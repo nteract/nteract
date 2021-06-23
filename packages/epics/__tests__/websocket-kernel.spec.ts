@@ -112,7 +112,8 @@ describe("launchWebSocketKernelEpic", () => {
           selectNextKernel: true,
           kernel: {
             info: null,
-            sessionId: "test",
+            sessionId: "fake",
+            remoteSessionId: "test",
             hostRef,
             type: "websocket",
             channels: expect.any(Subject),
@@ -681,7 +682,8 @@ describe("killKernelEpic", () => {
             byRef: Immutable.Map({
               aKernel: stateModule.makeRemoteKernelRecord({
                 id: "test",
-                sessionId: "test"
+                sessionId: "aKernel", 
+                remoteSessionId: "test"
               })
             })
           }),

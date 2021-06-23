@@ -106,6 +106,7 @@ export const mockAppState = (config: JSONObject): AppState => {
           byRef: Immutable.Map({
             [kernelRef]: makeRemoteKernelRecord({
               sessionId: "aSessionId",
+              remoteSessionId: "aSessionId",
               channels,
               status: KernelStatus.NotConnected
             })

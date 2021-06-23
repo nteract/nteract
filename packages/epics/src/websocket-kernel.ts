@@ -69,12 +69,14 @@ export const launchWebSocketKernelEpic = (
         mergeMap(data => {
           const session = data.response;
 
-          const sessionId = castToSessionId(session.id);
+          const sessionId = castToSessionId(kernelRef);
+          const remoteSessionId = castToSessionId(session.id);
 
           const kernel: RemoteKernelProps = Object.assign({}, session.kernel, {
             type: "websocket",
             info: null,
             sessionId,
+            remoteSessionId,
             cwd,
             channels: kernels.connect(
               serverConfig,
@@ -139,8 +141,8 @@ export const changeWebSocketKernelEpic = (
       if (!oldKernel || oldKernel.type !== "websocket") {
         return empty();
       }
-      const { sessionId } = oldKernel;
-      if (!sessionId) {
+      const { sessionId, remoteSessionId } = oldKernel;
+      if (!sessionId || !remoteSessionId) {
         return empty();
       }
 
@@ -163,7 +165,7 @@ export const changeWebSocketKernelEpic = (
           };
           // The sessions API will close down the old kernel for us if it is
           // on this session
-          return sessions.update(serverConfig, sessionId, sessionPayload).pipe(
+          return sessions.update(serverConfig, remoteSessionId, sessionPayload).pipe(
             mergeMap(({ response: session }) => {
               const kernel: RemoteKernelProps = Object.assign(
                 {},
@@ -171,6 +173,7 @@ export const changeWebSocketKernelEpic = (
                 {
                   type: "websocket",
                   sessionId,
+                  remoteSessionId,
                   cwd,
                   channels: kernels.connect(
                     serverConfig,
@@ -332,7 +335,7 @@ export const killKernelEpic = (
         );
       }
 
-      if (!kernel.id || !kernel.sessionId) {
+      if (!kernel.id || !kernel.remoteSessionId) {
         return of(
           actions.killKernelFailed({
             error: new Error(
@@ -346,7 +349,7 @@ export const killKernelEpic = (
       // TODO: If this was a kernel language change, we shouldn't be using this
       //       kill kernel epic because we need to make sure that creation happens
       //       after deletion
-      return sessions.destroy(serverConfig, kernel.sessionId).pipe(
+      return sessions.destroy(serverConfig, kernel.remoteSessionId).pipe(
         mergeMap(() =>
           action.payload.dispose && action.payload.kernelRef
             ? of(

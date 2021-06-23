@@ -107,7 +107,10 @@ export interface RemoteKernelProps {
   //   shutting down, not connected.
   status?: string | null;
   type: "websocket";
-  sessionId?: SessionId | null;
+  // Xref: https://jupyter-client.readthedocs.io/en/stable/messaging.html#message-header
+  // Each client has it's own unique session ID that is used to connect to the remote kernel. 
+  sessionId?: SessionId | null; // unique client session ID
+  remoteSessionId?: SessionId | null; // unique sessionID on the server
   id?: KernelId | null;
 }
 
@@ -121,6 +124,7 @@ export const makeRemoteKernelRecord = Immutable.Record<RemoteKernelProps>({
   lastActivity: null,
   channels: new Subject(),
   sessionId: null,
+  remoteSessionId: null,
   status: null
 });
 

@@ -115,6 +115,7 @@ Provide a bulleted list of breaking changes and a reference to the PR(s) contain
 #### New Features
 
 Provide a bulleted list of new features or improvements and a reference to the PR(s) containing these changes.
+- Add support for multiple clients to be able to connect the same remote kernel. ([PR#5557](https://github.com/nteract/nteract/pull/5557))
 
 #### Bug Fixes
 
