@@ -104,6 +104,11 @@ module.exports = {
       private: false
     },
     {
+      name: "@nteract/mythic-rtc",
+      version: "0.1.0",
+      private: false
+    },
+    {
       name: "@nteract/myths",
       version: "0.1.0",
       private: false,

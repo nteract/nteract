@@ -1,0 +1,1 @@
+export { collaborationMiddleware } from "./middleware";

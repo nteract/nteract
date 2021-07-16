@@ -1,0 +1,26 @@
+{
+    "name": "@nteract/mythic-rtc",
+    "version": "0.1.0",
+    "description": "Real-time collaboration experience for nteract apps.",
+    "main": "lib/index.js",
+    "types": "lib/index.d.ts",
+    "nteractDesktop": "src/index.ts",
+    "scripts": {},
+    "repository": "https://github.com/nteract/nteract/tree/main/packages/mythic-rtc",
+    "keywords": [
+      "nteract", "rtc", "collaboration"
+    ],
+    "publishConfig": {
+      "access": "public"
+    },
+    "devDependencies": {
+    },
+    "dependencies": {
+      "rxjs": "^6.3.3"
+    },
+    "peerDependencies": {
+      "immutable": "^4.0.0-rc.12"
+    },
+    "author": "Alex Panov <alpaix@outlook.com>",
+    "license": "BSD-3-Clause"
+  }
