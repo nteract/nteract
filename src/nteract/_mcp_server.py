@@ -23,6 +23,7 @@ from typing import Any
 
 import runtimed
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +129,7 @@ def _result_to_dict(result: runtimed.ExecutionResult) -> dict[str, Any]:
 # =============================================================================
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
 async def connect_notebook(
     notebook_id: str | None = None,
 ) -> dict[str, Any]:
@@ -161,7 +162,7 @@ async def connect_notebook(
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def disconnect_notebook() -> dict[str, Any]:
     """Disconnect from the current notebook session.
 
@@ -181,7 +182,7 @@ async def disconnect_notebook() -> dict[str, Any]:
     return {"disconnected": True}
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def list_notebooks() -> list[dict[str, Any]]:
     """List all active notebook rooms in the daemon.
 
@@ -200,7 +201,7 @@ async def list_notebooks() -> list[dict[str, Any]]:
 # =============================================================================
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
 async def start_kernel(
     kernel_type: str = "python",
     env_source: str = "auto",
@@ -233,7 +234,7 @@ async def start_kernel(
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def shutdown_kernel() -> dict[str, Any]:
     """Shutdown the kernel for the current session.
 
@@ -246,7 +247,7 @@ async def shutdown_kernel() -> dict[str, Any]:
     return {"shutdown": True}
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def interrupt_kernel() -> dict[str, Any]:
     """Interrupt the currently executing cell.
 
@@ -261,7 +262,7 @@ async def interrupt_kernel() -> dict[str, Any]:
     return {"interrupted": True}
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def get_kernel_status() -> dict[str, Any]:
     """Get the kernel status for the current session.
 
@@ -282,7 +283,7 @@ async def get_kernel_status() -> dict[str, Any]:
 # =============================================================================
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
 async def create_cell(
     source: str = "",
     cell_type: str = "code",
@@ -344,7 +345,7 @@ async def create_cell(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def set_cell_source(cell_id: str, source: str) -> dict[str, Any]:
     """Update a cell's source code.
 
@@ -363,7 +364,7 @@ async def set_cell_source(cell_id: str, source: str) -> dict[str, Any]:
     return {"cell_id": cell_id, "updated": True}
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def get_cell(cell_id: str) -> dict[str, Any]:
     """Get a cell by ID, including cached outputs if available.
 
@@ -385,7 +386,7 @@ async def get_cell(cell_id: str) -> dict[str, Any]:
     return _cell_to_dict(cell)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def get_all_cells() -> list[dict[str, Any]]:
     """Get all cells in the current notebook, including cached outputs.
 
@@ -403,7 +404,7 @@ async def get_all_cells() -> list[dict[str, Any]]:
     return [_cell_to_dict(cell) for cell in cells]
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def delete_cell(cell_id: str) -> dict[str, Any]:
     """Delete a cell from the notebook.
 
@@ -426,7 +427,7 @@ async def delete_cell(cell_id: str) -> dict[str, Any]:
 # =============================================================================
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def execute_cell(
     cell_id: str,
     timeout_secs: float = 60.0,
@@ -458,7 +459,7 @@ async def execute_cell(
     return _result_to_dict(result)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
 async def run_code(
     code: str,
     timeout_secs: float = 60.0,
