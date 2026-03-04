@@ -317,7 +317,8 @@ async def create_cell(
     if and_run and cell_type == "code":
         _cell_status[cell_id] = "running"
         # Create task so it continues even if we timeout waiting
-        task = asyncio.create_task(session.execute_cell(cell_id=cell_id, timeout_secs=60.0))
+        # Use ensure_future since runtimed returns a Future, not a coroutine
+        task = asyncio.ensure_future(session.execute_cell(cell_id=cell_id, timeout_secs=60.0))
         _pending_executions[cell_id] = task
 
         done, _ = await asyncio.wait({task}, timeout=5.0)
