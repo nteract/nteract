@@ -24,7 +24,7 @@ We're in the prelimiary stages of hooking up the realtime system from nteract/de
 
 ```bash
 # Add to Claude Code
-claude mcp add nteract -- uvx nteract
+claude mcp add nteract -- uvx --prerelease allow nteract
 ```
 
 That's it. Now Claude can execute Python code, create visualizations, and work with your data.
@@ -55,7 +55,7 @@ You can open the same notebook in the [nteract desktop app](https://github.com/n
 ## Installation
 
 ```bash
-uvx --prerelease=allow nteract
+uvx --prerelease allow nteract
 ```
 
 ## Claude Code Setup
@@ -63,7 +63,7 @@ uvx --prerelease=allow nteract
 Add nteract as an MCP server:
 
 ```bash
-claude mcp add nteract -- uvx --prerelease=allow nteract
+claude mcp add nteract -- uvx --prerelease allow nteract
 ```
 
 Or manually add to your Claude configuration:
@@ -73,7 +73,7 @@ Or manually add to your Claude configuration:
   "mcpServers": {
     "nteract": {
       "command": "uvx",
-      "args": ["--prerelease=allow", "nteract"]
+      "args": ["--prerelease", "allow", "nteract"]
     }
   }
 }
