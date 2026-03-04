@@ -17,3 +17,6 @@ build/
 .idea/
 .vscode/
 *.swp
+
+# Local Claude settings
+.claude/settings.local.json
