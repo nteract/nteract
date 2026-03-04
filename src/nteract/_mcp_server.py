@@ -15,6 +15,7 @@ Requires: pip install nteract
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 from typing import Any
@@ -117,10 +118,8 @@ async def connect_notebook(
 
     # Close existing session if any
     if _session is not None:
-        try:
+        with contextlib.suppress(Exception):
             await _session.close()
-        except Exception:
-            pass
 
     # Create new session
     _session = runtimed.AsyncSession(notebook_id=notebook_id)
@@ -145,10 +144,8 @@ async def disconnect_notebook() -> dict[str, Any]:
     global _session
 
     if _session is not None:
-        try:
+        with contextlib.suppress(Exception):
             await _session.close()
-        except Exception:
-            pass
         _session = None
 
     return {"disconnected": True}
