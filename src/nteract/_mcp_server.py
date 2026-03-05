@@ -20,6 +20,8 @@ import contextlib
 import json
 import logging
 import re
+import shutil
+import subprocess
 import sys
 from typing import Any
 
@@ -217,6 +219,36 @@ def _outputs_to_content(outputs: list[runtimed.Output]) -> list[ContentItem]:
     for output in outputs:
         items.extend(_output_to_content(output))
     return items
+
+
+def _output_to_nbformat(output: Any) -> dict[str, Any]:
+    """Convert a runtimed Output to an nbformat v4 output dict."""
+    if output.output_type == "stream":
+        return {
+            "output_type": "stream",
+            "name": getattr(output, "name", None) or "stdout",
+            "text": output.text or "",
+        }
+
+    if output.output_type == "error":
+        return {
+            "output_type": "error",
+            "ename": output.ename or "",
+            "evalue": output.evalue or "",
+            "traceback": output.traceback or [],
+        }
+
+    if output.output_type in ("display_data", "execute_result"):
+        nb_output: dict[str, Any] = {
+            "output_type": output.output_type,
+            "data": dict(output.data) if output.data else {},
+            "metadata": {},
+        }
+        if output.output_type == "execute_result":
+            nb_output["execution_count"] = getattr(output, "execution_count", None)
+        return nb_output
+
+    return {"output_type": output.output_type}
 
 
 def _format_header(
@@ -671,6 +703,85 @@ async def delete_cell(cell_id: str) -> dict[str, Any]:
     await session.delete_cell(cell_id=cell_id)
 
     return {"cell_id": cell_id, "deleted": True}
+
+
+# =============================================================================
+# Notebook Management Tools
+# =============================================================================
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
+async def save_notebook(path: str) -> dict[str, Any]:
+    """Save the current notebook to disk as a .ipynb file.
+
+    Serializes all cells and their outputs from the active session into
+    a standard Jupyter notebook format (nbformat v4).
+
+    Args:
+        path: File path to save the notebook (e.g. "analysis.ipynb").
+            Adds .ipynb extension if not present.
+
+    Returns:
+        Confirmation with the saved path and cell count.
+    """
+    import nbformat
+
+    session = await _get_session()
+    cells = await session.get_cells()
+
+    nb = nbformat.v4.new_notebook()
+    nb.metadata["kernelspec"] = {
+        "display_name": "Python 3",
+        "language": "python",
+        "name": "python3",
+    }
+
+    for cell in cells:
+        if cell.cell_type == "code":
+            nb_cell = nbformat.v4.new_code_cell(source=cell.source or "")
+            nb_cell.execution_count = cell.execution_count
+            nb_cell.outputs = [_output_to_nbformat(out) for out in cell.outputs]
+        elif cell.cell_type == "markdown":
+            nb_cell = nbformat.v4.new_markdown_cell(source=cell.source or "")
+        else:
+            nb_cell = nbformat.v4.new_raw_cell(source=cell.source or "")
+        nb_cell.id = cell.id
+        nb.cells.append(nb_cell)
+
+    if not path.endswith(".ipynb"):
+        path += ".ipynb"
+
+    with open(path, "w") as f:
+        nbformat.write(nb, f)
+
+    return {"saved": True, "path": path, "cells": len(nb.cells)}
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
+async def open_notebook() -> dict[str, Any]:
+    """Open the current notebook in the nteract desktop app.
+
+    Launches the nteract app connected to the same notebook session,
+    so you can see the notebook the agent is working on in real-time.
+
+    Returns:
+        Confirmation with the notebook ID.
+    """
+    session = await _get_session()
+
+    runt = shutil.which("runt-nightly") or shutil.which("runt")
+    if not runt:
+        raise RuntimeError(
+            "runt CLI not found in PATH. Install runtimed to open notebooks."
+        )
+
+    subprocess.Popen(
+        [runt, "open", session.notebook_id],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    return {"opened": True, "notebook_id": session.notebook_id}
 
 
 # =============================================================================
