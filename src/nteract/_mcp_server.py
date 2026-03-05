@@ -15,6 +15,7 @@ Requires: pip install nteract
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -82,16 +83,35 @@ def _cell_to_dict(cell: runtimed.Cell) -> dict[str, Any]:
     }
 
 
-def _result_to_dict(result: runtimed.ExecutionResult) -> dict[str, Any]:
-    """Convert an ExecutionResult to a JSON-serializable dict."""
+def _execution_to_dict(
+    cell_id: str,
+    events: list[Any],  # list[runtimed.ExecutionEvent] - type not exported yet
+    complete: bool,
+) -> dict[str, Any]:
+    """Convert execution events to agent-friendly format.
+
+    Returns ordered outputs preserving interleaving (stdout/display_data/etc).
+    """
+    outputs: list[dict[str, Any]] = []
+    execution_count: int | None = None
+    status = "running"
+
+    for event in events:
+        if event.event_type == "execution_started":
+            execution_count = event.execution_count
+        elif event.event_type == "output":
+            outputs.append(_output_to_dict(event.output))
+        elif event.event_type == "done":
+            status = "idle"
+        elif event.event_type == "error":
+            status = "error"
+
     return {
-        "cell_id": result.cell_id,
-        "success": result.success,
-        "execution_count": result.execution_count,
-        "stdout": result.stdout,
-        "stderr": result.stderr,
-        "outputs": [_output_to_dict(o) for o in result.outputs],
-        "error": _output_to_dict(result.error) if result.error else None,
+        "cell_id": cell_id,
+        "status": status,
+        "execution_count": execution_count,
+        "outputs": outputs,
+        "complete": complete,
     }
 
 
@@ -260,6 +280,7 @@ async def create_cell(
     cell_type: str = "code",
     index: int | None = None,
     and_run: bool = False,
+    timeout_secs: float = 5.0,
 ) -> dict[str, Any]:
     """Create a new cell in the notebook, optionally executing it.
 
@@ -270,13 +291,13 @@ async def create_cell(
         source: Initial source code for the cell.
         cell_type: Cell type - "code", "markdown", or "raw".
         index: Position to insert the cell. None appends at the end.
-        and_run: If True, execute the cell after creating it. For long-running
-            cells, returns after ~5 seconds with status="running". Use get_cell
-            to poll for completion.
+        and_run: If True, execute the cell after creating it.
+        timeout_secs: Max time to wait for execution (default 5s). If execution
+            takes longer, returns partial results with complete=False.
 
     Returns:
-        Cell info including id. If and_run=True, includes outputs or status.
-        On execution error, still returns cell_id so you can retry or poll.
+        Cell info including id. If and_run=True, includes outputs and status.
+        Check 'complete' field to know if execution finished.
     """
     session = await _get_session()
     cell_id = await session.create_cell(
@@ -288,18 +309,8 @@ async def create_cell(
     result: dict[str, Any] = {"cell_id": cell_id, "created": True}
 
     if and_run and cell_type == "code":
-        try:
-            exec_result = await session.execute_cell(cell_id=cell_id, timeout_secs=60.0)
-            result["status"] = "error" if exec_result.error else "idle"
-            result["outputs"] = [_output_to_dict(o) for o in exec_result.outputs]
-            result["stdout"] = exec_result.stdout
-            result["stderr"] = exec_result.stderr
-            if exec_result.error:
-                result["error"] = _output_to_dict(exec_result.error)
-        except Exception as e:
-            # Execution failed but cell was created - return cell_id so agent can retry
-            result["status"] = "error"
-            result["message"] = f"Execution failed: {e}. Use get_cell to check status."
+        exec_result = await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
+        result.update(exec_result)
 
     return result
 
@@ -321,6 +332,26 @@ async def set_cell_source(cell_id: str, source: str) -> dict[str, Any]:
     await session.set_source(cell_id=cell_id, source=source)
 
     return {"cell_id": cell_id, "updated": True}
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
+async def append_source(cell_id: str, text: str) -> dict[str, Any]:
+    """Append text to a cell's source code.
+
+    Uses direct CRDT insertion (no diff) - ideal for streaming LLM tokens.
+    Changes sync to all connected clients in real-time.
+
+    Args:
+        cell_id: The cell ID to append to.
+        text: The text to append.
+
+    Returns:
+        Confirmation of append.
+    """
+    session = await _get_session()
+    await session.append_source(cell_id=cell_id, text=text)
+
+    return {"cell_id": cell_id, "appended": True}
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
@@ -380,55 +411,50 @@ async def delete_cell(cell_id: str) -> dict[str, Any]:
 # =============================================================================
 
 
+async def _execute_cell_internal(
+    cell_id: str,
+    timeout_secs: float = 5.0,
+) -> dict[str, Any]:
+    """Internal execution with streaming and partial results."""
+    session = await _get_session()
+    events: list[Any] = []  # list[runtimed.ExecutionEvent]
+    complete = False
+
+    async def collect_events() -> None:
+        nonlocal complete
+        async for event in await session.stream_execute(cell_id):
+            events.append(event)
+            if event.event_type in ("done", "error"):
+                complete = True
+                break
+
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(collect_events(), timeout=timeout_secs)
+
+    return _execution_to_dict(cell_id, events, complete)
+
+
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def execute_cell(
     cell_id: str,
-    timeout_secs: float = 60.0,
+    timeout_secs: float = 5.0,
 ) -> dict[str, Any]:
     """Execute a cell by ID.
 
-    The daemon reads the cell's source from the shared document and executes
-    it. This ensures all clients see the same code being executed.
+    Returns partial results after timeout_secs if still running.
+    Check 'complete' field - if False, use get_cell() to poll for more outputs.
 
     If no kernel is running, one will be started automatically.
 
     Args:
         cell_id: The cell ID to execute.
-        timeout_secs: Maximum time to wait for execution (default: 60).
+        timeout_secs: Maximum time to wait for execution (default: 5s).
 
     Returns:
-        Execution result including outputs, stdout, stderr, and error info.
+        Execution result with ordered outputs preserving interleaving.
+        Fields: cell_id, status, execution_count, outputs, complete.
     """
-    session = await _get_session()
-    result = await session.execute_cell(
-        cell_id=cell_id,
-        timeout_secs=timeout_secs,
-    )
-    return _result_to_dict(result)
-
-
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
-async def run_code(
-    code: str,
-    timeout_secs: float = 60.0,
-) -> dict[str, Any]:
-    """Execute code in a new cell.
-
-    This is a convenience method that creates a cell, executes it, and returns
-    the result. The cell is persisted in the notebook document.
-
-    If no kernel is running, one will be started automatically.
-
-    Args:
-        code: Python code to execute.
-        timeout_secs: Maximum time to wait for execution (default: 60).
-
-    Returns:
-        Execution result including cell_id, outputs, stdout, stderr, and error.
-    """
-    session = await _get_session()
-    result = await session.run(code=code, timeout_secs=timeout_secs)
-    return _result_to_dict(result)
+    return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
 
 
 # =============================================================================

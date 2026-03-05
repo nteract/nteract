@@ -1,6 +1,6 @@
 [project]
 name = "nteract"
-version = "0.0.6"
+version = "0.1.0"
 description = "Bring AI to Jupyter notebooks. MCP server for Claude, ChatGPT, Gemini, OpenCode and any agent."
 readme = "README.md"
 license = "BSD-3-Clause"
@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
     "mcp>=1.26.0",
     "httpx>=0.27.0,<1.0",
-    "runtimed>=0.1.5a202603042356",  # Requires Cell.outputs API from PR #520
+    "runtimed==0.1.5a202603050550",  # Requires streaming API from PR #528 (pinned until full build)
 ]
 
 [project.scripts]
@@ -26,6 +26,7 @@ packages = ["src/nteract"]
 
 [dependency-groups]
 dev = [
+    "anyio>=4.0",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.9",
