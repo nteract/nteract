@@ -19,6 +19,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import sys
 from typing import Any
 
 import runtimed
@@ -532,6 +533,7 @@ def main():
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        stream=sys.stderr,
     )
     mcp.run(transport="stdio")
 
