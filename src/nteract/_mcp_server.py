@@ -91,19 +91,30 @@ def _execution_to_dict(
     """Convert execution events to agent-friendly format.
 
     Returns ordered outputs preserving interleaving (stdout/display_data/etc).
+    Status reflects execution outcome:
+    - "running": execution in progress
+    - "idle": completed successfully
+    - "error": execution raised an exception or kernel error
     """
     outputs: list[dict[str, Any]] = []
     execution_count: int | None = None
     status = "running"
+    has_error_output = False
 
     for event in events:
         if event.event_type == "execution_started":
             execution_count = event.execution_count
         elif event.event_type == "output":
-            outputs.append(_output_to_dict(event.output))
+            output_dict = _output_to_dict(event.output)
+            outputs.append(output_dict)
+            # Check for error output from user code exceptions (e.g., 1/0)
+            if output_dict.get("output_type") == "error":
+                has_error_output = True
         elif event.event_type == "done":
-            status = "idle"
+            # Set status based on whether any error output was produced
+            status = "error" if has_error_output else "idle"
         elif event.event_type == "error":
+            # Transport/kernel-level error
             status = "error"
 
     return {

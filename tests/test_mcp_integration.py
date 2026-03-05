@@ -284,11 +284,13 @@ print('c', flush=True)
         o for o in outputs if o.get("output_type") in ("stream", "display_data")
     ]
 
-    # Verify we have at least 3 outputs in order
-    if len(main_outputs) >= 3:
-        assert main_outputs[0]["output_type"] == "stream"
-        assert main_outputs[1]["output_type"] == "display_data"
-        assert main_outputs[2]["output_type"] == "stream"
+    # Strict assertion: must have exactly 3 outputs in the expected order
+    assert len(main_outputs) == 3, f"Expected 3 outputs, got {len(main_outputs)}: {main_outputs}"
+    assert main_outputs[0]["output_type"] == "stream", "First output should be stream"
+    assert "a" in main_outputs[0].get("text", ""), "First output should contain 'a'"
+    assert main_outputs[1]["output_type"] == "display_data", "Second output should be display_data"
+    assert main_outputs[2]["output_type"] == "stream", "Third output should be stream"
+    assert "c" in main_outputs[2].get("text", ""), "Third output should contain 'c'"
 
 
 @pytest.mark.asyncio
