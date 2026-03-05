@@ -84,10 +84,15 @@ Or manually add to your Claude configuration:
 | Tool | Description |
 |------|-------------|
 | `connect_notebook` | Connect to a notebook (new or existing) |
-| `run_code` | Execute Python code |
-| `create_cell` | Add a cell to the notebook |
-| `execute_cell` | Run a specific cell |
+| `create_cell` | Add a cell to the notebook (use `and_run=True` to execute) |
+| `execute_cell` | Run a specific cell (returns partial results after timeout) |
+| `append_source` | Stream tokens into a cell (ideal for LLM output) |
+| `get_cell` | Get a cell by ID with outputs |
 | `get_all_cells` | View all cells in the notebook |
+| `set_cell_source` | Update a cell's source code |
+| `delete_cell` | Remove a cell from the notebook |
+| `start_kernel` | Start a Python kernel |
+| `get_kernel_status` | Check kernel state |
 
 ## Architecture
 
