@@ -276,6 +276,7 @@ async def create_cell(
 
     Returns:
         Cell info including id. If and_run=True, includes outputs or status.
+        On execution error, still returns cell_id so you can retry or poll.
     """
     session = await _get_session()
     cell_id = await session.create_cell(
@@ -287,13 +288,18 @@ async def create_cell(
     result: dict[str, Any] = {"cell_id": cell_id, "created": True}
 
     if and_run and cell_type == "code":
-        exec_result = await session.execute_cell(cell_id=cell_id, timeout_secs=60.0)
-        result["status"] = "error" if exec_result.error else "idle"
-        result["outputs"] = [_output_to_dict(o) for o in exec_result.outputs]
-        result["stdout"] = exec_result.stdout
-        result["stderr"] = exec_result.stderr
-        if exec_result.error:
-            result["error"] = _output_to_dict(exec_result.error)
+        try:
+            exec_result = await session.execute_cell(cell_id=cell_id, timeout_secs=60.0)
+            result["status"] = "error" if exec_result.error else "idle"
+            result["outputs"] = [_output_to_dict(o) for o in exec_result.outputs]
+            result["stdout"] = exec_result.stdout
+            result["stderr"] = exec_result.stderr
+            if exec_result.error:
+                result["error"] = _output_to_dict(exec_result.error)
+        except Exception as e:
+            # Execution failed but cell was created - return cell_id so agent can retry
+            result["status"] = "error"
+            result["message"] = f"Execution failed: {e}. Use get_cell to check status."
 
     return result
 
@@ -319,17 +325,17 @@ async def set_cell_source(cell_id: str, source: str) -> dict[str, Any]:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def get_cell(cell_id: str) -> dict[str, Any]:
-    """Get a cell by ID, including cached outputs if available.
+    """Get a cell by ID, including outputs if available.
 
-    If a cell execution is pending, checks if it has completed and
-    updates the cache before returning.
+    Outputs are resolved from the Automerge document, so you can see
+    outputs from cells executed by other clients.
 
     Args:
         cell_id: The cell ID.
 
     Returns:
         Cell info including id, cell_type, source, execution_count,
-        and outputs/status if available.
+        and outputs if available.
     """
     session = await _get_session()
     cell = await session.get_cell(cell_id=cell_id)
@@ -338,12 +344,13 @@ async def get_cell(cell_id: str) -> dict[str, Any]:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def get_all_cells() -> list[dict[str, Any]]:
-    """Get all cells in the current notebook, including cached outputs.
+    """Get all cells in the current notebook, including outputs.
 
-    Checks for any completed pending executions before returning.
+    Outputs are resolved from the Automerge document, so you can see
+    outputs from cells executed by other clients.
 
     Returns:
-        List of cells with their info, outputs, and status.
+        List of cells with their info and outputs.
     """
     session = await _get_session()
     cells = await session.get_cells()
