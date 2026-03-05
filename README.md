@@ -79,6 +79,20 @@ Or manually add to your Claude configuration:
 }
 ```
 
+### Using Nightly or Preview Builds
+
+If you're using the nightly build of nteract desktop:
+
+```bash
+claude mcp add nteract -- env RUNTIMED_SOCKET_PATH="$HOME/Library/Caches/runt-nightly/runtimed.sock" uvx --prerelease allow nteract
+```
+
+For the preview build:
+
+```bash
+claude mcp add nteract -- env RUNTIMED_SOCKET_PATH="$HOME/Library/Caches/runt-preview/runtimed.sock" uvx --prerelease allow nteract
+```
+
 ## Available Tools
 
 | Tool | Description |
