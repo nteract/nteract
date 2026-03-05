@@ -69,6 +69,11 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
+# Maximum size for image data (base64-encoded). 1 MB is generous — a typical
+# matplotlib PNG is 50–100 KB. Images beyond this are silently dropped to
+# avoid blowing up the LLM's context window.
+_MAX_IMAGE_BASE64_BYTES = 1_000_000
+
 # Text mime type priority for LLM consumption.
 # text/llm+plain is from https://github.com/rgbkrk/repr_llm — a repr designed
 # specifically for language models. text/html is intentionally excluded: it's
@@ -175,7 +180,7 @@ def _output_to_content(output: runtimed.Output) -> list[ContentItem]:
         for mime in ("image/png", "image/jpeg", "image/gif", "image/webp"):
             if mime in output.data:
                 data = output.data[mime]
-                if isinstance(data, str):
+                if isinstance(data, str) and len(data) <= _MAX_IMAGE_BASE64_BYTES:
                     items.append(ImageContent(type="image", data=data, mimeType=mime))
 
         # SVG as text (it's XML, not base64)
