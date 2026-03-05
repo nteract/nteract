@@ -23,7 +23,7 @@ from typing import Any
 
 import runtimed
 from mcp.server.fastmcp import FastMCP
-from mcp.types import ToolAnnotations
+from mcp.types import TextContent, ToolAnnotations
 
 logger = logging.getLogger(__name__)
 
@@ -353,7 +353,7 @@ async def create_cell(
     index: int | None = None,
     and_run: bool = False,
     timeout_secs: float = 5.0,
-) -> str:
+) -> TextContent:
     """Create a new cell in the notebook, optionally executing it.
 
     The cell is added to the shared document and synced to all connected
@@ -381,7 +381,7 @@ async def create_cell(
     if and_run and cell_type == "code":
         return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
 
-    return f"Created cell: {cell_id}"
+    return TextContent(type="text", text=f"Created cell: {cell_id}")
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
@@ -424,7 +424,7 @@ async def append_source(cell_id: str, text: str) -> dict[str, Any]:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-async def get_cell(cell_id: str) -> str:
+async def get_cell(cell_id: str) -> TextContent:
     """Get a cell by ID, including outputs if available.
 
     Outputs are resolved from the Automerge document, so you can see
@@ -438,13 +438,11 @@ async def get_cell(cell_id: str) -> str:
     """
     session = await _get_session()
     cell = await session.get_cell(cell_id=cell_id)
-    return _format_cell(
-        cell,
-    )
+    return TextContent(type="text", text=_format_cell(cell))
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-async def get_all_cells() -> str:
+async def get_all_cells() -> TextContent:
     """Get all cells in the current notebook, including outputs.
 
     Outputs are resolved from the Automerge document, so you can see
@@ -455,13 +453,8 @@ async def get_all_cells() -> str:
     """
     session = await _get_session()
     cells = await session.get_cells()
-    formatted = [
-        _format_cell(
-            cell,
-        )
-        for cell in cells
-    ]
-    return "\n\n".join(formatted)
+    formatted = [_format_cell(cell) for cell in cells]
+    return TextContent(type="text", text="\n\n".join(formatted))
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
@@ -490,7 +483,7 @@ async def delete_cell(cell_id: str) -> dict[str, Any]:
 async def _execute_cell_internal(
     cell_id: str,
     timeout_secs: float = 5.0,
-) -> str:
+) -> TextContent:
     """Internal execution with streaming and partial results."""
     session = await _get_session()
     events: list[Any] = []  # list[runtimed.ExecutionEvent]
@@ -507,14 +500,14 @@ async def _execute_cell_internal(
     with contextlib.suppress(asyncio.TimeoutError):
         await asyncio.wait_for(collect_events(), timeout=timeout_secs)
 
-    return _format_execution_result(cell_id, events, complete)
+    return TextContent(type="text", text=_format_execution_result(cell_id, events, complete))
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def execute_cell(
     cell_id: str,
     timeout_secs: float = 5.0,
-) -> str:
+) -> TextContent:
     """Execute a cell by ID.
 
     Returns partial results after timeout_secs if still running.
