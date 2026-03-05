@@ -19,14 +19,18 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import sys
 from typing import Any
 
 import runtimed
 from mcp.server.fastmcp import FastMCP
-from mcp.types import TextContent, ToolAnnotations
+from mcp.types import ImageContent, TextContent, ToolAnnotations
 
 logger = logging.getLogger(__name__)
+
+# MCP content types for tool responses
+ContentItem = TextContent | ImageContent
 
 # Create the MCP server
 mcp = FastMCP("nteract")
@@ -51,14 +55,45 @@ async def _get_session() -> runtimed.AsyncSession:
     return _session
 
 
+# Regex to strip ANSI escape sequences (terminal colors, cursor movement, etc.)
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\].*?\x07|\x1b\(B")
+
+
+def _strip_ansi(text: str) -> str:
+    """Strip ANSI escape sequences from text.
+
+    Kernel stream output (especially from pip/uv installs) often contains
+    terminal control codes for colors, progress bars, and cursor movement.
+    These waste LLM context and render as garbage in text responses.
+    """
+    return _ANSI_RE.sub("", text)
+
+
+# Maximum size for image data (base64-encoded). 1 MB is generous — a typical
+# matplotlib PNG is 50–100 KB. Images beyond this are silently dropped to
+# avoid blowing up the LLM's context window.
+_MAX_IMAGE_BASE64_BYTES = 1_000_000
+
+# Text mime type priority for LLM consumption.
+# text/llm+plain is from https://github.com/rgbkrk/repr_llm — a repr designed
+# specifically for language models. text/html is intentionally excluded: it's
+# often bulky embedded JS (e.g. Plotly) that wastes context window.
+_TEXT_MIME_PRIORITY = (
+    "text/llm+plain",
+    "text/markdown",
+    "text/plain",
+    "application/json",
+)
+
+
 def _format_output_text(output: runtimed.Output) -> str | None:
     """Extract text representation from a single output.
 
     Returns the best text representation, or None if no text available.
-    Priority: text/markdown > text/plain > application/json
+    Priority: text/llm+plain > text/markdown > text/plain > application/json
     """
     if output.output_type == "stream":
-        return output.text
+        return _strip_ansi(output.text) if output.text else None
 
     if output.output_type == "error":
         parts = []
@@ -68,25 +103,23 @@ def _format_output_text(output: runtimed.Output) -> str | None:
             parts.append(output.evalue)
         if output.traceback:
             parts.append("\n".join(output.traceback))
-        return "\n".join(parts) if parts else None
+        return _strip_ansi("\n".join(parts)) if parts else None
 
     if output.output_type in ("display_data", "execute_result"):
         if output.data is None:
             return None
-        # Priority: text/markdown > text/plain > application/json
-        if "text/markdown" in output.data:
-            return output.data["text/markdown"]
-        if "text/plain" in output.data:
-            return output.data["text/plain"]
-        if "application/json" in output.data:
-            try:
-                data = output.data["application/json"]
-                # If it's already a string, try to parse and pretty-print
-                if isinstance(data, str):
-                    return json.dumps(json.loads(data), indent=2)
-                return json.dumps(data, indent=2)
-            except (json.JSONDecodeError, TypeError):
-                return str(output.data["application/json"])
+        for mime in _TEXT_MIME_PRIORITY:
+            if mime not in output.data:
+                continue
+            if mime == "application/json":
+                try:
+                    data = output.data[mime]
+                    if isinstance(data, str):
+                        return json.dumps(json.loads(data), indent=2)
+                    return json.dumps(data, indent=2)
+                except (json.JSONDecodeError, TypeError):
+                    return str(output.data[mime])
+            return output.data[mime]
         return None
 
     return None
@@ -95,8 +128,8 @@ def _format_output_text(output: runtimed.Output) -> str | None:
 def _format_outputs_text(outputs: list[runtimed.Output]) -> str:
     """Convert a list of outputs to readable text.
 
-    Extracts only text-based representations (text/markdown, text/plain,
-    application/json). Ignores images, HTML, and other binary formats.
+    Extracts only text-based representations. Ignores images, HTML, and
+    other binary/bulky formats.
     """
     parts: list[str] = []
     for output in outputs:
@@ -104,6 +137,86 @@ def _format_outputs_text(outputs: list[runtimed.Output]) -> str:
         if text:
             parts.append(text)
     return "\n\n".join(parts)
+
+
+def _output_to_content(output: runtimed.Output) -> list[ContentItem]:
+    """Convert a single output to a list of MCP content items.
+
+    Returns the richest representation for each mime type:
+    - image/png, image/jpeg, image/gif, image/webp → ImageContent
+    - image/svg+xml → TextContent (XML text, not base64)
+    - text/llm+plain, text/markdown, text/plain, application/json → TextContent
+    - stream, error → TextContent
+
+    text/html is intentionally excluded — it's often bulky embedded JS
+    (e.g. Plotly, Bokeh) that wastes LLM context window.
+    """
+    items: list[ContentItem] = []
+
+    if output.output_type == "stream":
+        if output.text:
+            cleaned = _strip_ansi(output.text)
+            if cleaned.strip():
+                items.append(TextContent(type="text", text=cleaned))
+        return items
+
+    if output.output_type == "error":
+        parts = []
+        if output.ename and output.evalue:
+            parts.append(f"{output.ename}: {output.evalue}")
+        elif output.evalue:
+            parts.append(output.evalue)
+        if output.traceback:
+            parts.append("\n".join(output.traceback))
+        if parts:
+            items.append(TextContent(type="text", text=_strip_ansi("\n".join(parts))))
+        return items
+
+    if output.output_type in ("display_data", "execute_result"):
+        if output.data is None:
+            return items
+
+        # Images → ImageContent (base64 encoded by the kernel)
+        for mime in ("image/png", "image/jpeg", "image/gif", "image/webp"):
+            if mime in output.data:
+                data = output.data[mime]
+                if isinstance(data, str) and len(data) <= _MAX_IMAGE_BASE64_BYTES:
+                    items.append(ImageContent(type="image", data=data, mimeType=mime))
+
+        # SVG as text (it's XML, not base64)
+        if "image/svg+xml" in output.data:
+            items.append(TextContent(type="text", text=output.data["image/svg+xml"]))
+
+        # Best available text representation
+        for mime in _TEXT_MIME_PRIORITY:
+            if mime not in output.data:
+                continue
+            if mime == "application/json":
+                try:
+                    data = output.data[mime]
+                    if isinstance(data, str):
+                        text = json.dumps(json.loads(data), indent=2)
+                    else:
+                        text = json.dumps(data, indent=2)
+                    items.append(TextContent(type="text", text=text))
+                except (json.JSONDecodeError, TypeError):
+                    items.append(TextContent(type="text", text=str(output.data[mime])))
+            else:
+                items.append(TextContent(type="text", text=output.data[mime]))
+            break
+
+    return items
+
+
+def _outputs_to_content(outputs: list[runtimed.Output]) -> list[ContentItem]:
+    """Convert a list of outputs to MCP content items.
+
+    Each output may produce multiple items (e.g. an image + its text/plain alt).
+    """
+    items: list[ContentItem] = []
+    for output in outputs:
+        items.extend(_output_to_content(output))
+    return items
 
 
 def _format_header(
@@ -148,6 +261,26 @@ def _format_cell(cell: runtimed.Cell) -> str:
         return header
 
 
+def _cell_to_content(cell: runtimed.Cell) -> list[ContentItem]:
+    """Convert a cell to rich MCP content items.
+
+    Returns a header as TextContent, then each output as its richest type.
+    """
+    header = _format_header(cell.id, execution_count=cell.execution_count)
+    items: list[ContentItem] = []
+
+    if cell.source:
+        items.append(TextContent(type="text", text=f"{header}\n\n{cell.source}"))
+    else:
+        items.append(TextContent(type="text", text=header))
+
+    output_items = _outputs_to_content(cell.outputs)
+    if output_items:
+        items.extend(output_items)
+
+    return items
+
+
 def _format_execution_result(
     cell_id: str,
     events: list[Any],  # list[runtimed.ExecutionEvent]
@@ -186,6 +319,44 @@ def _format_execution_result(
         return f"{header}\n\n(execution in progress...)"
     else:
         return header
+
+
+def _execution_result_to_content(
+    cell_id: str,
+    events: list[Any],  # list[runtimed.ExecutionEvent]
+    complete: bool,
+) -> list[ContentItem]:
+    """Convert execution result to rich MCP content items.
+
+    Returns a header TextContent, then each output as its richest type.
+    """
+    outputs: list[runtimed.Output] = []
+    execution_count: int | None = None
+    status = "running"
+    has_error_output = False
+
+    for event in events:
+        if event.event_type == "execution_started":
+            execution_count = event.execution_count
+        elif event.event_type == "output":
+            outputs.append(event.output)
+            if event.output.output_type == "error":
+                has_error_output = True
+        elif event.event_type == "done":
+            status = "error" if has_error_output else "idle"
+        elif event.event_type == "error":
+            status = "error"
+
+    header = _format_header(cell_id, status=status, execution_count=execution_count)
+    items: list[ContentItem] = [TextContent(type="text", text=header)]
+
+    output_items = _outputs_to_content(outputs)
+    if output_items:
+        items.extend(output_items)
+    elif not complete:
+        items.append(TextContent(type="text", text="(execution in progress...)"))
+
+    return items
 
 
 # =============================================================================
@@ -273,7 +444,7 @@ def _format_notebook_list(rooms: list[dict[str, Any]]) -> str:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-async def list_notebooks() -> TextContent:
+async def list_notebooks() -> list[ContentItem]:
     """List all active notebook rooms in the daemon.
 
     Returns:
@@ -281,9 +452,7 @@ async def list_notebooks() -> TextContent:
     """
     client = _get_daemon_client()
     rooms = client.list_rooms()
-    # rooms is a list of dicts with keys: notebook_id, active_peers, has_kernel,
-    # kernel_type (optional), kernel_status (optional), env_source (optional)
-    return TextContent(type="text", text=_format_notebook_list([dict(room) for room in rooms]))
+    return [TextContent(type="text", text=_format_notebook_list([dict(room) for room in rooms]))]
 
 
 # =============================================================================
@@ -380,7 +549,7 @@ async def create_cell(
     index: int | None = None,
     and_run: bool = False,
     timeout_secs: float = 5.0,
-) -> TextContent:
+) -> list[ContentItem]:
     """Create a new cell in the notebook, optionally executing it.
 
     The cell is added to the shared document and synced to all connected
@@ -408,7 +577,7 @@ async def create_cell(
     if and_run and cell_type == "code":
         return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
 
-    return TextContent(type="text", text=f"Created cell: {cell_id}")
+    return [TextContent(type="text", text=f"Created cell: {cell_id}")]
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
@@ -451,7 +620,7 @@ async def append_source(cell_id: str, text: str) -> dict[str, Any]:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-async def get_cell(cell_id: str) -> TextContent:
+async def get_cell(cell_id: str) -> list[ContentItem]:
     """Get a cell by ID, including outputs if available.
 
     Outputs are resolved from the Automerge document, so you can see
@@ -461,27 +630,29 @@ async def get_cell(cell_id: str) -> TextContent:
         cell_id: The cell ID.
 
     Returns:
-        Cell with source code and outputs.
+        Cell with source code and outputs (images returned as ImageContent).
     """
     session = await _get_session()
     cell = await session.get_cell(cell_id=cell_id)
-    return TextContent(type="text", text=_format_cell(cell))
+    return _cell_to_content(cell)
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-async def get_all_cells() -> TextContent:
+async def get_all_cells() -> list[ContentItem]:
     """Get all cells in the current notebook, including outputs.
 
     Outputs are resolved from the Automerge document, so you can see
     outputs from cells executed by other clients.
 
     Returns:
-        All cells with source code and outputs.
+        All cells with source code and outputs (images returned as ImageContent).
     """
     session = await _get_session()
     cells = await session.get_cells()
-    formatted = [_format_cell(cell) for cell in cells]
-    return TextContent(type="text", text="\n\n".join(formatted))
+    items: list[ContentItem] = []
+    for cell in cells:
+        items.extend(_cell_to_content(cell))
+    return items
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
@@ -510,7 +681,7 @@ async def delete_cell(cell_id: str) -> dict[str, Any]:
 async def _execute_cell_internal(
     cell_id: str,
     timeout_secs: float = 5.0,
-) -> TextContent:
+) -> list[ContentItem]:
     """Internal execution with streaming and partial results."""
     session = await _get_session()
     events: list[Any] = []  # list[runtimed.ExecutionEvent]
@@ -527,14 +698,14 @@ async def _execute_cell_internal(
     with contextlib.suppress(asyncio.TimeoutError):
         await asyncio.wait_for(collect_events(), timeout=timeout_secs)
 
-    return TextContent(type="text", text=_format_execution_result(cell_id, events, complete))
+    return _execution_result_to_content(cell_id, events, complete)
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def execute_cell(
     cell_id: str,
     timeout_secs: float = 5.0,
-) -> TextContent:
+) -> list[ContentItem]:
     """Execute a cell by ID.
 
     Returns partial results after timeout_secs if still running.
@@ -545,7 +716,7 @@ async def execute_cell(
         timeout_secs: Maximum time to wait for execution (default: 5s).
 
     Returns:
-        Cell with execution status and outputs.
+        Cell with execution status and outputs (images returned as ImageContent).
     """
     return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
 
