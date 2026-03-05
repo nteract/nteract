@@ -15,7 +15,6 @@ Requires: pip install nteract
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
 import logging
@@ -33,11 +32,6 @@ mcp = FastMCP("nteract")
 # Session state - single active session at a time
 _session: runtimed.AsyncSession | None = None
 _daemon_client: runtimed.DaemonClient | None = None
-
-# Output caching - stores outputs by cell_id after execution
-_cell_outputs: dict[str, list[dict[str, Any]]] = {}
-_cell_status: dict[str, str] = {}  # "idle", "running", "error"
-_pending_executions: dict[str, asyncio.Task[runtimed.ExecutionResult]] = {}
 
 
 def _get_daemon_client() -> runtimed.DaemonClient:
@@ -77,38 +71,15 @@ def _output_to_dict(output: runtimed.Output) -> dict[str, Any]:
     return result
 
 
-async def _check_pending_execution(cell_id: str) -> None:
-    """Check if a pending execution has completed and cache its results."""
-    if cell_id not in _pending_executions:
-        return
-
-    task = _pending_executions[cell_id]
-    if task.done():
-        try:
-            exec_result = task.result()
-            outputs = [_output_to_dict(o) for o in exec_result.outputs]
-            _cell_outputs[cell_id] = outputs
-            _cell_status[cell_id] = "error" if exec_result.error else "idle"
-        except Exception:
-            _cell_status[cell_id] = "error"
-        finally:
-            del _pending_executions[cell_id]
-
-
 def _cell_to_dict(cell: runtimed.Cell) -> dict[str, Any]:
-    """Convert a Cell to a JSON-serializable dict, including cached outputs."""
-    result: dict[str, Any] = {
+    """Convert a Cell to a JSON-serializable dict with outputs from Automerge."""
+    return {
         "id": cell.id,
         "cell_type": cell.cell_type,
         "source": cell.source,
         "execution_count": cell.execution_count,
+        "outputs": [_output_to_dict(o) for o in cell.outputs],
     }
-    # Include cached outputs and status if available
-    if cell.id in _cell_outputs:
-        result["outputs"] = _cell_outputs[cell.id]
-    if cell.id in _cell_status:
-        result["status"] = _cell_status[cell.id]
-    return result
 
 
 def _result_to_dict(result: runtimed.ExecutionResult) -> dict[str, Any]:
@@ -316,31 +287,13 @@ async def create_cell(
     result: dict[str, Any] = {"cell_id": cell_id, "created": True}
 
     if and_run and cell_type == "code":
-        _cell_status[cell_id] = "running"
-        # Create task so it continues even if we timeout waiting
-        # Use ensure_future since runtimed returns a Future, not a coroutine
-        task = asyncio.ensure_future(session.execute_cell(cell_id=cell_id, timeout_secs=60.0))
-        _pending_executions[cell_id] = task
-
-        done, _ = await asyncio.wait({task}, timeout=5.0)
-
-        if done:
-            # Execution completed quickly - cache and return outputs
-            exec_result = task.result()
-            outputs = [_output_to_dict(o) for o in exec_result.outputs]
-            _cell_outputs[cell_id] = outputs
-            _cell_status[cell_id] = "error" if exec_result.error else "idle"
-            del _pending_executions[cell_id]
-            result["status"] = _cell_status[cell_id]
-            result["outputs"] = outputs
-            result["stdout"] = exec_result.stdout
-            result["stderr"] = exec_result.stderr
-            if exec_result.error:
-                result["error"] = _output_to_dict(exec_result.error)
-        else:
-            # Still running - tell agent to poll with get_cell
-            result["status"] = "running"
-            result["message"] = "Execution taking longer than 5s. Use get_cell to poll for results."
+        exec_result = await session.execute_cell(cell_id=cell_id, timeout_secs=60.0)
+        result["status"] = "error" if exec_result.error else "idle"
+        result["outputs"] = [_output_to_dict(o) for o in exec_result.outputs]
+        result["stdout"] = exec_result.stdout
+        result["stderr"] = exec_result.stderr
+        if exec_result.error:
+            result["error"] = _output_to_dict(exec_result.error)
 
     return result
 
@@ -378,9 +331,6 @@ async def get_cell(cell_id: str) -> dict[str, Any]:
         Cell info including id, cell_type, source, execution_count,
         and outputs/status if available.
     """
-    # Check if pending execution has completed
-    await _check_pending_execution(cell_id)
-
     session = await _get_session()
     cell = await session.get_cell(cell_id=cell_id)
     return _cell_to_dict(cell)
@@ -395,10 +345,6 @@ async def get_all_cells() -> list[dict[str, Any]]:
     Returns:
         List of cells with their info, outputs, and status.
     """
-    # Check all pending executions
-    for cell_id in list(_pending_executions.keys()):
-        await _check_pending_execution(cell_id)
-
     session = await _get_session()
     cells = await session.get_cells()
     return [_cell_to_dict(cell) for cell in cells]
@@ -446,16 +392,11 @@ async def execute_cell(
     Returns:
         Execution result including outputs, stdout, stderr, and error info.
     """
-    _cell_status[cell_id] = "running"
     session = await _get_session()
     result = await session.execute_cell(
         cell_id=cell_id,
         timeout_secs=timeout_secs,
     )
-    # Cache outputs
-    outputs = [_output_to_dict(o) for o in result.outputs]
-    _cell_outputs[cell_id] = outputs
-    _cell_status[cell_id] = "error" if result.error else "idle"
     return _result_to_dict(result)
 
 
@@ -480,11 +421,6 @@ async def run_code(
     """
     session = await _get_session()
     result = await session.run(code=code, timeout_secs=timeout_secs)
-    # Cache outputs
-    cell_id = result.cell_id
-    outputs = [_output_to_dict(o) for o in result.outputs]
-    _cell_outputs[cell_id] = outputs
-    _cell_status[cell_id] = "error" if result.error else "idle"
     return _result_to_dict(result)
 
 
