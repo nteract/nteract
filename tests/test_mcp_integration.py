@@ -16,6 +16,8 @@ Skip in CI (requires daemon):
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 from typing import Any
 
@@ -28,28 +30,48 @@ from nteract._mcp_server import mcp
 
 @pytest.fixture
 async def mcp_client():
-    """Create in-memory MCP client connected to our server."""
+    """Create in-memory MCP client connected to our server.
+
+    Uses asyncio for task management to avoid anyio cancel scope
+    issues with pytest-asyncio fixture teardown.
+    """
     # Bidirectional streams: client->server and server->client
     client_send, server_recv = anyio.create_memory_object_stream[Any](0)
     server_send, client_recv = anyio.create_memory_object_stream[Any](0)
 
-    async with anyio.create_task_group() as tg:
-        # Run server in background
-        tg.start_soon(
-            mcp._mcp_server.run,
+    # Start server as asyncio task (not anyio task group)
+    server_task = asyncio.create_task(
+        mcp._mcp_server.run(
             server_recv,
             server_send,
             mcp._mcp_server.create_initialization_options(),
-            True,  # raise_exceptions=True for better test visibility
+            raise_exceptions=True,
         )
+    )
 
-        # Create client session
-        async with ClientSession(client_recv, client_send) as client:
-            await client.initialize()
-            yield client
+    # Give server a moment to start
+    await asyncio.sleep(0.01)
 
-        # Cancel server when done
-        tg.cancel_scope.cancel()
+    # Create client - use manual __aenter__/__aexit__ to control cleanup
+    client = ClientSession(client_recv, client_send)
+    await client.__aenter__()
+
+    try:
+        await client.initialize()
+        yield client
+    finally:
+        # Cancel server first
+        server_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await server_task
+
+        # Close streams to unblock any pending operations
+        await client_send.aclose()
+        await server_send.aclose()
+
+        # Best-effort client cleanup - suppress task context errors
+        with contextlib.suppress(RuntimeError):
+            await client.__aexit__(None, None, None)
 
 
 def _parse_tool_result(result: Any) -> dict[str, Any]:
