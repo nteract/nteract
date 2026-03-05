@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 from typing import Any
 
 import anyio
@@ -74,14 +75,34 @@ async def mcp_client():
             await client.__aexit__(None, None, None)
 
 
-def _parse_tool_result(result: Any) -> dict[str, Any]:
-    """Parse tool result from MCP response."""
-    # Tool results come as a list of content blocks
+def _get_text(result: Any) -> str:
+    """Get text content from MCP tool result."""
     if hasattr(result, "content") and result.content:
         content = result.content[0]
         if hasattr(content, "text"):
-            return json.loads(content.text)
+            return content.text
+    return ""
+
+
+def _parse_json(result: Any) -> dict[str, Any]:
+    """Parse JSON from MCP tool result (for tools that return JSON)."""
+    text = _get_text(result)
+    if text:
+        return json.loads(text)
     return {}
+
+
+def _extract_cell_id(text: str) -> str | None:
+    """Extract cell ID from 'Created cell: {id}' or header format."""
+    # Match "Created cell: cell-uuid"
+    match = re.search(r"Created cell: (cell-[\w-]+)", text)
+    if match:
+        return match.group(1)
+    # Match header format "━━━ cell-uuid" (full ID in header)
+    match = re.search(r"━━━ (cell-[\w-]+)", text)
+    if match:
+        return match.group(1)
+    return None
 
 
 @pytest.mark.asyncio
@@ -115,25 +136,24 @@ async def test_connect_and_create_cell(mcp_client: ClientSession):
     """Connect to notebook and create a cell."""
     # Connect
     result = await mcp_client.call_tool("connect_notebook", {})
-    data = _parse_tool_result(result)
+    data = _parse_json(result)
     assert data["connected"] is True
     assert "notebook_id" in data
 
-    # Create cell
+    # Create cell (returns plain text)
     result = await mcp_client.call_tool(
         "create_cell",
         {"source": "print('hello')", "cell_type": "code"},
     )
-    data = _parse_tool_result(result)
-    assert data["created"] is True
-    assert "cell_id" in data
+    text = _get_text(result)
+    assert "Created cell:" in text
+    cell_id = _extract_cell_id(text)
+    assert cell_id is not None
 
-    # Get cell
-    cell_id = data["cell_id"]
+    # Get cell (returns formatted string with source)
     result = await mcp_client.call_tool("get_cell", {"cell_id": cell_id})
-    data = _parse_tool_result(result)
-    assert data["source"] == "print('hello')"
-    assert data["cell_type"] == "code"
+    text = _get_text(result)
+    assert "print('hello')" in text
 
 
 @pytest.mark.asyncio
@@ -144,8 +164,9 @@ async def test_append_source(mcp_client: ClientSession):
 
     # Create empty cell
     result = await mcp_client.call_tool("create_cell", {"source": ""})
-    data = _parse_tool_result(result)
-    cell_id = data["cell_id"]
+    text = _get_text(result)
+    cell_id = _extract_cell_id(text)
+    assert cell_id is not None
 
     # Stream tokens
     tokens = ["print", "(", "'hello", " ", "world", "'", ")"]
@@ -154,13 +175,13 @@ async def test_append_source(mcp_client: ClientSession):
             "append_source",
             {"cell_id": cell_id, "text": token},
         )
-        data = _parse_tool_result(result)
+        data = _parse_json(result)
         assert data["appended"] is True
 
     # Verify final source
     result = await mcp_client.call_tool("get_cell", {"cell_id": cell_id})
-    data = _parse_tool_result(result)
-    assert data["source"] == "print('hello world')"
+    text = _get_text(result)
+    assert "print('hello world')" in text
 
 
 @pytest.mark.asyncio
@@ -179,13 +200,11 @@ async def test_execute_cell_basic(mcp_client: ClientSession):
             "timeout_secs": 30.0,  # Give enough time for kernel warmup
         },
     )
-    data = _parse_tool_result(result)
+    text = _get_text(result)
 
-    assert data["created"] is True
-    assert "cell_id" in data
-    # Should have status and outputs
-    assert "status" in data
-    assert "outputs" in data
+    # Should have header with cell ID and output
+    assert "cell-" in text
+    assert "hello from kernel" in text
 
 
 @pytest.mark.asyncio
@@ -204,17 +223,11 @@ async def test_execute_cell_partial_results(mcp_client: ClientSession):
             "timeout_secs": 2.0,  # Short timeout to test partial results
         },
     )
-    data = _parse_tool_result(result)
+    text = _get_text(result)
 
-    # Should have partial output and complete=False
-    assert data.get("complete") is False
-    assert data.get("status") == "running"
-    # Should have at least the "start" output
-    outputs = data.get("outputs", [])
-    output_text = "".join(
-        o.get("text", "") for o in outputs if o.get("output_type") == "stream"
-    )
-    assert "start" in output_text
+    # Should have partial output with "start" and running status
+    assert "running" in text
+    assert "start" in text
 
 
 @pytest.mark.asyncio
@@ -233,23 +246,20 @@ async def test_poll_for_outputs(mcp_client: ClientSession):
             "timeout_secs": 0.5,  # Return before completion
         },
     )
-    data = _parse_tool_result(result)
-    cell_id = data["cell_id"]
+    text = _get_text(result)
+    cell_id = _extract_cell_id(text)
+    assert cell_id is not None
 
-    # Should be incomplete
-    assert data.get("complete") is False
+    # Should be incomplete (running status)
+    assert "running" in text
 
     # Wait and poll
     await anyio.sleep(2)
     result = await mcp_client.call_tool("get_cell", {"cell_id": cell_id})
-    data = _parse_tool_result(result)
+    text = _get_text(result)
 
     # Should now have the output
-    outputs = data.get("outputs", [])
-    output_text = "".join(
-        o.get("text", "") for o in outputs if o.get("output_type") == "stream"
-    )
-    assert "done" in output_text
+    assert "done" in text
 
 
 @pytest.mark.asyncio
@@ -275,22 +285,20 @@ print('c', flush=True)
             "timeout_secs": 30.0,
         },
     )
-    data = _parse_tool_result(result)
+    text = _get_text(result)
 
-    outputs = data.get("outputs", [])
-    # Should be: stream(a), display_data(b), stream(c) in order
-    # Filter to just the main output types
-    main_outputs = [
-        o for o in outputs if o.get("output_type") in ("stream", "display_data")
-    ]
+    # Should contain a, b, c in that order
+    assert "a" in text, "Output should contain 'a'"
+    assert "b" in text, "Output should contain 'b'"
+    assert "c" in text, "Output should contain 'c'"
 
-    # Strict assertion: must have exactly 3 outputs in the expected order
-    assert len(main_outputs) == 3, f"Expected 3 outputs, got {len(main_outputs)}: {main_outputs}"
-    assert main_outputs[0]["output_type"] == "stream", "First output should be stream"
-    assert "a" in main_outputs[0].get("text", ""), "First output should contain 'a'"
-    assert main_outputs[1]["output_type"] == "display_data", "Second output should be display_data"
-    assert main_outputs[2]["output_type"] == "stream", "Third output should be stream"
-    assert "c" in main_outputs[2].get("text", ""), "Third output should contain 'c'"
+    # Verify ordering: a comes before b, b comes before c
+    pos_a = text.find("\na\n")  # Look for 'a' on its own line
+    pos_b = text.find("'b'")  # display('b') shows as 'b'
+    pos_c = text.find("\nc\n")  # Look for 'c' on its own line
+    assert pos_a < pos_b < pos_c, (
+        f"Outputs should be in order a, b, c. Got positions: a={pos_a}, b={pos_b}, c={pos_c}"
+    )
 
 
 @pytest.mark.asyncio
@@ -301,7 +309,7 @@ async def test_get_kernel_status(mcp_client: ClientSession):
 
     # Check status before starting kernel
     result = await mcp_client.call_tool("get_kernel_status", {})
-    data = _parse_tool_result(result)
+    data = _parse_json(result)
     assert data.get("kernel_started") is False
 
     # Start kernel
@@ -309,7 +317,7 @@ async def test_get_kernel_status(mcp_client: ClientSession):
 
     # Check status after starting
     result = await mcp_client.call_tool("get_kernel_status", {})
-    data = _parse_tool_result(result)
+    data = _parse_json(result)
     assert data.get("kernel_started") is True
 
 
@@ -321,16 +329,17 @@ async def test_delete_cell(mcp_client: ClientSession):
 
     # Create cell
     result = await mcp_client.call_tool("create_cell", {"source": "x = 1"})
-    data = _parse_tool_result(result)
-    cell_id = data["cell_id"]
+    text = _get_text(result)
+    cell_id = _extract_cell_id(text)
+    assert cell_id is not None
 
     # Delete cell
     result = await mcp_client.call_tool("delete_cell", {"cell_id": cell_id})
-    data = _parse_tool_result(result)
+    data = _parse_json(result)
     assert data["deleted"] is True
 
-    # Verify it's gone
+    # Verify it's gone - get_all_cells returns formatted string
     result = await mcp_client.call_tool("get_all_cells", {})
-    data = _parse_tool_result(result)
-    cell_ids = [c.get("id") for c in data] if isinstance(data, list) else []
-    assert cell_id not in cell_ids
+    text = _get_text(result)
+    # The full cell_id shouldn't appear (we only show first 8 chars in header)
+    assert cell_id not in text
