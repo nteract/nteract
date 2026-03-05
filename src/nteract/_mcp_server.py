@@ -82,26 +82,49 @@ def _cell_to_dict(cell: runtimed.Cell) -> dict[str, Any]:
     }
 
 
+def _fence(content: str, lang: str = "") -> str:
+    """Wrap content in a fenced code block, handling nested backticks."""
+    # Find the longest run of backticks in content
+    max_backticks = 0
+    current_run = 0
+    for char in content:
+        if char == "`":
+            current_run += 1
+            max_backticks = max(max_backticks, current_run)
+        else:
+            current_run = 0
+
+    # Use at least 3 backticks, or more if content has backtick runs
+    fence_len = max(3, max_backticks + 1)
+    fence = "`" * fence_len
+    return f"{fence}{lang}\n{content}\n{fence}"
+
+
 def _output_to_markdown(output: runtimed.Output) -> str:
     """Convert an Output to markdown format."""
     if output.output_type == "stream":
         name = output.name or "stdout"
         text = output.text or ""
-        return f"```{name}\n{text}\n```"
+        return _fence(text, name)
 
     elif output.output_type == "execute_result":
-        # Prefer text/plain for LLM readability
-        if output.data:
-            text = output.data.get("text/plain", "")
-            return f"```output\n{text}\n```"
-        return ""
-
-    elif output.output_type == "display_data":
-        # Prefer text/plain for now, images could be added later
         if output.data:
             text = output.data.get("text/plain", "")
             if text:
-                return f"```output\n{text}\n```"
+                return _fence(text, "output")
+            # Fallback: show available mime types
+            mimes = list(output.data.keys())
+            return _fence(f"[execute_result: {', '.join(mimes)}]", "output")
+        return ""
+
+    elif output.output_type == "display_data":
+        if output.data:
+            text = output.data.get("text/plain", "")
+            if text:
+                return _fence(text, "output")
+            # Fallback: show available mime types
+            mimes = list(output.data.keys())
+            return _fence(f"[display_data: {', '.join(mimes)}]", "output")
         return ""
 
     elif output.output_type == "error":
@@ -109,7 +132,8 @@ def _output_to_markdown(output: runtimed.Output) -> str:
         evalue = output.evalue or ""
         traceback = output.traceback or []
         tb_text = "\n".join(traceback) if traceback else ""
-        return f"```error\n{ename}: {evalue}\n{tb_text}\n```"
+        error_content = f"{ename}: {evalue}\n{tb_text}" if tb_text else f"{ename}: {evalue}"
+        return _fence(error_content, "error")
 
     return ""
 
@@ -121,14 +145,14 @@ def _cell_to_markdown(cell: runtimed.Cell) -> str:
     if cell.cell_type == "markdown":
         parts.append(cell.source)
     elif cell.cell_type == "code":
-        parts.append(f"```python\n{cell.source}\n```")
+        parts.append(_fence(cell.source, "python"))
         # Add outputs
         for output in cell.outputs:
             output_md = _output_to_markdown(output)
             if output_md:
                 parts.append(output_md)
     elif cell.cell_type == "raw":
-        parts.append(f"```\n{cell.source}\n```")
+        parts.append(_fence(cell.source, ""))
 
     return "\n".join(parts)
 
