@@ -245,8 +245,34 @@ async def disconnect_notebook() -> dict[str, Any]:
     return {"disconnected": True}
 
 
+def _format_notebook_list(rooms: list[dict[str, Any]]) -> str:
+    """Format notebook rooms for terminal display."""
+    if not rooms:
+        return "No active notebooks"
+
+    lines = [f"Notebooks ({len(rooms)}):"]
+    for room in rooms:
+        notebook_id = room.get("notebook_id", "unknown")
+        peers = room.get("active_peers", 0)
+        has_kernel = room.get("has_kernel", False)
+
+        # Build kernel info
+        if has_kernel:
+            kernel_type = room.get("kernel_type", "unknown")
+            kernel_status = room.get("kernel_status", "unknown")
+            env_source = room.get("env_source", "unknown")
+            kernel_info = f"{kernel_type} ({kernel_status}) | env: {env_source}"
+        else:
+            kernel_info = "no kernel"
+
+        lines.append(f"\n• {notebook_id}")
+        lines.append(f"  {kernel_info} | peers: {peers}")
+
+    return "\n".join(lines)
+
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-async def list_notebooks() -> list[dict[str, Any]]:
+async def list_notebooks() -> TextContent:
     """List all active notebook rooms in the daemon.
 
     Returns:
@@ -256,7 +282,7 @@ async def list_notebooks() -> list[dict[str, Any]]:
     rooms = client.list_rooms()
     # rooms is a list of dicts with keys: notebook_id, active_peers, has_kernel,
     # kernel_type (optional), kernel_status (optional), env_source (optional)
-    return [dict(room) for room in rooms]
+    return TextContent(type="text", text=_format_notebook_list([dict(room) for room in rooms]))
 
 
 # =============================================================================
