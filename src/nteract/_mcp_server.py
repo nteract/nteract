@@ -19,6 +19,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import sys
 from typing import Any
 
@@ -54,6 +55,20 @@ async def _get_session() -> runtimed.AsyncSession:
     return _session
 
 
+# Regex to strip ANSI escape sequences (terminal colors, cursor movement, etc.)
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\].*?\x07|\x1b\(B")
+
+
+def _strip_ansi(text: str) -> str:
+    """Strip ANSI escape sequences from text.
+
+    Kernel stream output (especially from pip/uv installs) often contains
+    terminal control codes for colors, progress bars, and cursor movement.
+    These waste LLM context and render as garbage in text responses.
+    """
+    return _ANSI_RE.sub("", text)
+
+
 # Text mime type priority for LLM consumption.
 # text/llm+plain is from https://github.com/rgbkrk/repr_llm — a repr designed
 # specifically for language models. text/html is intentionally excluded: it's
@@ -73,7 +88,7 @@ def _format_output_text(output: runtimed.Output) -> str | None:
     Priority: text/llm+plain > text/markdown > text/plain > application/json
     """
     if output.output_type == "stream":
-        return output.text
+        return _strip_ansi(output.text) if output.text else None
 
     if output.output_type == "error":
         parts = []
@@ -83,7 +98,7 @@ def _format_output_text(output: runtimed.Output) -> str | None:
             parts.append(output.evalue)
         if output.traceback:
             parts.append("\n".join(output.traceback))
-        return "\n".join(parts) if parts else None
+        return _strip_ansi("\n".join(parts)) if parts else None
 
     if output.output_type in ("display_data", "execute_result"):
         if output.data is None:
@@ -135,7 +150,9 @@ def _output_to_content(output: runtimed.Output) -> list[ContentItem]:
 
     if output.output_type == "stream":
         if output.text:
-            items.append(TextContent(type="text", text=output.text))
+            cleaned = _strip_ansi(output.text)
+            if cleaned.strip():
+                items.append(TextContent(type="text", text=cleaned))
         return items
 
     if output.output_type == "error":
@@ -147,7 +164,7 @@ def _output_to_content(output: runtimed.Output) -> list[ContentItem]:
         if output.traceback:
             parts.append("\n".join(output.traceback))
         if parts:
-            items.append(TextContent(type="text", text="\n".join(parts)))
+            items.append(TextContent(type="text", text=_strip_ansi("\n".join(parts))))
         return items
 
     if output.output_type in ("display_data", "execute_result"):
