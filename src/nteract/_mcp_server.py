@@ -82,6 +82,57 @@ def _cell_to_dict(cell: runtimed.Cell) -> dict[str, Any]:
     }
 
 
+def _output_to_markdown(output: runtimed.Output) -> str:
+    """Convert an Output to markdown format."""
+    if output.output_type == "stream":
+        name = output.name or "stdout"
+        text = output.text or ""
+        return f"```{name}\n{text}\n```"
+
+    elif output.output_type == "execute_result":
+        # Prefer text/plain for LLM readability
+        if output.data:
+            text = output.data.get("text/plain", "")
+            return f"```output\n{text}\n```"
+        return ""
+
+    elif output.output_type == "display_data":
+        # Prefer text/plain for now, images could be added later
+        if output.data:
+            text = output.data.get("text/plain", "")
+            if text:
+                return f"```output\n{text}\n```"
+        return ""
+
+    elif output.output_type == "error":
+        ename = output.ename or "Error"
+        evalue = output.evalue or ""
+        traceback = output.traceback or []
+        tb_text = "\n".join(traceback) if traceback else ""
+        return f"```error\n{ename}: {evalue}\n{tb_text}\n```"
+
+    return ""
+
+
+def _cell_to_markdown(cell: runtimed.Cell) -> str:
+    """Convert a Cell to markdown format."""
+    parts = [f"<!-- Cell ID: {cell.id} -->"]
+
+    if cell.cell_type == "markdown":
+        parts.append(cell.source)
+    elif cell.cell_type == "code":
+        parts.append(f"```python\n{cell.source}\n```")
+        # Add outputs
+        for output in cell.outputs:
+            output_md = _output_to_markdown(output)
+            if output_md:
+                parts.append(output_md)
+    elif cell.cell_type == "raw":
+        parts.append(f"```\n{cell.source}\n```")
+
+    return "\n".join(parts)
+
+
 def _result_to_dict(result: runtimed.ExecutionResult) -> dict[str, Any]:
     """Convert an ExecutionResult to a JSON-serializable dict."""
     return {
@@ -355,6 +406,26 @@ async def get_all_cells() -> list[dict[str, Any]]:
     session = await _get_session()
     cells = await session.get_cells()
     return [_cell_to_dict(cell) for cell in cells]
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def get_notebook() -> str:
+    """Get the full notebook as LLM-friendly markdown.
+
+    Returns the notebook in a readable markdown format with:
+    - Cell IDs in HTML comments
+    - Markdown cells as plain markdown
+    - Code cells in ```python blocks
+    - Outputs in ```output, ```stdout, ```stderr, or ```error blocks
+
+    This format is easier for LLMs to parse and reason about than JSON.
+
+    Returns:
+        The notebook as a markdown string.
+    """
+    session = await _get_session()
+    cells = await session.get_cells()
+    return "\n\n".join(_cell_to_markdown(cell) for cell in cells)
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
