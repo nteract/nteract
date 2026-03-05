@@ -50,53 +50,116 @@ async def _get_session() -> runtimed.AsyncSession:
     return _session
 
 
-def _output_to_dict(output: runtimed.Output) -> dict[str, Any]:
-    """Convert an Output to a JSON-serializable dict."""
-    result: dict[str, Any] = {"output_type": output.output_type}
+def _format_output_text(output: runtimed.Output) -> str | None:
+    """Extract text representation from a single output.
 
-    if output.name is not None:
-        result["name"] = output.name
-    if output.text is not None:
-        result["text"] = output.text
-    if output.data is not None:
-        result["data"] = output.data
-    if output.ename is not None:
-        result["ename"] = output.ename
-    if output.evalue is not None:
-        result["evalue"] = output.evalue
-    if output.traceback is not None:
-        result["traceback"] = output.traceback
-    if output.execution_count is not None:
-        result["execution_count"] = output.execution_count
-
-    return result
-
-
-def _cell_to_dict(cell: runtimed.Cell) -> dict[str, Any]:
-    """Convert a Cell to a JSON-serializable dict with outputs from Automerge."""
-    return {
-        "id": cell.id,
-        "cell_type": cell.cell_type,
-        "source": cell.source,
-        "execution_count": cell.execution_count,
-        "outputs": [_output_to_dict(o) for o in cell.outputs],
-    }
-
-
-def _execution_to_dict(
-    cell_id: str,
-    events: list[Any],  # list[runtimed.ExecutionEvent] - type not exported yet
-    complete: bool,
-) -> dict[str, Any]:
-    """Convert execution events to agent-friendly format.
-
-    Returns ordered outputs preserving interleaving (stdout/display_data/etc).
-    Status reflects execution outcome:
-    - "running": execution in progress
-    - "idle": completed successfully
-    - "error": execution raised an exception or kernel error
+    Returns the best text representation, or None if no text available.
+    Priority: text/markdown > text/plain > application/json
     """
-    outputs: list[dict[str, Any]] = []
+    if output.output_type == "stream":
+        return output.text
+
+    if output.output_type == "error":
+        parts = []
+        if output.ename and output.evalue:
+            parts.append(f"{output.ename}: {output.evalue}")
+        elif output.evalue:
+            parts.append(output.evalue)
+        if output.traceback:
+            parts.append("\n".join(output.traceback))
+        return "\n".join(parts) if parts else None
+
+    if output.output_type in ("display_data", "execute_result"):
+        if output.data is None:
+            return None
+        # Priority: text/markdown > text/plain > application/json
+        if "text/markdown" in output.data:
+            return output.data["text/markdown"]
+        if "text/plain" in output.data:
+            return output.data["text/plain"]
+        if "application/json" in output.data:
+            try:
+                data = output.data["application/json"]
+                # If it's already a string, try to parse and pretty-print
+                if isinstance(data, str):
+                    return json.dumps(json.loads(data), indent=2)
+                return json.dumps(data, indent=2)
+            except (json.JSONDecodeError, TypeError):
+                return str(output.data["application/json"])
+        return None
+
+    return None
+
+
+def _format_outputs_text(outputs: list[runtimed.Output]) -> str:
+    """Convert a list of outputs to readable text.
+
+    Extracts only text-based representations (text/markdown, text/plain,
+    application/json). Ignores images, HTML, and other binary formats.
+    """
+    parts: list[str] = []
+    for output in outputs:
+        text = _format_output_text(output)
+        if text:
+            parts.append(text)
+    return "\n\n".join(parts)
+
+
+def _format_header(
+    cell_id: str,
+    status: str | None = None,
+    execution_count: int | None = None,
+) -> str:
+    """Format a cell header line for terminal display.
+
+    Example: ━━━ cell-abc12345 ✓ idle [3] ━━━
+    """
+    icons = {"idle": "✓", "error": "✗", "running": "◐"}
+
+    parts = [f"━━━ {cell_id}"]
+
+    if status:
+        icon = icons.get(status, "?")
+        parts.append(f"{icon} {status}")
+
+    if execution_count is not None:
+        parts.append(f"[{execution_count}]")
+
+    parts.append("━━━")
+    return " ".join(parts)
+
+
+def _format_cell(cell: runtimed.Cell) -> str:
+    """Format a cell for terminal display (includes source).
+
+    Used by get_cell to show full cell state.
+    """
+    header = _format_header(cell.id, execution_count=cell.execution_count)
+    output_text = _format_outputs_text(cell.outputs)
+
+    if cell.source and output_text:
+        return f"{header}\n\n{cell.source}\n\n───────────────────\n\n{output_text}"
+    elif cell.source:
+        return f"{header}\n\n{cell.source}"
+    elif output_text:
+        return f"{header}\n\n{output_text}"
+    else:
+        return header
+
+
+def _format_execution_result(
+    cell_id: str,
+    events: list[Any],  # list[runtimed.ExecutionEvent]
+    complete: bool,
+) -> str:
+    """Format execution result for terminal display.
+
+    Status reflects execution outcome:
+    - "running": execution in progress (complete=false)
+    - "idle": completed successfully
+    - "error": execution raised an exception
+    """
+    outputs: list[runtimed.Output] = []
     execution_count: int | None = None
     status = "running"
     has_error_output = False
@@ -105,25 +168,23 @@ def _execution_to_dict(
         if event.event_type == "execution_started":
             execution_count = event.execution_count
         elif event.event_type == "output":
-            output_dict = _output_to_dict(event.output)
-            outputs.append(output_dict)
-            # Check for error output from user code exceptions (e.g., 1/0)
-            if output_dict.get("output_type") == "error":
+            outputs.append(event.output)
+            if event.output.output_type == "error":
                 has_error_output = True
         elif event.event_type == "done":
-            # Set status based on whether any error output was produced
             status = "error" if has_error_output else "idle"
         elif event.event_type == "error":
-            # Transport/kernel-level error
             status = "error"
 
-    return {
-        "cell_id": cell_id,
-        "status": status,
-        "execution_count": execution_count,
-        "outputs": outputs,
-        "complete": complete,
-    }
+    header = _format_header(cell_id, status=status, execution_count=execution_count)
+    output_text = _format_outputs_text(outputs)
+
+    if output_text:
+        return f"{header}\n\n{output_text}"
+    elif not complete:
+        return f"{header}\n\n(execution in progress...)"
+    else:
+        return header
 
 
 # =============================================================================
@@ -292,7 +353,7 @@ async def create_cell(
     index: int | None = None,
     and_run: bool = False,
     timeout_secs: float = 5.0,
-) -> dict[str, Any]:
+) -> str:
     """Create a new cell in the notebook, optionally executing it.
 
     The cell is added to the shared document and synced to all connected
@@ -307,8 +368,8 @@ async def create_cell(
             takes longer, returns partial results with complete=False.
 
     Returns:
-        Cell info including id. If and_run=True, includes outputs and status.
-        Check 'complete' field to know if execution finished.
+        If and_run=False: The cell_id.
+        If and_run=True: Cell with execution status and outputs.
     """
     session = await _get_session()
     cell_id = await session.create_cell(
@@ -317,13 +378,10 @@ async def create_cell(
         index=index,
     )
 
-    result: dict[str, Any] = {"cell_id": cell_id, "created": True}
-
     if and_run and cell_type == "code":
-        exec_result = await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
-        result.update(exec_result)
+        return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
 
-    return result
+    return f"Created cell: {cell_id}"
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
@@ -366,7 +424,7 @@ async def append_source(cell_id: str, text: str) -> dict[str, Any]:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-async def get_cell(cell_id: str) -> dict[str, Any]:
+async def get_cell(cell_id: str) -> str:
     """Get a cell by ID, including outputs if available.
 
     Outputs are resolved from the Automerge document, so you can see
@@ -376,27 +434,34 @@ async def get_cell(cell_id: str) -> dict[str, Any]:
         cell_id: The cell ID.
 
     Returns:
-        Cell info including id, cell_type, source, execution_count,
-        and outputs if available.
+        Cell with source code and outputs.
     """
     session = await _get_session()
     cell = await session.get_cell(cell_id=cell_id)
-    return _cell_to_dict(cell)
+    return _format_cell(
+        cell,
+    )
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-async def get_all_cells() -> list[dict[str, Any]]:
+async def get_all_cells() -> str:
     """Get all cells in the current notebook, including outputs.
 
     Outputs are resolved from the Automerge document, so you can see
     outputs from cells executed by other clients.
 
     Returns:
-        List of cells with their info and outputs.
+        All cells with source code and outputs.
     """
     session = await _get_session()
     cells = await session.get_cells()
-    return [_cell_to_dict(cell) for cell in cells]
+    formatted = [
+        _format_cell(
+            cell,
+        )
+        for cell in cells
+    ]
+    return "\n\n".join(formatted)
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
@@ -425,7 +490,7 @@ async def delete_cell(cell_id: str) -> dict[str, Any]:
 async def _execute_cell_internal(
     cell_id: str,
     timeout_secs: float = 5.0,
-) -> dict[str, Any]:
+) -> str:
     """Internal execution with streaming and partial results."""
     session = await _get_session()
     events: list[Any] = []  # list[runtimed.ExecutionEvent]
@@ -442,28 +507,25 @@ async def _execute_cell_internal(
     with contextlib.suppress(asyncio.TimeoutError):
         await asyncio.wait_for(collect_events(), timeout=timeout_secs)
 
-    return _execution_to_dict(cell_id, events, complete)
+    return _format_execution_result(cell_id, events, complete)
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def execute_cell(
     cell_id: str,
     timeout_secs: float = 5.0,
-) -> dict[str, Any]:
+) -> str:
     """Execute a cell by ID.
 
     Returns partial results after timeout_secs if still running.
-    Check 'complete' field - if False, use get_cell() to poll for more outputs.
-
-    If no kernel is running, one will be started automatically.
+    If status shows "running", use get_cell() to poll for more outputs.
 
     Args:
         cell_id: The cell ID to execute.
         timeout_secs: Maximum time to wait for execution (default: 5s).
 
     Returns:
-        Execution result with ordered outputs preserving interleaving.
-        Fields: cell_id, status, execution_count, outputs, complete.
+        Cell with execution status and outputs.
     """
     return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
 
@@ -475,15 +537,21 @@ async def execute_cell(
 
 @mcp.resource("notebook://cells")
 async def resource_cells() -> str:
-    """Get all cells in the current notebook as JSON."""
+    """Get all cells in the current notebook."""
     if _session is None:
-        return json.dumps({"error": "No active session"})
+        return "Error: No active session"
 
     try:
         cells = await _session.get_cells()
-        return json.dumps([_cell_to_dict(cell) for cell in cells])
+        formatted = [
+            _format_cell(
+                cell,
+            )
+            for cell in cells
+        ]
+        return "\n\n".join(formatted)
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        return f"Error: {e}"
 
 
 @mcp.resource("notebook://status")
