@@ -76,12 +76,18 @@ async def mcp_client():
 
 
 def _get_text(result: Any) -> str:
-    """Get text content from MCP tool result."""
-    if hasattr(result, "content") and result.content:
-        content = result.content[0]
-        if hasattr(content, "text"):
-            return content.text
-    return ""
+    """Get all text content from MCP tool result.
+
+    Joins text from all TextContent items in the response, since tools
+    now return multiple content items (header, outputs, images, etc.).
+    """
+    if not hasattr(result, "content") or not result.content:
+        return ""
+    parts = []
+    for item in result.content:
+        if hasattr(item, "text"):
+            parts.append(item.text)
+    return "\n\n".join(parts)
 
 
 def _parse_json(result: Any) -> dict[str, Any]:
