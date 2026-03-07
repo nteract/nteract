@@ -537,6 +537,69 @@ async def get_kernel_status() -> dict[str, Any]:
     }
 
 
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def complete_code(code: str, cursor_pos: int) -> dict[str, Any]:
+    """Get code completions from the kernel.
+
+    Uses the kernel's introspection to provide context-aware completions.
+    Requires a running kernel.
+
+    Args:
+        code: The code to complete.
+        cursor_pos: Cursor position in the code (0-indexed byte offset).
+
+    Returns:
+        Completions including cursor_start, cursor_end, and items list.
+    """
+    session = await _get_session()
+    result = await session.complete(code, cursor_pos)
+    return {
+        "cursor_start": result.cursor_start,
+        "cursor_end": result.cursor_end,
+        "items": [
+            {"label": item.label, "kind": item.kind, "detail": item.detail} for item in result.items
+        ],
+    }
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def get_queue_state() -> dict[str, Any]:
+    """Get the current execution queue state.
+
+    Shows which cell is currently executing and which cells are queued.
+
+    Returns:
+        executing: Cell ID currently running (or null if idle).
+        queued: List of cell IDs waiting to run.
+    """
+    session = await _get_session()
+    state = await session.get_queue_state()
+    return {"executing": state.executing, "queued": state.queued}
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def get_history(
+    pattern: str | None = None,
+    n: int = 100,
+) -> dict[str, Any]:
+    """Search kernel execution history.
+
+    Returns previously executed code from this kernel session.
+
+    Args:
+        pattern: Optional glob pattern to filter results (e.g., "*import*").
+        n: Maximum entries to return (default 100).
+
+    Returns:
+        entries: List of history entries with session, line, and source.
+    """
+    session = await _get_session()
+    entries = await session.get_history(pattern=pattern, n=n, unique=True)
+    return {
+        "entries": [{"session": e.session, "line": e.line, "source": e.source} for e in entries]
+    }
+
+
 # =============================================================================
 # Cell Operations Tools
 # =============================================================================
@@ -673,6 +736,24 @@ async def delete_cell(cell_id: str) -> dict[str, Any]:
     return {"cell_id": cell_id, "deleted": True}
 
 
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+async def clear_outputs(cell_id: str) -> dict[str, Any]:
+    """Clear a cell's outputs.
+
+    Removes all outputs from the cell. Useful before re-running a cell
+    to get a clean slate.
+
+    Args:
+        cell_id: The cell ID to clear outputs from.
+
+    Returns:
+        Confirmation of clearing.
+    """
+    session = await _get_session()
+    await session.clear_outputs(cell_id)
+    return {"cell_id": cell_id, "cleared": True}
+
+
 # =============================================================================
 # Execution Tools
 # =============================================================================
@@ -719,6 +800,21 @@ async def execute_cell(
         Cell with execution status and outputs (images returned as ImageContent).
     """
     return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+async def run_all_cells() -> dict[str, Any]:
+    """Queue all code cells for execution.
+
+    Queues all code cells in document order. Does not wait for completion.
+    Use get_queue_state() to monitor progress or get_all_cells() to see results.
+
+    Returns:
+        count: Number of cells queued for execution.
+    """
+    session = await _get_session()
+    count = await session.run_all_cells()
+    return {"status": "queued", "count": count}
 
 
 # =============================================================================
