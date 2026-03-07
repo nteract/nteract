@@ -557,8 +557,7 @@ async def complete_code(code: str, cursor_pos: int) -> dict[str, Any]:
         "cursor_start": result.cursor_start,
         "cursor_end": result.cursor_end,
         "items": [
-            {"label": item.label, "kind": item.kind, "detail": item.detail}
-            for item in result.items
+            {"label": item.label, "kind": item.kind, "detail": item.detail} for item in result.items
         ],
     }
 
@@ -597,10 +596,7 @@ async def get_history(
     session = await _get_session()
     entries = await session.get_history(pattern=pattern, n=n, unique=True)
     return {
-        "entries": [
-            {"session": e.session, "line": e.line, "source": e.source}
-            for e in entries
-        ]
+        "entries": [{"session": e.session, "line": e.line, "source": e.source} for e in entries]
     }
 
 
