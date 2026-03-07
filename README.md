@@ -94,13 +94,18 @@ claude mcp add nteract -- env RUNTIMED_SOCKET_PATH="$HOME/Library/Caches/runt-ni
 | `connect_notebook` | Connect to a notebook (new or existing) |
 | `create_cell` | Add a cell to the notebook (use `and_run=True` to execute) |
 | `execute_cell` | Run a specific cell (returns partial results after timeout) |
+| `run_all_cells` | Queue all code cells for execution |
 | `append_source` | Stream tokens into a cell (ideal for LLM output) |
 | `get_cell` | Get a cell by ID with outputs |
 | `get_all_cells` | View all cells in the notebook |
 | `set_cell_source` | Update a cell's source code |
+| `clear_outputs` | Clear a cell's outputs |
 | `delete_cell` | Remove a cell from the notebook |
 | `start_kernel` | Start a Python kernel |
 | `get_kernel_status` | Check kernel state |
+| `get_queue_state` | See what's executing and what's queued |
+| `complete_code` | Get code completions from the kernel |
+| `get_history` | Search kernel execution history |
 
 ## Architecture
 
