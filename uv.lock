@@ -810,16 +810,12 @@ wheels = [
 
 [[package]]
 name = "runtimed"
-version = "0.1.5a202603062132"
+version = "0.1.5a202603081823"
 source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "httpx" },
-    { name = "mcp" },
-]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/50/98/07c16eb199713a0604b40702b665f770db9cc92590e81aa0108a83584819/runtimed-0.1.5a202603062132-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:a1c435ac06f12423e62ddbad512e9a4ee8795668b6eacca9ca9f9f432a8f6e87", size = 1404969, upload-time = "2026-03-06T21:46:29.377Z" },
-    { url = "https://files.pythonhosted.org/packages/1b/bd/c705a0131bfcaac348c436c8a9f143caf462b160f02a90de2c82bf4eb760/runtimed-0.1.5a202603062132-cp39-abi3-manylinux_2_39_x86_64.whl", hash = "sha256:0d3dedb3b583d6e50bfabd346a658f2917acea114299ab450ca93b5b8bbcc27e", size = 3909247, upload-time = "2026-03-06T21:46:30.628Z" },
-    { url = "https://files.pythonhosted.org/packages/9d/02/503fc663a19bdef572fd91305266f5cec8f9ca629bd97f38d8697cc9b548/runtimed-0.1.5a202603062132-cp39-abi3-win_amd64.whl", hash = "sha256:cdcf0def0863ac99e0eca93a3f05e31664a07e0cb2501dd0cb6cedda5ba23081", size = 1400247, upload-time = "2026-03-06T21:46:32.003Z" },
+    { url = "https://files.pythonhosted.org/packages/06/4e/49e7e985f085b6d40bd2004af59514baa1c586f58ffcd4f05aa01ccb93a6/runtimed-0.1.5a202603081823-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:92ede9a5dba99cf9ff008267b6183085bce3212d1076655f8643b55efad459b0", size = 1504363, upload-time = "2026-03-08T18:44:08.928Z" },
+    { url = "https://files.pythonhosted.org/packages/9d/ad/04dedf6807ef5c28aadd89a647b41bb920e4352f54b50b2839074ba9db6f/runtimed-0.1.5a202603081823-cp39-abi3-manylinux_2_39_x86_64.whl", hash = "sha256:f9ab311d25b9013118ddf2c9b68d145399475078b01ba6c4be013e4b87760c9c", size = 4025201, upload-time = "2026-03-08T18:44:11.853Z" },
+    { url = "https://files.pythonhosted.org/packages/0b/13/ca410b745edd2612466ebd52cf07066113ade3399c66ee36dd9f155e324c/runtimed-0.1.5a202603081823-cp39-abi3-win_amd64.whl", hash = "sha256:0fe2383a9fe6b36852619f6b1165a3180fbecb0545dd1a91e01636a2d8af3d6b", size = 1498209, upload-time = "2026-03-08T18:44:10.341Z" },
 ]
 
 [[package]]

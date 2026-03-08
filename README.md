@@ -91,16 +91,28 @@ claude mcp add nteract -- env RUNTIMED_SOCKET_PATH="$HOME/Library/Caches/runt-ni
 
 | Tool | Description |
 |------|-------------|
-| `connect_notebook` | Connect to a notebook (new or existing) |
+| `connect_notebook` | Connect to a notebook by ID |
+| `open_notebook` | Open an existing .ipynb file |
+| `create_notebook` | Create a new notebook |
 | `create_cell` | Add a cell to the notebook (use `and_run=True` to execute) |
 | `execute_cell` | Run a specific cell (returns partial results after timeout) |
+| `run_all_cells` | Queue all code cells for execution |
 | `append_source` | Stream tokens into a cell (ideal for LLM output) |
 | `get_cell` | Get a cell by ID with outputs |
 | `get_all_cells` | View all cells in the notebook |
 | `set_cell_source` | Update a cell's source code |
+| `clear_outputs` | Clear a cell's outputs |
 | `delete_cell` | Remove a cell from the notebook |
 | `start_kernel` | Start a Python kernel |
+| `restart_kernel` | Restart kernel with updated dependencies |
 | `get_kernel_status` | Check kernel state |
+| `get_queue_state` | See what's executing and what's queued |
+| `complete_code` | Get code completions from the kernel |
+| `get_history` | Search kernel execution history |
+| `add_dependency` | Add a Python package dependency |
+| `remove_dependency` | Remove a dependency |
+| `get_dependencies` | List current dependencies |
+| `sync_environment` | Hot-install new deps without restart |
 
 ## Architecture
 

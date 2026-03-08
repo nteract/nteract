@@ -417,6 +417,66 @@ async def disconnect_notebook() -> dict[str, Any]:
     return {"disconnected": True}
 
 
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
+async def open_notebook(path: str) -> dict[str, Any]:
+    """Open an existing notebook file.
+
+    Connects to the notebook via the daemon. If already connected to
+    a different notebook, disconnects first.
+
+    Args:
+        path: Path to the .ipynb file.
+
+    Returns:
+        Connection info including notebook_id and trust status.
+    """
+    global _session
+
+    if _session is not None:
+        with contextlib.suppress(Exception):
+            await _session.close()
+
+    _session = await runtimed.AsyncSession.open_notebook(path)
+    info = await _session.connection_info()
+    return {
+        "notebook_id": _session.notebook_id,
+        "path": path,
+        "cell_count": info.cell_count if info else 0,
+        "needs_trust_approval": info.needs_trust_approval if info else False,
+    }
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
+async def create_notebook(
+    runtime: str = "python",
+    working_dir: str | None = None,
+) -> dict[str, Any]:
+    """Create a new notebook.
+
+    Creates an empty notebook with one code cell via the daemon.
+
+    Args:
+        runtime: Kernel runtime type ("python" or "deno").
+        working_dir: Optional working directory for project detection.
+
+    Returns:
+        Connection info for the new notebook.
+    """
+    global _session
+
+    if _session is not None:
+        with contextlib.suppress(Exception):
+            await _session.close()
+
+    _session = await runtimed.AsyncSession.create_notebook(runtime=runtime, working_dir=working_dir)
+    info = await _session.connection_info()
+    return {
+        "notebook_id": _session.notebook_id,
+        "runtime": runtime,
+        "cell_count": info.cell_count if info else 1,
+    }
+
+
 def _format_notebook_list(rooms: list[dict[str, Any]]) -> str:
     """Format notebook rooms for terminal display."""
     if not rooms:
@@ -521,6 +581,22 @@ async def interrupt_kernel() -> dict[str, Any]:
     return {"interrupted": True}
 
 
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+async def restart_kernel() -> dict[str, Any]:
+    """Restart the kernel with updated dependencies.
+
+    Clears all kernel state and reloads dependencies from notebook metadata.
+    Use this after adding/removing dependencies when sync_environment()
+    isn't sufficient.
+
+    Returns:
+        Confirmation of restart with the new env_source.
+    """
+    session = await _get_session()
+    await session.restart_kernel(wait_for_ready=True)
+    return {"restarted": True, "env_source": await session.env_source()}
+
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def get_kernel_status() -> dict[str, Any]:
     """Get the kernel status for the current session.
@@ -534,6 +610,144 @@ async def get_kernel_status() -> dict[str, Any]:
         "connected": await session.is_connected(),
         "kernel_started": await session.kernel_started(),
         "env_source": await session.env_source(),
+    }
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def complete_code(code: str, cursor_pos: int) -> dict[str, Any]:
+    """Get code completions from the kernel.
+
+    Uses the kernel's introspection to provide context-aware completions.
+    Requires a running kernel.
+
+    Args:
+        code: The code to complete.
+        cursor_pos: Cursor position in the code (0-indexed byte offset).
+
+    Returns:
+        Completions including cursor_start, cursor_end, and items list.
+    """
+    session = await _get_session()
+    result = await session.complete(code, cursor_pos)
+    return {
+        "cursor_start": result.cursor_start,
+        "cursor_end": result.cursor_end,
+        "items": [
+            {"label": item.label, "kind": item.kind, "detail": item.detail} for item in result.items
+        ],
+    }
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def get_queue_state() -> dict[str, Any]:
+    """Get the current execution queue state.
+
+    Shows which cell is currently executing and which cells are queued.
+
+    Returns:
+        executing: Cell ID currently running (or null if idle).
+        queued: List of cell IDs waiting to run.
+    """
+    session = await _get_session()
+    state = await session.get_queue_state()
+    return {"executing": state.executing, "queued": state.queued}
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def get_history(
+    pattern: str | None = None,
+    n: int = 100,
+) -> dict[str, Any]:
+    """Search kernel execution history.
+
+    Returns previously executed code from this kernel session.
+
+    Args:
+        pattern: Optional glob pattern to filter results (e.g., "*import*").
+        n: Maximum entries to return (default 100).
+
+    Returns:
+        entries: List of history entries with session, line, and source.
+    """
+    session = await _get_session()
+    entries = await session.get_history(pattern=pattern, n=n, unique=True)
+    return {
+        "entries": [{"session": e.session, "line": e.line, "source": e.source} for e in entries]
+    }
+
+
+# =============================================================================
+# Dependency Management Tools
+# =============================================================================
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+async def add_dependency(package: str) -> dict[str, Any]:
+    """Add a Python package dependency to the notebook.
+
+    The package is added to the notebook's inline dependency metadata.
+    Use sync_environment() to install without restart, or restart_kernel()
+    for a clean environment with the new dependency.
+
+    Args:
+        package: PEP 508 dependency specifier (e.g., "pandas>=2.0", "requests").
+
+    Returns:
+        Updated list of dependencies.
+    """
+    session = await _get_session()
+    deps = await session.add_uv_dependency(package)
+    return {"dependencies": deps, "added": package}
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+async def remove_dependency(package: str) -> dict[str, Any]:
+    """Remove a dependency from the notebook.
+
+    Requires kernel restart to take effect.
+
+    Args:
+        package: Exact dependency string to remove.
+
+    Returns:
+        Updated list of dependencies.
+    """
+    session = await _get_session()
+    deps = await session.remove_uv_dependency(package)
+    return {"dependencies": deps, "removed": package}
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def get_dependencies() -> dict[str, Any]:
+    """Get the notebook's current dependencies.
+
+    Returns:
+        List of PEP 508 dependency specifiers.
+    """
+    session = await _get_session()
+    deps = await session.get_uv_dependencies()
+    return {"dependencies": deps}
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+async def sync_environment() -> dict[str, Any]:
+    """Hot-install new dependencies without restarting the kernel.
+
+    Only works for UV dependencies and only for additions.
+    If removals are needed or sync fails, use restart_kernel() instead.
+
+    Returns:
+        success: Whether sync completed.
+        synced_packages: Packages that were installed (if success).
+        needs_restart: If true, must restart kernel instead.
+    """
+    session = await _get_session()
+    result = await session.sync_environment()
+    return {
+        "success": result.success,
+        "synced_packages": result.synced_packages,
+        "error": result.error,
+        "needs_restart": result.needs_restart,
     }
 
 
@@ -673,6 +887,24 @@ async def delete_cell(cell_id: str) -> dict[str, Any]:
     return {"cell_id": cell_id, "deleted": True}
 
 
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+async def clear_outputs(cell_id: str) -> dict[str, Any]:
+    """Clear a cell's outputs.
+
+    Removes all outputs from the cell. Useful before re-running a cell
+    to get a clean slate.
+
+    Args:
+        cell_id: The cell ID to clear outputs from.
+
+    Returns:
+        Confirmation of clearing.
+    """
+    session = await _get_session()
+    await session.clear_outputs(cell_id)
+    return {"cell_id": cell_id, "cleared": True}
+
+
 # =============================================================================
 # Execution Tools
 # =============================================================================
@@ -719,6 +951,21 @@ async def execute_cell(
         Cell with execution status and outputs (images returned as ImageContent).
     """
     return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+async def run_all_cells() -> dict[str, Any]:
+    """Queue all code cells for execution.
+
+    Queues all code cells in document order. Does not wait for completion.
+    Use get_queue_state() to monitor progress or get_all_cells() to see results.
+
+    Returns:
+        count: Number of cells queued for execution.
+    """
+    session = await _get_session()
+    count = await session.run_all_cells()
+    return {"status": "queued", "count": count}
 
 
 # =============================================================================
