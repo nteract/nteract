@@ -419,13 +419,13 @@ async def disconnect_notebook() -> dict[str, Any]:
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
 async def open_notebook(path: str) -> dict[str, Any]:
-    """Open an existing notebook file.
+    """Open an existing .ipynb notebook file from disk.
 
-    Connects to the notebook via the daemon. If already connected to
-    a different notebook, disconnects first.
+    Use this to open a notebook that already exists on the filesystem.
+    For creating a new notebook, use create_notebook() instead.
 
     Args:
-        path: Path to the .ipynb file.
+        path: Absolute or relative path to the .ipynb file.
 
     Returns:
         Connection info including notebook_id and trust status.
@@ -451,16 +451,20 @@ async def create_notebook(
     runtime: str = "python",
     working_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Create a new notebook.
+    """Create a new empty notebook in memory.
 
-    Creates an empty notebook with one code cell via the daemon.
+    Creates an empty notebook with one code cell via the daemon. The notebook
+    exists only in memory until saved with save_notebook(path).
+
+    NOTE: This tool does NOT accept a path parameter. To save the notebook
+    to disk, call save_notebook(path) after creating it.
 
     Args:
         runtime: Kernel runtime type ("python" or "deno").
         working_dir: Optional working directory for project detection.
 
     Returns:
-        Connection info for the new notebook.
+        Connection info including notebook_id (a session identifier, not a file path).
     """
     global _session
 
@@ -479,14 +483,14 @@ async def create_notebook(
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
 async def save_notebook(path: str | None = None) -> dict[str, Any]:
-    """Save the notebook to disk as a .ipynb file.
+    """Save the current notebook to disk as a .ipynb file.
 
     Persists the current notebook state including cells, outputs, and metadata.
 
     Args:
-        path: File path to save to. Required for notebooks created with
-            create_notebook(). For notebooks opened with open_notebook(),
-            this can be omitted to save to the original location.
+        path: File path to save to. REQUIRED for notebooks created with
+            create_notebook(). Can be omitted for notebooks opened with
+            open_notebook() to save to the original location.
 
     Returns:
         The absolute path where the file was saved.
