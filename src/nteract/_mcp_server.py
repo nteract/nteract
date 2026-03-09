@@ -477,6 +477,23 @@ async def create_notebook(
     }
 
 
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
+async def save_notebook(path: str | None = None) -> dict[str, Any]:
+    """Save the notebook to disk as a .ipynb file.
+
+    Persists the current notebook state including cells, outputs, and metadata.
+
+    Args:
+        path: File path to save to. If None, uses the notebook's original path.
+
+    Returns:
+        The absolute path where the file was saved.
+    """
+    session = await _get_session()
+    saved_path = await session.save(path)
+    return {"path": saved_path}
+
+
 def _format_notebook_list(rooms: list[dict[str, Any]]) -> str:
     """Format notebook rooms for terminal display."""
     if not rooms:
@@ -681,52 +698,85 @@ async def get_history(
 # =============================================================================
 
 
+async def _get_package_manager(session: runtimed.AsyncSession) -> str:
+    """Detect which package manager the notebook is using.
+
+    Based on env_source:
+    - "uv:inline" or "uv:prewarmed" → "uv"
+    - "conda:inline" or "conda:prewarmed" → "conda"
+    - Default to "uv" if unknown or no kernel running
+    """
+    env = await session.env_source()
+    if env and env.startswith("conda:"):
+        return "conda"
+    return "uv"
+
+
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def add_dependency(package: str) -> dict[str, Any]:
     """Add a Python package dependency to the notebook.
 
-    The package is added to the notebook's inline dependency metadata.
+    Automatically uses the notebook's configured package manager (UV or Conda)
+    based on env_source. The package is added to the notebook's inline
+    dependency metadata.
+
     Use sync_environment() to install without restart, or restart_kernel()
     for a clean environment with the new dependency.
 
     Args:
-        package: PEP 508 dependency specifier (e.g., "pandas>=2.0", "requests").
+        package: Package specifier (e.g., "pandas>=2.0", "requests").
 
     Returns:
-        Updated list of dependencies.
+        Updated list of dependencies and which package manager was used.
     """
     session = await _get_session()
-    deps = await session.add_uv_dependency(package)
-    return {"dependencies": deps, "added": package}
+    pm = await _get_package_manager(session)
+    if pm == "conda":
+        deps = await session.add_conda_dependency(package)
+    else:
+        deps = await session.add_uv_dependency(package)
+    return {"dependencies": deps, "added": package, "package_manager": pm}
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def remove_dependency(package: str) -> dict[str, Any]:
     """Remove a dependency from the notebook.
 
-    Requires kernel restart to take effect.
+    Automatically uses the notebook's configured package manager (UV or Conda)
+    based on env_source. Requires kernel restart to take effect.
 
     Args:
         package: Exact dependency string to remove.
 
     Returns:
-        Updated list of dependencies.
+        Updated list of dependencies and which package manager was used.
     """
     session = await _get_session()
-    deps = await session.remove_uv_dependency(package)
-    return {"dependencies": deps, "removed": package}
+    pm = await _get_package_manager(session)
+    if pm == "conda":
+        deps = await session.remove_conda_dependency(package)
+    else:
+        deps = await session.remove_uv_dependency(package)
+    return {"dependencies": deps, "removed": package, "package_manager": pm}
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def get_dependencies() -> dict[str, Any]:
     """Get the notebook's current dependencies.
 
+    Returns dependencies from the notebook's configured package manager
+    (UV or Conda) based on env_source.
+
     Returns:
-        List of PEP 508 dependency specifiers.
+        List of dependency specifiers and which package manager is active.
     """
     session = await _get_session()
-    deps = await session.get_uv_dependencies()
-    return {"dependencies": deps}
+    pm = await _get_package_manager(session)
+    if pm == "conda":
+        deps = await session.get_conda_dependencies()
+    else:
+        deps = await session.get_uv_dependencies()
+    return {"dependencies": deps, "package_manager": pm}
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))

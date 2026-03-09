@@ -94,6 +94,7 @@ claude mcp add nteract -- env RUNTIMED_SOCKET_PATH="$HOME/Library/Caches/runt-ni
 | `connect_notebook` | Connect to a notebook by ID |
 | `open_notebook` | Open an existing .ipynb file |
 | `create_notebook` | Create a new notebook |
+| `save_notebook` | Save notebook to disk as .ipynb file |
 | `create_cell` | Add a cell to the notebook (use `and_run=True` to execute) |
 | `execute_cell` | Run a specific cell (returns partial results after timeout) |
 | `run_all_cells` | Queue all code cells for execution |
