@@ -484,14 +484,26 @@ async def save_notebook(path: str | None = None) -> dict[str, Any]:
     Persists the current notebook state including cells, outputs, and metadata.
 
     Args:
-        path: File path to save to. If None, uses the notebook's original path.
+        path: File path to save to. Required for notebooks created with
+            create_notebook(). For notebooks opened with open_notebook(),
+            this can be omitted to save to the original location.
 
     Returns:
         The absolute path where the file was saved.
     """
     session = await _get_session()
-    saved_path = await session.save(path)
-    return {"path": saved_path}
+    try:
+        saved_path = await session.save(path)
+        return {"path": saved_path}
+    except Exception as e:
+        error_msg = str(e)
+        is_write_error = "Read-only" in error_msg or "Failed to write" in error_msg
+        if is_write_error and path is None:
+            raise RuntimeError(
+                "No path specified. For notebooks created with create_notebook(), "
+                "you must provide a path (e.g., save_notebook('/path/to/file.ipynb'))"
+            ) from e
+        raise
 
 
 def _format_notebook_list(rooms: list[dict[str, Any]]) -> str:
@@ -701,14 +713,24 @@ async def get_history(
 async def _get_package_manager(session: runtimed.AsyncSession) -> str:
     """Detect which package manager the notebook is using.
 
-    Based on env_source:
-    - "uv:inline" or "uv:prewarmed" → "uv"
-    - "conda:inline" or "conda:prewarmed" → "conda"
-    - Default to "uv" if unknown or no kernel running
+    Detection order:
+    1. If kernel is running, check env_source (most reliable)
+    2. Otherwise, check stored metadata for existing dependencies
+    3. Default to "uv" if no signal
     """
+    # First check env_source if kernel is running
     env = await session.env_source()
-    if env and env.startswith("conda:"):
+    if env:
+        if env.startswith("conda:"):
+            return "conda"
+        return "uv"
+
+    # No kernel running - check stored metadata
+    # If notebook has conda deps, it's a conda notebook
+    conda_deps = await session.get_conda_dependencies()
+    if conda_deps:
         return "conda"
+
     return "uv"
 
 
