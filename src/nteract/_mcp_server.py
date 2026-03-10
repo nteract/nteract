@@ -758,9 +758,11 @@ async def add_dependency(package: str) -> dict[str, Any]:
     session = await _get_session()
     pm = await _get_package_manager(session)
     if pm == "conda":
-        deps = await session.add_conda_dependency(package)
+        await session.add_conda_dependency(package)
+        deps = await session.get_conda_dependencies()
     else:
-        deps = await session.add_uv_dependency(package)
+        await session.add_uv_dependency(package)
+        deps = await session.get_uv_dependencies()
     return {"dependencies": deps, "added": package, "package_manager": pm}
 
 
@@ -780,9 +782,11 @@ async def remove_dependency(package: str) -> dict[str, Any]:
     session = await _get_session()
     pm = await _get_package_manager(session)
     if pm == "conda":
-        deps = await session.remove_conda_dependency(package)
+        await session.remove_conda_dependency(package)
+        deps = await session.get_conda_dependencies()
     else:
-        deps = await session.remove_uv_dependency(package)
+        await session.remove_uv_dependency(package)
+        deps = await session.get_uv_dependencies()
     return {"dependencies": deps, "removed": package, "package_manager": pm}
 
 
