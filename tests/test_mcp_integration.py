@@ -131,6 +131,7 @@ async def test_list_tools(mcp_client: ClientSession):
     assert "get_cell" in tool_names
     assert "get_all_cells" in tool_names
     assert "delete_cell" in tool_names
+    assert "move_cell" in tool_names
     assert "execute_cell" in tool_names
 
     # run_code should be removed
@@ -349,3 +350,47 @@ async def test_delete_cell(mcp_client: ClientSession):
     text = _get_text(result)
     # The full cell_id shouldn't appear (we only show first 8 chars in header)
     assert cell_id not in text
+
+
+@pytest.mark.asyncio
+async def test_move_cell(mcp_client: ClientSession):
+    """Test cell reordering."""
+    await mcp_client.call_tool("connect_notebook", {})
+
+    result = await mcp_client.call_tool("create_cell", {"source": "first"})
+    first_id = _extract_cell_id(_get_text(result))
+    assert first_id is not None
+
+    result = await mcp_client.call_tool("create_cell", {"source": "second"})
+    second_id = _extract_cell_id(_get_text(result))
+    assert second_id is not None
+
+    result = await mcp_client.call_tool("create_cell", {"source": "third"})
+    third_id = _extract_cell_id(_get_text(result))
+    assert third_id is not None
+
+    result = await mcp_client.call_tool(
+        "move_cell",
+        {"cell_id": third_id, "after_cell_id": first_id},
+    )
+    data = _parse_json(result)
+    assert data["moved"] is True
+    assert data["cell_id"] == third_id
+    assert data["after_cell_id"] == first_id
+
+    result = await mcp_client.call_tool("get_all_cells", {})
+    text = _get_text(result)
+    assert text.index("first") < text.index("third") < text.index("second")
+
+    result = await mcp_client.call_tool(
+        "move_cell",
+        {"cell_id": second_id, "after_cell_id": None},
+    )
+    data = _parse_json(result)
+    assert data["moved"] is True
+    assert data["cell_id"] == second_id
+    assert data["after_cell_id"] is None
+
+    result = await mcp_client.call_tool("get_all_cells", {})
+    text = _get_text(result)
+    assert text.index("second") < text.index("first") < text.index("third")

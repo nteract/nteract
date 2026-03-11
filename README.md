@@ -23,8 +23,14 @@ We're in the prelimiary stages of hooking up the realtime system from nteract/de
 #### Claude Code
 
 ```bash
-# Add to Claude Code
+# Stable desktop 1.4.x / stable MCP
 claude mcp add nteract -- uvx nteract
+```
+
+For desktop nightly / the upcoming 2.x transition, use the prerelease MCP package and nightly socket:
+
+```bash
+claude mcp add nteract-nightly -- env RUNTIMED_SOCKET_PATH="$HOME/Library/Caches/runt-nightly/runtimed.sock" uvx --prerelease allow nteract
 ```
 
 That's it. Now Claude can execute Python code, create visualizations, and work with your data.
@@ -54,13 +60,21 @@ You can open the same notebook in the [nteract desktop app](https://github.com/n
 
 ## Installation
 
+Stable line for desktop `1.4.x`:
+
 ```bash
 uvx nteract
 ```
 
+Prerelease line for desktop nightly / 2.x transition:
+
+```bash
+uvx --prerelease allow nteract
+```
+
 ## Claude Code Setup
 
-Add nteract as an MCP server:
+Add stable `nteract` as an MCP server:
 
 ```bash
 claude mcp add nteract -- uvx nteract
@@ -81,11 +95,16 @@ Or manually add to your Claude configuration:
 
 ### Using with Nightly
 
-If you're using nteract desktop nightly builds, point at the nightly socket:
+If you're using nteract desktop nightly builds, point at the nightly socket and allow prereleases:
 
 ```bash
 claude mcp add nteract -- env RUNTIMED_SOCKET_PATH="$HOME/Library/Caches/runt-nightly/runtimed.sock" uvx --prerelease allow nteract
 ```
+
+### Release Tracks
+
+- `main` publishes prerelease `nteract` builds for the 2.x transition and tracks `runtimed 2.x` prereleases.
+- `release/1.9.x` is the stable maintenance line for desktop `1.4.x` and stays on `runtimed 1.9.0`.
 
 ## Available Tools
 
@@ -102,6 +121,7 @@ claude mcp add nteract -- env RUNTIMED_SOCKET_PATH="$HOME/Library/Caches/runt-ni
 | `get_cell` | Get a cell by ID with outputs |
 | `get_all_cells` | View all cells in the notebook |
 | `set_cell_source` | Update a cell's source code |
+| `move_cell` | Reorder a cell within the notebook |
 | `clear_outputs` | Clear a cell's outputs |
 | `delete_cell` | Remove a cell from the notebook |
 | `start_kernel` | Start a Python kernel |
