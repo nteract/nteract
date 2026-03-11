@@ -2,9 +2,6 @@ version = 1
 revision = 3
 requires-python = ">=3.10"
 
-[options]
-prerelease-mode = "allow"
-
 [[package]]
 name = "annotated-types"
 version = "0.7.0"
@@ -348,7 +345,7 @@ wheels = [
 
 [[package]]
 name = "nteract"
-version = "0.10.2"
+version = "1.9.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
@@ -369,7 +366,7 @@ dev = [
 requires-dist = [
     { name = "httpx", specifier = ">=0.27.0,<1.0" },
     { name = "mcp", specifier = ">=1.26.0" },
-    { name = "runtimed", specifier = ">=0.1.5a202603101316" },
+    { name = "runtimed", specifier = ">=1.9.0,<2.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -813,12 +810,12 @@ wheels = [
 
 [[package]]
 name = "runtimed"
-version = "0.1.5a202603101316"
+version = "1.9.0"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/47/fe/755902630c45adafb670e04bbed02568500c642e63d4dbade9ce8a5f452c/runtimed-0.1.5a202603101316-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:b68198405d6f273531675da267cc175beaef5ec8861d68a558ac174dfd3fbba2", size = 1516734, upload-time = "2026-03-10T13:42:27.641Z" },
-    { url = "https://files.pythonhosted.org/packages/43/e1/05722569b292d1fc968dfb490e442f8e9f9aa9145969c26a5bb31f752c6e/runtimed-0.1.5a202603101316-cp39-abi3-manylinux_2_39_x86_64.whl", hash = "sha256:600a4da5033fbae434e197b49b7e9cd5760a5be51db5f6caef729a1ac12b5a8e", size = 4037793, upload-time = "2026-03-10T13:42:25.82Z" },
-    { url = "https://files.pythonhosted.org/packages/09/b2/94acd7763fcd5cdf1d92889fb848f63751d84c2e24ed4584bb7d809f627f/runtimed-0.1.5a202603101316-cp39-abi3-win_amd64.whl", hash = "sha256:35d7202a804d9e204c784894a0ed8b484b184627c5416e29ec4cc133ac6c7e89", size = 1511332, upload-time = "2026-03-10T13:42:29.169Z" },
+    { url = "https://files.pythonhosted.org/packages/3a/06/bb06ce9f92735f57467af52c0bdd3495e31a58296e62086dfcaeae306f00/runtimed-1.9.0-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:7ec769f2c9c9cb9d7403eae8cd0a8598cc0f5b08f4e7e512f6019ecfd2200412", size = 1540939, upload-time = "2026-03-11T05:31:34.489Z" },
+    { url = "https://files.pythonhosted.org/packages/08/50/e9139ba5cf74f64427a657a7015a29caf7ec9e4325783db17226718a1d2b/runtimed-1.9.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:df4be6575062cc52ffddf2a77b10eddfddf6f001697485c82628ffceecd88164", size = 1518345, upload-time = "2026-03-11T05:31:36.824Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/c1/2a667e651b6286e06c1cea0a6d53ee8f50e86ef38134914a384a9ac09dc0/runtimed-1.9.0-cp39-abi3-manylinux_2_39_x86_64.whl", hash = "sha256:15e17594add4b5149c34aeaf94094c40923c37691c5d2388ffbe4925bce9d6b3", size = 4037045, upload-time = "2026-03-11T05:31:39.05Z" },
 ]
 
 [[package]]
