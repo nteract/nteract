@@ -105,6 +105,7 @@ claude mcp add nteract -- env RUNTIMED_SOCKET_PATH="$HOME/Library/Caches/runt-ni
 
 - `main` publishes prerelease `nteract` builds for the 2.x transition and tracks `runtimed 2.x` prereleases.
 - `release/1.9.x` is the stable maintenance line for desktop `1.4.x` and stays on `runtimed 1.9.0`.
+- use the `Stamp Prerelease Version` GitHub Actions workflow to open a PR with the next `2.x` prerelease version before publishing from `main`
 
 ## Available Tools
 
