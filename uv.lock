@@ -345,7 +345,7 @@ wheels = [
 
 [[package]]
 name = "nteract"
-version = "1.9.2"
+version = "2.0.1a202603110913"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
