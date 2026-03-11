@@ -1,6 +1,6 @@
 [project]
 name = "nteract"
-version = "1.9.1"
+version = "1.9.2"
 description = "Bring AI to Jupyter notebooks. MCP server for Claude, ChatGPT, Gemini, OpenCode and any agent."
 readme = "README.md"
 license = "BSD-3-Clause"
@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
     "mcp>=1.26.0",
     "httpx>=0.27.0,<1.0",
-    "runtimed>=1.9.0,<2.0",
+    "runtimed>=2.0.1a202603110913,<3.0",
 ]
 
 [project.scripts]
