@@ -968,6 +968,29 @@ async def delete_cell(cell_id: str) -> dict[str, Any]:
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+async def move_cell(cell_id: str, after_cell_id: str | None = None) -> dict[str, Any]:
+    """Move a cell to a new position in the notebook.
+
+    Reorders the shared document and syncs the change to all connected clients.
+
+    Args:
+        cell_id: The cell to move.
+        after_cell_id: Move after this cell. Use None to move to the start.
+
+    Returns:
+        Confirmation of the move, including the new internal position token.
+    """
+    session = await _get_session()
+    new_position = await session.move_cell(cell_id=cell_id, after_cell_id=after_cell_id)
+    return {
+        "cell_id": cell_id,
+        "after_cell_id": after_cell_id,
+        "new_position": new_position,
+        "moved": True,
+    }
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def clear_outputs(cell_id: str) -> dict[str, Any]:
     """Clear a cell's outputs.
 
@@ -1009,6 +1032,19 @@ async def _execute_cell_internal(
 
     with contextlib.suppress(asyncio.TimeoutError):
         await asyncio.wait_for(collect_events(), timeout=timeout_secs)
+
+    if complete:
+        # Prefer the synced document as the final source of truth once execution
+        # finishes. This is more robust across runtimed output transport changes.
+        session = await _get_session()
+        with contextlib.suppress(Exception):
+            cell = await session.get_cell(cell_id=cell_id)
+            has_error_output = any(output.output_type == "error" for output in cell.outputs)
+            status = "error" if has_error_output else "idle"
+            header = _format_header(cell.id, status=status, execution_count=cell.execution_count)
+            items: list[ContentItem] = [TextContent(type="text", text=header)]
+            items.extend(_outputs_to_content(cell.outputs))
+            return items
 
     return _execution_result_to_content(cell_id, events, complete)
 
