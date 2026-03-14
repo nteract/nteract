@@ -15,12 +15,15 @@ Requires: pip install nteract
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import contextlib
 import json
 import logging
+import os
 import re
 import sys
+from pathlib import Path
 from typing import Any
 
 import runtimed
@@ -28,6 +31,8 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ImageContent, TextContent, ToolAnnotations
 
 logger = logging.getLogger(__name__)
+
+_NIGHTLY_SOCKET_PATH = Path.home() / "Library" / "Caches" / "runt-nightly" / "runtimed.sock"
 
 # MCP content types for tool responses
 ContentItem = TextContent | ImageContent
@@ -1149,13 +1154,38 @@ async def resource_rooms() -> str:
 # =============================================================================
 
 
-def main():
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command line arguments for the MCP server."""
+    parser = argparse.ArgumentParser(
+        prog="nteract",
+        description="Run the nteract MCP server.",
+    )
+    parser.add_argument(
+        "--nightly",
+        action="store_true",
+        help="Use the nightly runtimed socket path.",
+    )
+    return parser.parse_args(argv)
+
+
+def _configure_runtime_environment(args: argparse.Namespace) -> None:
+    """Apply CLI-derived runtime configuration before creating daemon clients."""
+    if not args.nightly:
+        return
+
+    os.environ["RUNTIMED_SOCKET_PATH"] = str(_NIGHTLY_SOCKET_PATH)
+    logger.info("Using nightly runtimed socket at %s", _NIGHTLY_SOCKET_PATH)
+
+
+def main(argv: list[str] | None = None):
     """Run the MCP server."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         stream=sys.stderr,
     )
+    args = _parse_args(argv)
+    _configure_runtime_environment(args)
     mcp.run(transport="stdio")
 
 

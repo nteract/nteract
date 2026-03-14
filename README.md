@@ -27,10 +27,10 @@ We're in the prelimiary stages of hooking up the realtime system from nteract/de
 claude mcp add nteract -- uvx nteract
 ```
 
-For desktop nightly / the upcoming 2.x transition, use the prerelease MCP package and nightly socket:
+For desktop nightly / the upcoming 2.x transition, use the prerelease MCP package and the `--nightly` shorthand:
 
 ```bash
-claude mcp add nteract-nightly -- env RUNTIMED_SOCKET_PATH="$HOME/Library/Caches/runt-nightly/runtimed.sock" uvx --prerelease allow nteract
+claude mcp add nteract-nightly -- uvx --prerelease allow nteract --nightly
 ```
 
 That's it. Now Claude can execute Python code, create visualizations, and work with your data.
@@ -69,7 +69,7 @@ uvx nteract
 Prerelease line for desktop nightly / 2.x transition:
 
 ```bash
-uvx --prerelease allow nteract
+uvx --prerelease allow nteract --nightly
 ```
 
 ## Claude Code Setup
@@ -95,10 +95,10 @@ Or manually add to your Claude configuration:
 
 ### Using with Nightly
 
-If you're using nteract desktop nightly builds, point at the nightly socket and allow prereleases:
+If you're using nteract desktop nightly builds, use the nightly socket shorthand and allow prereleases:
 
 ```bash
-claude mcp add nteract -- env RUNTIMED_SOCKET_PATH="$HOME/Library/Caches/runt-nightly/runtimed.sock" uvx --prerelease allow nteract
+claude mcp add nteract -- uvx --prerelease allow nteract --nightly
 ```
 
 ### Release Tracks
