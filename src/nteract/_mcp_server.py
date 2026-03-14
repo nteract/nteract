@@ -32,9 +32,7 @@ from mcp.types import ImageContent, TextContent, ToolAnnotations
 
 logger = logging.getLogger(__name__)
 
-_NIGHTLY_SOCKET_PATH = (
-    Path.home() / "Library" / "Caches" / "runt-nightly" / "runtimed.sock"
-)
+_NIGHTLY_SOCKET_PATH = Path.home() / "Library" / "Caches" / "runt-nightly" / "runtimed.sock"
 
 # MCP content types for tool responses
 ContentItem = TextContent | ImageContent
