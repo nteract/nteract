@@ -430,7 +430,6 @@ def daemon_process(request):
         cache_dir = tmpdir / "cache"
         blob_dir = tmpdir / "blobs"
         workspace_dir = tmpdir / "workspace"
-        settings_doc = tmpdir / "settings.automerge"
         settings_json = tmpdir / "settings.json"
         cache_dir.mkdir()
         blob_dir.mkdir()
@@ -465,8 +464,6 @@ def daemon_process(request):
             conda_pool_size,
             "--pixi-pool-size",
             "0",
-            "--settings-doc",
-            str(settings_doc),
             "--settings-json",
             str(settings_json),
         ]

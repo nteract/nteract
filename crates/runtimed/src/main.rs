@@ -84,11 +84,7 @@ enum Commands {
         )]
         pixi_pool_size: usize,
 
-        /// Override persisted settings doc path.
-        #[arg(long, hide = true)]
-        settings_doc: Option<PathBuf>,
-
-        /// Override persisted settings JSON mirror path.
+        /// Override canonical settings JSON path.
         #[arg(long, hide = true)]
         settings_json: Option<PathBuf>,
     },
@@ -319,7 +315,6 @@ async fn main() -> anyhow::Result<()> {
                 uv_pool_size,
                 conda_pool_size,
                 pixi_pool_size,
-                settings_doc,
                 settings_json,
             ) = match cli.command {
                 Some(Commands::Run {
@@ -329,7 +324,6 @@ async fn main() -> anyhow::Result<()> {
                     uv_pool_size,
                     conda_pool_size,
                     pixi_pool_size,
-                    settings_doc,
                     settings_json,
                 }) => (
                     socket,
@@ -338,7 +332,6 @@ async fn main() -> anyhow::Result<()> {
                     uv_pool_size,
                     conda_pool_size,
                     pixi_pool_size,
-                    settings_doc,
                     settings_json,
                 ),
                 _ => (
@@ -348,7 +341,6 @@ async fn main() -> anyhow::Result<()> {
                     runtimed_client::settings_doc::DEFAULT_UV_POOL_SIZE as usize,
                     runtimed_client::settings_doc::DEFAULT_CONDA_POOL_SIZE as usize,
                     runtimed_client::settings_doc::DEFAULT_PIXI_POOL_SIZE as usize,
-                    None,
                     None,
                 ),
             };
@@ -361,7 +353,6 @@ async fn main() -> anyhow::Result<()> {
                 uv_pool_size,
                 conda_pool_size,
                 pixi_pool_size,
-                settings_doc_path: settings_doc,
                 settings_json_path: settings_json,
                 ..Default::default()
             };
