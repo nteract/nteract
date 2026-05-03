@@ -49,14 +49,6 @@ class Session {
         ),
       );
     }
-
-    return new Proxy(this, {
-      get(target, prop, receiver) {
-        if (prop in target) return Reflect.get(target, prop, receiver);
-        const value = target._native[prop];
-        return typeof value === "function" ? value.bind(target._native) : value;
-      },
-    });
   }
 
   get notebookId() {
@@ -103,8 +95,82 @@ class Session {
     return this._native.saveNotebook(path);
   }
 
-  addUvDependency(pkg) {
-    return this._native.addUvDependency(pkg);
+  listCells() {
+    return this._native.listCells();
+  }
+
+  getCell(cellId) {
+    return this._native.getCell(cellId);
+  }
+
+  createCell(source, options) {
+    return this._native.createCell(source, options);
+  }
+
+  setCell(cellId, options) {
+    return this._native.setCell(cellId, options);
+  }
+
+  deleteCell(cellId) {
+    return this._native.deleteCell(cellId);
+  }
+
+  moveCell(cellId, afterCellId) {
+    return this._native.moveCell(cellId, { afterCellId: afterCellId ?? null });
+  }
+
+  executeCell(cellId, options) {
+    return this._native.executeCell(cellId, options);
+  }
+
+  showNotebook() {
+    return this._native.showNotebook();
+  }
+
+  interruptKernel() {
+    return this._native.interruptKernel();
+  }
+
+  shutdownKernel() {
+    return this._native.shutdownKernel();
+  }
+
+  restartKernel() {
+    return this._native.restartKernel();
+  }
+
+  shutdownNotebook() {
+    return this._native.shutdownNotebook();
+  }
+
+  addDependency(pkg, options) {
+    return this._native.addDependency(pkg, normalizeDependencyOptions(options));
+  }
+
+  addDependencies(packages, options) {
+    return this._native.addDependencies(
+      normalizePackages(packages),
+      normalizeDependencyOptions(options),
+    );
+  }
+
+  removeDependency(pkg, options) {
+    return this._native.removeDependency(pkg, normalizeDependencyOptions(options));
+  }
+
+  removeDependencies(packages, options) {
+    return this._native.removeDependencies(
+      normalizePackages(packages),
+      normalizeDependencyOptions(options),
+    );
+  }
+
+  getDependencyStatus() {
+    return this._native.getDependencyStatus();
+  }
+
+  getRuntimeStatus() {
+    return this._native.getRuntimeStatus();
   }
 
   dependencyFingerprint() {
@@ -130,6 +196,20 @@ class Session {
     this._sessionStatusSubject.complete();
     return this._native.close();
   }
+}
+
+function normalizePackages(packages) {
+  if (!Array.isArray(packages)) {
+    throw new TypeError("packages must be an array of dependency specifiers");
+  }
+  return Array.from(new Set(packages.map((pkg) => String(pkg).trim()).filter(Boolean)));
+}
+
+function normalizeDependencyOptions(options) {
+  if (!options?.packageManager) {
+    return undefined;
+  }
+  return { packageManager: options.packageManager };
 }
 
 module.exports = {

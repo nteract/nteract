@@ -2,17 +2,28 @@ import type { Observable } from "rxjs";
 import type { CellChangeset, ExecutionTransition, RuntimeState, SessionStatus } from "runtimed";
 
 export type RuntimeKind = "python" | "deno" | (string & {});
+export type PackageManager = "uv" | "conda" | "pixi";
+
+export const PackageManager: {
+  readonly Uv: "uv";
+  readonly Conda: "conda";
+  readonly Pixi: "pixi";
+};
 
 export interface CreateNotebookOptions {
   runtime?: RuntimeKind;
   workingDir?: string;
   socketPath?: string;
   peerLabel?: string;
+  description?: string;
+  dependencies?: string[];
+  packageManager?: PackageManager;
 }
 
 export interface OpenNotebookOptions {
   socketPath?: string;
   peerLabel?: string;
+  description?: string;
 }
 
 export interface RunCellOptions {
@@ -23,6 +34,10 @@ export interface RunCellOptions {
 
 export interface QueueCellOptions {
   cellType?: "code" | "markdown" | "raw";
+}
+
+export interface DependencyEditOptions {
+  packageManager?: PackageManager;
 }
 
 export interface WaitExecutionOptions {
@@ -62,9 +77,59 @@ export interface EventSubscription {
   dispose(): void;
 }
 
-export class Session {
-  [key: string]: unknown;
+export interface CellSnapshot {
+  id: string;
+  cellType: string;
+  position: string;
+  source: string;
+  metadataJson: string;
+  executionCount?: string;
+}
 
+export interface CreateCellOptions {
+  cellType?: "code" | "markdown" | "raw";
+  afterCellId?: string | null;
+}
+
+export interface SetCellOptions {
+  source?: string;
+  cellType?: "code" | "markdown" | "raw";
+}
+
+export interface RuntimeStatus {
+  status: string;
+  lifecycle: string;
+  activity?: string;
+  startingPhase: string;
+  name: string;
+  language: string;
+  envSource: string;
+  runtimeAgentId: string;
+  errorReason?: string;
+  errorDetails?: string;
+}
+
+export interface DependencyStatus {
+  uv?: {
+    dependencies: string[];
+    requiresPython?: string;
+  };
+  conda?: {
+    dependencies: string[];
+    channels: string[];
+    python?: string;
+  };
+  pixi?: {
+    dependencies: string[];
+    pypiDependencies: string[];
+    channels: string[];
+    python?: string;
+  };
+  fingerprint?: string;
+  trust?: unknown;
+}
+
+export class Session {
   readonly notebookId: string;
   readonly runtimeState$: Observable<RuntimeState>;
   readonly executionTransitions$: Observable<ExecutionTransition>;
@@ -76,7 +141,24 @@ export class Session {
   waitForExecution(executionId: string, options?: WaitExecutionOptions): Promise<CellResult>;
   runCell(source: string, options?: RunCellOptions): Promise<CellResult>;
   saveNotebook(path?: string): Promise<void>;
-  addUvDependency(pkg: string): Promise<void>;
+  listCells(): Promise<CellSnapshot[]>;
+  getCell(cellId: string): Promise<CellSnapshot | null>;
+  createCell(source: string, options?: CreateCellOptions): Promise<string>;
+  setCell(cellId: string, options: SetCellOptions): Promise<boolean>;
+  deleteCell(cellId: string): Promise<boolean>;
+  moveCell(cellId: string, afterCellId?: string | null): Promise<string>;
+  executeCell(cellId: string, options?: { timeoutMs?: number }): Promise<CellResult>;
+  showNotebook(): Promise<unknown>;
+  interruptKernel(): Promise<void>;
+  shutdownKernel(): Promise<void>;
+  restartKernel(): Promise<void>;
+  shutdownNotebook(): Promise<boolean>;
+  addDependency(pkg: string, options?: DependencyEditOptions): Promise<void>;
+  addDependencies(packages: string[], options?: DependencyEditOptions): Promise<void>;
+  removeDependency(pkg: string, options?: DependencyEditOptions): Promise<boolean>;
+  removeDependencies(packages: string[], options?: DependencyEditOptions): Promise<number>;
+  getDependencyStatus(): Promise<DependencyStatus>;
+  getRuntimeStatus(): Promise<RuntimeStatus>;
   dependencyFingerprint(): Promise<string | null>;
   approveTrust(observedHeads?: string[]): Promise<void>;
   syncEnvironment(): Promise<void>;

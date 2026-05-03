@@ -21,7 +21,7 @@ use runtimed_client::output_resolver as shared_resolver;
 use runtimed_client::resolved_output::DataValue as SharedDataValue;
 
 use crate::error::to_napi_err;
-use runtime_doc::diff_executions;
+use runtime_doc::{diff_executions, ProjectContext, ProjectFileKind};
 
 /// Valid cell types accepted by `runCell`.
 const VALID_CELL_TYPES: &[&str] = &["code", "markdown", "raw"];
@@ -38,7 +38,7 @@ type JsonCallback = ThreadsafeFunction<String, (), (String,), napi::Status, fals
 /// and that enum intentionally includes an `Unknown(String)` wire-compatibility
 /// variant that should not be exposed as a typed JavaScript option.
 #[napi(string_enum = "lowercase")]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PackageManager {
     Uv,
     Conda,
@@ -91,7 +91,8 @@ pub struct OpenNotebookOptions {
 #[napi(object)]
 #[derive(Default)]
 pub struct DependencyEditOptions {
-    /// Dependency manager to edit. Defaults to `uv` for Python notebooks.
+    /// Dependency manager to edit. Defaults to the running/configured manager,
+    /// falling back to UV for fresh Python notebooks.
     pub package_manager: Option<PackageManager>,
 }
 
@@ -673,7 +674,8 @@ impl Session {
         Ok(())
     }
 
-    /// Add dependencies to the selected package manager (defaults to UV) in one CRDT transaction.
+    /// Add dependencies to the selected package manager in one CRDT transaction.
+    /// When no manager is provided, the running/configured notebook manager is used.
     /// Call `syncEnvironment()` or restart the kernel to install them.
     #[napi]
     pub async fn add_dependencies(
@@ -682,9 +684,11 @@ impl Session {
         options: Option<DependencyEditOptions>,
     ) -> Result<()> {
         let handle = session_handle(&self.state).await?;
-        let package_manager = dependency_package_manager(options);
+        let runtime_state = handle.get_runtime_state().ok();
         handle
             .with_metadata(|snapshot| {
+                let package_manager =
+                    dependency_package_manager(options, runtime_state.as_ref(), snapshot);
                 for pkg in &packages {
                     match package_manager {
                         PackageManager::Uv => snapshot.add_uv_dependency(pkg),
@@ -697,7 +701,8 @@ impl Session {
         approve_current_trust(&handle, None).await
     }
 
-    /// Add a dependency to the selected package manager (defaults to UV).
+    /// Add a dependency to the selected package manager.
+    /// When no manager is provided, the running/configured notebook manager is used.
     /// Call `syncEnvironment()` or restart the kernel to install it.
     #[napi]
     pub async fn add_dependency(
@@ -708,7 +713,8 @@ impl Session {
         self.add_dependencies(vec![pkg], options).await
     }
 
-    /// Remove dependencies from the selected package manager (defaults to UV) in one CRDT transaction.
+    /// Remove dependencies from the selected package manager in one CRDT transaction.
+    /// When no manager is provided, the running/configured notebook manager is used.
     /// Returns the number of dependencies removed.
     #[napi]
     pub async fn remove_dependencies(
@@ -717,9 +723,11 @@ impl Session {
         options: Option<DependencyEditOptions>,
     ) -> Result<u32> {
         let handle = session_handle(&self.state).await?;
-        let package_manager = dependency_package_manager(options);
+        let runtime_state = handle.get_runtime_state().ok();
         let removed = handle
             .with_metadata(|snapshot| {
+                let package_manager =
+                    dependency_package_manager(options, runtime_state.as_ref(), snapshot);
                 packages
                     .iter()
                     .filter(|pkg| match package_manager {
@@ -736,7 +744,8 @@ impl Session {
         Ok(removed.try_into().unwrap_or(u32::MAX))
     }
 
-    /// Remove a dependency from the selected package manager (defaults to UV).
+    /// Remove a dependency from the selected package manager.
+    /// When no manager is provided, the running/configured notebook manager is used.
     /// Returns true if a dependency was removed.
     #[napi]
     pub async fn remove_dependency(
@@ -1578,10 +1587,52 @@ async fn show_notebook_inner(
     })
 }
 
-fn dependency_package_manager(options: Option<DependencyEditOptions>) -> PackageManager {
+fn dependency_package_manager(
+    options: Option<DependencyEditOptions>,
+    runtime_state: Option<&runtime_doc::RuntimeState>,
+    metadata: &notebook_doc::metadata::NotebookMetadataSnapshot,
+) -> PackageManager {
     options
         .and_then(|opts| opts.package_manager)
+        .or_else(|| infer_dependency_package_manager(runtime_state, metadata))
         .unwrap_or(PackageManager::Uv)
+}
+
+fn infer_dependency_package_manager(
+    runtime_state: Option<&runtime_doc::RuntimeState>,
+    metadata: &notebook_doc::metadata::NotebookMetadataSnapshot,
+) -> Option<PackageManager> {
+    if let Some(state) = runtime_state {
+        let env_source = state.kernel.env_source.as_str();
+        if env_source.starts_with("pixi:") {
+            return Some(PackageManager::Pixi);
+        }
+        if env_source.starts_with("conda:") {
+            return Some(PackageManager::Conda);
+        }
+        if env_source.starts_with("uv:") {
+            return Some(PackageManager::Uv);
+        }
+    }
+
+    if metadata.runt.uv.is_some() {
+        return Some(PackageManager::Uv);
+    }
+    if metadata.runt.conda.is_some() {
+        return Some(PackageManager::Conda);
+    }
+    if metadata.runt.pixi.is_some() {
+        return Some(PackageManager::Pixi);
+    }
+
+    match runtime_state.map(|state| &state.project_context) {
+        Some(ProjectContext::Detected { project_file, .. }) => match project_file.kind {
+            ProjectFileKind::PixiToml => Some(PackageManager::Pixi),
+            ProjectFileKind::EnvironmentYml => Some(PackageManager::Conda),
+            ProjectFileKind::PyprojectToml => Some(PackageManager::Uv),
+        },
+        _ => None,
+    }
 }
 
 fn js_cell_from_snapshot(cell: notebook_doc::CellSnapshot) -> JsCellSnapshot {
@@ -2042,6 +2093,89 @@ mod tests {
         assert_eq!(uv.as_str(), "uv");
         assert_eq!(conda.as_str(), "conda");
         assert_eq!(pixi.as_str(), "pixi");
+    }
+
+    #[test]
+    fn dependency_package_manager_prefers_explicit_option() {
+        let metadata = notebook_doc::metadata::NotebookMetadataSnapshot::default();
+
+        assert_eq!(
+            dependency_package_manager(
+                Some(DependencyEditOptions {
+                    package_manager: Some(PackageManager::Pixi),
+                }),
+                None,
+                &metadata,
+            ),
+            PackageManager::Pixi
+        );
+    }
+
+    #[test]
+    fn dependency_package_manager_prefers_running_env_source() {
+        let mut metadata = notebook_doc::metadata::NotebookMetadataSnapshot::default();
+        metadata.add_uv_dependency("numpy");
+        let runtime_state = runtime_doc::RuntimeState {
+            kernel: runtime_doc::KernelState {
+                env_source: "conda:environment-yml".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert_eq!(
+            dependency_package_manager(None, Some(&runtime_state), &metadata),
+            PackageManager::Conda
+        );
+    }
+
+    #[test]
+    fn dependency_package_manager_uses_inline_metadata_before_project_context() {
+        let mut metadata = notebook_doc::metadata::NotebookMetadataSnapshot::default();
+        metadata.add_pixi_dependency("numpy");
+        let runtime_state = runtime_doc::RuntimeState {
+            project_context: ProjectContext::Detected {
+                project_file: runtime_doc::ProjectFile {
+                    kind: ProjectFileKind::PyprojectToml,
+                    absolute_path: "/tmp/pyproject.toml".to_string(),
+                    relative_to_notebook: "pyproject.toml".to_string(),
+                },
+                parsed: runtime_doc::ProjectFileParsed::default(),
+                observed_at: "2026-05-03T00:00:00Z".to_string(),
+            },
+            ..Default::default()
+        };
+
+        assert_eq!(
+            dependency_package_manager(None, Some(&runtime_state), &metadata),
+            PackageManager::Pixi
+        );
+    }
+
+    #[test]
+    fn dependency_package_manager_falls_back_to_project_context_then_uv() {
+        let metadata = notebook_doc::metadata::NotebookMetadataSnapshot::default();
+        let runtime_state = runtime_doc::RuntimeState {
+            project_context: ProjectContext::Detected {
+                project_file: runtime_doc::ProjectFile {
+                    kind: ProjectFileKind::EnvironmentYml,
+                    absolute_path: "/tmp/environment.yml".to_string(),
+                    relative_to_notebook: "environment.yml".to_string(),
+                },
+                parsed: runtime_doc::ProjectFileParsed::default(),
+                observed_at: "2026-05-03T00:00:00Z".to_string(),
+            },
+            ..Default::default()
+        };
+
+        assert_eq!(
+            dependency_package_manager(None, Some(&runtime_state), &metadata),
+            PackageManager::Conda
+        );
+        assert_eq!(
+            dependency_package_manager(None, None, &metadata),
+            PackageManager::Uv
+        );
     }
 
     #[test]

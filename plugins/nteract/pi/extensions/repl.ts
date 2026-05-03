@@ -95,7 +95,7 @@ type Session = {
     executionId: string,
     opts?: { timeoutMs?: number; cellId?: string; onUpdate?: (progress: CellResult) => void },
   ): Promise<CellResult>;
-  addUvDependency(pkg: string): Promise<void>;
+  addUvDependency?(pkg: string): Promise<void>;
   addDependencies?(
     packages: string[],
     opts?: { packageManager?: "uv" | "conda" | "pixi" },
@@ -459,11 +459,13 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
     const unique = Array.from(new Set(packages.map((pkg) => pkg.trim()).filter(Boolean)));
     if (!unique.length) return;
     if (sess.addDependencies) {
-      await sess.addDependencies(unique, { packageManager: rn.PackageManager?.Uv ?? "uv" });
-    } else {
+      await sess.addDependencies(unique);
+    } else if (sess.addUvDependency) {
       for (const pkg of unique) {
         await sess.addUvDependency(pkg);
       }
+    } else {
+      throw new Error("@runtimed/node Session does not support dependency edits");
     }
     await sess.syncEnvironment();
   }
@@ -489,7 +491,6 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
         peerLabel: "pi",
         description: "pi Python REPL",
         dependencies,
-        packageManager: rn.PackageManager?.Uv ?? "uv",
       });
       return session;
     })();

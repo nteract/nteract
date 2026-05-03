@@ -26,22 +26,13 @@ async function main() {
   const session = await rt.createNotebook({
     description: "@runtimed/node smoke-api",
     dependencies: ["numpy"],
-    packageManager: rt.PackageManager.Uv,
   });
 
   try {
     assert.match(session.notebookId, /^[0-9a-f-]{36}$/i, "session has UUID notebookId");
 
-    await session.addDependencies(["pandas", "matplotlib"], {
-      packageManager: rt.PackageManager.Uv,
-    });
-    assert.equal(
-      await session.removeDependencies(["matplotlib"], {
-        packageManager: rt.PackageManager.Uv,
-      }),
-      1,
-      "removeDependencies() returns removal count",
-    );
+    await session.addDependencies(["pandas", "matplotlib"]);
+    assert.equal(await session.removeDependencies(["matplotlib"]), 1);
 
     const deps = await session.getDependencyStatus();
     assert(deps.uv, "uv dependency status is present");
