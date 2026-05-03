@@ -138,6 +138,11 @@ enum Commands {
         #[arg(long)]
         blob_root: PathBuf,
     },
+
+    /// Warm a pool environment (internal, spawned by daemon warming loops).
+    /// Reads JSON config from stdin, writes JSON events to stdout.
+    #[command(hide = true, name = "warm-env")]
+    WarmEnv,
 }
 
 /// Get a log path that works even when HOME is not set.
@@ -417,6 +422,10 @@ async fn main() -> anyhow::Result<()> {
             eprintln!("[runtime-agent] Fatal: {}", e);
             e
         }),
+        Some(Commands::WarmEnv) => {
+            runtimed::warm_env::run().await;
+            Ok(())
+        }
     }
 }
 
