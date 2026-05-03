@@ -83,6 +83,14 @@ enum Commands {
             default_value_t = runtimed_client::settings_doc::DEFAULT_PIXI_POOL_SIZE as usize
         )]
         pixi_pool_size: usize,
+
+        /// Override persisted settings doc path.
+        #[arg(long, hide = true)]
+        settings_doc: Option<PathBuf>,
+
+        /// Override persisted settings JSON mirror path.
+        #[arg(long, hide = true)]
+        settings_json: Option<PathBuf>,
     },
 
     /// Install daemon as a system service
@@ -304,32 +312,46 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         None | Some(Commands::Run { .. }) => {
             // Extract run args from command or use defaults
-            let (socket, cache_dir, blob_store_dir, uv_pool_size, conda_pool_size, pixi_pool_size) =
-                match cli.command {
-                    Some(Commands::Run {
-                        socket,
-                        cache_dir,
-                        blob_store_dir,
-                        uv_pool_size,
-                        conda_pool_size,
-                        pixi_pool_size,
-                    }) => (
-                        socket,
-                        cache_dir,
-                        blob_store_dir,
-                        uv_pool_size,
-                        conda_pool_size,
-                        pixi_pool_size,
-                    ),
-                    _ => (
-                        None,
-                        None,
-                        None,
-                        runtimed_client::settings_doc::DEFAULT_UV_POOL_SIZE as usize,
-                        runtimed_client::settings_doc::DEFAULT_CONDA_POOL_SIZE as usize,
-                        runtimed_client::settings_doc::DEFAULT_PIXI_POOL_SIZE as usize,
-                    ),
-                };
+            let (
+                socket,
+                cache_dir,
+                blob_store_dir,
+                uv_pool_size,
+                conda_pool_size,
+                pixi_pool_size,
+                settings_doc,
+                settings_json,
+            ) = match cli.command {
+                Some(Commands::Run {
+                    socket,
+                    cache_dir,
+                    blob_store_dir,
+                    uv_pool_size,
+                    conda_pool_size,
+                    pixi_pool_size,
+                    settings_doc,
+                    settings_json,
+                }) => (
+                    socket,
+                    cache_dir,
+                    blob_store_dir,
+                    uv_pool_size,
+                    conda_pool_size,
+                    pixi_pool_size,
+                    settings_doc,
+                    settings_json,
+                ),
+                _ => (
+                    None,
+                    None,
+                    None,
+                    runtimed_client::settings_doc::DEFAULT_UV_POOL_SIZE as usize,
+                    runtimed_client::settings_doc::DEFAULT_CONDA_POOL_SIZE as usize,
+                    runtimed_client::settings_doc::DEFAULT_PIXI_POOL_SIZE as usize,
+                    None,
+                    None,
+                ),
+            };
 
             run_daemon(
                 socket,
@@ -338,6 +360,8 @@ async fn main() -> anyhow::Result<()> {
                 uv_pool_size,
                 conda_pool_size,
                 pixi_pool_size,
+                settings_doc,
+                settings_json,
             )
             .await
         }
@@ -409,6 +433,8 @@ async fn run_daemon(
     uv_pool_size: usize,
     conda_pool_size: usize,
     pixi_pool_size: usize,
+    settings_doc: Option<PathBuf>,
+    settings_json: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     info!("runtimed starting...");
 
@@ -420,6 +446,8 @@ async fn run_daemon(
         uv_pool_size,
         conda_pool_size,
         pixi_pool_size,
+        settings_doc_path: settings_doc,
+        settings_json_path: settings_json,
         ..Default::default()
     };
 

@@ -2028,7 +2028,7 @@ impl Daemon {
                 #[cfg(not(target_os = "windows"))]
                 let python_path = env_path.join("bin").join("python");
 
-                if python_path.exists() {
+                if python_path.exists() && env_path.join(".warmed").exists() {
                     let hash_matches =
                         pool_package_hash_matches(&env_path, EnvType::Uv, &uv_prewarmed).await;
                     let mut pool = self.uv_pool.lock().await;
@@ -6947,6 +6947,30 @@ mod tests {
         assert_eq!(retired, 0);
         assert!(pool.available.is_empty());
         assert!(pool.retired_paths.is_empty());
+    }
+
+    #[test]
+    fn test_data_package_toggle_retires_previous_pool_entries() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut pool = Pool::new(3, 3600);
+
+        let packages_with_data_stack = uv_prewarmed_packages(&[], true);
+        let packages_without_data_stack = uv_prewarmed_packages(&[], false);
+        assert_ne!(
+            packages_with_data_stack, packages_without_data_stack,
+            "the data-stack toggle must affect the expected pool package set"
+        );
+
+        let mut env = create_test_env(&temp_dir, "runtimed-uv-data-stack");
+        let env_root = pool_env_root(&env.venv_path);
+        env.prewarmed_packages = packages_with_data_stack;
+        pool.add(env);
+
+        let retired = pool.retire_mismatched_packages(&packages_without_data_stack);
+
+        assert_eq!(retired, 1);
+        assert!(pool.available.is_empty());
+        assert!(pool.retired_paths.contains(&env_root));
     }
 
     #[test]
