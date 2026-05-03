@@ -32,6 +32,7 @@ use notebook_protocol::protocol::{
     NotebookBroadcast, NotebookRequest, NotebookRequestEnvelope, NotebookResponse,
     NotebookResponseEnvelope, SessionControlMessage, SessionSyncStatusWire,
 };
+use runtime_doc::RuntimeState;
 
 use crate::error::SyncError;
 use crate::shared::SharedDocState;
@@ -139,6 +140,9 @@ pub struct SyncTaskConfig {
     /// Watch sender for publishing snapshots after applying remote changes.
     pub snapshot_tx: Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
 
+    /// Watch sender for publishing RuntimeStateDoc snapshots after remote changes.
+    pub runtime_state_tx: watch::Sender<RuntimeState>,
+
     /// Watch sender for publishing connection/bootstrap status.
     pub status_tx: watch::Sender<SyncStatus>,
 
@@ -168,6 +172,7 @@ struct StateSyncWaiter {
 struct ReactorIo {
     doc: Arc<Mutex<SharedDocState>>,
     snapshot_tx: Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
+    runtime_state_tx: watch::Sender<RuntimeState>,
     status_tx: watch::Sender<SyncStatus>,
     broadcast_tx: broadcast::Sender<NotebookBroadcast>,
     notebook_id: String,
@@ -208,6 +213,7 @@ impl SyncReactor {
     fn new(
         doc: Arc<Mutex<SharedDocState>>,
         snapshot_tx: Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
+        runtime_state_tx: watch::Sender<RuntimeState>,
         status_tx: watch::Sender<SyncStatus>,
         broadcast_tx: broadcast::Sender<NotebookBroadcast>,
     ) -> Self {
@@ -220,6 +226,7 @@ impl SyncReactor {
             io: ReactorIo {
                 doc,
                 snapshot_tx,
+                runtime_state_tx,
                 status_tx,
                 broadcast_tx,
                 notebook_id,
@@ -255,10 +262,11 @@ where
         mut changed_rx,
         mut cmd_rx,
         snapshot_tx,
+        runtime_state_tx,
         status_tx,
         broadcast_tx,
     } = config;
-    let mut reactor = SyncReactor::new(doc, snapshot_tx, status_tx, broadcast_tx);
+    let mut reactor = SyncReactor::new(doc, snapshot_tx, runtime_state_tx, status_tx, broadcast_tx);
     let mut maintenance = tokio::time::interval(MAINTENANCE_TICK);
     maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -700,7 +708,7 @@ impl SyncReactor {
                 // the socket and causes the MCP connection to drop — any
                 // locally-pending notebook mutations (e.g. a cell creation)
                 // that hadn't been synced yet are lost on reconnect.
-                let reply_bytes = {
+                let (reply_bytes, runtime_state) = {
                     let mut state = self.io.doc.lock().unwrap_or_else(|e| e.into_inner());
                     let recv_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                         state.receive_state_sync_message(msg)
@@ -731,7 +739,7 @@ impl SyncReactor {
                             return;
                         }
                     };
-                    match std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    let reply_bytes = match std::panic::catch_unwind(AssertUnwindSafe(|| {
                         state.generate_state_sync_message().map(|msg| msg.encode())
                     })) {
                         Ok(bytes) => bytes,
@@ -744,8 +752,10 @@ impl SyncReactor {
                             state.rebuild_state_doc();
                             None
                         }
-                    }
+                    };
+                    (reply_bytes, state.state_doc.read_state())
                 };
+                let _ = self.io.runtime_state_tx.send(runtime_state);
 
                 if let Some(bytes) = reply_bytes {
                     if let Err(e) = connection::send_typed_frame(
@@ -1179,6 +1189,8 @@ mod tests {
         };
         let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
         let snapshot_tx = Arc::new(snapshot_tx);
+        let (runtime_state_tx, runtime_state_rx) =
+            watch::channel(runtime_doc::RuntimeState::default());
         let (status_tx, status_rx) = watch::channel(SyncStatus::connected_pending());
         let (changed_tx, changed_rx) = mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
@@ -1190,6 +1202,7 @@ mod tests {
             cmd_tx,
             Arc::clone(&snapshot_tx),
             snapshot_rx,
+            runtime_state_rx,
             status_rx,
             "test-notebook".to_string(),
         );
@@ -1198,6 +1211,7 @@ mod tests {
             changed_rx,
             cmd_rx,
             snapshot_tx,
+            runtime_state_tx,
             status_tx,
             broadcast_tx,
         };
@@ -1212,11 +1226,12 @@ mod tests {
             changed_rx: _,
             cmd_rx: _,
             snapshot_tx,
+            runtime_state_tx,
             status_tx,
             broadcast_tx,
         } = config;
 
-        SyncReactor::new(doc, snapshot_tx, status_tx, broadcast_tx)
+        SyncReactor::new(doc, snapshot_tx, runtime_state_tx, status_tx, broadcast_tx)
     }
 
     fn interactive_status() -> SessionControlMessage {
@@ -1512,6 +1527,8 @@ mod tests {
         };
         let (snapshot_tx, _snapshot_rx) = watch::channel(initial_snapshot);
         let snapshot_tx = Arc::new(snapshot_tx);
+        let (runtime_state_tx, _runtime_state_rx) =
+            watch::channel(runtime_doc::RuntimeState::default());
         let (status_tx, status_rx) = watch::channel(SyncStatus::connected_pending());
         let (changed_tx, changed_rx) = mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = mpsc::channel(1);
@@ -1525,6 +1542,7 @@ mod tests {
                 changed_rx,
                 cmd_rx,
                 snapshot_tx,
+                runtime_state_tx,
                 status_tx,
                 broadcast_tx,
             },

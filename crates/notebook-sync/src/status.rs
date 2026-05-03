@@ -3,28 +3,29 @@
 use notebook_protocol::protocol::{
     InitialLoadPhaseWire, NotebookDocPhaseWire, RuntimeStatePhaseWire, SessionSyncStatusWire,
 };
+use serde::Serialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ConnectionState {
     Connected,
     Disconnected,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum NotebookDocPhase {
     Pending,
     Syncing,
     Interactive,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum RuntimeStatePhase {
     Pending,
     Syncing,
     Ready,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum InitialLoadPhase {
     NotNeeded,
     Streaming,
@@ -32,7 +33,7 @@ pub enum InitialLoadPhase {
     Failed { reason: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SyncStatus {
     pub connection: ConnectionState,
     pub notebook_doc: NotebookDocPhase,

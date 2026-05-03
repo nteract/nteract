@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use napi::bindgen_prelude::*;
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 use serde::Serialize;
 use tokio::sync::Mutex;
@@ -20,11 +21,13 @@ use runtimed_client::output_resolver as shared_resolver;
 use runtimed_client::resolved_output::DataValue as SharedDataValue;
 
 use crate::error::to_napi_err;
+use crate::projection::diff_executions;
 
 /// Valid cell types accepted by `runCell`.
 const VALID_CELL_TYPES: &[&str] = &["code", "markdown", "raw"];
 
 type CommMap = std::collections::HashMap<String, runtime_doc::CommDocEntry>;
+type JsonCallback = ThreadsafeFunction<String, (), (String,), napi::Status, false, false, 0>;
 
 // ── Options ────────────────────────────────────────────────────────────
 
@@ -254,6 +257,8 @@ pub struct ShowNotebookOptions {
 
 /// A queued execution handle.
 #[napi(object)]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct QueuedExecution {
     pub cell_id: String,
     pub execution_id: String,
@@ -300,6 +305,8 @@ pub struct JsCellSnapshot {
 
 /// One output from a cell. `data` values are: `{ type: "text"|"binary"|"json", value: ... }`.
 #[napi(object)]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JsOutput {
     pub output_type: String,
     pub name: Option<String>,
@@ -316,6 +323,8 @@ pub struct JsOutput {
 
 /// Result of running a cell.
 #[napi(object)]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CellResult {
     pub cell_id: String,
     pub execution_id: String,
@@ -367,12 +376,263 @@ pub struct Session {
     state: Arc<Mutex<SessionState>>,
 }
 
+/// A live event subscription returned by `Session.on*` methods.
+#[napi]
+pub struct EventSubscription {
+    task: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+}
+
+#[napi]
+impl EventSubscription {
+    /// Stop delivering events to the callback.
+    #[napi]
+    pub fn dispose(&self) {
+        if let Ok(mut task) = self.task.lock() {
+            if let Some(task) = task.take() {
+                task.abort();
+            }
+        }
+    }
+}
+
+impl Drop for EventSubscription {
+    fn drop(&mut self) {
+        if let Ok(mut task) = self.task.lock() {
+            if let Some(task) = task.take() {
+                task.abort();
+            }
+        }
+    }
+}
+
+impl EventSubscription {
+    fn new(task: tokio::task::JoinHandle<()>) -> Self {
+        Self {
+            task: Arc::new(std::sync::Mutex::new(Some(task))),
+        }
+    }
+}
+
+fn json_callback(callback: Function<'_, (String,), ()>) -> Result<JsonCallback> {
+    callback
+        .build_threadsafe_function::<String>()
+        .callee_handled::<false>()
+        .build_callback(|ctx| Ok((ctx.value,)))
+}
+
+fn emit_json<T: Serialize>(callback: &JsonCallback, value: &T) {
+    if let Ok(json) = serde_json::to_string(value) {
+        let _ = callback.call(json, ThreadsafeFunctionCallMode::NonBlocking);
+    }
+}
+
 #[napi]
 impl Session {
     /// The notebook ID (always a UUID).
     #[napi(getter)]
     pub fn notebook_id(&self) -> String {
         self.notebook_id.clone()
+    }
+
+    /// Subscribe to RuntimeStateDoc snapshots. Callback receives a JSON string.
+    #[napi]
+    pub fn on_runtime_state(
+        &self,
+        callback: Function<'_, (String,), ()>,
+    ) -> Result<EventSubscription> {
+        let handle = {
+            let st = self
+                .state
+                .try_lock()
+                .map_err(|_| Error::from_reason("Session state busy"))?;
+            st.handle
+                .as_ref()
+                .ok_or_else(|| Error::from_reason("Not connected"))?
+                .clone()
+        };
+        let mut rx = handle.subscribe_runtime_state();
+        let tsfn = json_callback(callback)?;
+        let task = tokio::spawn(async move {
+            emit_json(&tsfn, &*rx.borrow());
+            while rx.changed().await.is_ok() {
+                emit_json(&tsfn, &*rx.borrow());
+            }
+        });
+        Ok(EventSubscription::new(task))
+    }
+
+    /// Subscribe to execution lifecycle transitions. Callback receives a JSON string.
+    #[napi]
+    pub fn on_execution_transition(
+        &self,
+        callback: Function<'_, (String,), ()>,
+    ) -> Result<EventSubscription> {
+        let handle = {
+            let st = self
+                .state
+                .try_lock()
+                .map_err(|_| Error::from_reason("Session state busy"))?;
+            st.handle
+                .as_ref()
+                .ok_or_else(|| Error::from_reason("Not connected"))?
+                .clone()
+        };
+        let mut rx = handle.subscribe_runtime_state();
+        let tsfn = json_callback(callback)?;
+        let task = tokio::spawn(async move {
+            let mut prev = rx.borrow().executions.clone();
+            while rx.changed().await.is_ok() {
+                let curr = rx.borrow().executions.clone();
+                for transition in diff_executions(&prev, &curr) {
+                    emit_json(&tsfn, &transition);
+                }
+                prev = curr;
+            }
+        });
+        Ok(EventSubscription::new(task))
+    }
+
+    /// Subscribe to resolved progress snapshots for one execution.
+    ///
+    /// Callback receives the same JSON shape as `CellResult`, emitted whenever
+    /// the RuntimeStateDoc entry for the execution changes. The subscription
+    /// ends after a terminal `done` or `error` snapshot.
+    #[napi]
+    pub fn on_execution_progress(
+        &self,
+        execution_id: String,
+        cell_id: Option<String>,
+        callback: Function<'_, (String,), ()>,
+    ) -> Result<EventSubscription> {
+        let (handle, blob_base_url, blob_store_path) = {
+            let st = self
+                .state
+                .try_lock()
+                .map_err(|_| Error::from_reason("Session state busy"))?;
+            (
+                st.handle
+                    .as_ref()
+                    .ok_or_else(|| Error::from_reason("Not connected"))?
+                    .clone(),
+                st.blob_base_url.clone(),
+                st.blob_store_path.clone(),
+            )
+        };
+        let mut rx = handle.subscribe_runtime_state();
+        let tsfn = json_callback(callback)?;
+        let task = tokio::spawn(async move {
+            let fallback_cell_id = cell_id.unwrap_or_default();
+            let mut prev: Option<runtime_doc::ExecutionState> = None;
+            loop {
+                let (entry, comms) = {
+                    let state = rx.borrow().clone();
+                    (state.executions.get(&execution_id).cloned(), state.comms)
+                };
+                if let Some(entry) = entry {
+                    if prev.as_ref() != Some(&entry) {
+                        if let Ok(result) = cell_result_from_execution_state(
+                            &execution_id,
+                            Some(&fallback_cell_id),
+                            &entry,
+                            Some(&comms),
+                            &blob_base_url,
+                            &blob_store_path,
+                        )
+                        .await
+                        {
+                            emit_json(&tsfn, &result);
+                        }
+                        let terminal = entry.status == "done" || entry.status == "error";
+                        prev = Some(entry);
+                        if terminal {
+                            break;
+                        }
+                    }
+                }
+                if rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(EventSubscription::new(task))
+    }
+
+    /// Subscribe to notebook document changes. Callback receives a JSON string.
+    ///
+    /// The native handle currently reports `null` as a full-materialization
+    /// marker, matching the browser SyncEngine's no-changeset fallback.
+    #[napi]
+    pub fn on_cell_change(
+        &self,
+        callback: Function<'_, (String,), ()>,
+    ) -> Result<EventSubscription> {
+        let handle = {
+            let st = self
+                .state
+                .try_lock()
+                .map_err(|_| Error::from_reason("Session state busy"))?;
+            st.handle
+                .as_ref()
+                .ok_or_else(|| Error::from_reason("Not connected"))?
+                .clone()
+        };
+        let mut rx = handle.subscribe();
+        let tsfn = json_callback(callback)?;
+        let task = tokio::spawn(async move {
+            while rx.changed().await.is_ok() {
+                let _ = tsfn.call("null".to_string(), ThreadsafeFunctionCallMode::NonBlocking);
+            }
+        });
+        Ok(EventSubscription::new(task))
+    }
+
+    /// Subscribe to comm broadcasts. Callback receives a JSON string.
+    #[napi]
+    pub fn on_broadcast(&self, callback: Function<'_, (String,), ()>) -> Result<EventSubscription> {
+        let mut rx = {
+            let st = self
+                .state
+                .try_lock()
+                .map_err(|_| Error::from_reason("Session state busy"))?;
+            st._broadcast_rx
+                .as_ref()
+                .ok_or_else(|| Error::from_reason("Not connected"))?
+                .resubscribe()
+        };
+        let tsfn = json_callback(callback)?;
+        let task = tokio::spawn(async move {
+            while let Some(broadcast) = rx.recv().await {
+                emit_json(&tsfn, &broadcast);
+            }
+        });
+        Ok(EventSubscription::new(task))
+    }
+
+    /// Subscribe to handshake/readiness status updates. Callback receives a JSON string.
+    #[napi]
+    pub fn on_session_status(
+        &self,
+        callback: Function<'_, (String,), ()>,
+    ) -> Result<EventSubscription> {
+        let handle = {
+            let st = self
+                .state
+                .try_lock()
+                .map_err(|_| Error::from_reason("Session state busy"))?;
+            st.handle
+                .as_ref()
+                .ok_or_else(|| Error::from_reason("Not connected"))?
+                .clone()
+        };
+        let mut rx = handle.subscribe_status();
+        let tsfn = json_callback(callback)?;
+        let task = tokio::spawn(async move {
+            emit_json(&tsfn, &*rx.borrow());
+            while rx.changed().await.is_ok() {
+                emit_json(&tsfn, &*rx.borrow());
+            }
+        });
+        Ok(EventSubscription::new(task))
     }
 
     /// Save the notebook to disk. If a path is given, saves to that path

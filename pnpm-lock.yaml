@@ -528,6 +528,13 @@ importers:
         version: 7.8.2
 
   packages/runtimed-node:
+    dependencies:
+      runtimed:
+        specifier: workspace:*
+        version: link:../runtimed
+      rxjs:
+        specifier: ^7.8.2
+        version: 7.8.2
     devDependencies:
       '@napi-rs/cli':
         specifier: ^3.6.2

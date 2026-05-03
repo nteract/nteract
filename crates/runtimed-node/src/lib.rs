@@ -24,6 +24,7 @@ use napi_derive::napi;
 
 mod error;
 mod parquet;
+mod projection;
 mod session;
 
 pub use error::NodeError;
@@ -32,11 +33,11 @@ pub use session::{
     create_notebook, get_execution_result, list_active_notebooks, open_notebook,
     open_notebook_path, show_notebook, shutdown_notebook, ActiveNotebook, CellResult,
     CondaDependencyStatus, CreateCellOptions, CreateNotebookOptions, DependencyEditOptions,
-    DependencyStatus, DependencyTrustStatus, ExecuteCellOptions, GetExecutionResultOptions,
-    JsCellSnapshot, JsOutput, ListActiveNotebooksOptions, MoveCellOptions, OpenNotebookOptions,
-    PackageManager, PixiDependencyStatus, QueueCellOptions, QueuedExecution, RunCellOptions,
-    RuntimeStatus, Session, SetCellOptions, ShowNotebookOptions, ShowNotebookResult,
-    ShutdownNotebookOptions, UvDependencyStatus, WaitExecutionOptions,
+    DependencyStatus, DependencyTrustStatus, EventSubscription, ExecuteCellOptions,
+    GetExecutionResultOptions, JsCellSnapshot, JsOutput, ListActiveNotebooksOptions,
+    MoveCellOptions, OpenNotebookOptions, PackageManager, PixiDependencyStatus, QueueCellOptions,
+    QueuedExecution, RunCellOptions, RuntimeStatus, Session, SetCellOptions, ShowNotebookOptions,
+    ShowNotebookResult, ShutdownNotebookOptions, UvDependencyStatus, WaitExecutionOptions,
 };
 
 /// Return the default daemon socket path.
