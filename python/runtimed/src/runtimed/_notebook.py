@@ -102,12 +102,23 @@ class Notebook:
     ) -> None:
         """Start a runtime for this notebook.
 
+        Approves trust automatically if the daemon requires it (e.g. when
+        default pool packages have been injected since the notebook was
+        created). This is safe for client-created notebooks.
+
         Args:
             runtime: Runtime type (e.g. "python", "deno").
             env_source: Environment source (e.g. "auto", "uv:inline").
             notebook_path: Optional path for project file detection.
         """
-        await self._session.start_kernel(runtime, env_source, notebook_path)
+        try:
+            await self._session.start_kernel(runtime, env_source, notebook_path)
+        except Exception as e:
+            if "Trust changed" in str(e):
+                await self._session.approve_trust()
+                await self._session.start_kernel(runtime, env_source, notebook_path)
+            else:
+                raise
 
     async def stop_runtime(self) -> None:
         """Shut down the kernel. The notebook session stays connected."""
