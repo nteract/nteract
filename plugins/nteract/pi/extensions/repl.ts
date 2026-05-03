@@ -8,6 +8,7 @@
  * Config (env vars):
  *   NTERACT_RUNTIMED_NODE_PATH  override the runtimed-node package path.
  *   NTERACT_SOCKET_PATH         override the daemon socket path.
+ *   NTERACT_CHANNEL             "stable" or "nightly" - picks the channel's socket.
  *
  * After editing, run `/reload` in pi.
  */
@@ -137,6 +138,11 @@ function loadRuntimedNode(): RuntimedNode | null {
 
 function resolveSocketPath(rn: RuntimedNode): string {
   if (process.env.NTERACT_SOCKET_PATH) return process.env.NTERACT_SOCKET_PATH;
+
+  const envChannel = process.env.NTERACT_CHANNEL;
+  if (envChannel === "stable" || envChannel === "nightly") {
+    return rn.socketPathForChannel(envChannel);
+  }
 
   for (const channel of ["nightly", "stable"] as const) {
     const socketPath = rn.socketPathForChannel(channel);
