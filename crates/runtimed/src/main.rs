@@ -139,29 +139,10 @@ enum Commands {
         blob_root: PathBuf,
     },
 
-    /// Warm a pool environment (internal, spawned by daemon warming loops)
+    /// Warm a pool environment (internal, spawned by daemon warming loops).
+    /// Reads JSON config from stdin, writes JSON events to stdout.
     #[command(hide = true, name = "warm-env")]
-    WarmEnv {
-        /// Environment type: uv, conda, or pixi
-        #[arg(long, value_enum)]
-        env_type: WarmEnvType,
-        /// Directory for the environment
-        #[arg(long)]
-        env_dir: PathBuf,
-        /// Packages to install (comma-separated)
-        #[arg(long, value_delimiter = ',')]
-        packages: Vec<String>,
-        /// Channels for conda/pixi (comma-separated)
-        #[arg(long, value_delimiter = ',', default_value = "")]
-        channels: Vec<String>,
-    },
-}
-
-#[derive(Clone, Debug, clap::ValueEnum)]
-enum WarmEnvType {
-    Uv,
-    Conda,
-    Pixi,
+    WarmEnv,
 }
 
 /// Get a log path that works even when HOME is not set.
@@ -441,18 +422,8 @@ async fn main() -> anyhow::Result<()> {
             eprintln!("[runtime-agent] Fatal: {}", e);
             e
         }),
-        Some(Commands::WarmEnv {
-            env_type,
-            env_dir,
-            packages,
-            channels,
-        }) => {
-            let env_type = match env_type {
-                WarmEnvType::Uv => runtimed_client::EnvType::Uv,
-                WarmEnvType::Conda => runtimed_client::EnvType::Conda,
-                WarmEnvType::Pixi => runtimed_client::EnvType::Pixi,
-            };
-            runtimed::warm_env::run(env_type, env_dir, packages, channels).await;
+        Some(Commands::WarmEnv) => {
+            runtimed::warm_env::run().await;
             Ok(())
         }
     }

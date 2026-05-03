@@ -13,7 +13,21 @@ use tracing::{error, info, warn};
 
 use crate::EnvType;
 
-// ── IPC protocol (JSON lines on stdout) ─────────────────────────────────
+// ── IPC protocol ────────────────────────────────────────────────────────
+//
+// stdin:  single JSON object (WarmEnvConfig) — all arguments for the run
+// stdout: newline-delimited JSON events (WarmEnvEvent) — progress + result
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WarmEnvConfig {
+    pub env_type: EnvType,
+    pub env_dir: PathBuf,
+    pub packages: Vec<String>,
+    #[serde(default)]
+    pub channels: Vec<String>,
+}
+
+// ── stdout events ───────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -735,16 +749,35 @@ async fn cleanup_and_fail(
 
 // ── entry point ──────────────────────────────────────────────────────────
 
-pub async fn run(
-    env_type: EnvType,
-    env_dir: PathBuf,
-    packages: Vec<String>,
-    channels: Vec<String>,
-) {
-    match env_type {
-        EnvType::Uv => create_uv(&env_dir, &packages).await,
-        EnvType::Conda => create_conda(&env_dir, &packages, &channels).await,
-        EnvType::Pixi => create_pixi(&env_dir, &packages, &channels).await,
+pub async fn run() {
+    use tokio::io::AsyncReadExt;
+
+    let mut input = String::new();
+    if let Err(e) = tokio::io::stdin().read_to_string(&mut input).await {
+        emit_failure(
+            format!("Failed to read config from stdin: {e}"),
+            "setup_failed",
+            None,
+        );
+        return;
+    }
+
+    let config: WarmEnvConfig = match serde_json::from_str(&input) {
+        Ok(c) => c,
+        Err(e) => {
+            emit_failure(
+                format!("Invalid config JSON on stdin: {e}"),
+                "setup_failed",
+                None,
+            );
+            return;
+        }
+    };
+
+    match config.env_type {
+        EnvType::Uv => create_uv(&config.env_dir, &config.packages).await,
+        EnvType::Conda => create_conda(&config.env_dir, &config.packages, &config.channels).await,
+        EnvType::Pixi => create_pixi(&config.env_dir, &config.packages, &config.channels).await,
     }
 }
 
@@ -794,6 +827,20 @@ mod tests {
             }
             _ => panic!("expected Result variant"),
         }
+    }
+
+    #[test]
+    fn warm_env_config_roundtrip() {
+        let config = WarmEnvConfig {
+            env_type: EnvType::Conda,
+            env_dir: PathBuf::from("/cache/pool-conda-abc"),
+            packages: vec!["numpy>=1.20,<2".into(), "pandas".into()],
+            channels: vec!["conda-forge".into()],
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: WarmEnvConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.packages, config.packages);
+        assert_eq!(parsed.channels, config.channels);
     }
 
     #[test]

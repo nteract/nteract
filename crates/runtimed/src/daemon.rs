@@ -4700,6 +4700,10 @@ impl Daemon {
     }
 
     /// Spawn a `runtimed warm-env` subprocess and parse its JSON result.
+    ///
+    /// Config is sent as a single JSON object on the child's stdin.
+    /// The child writes newline-delimited JSON events (progress + result) on
+    /// stdout. A 10-minute overall timeout kills the child if it hangs.
     async fn spawn_warm_env(
         &self,
         env_type: EnvType,
@@ -4707,7 +4711,7 @@ impl Daemon {
         packages: &[String],
         channels: &[String],
     ) -> Result<crate::warm_env::WarmEnvResult, String> {
-        use tokio::io::AsyncBufReadExt;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
         let exe = match std::env::current_exe() {
             Ok(e) => e,
@@ -4720,32 +4724,36 @@ impl Daemon {
             EnvType::Pixi => "pixi",
         };
 
-        let mut cmd = tokio::process::Command::new(&exe);
-        cmd.arg("warm-env")
-            .arg("--env-type")
-            .arg(type_str)
-            .arg("--env-dir")
-            .arg(env_dir);
-
-        if !packages.is_empty() {
-            cmd.arg("--packages").arg(packages.join(","));
-        }
-        if !channels.is_empty() {
-            let non_empty: Vec<_> = channels.iter().filter(|c| !c.is_empty()).cloned().collect();
-            if !non_empty.is_empty() {
-                cmd.arg("--channels").arg(non_empty.join(","));
-            }
-        }
-
-        cmd.stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .stdin(Stdio::null())
-            .kill_on_drop(true);
-
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => return Err(format!("Failed to spawn warm-env: {e}")),
+        let config = crate::warm_env::WarmEnvConfig {
+            env_type,
+            env_dir: env_dir.to_path_buf(),
+            packages: packages.to_vec(),
+            channels: channels.to_vec(),
         };
+        let config_json = serde_json::to_string(&config)
+            .map_err(|e| format!("Failed to serialize warm-env config: {e}"))?;
+
+        let mut child = tokio::process::Command::new(&exe)
+            .arg("warm-env")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| format!("Failed to spawn warm-env: {e}"))?;
+
+        // Write config to stdin and close it so the child can proceed.
+        {
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| "Failed to open subprocess stdin".to_string())?;
+            stdin
+                .write_all(config_json.as_bytes())
+                .await
+                .map_err(|e| format!("Failed to write config to warm-env stdin: {e}"))?;
+            // stdin is dropped here, closing the pipe
+        }
 
         let stdout = child
             .stdout
@@ -4755,7 +4763,6 @@ impl Daemon {
         let mut lines = tokio::io::BufReader::new(stdout).lines();
         let mut last_result: Option<crate::warm_env::WarmEnvResult> = None;
 
-        // 10-minute overall timeout
         let timeout = std::time::Duration::from_secs(600);
         let read_result = tokio::time::timeout(timeout, async {
             while let Ok(Some(line)) = lines.next_line().await {
@@ -4774,14 +4781,25 @@ impl Daemon {
         })
         .await;
 
-        let status = child.wait().await;
-
         if read_result.is_err() {
+            // Kill before waiting — don't block on a wedged child.
             let _ = child.kill().await;
+            let _ = child.wait().await;
             return Err("warm-env subprocess timed out after 10 minutes".to_string());
         }
 
+        let status = child.wait().await;
+
         if let Some(result) = last_result {
+            // Treat non-zero exit as failure even if the child emitted a
+            // success result (it may have crashed during teardown).
+            if let Ok(s) = &status {
+                if !s.success() && result.success {
+                    return Err(format!(
+                        "warm-env {type_str} emitted success but exited with {s}"
+                    ));
+                }
+            }
             return Ok(result);
         }
 
