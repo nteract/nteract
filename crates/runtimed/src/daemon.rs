@@ -277,6 +277,7 @@ struct PackageInstallError {
 ///
 /// UV outputs errors in various formats. This function tries to extract
 /// the package name that caused the failure.
+#[cfg(test)]
 fn parse_uv_error(stderr: &str) -> Option<PackageInstallError> {
     // Pattern 1: "No solution found when resolving dependencies:
     //   ╰─▶ Because foo was not found..."
@@ -327,60 +328,6 @@ fn parse_uv_error(stderr: &str) -> Option<PackageInstallError> {
     }
 
     None
-}
-
-fn uv_pip_install_args(python_path: &Path, packages: &[String], offline: bool) -> Vec<String> {
-    let mut args = vec![
-        "pip".to_string(),
-        "install".to_string(),
-        "--link-mode".to_string(),
-        "hardlink".to_string(),
-        "--python".to_string(),
-        python_path.to_string_lossy().to_string(),
-    ];
-    if offline {
-        args.push("--offline".to_string());
-    }
-    args.extend(packages.iter().cloned());
-    args
-}
-
-const UV_OFFLINE_INSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-const UV_ONLINE_INSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
-
-enum UvInstallAttempt {
-    Completed(std::process::Output),
-    SpawnError(std::io::Error),
-    Timeout,
-}
-
-async fn run_uv_pip_install(
-    uv_path: &Path,
-    install_args: &[String],
-    timeout: std::time::Duration,
-) -> UvInstallAttempt {
-    let mut command = tokio::process::Command::new(uv_path);
-    command
-        .args(install_args)
-        .kill_on_drop(true)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    match tokio::time::timeout(timeout, command.output()).await {
-        Ok(Ok(output)) => UvInstallAttempt::Completed(output),
-        Ok(Err(e)) => UvInstallAttempt::SpawnError(e),
-        Err(_) => UvInstallAttempt::Timeout,
-    }
-}
-
-/// Outcome of a warmup script execution.
-enum WarmupOutcome {
-    /// Warmup succeeded — environment is ready.
-    Ok,
-    /// Warmup timed out.
-    Timeout,
-    /// Warmup script failed (import error or process failure).
-    ImportError(String),
 }
 
 /// Spawn background deletion of environment directories.
@@ -520,6 +467,7 @@ fn expected_pool_package_hash(env_type: EnvType, packages: &[String]) -> String 
     hex::encode(hasher.finalize())
 }
 
+#[cfg(test)]
 async fn write_pool_package_hash(
     env_root: &Path,
     env_type: EnvType,
@@ -4499,315 +4447,48 @@ impl Daemon {
         }
     }
 
-    /// Create a single Conda environment using rattler and add it to the pool.
+    /// Create a single Conda environment via subprocess and add it to the pool.
     async fn create_conda_env(self: &Arc<Self>) {
-        use rattler::{default_cache_dir, install::Installer};
-        use rattler_conda_types::{
-            Channel, ChannelConfig, GenericVirtualPackage, MatchSpec, ParseMatchSpecOptions,
-            Platform,
-        };
-        use rattler_solve::{resolvo, SolverImpl, SolverTask};
-
         let temp_id = format!("{}{}", crate::POOL_PREFIX_CONDA, uuid::Uuid::new_v4());
         let env_path = self.config.cache_dir.join(&temp_id);
 
-        // Register warming path before creating the directory so GC won't
-        // delete it while packages are being installed.
-        self.conda_pool
-            .lock()
-            .await
-            .register_warming_path(env_path.clone());
-
-        // Guard rolls back pool accounting on panic or early exit.
-        let mut guard = WarmingGuard::new(self.clone(), env_path.clone(), PoolKind::Conda);
-
-        #[cfg(target_os = "windows")]
-        let python_path = env_path.join("python.exe");
-        #[cfg(not(target_os = "windows"))]
-        let python_path = env_path.join("bin").join("python");
-
-        info!("[runtimed] Creating Conda environment at {:?}", env_path);
-
-        // Ensure cache directory exists
-        if let Err(e) = tokio::fs::create_dir_all(&self.config.cache_dir).await {
-            error!("[runtimed] Failed to create cache dir: {}", e);
-            guard
-                .fail_with(Some(PackageInstallError {
-                    failed_package: None,
-                    error_message: format!("Failed to create cache dir: {}", e),
-                    error_kind: "setup_failed".to_string(),
-                }))
-                .await;
-            return;
-        }
-
-        // Setup channel configuration
-        let channel_config = ChannelConfig::default_with_root_dir(self.config.cache_dir.clone());
-
-        // Parse channels
-        let channels = match Channel::from_str("conda-forge", &channel_config) {
-            Ok(ch) => vec![ch],
-            Err(e) => {
-                error!("[runtimed] Failed to parse conda-forge channel: {}", e);
-                guard
-                    .fail_with(Some(PackageInstallError {
-                        failed_package: None,
-                        error_message: format!("Failed to parse conda-forge channel: {}", e),
-                        error_kind: "setup_failed".to_string(),
-                    }))
-                    .await;
-                return;
-            }
-        };
-
-        // Read default conda packages from synced settings
-        let (extra_conda_packages, install_default_data_packages) = {
+        let conda_install_packages = {
             let settings = self.settings.read().await;
             let synced = settings.get_all();
-            (
-                synced.conda.default_packages,
+            conda_prewarmed_packages(
+                &synced.conda.default_packages,
                 synced.install_default_data_packages,
             )
         };
 
-        if !extra_conda_packages.is_empty() {
-            info!(
-                "[runtimed] Including default conda packages: {:?}",
-                extra_conda_packages
-            );
-        }
+        self.conda_pool
+            .lock()
+            .await
+            .register_warming_path(env_path.clone());
+        let mut guard = WarmingGuard::new(self.clone(), env_path.clone(), PoolKind::Conda);
 
-        // Build specs: python + notebook essentials + user-configured defaults
-        let conda_install_packages =
-            conda_prewarmed_packages(&extra_conda_packages, install_default_data_packages);
+        info!("[runtimed] Creating Conda environment at {:?}", env_path);
 
-        let match_spec_options = ParseMatchSpecOptions::strict();
-        let specs: Vec<MatchSpec> = match (|| -> anyhow::Result<Vec<MatchSpec>> {
-            let mut specs = vec![MatchSpec::from_str("python>=3.13", match_spec_options)?];
-            specs.push(MatchSpec::from_str("python-gil", match_spec_options)?);
-            for pkg in &conda_install_packages {
-                specs.push(MatchSpec::from_str(pkg, match_spec_options)?);
-            }
-            Ok(specs)
-        })() {
-            Ok(s) => s,
-            Err(e) => {
-                error!("[runtimed] Failed to parse match specs: {}", e);
-                guard
-                    .fail_with(Some(PackageInstallError {
-                        failed_package: None,
-                        error_message: format!("Failed to parse match specs: {}", e),
-                        error_kind: "setup_failed".to_string(),
-                    }))
-                    .await;
-                return;
-            }
-        };
-
-        // Find rattler cache directory
-        let rattler_cache_dir = match default_cache_dir() {
-            Ok(dir) => dir,
-            Err(e) => {
-                error!(
-                    "[runtimed] Could not determine rattler cache directory: {}",
-                    e
-                );
-                guard
-                    .fail_with(Some(PackageInstallError {
-                        failed_package: None,
-                        error_message: format!(
-                            "Could not determine rattler cache directory: {}",
-                            e
-                        ),
-                        error_kind: "setup_failed".to_string(),
-                    }))
-                    .await;
-                return;
-            }
-        };
-
-        if let Err(e) = rattler_cache::ensure_cache_dir(&rattler_cache_dir) {
-            error!("[runtimed] Could not create rattler cache directory: {}", e);
-            guard
-                .fail_with(Some(PackageInstallError {
-                    failed_package: None,
-                    error_message: format!("Could not create rattler cache directory: {}", e),
-                    error_kind: "setup_failed".to_string(),
-                }))
-                .await;
-            return;
-        }
-
-        // Create HTTP client
-        let download_client = match reqwest::Client::builder().build() {
-            Ok(c) => reqwest_middleware::ClientBuilder::new(c).build(),
-            Err(e) => {
-                error!("[runtimed] Failed to create HTTP client: {}", e);
-                guard
-                    .fail_with(Some(PackageInstallError {
-                        failed_package: None,
-                        error_message: format!("Failed to create HTTP client: {}", e),
-                        error_kind: "setup_failed".to_string(),
-                    }))
-                    .await;
-                return;
-            }
-        };
-
-        let install_platform = Platform::current();
-        let platforms = vec![install_platform, Platform::NoArch];
-        let progress_handler = Arc::new(kernel_env::LogHandler);
-
-        info!("[runtimed] Resolving conda repodata from cache or conda-forge...");
-        let repo_data = match kernel_env::repodata::query_repodata_offline_first(
-            channels.clone(),
-            platforms,
-            specs.clone(),
-            &rattler_cache_dir,
-            download_client.clone(),
-            progress_handler,
-            "conda",
-        )
-        .await
+        match self
+            .spawn_warm_env(
+                EnvType::Conda,
+                &env_path,
+                &conda_install_packages,
+                &["conda-forge".to_string()],
+            )
+            .await
         {
-            Ok(data) => data,
-            Err(e) => {
-                error!("[runtimed] Failed to fetch repodata: {}", e);
-                guard
-                    .fail_with(Some(PackageInstallError {
-                        failed_package: None,
-                        error_message: format!("Failed to fetch repodata: {}", e),
-                        error_kind: "setup_failed".to_string(),
-                    }))
-                    .await;
-                return;
-            }
-        };
-
-        info!("[runtimed] Repodata fetched, solving dependencies...");
-
-        // Detect virtual packages
-        let virtual_packages = match rattler_virtual_packages::VirtualPackage::detect(
-            &rattler_virtual_packages::VirtualPackageOverrides::default(),
-        ) {
-            Ok(vps) => vps
-                .iter()
-                .map(|vpkg| GenericVirtualPackage::from(vpkg.clone()))
-                .collect::<Vec<_>>(),
-            Err(e) => {
-                error!("[runtimed] Failed to detect virtual packages: {}", e);
-                guard
-                    .fail_with(Some(PackageInstallError {
-                        failed_package: None,
-                        error_message: format!("Failed to detect virtual packages: {}", e),
-                        error_kind: "setup_failed".to_string(),
-                    }))
-                    .await;
-                return;
-            }
-        };
-
-        // Solve dependencies
-        let solver_task = SolverTask {
-            virtual_packages,
-            specs,
-            ..SolverTask::from_iter(&repo_data)
-        };
-
-        let required_packages = match resolvo::Solver.solve(solver_task) {
-            Ok(result) => result.records,
-            Err(e) => {
-                error!("[runtimed] Failed to solve dependencies: {}", e);
-                guard
-                    .fail_with(Some(PackageInstallError {
-                        failed_package: None,
-                        error_message: format!("Failed to solve dependencies: {}", e),
-                        error_kind: "invalid_package".to_string(),
-                    }))
-                    .await;
-                return;
-            }
-        };
-
-        info!(
-            "[runtimed] Solved: {} packages to install",
-            required_packages.len()
-        );
-
-        // Install packages
-        let install_result = Installer::new()
-            .with_download_client(download_client)
-            .with_target_platform(install_platform)
-            .install(&env_path, required_packages)
-            .await;
-
-        if let Err(e) = install_result {
-            error!("[runtimed] Failed to install packages: {}", e);
-            tokio::fs::remove_dir_all(&env_path).await.ok();
-            guard
-                .fail_with(Some(PackageInstallError {
-                    failed_package: None,
-                    error_message: format!("Failed to install packages: {}", e),
-                    error_kind: "setup_failed".to_string(),
-                }))
-                .await;
-            return;
-        }
-
-        // Verify python exists
-        if !python_path.exists() {
-            error!(
-                "[runtimed] Python not found at {:?} after install",
-                python_path
-            );
-            tokio::fs::remove_dir_all(&env_path).await.ok();
-            guard
-                .fail_with(Some(PackageInstallError {
-                    failed_package: None,
-                    error_message: format!("Python not found at {:?} after install", python_path),
-                    error_kind: "setup_failed".to_string(),
-                }))
-                .await;
-            return;
-        }
-
-        // Vendor the single-file nteract_kernel_launcher module into
-        // site-packages so `python -m nteract_kernel_launcher` resolves for
-        // pool-served conda envs. Without this, bootstrap_dx kernels die with
-        // ModuleNotFoundError at launch. Run before warmup so .pyc is built
-        // with the launcher present.
-        if let Err(e) = kernel_env::launcher::vendor_into_venv(&python_path).await {
-            error!(
-                "[runtimed] Failed to vendor nteract_kernel_launcher into conda pool env at {:?}: {}",
-                python_path, e
-            );
-            let _ = tokio::fs::remove_dir_all(&env_path).await;
-            guard
-                .fail_with(Some(PackageInstallError {
-                    failed_package: None,
-                    error_message: format!("Failed to vendor nteract_kernel_launcher: {}", e),
-                    error_kind: "setup_failed".to_string(),
-                }))
-                .await;
-            return;
-        }
-
-        // Run warmup script
-        let warmup_outcome = self
-            .warmup_conda_env(&python_path, &env_path, &conda_install_packages)
-            .await;
-
-        match warmup_outcome {
-            WarmupOutcome::Ok => {
-                if let Err(e) =
-                    write_pool_package_hash(&env_path, EnvType::Conda, &conda_install_packages)
-                        .await
-                {
-                    warn!(
-                        "[runtimed] Failed to write Conda pool package marker for {:?}: {}",
-                        env_path, e
-                    );
-                }
+            Ok(result) if result.success => {
+                let python_path = result.python_path.unwrap_or_else(|| {
+                    #[cfg(target_os = "windows")]
+                    {
+                        env_path.join("python.exe")
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        env_path.join("bin").join("python")
+                    }
+                });
                 guard.commit();
                 let retired_to_delete = {
                     let mut pool = self.conda_pool.lock().await;
@@ -4822,7 +4503,6 @@ impl Daemon {
                 if !retired_to_delete.is_empty() {
                     spawn_env_deletions(retired_to_delete);
                 }
-
                 {
                     let pool = self.conda_pool.lock().await;
                     info!(
@@ -4834,93 +4514,24 @@ impl Daemon {
                 }
                 self.update_pool_doc().await;
             }
-            WarmupOutcome::Timeout => {
-                let _ = tokio::fs::remove_dir_all(&env_path).await;
+            Ok(result) => {
                 guard
                     .fail_with(Some(PackageInstallError {
-                        failed_package: None,
-                        error_message: "Conda warmup timed out".into(),
-                        error_kind: "timeout".to_string(),
+                        failed_package: result.failed_package,
+                        error_message: result.error.unwrap_or_default(),
+                        error_kind: result.error_kind.unwrap_or_else(|| "unknown".into()),
                     }))
                     .await;
             }
-            WarmupOutcome::ImportError(msg) => {
-                let _ = tokio::fs::remove_dir_all(&env_path).await;
+            Err(e) => {
+                error!("[runtimed] Conda warm-env subprocess failed: {}", e);
                 guard
                     .fail_with(Some(PackageInstallError {
                         failed_package: None,
-                        error_message: format!(
-                            "Conda warmup failed: {}",
-                            msg.chars().take(200).collect::<String>()
-                        ),
-                        error_kind: "import_error".to_string(),
+                        error_message: e,
+                        error_kind: "setup_failed".to_string(),
                     }))
                     .await;
-            }
-        }
-    }
-
-    /// Warm up a conda environment by running Python to trigger .pyc compilation.
-    async fn warmup_conda_env(
-        &self,
-        python_path: &PathBuf,
-        env_path: &PathBuf,
-        extra_packages: &[String],
-    ) -> WarmupOutcome {
-        let site_packages = {
-            let lib_dir = env_path.join("lib");
-            std::fs::read_dir(&lib_dir).ok().and_then(|entries| {
-                entries.flatten().find_map(|entry| {
-                    let path = entry.path();
-                    let name = path.file_name()?.to_str()?;
-                    if name.starts_with("python") {
-                        let sp = path.join("site-packages");
-                        sp.is_dir().then(|| sp.to_string_lossy().into_owned())
-                    } else {
-                        None
-                    }
-                })
-            })
-        };
-        let warmup_script = kernel_env::warmup::build_warmup_command(
-            extra_packages,
-            true,
-            site_packages.as_deref(),
-        );
-
-        let warmup_result = tokio::time::timeout(
-            std::time::Duration::from_secs(180),
-            tokio::process::Command::new(python_path)
-                .args(["-c", &warmup_script])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output(),
-        )
-        .await;
-
-        match warmup_result {
-            Ok(Ok(output)) if output.status.success() => {
-                // Create marker file
-                tokio::fs::write(env_path.join(".warmed"), "").await.ok();
-                info!("[runtimed] Conda warmup complete for {:?}", env_path);
-                WarmupOutcome::Ok
-            }
-            Ok(Ok(output)) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                error!(
-                    "[runtimed] Conda warmup failed for {:?}: {}",
-                    env_path,
-                    stderr.lines().take(3).collect::<Vec<_>>().join(" | ")
-                );
-                WarmupOutcome::ImportError(stderr.to_string())
-            }
-            Ok(Err(e)) => {
-                error!("[runtimed] Failed to run conda warmup: {}", e);
-                WarmupOutcome::ImportError(e.to_string())
-            }
-            Err(_) => {
-                error!("[runtimed] Conda warmup timed out (180s)");
-                WarmupOutcome::Timeout
             }
         }
     }
@@ -4931,94 +4542,85 @@ impl Daemon {
         self.create_conda_env().await;
     }
 
-    /// Create a pixi environment using rattler (no subprocess).
-    ///
-    /// Creates a pixi-compatible project directory with ipykernel and default
-    /// packages, solved and installed via rattler. Replaces the old
-    /// `pixi init` + `pixi add` subprocess approach.
+    /// Create a pixi environment via subprocess and add it to the pool.
     async fn create_pixi_env(self: &Arc<Self>) {
         let cache_dir = self.config.cache_dir.clone();
         let env_id = uuid::Uuid::new_v4().to_string();
         let project_dir = cache_dir.join(format!("{}{}", crate::POOL_PREFIX_PIXI, env_id));
 
-        // Register warming path before creating the directory so GC won't
-        // delete it while packages are being installed.
+        let packages = {
+            let settings = self.settings.read().await;
+            let synced = settings.get_all();
+            pixi_prewarmed_packages(
+                &synced.pixi.default_packages,
+                synced.install_default_data_packages,
+            )
+        };
+
         self.pixi_pool
             .lock()
             .await
             .register_warming_path(project_dir.clone());
-
-        // Guard rolls back pool accounting on panic or early exit.
         let mut guard = WarmingGuard::new(self.clone(), project_dir.clone(), PoolKind::Pixi);
 
         info!("[runtimed] Creating Pixi environment at {:?}", project_dir);
 
-        // Build package list
-        let packages = {
-            let settings = self.settings.read().await;
-            let synced = settings.get_all();
-            let pixi_defaults = synced.pixi.default_packages;
-            let install_default_data_packages = synced.install_default_data_packages;
-            if !pixi_defaults.is_empty() {
-                info!(
-                    "[runtimed] Including default pixi packages: {:?}",
-                    pixi_defaults
-                );
-            }
-            pixi_prewarmed_packages(&pixi_defaults, install_default_data_packages)
-        };
-        let prewarmed_packages = packages.clone();
-
-        // Create environment using rattler (pixi-compatible layout)
-        let handler = std::sync::Arc::new(kernel_env::LogHandler);
-        match kernel_env::pixi::create_pixi_environment(
-            &project_dir,
-            &packages,
-            &["conda-forge".to_string()],
-            handler.clone(),
-        )
-        .await
+        match self
+            .spawn_warm_env(
+                EnvType::Pixi,
+                &project_dir,
+                &packages,
+                &["conda-forge".to_string()],
+            )
+            .await
         {
-            Ok(env) => {
-                // Warm up the environment (.pyc compilation)
-                if let Err(e) =
-                    kernel_env::pixi::warmup_environment(&env, &prewarmed_packages).await
-                {
-                    warn!("[runtimed] Pixi warmup failed (non-fatal): {}", e);
-                }
-
-                info!("[runtimed] Pixi environment ready at {:?}", env.project_dir);
-                if let Err(e) =
-                    write_pool_package_hash(&project_dir, EnvType::Pixi, &prewarmed_packages).await
-                {
-                    warn!(
-                        "[runtimed] Failed to write Pixi pool package marker for {:?}: {}",
-                        project_dir, e
-                    );
-                }
+            Ok(result) if result.success => {
+                let python_path = result
+                    .python_path
+                    .unwrap_or_else(|| project_dir.join(".pixi/envs/default/bin/python"));
+                let venv_path = result
+                    .venv_path
+                    .unwrap_or_else(|| project_dir.join(".pixi/envs/default"));
                 guard.commit();
                 let retired_to_delete = {
                     let mut pool = self.pixi_pool.lock().await;
                     pool.add(PooledEnv {
                         env_type: EnvType::Pixi,
-                        venv_path: env.venv_path,
-                        python_path: env.python_path,
-                        prewarmed_packages,
+                        venv_path,
+                        python_path,
+                        prewarmed_packages: packages,
                     });
                     pool.retired_paths_after_replacement()
                 };
                 if !retired_to_delete.is_empty() {
                     spawn_env_deletions(retired_to_delete);
                 }
+                {
+                    let pool = self.pixi_pool.lock().await;
+                    info!(
+                        "[runtimed] Pixi environment ready: {:?} (pool: {}/{})",
+                        project_dir,
+                        pool.stats().0,
+                        pool.target()
+                    );
+                }
                 self.update_pool_doc().await;
             }
-            Err(e) => {
-                error!("[runtimed] Pixi environment creation failed: {}", e);
-                let _ = tokio::fs::remove_dir_all(&project_dir).await;
+            Ok(result) => {
                 guard
                     .fail_with(Some(PackageInstallError {
-                        error_message: format!("{}", e),
+                        failed_package: result.failed_package,
+                        error_message: result.error.unwrap_or_default(),
+                        error_kind: result.error_kind.unwrap_or_else(|| "unknown".into()),
+                    }))
+                    .await;
+            }
+            Err(e) => {
+                error!("[runtimed] Pixi warm-env subprocess failed: {}", e);
+                guard
+                    .fail_with(Some(PackageInstallError {
                         failed_package: None,
+                        error_message: e,
                         error_kind: "setup_failed".to_string(),
                     }))
                     .await;
@@ -5097,327 +4699,143 @@ impl Daemon {
         self.pool_ready_pixi.notify_waiters();
     }
 
-    /// Create a single UV environment and add it to the pool.
-    async fn create_uv_env(self: &Arc<Self>) {
-        // Get uv path (cached via OnceCell, so this is instant after initial bootstrap)
-        let uv_path = match kernel_launch::tools::get_uv_path().await {
-            Ok(path) => path,
-            Err(e) => {
-                error!("[runtimed] Failed to get uv path: {}", e);
-                self.uv_pool
-                    .lock()
-                    .await
-                    .warming_failed_with_error(Some(PackageInstallError {
-                        failed_package: None,
-                        error_message: format!("Failed to get uv path: {}", e),
-                        error_kind: "setup_failed".to_string(),
-                    }));
-                self.update_pool_doc().await;
-                return;
-            }
+    /// Spawn a `runtimed warm-env` subprocess and parse its JSON result.
+    async fn spawn_warm_env(
+        &self,
+        env_type: EnvType,
+        env_dir: &Path,
+        packages: &[String],
+        channels: &[String],
+    ) -> Result<crate::warm_env::WarmEnvResult, String> {
+        use tokio::io::AsyncBufReadExt;
+
+        let exe = match std::env::current_exe() {
+            Ok(e) => e,
+            Err(e) => return Err(format!("Failed to get current exe: {e}")),
         };
 
+        let type_str = match env_type {
+            EnvType::Uv => "uv",
+            EnvType::Conda => "conda",
+            EnvType::Pixi => "pixi",
+        };
+
+        let mut cmd = tokio::process::Command::new(&exe);
+        cmd.arg("warm-env")
+            .arg("--env-type")
+            .arg(type_str)
+            .arg("--env-dir")
+            .arg(env_dir);
+
+        if !packages.is_empty() {
+            cmd.arg("--packages").arg(packages.join(","));
+        }
+        if !channels.is_empty() {
+            let non_empty: Vec<_> = channels.iter().filter(|c| !c.is_empty()).cloned().collect();
+            if !non_empty.is_empty() {
+                cmd.arg("--channels").arg(non_empty.join(","));
+            }
+        }
+
+        cmd.stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .stdin(Stdio::null())
+            .kill_on_drop(true);
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => return Err(format!("Failed to spawn warm-env: {e}")),
+        };
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "Failed to capture subprocess stdout".to_string())?;
+
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        let mut last_result: Option<crate::warm_env::WarmEnvResult> = None;
+
+        // 10-minute overall timeout
+        let timeout = std::time::Duration::from_secs(600);
+        let read_result = tokio::time::timeout(timeout, async {
+            while let Ok(Some(line)) = lines.next_line().await {
+                match serde_json::from_str::<crate::warm_env::WarmEnvEvent>(&line) {
+                    Ok(crate::warm_env::WarmEnvEvent::Progress { phase, detail }) => {
+                        debug!("[runtimed] warm-env {type_str}: [{phase}] {detail}");
+                    }
+                    Ok(crate::warm_env::WarmEnvEvent::Result(result)) => {
+                        last_result = Some(result);
+                    }
+                    Err(e) => {
+                        debug!("[runtimed] warm-env {type_str}: unparseable line: {e}");
+                    }
+                }
+            }
+        })
+        .await;
+
+        let status = child.wait().await;
+
+        if read_result.is_err() {
+            let _ = child.kill().await;
+            return Err("warm-env subprocess timed out after 10 minutes".to_string());
+        }
+
+        if let Some(result) = last_result {
+            return Ok(result);
+        }
+
+        match status {
+            Ok(s) if s.success() => Err("warm-env exited 0 but no result event on stdout".into()),
+            Ok(s) => Err(format!("warm-env exited with status {s}")),
+            Err(e) => Err(format!("Failed to wait on warm-env: {e}")),
+        }
+    }
+
+    /// Create a single UV environment and add it to the pool.
+    async fn create_uv_env(self: &Arc<Self>) {
         let temp_id = format!("{}{}", crate::POOL_PREFIX_UV, uuid::Uuid::new_v4());
         let venv_path = self.config.cache_dir.join(&temp_id);
 
-        // Register warming path before creating the directory so GC won't
-        // delete it while packages are being installed.
+        // Read packages from settings before spawning
+        let install_packages = {
+            let settings = self.settings.read().await;
+            let synced = settings.get_all();
+            uv_prewarmed_packages(
+                &synced.uv.default_packages,
+                synced.install_default_data_packages,
+            )
+        };
+
         self.uv_pool
             .lock()
             .await
             .register_warming_path(venv_path.clone());
-
-        // Guard rolls back pool accounting on panic or early exit.
         let mut guard = WarmingGuard::new(self.clone(), venv_path.clone(), PoolKind::Uv);
-
-        #[cfg(target_os = "windows")]
-        let python_path = venv_path.join("Scripts").join("python.exe");
-        #[cfg(not(target_os = "windows"))]
-        let python_path = venv_path.join("bin").join("python");
 
         info!("[runtimed] Creating UV environment at {:?}", venv_path);
 
-        // Ensure cache directory exists
-        if let Err(e) = tokio::fs::create_dir_all(&self.config.cache_dir).await {
-            error!("[runtimed] Failed to create cache dir: {}", e);
-            guard
-                .fail_with(Some(PackageInstallError {
-                    failed_package: None,
-                    error_message: format!("Failed to create cache dir: {}", e),
-                    error_kind: "setup_failed".to_string(),
-                }))
-                .await;
-            return;
-        }
-
-        // Create venv (60 second timeout)
-        let venv_result = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            tokio::process::Command::new(&uv_path)
-                .arg("venv")
-                .arg(&venv_path)
-                .arg("--python")
-                .arg("3.13")
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output(),
-        )
-        .await;
-
-        match venv_result {
-            Ok(Ok(output)) if output.status.success() => {}
-            Ok(Ok(output)) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                error!("[runtimed] Failed to create venv: {}", stderr);
-                guard
-                    .fail_with(Some(PackageInstallError {
-                        failed_package: None,
-                        error_message: format!("Failed to create venv: {}", stderr),
-                        error_kind: "setup_failed".to_string(),
-                    }))
-                    .await;
-                return;
-            }
-            Ok(Err(e)) => {
-                error!("[runtimed] Failed to create venv: {}", e);
-                guard
-                    .fail_with(Some(PackageInstallError {
-                        failed_package: None,
-                        error_message: format!("Failed to create venv: {}", e),
-                        error_kind: "setup_failed".to_string(),
-                    }))
-                    .await;
-                return;
-            }
-            Err(_) => {
-                error!("[runtimed] Timeout creating venv");
-                tokio::fs::remove_dir_all(&venv_path).await.ok();
-                guard
-                    .fail_with(Some(PackageInstallError {
-                        failed_package: None,
-                        error_message: "Timeout creating venv after 60 seconds".to_string(),
-                        error_kind: "timeout".to_string(),
-                    }))
-                    .await;
-                return;
-            }
-        }
-
-        // Read default uv packages from synced settings
-        let (user_default_packages, install_default_data_packages) = {
-            let settings = self.settings.read().await;
-            let synced = settings.get_all();
-            let configured = synced.uv.default_packages;
-            if !configured.is_empty() {
-                info!("[runtimed] Including default uv packages: {:?}", configured);
-            }
-            (configured, synced.install_default_data_packages)
-        };
-        let install_packages =
-            uv_prewarmed_packages(&user_default_packages, install_default_data_packages);
-
-        // Install packages (180 second timeout per attempt). Try uv's cache
-        // first so offline users with cached wheels do not take the network
-        // path just to warm a background pool entry.
-        let offline_install_args = uv_pip_install_args(&python_path, &install_packages, true);
-        let install_result = match run_uv_pip_install(
-            &uv_path,
-            &offline_install_args,
-            UV_OFFLINE_INSTALL_TIMEOUT,
-        )
-        .await
+        match self
+            .spawn_warm_env(EnvType::Uv, &venv_path, &install_packages, &[])
+            .await
         {
-            UvInstallAttempt::Completed(output) if output.status.success() => {
-                info!("[runtimed] UV packages installed from local cache (offline mode)");
-                UvInstallAttempt::Completed(output)
-            }
-            UvInstallAttempt::Completed(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                info!(
-                    "[runtimed] UV offline install missed cache, falling back to network-capable install: {}",
-                    stderr.lines().take(3).collect::<Vec<_>>().join(" ")
-                );
-                let install_args = uv_pip_install_args(&python_path, &install_packages, false);
-                run_uv_pip_install(&uv_path, &install_args, UV_ONLINE_INSTALL_TIMEOUT).await
-            }
-            UvInstallAttempt::SpawnError(e) => {
-                warn!(
-                    "[runtimed] Failed to run uv offline install, falling back to network-capable install: {}",
-                    e
-                );
-                let install_args = uv_pip_install_args(&python_path, &install_packages, false);
-                run_uv_pip_install(&uv_path, &install_args, UV_ONLINE_INSTALL_TIMEOUT).await
-            }
-            UvInstallAttempt::Timeout => {
-                warn!(
-                    "[runtimed] UV offline install timed out, falling back to network-capable install"
-                );
-                let install_args = uv_pip_install_args(&python_path, &install_packages, false);
-                run_uv_pip_install(&uv_path, &install_args, UV_ONLINE_INSTALL_TIMEOUT).await
-            }
-        };
-
-        match install_result {
-            UvInstallAttempt::Completed(output) if output.status.success() => {}
-            UvInstallAttempt::Completed(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let parsed_error = parse_uv_error(&stderr);
-
-                if let Some(ref err) = parsed_error {
-                    if let Some(pkg) = &err.failed_package {
-                        // Check if this is a user-specified package (not ipykernel/ipywidgets/anywidget)
-                        let is_user_package = user_default_packages
-                            .iter()
-                            .any(|configured| configured == pkg);
-
-                        if is_user_package {
-                            error!(
-                                "[runtimed] Failed to install user package '{}' from default_packages setting. \
-                                 Check uv.default_packages in settings for typos.",
-                                pkg
-                            );
-                        } else {
-                            error!(
-                                "[runtimed] Failed to install package '{}': {}",
-                                pkg,
-                                stderr.lines().take(3).collect::<Vec<_>>().join(" ")
-                            );
-                        }
-                    } else {
-                        error!(
-                            "[runtimed] Package installation failed: {}",
-                            stderr.lines().take(5).collect::<Vec<_>>().join(" ")
-                        );
+            Ok(result) if result.success => {
+                let python_path = result.python_path.unwrap_or_else(|| {
+                    #[cfg(target_os = "windows")]
+                    {
+                        venv_path.join("Scripts").join("python.exe")
                     }
-                } else {
-                    error!(
-                        "[runtimed] Package installation failed: {}",
-                        stderr.lines().take(5).collect::<Vec<_>>().join(" ")
-                    );
-                }
-
-                tokio::fs::remove_dir_all(&venv_path).await.ok();
-                guard.fail_with(parsed_error).await;
-                return;
-            }
-            UvInstallAttempt::SpawnError(e) => {
-                error!("[runtimed] Failed to run uv pip install: {}", e);
-                tokio::fs::remove_dir_all(&venv_path).await.ok();
-                guard
-                    .fail_with(Some(PackageInstallError {
-                        failed_package: None,
-                        error_message: e.to_string(),
-                        error_kind: "setup_failed".to_string(),
-                    }))
-                    .await;
-                return;
-            }
-            UvInstallAttempt::Timeout => {
-                error!("[runtimed] Timeout installing packages (180s)");
-                tokio::fs::remove_dir_all(&venv_path).await.ok();
-                guard
-                    .fail_with(Some(PackageInstallError {
-                        failed_package: None,
-                        error_message: "Timeout after 180 seconds".to_string(),
-                        error_kind: "timeout".to_string(),
-                    }))
-                    .await;
-                return;
-            }
-        }
-
-        // Vendor the single-file nteract_kernel_launcher module into
-        // site-packages so `python -m nteract_kernel_launcher` resolves for
-        // pool-served UV envs. Without this, bootstrap_dx kernels die with
-        // ModuleNotFoundError at launch. Run before warmup so .pyc is built
-        // with the launcher present.
-        if let Err(e) = kernel_env::launcher::vendor_into_venv(&python_path).await {
-            error!(
-                "[runtimed] Failed to vendor nteract_kernel_launcher into UV pool env at {:?}: {}",
-                python_path, e
-            );
-            let _ = tokio::fs::remove_dir_all(&venv_path).await;
-            guard
-                .fail_with(Some(PackageInstallError {
-                    failed_package: None,
-                    error_message: format!("Failed to vendor nteract_kernel_launcher: {}", e),
-                    error_kind: "setup_failed".to_string(),
-                }))
-                .await;
-            return;
-        }
-
-        // Warm up the environment (30 second timeout)
-        let site_packages = {
-            let lib_dir = venv_path.join("lib");
-            std::fs::read_dir(&lib_dir).ok().and_then(|entries| {
-                entries.flatten().find_map(|entry| {
-                    let path = entry.path();
-                    let name = path.file_name()?.to_str()?;
-                    if name.starts_with("python") {
-                        let sp = path.join("site-packages");
-                        sp.is_dir().then(|| sp.to_string_lossy().into_owned())
-                    } else {
-                        None
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        venv_path.join("bin").join("python")
                     }
-                })
-            })
-        };
-        let warmup_script = kernel_env::warmup::build_warmup_command(
-            &install_packages,
-            false,
-            site_packages.as_deref(),
-        );
-
-        let warmup_result = tokio::time::timeout(
-            std::time::Duration::from_secs(180),
-            tokio::process::Command::new(&python_path)
-                .args(["-c", &warmup_script])
-                .output(),
-        )
-        .await;
-
-        let warmup_outcome = match warmup_result {
-            Ok(Ok(output)) if output.status.success() => {
-                // Create marker file
-                tokio::fs::write(venv_path.join(".warmed"), "").await.ok();
-                WarmupOutcome::Ok
-            }
-            Ok(Ok(output)) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                error!(
-                    "[runtimed] UV warmup failed, NOT adding to pool: {}",
-                    stderr.lines().take(3).collect::<Vec<_>>().join(" | ")
-                );
-                WarmupOutcome::ImportError(stderr.to_string())
-            }
-            Ok(Err(e)) => {
-                error!("[runtimed] Failed to run UV warmup: {}", e);
-                WarmupOutcome::ImportError(e.to_string())
-            }
-            Err(_) => {
-                error!("[runtimed] UV warmup timed out, NOT adding to pool (180s)");
-                WarmupOutcome::Timeout
-            }
-        };
-
-        match warmup_outcome {
-            WarmupOutcome::Ok => {
-                info!("[runtimed] UV environment ready at {:?}", venv_path);
-                if let Err(e) =
-                    write_pool_package_hash(&venv_path, EnvType::Uv, &install_packages).await
-                {
-                    warn!(
-                        "[runtimed] Failed to write UV pool package marker for {:?}: {}",
-                        venv_path, e
-                    );
-                }
+                });
                 guard.commit();
                 let retired_to_delete = {
                     let mut pool = self.uv_pool.lock().await;
                     pool.add(PooledEnv {
                         env_type: EnvType::Uv,
-                        venv_path,
+                        venv_path: venv_path.clone(),
                         python_path,
                         prewarmed_packages: install_packages,
                     });
@@ -5426,28 +4844,33 @@ impl Daemon {
                 if !retired_to_delete.is_empty() {
                     spawn_env_deletions(retired_to_delete);
                 }
+                {
+                    let pool = self.uv_pool.lock().await;
+                    info!(
+                        "[runtimed] UV environment ready: {:?} (pool: {}/{})",
+                        venv_path,
+                        pool.stats().0,
+                        pool.target()
+                    );
+                }
                 self.update_pool_doc().await;
             }
-            WarmupOutcome::Timeout => {
-                let _ = tokio::fs::remove_dir_all(&venv_path).await;
+            Ok(result) => {
                 guard
                     .fail_with(Some(PackageInstallError {
-                        failed_package: None,
-                        error_message: "UV warmup timed out".into(),
-                        error_kind: "timeout".to_string(),
+                        failed_package: result.failed_package,
+                        error_message: result.error.unwrap_or_default(),
+                        error_kind: result.error_kind.unwrap_or_else(|| "unknown".into()),
                     }))
                     .await;
             }
-            WarmupOutcome::ImportError(msg) => {
-                let _ = tokio::fs::remove_dir_all(&venv_path).await;
+            Err(e) => {
+                error!("[runtimed] UV warm-env subprocess failed: {}", e);
                 guard
                     .fail_with(Some(PackageInstallError {
                         failed_package: None,
-                        error_message: format!(
-                            "UV warmup failed: {}",
-                            msg.chars().take(200).collect::<String>()
-                        ),
-                        error_kind: "import_error".to_string(),
+                        error_message: e,
+                        error_kind: "setup_failed".to_string(),
                     }))
                     .await;
             }
@@ -6435,53 +5858,6 @@ mod tests {
 
         let result = parse_uv_error(stderr);
         assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_uv_pip_install_args_offline_first_shape() {
-        let packages = vec!["ipykernel".to_string(), "ipywidgets".to_string()];
-        let args = uv_pip_install_args(Path::new("/tmp/env/bin/python"), &packages, true);
-
-        assert_eq!(
-            args,
-            vec![
-                "pip",
-                "install",
-                "--link-mode",
-                "hardlink",
-                "--python",
-                "/tmp/env/bin/python",
-                "--offline",
-                "ipykernel",
-                "ipywidgets",
-            ]
-        );
-    }
-
-    #[test]
-    fn test_uv_pip_install_args_online_fallback_shape() {
-        let packages = vec!["ipykernel".to_string(), "ipywidgets".to_string()];
-        let args = uv_pip_install_args(Path::new("/tmp/env/bin/python"), &packages, false);
-
-        assert_eq!(
-            args,
-            vec![
-                "pip",
-                "install",
-                "--link-mode",
-                "hardlink",
-                "--python",
-                "/tmp/env/bin/python",
-                "ipykernel",
-                "ipywidgets",
-            ]
-        );
-        assert!(!args.iter().any(|arg| arg == "--offline"));
-    }
-
-    #[test]
-    fn test_uv_offline_probe_has_shorter_timeout_than_online_fallback() {
-        assert!(UV_OFFLINE_INSTALL_TIMEOUT < UV_ONLINE_INSTALL_TIMEOUT);
     }
 
     #[test]

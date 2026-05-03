@@ -53,6 +53,7 @@ pub mod terminal_size;
 pub(crate) mod trusted_packages;
 pub mod user_error;
 pub(crate) mod uv_project;
+pub mod warm_env;
 
 pub fn trusted_packages_db_path() -> std::path::PathBuf {
     runtimed_client::daemon_base_dir().join("trusted-packages.sqlite")
