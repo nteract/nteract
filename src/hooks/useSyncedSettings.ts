@@ -154,6 +154,7 @@ export function useSyncedSettings() {
   const [defaultUvPackages, setDefaultUvPackagesState] = useState<string[]>([]);
   const [defaultCondaPackages, setDefaultCondaPackagesState] = useState<string[]>([]);
   const [defaultPixiPackages, setDefaultPixiPackagesState] = useState<string[]>([]);
+  const [installDefaultDataPackages, setInstallDefaultDataPackagesState] = useState<boolean>(true);
   // Keep-alive duration in seconds (5s to 7 days)
   const [keepAliveSecs, setKeepAliveSecsState] = useState<number>(30);
   // Feature flags (auto-derived from FEATURE_FLAG_METADATA)
@@ -192,6 +193,9 @@ export function useSyncedSettings() {
         }
         if (Array.isArray(settings.pixi?.default_packages)) {
           setDefaultPixiPackagesState(settings.pixi.default_packages);
+        }
+        if (typeof settings.install_default_data_packages === "boolean") {
+          setInstallDefaultDataPackagesState(settings.install_default_data_packages);
         }
         // Handle keep_alive_secs: bigint from backend, convert to number
         if (typeof settings.keep_alive_secs === "bigint") {
@@ -256,6 +260,9 @@ export function useSyncedSettings() {
       }
       if (Array.isArray(event.payload.pixi?.default_packages)) {
         setDefaultPixiPackagesState(event.payload.pixi.default_packages);
+      }
+      if (typeof event.payload.install_default_data_packages === "boolean") {
+        setInstallDefaultDataPackagesState(event.payload.install_default_data_packages);
       }
       // Handle keep_alive_secs: bigint from backend, convert to number
       if (typeof keep_alive_secs === "bigint") {
@@ -336,6 +343,14 @@ export function useSyncedSettings() {
     }).catch((e) => console.warn("[settings] Failed to persist pixi packages:", e));
   }, []);
 
+  const setInstallDefaultDataPackages = useCallback((enabled: boolean) => {
+    setInstallDefaultDataPackagesState(enabled);
+    invoke("set_synced_setting", {
+      key: "install_default_data_packages",
+      value: enabled,
+    }).catch((e) => console.warn("[settings] Failed to persist install_default_data_packages:", e));
+  }, []);
+
   const setKeepAliveSecs = useCallback((secs: number) => {
     setKeepAliveSecsState(secs);
     invoke("set_synced_setting", {
@@ -397,6 +412,8 @@ export function useSyncedSettings() {
     setDefaultCondaPackages,
     defaultPixiPackages,
     setDefaultPixiPackages,
+    installDefaultDataPackages,
+    setInstallDefaultDataPackages,
     keepAliveSecs,
     setKeepAliveSecs,
     featureFlags,

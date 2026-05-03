@@ -12,6 +12,7 @@
 //!   theme: "system"
 //!   default_runtime: "python"
 //!   default_python_env: "uv"
+//!   install_default_data_packages: true
 //!   uv/                           ← nested Map
 //!     default_packages: List[…]   ← List of Str
 //!   conda/                        ← nested Map
@@ -272,6 +273,14 @@ pub struct SyncedSettings {
     #[serde(default = "default_pixi_pool_size")]
     pub pixi_pool_size: u64,
 
+    /// Install the curated data-science package set in prewarmed pool environments.
+    ///
+    /// When true, UV/Conda/Pixi pools include pandas, polars, matplotlib,
+    /// plotly, and altair in addition to the managed notebook runtime. Project
+    /// notebooks with explicit dependencies are unaffected.
+    #[serde(default = "default_install_default_data_packages")]
+    pub install_default_data_packages: bool,
+
     /// Enable the nteract data-experience kernel bootstrap (nteract/dx).
     /// When true, the daemon installs `nteract-kernel-launcher` and `dx` into
     /// UV kernel environments, launches kernels via `nteract_kernel_launcher`,
@@ -339,6 +348,7 @@ impl Default for SyncedSettings {
             uv_pool_size: pool_sizes.uv_pool_size,
             conda_pool_size: pool_sizes.conda_pool_size,
             pixi_pool_size: pool_sizes.pixi_pool_size,
+            install_default_data_packages: true,
             bootstrap_dx: false,
             install_id: String::new(),
             telemetry_enabled: true,
@@ -365,6 +375,9 @@ fn default_conda_pool_size() -> u64 {
 }
 fn default_pixi_pool_size() -> u64 {
     DEFAULT_PIXI_POOL_SIZE
+}
+fn default_install_default_data_packages() -> bool {
+    true
 }
 
 /// Backfill `telemetry_consent_recorded` for installations that completed
@@ -466,6 +479,11 @@ impl SettingsDoc {
 
         // nteract/dx kernel bootstrap (opt-in)
         let _ = doc.put(automerge::ROOT, "bootstrap_dx", defaults.bootstrap_dx);
+        let _ = doc.put(
+            automerge::ROOT,
+            "install_default_data_packages",
+            defaults.install_default_data_packages,
+        );
 
         // Telemetry defaults (install_id left empty until first heartbeat)
         let _ = doc.put(automerge::ROOT, "install_id", "");
@@ -578,6 +596,12 @@ impl SettingsDoc {
         // bootstrap_dx: boolean
         if let Some(enabled) = json.get("bootstrap_dx").and_then(|v| v.as_bool()) {
             settings.put_bool("bootstrap_dx", enabled);
+        }
+        if let Some(enabled) = json
+            .get("install_default_data_packages")
+            .and_then(|v| v.as_bool())
+        {
+            settings.put_bool("install_default_data_packages", enabled);
         }
 
         // Telemetry fields
@@ -1013,6 +1037,9 @@ impl SettingsDoc {
             pixi_pool_size: self
                 .get_u64("pixi_pool_size")
                 .unwrap_or(pool_sizes.pixi_pool_size),
+            install_default_data_packages: self
+                .get_bool("install_default_data_packages")
+                .unwrap_or(defaults.install_default_data_packages),
             bootstrap_dx: self
                 .get_bool("bootstrap_dx")
                 .unwrap_or(defaults.bootstrap_dx),
@@ -1166,6 +1193,20 @@ impl SettingsDoc {
                 changed = true;
             }
         }
+        if let Some(enabled) = json
+            .get("install_default_data_packages")
+            .and_then(|v| v.as_bool())
+        {
+            let current = self.get_bool("install_default_data_packages");
+            if current != Some(enabled) {
+                info!(
+                    "[settings] apply_json_changes: install_default_data_packages changed {:?} -> {}",
+                    current, enabled
+                );
+                self.put_bool("install_default_data_packages", enabled);
+                changed = true;
+            }
+        }
 
         // Telemetry fields
         if let Some(id) = json.get("install_id").and_then(|v| v.as_str()) {
@@ -1285,6 +1326,7 @@ mod tests {
         assert_eq!(settings.pixi_pool_size, DEFAULT_POOL_SIZE);
         assert!(settings.uv.default_packages.is_empty());
         assert!(settings.conda.default_packages.is_empty());
+        assert!(settings.install_default_data_packages);
     }
 
     #[test]
@@ -1333,6 +1375,18 @@ mod tests {
             "default_python_env": "conda"
         })));
         assert_eq!(doc.get_all().uv_pool_size, DEFAULT_SELECTED_POOL_SIZE);
+    }
+
+    #[test]
+    fn test_install_default_data_packages_can_be_disabled_from_json() {
+        let mut doc = SettingsDoc::new();
+
+        assert!(doc.apply_json_changes(&serde_json::json!({
+            "install_default_data_packages": false
+        })));
+
+        assert_eq!(doc.get_bool("install_default_data_packages"), Some(false));
+        assert!(!doc.get_all().install_default_data_packages);
     }
 
     #[test]
@@ -1687,6 +1741,7 @@ mod tests {
         assert!(schema_str.contains("theme"));
         assert!(schema_str.contains("default_runtime"));
         assert!(schema_str.contains("default_python_env"));
+        assert!(schema_str.contains("install_default_data_packages"));
         // Should have known values as examples for editor autocomplete
         assert!(schema_str.contains("python"));
         assert!(schema_str.contains("deno"));

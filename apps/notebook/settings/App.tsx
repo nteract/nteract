@@ -213,6 +213,8 @@ export default function App() {
     setDefaultCondaPackages,
     defaultPixiPackages,
     setDefaultPixiPackages,
+    installDefaultDataPackages,
+    setInstallDefaultDataPackages,
     keepAliveSecs,
     setKeepAliveSecs,
     featureFlags,
@@ -402,6 +404,22 @@ export default function App() {
                 </span>
               </div>
             )}
+
+            <span className="text-sm text-muted-foreground whitespace-nowrap self-center text-right">
+              Data Stack
+            </span>
+            <div className="flex items-center justify-between gap-3 min-h-8">
+              <div className="space-y-0.5">
+                <span className="text-sm text-foreground">Default data packages</span>
+                <p className="text-[10px] text-muted-foreground/70">
+                  pandas, polars, matplotlib, plotly, altair
+                </p>
+              </div>
+              <Switch
+                checked={installDefaultDataPackages}
+                onCheckedChange={setInstallDefaultDataPackages}
+              />
+            </div>
 
             {/* Packages */}
             {defaultPythonEnv === "uv" && (
