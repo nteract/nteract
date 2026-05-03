@@ -49,6 +49,14 @@ class Session {
         ),
       );
     }
+
+    return new Proxy(this, {
+      get(target, prop, receiver) {
+        if (prop in target) return Reflect.get(target, prop, receiver);
+        const value = target._native[prop];
+        return typeof value === "function" ? value.bind(target._native) : value;
+      },
+    });
   }
 
   get notebookId() {

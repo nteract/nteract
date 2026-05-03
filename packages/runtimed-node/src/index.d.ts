@@ -63,6 +63,8 @@ export interface EventSubscription {
 }
 
 export class Session {
+  [key: string]: unknown;
+
   readonly notebookId: string;
   readonly runtimeState$: Observable<RuntimeState>;
   readonly executionTransitions$: Observable<ExecutionTransition>;

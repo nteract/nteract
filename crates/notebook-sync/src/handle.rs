@@ -108,6 +108,7 @@ impl DocHandle {
     /// Create a new `DocHandle` from shared state and channels.
     ///
     /// This is called by the connection/split logic, not by end users.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         doc: Arc<Mutex<SharedDocState>>,
         changed_tx: mpsc::UnboundedSender<()>,
