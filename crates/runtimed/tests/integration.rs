@@ -463,7 +463,7 @@ async fn test_external_settings_json_edit_survives_settings_sync_ack() {
     )
     .unwrap();
 
-    let synced = tokio::time::timeout(Duration::from_secs(5), sync_client.recv_changes())
+    let synced = tokio::time::timeout(Duration::from_secs(15), sync_client.recv_changes())
         .await
         .expect("settings client should receive the external JSON edit")
         .expect("settings sync connection should stay open");

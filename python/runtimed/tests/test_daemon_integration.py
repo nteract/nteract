@@ -21,6 +21,7 @@ Environment variables:
 import asyncio
 import gc
 import inspect
+import json
 import os
 import subprocess
 import sys
@@ -429,9 +430,21 @@ def daemon_process(request):
         cache_dir = tmpdir / "cache"
         blob_dir = tmpdir / "blobs"
         workspace_dir = tmpdir / "workspace"
+        settings_json = tmpdir / "settings.json"
         cache_dir.mkdir()
         blob_dir.mkdir()
         workspace_dir.mkdir()
+        settings_json.write_text(
+            json.dumps(
+                {
+                    # The app defaults pool envs to a richer data-science stack.
+                    # Integration tests exercise daemon/session behavior and run
+                    # many short-lived daemons, so keep their prewarm env minimal.
+                    "install_default_data_packages": False,
+                }
+            ),
+            encoding="utf-8",
+        )
         uv_pool_size = os.environ.get("RUNTIMED_TEST_UV_POOL_SIZE", "3")
         conda_pool_size = os.environ.get("RUNTIMED_TEST_CONDA_POOL_SIZE", "1")
 
@@ -451,6 +464,8 @@ def daemon_process(request):
             conda_pool_size,
             "--pixi-pool-size",
             "0",
+            "--settings-json",
+            str(settings_json),
         ]
 
         print(f"\n[test] Starting daemon: {' '.join(cmd)}", file=sys.stderr)

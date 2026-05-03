@@ -63,6 +63,14 @@ export type SyncedSettings = {
    */
   pixi_pool_size: bigint;
   /**
+   * Install the curated data-science package set in prewarmed pool environments.
+   *
+   * When true, UV/Conda/Pixi pools include pandas, polars, matplotlib,
+   * plotly, and altair in addition to the managed notebook runtime. Project
+   * notebooks with explicit dependencies are unaffected.
+   */
+  install_default_data_packages: boolean;
+  /**
    * Enable the nteract data-experience kernel bootstrap (nteract/dx).
    * When true, the daemon installs `nteract-kernel-launcher` and `dx` into
    * UV kernel environments, launches kernels via `nteract_kernel_launcher`,

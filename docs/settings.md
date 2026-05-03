@@ -9,6 +9,7 @@ nteract Desktop settings control default behavior for new notebooks, appearance,
 | Theme | light, dark, system | system | `settings.json` + live Automerge sync |
 | Default runtime | python, deno | python | `settings.json` + live Automerge sync |
 | Default Python env | uv, conda | uv | `settings.json` + live Automerge sync |
+| Install default data packages | boolean | true | `settings.json` + live Automerge sync |
 | Default uv packages | list of strings | (empty) | `settings.json` + live Automerge sync |
 | Default conda packages | list of strings | (empty) | `settings.json` + live Automerge sync |
 | Keep alive secs | integer | 30 | `settings.json` + live Automerge sync |
@@ -35,6 +36,7 @@ ROOT/
   theme: "system"
   default_runtime: "python"
   default_python_env: "uv"
+  install_default_data_packages: true
   keep_alive_secs: 30
   onboarding_completed: false
   uv/                                         ← nested Map
@@ -64,6 +66,7 @@ Example:
   "theme": "system",
   "default_runtime": "python",
   "default_python_env": "uv",
+  "install_default_data_packages": true,
   "uv": {
     "default_packages": ["numpy", "pandas", "matplotlib"]
   },
@@ -122,17 +125,23 @@ If the notebook directory contains a `pyproject.toml` or `environment.yml`, the 
 
 ## Default Packages
 
-Controls which packages are pre-installed in prewarmed environments. These packages are available immediately when you open a new notebook, without needing to add them as inline dependencies.
+Controls which extra packages are pre-installed in prewarmed environments. These packages are available immediately when you open a new notebook, without needing to add them as inline dependencies.
 
-Since uv and conda have different package ecosystems, packages are configured separately:
+By default, pool environments also include the curated data-science set: `pandas`, `polars`, `matplotlib`, `plotly`, and `altair`. Set `install_default_data_packages` to `false` to opt out while keeping the managed notebook runtime packages.
+
+Since uv, conda, and pixi have different package ecosystems, user extras are configured separately:
 
 ```json
 {
+  "install_default_data_packages": false,
   "uv": {
     "default_packages": ["numpy", "pandas", "matplotlib"]
   },
   "conda": {
     "default_packages": ["numpy", "pandas", "scikit-learn"]
+  },
+  "pixi": {
+    "default_packages": ["numpy"]
   }
 }
 ```

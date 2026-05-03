@@ -454,6 +454,8 @@ pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
         uv_pool_size: get_u64("uv_pool_size").unwrap_or(pool_sizes.uv_pool_size),
         conda_pool_size: get_u64("conda_pool_size").unwrap_or(pool_sizes.conda_pool_size),
         pixi_pool_size: get_u64("pixi_pool_size").unwrap_or(pool_sizes.pixi_pool_size),
+        install_default_data_packages: get_bool("install_default_data_packages")
+            .unwrap_or(defaults.install_default_data_packages),
         bootstrap_dx: get_bool("bootstrap_dx").unwrap_or(defaults.bootstrap_dx),
         install_id: get_str("install_id").unwrap_or_default(),
         telemetry_enabled: get_bool("telemetry_enabled").unwrap_or(true),

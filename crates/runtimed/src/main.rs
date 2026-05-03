@@ -83,6 +83,10 @@ enum Commands {
             default_value_t = runtimed_client::settings_doc::DEFAULT_PIXI_POOL_SIZE as usize
         )]
         pixi_pool_size: usize,
+
+        /// Override canonical settings JSON path.
+        #[arg(long, hide = true)]
+        settings_json: Option<PathBuf>,
     },
 
     /// Install daemon as a system service
@@ -304,42 +308,56 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         None | Some(Commands::Run { .. }) => {
             // Extract run args from command or use defaults
-            let (socket, cache_dir, blob_store_dir, uv_pool_size, conda_pool_size, pixi_pool_size) =
-                match cli.command {
-                    Some(Commands::Run {
-                        socket,
-                        cache_dir,
-                        blob_store_dir,
-                        uv_pool_size,
-                        conda_pool_size,
-                        pixi_pool_size,
-                    }) => (
-                        socket,
-                        cache_dir,
-                        blob_store_dir,
-                        uv_pool_size,
-                        conda_pool_size,
-                        pixi_pool_size,
-                    ),
-                    _ => (
-                        None,
-                        None,
-                        None,
-                        runtimed_client::settings_doc::DEFAULT_UV_POOL_SIZE as usize,
-                        runtimed_client::settings_doc::DEFAULT_CONDA_POOL_SIZE as usize,
-                        runtimed_client::settings_doc::DEFAULT_PIXI_POOL_SIZE as usize,
-                    ),
-                };
-
-            run_daemon(
+            let (
                 socket,
                 cache_dir,
                 blob_store_dir,
                 uv_pool_size,
                 conda_pool_size,
                 pixi_pool_size,
-            )
-            .await
+                settings_json,
+            ) = match cli.command {
+                Some(Commands::Run {
+                    socket,
+                    cache_dir,
+                    blob_store_dir,
+                    uv_pool_size,
+                    conda_pool_size,
+                    pixi_pool_size,
+                    settings_json,
+                }) => (
+                    socket,
+                    cache_dir,
+                    blob_store_dir,
+                    uv_pool_size,
+                    conda_pool_size,
+                    pixi_pool_size,
+                    settings_json,
+                ),
+                _ => (
+                    None,
+                    None,
+                    None,
+                    runtimed_client::settings_doc::DEFAULT_UV_POOL_SIZE as usize,
+                    runtimed_client::settings_doc::DEFAULT_CONDA_POOL_SIZE as usize,
+                    runtimed_client::settings_doc::DEFAULT_PIXI_POOL_SIZE as usize,
+                    None,
+                ),
+            };
+
+            let config = DaemonConfig {
+                socket_path: socket.unwrap_or_else(runtimed::default_socket_path),
+                cache_dir: cache_dir.unwrap_or_else(runtimed::default_cache_dir),
+                blob_store_dir: blob_store_dir.unwrap_or_else(runtimed::default_blob_store_dir),
+                execution_store_dir: runtimed::default_execution_store_dir(),
+                uv_pool_size,
+                conda_pool_size,
+                pixi_pool_size,
+                settings_json_path: settings_json,
+                ..Default::default()
+            };
+
+            run_daemon(config).await
         }
         Some(Commands::Install { binary }) => install_service(binary),
         // Deprecated commands - still work but print warnings
@@ -402,26 +420,8 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn run_daemon(
-    socket: Option<PathBuf>,
-    cache_dir: Option<PathBuf>,
-    blob_store_dir: Option<PathBuf>,
-    uv_pool_size: usize,
-    conda_pool_size: usize,
-    pixi_pool_size: usize,
-) -> anyhow::Result<()> {
+async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     info!("runtimed starting...");
-
-    let config = DaemonConfig {
-        socket_path: socket.unwrap_or_else(runtimed::default_socket_path),
-        cache_dir: cache_dir.unwrap_or_else(runtimed::default_cache_dir),
-        blob_store_dir: blob_store_dir.unwrap_or_else(runtimed::default_blob_store_dir),
-        execution_store_dir: runtimed::default_execution_store_dir(),
-        uv_pool_size,
-        conda_pool_size,
-        pixi_pool_size,
-        ..Default::default()
-    };
 
     info!("Configuration:");
     info!("  Socket: {:?}", config.socket_path);

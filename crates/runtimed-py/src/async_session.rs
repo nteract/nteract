@@ -1078,6 +1078,10 @@ impl AsyncSession {
                 )?;
                 dict.set_item("keep_alive_secs", settings.keep_alive_secs)?;
                 dict.set_item("onboarding_completed", settings.onboarding_completed)?;
+                dict.set_item(
+                    "install_default_data_packages",
+                    settings.install_default_data_packages,
+                )?;
 
                 let uv_dict = PyDict::new(py);
                 uv_dict.set_item("default_packages", &settings.uv.default_packages)?;

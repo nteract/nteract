@@ -105,6 +105,10 @@ pub fn load_settings() -> SyncedSettings {
             .get("pixi_pool_size")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or(defaults.pixi_pool_size),
+        install_default_data_packages: json
+            .get("install_default_data_packages")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(defaults.install_default_data_packages),
         bootstrap_dx: json
             .get("bootstrap_dx")
             .and_then(|v| v.as_bool())
@@ -165,6 +169,7 @@ mod tests {
         assert_eq!(settings.default_python_env, PythonEnvType::Uv);
         assert!(settings.uv.default_packages.is_empty());
         assert!(settings.conda.default_packages.is_empty());
+        assert!(settings.install_default_data_packages);
     }
 
     #[test]
@@ -184,6 +189,7 @@ mod tests {
             uv_pool_size: 4,
             conda_pool_size: 5,
             pixi_pool_size: 6,
+            install_default_data_packages: true,
             bootstrap_dx: false,
             ..SyncedSettings::default()
         };
@@ -375,6 +381,7 @@ mod tests {
             uv_pool_size: defaults.uv_pool_size,
             conda_pool_size: defaults.conda_pool_size,
             pixi_pool_size: defaults.pixi_pool_size,
+            install_default_data_packages: defaults.install_default_data_packages,
             bootstrap_dx: defaults.bootstrap_dx,
             ..defaults
         };

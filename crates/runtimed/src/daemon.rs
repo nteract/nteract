@@ -405,6 +405,8 @@ fn spawn_env_deletions(paths: Vec<PathBuf>) {
 struct Pool {
     /// Available environments ready for use.
     available: VecDeque<PoolEntry>,
+    /// Stale-but-usable environments that can bridge a cold pool rebuild.
+    retired_available: VecDeque<PoolEntry>,
     /// Pool-root paths that were found on disk but whose package marker does
     /// not match the current expected package set. Keep these tracked so
     /// orphan GC does not delete a potentially working env while replacement
@@ -429,6 +431,7 @@ struct Pool {
 const MIN_WARM_BASES: usize = 2;
 const POOL_PACKAGE_HASH_FILE: &str = ".runt-pool-packages.sha256";
 const POOL_PACKAGE_HASH_VERSION: &str = "v1";
+const DEFAULT_DATA_PACKAGES: &[&str] = &["pandas", "polars", "matplotlib", "plotly", "altair"];
 
 fn has_package_named(packages: &[String], name: &str) -> bool {
     packages
@@ -440,9 +443,20 @@ fn has_package_named(packages: &[String], name: &str) -> bool {
         .any(|pkg| pkg == name)
 }
 
-fn extend_default_packages(packages: &mut Vec<String>, extra: &[String]) {
+fn extend_default_packages(
+    packages: &mut Vec<String>,
+    extra: &[String],
+    install_default_data_packages: bool,
+) {
     for pkg in extra {
         packages.push(pkg.clone());
+    }
+    if install_default_data_packages {
+        for pkg in DEFAULT_DATA_PACKAGES {
+            if !has_package_named(packages, pkg) {
+                packages.push((*pkg).to_string());
+            }
+        }
     }
     if !has_package_named(packages, "nbformat") {
         packages.push("nbformat".to_string());
@@ -452,7 +466,7 @@ fn extend_default_packages(packages: &mut Vec<String>, extra: &[String]) {
     }
 }
 
-fn uv_prewarmed_packages(extra: &[String]) -> Vec<String> {
+fn uv_prewarmed_packages(extra: &[String], install_default_data_packages: bool) -> Vec<String> {
     // The launcher package is vendored post-creation. pyarrow and nbformat are
     // part of the managed notebook runtime so rich display formatters work by
     // default; user defaults can still override either package by name.
@@ -462,27 +476,27 @@ fn uv_prewarmed_packages(extra: &[String]) -> Vec<String> {
         "anywidget".to_string(),
         "uv".to_string(),
     ];
-    extend_default_packages(&mut packages, extra);
+    extend_default_packages(&mut packages, extra, install_default_data_packages);
     packages
 }
 
-fn conda_prewarmed_packages(extra: &[String]) -> Vec<String> {
+fn conda_prewarmed_packages(extra: &[String], install_default_data_packages: bool) -> Vec<String> {
     let mut packages = vec![
         "ipykernel".to_string(),
         "ipywidgets".to_string(),
         "anywidget".to_string(),
     ];
-    extend_default_packages(&mut packages, extra);
+    extend_default_packages(&mut packages, extra, install_default_data_packages);
     packages
 }
 
-fn pixi_prewarmed_packages(extra: &[String]) -> Vec<String> {
+fn pixi_prewarmed_packages(extra: &[String], install_default_data_packages: bool) -> Vec<String> {
     let mut packages = vec![
         "ipykernel".to_string(),
         "ipywidgets".to_string(),
         "anywidget".to_string(),
     ];
-    extend_default_packages(&mut packages, extra);
+    extend_default_packages(&mut packages, extra, install_default_data_packages);
     packages
 }
 
@@ -554,6 +568,7 @@ impl Pool {
     fn new(target: usize, max_age_secs: u64) -> Self {
         Self {
             available: VecDeque::new(),
+            retired_available: VecDeque::new(),
             retired_paths: std::collections::HashSet::new(),
             warming: 0,
             warming_paths: std::collections::HashSet::new(),
@@ -635,6 +650,7 @@ impl Pool {
             } else {
                 self.retired_paths
                     .insert(pool_env_root(&entry.env.venv_path));
+                self.retired_available.push_back(entry);
                 retired += 1;
             }
         }
@@ -668,6 +684,27 @@ impl Pool {
 
         let mut all_paths = stale_paths;
         all_paths.extend(invalid_paths);
+        while let Some(entry) = self.retired_available.pop_front() {
+            let root = pool_env_root(&entry.env.venv_path);
+            if entry.env.venv_path.exists()
+                && entry.env.python_path.exists()
+                && entry.env.venv_path.join(".warmed").exists()
+            {
+                info!(
+                    "[runtimed] Pool empty; falling back to retired environment {:?}",
+                    entry.env.venv_path
+                );
+                self.retired_paths.remove(&root);
+                self.leased_paths.insert(root);
+                return (Some(entry.env), all_paths);
+            }
+            warn!(
+                "[runtimed] Skipping retired env with missing path or warmup marker: {:?}",
+                entry.env.venv_path
+            );
+            self.retired_paths.remove(&root);
+            all_paths.push(entry.env.venv_path);
+        }
         (None, all_paths)
     }
 
@@ -687,10 +724,12 @@ impl Pool {
         let mut retired = Vec::new();
         if let Some(path) = self.retired_paths.iter().next().cloned() {
             self.retired_paths.remove(&path);
+            self.remove_retired_available(&path);
             retired.push(path);
         }
 
         if self.available.len() >= self.target {
+            self.retired_available.clear();
             retired.extend(self.retired_paths.drain());
         }
         retired
@@ -698,22 +737,39 @@ impl Pool {
 
     fn retired_paths_if_available_at_target(&mut self) -> Vec<PathBuf> {
         if self.available.len() >= self.target {
+            self.retired_available.clear();
             self.retired_paths.drain().collect()
         } else {
             Vec::new()
         }
     }
 
+    #[cfg(test)]
     fn retire_path(&mut self, path: PathBuf) {
         self.retired_paths.insert(pool_env_root(&path));
     }
 
-    fn retire_path_if_fallback_needed(&mut self, path: PathBuf) -> bool {
+    fn retire_env_if_fallback_needed(&mut self, env: PooledEnv) -> bool {
         if self.available.len() + self.retired_paths.len() + self.warming < self.target {
-            self.retire_path(path);
+            self.retired_paths.insert(pool_env_root(&env.venv_path));
+            self.retired_available.push_back(PoolEntry {
+                env,
+                created_at: Instant::now(),
+            });
             true
         } else {
             false
+        }
+    }
+
+    fn remove_retired_available(&mut self, path: &Path) {
+        let root = pool_env_root(path);
+        if let Some(index) = self
+            .retired_available
+            .iter()
+            .position(|entry| pool_env_root(&entry.env.venv_path) == root)
+        {
+            self.retired_available.remove(index);
         }
     }
 
@@ -1116,7 +1172,10 @@ impl Daemon {
     pub async fn uv_pool_packages(&self) -> Vec<String> {
         let settings = self.settings.read().await;
         let synced = settings.get_all();
-        uv_prewarmed_packages(&synced.uv.default_packages)
+        uv_prewarmed_packages(
+            &synced.uv.default_packages,
+            synced.install_default_data_packages,
+        )
     }
 
     /// Snapshot the user's feature-flag settings.
@@ -1207,7 +1266,10 @@ impl Daemon {
     pub async fn conda_pool_packages(&self) -> Vec<String> {
         let settings = self.settings.read().await;
         let synced = settings.get_all();
-        conda_prewarmed_packages(&synced.conda.default_packages)
+        conda_prewarmed_packages(
+            &synced.conda.default_packages,
+            synced.install_default_data_packages,
+        )
     }
 
     /// Create a new daemon with the given configuration.
@@ -1933,9 +1995,18 @@ impl Daemon {
             let settings = self.settings.read().await;
             let synced = settings.get_all();
 
-            let uv_pkgs = uv_prewarmed_packages(&synced.uv.default_packages);
-            let conda_pkgs = conda_prewarmed_packages(&synced.conda.default_packages);
-            let pixi_pkgs = pixi_prewarmed_packages(&synced.pixi.default_packages);
+            let uv_pkgs = uv_prewarmed_packages(
+                &synced.uv.default_packages,
+                synced.install_default_data_packages,
+            );
+            let conda_pkgs = conda_prewarmed_packages(
+                &synced.conda.default_packages,
+                synced.install_default_data_packages,
+            );
+            let pixi_pkgs = pixi_prewarmed_packages(
+                &synced.pixi.default_packages,
+                synced.install_default_data_packages,
+            );
 
             (uv_pkgs, conda_pkgs, pixi_pkgs)
         };
@@ -1957,12 +2028,18 @@ impl Daemon {
                 #[cfg(not(target_os = "windows"))]
                 let python_path = env_path.join("bin").join("python");
 
-                if python_path.exists() {
+                if python_path.exists() && env_path.join(".warmed").exists() {
                     let hash_matches =
                         pool_package_hash_matches(&env_path, EnvType::Uv, &uv_prewarmed).await;
                     let mut pool = self.uv_pool.lock().await;
                     if !hash_matches {
-                        if pool.retire_path_if_fallback_needed(env_path.clone()) {
+                        let env = PooledEnv {
+                            env_type: EnvType::Uv,
+                            venv_path: env_path.clone(),
+                            python_path,
+                            prewarmed_packages: vec![],
+                        };
+                        if pool.retire_env_if_fallback_needed(env) {
                             retired_found += 1;
                         } else {
                             orphans.push(env_path);
@@ -2005,7 +2082,13 @@ impl Daemon {
                             .await;
                     let mut pool = self.conda_pool.lock().await;
                     if !hash_matches {
-                        if pool.retire_path_if_fallback_needed(env_path.clone()) {
+                        let env = PooledEnv {
+                            env_type: EnvType::Conda,
+                            venv_path: env_path.clone(),
+                            python_path,
+                            prewarmed_packages: vec![],
+                        };
+                        if pool.retire_env_if_fallback_needed(env) {
                             retired_found += 1;
                         } else {
                             orphans.push(env_path);
@@ -2046,7 +2129,13 @@ impl Daemon {
                         pool_package_hash_matches(&env_path, EnvType::Pixi, &pixi_prewarmed).await;
                     let mut pool = self.pixi_pool.lock().await;
                     if !hash_matches {
-                        if pool.retire_path_if_fallback_needed(env_path.clone()) {
+                        let env = PooledEnv {
+                            env_type: EnvType::Pixi,
+                            venv_path,
+                            python_path,
+                            prewarmed_packages: vec![],
+                        };
+                        if pool.retire_env_if_fallback_needed(env) {
                             retired_found += 1;
                         } else {
                             orphans.push(env_path);
@@ -4091,7 +4180,10 @@ impl Daemon {
                         .min(runtimed_client::settings_doc::MAX_POOL_SIZE)
                         as usize
                 };
-                let pkgs = uv_prewarmed_packages(&synced.uv.default_packages);
+                let pkgs = uv_prewarmed_packages(
+                    &synced.uv.default_packages,
+                    synced.install_default_data_packages,
+                );
                 (target, pkgs)
             };
 
@@ -4198,7 +4290,10 @@ impl Daemon {
                         .min(runtimed_client::settings_doc::MAX_POOL_SIZE)
                         as usize
                 };
-                let pkgs = conda_prewarmed_packages(&synced.conda.default_packages);
+                let pkgs = conda_prewarmed_packages(
+                    &synced.conda.default_packages,
+                    synced.install_default_data_packages,
+                );
                 (target, pkgs)
             };
 
@@ -4312,7 +4407,10 @@ impl Daemon {
                         .min(runtimed_client::settings_doc::MAX_POOL_SIZE)
                         as usize
                 };
-                let pkgs = pixi_prewarmed_packages(&synced.pixi.default_packages);
+                let pkgs = pixi_prewarmed_packages(
+                    &synced.pixi.default_packages,
+                    synced.install_default_data_packages,
+                );
                 (target, pkgs)
             };
 
@@ -4463,10 +4561,13 @@ impl Daemon {
         };
 
         // Read default conda packages from synced settings
-        let extra_conda_packages = {
+        let (extra_conda_packages, install_default_data_packages) = {
             let settings = self.settings.read().await;
             let synced = settings.get_all();
-            synced.conda.default_packages
+            (
+                synced.conda.default_packages,
+                synced.install_default_data_packages,
+            )
         };
 
         if !extra_conda_packages.is_empty() {
@@ -4477,7 +4578,8 @@ impl Daemon {
         }
 
         // Build specs: python + notebook essentials + user-configured defaults
-        let conda_install_packages = conda_prewarmed_packages(&extra_conda_packages);
+        let conda_install_packages =
+            conda_prewarmed_packages(&extra_conda_packages, install_default_data_packages);
 
         let match_spec_options = ParseMatchSpecOptions::strict();
         let specs: Vec<MatchSpec> = match (|| -> anyhow::Result<Vec<MatchSpec>> {
@@ -4692,7 +4794,7 @@ impl Daemon {
 
         // Run warmup script
         let warmup_outcome = self
-            .warmup_conda_env(&python_path, &env_path, &extra_conda_packages)
+            .warmup_conda_env(&python_path, &env_path, &conda_install_packages)
             .await;
 
         match warmup_outcome {
@@ -4856,13 +4958,14 @@ impl Daemon {
             let settings = self.settings.read().await;
             let synced = settings.get_all();
             let pixi_defaults = synced.pixi.default_packages;
+            let install_default_data_packages = synced.install_default_data_packages;
             if !pixi_defaults.is_empty() {
                 info!(
                     "[runtimed] Including default pixi packages: {:?}",
                     pixi_defaults
                 );
             }
-            pixi_prewarmed_packages(&pixi_defaults)
+            pixi_prewarmed_packages(&pixi_defaults, install_default_data_packages)
         };
         let prewarmed_packages = packages.clone();
 
@@ -4878,7 +4981,9 @@ impl Daemon {
         {
             Ok(env) => {
                 // Warm up the environment (.pyc compilation)
-                if let Err(e) = kernel_env::pixi::warmup_environment(&env).await {
+                if let Err(e) =
+                    kernel_env::pixi::warmup_environment(&env, &prewarmed_packages).await
+                {
                     warn!("[runtimed] Pixi warmup failed (non-fatal): {}", e);
                 }
 
@@ -5099,16 +5204,17 @@ impl Daemon {
         }
 
         // Read default uv packages from synced settings
-        let user_default_packages = {
+        let (user_default_packages, install_default_data_packages) = {
             let settings = self.settings.read().await;
             let synced = settings.get_all();
             let configured = synced.uv.default_packages;
             if !configured.is_empty() {
                 info!("[runtimed] Including default uv packages: {:?}", configured);
             }
-            configured
+            (configured, synced.install_default_data_packages)
         };
-        let install_packages = uv_prewarmed_packages(&user_default_packages);
+        let install_packages =
+            uv_prewarmed_packages(&user_default_packages, install_default_data_packages);
 
         // Install packages (180 second timeout per attempt). Try uv's cache
         // first so offline users with cached wheels do not take the network
@@ -5258,7 +5364,7 @@ impl Daemon {
             })
         };
         let warmup_script = kernel_env::warmup::build_warmup_command(
-            &user_default_packages,
+            &install_packages,
             false,
             site_packages.as_deref(),
         );
@@ -5360,17 +5466,34 @@ mod tests {
 
     #[test]
     fn test_uv_prewarmed_packages_include_required_display_deps() {
-        let packages = uv_prewarmed_packages(&[]);
+        let packages = uv_prewarmed_packages(&[], true);
+        assert!(packages.iter().any(|pkg| pkg == "nbformat"));
+        assert!(packages.iter().any(|pkg| pkg == "pyarrow>=14"));
+        for pkg in DEFAULT_DATA_PACKAGES {
+            assert!(packages.iter().any(|candidate| candidate == pkg));
+        }
+    }
+
+    #[test]
+    fn test_prewarmed_packages_can_disable_default_data_packages() {
+        let packages = uv_prewarmed_packages(&[], false);
+        for pkg in DEFAULT_DATA_PACKAGES {
+            assert!(!packages.iter().any(|candidate| candidate == pkg));
+        }
         assert!(packages.iter().any(|pkg| pkg == "nbformat"));
         assert!(packages.iter().any(|pkg| pkg == "pyarrow>=14"));
     }
 
     #[test]
     fn test_prewarmed_packages_do_not_duplicate_overrides() {
-        let packages = conda_prewarmed_packages(&[
-            "nbformat==5.10.4".to_string(),
-            "conda-forge::pyarrow>=15".to_string(),
-        ]);
+        let packages = conda_prewarmed_packages(
+            &[
+                "nbformat==5.10.4".to_string(),
+                "conda-forge::pyarrow>=15".to_string(),
+                "pandas==2.2.3".to_string(),
+            ],
+            true,
+        );
         let pyarrow_count = packages
             .iter()
             .filter_map(|pkg| crate::inline_env::extract_conda_package_name(pkg))
@@ -5381,16 +5504,24 @@ mod tests {
             .filter_map(|pkg| crate::inline_env::extract_conda_package_name(pkg))
             .filter(|pkg| crate::inline_env::normalize_package_name(pkg) == "nbformat")
             .count();
+        let pandas_count = packages
+            .iter()
+            .filter_map(|pkg| crate::inline_env::extract_conda_package_name(pkg))
+            .filter(|pkg| crate::inline_env::normalize_package_name(pkg) == "pandas")
+            .count();
         assert_eq!(pyarrow_count, 1);
         assert_eq!(nbformat_count, 1);
+        assert_eq!(pandas_count, 1);
         assert!(!packages.iter().any(|pkg| pkg == "pyarrow>=14"));
         assert!(!packages.iter().any(|pkg| pkg == "nbformat"));
     }
 
     #[test]
     fn test_conda_prewarmed_packages_does_not_duplicate_direct_ref_pyarrow() {
-        let packages =
-            conda_prewarmed_packages(&["pyarrow@https://example.invalid/pyarrow.whl".to_string()]);
+        let packages = conda_prewarmed_packages(
+            &["pyarrow@https://example.invalid/pyarrow.whl".to_string()],
+            true,
+        );
         let pyarrow_count = packages
             .iter()
             .filter_map(|pkg| crate::inline_env::extract_conda_package_name(pkg))
@@ -5498,6 +5629,7 @@ mod tests {
         assert_eq!(pool.target, 3);
         assert_eq!(pool.max_age_secs, 3600);
         assert_eq!(pool.available.len(), 0);
+        assert!(pool.retired_available.is_empty());
         assert_eq!(pool.warming, 0);
         assert!(pool.leased_paths.is_empty());
         assert!(pool.retired_paths.is_empty());
@@ -5561,6 +5693,29 @@ mod tests {
         assert!(tracked.contains(&pool_env_root(&leased_env.venv_path)));
         assert!(tracked.contains(&warming));
         assert!(tracked.contains(&retired));
+    }
+
+    #[test]
+    fn test_pool_take_falls_back_to_retired_env_when_available_empty() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut pool = Pool::new(2, 3600);
+
+        let mut env = create_test_env(&temp_dir, "runtimed-uv-retired");
+        env.prewarmed_packages = vec!["ipykernel".into()];
+        let root = pool_env_root(&env.venv_path);
+        pool.add(env.clone());
+
+        let expected = vec!["ipykernel".to_string(), "pandas".to_string()];
+        assert_eq!(pool.retire_mismatched_packages(&expected), 1);
+        assert!(pool.available.is_empty());
+        assert!(pool.retired_paths.contains(&root));
+
+        let (taken, stale) = pool.take();
+        assert!(stale.is_empty());
+        assert_eq!(taken.unwrap().venv_path, env.venv_path);
+        assert!(pool.retired_paths.is_empty());
+        assert!(pool.retired_available.is_empty());
+        assert!(pool.leased_paths.contains(&root));
     }
 
     /// Build a minimal `DaemonConfig` for in-process tests. Pool sizes
@@ -6795,6 +6950,30 @@ mod tests {
     }
 
     #[test]
+    fn test_data_package_toggle_retires_previous_pool_entries() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut pool = Pool::new(3, 3600);
+
+        let packages_with_data_stack = uv_prewarmed_packages(&[], true);
+        let packages_without_data_stack = uv_prewarmed_packages(&[], false);
+        assert_ne!(
+            packages_with_data_stack, packages_without_data_stack,
+            "the data-stack toggle must affect the expected pool package set"
+        );
+
+        let mut env = create_test_env(&temp_dir, "runtimed-uv-data-stack");
+        let env_root = pool_env_root(&env.venv_path);
+        env.prewarmed_packages = packages_with_data_stack;
+        pool.add(env);
+
+        let retired = pool.retire_mismatched_packages(&packages_without_data_stack);
+
+        assert_eq!(retired, 1);
+        assert!(pool.available.is_empty());
+        assert!(pool.retired_paths.contains(&env_root));
+    }
+
+    #[test]
     fn test_retire_mismatched_packages_tracks_pool_root_for_nested_venv() {
         // Pixi envs live at `runtimed-pixi-*/.pixi/envs/default`. Retirement
         // must track the pool root so orphan GC protects the whole directory,
@@ -6939,7 +7118,7 @@ mod tests {
             ..lease_test_config(&temp_dir)
         };
         std::fs::create_dir_all(&config.cache_dir).unwrap();
-        let expected = uv_prewarmed_packages(&[]);
+        let expected = uv_prewarmed_packages(&[], true);
         let env = create_test_env_in(&config.cache_dir, "runtimed-uv-matching");
         write_pool_package_hash(&env.venv_path, EnvType::Uv, &expected)
             .await
@@ -6967,7 +7146,7 @@ mod tests {
         std::fs::create_dir_all(python_path.parent().unwrap()).unwrap();
         std::fs::write(&python_path, "").unwrap();
         std::fs::write(venv_path.join(".warmed"), "").unwrap();
-        let expected = pixi_prewarmed_packages(&[]);
+        let expected = pixi_prewarmed_packages(&[], true);
         write_pool_package_hash(&project_dir, EnvType::Pixi, &expected)
             .await
             .unwrap();
