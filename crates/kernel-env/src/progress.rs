@@ -84,6 +84,13 @@ pub enum EnvProgressPhase {
     CreatingVenv,
     /// Installing pip packages (UV-specific).
     InstallingPackages { packages: Vec<String> },
+    /// Preparing a project-managed environment before kernel launch.
+    ProjectPreparing {
+        /// Environment source that owns the project preparation.
+        source: String,
+        /// Project file path being prepared.
+        project_path: String,
+    },
     /// Environment is ready.
     Ready {
         env_path: String,
@@ -163,6 +170,12 @@ impl ProgressHandler for LogHandler {
             }
             EnvProgressPhase::InstallingPackages { packages } => {
                 log::info!("[{env_type}] Installing packages: {packages:?}");
+            }
+            EnvProgressPhase::ProjectPreparing {
+                source,
+                project_path,
+            } => {
+                log::info!("[{env_type}] Preparing project environment: {source} {project_path}");
             }
             EnvProgressPhase::Ready {
                 env_path,
@@ -421,4 +434,27 @@ impl Reporter for RattlerReporter {
     }
 
     fn on_pre_unlink_complete(&self, _index: usize, _success: bool) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_preparing_serializes_as_snake_case_phase() {
+        let value = serde_json::to_value(EnvProgressPhase::ProjectPreparing {
+            source: "uv:pyproject".to_string(),
+            project_path: "/tmp/project/pyproject.toml".to_string(),
+        })
+        .unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "phase": "project_preparing",
+                "source": "uv:pyproject",
+                "project_path": "/tmp/project/pyproject.toml",
+            })
+        );
+    }
 }

@@ -1234,6 +1234,45 @@ pub(crate) async fn handle(
         (pooled_env, None)
     };
 
+    if matches!(parsed_resolved, EnvSource::Pyproject) {
+        match crate::uv_project::prepare_uv_pyproject_environment(
+            notebook_path.as_deref(),
+            bootstrap_dx,
+            launch_progress_handler.clone(),
+        )
+        .await
+        {
+            Ok(()) => {
+                if let Err(e) = room.state.with_doc(|sd| sd.clear_env_progress()) {
+                    warn!("[runtime-state] {}", e);
+                }
+            }
+            Err(e) => {
+                let details = format!("Failed to prepare UV project environment: {e}");
+                error!("[notebook-sync] {}", details);
+                reset_starting_state(room, None).await;
+                let error_phase = kernel_env::EnvProgressPhase::Error {
+                    message: details.clone(),
+                };
+                if let Err(e) = room.state.with_doc(|sd| {
+                    sd.set_lifecycle_with_error_details(
+                        &RuntimeLifecycle::Error,
+                        None,
+                        Some(&details),
+                    )?;
+                    sd.set_kernel_info("python", "python", parsed_resolved.as_str())?;
+                    if let Ok(value) = serde_json::to_value(&error_phase) {
+                        sd.set_env_progress("uv", &value)?;
+                    }
+                    Ok(())
+                }) {
+                    warn!("[runtime-state] {}", e);
+                }
+                return NotebookResponse::Error { error: details };
+            }
+        }
+    }
+
     // Verify ipykernel is present in the prepared env before we launch.
     // Mirrors the auto-launch gate in `notebook_sync_server/metadata.rs`:
     // the LaunchKernel RPC serves the toolbar restart button,

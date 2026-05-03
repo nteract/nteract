@@ -2308,6 +2308,13 @@ fn env_progress_message(phase: &EnvProgressPhase) -> String {
         EnvProgressPhase::InstallingPackages { packages } => {
             format!("Installing {} packages...", packages.len())
         }
+        EnvProgressPhase::ProjectPreparing { source, .. } => {
+            if source == "uv:pyproject" {
+                "Preparing UV project environment...".to_string()
+            } else {
+                "Preparing project environment...".to_string()
+            }
+        }
         EnvProgressPhase::Ready { .. } => "Environment ready".to_string(),
         EnvProgressPhase::Error { message } => format!("Environment error: {}", message),
     }
@@ -2337,6 +2344,12 @@ fn env_progress_dedupe_key(env_type: &str, phase: &EnvProgressPhase) -> String {
         EnvProgressPhase::CreatingVenv => format!("{}:creating_venv", env_type),
         EnvProgressPhase::InstallingPackages { .. } => {
             format!("{}:installing_packages", env_type)
+        }
+        EnvProgressPhase::ProjectPreparing {
+            source,
+            project_path,
+        } => {
+            format!("{}:project_preparing:{}:{}", env_type, source, project_path)
         }
         EnvProgressPhase::Ready { .. } => format!("{}:ready", env_type),
         EnvProgressPhase::Error { message } => format!("{}:error:{}", env_type, message),

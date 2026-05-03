@@ -3480,6 +3480,45 @@ pub(crate) async fn auto_launch_kernel(
         (pooled_env, None)
     };
 
+    if matches!(env_source, EnvSource::Pyproject) {
+        match crate::uv_project::prepare_uv_pyproject_environment(
+            notebook_path_opt.as_deref(),
+            bootstrap_dx,
+            progress_handler.clone(),
+        )
+        .await
+        {
+            Ok(()) => {
+                if let Err(e) = room.state.with_doc(|sd| sd.clear_env_progress()) {
+                    warn!("[runtime-state] {}", e);
+                }
+            }
+            Err(e) => {
+                let details = format!("Failed to prepare UV project environment: {e}");
+                error!("[notebook-sync] {}", details);
+                reset_starting_state(room, None).await;
+                let error_phase = kernel_env::EnvProgressPhase::Error {
+                    message: details.clone(),
+                };
+                if let Err(e) = room.state.with_doc(|sd| {
+                    sd.set_lifecycle_with_error_details(
+                        &RuntimeLifecycle::Error,
+                        None,
+                        Some(&details),
+                    )?;
+                    sd.set_kernel_info("python", "python", env_source.as_str())?;
+                    if let Ok(value) = serde_json::to_value(&error_phase) {
+                        sd.set_env_progress("uv", &value)?;
+                    }
+                    Ok(())
+                }) {
+                    warn!("[runtime-state] {}", e);
+                }
+                return;
+            }
+        }
+    }
+
     // Verify ipykernel is actually present in the prepared env before we
     // spawn the kernel. For UV/Conda inline + PEP 723, `prepare_environment_in`
     // always adds `ipykernel` to the install set, but cache hits skip the

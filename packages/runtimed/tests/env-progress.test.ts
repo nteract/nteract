@@ -49,6 +49,22 @@ describe("env progress projection", () => {
     });
   });
 
+  it("projects UV project preparation as active toolbar progress", () => {
+    const event: EnvProgressEvent = {
+      env_type: "uv",
+      phase: "project_preparing",
+      source: "uv:pyproject",
+      project_path: "/tmp/project/pyproject.toml",
+    };
+
+    expect(projectEnvProgress(event)).toMatchObject({
+      isActive: true,
+      envType: "uv",
+      phase: "project_preparing",
+      statusText: "Preparing UV project environment...",
+    });
+  });
+
   it("uses a stable dismissal key across object field order", () => {
     const eventA = {
       env_type: "uv",
