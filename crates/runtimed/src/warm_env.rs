@@ -55,8 +55,9 @@ pub struct WarmEnvResult {
 
 fn emit(event: &WarmEnvEvent) {
     if let Ok(json) = serde_json::to_string(event) {
-        println!("{json}");
         let mut stdout = std::io::stdout();
+        let _ = std::io::Write::write_all(&mut stdout, json.as_bytes());
+        let _ = std::io::Write::write_all(&mut stdout, b"\n");
         let _ = std::io::Write::flush(&mut stdout);
     }
 }
@@ -859,5 +860,78 @@ mod tests {
         let h1 = expected_pool_package_hash(EnvType::Uv, &["b".into(), "a".into()]);
         let h2 = expected_pool_package_hash(EnvType::Uv, &["a".into(), "b".into()]);
         assert_eq!(h1, h2, "hash should be order-independent");
+    }
+
+    #[test]
+    fn parse_uv_error_package_not_found() {
+        let stderr = r#"error: No solution found when resolving dependencies:
+  Because Because scitkit-learn was not found in the package registry and you require scitkit-learn, we can conclude that your requirements are unsatisfiable."#;
+
+        let result = parse_uv_error(stderr).expect("expected package parse error");
+        assert_eq!(result.1, "invalid_package");
+        assert_eq!(result.2, Some("scitkit-learn".to_string()));
+    }
+
+    #[test]
+    fn parse_uv_error_backtick_format() {
+        let result = parse_uv_error("error: Package `nonexistent-pkg` not found in registry")
+            .expect("expected package parse error");
+        assert_eq!(result.1, "invalid_package");
+        assert_eq!(result.2, Some("nonexistent-pkg".to_string()));
+    }
+
+    #[test]
+    fn parse_uv_error_no_matching_distribution() {
+        let result = parse_uv_error("error: No matching distribution found for bad-package-name")
+            .expect("expected package parse error");
+        assert_eq!(result.1, "invalid_package");
+        assert_eq!(result.2, Some("bad-package-name".to_string()));
+    }
+
+    #[test]
+    fn parse_uv_error_generic_error() {
+        let result = parse_uv_error("error: Failed to resolve dependencies")
+            .expect("expected generic error");
+        assert_eq!(result.1, "setup_failed");
+        assert_eq!(result.2, None);
+        assert!(result.0.contains("error"));
+    }
+
+    #[test]
+    fn parse_uv_error_no_error() {
+        assert!(parse_uv_error("Successfully installed packages").is_none());
+    }
+
+    #[test]
+    fn uv_pip_install_args_offline_first_shape() {
+        let args = uv_pip_install_args(
+            Path::new("/tmp/env/bin/python"),
+            &["ipykernel".into(), "numpy>=2".into()],
+            true,
+        );
+
+        assert_eq!(args[0], "pip");
+        assert_eq!(args[1], "install");
+        assert!(args.contains(&"--link-mode".to_string()));
+        assert!(args.contains(&"hardlink".to_string()));
+        assert!(args.contains(&"--python".to_string()));
+        assert!(args.contains(&"/tmp/env/bin/python".to_string()));
+        assert!(args.contains(&"--offline".to_string()));
+        assert!(args.ends_with(&["ipykernel".to_string(), "numpy>=2".to_string()]));
+    }
+
+    #[test]
+    fn uv_pip_install_args_online_fallback_shape() {
+        let args = uv_pip_install_args(Path::new("/tmp/env/bin/python"), &["pandas".into()], false);
+
+        assert!(!args.contains(&"--offline".to_string()));
+        assert!(args.contains(&"--link-mode".to_string()));
+        assert!(args.contains(&"hardlink".to_string()));
+        assert!(args.ends_with(&["pandas".to_string()]));
+    }
+
+    #[test]
+    fn uv_offline_probe_has_shorter_timeout_than_online_fallback() {
+        assert!(UV_OFFLINE_INSTALL_TIMEOUT < UV_ONLINE_INSTALL_TIMEOUT);
     }
 }
