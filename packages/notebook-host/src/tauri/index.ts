@@ -178,8 +178,8 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
   };
 
   const relay: HostRelay = {
-    async notifySyncReady() {
-      await invoke("notify_sync_ready");
+    async notifySyncReady(generation?: number) {
+      await invoke("notify_sync_ready", { generation });
     },
   };
 

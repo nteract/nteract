@@ -223,6 +223,14 @@ export function useAutomergeNotebook() {
     return true;
   }, []);
 
+  const notifyRelayReady = useCallback(
+    (generation?: number) =>
+      host.relay
+        .notifySyncReady(generation)
+        .catch((e: unknown) => logger.warn("[automerge-notebook] Failed to signal sync ready:", e)),
+    [host.relay],
+  );
+
   // ── Lifecycle (single effect) ──────────────────────────────────────
 
   useEffect(() => {
@@ -242,13 +250,6 @@ export function useAutomergeNotebook() {
 
     // Start the engine (subscribes to transport frames).
     engine.start();
-
-    // Signal the Rust relay that the JS frame listener is active.
-    // The relay buffers daemon frames until this fires, preventing
-    // frame loss during WASM init (see #1421).
-    host.relay.notifySyncReady().catch((e: unknown) => {
-      logger.warn("[automerge-notebook] Failed to signal sync ready:", e);
-    });
 
     // ── Subscribe to SyncEngine observables ───────────────────────
 
@@ -376,21 +377,35 @@ export function useAutomergeNotebook() {
     // ── Bootstrap ─────────────────────────────────────────────────
 
     setIsLoading(true);
-    void bootstrap(() => cancelled).catch((error) => {
-      logger.error("[automerge-notebook] Bootstrap failed", error);
-      if (!cancelled) {
-        setLoadError(error instanceof Error ? error.message : String(error));
-        setIsLoading(false);
-      }
-    });
+    void host.daemon
+      .getReadyInfo()
+      .catch(() => null)
+      .then((readyInfo) =>
+        bootstrap(() => cancelled).then((bootstrapped) => ({ bootstrapped, readyInfo })),
+      )
+      .then((bootstrapped) => {
+        if (!bootstrapped.bootstrapped || cancelled) return;
+        // Signal the Rust relay only after the WASM handle exists and the
+        // bootstrap reset has run. Otherwise buffered daemon frames can mark
+        // the session interactive, then resetForBootstrap() emits pending
+        // afterward with no later status frame to recover.
+        return notifyRelayReady(bootstrapped.readyInfo?.sync_generation);
+      })
+      .catch((error) => {
+        logger.error("[automerge-notebook] Bootstrap failed", error);
+        if (!cancelled) {
+          setLoadError(error instanceof Error ? error.message : String(error));
+          setIsLoading(false);
+        }
+      });
 
     // ── Daemon lifecycle ─────────────────────────────────────────
 
-    const lifecycleSub = new Observable<void>((subscriber) =>
-      host.daemonEvents.onReadyLive(() => subscriber.next()),
+    const lifecycleSub = new Observable<{ sync_generation?: number }>((subscriber) =>
+      host.daemonEvents.onReadyLive((payload) => subscriber.next(payload)),
     )
       .pipe(
-        switchMap(() => {
+        switchMap((readyPayload) => {
           logger.info("[automerge-notebook] daemon:ready — re-bootstrapping");
           refreshBlobPort();
           resetNotebookCells();
@@ -402,9 +417,18 @@ export function useAutomergeNotebook() {
           setIsLoading(true);
           setLoadError(null);
           return from(
-            bootstrap(() => cancelled).catch((err: unknown) => {
-              logger.error("[automerge-notebook] lifecycle bootstrap failed:", err);
-            }),
+            bootstrap(() => cancelled)
+              .then((bootstrapped) => {
+                if (!bootstrapped || cancelled) return;
+                return notifyRelayReady(readyPayload.sync_generation);
+              })
+              .catch((err: unknown) => {
+                logger.error("[automerge-notebook] lifecycle bootstrap failed:", err);
+                if (!cancelled) {
+                  setLoadError(err instanceof Error ? err.message : String(err));
+                  setIsLoading(false);
+                }
+              }),
           );
         }),
       )
@@ -445,7 +469,7 @@ export function useAutomergeNotebook() {
       handleRef.current?.free();
       handleRef.current = null;
     };
-  }, [bootstrap, host, materializeCells, refreshCanAcceptCellMutations]);
+  }, [bootstrap, host, materializeCells, notifyRelayReady, refreshCanAcceptCellMutations]);
 
   // ── Cell mutations ─────────────────────────────────────────────────
 

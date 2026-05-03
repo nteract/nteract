@@ -29,6 +29,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "get_daemon_ready_info":
         return Promise.resolve({
           notebook_id: "nb-1",
+          sync_generation: 3,
           cell_count: 2,
           needs_trust_approval: false,
           ephemeral: true,
@@ -301,6 +302,7 @@ describe("createTauriHost()", () => {
     // Mock returns the canned ready info (ephemeral=true, runtime=python).
     expect(received).toContainEqual({
       notebook_id: "nb-1",
+      sync_generation: 3,
       cell_count: 2,
       needs_trust_approval: false,
       ephemeral: true,
@@ -341,8 +343,9 @@ describe("createTauriHost()", () => {
 
   it("relay.notifySyncReady invokes notify_sync_ready (not on daemonEvents)", async () => {
     const host = createTauriHost({ transport: stubTransport });
-    await host.relay.notifySyncReady();
+    await host.relay.notifySyncReady(7);
     expect(capturedInvokes.at(-1)?.cmd).toBe("notify_sync_ready");
+    expect(capturedInvokes.at(-1)?.args).toEqual({ generation: 7 });
     // Sanity: subscribe-only namespace shouldn't have the outbound method.
     expect(
       (host.daemonEvents as unknown as { notifySyncReady?: unknown }).notifySyncReady,
