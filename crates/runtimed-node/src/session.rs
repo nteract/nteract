@@ -497,7 +497,8 @@ impl Session {
     ///
     /// Callback receives the same JSON shape as `CellResult`, emitted whenever
     /// the RuntimeStateDoc entry for the execution changes. The subscription
-    /// ends after a terminal `done` or `error` snapshot.
+    /// ends after an authoritative terminal snapshot, including kernel
+    /// failure/close.
     #[napi]
     pub fn on_execution_progress(
         &self,
@@ -519,38 +520,24 @@ impl Session {
                 st.blob_store_path.clone(),
             )
         };
-        let mut rx = handle.subscribe_runtime_state();
         let tsfn = json_callback(callback)?;
         let task = tokio::spawn(async move {
             let fallback_cell_id = cell_id.unwrap_or_default();
-            let mut prev: Option<runtime_doc::ExecutionState> = None;
-            loop {
-                let (entry, comms) = {
-                    let state = rx.borrow_and_update().clone();
-                    (state.executions.get(&execution_id).cloned(), state.comms)
-                };
-                if let Some(entry) = entry {
-                    if prev.as_ref() != Some(&entry) {
-                        if let Ok(result) = cell_result_from_execution_state(
-                            &execution_id,
-                            Some(&fallback_cell_id),
-                            &entry,
-                            Some(&comms),
-                            &blob_base_url,
-                            &blob_store_path,
-                        )
-                        .await
-                        {
-                            emit_json(&tsfn, &result);
-                        }
-                        let terminal = entry.status == "done" || entry.status == "error";
-                        prev = Some(entry);
-                        if terminal {
-                            break;
-                        }
-                    }
+            let mut watcher =
+                notebook_sync::ExecutionWatcher::new(&handle, fallback_cell_id, execution_id);
+            while let Some(progress) = watcher.next().await {
+                let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
+                if let Ok(result) = cell_result_from_execution_progress(
+                    &progress,
+                    comms.as_ref(),
+                    &blob_base_url,
+                    &blob_store_path,
+                )
+                .await
+                {
+                    emit_json(&tsfn, &result);
                 }
-                if rx.changed().await.is_err() {
+                if progress.terminal {
                     break;
                 }
             }
@@ -1959,6 +1946,30 @@ async fn cell_result_from_execution_state(
             success,
             execution_count: state.execution_count,
             output_manifests: &state.outputs,
+        },
+        OutputResolutionContext {
+            comms,
+            blob_base_url,
+            blob_store_path,
+        },
+    )
+    .await
+}
+
+async fn cell_result_from_execution_progress(
+    progress: &notebook_sync::ExecutionProgressState,
+    comms: Option<&CommMap>,
+    blob_base_url: &Option<String>,
+    blob_store_path: &Option<PathBuf>,
+) -> Result<CellResult> {
+    cell_result_from_output_manifests(
+        ExecutionResultParts {
+            execution_id: &progress.execution_id,
+            cell_id: &progress.cell_id,
+            status: &progress.status,
+            success: progress.success.unwrap_or(true),
+            execution_count: progress.execution_count,
+            output_manifests: &progress.output_manifests,
         },
         OutputResolutionContext {
             comms,

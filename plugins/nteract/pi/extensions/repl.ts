@@ -337,6 +337,7 @@ function formatResult(result: CellResult): {
   const isError =
     result.status === "error" ||
     result.status === "kernel_error" ||
+    result.status === "kernel_failed" ||
     result.outputs.some((o) => o.outputType === "error");
 
   const parts: (TextContent | ImageContent)[] = [];

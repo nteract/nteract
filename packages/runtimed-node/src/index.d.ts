@@ -1,5 +1,5 @@
 import type { Observable } from "rxjs";
-import type { CellChangeset, ExecutionTransition, RuntimeState, SessionStatus } from "runtimed";
+import type { ExecutionTransition, RuntimeState, SessionStatus } from "runtimed";
 
 export type RuntimeKind = "python" | "deno" | (string & {});
 export type PackageManager = "uv" | "conda" | "pixi";
@@ -68,7 +68,16 @@ export interface CellResult {
   cellId: string;
   executionId: string;
   executionCount?: number;
-  status: "done" | "error" | "timeout" | "kernel_error" | "queued" | "running" | (string & {});
+  status:
+    | "done"
+    | "error"
+    | "timeout"
+    | "kernel_error"
+    | "kernel_failed"
+    | "closed"
+    | "queued"
+    | "running"
+    | (string & {});
   success: boolean;
   outputs: JsOutput[];
 }
@@ -133,7 +142,7 @@ export class Session {
   readonly notebookId: string;
   readonly runtimeState$: Observable<RuntimeState>;
   readonly executionTransitions$: Observable<ExecutionTransition>;
-  readonly cellChanges$: Observable<CellChangeset | null>;
+  readonly cellChanges$: Observable<null>;
   readonly broadcasts$: Observable<unknown>;
   readonly sessionStatus$: Observable<SessionStatus>;
 
@@ -164,6 +173,8 @@ export class Session {
   syncEnvironment(): Promise<void>;
   close(): Promise<void>;
 }
+
+export const NativeSession: unknown;
 
 export function defaultSocketPath(): string;
 export function socketPathForChannel(channel: "stable" | "nightly"): string;

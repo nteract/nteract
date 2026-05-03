@@ -63,11 +63,12 @@ main().catch((error) => {
 up-front instead of failing the first import and retrying after `addDependencies()`.
 When `packageManager` is omitted, the daemon/user environment choice remains in
 charge. Later dependency edits also infer the manager from the running kernel,
-inline notebook metadata, or detected project file, falling back to UV only for
-fresh Python notebooks with no other signal. Pass the native binding's
-`PackageManager` string enum (`"uv"`, `"conda"`, or `"pixi"`) only when you need
-to target a specific metadata section. `description` can be used as a
-human-readable peer label for agent-created sessions.
+inline notebook metadata (`uv`, then `conda`, then `pixi`), or detected project
+file, falling back to UV for fresh Python notebooks with no other signal. Pass
+the native binding's `PackageManager` string enum (`"uv"`, `"conda"`, or
+`"pixi"`) only when you need to target a specific metadata section.
+`description` can be used as a human-readable peer label for agent-created
+sessions.
 
 ## API Surface
 
