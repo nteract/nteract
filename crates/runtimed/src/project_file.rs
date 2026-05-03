@@ -759,18 +759,17 @@ mod tests {
             resolve_conda_env_yml_prefix(&config, &temp.path().join("environment.yml"));
         let (prefix2, _) =
             resolve_conda_env_yml_prefix(&config, &temp.path().join("environment.yml"));
-        assert_eq!(prefix1, prefix2, "same project dir must produce same prefix");
+        assert_eq!(
+            prefix1, prefix2,
+            "same project dir must produce same prefix"
+        );
     }
 
     #[test]
     fn test_resolve_conda_env_yml_prefix_no_name_no_prefix() {
         // No name or prefix: should use hash-based path
         let temp = TempDir::new().unwrap();
-        write_file(
-            temp.path(),
-            "environment.yml",
-            "dependencies:\n  - numpy\n",
-        );
+        write_file(temp.path(), "environment.yml", "dependencies:\n  - numpy\n");
         let config = parse_environment_yml(&temp.path().join("environment.yml")).unwrap();
         let (prefix, is_daemon_owned) =
             resolve_conda_env_yml_prefix(&config, &temp.path().join("environment.yml"));
