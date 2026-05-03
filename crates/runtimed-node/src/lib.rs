@@ -24,7 +24,6 @@ use napi_derive::napi;
 
 mod error;
 mod parquet;
-mod projection;
 mod session;
 
 pub use error::NodeError;

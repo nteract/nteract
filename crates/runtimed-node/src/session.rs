@@ -21,7 +21,7 @@ use runtimed_client::output_resolver as shared_resolver;
 use runtimed_client::resolved_output::DataValue as SharedDataValue;
 
 use crate::error::to_napi_err;
-use crate::projection::diff_executions;
+use runtime_projection::diff_executions;
 
 /// Valid cell types accepted by `runCell`.
 const VALID_CELL_TYPES: &[&str] = &["code", "markdown", "raw"];

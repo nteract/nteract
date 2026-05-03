@@ -18,6 +18,9 @@ pub enum ExecutionTransitionKind {
     Error,
 }
 
+/// Diff RuntimeStateDoc execution maps into lifecycle transitions.
+///
+/// Keep this behavior in parity with `packages/runtimed/src/runtime-state.ts`.
 pub fn diff_executions(
     prev: &HashMap<String, runtime_doc::ExecutionState>,
     curr: &HashMap<String, runtime_doc::ExecutionState>,

@@ -9,13 +9,36 @@ class Session {
     this._subscriptions = [];
     this._runtimeStateSubject = new Subject();
     this._executionTransitionsSubject = new Subject();
+    this._cellChangesSubject = new Subject();
+    this._broadcastsSubject = new Subject();
+    this._sessionStatusSubject = new Subject();
     this.runtimeState$ = this._runtimeStateSubject.asObservable();
     this.executionTransitions$ = this._executionTransitionsSubject.asObservable();
+    this.cellChanges$ = this._cellChangesSubject.asObservable();
+    this.broadcasts$ = this._broadcastsSubject.asObservable();
+    this.sessionStatus$ = this._sessionStatusSubject.asObservable();
 
     if (typeof nativeSession.onRuntimeState === "function") {
       this._subscriptions.push(
         nativeSession.onRuntimeState((json) =>
           this._runtimeStateSubject.next(parseJsonEvent(json)),
+        ),
+      );
+    }
+    if (typeof nativeSession.onCellChange === "function") {
+      this._subscriptions.push(
+        nativeSession.onCellChange((json) => this._cellChangesSubject.next(parseJsonEvent(json))),
+      );
+    }
+    if (typeof nativeSession.onBroadcast === "function") {
+      this._subscriptions.push(
+        nativeSession.onBroadcast((json) => this._broadcastsSubject.next(parseJsonEvent(json))),
+      );
+    }
+    if (typeof nativeSession.onSessionStatus === "function") {
+      this._subscriptions.push(
+        nativeSession.onSessionStatus((json) =>
+          this._sessionStatusSubject.next(parseJsonEvent(json)),
         ),
       );
     }
@@ -93,6 +116,9 @@ class Session {
     }
     this._runtimeStateSubject.complete();
     this._executionTransitionsSubject.complete();
+    this._cellChangesSubject.complete();
+    this._broadcastsSubject.complete();
+    this._sessionStatusSubject.complete();
     return this._native.close();
   }
 }

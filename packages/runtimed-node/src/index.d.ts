@@ -1,5 +1,5 @@
 import type { Observable } from "rxjs";
-import type { ExecutionTransition, RuntimeState } from "runtimed";
+import type { CellChangeset, ExecutionTransition, RuntimeState, SessionStatus } from "runtimed";
 
 export type RuntimeKind = "python" | "deno" | (string & {});
 
@@ -66,6 +66,9 @@ export class Session {
   readonly notebookId: string;
   readonly runtimeState$: Observable<RuntimeState>;
   readonly executionTransitions$: Observable<ExecutionTransition>;
+  readonly cellChanges$: Observable<CellChangeset | null>;
+  readonly broadcasts$: Observable<unknown>;
+  readonly sessionStatus$: Observable<SessionStatus>;
 
   queueCell(source: string, options?: QueueCellOptions): Promise<QueuedExecution>;
   waitForExecution(executionId: string, options?: WaitExecutionOptions): Promise<CellResult>;

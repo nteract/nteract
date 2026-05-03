@@ -7046,6 +7046,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-projection"
+version = "0.1.0"
+dependencies = [
+ "runtime-doc",
+ "serde",
+]
+
+[[package]]
 name = "runtimed"
 version = "2.4.3"
 dependencies = [
@@ -7154,6 +7162,7 @@ dependencies = [
  "parquet",
  "runt-workspace",
  "runtime-doc",
+ "runtime-projection",
  "runtimed-client",
  "serde",
  "serde_json",
