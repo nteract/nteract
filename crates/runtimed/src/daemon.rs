@@ -80,18 +80,10 @@ pub struct DaemonConfig {
     /// retries push boot past the test's `wait_for_daemon` timeout, and
     /// for any other context where the stable-port UX isn't load-bearing.
     pub use_preferred_blob_port: bool,
-    /// Override for the persisted Automerge settings-document path.
+    /// Override for the canonical settings JSON path.
     ///
-    /// `None` (default) uses the channel's global path
-    /// (`daemon_base_dir()/settings.automerge`). Integration tests
-    /// override this to a per-test temp-dir path so dozens of parallel
-    /// daemons don't contend on the same on-disk file during boot.
-    pub settings_doc_path: Option<PathBuf>,
-    /// Override for the JSON mirror of the settings doc.
-    ///
-    /// Same story as `settings_doc_path`: global by default, per-test
-    /// when overridden. Integration tests set both to avoid write
-    /// contention under parallel boot.
+    /// Global by default, per-test when overridden. Integration tests set this
+    /// to avoid write contention under parallel boot.
     pub settings_json_path: Option<PathBuf>,
 }
 
@@ -116,28 +108,23 @@ impl Default for DaemonConfig {
             env_cache_max_age_secs: 86400, // 1 day
             env_cache_max_count: 10,
             use_preferred_blob_port: true,
-            settings_doc_path: None,
             settings_json_path: None,
         }
     }
 }
 
 impl DaemonConfig {
-    /// Resolve the Automerge settings-doc path: override when set,
-    /// otherwise the channel's global path.
-    pub fn resolved_settings_doc_path(&self) -> PathBuf {
-        self.settings_doc_path
-            .clone()
-            .unwrap_or_else(runtimed_client::default_settings_doc_path)
-    }
-
-    /// Resolve the JSON mirror path: override when set, otherwise the
+    /// Resolve the canonical settings JSON path: override when set, otherwise the
     /// channel's global path.
     pub fn resolved_settings_json_path(&self) -> PathBuf {
         self.settings_json_path
             .clone()
             .unwrap_or_else(runt_workspace::settings_json_path)
     }
+}
+
+fn legacy_settings_doc_path() -> PathBuf {
+    runtimed_client::daemon_base_dir().join("settings.automerge")
 }
 
 #[cfg(unix)]
@@ -1055,7 +1042,7 @@ pub struct Daemon {
     shutdown_notify: Arc<Notify>,
     /// Singleton lock - kept alive while daemon is running.
     _lock: DaemonLock,
-    /// Shared Automerge settings document.
+    /// Shared in-memory Automerge settings document for live sync.
     pub(crate) settings: Arc<RwLock<SettingsDoc>>,
     /// Broadcast channel to notify sync connections of settings changes.
     settings_changed: tokio::sync::broadcast::Sender<()>,
@@ -1228,10 +1215,10 @@ impl Daemon {
         let lock = DaemonLock::try_acquire(config.lock_dir.as_ref())
             .map_err(|info| DaemonAlreadyRunning { info })?;
 
-        // Load or create the settings document. Use the config-resolved
-        // paths so integration tests can point each daemon at a per-test
-        // temp file and avoid contention on the global settings doc.
-        let automerge_path = config.resolved_settings_doc_path();
+        // Load or create the in-memory settings document. settings.json is
+        // canonical; the legacy Automerge file is read only for one-time
+        // migration when JSON is missing.
+        let automerge_path = legacy_settings_doc_path();
         let json_path = config.resolved_settings_json_path();
         let mut settings = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
 
@@ -1246,7 +1233,7 @@ impl Daemon {
         // installs (onboarding_completed = false) and idempotent across
         // restarts.
         //
-        // Write both the Automerge doc and the JSON mirror immediately when
+        // Write the JSON settings file immediately when
         // the flag flips. Otherwise the change only persists if a settings
         // client happens to connect and trigger `persist_settings` in
         // `sync_server.rs` — a daemon that boots, runs briefly with no
@@ -1255,14 +1242,11 @@ impl Daemon {
             tracing::info!(
                 "[settings] Backfilled telemetry_consent_recorded for an existing onboarded install"
             );
-            if let Err(e) = settings.save_to_file(&automerge_path) {
+            if let Err(e) = settings.save_json_mirror(&json_path) {
                 tracing::warn!(
-                    "[settings] Failed to persist backfilled Automerge doc: {}",
+                    "[settings] Failed to persist backfilled settings.json: {}",
                     e
                 );
-            }
-            if let Err(e) = settings.save_json_mirror(&json_path) {
-                tracing::warn!("[settings] Failed to persist backfilled JSON mirror: {}", e);
             }
         }
 
@@ -1776,7 +1760,7 @@ impl Daemon {
         Ok(())
     }
 
-    /// Watch `settings.json` for external changes and apply them to the Automerge doc.
+    /// Watch `settings.json` for external changes and apply them to the in-memory Automerge doc.
     ///
     /// Uses the `notify` crate with a 500ms debouncer. When changes are detected,
     /// reads the file, parses it, and selectively applies any differences to the
@@ -1868,21 +1852,12 @@ impl Daemon {
                                 }
                             };
 
-                            // Apply changes to the Automerge doc
+                            // Apply changes to the in-memory Automerge doc.
+                            // settings.json is canonical, so do not write a
+                            // legacy settings.automerge file here.
                             let changed = {
                                 let mut doc = self.settings.write().await;
-                                let changed = doc.apply_json_changes(&json);
-                                if changed {
-                                    // Only persist the Automerge binary — do NOT write
-                                    // the JSON mirror back, as serde_json formatting
-                                    // differs from editors (e.g. arrays expand to one
-                                    // element per line) which causes unwanted churn.
-                                    let automerge_path = self.config.resolved_settings_doc_path();
-                                    if let Err(e) = doc.save_to_file(&automerge_path) {
-                                        warn!("[settings-watch] Failed to save Automerge doc: {}", e);
-                                    }
-                                }
-                                changed
+                                doc.apply_json_changes(&json)
                             };
 
                             if changed {
@@ -2198,7 +2173,6 @@ impl Daemon {
                     self.settings.clone(),
                     changed_tx,
                     changed_rx,
-                    self.config.resolved_settings_doc_path(),
                     self.config.resolved_settings_json_path(),
                 )
                 .await
@@ -5614,7 +5588,6 @@ mod tests {
             lock_dir: Some(temp_dir.path().to_path_buf()),
             room_eviction_delay_ms: Some(50),
             use_preferred_blob_port: false,
-            settings_doc_path: Some(temp_dir.path().join("settings.automerge")),
             settings_json_path: Some(temp_dir.path().join("settings.json")),
             ..Default::default()
         }
