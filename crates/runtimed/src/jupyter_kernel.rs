@@ -201,6 +201,11 @@ impl KernelConnection for JupyterKernel {
         let launched_config = config.launched_config;
         let bootstrap_dx = launched_config.feature_flags.bootstrap_dx;
         let env_path = env.as_ref().map(|e| e.venv_path.clone());
+        let launch_started = std::time::Instant::now();
+        info!(
+            "[jupyter-kernel] Launch start: kernel_type={} env_source={} bootstrap_dx={} env_path={:?}",
+            kernel_type, env_source, bootstrap_dx, env_path
+        );
 
         // ── Build process command ────────────────────────────────────────
 
@@ -222,6 +227,11 @@ impl KernelConnection for JupyterKernel {
         let kernel_id: String =
             petname::petname(2, "-").unwrap_or_else(|| Uuid::new_v4().to_string());
         let connection_file_path = conn_dir.join(format!("{}.json", kernel_id));
+        info!(
+            "[jupyter-kernel] Connection file path selected: kernel_id={} path={}",
+            kernel_id,
+            connection_file_path.display()
+        );
 
         // Determine working directory
         let cwd = if let Some(ref path) = notebook_path {
@@ -705,7 +715,14 @@ impl KernelConnection for JupyterKernel {
                     serde_json::to_string_pretty(&connection_info)?,
                 )
                 .await?;
+                info!(
+                    "[jupyter-kernel] Wrote connection file: kernel_id={} transport=ipc path={} launch_elapsed_ms={}",
+                    kernel_id,
+                    connection_file_path.display(),
+                    launch_started.elapsed().as_millis()
+                );
 
+                let spawn_started = std::time::Instant::now();
                 let mut process = cmd.spawn()?;
                 let stderr_buffer: Arc<StdMutex<VecDeque<String>>> =
                     Arc::new(StdMutex::new(VecDeque::with_capacity(STDERR_BUFFER_LINES)));
@@ -735,10 +752,12 @@ impl KernelConnection for JupyterKernel {
                     };
 
                 info!(
-                    "[jupyter-kernel] Spawned kernel process (pid={:?}, kernel_id={}, transport=ipc, prefix={})",
+                    "[jupyter-kernel] Spawned kernel process (pid={:?}, kernel_id={}, transport=ipc, prefix={}, spawn_elapsed_ms={}, launch_elapsed_ms={})",
                     process.id(),
                     kernel_id,
                     prefix.display(),
+                    spawn_started.elapsed().as_millis(),
+                    launch_started.elapsed().as_millis(),
                 );
 
                 const STARTUP_CEILING: std::time::Duration = std::time::Duration::from_millis(3000);
@@ -826,10 +845,34 @@ impl KernelConnection for JupyterKernel {
                     serde_json::to_string_pretty(&connection_info)?,
                 )
                 .await?;
+                info!(
+                    "[jupyter-kernel] Wrote connection file: kernel_id={} transport=tcp path={} ports={:?} launch_elapsed_ms={}",
+                    kernel_id,
+                    connection_file_path.display(),
+                    ports,
+                    launch_started.elapsed().as_millis()
+                );
 
+                let bind_started = std::time::Instant::now();
                 let listeners = bind_kernel_port_listeners(ip, kernel_ports).await?;
+                info!(
+                    "[jupyter-kernel] Reserved TCP ports: kernel_id={} ports={:?} bind_elapsed_ms={} launch_elapsed_ms={}",
+                    kernel_id,
+                    ports,
+                    bind_started.elapsed().as_millis(),
+                    launch_started.elapsed().as_millis()
+                );
                 #[cfg(windows)]
-                drop(listeners);
+                {
+                    drop(listeners);
+                    info!(
+                        "[jupyter-kernel] Released reserved TCP listeners before Windows kernel spawn: kernel_id={} ports={:?} launch_elapsed_ms={}",
+                        kernel_id,
+                        ports,
+                        launch_started.elapsed().as_millis()
+                    );
+                }
+                let spawn_started = std::time::Instant::now();
                 let mut process = cmd.spawn()?;
                 #[cfg(not(windows))]
                 drop(listeners);
@@ -862,10 +905,12 @@ impl KernelConnection for JupyterKernel {
                     };
 
                 info!(
-                    "[jupyter-kernel] Spawned kernel process (pid={:?}, kernel_id={}, transport=tcp, ports={:?})",
+                    "[jupyter-kernel] Spawned kernel process (pid={:?}, kernel_id={}, transport=tcp, ports={:?}, spawn_elapsed_ms={}, launch_elapsed_ms={})",
                     process.id(),
                     kernel_id,
-                    ports
+                    ports,
+                    spawn_started.elapsed().as_millis(),
+                    launch_started.elapsed().as_millis()
                 );
 
                 const STARTUP_CEILING: std::time::Duration = std::time::Duration::from_millis(3000);
@@ -981,8 +1026,43 @@ impl KernelConnection for JupyterKernel {
         }
 
         // Create iopub connection and spawn listener
-        let mut iopub =
-            runtimelib::create_client_iopub_connection(&connection_info, "", &session_id).await?;
+        let iopub_endpoint = connection_info.iopub_url();
+        let iopub_connect_started = std::time::Instant::now();
+        info!(
+            "[jupyter-kernel] Connecting IOPub: kernel_id={} endpoint={} launch_elapsed_ms={}",
+            kernel_id,
+            iopub_endpoint,
+            launch_started.elapsed().as_millis()
+        );
+        let mut iopub = match runtimelib::create_client_iopub_connection(
+            &connection_info,
+            "",
+            &session_id,
+        )
+        .await
+        {
+            Ok(conn) => {
+                info!(
+                        "[jupyter-kernel] IOPub connected: kernel_id={} endpoint={} connect_elapsed_ms={} launch_elapsed_ms={}",
+                        kernel_id,
+                        iopub_endpoint,
+                        iopub_connect_started.elapsed().as_millis(),
+                        launch_started.elapsed().as_millis()
+                    );
+                conn
+            }
+            Err(e) => {
+                error!(
+                        "[jupyter-kernel] IOPub connect failed: kernel_id={} endpoint={} connect_elapsed_ms={} launch_elapsed_ms={} error={}",
+                        kernel_id,
+                        iopub_endpoint,
+                        iopub_connect_started.elapsed().as_millis(),
+                        launch_started.elapsed().as_millis(),
+                        e
+                    );
+                return Err(e.into());
+            }
+        };
 
         // Create command channel for queue processing
         let (cmd_tx, cmd_rx) = mpsc::channel::<QueueCommand>(100);
@@ -2114,16 +2194,62 @@ impl KernelConnection for JupyterKernel {
         // ── Shell connection ─────────────────────────────────────────────
 
         let identity = runtimelib::peer_identity_for_session(&session_id)?;
-        let mut shell = runtimelib::create_client_shell_connection_with_identity(
+        let shell_endpoint = connection_info.shell_url();
+        let shell_connect_started = std::time::Instant::now();
+        info!(
+            "[jupyter-kernel] Connecting shell: kernel_id={} endpoint={} launch_elapsed_ms={}",
+            kernel_id,
+            shell_endpoint,
+            launch_started.elapsed().as_millis()
+        );
+        let mut shell = match runtimelib::create_client_shell_connection_with_identity(
             &connection_info,
             &session_id,
             identity,
         )
-        .await?;
+        .await
+        {
+            Ok(conn) => {
+                info!(
+                    "[jupyter-kernel] Shell connected: kernel_id={} endpoint={} connect_elapsed_ms={} launch_elapsed_ms={}",
+                    kernel_id,
+                    shell_endpoint,
+                    shell_connect_started.elapsed().as_millis(),
+                    launch_started.elapsed().as_millis()
+                );
+                conn
+            }
+            Err(e) => {
+                error!(
+                    "[jupyter-kernel] Shell connect failed: kernel_id={} endpoint={} connect_elapsed_ms={} launch_elapsed_ms={} error={}",
+                    kernel_id,
+                    shell_endpoint,
+                    shell_connect_started.elapsed().as_millis(),
+                    launch_started.elapsed().as_millis(),
+                    e
+                );
+                return Err(e.into());
+            }
+        };
 
         // Verify kernel is alive — race kernel_info_reply against process death
+        let kernel_info_started = std::time::Instant::now();
         let request: JupyterMessage = KernelInfoRequest::default().into();
-        shell.send(request).await?;
+        info!(
+            "[jupyter-kernel] Sending kernel_info_request: kernel_id={} launch_elapsed_ms={}",
+            kernel_id,
+            launch_started.elapsed().as_millis()
+        );
+        if let Err(e) = shell.send(request).await {
+            error!(
+                "[jupyter-kernel] kernel_info_request send failed: kernel_id={} elapsed_ms={} launch_elapsed_ms={} error={}",
+                kernel_id,
+                kernel_info_started.elapsed().as_millis(),
+                launch_started.elapsed().as_millis(),
+                e
+            );
+            return Err(e.into());
+        }
 
         let reply = tokio::select! {
             result = tokio::time::timeout(std::time::Duration::from_secs(30), shell.read()) => {
@@ -2142,12 +2268,21 @@ impl KernelConnection for JupyterKernel {
         match reply {
             Ok(msg) => {
                 info!(
-                    "[jupyter-kernel] Kernel alive: got {} reply",
-                    msg.header.msg_type
+                    "[jupyter-kernel] Kernel alive: got {} reply (kernel_id={} kernel_info_elapsed_ms={} launch_elapsed_ms={})",
+                    msg.header.msg_type,
+                    kernel_id,
+                    kernel_info_started.elapsed().as_millis(),
+                    launch_started.elapsed().as_millis()
                 );
             }
             Err(e) => {
-                error!("[jupyter-kernel] {}", e);
+                error!(
+                    "[jupyter-kernel] Kernel info failed: kernel_id={} kernel_info_elapsed_ms={} launch_elapsed_ms={} error={}",
+                    kernel_id,
+                    kernel_info_started.elapsed().as_millis(),
+                    launch_started.elapsed().as_millis(),
+                    e
+                );
                 // Abort process watcher to clean up orphaned kernel
                 process_watcher_task.abort();
                 return Err(e);
@@ -2438,6 +2573,13 @@ impl KernelConnection for JupyterKernel {
         );
 
         // ── Construct the kernel struct ──────────────────────────────────
+        info!(
+            "[jupyter-kernel] Launch complete: kernel_id={} kernel_type={} env_source={} launch_elapsed_ms={}",
+            kernel_id,
+            kernel_type,
+            env_source,
+            launch_started.elapsed().as_millis()
+        );
 
         let kernel = Self {
             kernel_type,

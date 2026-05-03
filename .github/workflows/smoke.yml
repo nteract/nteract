@@ -253,8 +253,12 @@ jobs:
 
           $logOut = "$env:RUNNER_TEMP\runtimed.stdout.log"
           $logErr = "$env:RUNNER_TEMP\runtimed.stderr.log"
+          # The daemon CLI log level does not propagate to the runtime-agent
+          # subprocess, but RUST_LOG is inherited and keeps kernel-launch
+          # diagnostics visible in the collected stderr artifact.
+          $env:RUST_LOG = "info"
           $daemon = Start-Process -FilePath $env:RUNTIMED `
-            -ArgumentList @('run', '--uv-pool-size', '1', '--conda-pool-size', '0', '--pixi-pool-size', '0') `
+            -ArgumentList @('--log-level', 'info', 'run', '--uv-pool-size', '1', '--conda-pool-size', '0', '--pixi-pool-size', '0') `
             -WindowStyle Hidden -PassThru `
             -RedirectStandardOutput $logOut -RedirectStandardError $logErr
           Write-Host "Daemon pid: $($daemon.Id)"

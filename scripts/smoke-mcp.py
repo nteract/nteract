@@ -20,8 +20,11 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import shutil
 import sys
+import tempfile
 from pathlib import Path
+from typing import Any
 
 # The MCP server's tool-result formatter uses ━ (U+2501) as a section
 # separator. Windows runners default to cp1252, which can't encode that.
@@ -43,6 +46,8 @@ TRANSIENT_KERNEL_LAUNCH_RE = re.compile(
     re.IGNORECASE,
 )
 MAX_PASS_ATTEMPTS = 3
+UV_POOL_READY_TIMEOUT_SECS = 180
+KERNEL_READY_TIMEOUT_SECS = 240
 
 
 class SmokeRetry(Exception):
@@ -72,6 +77,12 @@ def stdout_of(body: str) -> str:
 
 def parse_json_body(body: str) -> dict | None:
     """Best-effort parse for tool responses that are printed as JSON."""
+    parsed = parse_json_value(body)
+    return parsed if isinstance(parsed, dict) else None
+
+
+def parse_json_value(body: str) -> Any | None:
+    """Best-effort parse for tool responses that are printed as JSON."""
     text = body.strip()
     if not text:
         return None
@@ -88,7 +99,7 @@ def parse_json_body(body: str) -> dict | None:
         except json.JSONDecodeError:
             return None
 
-    return parsed if isinstance(parsed, dict) else None
+    return parsed
 
 
 def kernel_launch_error(body: str) -> str | None:
@@ -105,11 +116,128 @@ def kernel_launch_error(body: str) -> str | None:
     return str(details) if details else "kernel launch failed"
 
 
+def int_value(value) -> int:
+    """Best-effort integer coercion for daemon status counters."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+async def daemon_status(runt_exe: Path) -> dict | None:
+    """Read `runt daemon status --json` from the already-started daemon."""
+    proc = await asyncio.create_subprocess_exec(
+        str(runt_exe),
+        "daemon",
+        "status",
+        "--json",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, _stderr = await proc.communicate()
+    if proc.returncode != 0:
+        return None
+
+    try:
+        parsed = json.loads(stdout.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return None
+
+    return parsed if isinstance(parsed, dict) else None
+
+
+async def wait_for_uv_pool_ready(runt_exe: Path) -> None:
+    """Wait until the smoke's first notebook can claim a prewarmed UV env."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + UV_POOL_READY_TIMEOUT_SECS
+    last_summary = ""
+
+    while True:
+        status = await daemon_status(runt_exe)
+        if status:
+            uv = (status.get("pool_stats") or {}).get("uv") or {}
+            available = int_value(uv.get("available"))
+            warming = int_value(uv.get("warming"))
+            pool_size = int_value(uv.get("pool_size"))
+            failures = int_value(uv.get("consecutive_failures"))
+            retry_in = int_value(uv.get("retry_in_secs"))
+            summary = (
+                f"available={available} warming={warming} pool_size={pool_size} "
+                f"failures={failures} retry_in_secs={retry_in}"
+            )
+
+            if available > 0:
+                print(f"[smoke] UV pool ready: {summary}")
+                return
+
+            if summary != last_summary:
+                print(f"[smoke] waiting for UV pool: {summary}")
+                last_summary = summary
+        elif last_summary != "status-unavailable":
+            print("[smoke] waiting for daemon status")
+            last_summary = "status-unavailable"
+
+        if loop.time() >= deadline:
+            fail(f"UV pool did not become ready within {UV_POOL_READY_TIMEOUT_SECS}s")
+
+        await asyncio.sleep(1)
+
+
+async def wait_for_kernel_ready(
+    session: ClientSession,
+    notebook_id: str,
+    label: str,
+) -> None:
+    """Wait for a newly-created smoke notebook's kernel to become executable."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + KERNEL_READY_TIMEOUT_SECS
+    last_summary = ""
+
+    while True:
+        rooms_result = await session.call_tool("list_active_notebooks", {})
+        body = text_of(rooms_result)
+        if rooms_result.isError:
+            fail(f"[{label}] list_active_notebooks errored while waiting for kernel: {body}")
+
+        rooms = parse_json_value(body)
+        room = None
+        if isinstance(rooms, list):
+            for candidate in rooms:
+                if isinstance(candidate, dict) and candidate.get("notebook_id") == notebook_id:
+                    room = candidate
+                    break
+
+        if isinstance(room, dict):
+            status = str(room.get("kernel_status") or "")
+            summary = (
+                f"has_kernel={room.get('has_kernel')} "
+                f"status={status or 'unknown'} "
+                f"env_source={room.get('env_source') or 'unknown'}"
+            )
+
+            if status in {"idle", "busy"}:
+                print(f"[{label}] kernel ready: {summary}")
+                return
+            if status == "error":
+                fail(f"[{label}] kernel entered error state before execute: {body}")
+            if summary != last_summary:
+                print(f"[{label}] waiting for kernel: {summary}")
+                last_summary = summary
+        elif last_summary != "room-missing":
+            print(f"[{label}] waiting for notebook room {notebook_id}")
+            last_summary = "room-missing"
+
+        if loop.time() >= deadline:
+            fail(f"[{label}] kernel did not become ready within {KERNEL_READY_TIMEOUT_SECS}s")
+
+        await asyncio.sleep(1)
+
+
 async def create_notebook_checked(
     session: ClientSession,
     label: str,
     args: dict | None = None,
-) -> None:
+) -> str:
     """Create a notebook and fail/retry immediately if auto-launch failed."""
     create = await session.call_tool("create_notebook", args or {})
     body = text_of(create)
@@ -117,9 +245,14 @@ async def create_notebook_checked(
         fail(f"create_notebook({label}) errored: {body}")
     print(body)
 
+    parsed = parse_json_body(body)
+    notebook_id = parsed.get("notebook_id") if parsed else None
+    if not isinstance(notebook_id, str) or not notebook_id:
+        fail(f"create_notebook({label}) did not return notebook_id: {body}")
+
     error_details = kernel_launch_error(body)
     if not error_details:
-        return
+        return notebook_id
 
     message = f"create_notebook({label}) reported kernel launch error: {error_details}"
     if TRANSIENT_KERNEL_LAUNCH_RE.search(error_details):
@@ -177,6 +310,8 @@ async def run_cell_and_get_body(session: ClientSession, source: str, label: str)
 
     match = EXEC_ID_RE.search(body)
     if not match:
+        if "running" in body.lower():
+            raise SmokeRetry(f"execute_cell returned running without execution_id: {body}")
         fail(f"could not parse execution_id from execute_cell response: {body}")
     execution_id = match.group(1)
     print(f"[{label}] execution_id={execution_id} - polling get_results")
@@ -197,10 +332,18 @@ async def run_cell_and_get_body(session: ClientSession, source: str, label: str)
     fail(f"[{label}] execution did not complete within 240s")
 
 
-async def basic_pass(session: ClientSession) -> None:
+async def basic_pass(session: ClientSession, smoke_root: Path) -> None:
     """Sanity-check pass: ephemeral notebook + `print(1+1)`."""
+    working_dir = smoke_root / "basic"
+    working_dir.mkdir(parents=True, exist_ok=True)
+
     print("[basic] create_notebook")
-    await create_notebook_checked(session, "basic")
+    notebook_id = await create_notebook_checked(
+        session,
+        "basic",
+        {"working_dir": str(working_dir)},
+    )
+    await wait_for_kernel_ready(session, notebook_id, "basic")
 
     body = await run_cell_and_get_body(session, "print(1 + 1)", "basic")
     out = stdout_of(body)
@@ -209,10 +352,18 @@ async def basic_pass(session: ClientSession) -> None:
     print("[basic] PASS")
 
 
-async def polars_pass(session: ClientSession) -> None:
+async def polars_pass(session: ClientSession, smoke_root: Path) -> None:
     """Deeper pass: install polars in a fresh uv-backed notebook, render a DataFrame."""
+    working_dir = smoke_root / "polars"
+    working_dir.mkdir(parents=True, exist_ok=True)
+
     print("[polars] create_notebook(dependencies=['polars'])")
-    await create_notebook_checked(session, "polars", {"dependencies": ["polars"]})
+    notebook_id = await create_notebook_checked(
+        session,
+        "polars",
+        {"dependencies": ["polars"], "working_dir": str(working_dir)},
+    )
+    await wait_for_kernel_ready(session, notebook_id, "polars")
 
     # Final expression `df` triggers an execute_result with the polars repr
     # (text/html + text/plain). Asserting on column names and values keeps the
@@ -242,12 +393,34 @@ async def smoke(runt_exe: Path) -> None:
         tools = await session.list_tools()
         tool_names = sorted(t.name for t in tools.tools)
         print(f"[smoke] {len(tool_names)} tools available")
-        for required in ("create_notebook", "create_cell", "execute_cell", "get_results"):
+        for required in (
+            "list_active_notebooks",
+            "create_notebook",
+            "create_cell",
+            "execute_cell",
+            "get_results",
+        ):
             if required not in tool_names:
                 fail(f"required tool missing: {required}")
 
-        await run_smoke_pass("basic", basic_pass, session)
-        await run_smoke_pass("polars", polars_pass, session)
+        await wait_for_uv_pool_ready(runt_exe)
+
+        smoke_root_path = Path(tempfile.mkdtemp(prefix="nteract-smoke-"))
+        try:
+            print(f"[smoke] working directory root: {smoke_root_path}")
+
+            await run_smoke_pass(
+                "basic",
+                lambda active_session: basic_pass(active_session, smoke_root_path),
+                session,
+            )
+            await run_smoke_pass(
+                "polars",
+                lambda active_session: polars_pass(active_session, smoke_root_path),
+                session,
+            )
+        finally:
+            shutil.rmtree(smoke_root_path, ignore_errors=True)
         print("[smoke] ALL PASSES GREEN")
 
 
