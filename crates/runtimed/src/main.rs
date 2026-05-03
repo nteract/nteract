@@ -353,17 +353,20 @@ async fn main() -> anyhow::Result<()> {
                 ),
             };
 
-            run_daemon(
-                socket,
-                cache_dir,
-                blob_store_dir,
+            let config = DaemonConfig {
+                socket_path: socket.unwrap_or_else(runtimed::default_socket_path),
+                cache_dir: cache_dir.unwrap_or_else(runtimed::default_cache_dir),
+                blob_store_dir: blob_store_dir.unwrap_or_else(runtimed::default_blob_store_dir),
+                execution_store_dir: runtimed::default_execution_store_dir(),
                 uv_pool_size,
                 conda_pool_size,
                 pixi_pool_size,
-                settings_doc,
-                settings_json,
-            )
-            .await
+                settings_doc_path: settings_doc,
+                settings_json_path: settings_json,
+                ..Default::default()
+            };
+
+            run_daemon(config).await
         }
         Some(Commands::Install { binary }) => install_service(binary),
         // Deprecated commands - still work but print warnings
@@ -426,30 +429,8 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn run_daemon(
-    socket: Option<PathBuf>,
-    cache_dir: Option<PathBuf>,
-    blob_store_dir: Option<PathBuf>,
-    uv_pool_size: usize,
-    conda_pool_size: usize,
-    pixi_pool_size: usize,
-    settings_doc: Option<PathBuf>,
-    settings_json: Option<PathBuf>,
-) -> anyhow::Result<()> {
+async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     info!("runtimed starting...");
-
-    let config = DaemonConfig {
-        socket_path: socket.unwrap_or_else(runtimed::default_socket_path),
-        cache_dir: cache_dir.unwrap_or_else(runtimed::default_cache_dir),
-        blob_store_dir: blob_store_dir.unwrap_or_else(runtimed::default_blob_store_dir),
-        execution_store_dir: runtimed::default_execution_store_dir(),
-        uv_pool_size,
-        conda_pool_size,
-        pixi_pool_size,
-        settings_doc_path: settings_doc,
-        settings_json_path: settings_json,
-        ..Default::default()
-    };
 
     info!("Configuration:");
     info!("  Socket: {:?}", config.socket_path);
