@@ -699,7 +699,7 @@ async fn create_pixi(project_dir: &Path, packages: &[String], channels: &[String
     {
         Ok(env) => {
             progress("warming", "compiling .pyc files");
-            if let Err(e) = kernel_env::pixi::warmup_environment(&env).await {
+            if let Err(e) = kernel_env::pixi::warmup_environment(&env, packages).await {
                 warn!("[warm-env] Pixi warmup failed (non-fatal): {e}");
             }
 
