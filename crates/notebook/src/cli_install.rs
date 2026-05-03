@@ -8,6 +8,7 @@
 
 use runt_workspace::{cli_command_name, cli_notebook_alias_name};
 use std::fs;
+#[cfg(unix)]
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
@@ -540,7 +541,7 @@ fn read_user_path_registry_value() -> Result<String, String> {
         ));
     }
 
-    let mut buffer = vec![0u16; (byte_len as usize + 1) / 2];
+    let mut buffer = vec![0u16; (byte_len as usize).div_ceil(2)];
     let status = unsafe {
         RegQueryValueExW(
             key,
@@ -936,9 +937,9 @@ pub fn is_cli_installed_local() -> bool {
 
     #[cfg(target_os = "windows")]
     {
-        return windows_candidate_cli_dirs().iter().any(|dir| {
-            command_path(dir, cli_name).exists() && command_path(dir, nb_name).exists()
-        });
+        windows_candidate_cli_dirs()
+            .iter()
+            .any(|dir| command_path(dir, cli_name).exists() && command_path(dir, nb_name).exists())
     }
 
     #[cfg(unix)]
