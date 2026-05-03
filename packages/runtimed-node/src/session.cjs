@@ -68,7 +68,8 @@ class Session {
   }
 
   async waitForExecution(executionId, options = {}) {
-    const { onUpdate, cellId, ...nativeOptions } = options ?? {};
+    const { onUpdate, ...nativeOptions } = options ?? {};
+    const cellId = nativeOptions.cellId;
     let progressSubscription = null;
     if (typeof onUpdate === "function" && typeof this._native.onExecutionProgress === "function") {
       progressSubscription = this._native.onExecutionProgress(
