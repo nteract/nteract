@@ -494,6 +494,8 @@ impl SettingsDoc {
     /// truth; `settings.automerge` is read only as a migration source when the
     /// JSON file does not exist.
     pub fn load_or_create(automerge_path: &Path, settings_json_path: Option<&Path>) -> Self {
+        let mut should_write_default_json = true;
+
         if let Some(json_path) = settings_json_path {
             if json_path.exists() {
                 match std::fs::read_to_string(json_path)
@@ -506,10 +508,10 @@ impl SettingsDoc {
                     }
                     None => {
                         log::warn!(
-                            "[settings] Failed to load canonical settings.json from {:?}; using defaults",
+                            "[settings] Failed to load canonical settings.json from {:?}; trying legacy Automerge settings before defaults",
                             json_path
                         );
-                        return Self::new();
+                        should_write_default_json = false;
                     }
                 }
             }
@@ -541,8 +543,10 @@ impl SettingsDoc {
         info!("[settings] Creating new settings doc with defaults");
         let settings = Self::new();
         if let Some(json_path) = settings_json_path {
-            if let Err(e) = settings.save_json_mirror(json_path) {
-                log::warn!("[settings] Failed to write default settings.json: {e}");
+            if should_write_default_json {
+                if let Err(e) = settings.save_json_mirror(json_path) {
+                    log::warn!("[settings] Failed to write default settings.json: {e}");
+                }
             }
         }
         settings
@@ -1598,6 +1602,27 @@ mod tests {
         let saved: SyncedSettings = serde_json::from_str(&saved_json).unwrap();
         assert_eq!(saved.default_python_env, PythonEnvType::Conda);
         assert_eq!(saved.uv.default_packages, vec!["numpy"]);
+    }
+
+    #[test]
+    fn test_load_or_create_recovers_from_invalid_json_with_legacy_automerge() {
+        let tmp = TempDir::new().unwrap();
+        let automerge_path = tmp.path().join("settings.automerge");
+        let json_path = tmp.path().join("settings.json");
+
+        let mut legacy_doc = SettingsDoc::new();
+        legacy_doc.put("default_python_env", "pixi");
+        legacy_doc.put_list("conda.default_packages", &["scipy".to_string()]);
+        legacy_doc.save_to_file(&automerge_path).unwrap();
+        std::fs::write(&json_path, "{ not valid json").unwrap();
+
+        let recovered = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
+        assert_eq!(recovered.get("default_python_env").as_deref(), Some("pixi"));
+
+        let saved_json = std::fs::read_to_string(&json_path).unwrap();
+        let saved: SyncedSettings = serde_json::from_str(&saved_json).unwrap();
+        assert_eq!(saved.default_python_env, PythonEnvType::Pixi);
+        assert_eq!(saved.conda.default_packages, vec!["scipy"]);
     }
 
     #[test]
