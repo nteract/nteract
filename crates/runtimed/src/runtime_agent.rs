@@ -724,6 +724,8 @@ async fn handle_runtime_agent_request(
                 presence: ctx.presence.clone(),
                 presence_tx: ctx.presence_tx.clone(),
             };
+            let launch_kernel_type = kernel_type.clone();
+            let launch_env_source = env_source.as_str().to_string();
             let config = KernelLaunchConfig {
                 kernel_type,
                 env_source: env_source.as_str().to_string(),
@@ -734,12 +736,19 @@ async fn handle_runtime_agent_request(
                 pooled_env,
             };
 
+            let launch_started = std::time::Instant::now();
             match JupyterKernel::launch(config, shared).await {
                 Ok((k, rx)) => {
                     let es = k.env_source().to_string();
                     *kernel = Some(k);
                     state.reset();
                     state.set_idle();
+                    info!(
+                        "[runtime-agent] LaunchKernel completed: type={} source={} elapsed_ms={}",
+                        launch_kernel_type,
+                        launch_env_source,
+                        launch_started.elapsed().as_millis()
+                    );
                     (
                         RuntimeAgentResponse::KernelLaunched {
                             env_source: notebook_protocol::connection::EnvSource::parse(&es),
@@ -747,12 +756,21 @@ async fn handle_runtime_agent_request(
                         Some(rx),
                     )
                 }
-                Err(e) => (
-                    RuntimeAgentResponse::Error {
-                        error: format!("Failed to launch kernel: {}", e),
-                    },
-                    None,
-                ),
+                Err(e) => {
+                    warn!(
+                        "[runtime-agent] LaunchKernel failed: type={} source={} elapsed_ms={} error={}",
+                        launch_kernel_type,
+                        launch_env_source,
+                        launch_started.elapsed().as_millis(),
+                        e
+                    );
+                    (
+                        RuntimeAgentResponse::Error {
+                            error: format!("Failed to launch kernel: {}", e),
+                        },
+                        None,
+                    )
+                }
             }
         }
 
@@ -810,6 +828,8 @@ async fn handle_runtime_agent_request(
                 presence: ctx.presence.clone(),
                 presence_tx: ctx.presence_tx.clone(),
             };
+            let launch_kernel_type = kernel_type.clone();
+            let launch_env_source = env_source.as_str().to_string();
             let config = KernelLaunchConfig {
                 kernel_type,
                 env_source: env_source.as_str().to_string(),
@@ -850,12 +870,19 @@ async fn handle_runtime_agent_request(
                 warn!("[runtime-state] {}", e);
             }
 
+            let launch_started = std::time::Instant::now();
             match JupyterKernel::launch(config, shared).await {
                 Ok((k, rx)) => {
                     let es = k.env_source().to_string();
                     *kernel = Some(k);
                     state.reset();
                     state.set_idle();
+                    info!(
+                        "[runtime-agent] RestartKernel completed: type={} source={} elapsed_ms={}",
+                        launch_kernel_type,
+                        launch_env_source,
+                        launch_started.elapsed().as_millis()
+                    );
                     (
                         RuntimeAgentResponse::KernelRestarted {
                             env_source: notebook_protocol::connection::EnvSource::parse(&es),
@@ -863,12 +890,21 @@ async fn handle_runtime_agent_request(
                         Some(rx),
                     )
                 }
-                Err(e) => (
-                    RuntimeAgentResponse::Error {
-                        error: format!("Failed to restart kernel: {}", e),
-                    },
-                    None,
-                ),
+                Err(e) => {
+                    warn!(
+                        "[runtime-agent] RestartKernel failed: type={} source={} elapsed_ms={} error={}",
+                        launch_kernel_type,
+                        launch_env_source,
+                        launch_started.elapsed().as_millis(),
+                        e
+                    );
+                    (
+                        RuntimeAgentResponse::Error {
+                            error: format!("Failed to restart kernel: {}", e),
+                        },
+                        None,
+                    )
+                }
             }
         }
 
