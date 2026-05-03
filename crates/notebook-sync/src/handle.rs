@@ -86,6 +86,9 @@ pub struct DocHandle {
     /// Watch channel receiver for reading the latest snapshot.
     snapshot_rx: watch::Receiver<NotebookSnapshot>,
 
+    /// Watch channel receiver for reading the latest RuntimeStateDoc snapshot.
+    runtime_state_rx: watch::Receiver<RuntimeState>,
+
     /// Watch channel receiver for connection/bootstrap status.
     status_rx: watch::Receiver<SyncStatus>,
 
@@ -105,12 +108,14 @@ impl DocHandle {
     /// Create a new `DocHandle` from shared state and channels.
     ///
     /// This is called by the connection/split logic, not by end users.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         doc: Arc<Mutex<SharedDocState>>,
         changed_tx: mpsc::UnboundedSender<()>,
         cmd_tx: mpsc::Sender<SyncCommand>,
         snapshot_tx: Arc<watch::Sender<NotebookSnapshot>>,
         snapshot_rx: watch::Receiver<NotebookSnapshot>,
+        runtime_state_rx: watch::Receiver<RuntimeState>,
         status_rx: watch::Receiver<SyncStatus>,
         notebook_id: String,
     ) -> Self {
@@ -120,6 +125,7 @@ impl DocHandle {
             cmd_tx,
             snapshot_tx,
             snapshot_rx,
+            runtime_state_rx,
             status_rx,
             notebook_id,
         }
@@ -769,6 +775,11 @@ impl DocHandle {
     /// Subscribe to status changes.
     pub fn subscribe_status(&self) -> watch::Receiver<SyncStatus> {
         self.status_rx.clone()
+    }
+
+    /// Subscribe to RuntimeStateDoc snapshot changes.
+    pub fn subscribe_runtime_state(&self) -> watch::Receiver<RuntimeState> {
+        self.runtime_state_rx.clone()
     }
 
     /// Wait until the notebook document is interactive.

@@ -26,7 +26,6 @@ async function main() {
     workingDir: process.cwd(),
     // Record these before the first cell runs.
     dependencies: ["numpy", "matplotlib"],
-    packageManager: "uv",
     description: "plotting smoke test",
   });
 
@@ -61,11 +60,15 @@ main().catch((error) => {
 ## Notebook Dependencies
 
 `createNotebook()` accepts `dependencies` so agent code can declare packages
-up-front instead of failing the first import and retrying after `addUvDependency()`.
-The `packageManager` option is typed from the native binding's `PackageManager`
-string enum (`"uv"`, `"conda"`, or `"pixi"`) and is converted to the shared
-notebook protocol enum before the daemon handshake. `description` can be used
-as a human-readable peer label for agent-created sessions.
+up-front instead of failing the first import and retrying after `addDependencies()`.
+When `packageManager` is omitted, the daemon/user environment choice remains in
+charge. Later dependency edits also infer the manager from the running kernel,
+inline notebook metadata (`uv`, then `conda`, then `pixi`), or detected project
+file, falling back to UV for fresh Python notebooks with no other signal. Pass
+the native binding's `PackageManager` string enum (`"uv"`, `"conda"`, or
+`"pixi"`) only when you need to target a specific metadata section.
+`description` can be used as a human-readable peer label for agent-created
+sessions.
 
 ## API Surface
 
@@ -94,17 +97,22 @@ as a human-readable peer label for agent-created sessions.
 - `Session.runCell(source, options)` creates, runs, and waits for a cell.
 - `Session.queueCell(source, options)` queues a cell and returns IDs.
 - `Session.waitForExecution(executionId, options)` waits for queued work.
+  Pass `onUpdate(progress)` to receive resolved output snapshots while the
+  execution is still running.
+- `Session.runtimeState$`, `Session.executionTransitions$`,
+  `Session.cellChanges$`, `Session.broadcasts$`, and `Session.sessionStatus$`
+  expose the same projected event families used by the browser sync engine.
 - `Session.addDependency(spec, { packageManager })` /
   `Session.addDependencies(specs, { packageManager })` and
   `Session.removeDependency(spec, { packageManager })` /
   `Session.removeDependencies(specs, { packageManager })` edit notebook
-  dependency metadata for UV, Conda, or Pixi. Batch variants use one CRDT
+  dependency metadata for UV, Conda, or Pixi. Omit `packageManager` to follow
+  the notebook's running/configured manager. Batch variants use one CRDT
   metadata transaction.
 - `Session.getDependencyStatus()` returns dependency metadata, fingerprint, and
   trust state in one call.
 - `Session.getRuntimeStatus()` returns kernel lifecycle, activity, env source,
   and startup error details.
-- `Session.addUvDependency(spec)` records a UV dependency for the notebook.
 - `Session.syncEnvironment()` installs recorded notebook dependencies.
 - `Session.saveNotebook(path?)` saves the notebook.
 - `Session.close()` releases the daemon connection.

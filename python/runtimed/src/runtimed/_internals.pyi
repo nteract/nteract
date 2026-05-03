@@ -6,7 +6,7 @@ Auto-maintained — regenerate from crates/runtimed-py/src/ when the Rust API ch
 from __future__ import annotations
 
 import os
-from collections.abc import Coroutine
+from collections.abc import AsyncIterator, Coroutine
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -197,6 +197,36 @@ class ExecutionResult:
     def error(self) -> Output | None:
         """Error output if any."""
         ...
+
+class ExecutionProgress:
+    """Progress snapshot for one execution."""
+
+    @property
+    def cell_id(self) -> str: ...
+    @property
+    def execution_id(self) -> str: ...
+    @property
+    def status(self) -> str: ...
+    @property
+    def success(self) -> bool | None: ...
+    @property
+    def execution_count(self) -> int | None: ...
+    @property
+    def outputs(self) -> list[Output]: ...
+    @property
+    def terminal(self) -> bool: ...
+    @property
+    def terminal_reason(self) -> str | None: ...
+    @property
+    def stdout(self) -> str: ...
+    @property
+    def stderr(self) -> str: ...
+
+class ExecutionProgressStream(AsyncIterator[ExecutionProgress]):
+    """Async iterator of execution progress snapshots."""
+
+    def __aiter__(self) -> ExecutionProgressStream: ...
+    def __anext__(self) -> Coroutine[Any, Any, ExecutionProgress]: ...
 
 class CompletionItem:
     """A single completion item from the kernel."""
@@ -645,6 +675,12 @@ class AsyncSession:
         execution_id: str,
         timeout_secs: float = 60.0,
     ) -> Coroutine[Any, Any, ExecutionResult]: ...
+    def watch_execution(
+        self,
+        cell_id: str,
+        execution_id: str,
+        timeout_secs: float | None = None,
+    ) -> ExecutionProgressStream: ...
 
     # Environment sync
     def sync_environment(self) -> Coroutine[Any, Any, SyncEnvironmentResult]: ...

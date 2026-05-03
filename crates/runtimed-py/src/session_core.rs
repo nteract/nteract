@@ -20,8 +20,9 @@ use notebook_doc::metadata::NotebookMetadataSnapshot;
 use crate::daemon_paths::get_socket_path;
 use crate::error::to_py_err;
 use crate::output::{
-    Cell, CompletionItem, CompletionResult, ExecutionResult, HistoryEntry, NotebookConnectionInfo,
-    Output, PyQueueEntry, PyRuntimeState, QueueState, SyncEnvironmentResult,
+    Cell, CompletionItem, CompletionResult, ExecutionProgress, ExecutionResult, HistoryEntry,
+    NotebookConnectionInfo, Output, PyQueueEntry, PyRuntimeState, QueueState,
+    SyncEnvironmentResult,
 };
 use crate::output_resolver;
 
@@ -1262,24 +1263,25 @@ pub(crate) async fn wait_for_execution(
     execution_id: &str,
     timeout_secs: f64,
 ) -> PyResult<ExecutionResult> {
-    let timeout = std::time::Duration::from_secs_f64(timeout_secs);
-    let result = tokio::time::timeout(timeout, async {
-        let (blob_base_url, blob_store_path) = {
-            let st = state.lock().await;
-            (st.blob_base_url.clone(), st.blob_store_path.clone())
-        };
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs_f64(timeout_secs);
+    let mut watcher = execution_watcher(state, cell_id, execution_id).await?;
 
-        collect_outputs(state, cell_id, execution_id, blob_base_url, blob_store_path).await
-    })
-    .await;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let raw = if remaining.is_zero() {
+            watcher.timeout()
+        } else {
+            match tokio::time::timeout(remaining, watcher.next()).await {
+                Ok(progress) => progress,
+                Err(_) => watcher.timeout(),
+            }
+        }
+        .ok_or_else(|| to_py_err("Execution stream closed before terminal state"))?;
 
-    match result {
-        Ok(Ok(exec_result)) => Ok(exec_result),
-        Ok(Err(e)) => Err(e),
-        Err(_) => Err(to_py_err(format!(
-            "Execution timed out after {} seconds (execution_id={})",
-            timeout_secs, execution_id
-        ))),
+        let progress = resolve_execution_progress(state, raw).await?;
+        if progress.terminal {
+            return terminal_progress_to_result(progress, timeout_secs);
+        }
     }
 }
 
@@ -1301,19 +1303,7 @@ pub(crate) async fn execute_cell(
         // sync, sends ExecuteCell request, emits focus presence.
         let execution_id = queue_cell(state, notebook_id, cell_id).await?;
 
-        let (blob_base_url, blob_store_path) = {
-            let st = state.lock().await;
-            (st.blob_base_url.clone(), st.blob_store_path.clone())
-        };
-
-        collect_outputs(
-            state,
-            cell_id,
-            &execution_id,
-            blob_base_url,
-            blob_store_path,
-        )
-        .await
+        wait_for_execution(state, cell_id, &execution_id, timeout_secs).await
     })
     .await;
 
@@ -1374,19 +1364,11 @@ pub(crate) async fn queue_cell(
     }
 }
 
-/// Wait for execution to complete, then read outputs from the Automerge doc.
-///
-/// Defers to [`notebook_sync::await_execution_terminal`] and reads outputs
-/// directly from the `RuntimeStateDoc` — the same path `runt-mcp` uses. This
-/// avoids the stream-output race where the `ExecutionDone` broadcast arrives
-/// before the final stream manifests have synced into our replica.
-pub(crate) async fn collect_outputs(
+pub(crate) async fn execution_watcher(
     state: &Arc<Mutex<SessionState>>,
     cell_id: &str,
     execution_id: &str,
-    blob_base_url: Option<String>,
-    blob_store_path: Option<PathBuf>,
-) -> PyResult<ExecutionResult> {
+) -> PyResult<notebook_sync::ExecutionWatcher> {
     let handle = {
         let st = state.lock().await;
         st.handle
@@ -1394,50 +1376,72 @@ pub(crate) async fn collect_outputs(
             .ok_or_else(|| to_py_err("Not connected"))?
             .clone()
     };
+    Ok(notebook_sync::ExecutionWatcher::new(
+        &handle,
+        cell_id.to_string(),
+        execution_id.to_string(),
+    ))
+}
 
-    // No outer timeout here: the caller's tokio::time::timeout at
-    // execute_cell()/wait_for_execution() bounds the total wait. Pass
-    // a very long timeout so the helper only returns on terminal state
-    // or kernel failure.
-    let helper_timeout = std::time::Duration::from_secs(60 * 60 * 24);
-    let terminal =
-        notebook_sync::await_execution_terminal(&handle, execution_id, helper_timeout, None).await;
+pub(crate) async fn resolve_execution_progress(
+    state: &Arc<Mutex<SessionState>>,
+    raw: notebook_sync::ExecutionProgressState,
+) -> PyResult<ExecutionProgress> {
+    let (handle, blob_base_url, blob_store_path) = {
+        let st = state.lock().await;
+        (
+            st.handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?
+                .clone(),
+            st.blob_base_url.clone(),
+            st.blob_store_path.clone(),
+        )
+    };
+    let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
+    let outputs = output_resolver::resolve_cell_outputs(
+        &raw.output_manifests,
+        &blob_base_url,
+        &blob_store_path,
+        comms.as_ref(),
+    )
+    .await;
 
-    match terminal {
-        Ok(state) => {
-            let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
-            let outputs = output_resolver::resolve_cell_outputs(
-                &state.output_manifests,
-                &blob_base_url,
-                &blob_store_path,
-                comms.as_ref(),
-            )
-            .await;
-            let success = state.status == "done"
-                && state.success
-                && !outputs.iter().any(|o| o.output_type == "error");
-            Ok(ExecutionResult {
-                cell_id: cell_id.to_string(),
-                execution_id: execution_id.to_string(),
-                outputs,
-                success,
-                execution_count: state.execution_count,
-            })
-        }
-        Err(notebook_sync::ExecutionTerminalError::KernelFailed { reason }) => {
-            Ok(ExecutionResult {
-                cell_id: cell_id.to_string(),
-                execution_id: execution_id.to_string(),
-                outputs: vec![Output::error("KernelError", &reason, vec![])],
-                success: false,
-                execution_count: None,
-            })
-        }
-        Err(notebook_sync::ExecutionTerminalError::Timeout) => {
-            // Helper timeout is a day; reaching this means something
-            // drove us there intentionally (cancellation, outer abort).
-            Err(to_py_err("Execution wait aborted"))
-        }
+    Ok(ExecutionProgress {
+        cell_id: raw.cell_id,
+        execution_id: raw.execution_id,
+        status: raw.status,
+        success: raw.success,
+        execution_count: raw.execution_count,
+        outputs,
+        terminal: raw.terminal,
+        terminal_reason: raw
+            .terminal_reason
+            .map(|reason| reason.as_str().to_string()),
+    })
+}
+
+fn terminal_progress_to_result(
+    progress: ExecutionProgress,
+    timeout_secs: f64,
+) -> PyResult<ExecutionResult> {
+    match progress.terminal_reason.as_deref() {
+        Some("timeout") => Err(to_py_err(format!(
+            "Execution timed out after {} seconds (execution_id={})",
+            timeout_secs, progress.execution_id
+        ))),
+        Some("kernel_failed") => Ok(ExecutionResult {
+            cell_id: progress.cell_id,
+            execution_id: progress.execution_id,
+            outputs: vec![Output::error("KernelError", "kernel error", vec![])],
+            success: false,
+            execution_count: progress.execution_count,
+        }),
+        Some("closed") => Err(to_py_err(format!(
+            "Execution stream closed before terminal state (execution_id={})",
+            progress.execution_id
+        ))),
+        _ => Ok(progress.into_result()),
     }
 }
 

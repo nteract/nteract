@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use napi::bindgen_prelude::*;
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 use serde::Serialize;
 use tokio::sync::Mutex;
@@ -20,11 +21,13 @@ use runtimed_client::output_resolver as shared_resolver;
 use runtimed_client::resolved_output::DataValue as SharedDataValue;
 
 use crate::error::to_napi_err;
+use runtime_doc::{diff_executions, ProjectContext, ProjectFileKind};
 
 /// Valid cell types accepted by `runCell`.
 const VALID_CELL_TYPES: &[&str] = &["code", "markdown", "raw"];
 
 type CommMap = std::collections::HashMap<String, runtime_doc::CommDocEntry>;
+type JsonCallback = ThreadsafeFunction<String, (), (String,), napi::Status, false, false, 0>;
 
 // ── Options ────────────────────────────────────────────────────────────
 
@@ -35,7 +38,7 @@ type CommMap = std::collections::HashMap<String, runtime_doc::CommDocEntry>;
 /// and that enum intentionally includes an `Unknown(String)` wire-compatibility
 /// variant that should not be exposed as a typed JavaScript option.
 #[napi(string_enum = "lowercase")]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PackageManager {
     Uv,
     Conda,
@@ -88,7 +91,8 @@ pub struct OpenNotebookOptions {
 #[napi(object)]
 #[derive(Default)]
 pub struct DependencyEditOptions {
-    /// Dependency manager to edit. Defaults to `uv` for Python notebooks.
+    /// Dependency manager to edit. Defaults to the running/configured manager,
+    /// falling back to UV for fresh Python notebooks.
     pub package_manager: Option<PackageManager>,
 }
 
@@ -254,6 +258,8 @@ pub struct ShowNotebookOptions {
 
 /// A queued execution handle.
 #[napi(object)]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct QueuedExecution {
     pub cell_id: String,
     pub execution_id: String,
@@ -300,6 +306,8 @@ pub struct JsCellSnapshot {
 
 /// One output from a cell. `data` values are: `{ type: "text"|"binary"|"json", value: ... }`.
 #[napi(object)]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JsOutput {
     pub output_type: String,
     pub name: Option<String>,
@@ -316,6 +324,8 @@ pub struct JsOutput {
 
 /// Result of running a cell.
 #[napi(object)]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CellResult {
     pub cell_id: String,
     pub execution_id: String,
@@ -367,12 +377,250 @@ pub struct Session {
     state: Arc<Mutex<SessionState>>,
 }
 
+/// A live event subscription returned by `Session.on*` methods.
+#[napi]
+pub struct EventSubscription {
+    task: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+}
+
+#[napi]
+impl EventSubscription {
+    /// Stop delivering events to the callback.
+    #[napi]
+    pub fn dispose(&self) {
+        if let Ok(mut task) = self.task.lock() {
+            if let Some(task) = task.take() {
+                task.abort();
+            }
+        }
+    }
+}
+
+impl Drop for EventSubscription {
+    fn drop(&mut self) {
+        if let Ok(mut task) = self.task.lock() {
+            if let Some(task) = task.take() {
+                task.abort();
+            }
+        }
+    }
+}
+
+impl EventSubscription {
+    fn new(task: tokio::task::JoinHandle<()>) -> Self {
+        Self {
+            task: Arc::new(std::sync::Mutex::new(Some(task))),
+        }
+    }
+}
+
+fn json_callback(callback: Function<'_, (String,), ()>) -> Result<JsonCallback> {
+    callback
+        .build_threadsafe_function::<String>()
+        .callee_handled::<false>()
+        .build_callback(|ctx| Ok((ctx.value,)))
+}
+
+fn emit_json<T: Serialize>(callback: &JsonCallback, value: &T) {
+    if let Ok(json) = serde_json::to_string(value) {
+        let _ = callback.call(json, ThreadsafeFunctionCallMode::NonBlocking);
+    }
+}
+
 #[napi]
 impl Session {
     /// The notebook ID (always a UUID).
     #[napi(getter)]
     pub fn notebook_id(&self) -> String {
         self.notebook_id.clone()
+    }
+
+    /// Subscribe to RuntimeStateDoc snapshots. Callback receives a JSON string.
+    #[napi]
+    pub fn on_runtime_state(
+        &self,
+        callback: Function<'_, (String,), ()>,
+    ) -> Result<EventSubscription> {
+        let handle = {
+            let st = self
+                .state
+                .try_lock()
+                .map_err(|_| Error::from_reason("Session state busy"))?;
+            st.handle
+                .as_ref()
+                .ok_or_else(|| Error::from_reason("Not connected"))?
+                .clone()
+        };
+        let mut rx = handle.subscribe_runtime_state();
+        let tsfn = json_callback(callback)?;
+        let task = tokio::spawn(async move {
+            emit_json(&tsfn, &*rx.borrow_and_update());
+            while rx.changed().await.is_ok() {
+                emit_json(&tsfn, &*rx.borrow_and_update());
+            }
+        });
+        Ok(EventSubscription::new(task))
+    }
+
+    /// Subscribe to execution lifecycle transitions. Callback receives a JSON string.
+    #[napi]
+    pub fn on_execution_transition(
+        &self,
+        callback: Function<'_, (String,), ()>,
+    ) -> Result<EventSubscription> {
+        let handle = {
+            let st = self
+                .state
+                .try_lock()
+                .map_err(|_| Error::from_reason("Session state busy"))?;
+            st.handle
+                .as_ref()
+                .ok_or_else(|| Error::from_reason("Not connected"))?
+                .clone()
+        };
+        let mut rx = handle.subscribe_runtime_state();
+        let tsfn = json_callback(callback)?;
+        let task = tokio::spawn(async move {
+            let mut prev = rx.borrow_and_update().executions.clone();
+            while rx.changed().await.is_ok() {
+                let curr = rx.borrow_and_update().executions.clone();
+                for transition in diff_executions(&prev, &curr) {
+                    emit_json(&tsfn, &transition);
+                }
+                prev = curr;
+            }
+        });
+        Ok(EventSubscription::new(task))
+    }
+
+    /// Subscribe to resolved progress snapshots for one execution.
+    ///
+    /// Callback receives the same JSON shape as `CellResult`, emitted whenever
+    /// the RuntimeStateDoc entry for the execution changes. The subscription
+    /// ends after an authoritative terminal snapshot, including kernel
+    /// failure/close.
+    #[napi]
+    pub fn on_execution_progress(
+        &self,
+        execution_id: String,
+        cell_id: Option<String>,
+        callback: Function<'_, (String,), ()>,
+    ) -> Result<EventSubscription> {
+        let (handle, blob_base_url, blob_store_path) = {
+            let st = self
+                .state
+                .try_lock()
+                .map_err(|_| Error::from_reason("Session state busy"))?;
+            (
+                st.handle
+                    .as_ref()
+                    .ok_or_else(|| Error::from_reason("Not connected"))?
+                    .clone(),
+                st.blob_base_url.clone(),
+                st.blob_store_path.clone(),
+            )
+        };
+        let tsfn = json_callback(callback)?;
+        let task = tokio::spawn(async move {
+            let fallback_cell_id = cell_id.unwrap_or_default();
+            let mut watcher =
+                notebook_sync::ExecutionWatcher::new(&handle, fallback_cell_id, execution_id);
+            while let Some(progress) = watcher.next().await {
+                let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
+                if let Ok(result) = cell_result_from_execution_progress(
+                    &progress,
+                    comms.as_ref(),
+                    &blob_base_url,
+                    &blob_store_path,
+                )
+                .await
+                {
+                    emit_json(&tsfn, &result);
+                }
+                if progress.terminal {
+                    break;
+                }
+            }
+        });
+        Ok(EventSubscription::new(task))
+    }
+
+    /// Subscribe to notebook document changes. Callback receives a JSON string.
+    ///
+    /// The native handle currently reports `null` as a full-materialization
+    /// marker, matching the browser SyncEngine's no-changeset fallback.
+    #[napi]
+    pub fn on_cell_change(
+        &self,
+        callback: Function<'_, (String,), ()>,
+    ) -> Result<EventSubscription> {
+        let handle = {
+            let st = self
+                .state
+                .try_lock()
+                .map_err(|_| Error::from_reason("Session state busy"))?;
+            st.handle
+                .as_ref()
+                .ok_or_else(|| Error::from_reason("Not connected"))?
+                .clone()
+        };
+        let mut rx = handle.subscribe();
+        let tsfn = json_callback(callback)?;
+        let task = tokio::spawn(async move {
+            while rx.changed().await.is_ok() {
+                let _ = tsfn.call("null".to_string(), ThreadsafeFunctionCallMode::NonBlocking);
+            }
+        });
+        Ok(EventSubscription::new(task))
+    }
+
+    /// Subscribe to comm broadcasts. Callback receives a JSON string.
+    #[napi]
+    pub fn on_broadcast(&self, callback: Function<'_, (String,), ()>) -> Result<EventSubscription> {
+        let mut rx = {
+            let st = self
+                .state
+                .try_lock()
+                .map_err(|_| Error::from_reason("Session state busy"))?;
+            st._broadcast_rx
+                .as_ref()
+                .ok_or_else(|| Error::from_reason("Not connected"))?
+                .resubscribe()
+        };
+        let tsfn = json_callback(callback)?;
+        let task = tokio::spawn(async move {
+            while let Some(broadcast) = rx.recv().await {
+                emit_json(&tsfn, &broadcast);
+            }
+        });
+        Ok(EventSubscription::new(task))
+    }
+
+    /// Subscribe to handshake/readiness status updates. Callback receives a JSON string.
+    #[napi]
+    pub fn on_session_status(
+        &self,
+        callback: Function<'_, (String,), ()>,
+    ) -> Result<EventSubscription> {
+        let handle = {
+            let st = self
+                .state
+                .try_lock()
+                .map_err(|_| Error::from_reason("Session state busy"))?;
+            st.handle
+                .as_ref()
+                .ok_or_else(|| Error::from_reason("Not connected"))?
+                .clone()
+        };
+        let mut rx = handle.subscribe_status();
+        let tsfn = json_callback(callback)?;
+        let task = tokio::spawn(async move {
+            emit_json(&tsfn, &*rx.borrow_and_update());
+            while rx.changed().await.is_ok() {
+                emit_json(&tsfn, &*rx.borrow_and_update());
+            }
+        });
+        Ok(EventSubscription::new(task))
     }
 
     /// Save the notebook to disk. If a path is given, saves to that path
@@ -413,7 +661,8 @@ impl Session {
         Ok(())
     }
 
-    /// Add dependencies to the selected package manager (defaults to UV) in one CRDT transaction.
+    /// Add dependencies to the selected package manager in one CRDT transaction.
+    /// When no manager is provided, the running/configured notebook manager is used.
     /// Call `syncEnvironment()` or restart the kernel to install them.
     #[napi]
     pub async fn add_dependencies(
@@ -422,9 +671,11 @@ impl Session {
         options: Option<DependencyEditOptions>,
     ) -> Result<()> {
         let handle = session_handle(&self.state).await?;
-        let package_manager = dependency_package_manager(options);
+        let runtime_state = handle.get_runtime_state().ok();
         handle
             .with_metadata(|snapshot| {
+                let package_manager =
+                    dependency_package_manager(options, runtime_state.as_ref(), snapshot);
                 for pkg in &packages {
                     match package_manager {
                         PackageManager::Uv => snapshot.add_uv_dependency(pkg),
@@ -437,7 +688,8 @@ impl Session {
         approve_current_trust(&handle, None).await
     }
 
-    /// Add a dependency to the selected package manager (defaults to UV).
+    /// Add a dependency to the selected package manager.
+    /// When no manager is provided, the running/configured notebook manager is used.
     /// Call `syncEnvironment()` or restart the kernel to install it.
     #[napi]
     pub async fn add_dependency(
@@ -448,7 +700,8 @@ impl Session {
         self.add_dependencies(vec![pkg], options).await
     }
 
-    /// Remove dependencies from the selected package manager (defaults to UV) in one CRDT transaction.
+    /// Remove dependencies from the selected package manager in one CRDT transaction.
+    /// When no manager is provided, the running/configured notebook manager is used.
     /// Returns the number of dependencies removed.
     #[napi]
     pub async fn remove_dependencies(
@@ -457,9 +710,11 @@ impl Session {
         options: Option<DependencyEditOptions>,
     ) -> Result<u32> {
         let handle = session_handle(&self.state).await?;
-        let package_manager = dependency_package_manager(options);
+        let runtime_state = handle.get_runtime_state().ok();
         let removed = handle
             .with_metadata(|snapshot| {
+                let package_manager =
+                    dependency_package_manager(options, runtime_state.as_ref(), snapshot);
                 packages
                     .iter()
                     .filter(|pkg| match package_manager {
@@ -476,7 +731,8 @@ impl Session {
         Ok(removed.try_into().unwrap_or(u32::MAX))
     }
 
-    /// Remove a dependency from the selected package manager (defaults to UV).
+    /// Remove a dependency from the selected package manager.
+    /// When no manager is provided, the running/configured notebook manager is used.
     /// Returns true if a dependency was removed.
     #[napi]
     pub async fn remove_dependency(
@@ -1318,10 +1574,52 @@ async fn show_notebook_inner(
     })
 }
 
-fn dependency_package_manager(options: Option<DependencyEditOptions>) -> PackageManager {
+fn dependency_package_manager(
+    options: Option<DependencyEditOptions>,
+    runtime_state: Option<&runtime_doc::RuntimeState>,
+    metadata: &notebook_doc::metadata::NotebookMetadataSnapshot,
+) -> PackageManager {
     options
         .and_then(|opts| opts.package_manager)
+        .or_else(|| infer_dependency_package_manager(runtime_state, metadata))
         .unwrap_or(PackageManager::Uv)
+}
+
+fn infer_dependency_package_manager(
+    runtime_state: Option<&runtime_doc::RuntimeState>,
+    metadata: &notebook_doc::metadata::NotebookMetadataSnapshot,
+) -> Option<PackageManager> {
+    if let Some(state) = runtime_state {
+        let env_source = state.kernel.env_source.as_str();
+        if env_source.starts_with("pixi:") {
+            return Some(PackageManager::Pixi);
+        }
+        if env_source.starts_with("conda:") {
+            return Some(PackageManager::Conda);
+        }
+        if env_source.starts_with("uv:") {
+            return Some(PackageManager::Uv);
+        }
+    }
+
+    if metadata.runt.uv.is_some() {
+        return Some(PackageManager::Uv);
+    }
+    if metadata.runt.conda.is_some() {
+        return Some(PackageManager::Conda);
+    }
+    if metadata.runt.pixi.is_some() {
+        return Some(PackageManager::Pixi);
+    }
+
+    match runtime_state.map(|state| &state.project_context) {
+        Some(ProjectContext::Detected { project_file, .. }) => match project_file.kind {
+            ProjectFileKind::PixiToml => Some(PackageManager::Pixi),
+            ProjectFileKind::EnvironmentYml => Some(PackageManager::Conda),
+            ProjectFileKind::PyprojectToml => Some(PackageManager::Uv),
+        },
+        _ => None,
+    }
 }
 
 fn js_cell_from_snapshot(cell: notebook_doc::CellSnapshot) -> JsCellSnapshot {
@@ -1658,6 +1956,30 @@ async fn cell_result_from_execution_state(
     .await
 }
 
+async fn cell_result_from_execution_progress(
+    progress: &notebook_sync::ExecutionProgressState,
+    comms: Option<&CommMap>,
+    blob_base_url: &Option<String>,
+    blob_store_path: &Option<PathBuf>,
+) -> Result<CellResult> {
+    cell_result_from_output_manifests(
+        ExecutionResultParts {
+            execution_id: &progress.execution_id,
+            cell_id: &progress.cell_id,
+            status: &progress.status,
+            success: progress.success.unwrap_or(true),
+            execution_count: progress.execution_count,
+            output_manifests: &progress.output_manifests,
+        },
+        OutputResolutionContext {
+            comms,
+            blob_base_url,
+            blob_store_path,
+        },
+    )
+    .await
+}
+
 async fn cell_result_from_output_manifests(
     parts: ExecutionResultParts<'_>,
     context: OutputResolutionContext<'_>,
@@ -1782,6 +2104,89 @@ mod tests {
         assert_eq!(uv.as_str(), "uv");
         assert_eq!(conda.as_str(), "conda");
         assert_eq!(pixi.as_str(), "pixi");
+    }
+
+    #[test]
+    fn dependency_package_manager_prefers_explicit_option() {
+        let metadata = notebook_doc::metadata::NotebookMetadataSnapshot::default();
+
+        assert_eq!(
+            dependency_package_manager(
+                Some(DependencyEditOptions {
+                    package_manager: Some(PackageManager::Pixi),
+                }),
+                None,
+                &metadata,
+            ),
+            PackageManager::Pixi
+        );
+    }
+
+    #[test]
+    fn dependency_package_manager_prefers_running_env_source() {
+        let mut metadata = notebook_doc::metadata::NotebookMetadataSnapshot::default();
+        metadata.add_uv_dependency("numpy");
+        let runtime_state = runtime_doc::RuntimeState {
+            kernel: runtime_doc::KernelState {
+                env_source: "conda:environment-yml".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert_eq!(
+            dependency_package_manager(None, Some(&runtime_state), &metadata),
+            PackageManager::Conda
+        );
+    }
+
+    #[test]
+    fn dependency_package_manager_uses_inline_metadata_before_project_context() {
+        let mut metadata = notebook_doc::metadata::NotebookMetadataSnapshot::default();
+        metadata.add_pixi_dependency("numpy");
+        let runtime_state = runtime_doc::RuntimeState {
+            project_context: ProjectContext::Detected {
+                project_file: runtime_doc::ProjectFile {
+                    kind: ProjectFileKind::PyprojectToml,
+                    absolute_path: "/tmp/pyproject.toml".to_string(),
+                    relative_to_notebook: "pyproject.toml".to_string(),
+                },
+                parsed: runtime_doc::ProjectFileParsed::default(),
+                observed_at: "2026-05-03T00:00:00Z".to_string(),
+            },
+            ..Default::default()
+        };
+
+        assert_eq!(
+            dependency_package_manager(None, Some(&runtime_state), &metadata),
+            PackageManager::Pixi
+        );
+    }
+
+    #[test]
+    fn dependency_package_manager_falls_back_to_project_context_then_uv() {
+        let metadata = notebook_doc::metadata::NotebookMetadataSnapshot::default();
+        let runtime_state = runtime_doc::RuntimeState {
+            project_context: ProjectContext::Detected {
+                project_file: runtime_doc::ProjectFile {
+                    kind: ProjectFileKind::EnvironmentYml,
+                    absolute_path: "/tmp/environment.yml".to_string(),
+                    relative_to_notebook: "environment.yml".to_string(),
+                },
+                parsed: runtime_doc::ProjectFileParsed::default(),
+                observed_at: "2026-05-03T00:00:00Z".to_string(),
+            },
+            ..Default::default()
+        };
+
+        assert_eq!(
+            dependency_package_manager(None, Some(&runtime_state), &metadata),
+            PackageManager::Conda
+        );
+        assert_eq!(
+            dependency_package_manager(None, None, &metadata),
+            PackageManager::Uv
+        );
     }
 
     #[test]

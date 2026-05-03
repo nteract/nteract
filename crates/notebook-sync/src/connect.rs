@@ -381,9 +381,14 @@ where
         let state = shared.lock().map_err(|_| SyncError::LockPoisoned)?;
         NotebookSnapshot::from_doc(&state.doc)
     };
+    let initial_runtime_state = {
+        let state = shared.lock().map_err(|_| SyncError::LockPoisoned)?;
+        state.state_doc.read_state()
+    };
 
     let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
     let snapshot_tx = Arc::new(snapshot_tx);
+    let (runtime_state_tx, runtime_state_rx) = watch::channel(initial_runtime_state);
     let (status_tx, status_rx) = watch::channel(SyncStatus::connected_pending());
     let (changed_tx, changed_rx) = mpsc::unbounded_channel();
     let (cmd_tx, cmd_rx) = mpsc::channel::<sync_task::SyncCommand>(32);
@@ -395,6 +400,7 @@ where
         cmd_tx,
         Arc::clone(&snapshot_tx),
         snapshot_rx,
+        runtime_state_rx,
         status_rx,
         notebook_id.clone(),
     );
@@ -404,6 +410,7 @@ where
         changed_rx,
         cmd_rx,
         snapshot_tx: Arc::clone(&snapshot_tx),
+        runtime_state_tx,
         status_tx,
         broadcast_tx,
     };

@@ -40,6 +40,83 @@ pub struct AsyncSession {
     peer_label: Option<String>,
 }
 
+#[pyclass(name = "ExecutionProgressStream")]
+pub struct ExecutionProgressStream {
+    inner: Arc<Mutex<ExecutionProgressStreamState>>,
+}
+
+struct ExecutionProgressStreamState {
+    session_state: Arc<Mutex<SessionState>>,
+    cell_id: String,
+    execution_id: String,
+    deadline: Option<tokio::time::Instant>,
+    watcher: Option<notebook_sync::ExecutionWatcher>,
+    done: bool,
+}
+
+#[pymethods]
+impl ExecutionProgressStream {
+    fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        future_into_py(py, async move {
+            let (session_state, cell_id, execution_id, deadline, watcher) = {
+                let mut st = inner.lock().await;
+                if st.done {
+                    return Err(pyo3::exceptions::PyStopAsyncIteration::new_err(()));
+                }
+                (
+                    Arc::clone(&st.session_state),
+                    st.cell_id.clone(),
+                    st.execution_id.clone(),
+                    st.deadline,
+                    st.watcher.take(),
+                )
+            };
+
+            let mut watcher = match watcher {
+                Some(watcher) => watcher,
+                None => {
+                    session_core::execution_watcher(&session_state, &cell_id, &execution_id).await?
+                }
+            };
+
+            let raw = match deadline {
+                Some(deadline) => {
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if remaining.is_zero() {
+                        watcher.timeout()
+                    } else {
+                        match tokio::time::timeout(remaining, watcher.next()).await {
+                            Ok(progress) => progress,
+                            Err(_) => watcher.timeout(),
+                        }
+                    }
+                }
+                None => watcher.next().await,
+            };
+
+            let Some(raw) = raw else {
+                let mut st = inner.lock().await;
+                st.done = true;
+                return Err(pyo3::exceptions::PyStopAsyncIteration::new_err(()));
+            };
+            {
+                let mut st = inner.lock().await;
+                if raw.terminal {
+                    st.done = true;
+                } else {
+                    st.watcher = Some(watcher);
+                }
+            }
+            session_core::resolve_execution_progress(&session_state, raw).await
+        })
+    }
+}
+
 impl AsyncSession {
     /// Create a pre-connected AsyncSession from a notebook_id and SessionState.
     /// Used by AsyncClient.open_notebook() / AsyncClient.create_notebook() / AsyncClient.join_notebook().
@@ -1160,6 +1237,38 @@ impl AsyncSession {
 
         future_into_py(py, async move {
             session_core::wait_for_execution(&state, &cell_id, &execution_id, timeout_secs).await
+        })
+    }
+
+    /// Watch an already-queued execution and stream RuntimeStateDoc-backed progress.
+    #[pyo3(signature = (cell_id, execution_id, timeout_secs=None))]
+    fn watch_execution(
+        &self,
+        cell_id: &str,
+        execution_id: &str,
+        timeout_secs: Option<f64>,
+    ) -> PyResult<ExecutionProgressStream> {
+        let deadline = match timeout_secs {
+            Some(secs) if !secs.is_finite() || secs < 0.0 => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "timeout_secs must be a finite non-negative number",
+                ));
+            }
+            Some(secs) => {
+                Some(tokio::time::Instant::now() + std::time::Duration::from_secs_f64(secs))
+            }
+            None => None,
+        };
+
+        Ok(ExecutionProgressStream {
+            inner: Arc::new(Mutex::new(ExecutionProgressStreamState {
+                session_state: Arc::clone(&self.state),
+                cell_id: cell_id.to_string(),
+                execution_id: execution_id.to_string(),
+                deadline,
+                watcher: None,
+                done: false,
+            })),
         })
     }
 

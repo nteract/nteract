@@ -838,6 +838,79 @@ impl ExecutionResult {
     }
 }
 
+/// Progress snapshot for one execution.
+#[pyclass(name = "ExecutionProgress", get_all, skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct ExecutionProgress {
+    /// Cell ID that is being executed.
+    pub cell_id: String,
+    /// Execution ID for this run.
+    pub execution_id: String,
+    /// Current status: "queued", "running", "done", "error", or synthetic terminal status.
+    pub status: String,
+    /// Whether execution succeeded, once known.
+    pub success: Option<bool>,
+    /// Kernel execution count, once known.
+    pub execution_count: Option<i64>,
+    /// Resolved outputs visible in RuntimeStateDoc at this snapshot.
+    pub outputs: Vec<Output>,
+    /// Whether this snapshot ends the stream.
+    pub terminal: bool,
+    /// Terminal reason: "done", "error", "kernel_failed", "interrupted", "timeout", or "closed".
+    pub terminal_reason: Option<String>,
+}
+
+#[pymethods]
+impl ExecutionProgress {
+    /// Get combined stdout text.
+    #[getter]
+    fn stdout(&self) -> String {
+        self.outputs
+            .iter()
+            .filter(|o| o.output_type == "stream" && o.name.as_deref() == Some("stdout"))
+            .filter_map(|o| o.text.as_deref())
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    /// Get combined stderr text.
+    #[getter]
+    fn stderr(&self) -> String {
+        self.outputs
+            .iter()
+            .filter(|o| o.output_type == "stream" && o.name.as_deref() == Some("stderr"))
+            .filter_map(|o| o.text.as_deref())
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ExecutionProgress(cell={}, execution={}, status={}, terminal={}, outputs={})",
+            self.cell_id,
+            self.execution_id,
+            self.status,
+            self.terminal,
+            self.outputs.len()
+        )
+    }
+}
+
+impl ExecutionProgress {
+    pub fn into_result(self) -> ExecutionResult {
+        let success = self.status == "done"
+            && self.success.unwrap_or(false)
+            && !self.outputs.iter().any(|o| o.output_type == "error");
+        ExecutionResult {
+            cell_id: self.cell_id,
+            execution_id: self.execution_id,
+            outputs: self.outputs,
+            success,
+            execution_count: self.execution_count,
+        }
+    }
+}
+
 // ── Runtime state (from RuntimeStateDoc) ─────────────────────────────
 
 /// Kernel state from the RuntimeStateDoc.

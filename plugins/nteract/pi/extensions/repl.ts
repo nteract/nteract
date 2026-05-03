@@ -72,16 +72,30 @@ type JsOutput = {
 
 type CellResult = {
   cellId: string;
+  executionId: string;
   executionCount?: number;
   status: string; // "done" | "error" | "timeout" | "kernel_error"
   success: boolean;
   outputs: JsOutput[];
 };
 
+type QueuedExecution = {
+  cellId: string;
+  executionId: string;
+};
+
 type Session = {
   readonly notebookId: string;
-  runCell(source: string, opts?: { timeoutMs?: number; cellType?: string }): Promise<CellResult>;
-  addUvDependency(pkg: string): Promise<void>;
+  runCell(
+    source: string,
+    opts?: { timeoutMs?: number; cellType?: string; onUpdate?: (progress: CellResult) => void },
+  ): Promise<CellResult>;
+  queueCell(source: string, opts?: { cellType?: string }): Promise<QueuedExecution>;
+  waitForExecution(
+    executionId: string,
+    opts?: { timeoutMs?: number; cellId?: string; onUpdate?: (progress: CellResult) => void },
+  ): Promise<CellResult>;
+  addUvDependency?(pkg: string): Promise<void>;
   addDependencies?(
     packages: string[],
     opts?: { packageManager?: "uv" | "conda" | "pixi" },
@@ -323,6 +337,7 @@ function formatResult(result: CellResult): {
   const isError =
     result.status === "error" ||
     result.status === "kernel_error" ||
+    result.status === "kernel_failed" ||
     result.outputs.some((o) => o.outputType === "error");
 
   const parts: (TextContent | ImageContent)[] = [];
@@ -397,6 +412,18 @@ function formatResult(result: CellResult): {
   return { content: parts, isError };
 }
 
+function findParquetBlobPath(result: CellResult): string | undefined {
+  for (const o of result.outputs) {
+    if (!o.blobPathsJson) continue;
+    try {
+      const paths = JSON.parse(o.blobPathsJson);
+      const pqPath = paths["application/vnd.apache.parquet"];
+      if (typeof pqPath === "string") return pqPath;
+    } catch {}
+  }
+  return undefined;
+}
+
 // --- extension ---------------------------------------------------------------
 
 const PYTHON_PARAMS = Type.Object({
@@ -433,11 +460,13 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
     const unique = Array.from(new Set(packages.map((pkg) => pkg.trim()).filter(Boolean)));
     if (!unique.length) return;
     if (sess.addDependencies) {
-      await sess.addDependencies(unique, { packageManager: rn.PackageManager?.Uv ?? "uv" });
-    } else {
+      await sess.addDependencies(unique);
+    } else if (sess.addUvDependency) {
       for (const pkg of unique) {
         await sess.addUvDependency(pkg);
       }
+    } else {
+      throw new Error("@runtimed/node Session does not support dependency edits");
     }
     await sess.syncEnvironment();
   }
@@ -463,7 +492,6 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
         peerLabel: "pi",
         description: "pi Python REPL",
         dependencies,
-        packageManager: rn.PackageManager?.Uv ?? "uv",
       });
       return session;
     })();
@@ -592,26 +620,31 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
       }
       return text;
     },
-    async execute(_toolCallId, params, signal) {
+    async execute(_toolCallId, params, signal, onUpdate) {
       if (signal?.aborted) throw new Error("aborted");
       const sess = await ensureSession(params.dependencies ?? []);
       const timeoutSecs = Math.max(1, params.timeout_secs ?? 120);
       const result = await sess.runCell(params.code, {
         timeoutMs: Math.round(timeoutSecs * 1000),
+        onUpdate: (progress) => {
+          const { content, isError } = formatResult(progress);
+          onUpdate?.({
+            content,
+            details: {
+              notebook_id: sess.notebookId,
+              cell_id: progress.cellId,
+              execution_id: progress.executionId,
+              status: progress.status,
+              execution_count: progress.executionCount,
+              is_error: isError,
+              parquet_blob_path: findParquetBlobPath(progress),
+              streaming: true,
+            },
+          });
+        },
       });
       // Extract parquet blob path for human-side table rendering
-      let parquetBlobPath: string | undefined;
-      for (const o of result.outputs) {
-        if (!o.blobPathsJson) continue;
-        try {
-          const paths = JSON.parse(o.blobPathsJson);
-          const pqPath = paths["application/vnd.apache.parquet"];
-          if (typeof pqPath === "string") {
-            parquetBlobPath = pqPath;
-            break;
-          }
-        } catch {}
-      }
+      const parquetBlobPath = findParquetBlobPath(result);
 
       const { content, isError } = formatResult(result);
       return {
@@ -619,6 +652,7 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
         details: {
           notebook_id: sess.notebookId,
           cell_id: result.cellId,
+          execution_id: result.executionId,
           status: result.status,
           execution_count: result.executionCount,
           is_error: isError,

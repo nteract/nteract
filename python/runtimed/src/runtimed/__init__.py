@@ -24,6 +24,7 @@ from runtimed._internals import (  # noqa: F401
     CompletionResult,
     EnvState,
     ExecutionEvent,
+    ExecutionProgress,
     ExecutionResult,
     HistoryEntry,
     KernelState,
@@ -51,6 +52,7 @@ __all__ = [
     "CellHandle",
     "CellCollection",
     "Execution",
+    "ExecutionProgress",
     "Presence",
     # Error type — raisable / catchable
     "RuntimedError",

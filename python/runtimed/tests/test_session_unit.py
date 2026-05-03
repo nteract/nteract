@@ -51,6 +51,7 @@ class TestModuleExports:
             # Primary API
             "Client",
             "Execution",
+            "ExecutionProgress",
             "Notebook",
             "NotebookInfo",
             "CellHandle",
@@ -82,6 +83,10 @@ class TestOutputTypes:
     def test_execution_result_class_exists(self):
         """ExecutionResult class is exported."""
         assert hasattr(runtimed, "ExecutionResult")
+
+    def test_execution_progress_class_exists(self):
+        """ExecutionProgress class is exported."""
+        assert hasattr(runtimed, "ExecutionProgress")
 
     def test_runtimed_error_class_exists(self):
         """RuntimedError class is exported."""
@@ -344,6 +349,8 @@ class _ExecutionSession:
         self._executions = executions or {}
         self._state_error = state_error
         self.wait_calls = []
+        self.watch_calls = []
+        self.progress_stream = object()
         self.interrupted = False
 
     def get_runtime_state_sync(self):
@@ -354,6 +361,10 @@ class _ExecutionSession:
     async def wait_for_execution(self, cell_id, execution_id, timeout_secs):
         self.wait_calls.append((cell_id, execution_id, timeout_secs))
         return "execution-result"
+
+    def watch_execution(self, cell_id, execution_id, timeout_secs=None):
+        self.watch_calls.append((cell_id, execution_id, timeout_secs))
+        return self.progress_stream
 
     async def interrupt(self):
         self.interrupted = True
@@ -413,6 +424,17 @@ class TestExecutionHandle:
 
         assert result == "execution-result"
         assert session.wait_calls == [("cell-1", "exec-1", 12.5)]
+
+    def test_watch_delegates_to_session_without_requeueing(self):
+        from runtimed._execution import Execution
+
+        session = _ExecutionSession({"exec-1": _ExecutionEntry(status="running")})
+        execution = Execution(session, "cell-1", "exec-1")  # ty: ignore[invalid-argument-type]
+
+        stream = execution.watch(timeout_secs=7.5)
+
+        assert stream is session.progress_stream
+        assert session.watch_calls == [("cell-1", "exec-1", 7.5)]
 
     @pytest.mark.asyncio
     async def test_await_execution_is_result_shorthand(self):

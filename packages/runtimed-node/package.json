@@ -35,6 +35,8 @@
     "README.md",
     "src/index.cjs",
     "src/index.d.ts",
+    "src/session.cjs",
+    "src/napi-observables.cjs",
     "src/binding.cjs",
     "src/binding.d.ts"
   ],
@@ -55,6 +57,10 @@
     "pack:dry-run": "pnpm pack --dry-run",
     "smoke": "node -e \"const m = require('./src/index.cjs'); console.log('defaultSocketPath:', m.defaultSocketPath());\"",
     "smoke:api": "node scripts/smoke-api.cjs"
+  },
+  "dependencies": {
+    "runtimed": "workspace:*",
+    "rxjs": "^7.8.2"
   },
   "optionalDependencies": {
     "@runtimed/node-darwin-arm64": "workspace:*",

@@ -8,5 +8,20 @@
 "use strict";
 
 const binding = require("./binding.cjs");
+const { Session } = require("./session.cjs");
 
-module.exports = binding;
+async function createNotebook(options) {
+  return new Session(await binding.createNotebook(options));
+}
+
+async function openNotebook(notebookId, options) {
+  return new Session(await binding.openNotebook(notebookId, options));
+}
+
+module.exports = {
+  ...binding,
+  createNotebook,
+  openNotebook,
+  NativeSession: binding.Session,
+  Session,
+};
