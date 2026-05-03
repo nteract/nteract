@@ -96,7 +96,7 @@ async fn try_send_daemon_heartbeat(daemon: &Arc<Daemon>, client: &reqwest::Clien
 }
 
 fn persist_settings(doc: &runtimed_client::settings_doc::SettingsDoc, json_path: &std::path::Path) {
-    if let Err(e) = doc.save_json_mirror(&json_path) {
+    if let Err(e) = doc.save_json_mirror(json_path) {
         tracing::warn!("[telemetry] failed to write settings.json: {e}");
     }
 }

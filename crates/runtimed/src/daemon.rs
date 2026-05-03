@@ -123,8 +123,11 @@ impl DaemonConfig {
     }
 }
 
-fn legacy_settings_doc_path() -> PathBuf {
-    runtimed_client::daemon_base_dir().join("settings.automerge")
+fn legacy_settings_doc_path(config: &DaemonConfig) -> PathBuf {
+    match &config.settings_json_path {
+        Some(json_path) => json_path.with_file_name("settings.automerge"),
+        None => runtimed_client::daemon_base_dir().join("settings.automerge"),
+    }
 }
 
 #[cfg(unix)]
@@ -1218,7 +1221,7 @@ impl Daemon {
         // Load or create the in-memory settings document. settings.json is
         // canonical; the legacy Automerge file is read only for one-time
         // migration when JSON is missing.
-        let automerge_path = legacy_settings_doc_path();
+        let automerge_path = legacy_settings_doc_path(&config);
         let json_path = config.resolved_settings_json_path();
         let mut settings = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
 
@@ -5591,6 +5594,21 @@ mod tests {
             settings_json_path: Some(temp_dir.path().join("settings.json")),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn legacy_settings_doc_path_tracks_settings_json_override() {
+        let temp_dir = TempDir::new().unwrap();
+        let settings_json = temp_dir.path().join("isolated").join("settings.json");
+        let config = DaemonConfig {
+            settings_json_path: Some(settings_json.clone()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            legacy_settings_doc_path(&config),
+            settings_json.with_file_name("settings.automerge")
+        );
     }
 
     /// Plant a fake pool env on disk under `cache_dir` and register it in
