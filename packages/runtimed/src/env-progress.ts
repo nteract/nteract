@@ -86,6 +86,10 @@ export function getEnvProgressStatusText(event: EnvProgressEvent): string {
       const e = event as Extract<EnvProgressPhase, { phase: "installing_packages" }>;
       return `Installing ${e.packages.length} packages...`;
     }
+    case "project_preparing":
+      return event.source === "uv:pyproject"
+        ? "Preparing UV project environment..."
+        : "Preparing project environment...";
     case "ready":
       return "Environment ready";
     case "error":

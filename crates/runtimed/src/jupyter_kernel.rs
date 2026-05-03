@@ -234,17 +234,7 @@ impl KernelConnection for JupyterKernel {
         );
 
         // Determine working directory
-        let cwd = if let Some(ref path) = notebook_path {
-            if path.is_dir() {
-                path.to_path_buf()
-            } else {
-                path.parent()
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(std::env::temp_dir)
-            }
-        } else {
-            runt_workspace::default_notebooks_dir().unwrap_or_else(|_| std::env::temp_dir())
-        };
+        let cwd = crate::uv_project::notebook_working_dir(notebook_path.as_deref());
 
         // Build kernel command based on kernel type
         let mut cmd = match kernel_type.as_str() {
@@ -294,32 +284,10 @@ impl KernelConnection for JupyterKernel {
                             env_source
                         );
                         let mut cmd = tokio::process::Command::new(&uv_path);
-                        let mut args: Vec<String> = vec![
-                            "run".into(),
-                            "--with".into(),
-                            "ipykernel".into(),
-                            "--with".into(),
-                            "uv".into(),
-                        ];
-                        if bootstrap_dx {
-                            // `dx` is on PyPI; the launcher is injected via
-                            // PYTHONPATH below so `-m nteract_kernel_launcher`
-                            // resolves without shadowing cwd in sys.path[0].
-                            args.push("--with".into());
-                            args.push("dx".into());
-                        }
-                        args.push("python".into());
-                        args.push("-Xfrozen_modules=off".into());
-                        args.push("-m".into());
-                        let launcher_module = if bootstrap_dx {
-                            "nteract_kernel_launcher"
-                        } else {
-                            "ipykernel_launcher"
-                        };
-                        args.push(launcher_module.into());
-                        args.push("-f".into());
-                        cmd.args(&args);
-                        cmd.arg(&connection_file_path);
+                        cmd.args(crate::uv_project::uv_pyproject_kernel_args(
+                            bootstrap_dx,
+                            &connection_file_path,
+                        ));
                         cmd.stdout(Stdio::null());
                         cmd.stderr(Stdio::piped());
                         if bootstrap_dx {
@@ -331,8 +299,7 @@ impl KernelConnection for JupyterKernel {
                             // cwd. `uv run` preserves env vars, and putting
                             // the launcher dir on PYTHONPATH keeps cwd at
                             // `sys.path[0]`.
-                            let dir = crate::launcher_cache::launcher_cache_dir().await?;
-                            cmd.env("PYTHONPATH", &dir);
+                            crate::uv_project::apply_bootstrap_pythonpath(&mut cmd).await?;
                         }
                         cmd
                     }

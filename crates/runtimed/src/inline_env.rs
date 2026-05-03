@@ -128,6 +128,7 @@ fn env_progress_phase_name(phase: &EnvProgressPhase) -> &'static str {
         EnvProgressPhase::InstallComplete { .. } => "install_complete",
         EnvProgressPhase::CreatingVenv => "creating_venv",
         EnvProgressPhase::InstallingPackages { .. } => "installing_packages",
+        EnvProgressPhase::ProjectPreparing { .. } => "project_preparing",
         EnvProgressPhase::Ready { .. } => "ready",
         EnvProgressPhase::Error { .. } => "error",
     }

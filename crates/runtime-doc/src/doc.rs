@@ -3012,6 +3012,30 @@ mod tests {
     }
 
     #[test]
+    fn test_set_env_progress_round_trips_project_preparing() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_env_progress(
+            "uv",
+            &serde_json::json!({
+                "phase": "project_preparing",
+                "source": "uv:pyproject",
+                "project_path": "/tmp/project/pyproject.toml",
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            doc.read_state().env.progress,
+            Some(serde_json::json!({
+                "env_type": "uv",
+                "phase": "project_preparing",
+                "source": "uv:pyproject",
+                "project_path": "/tmp/project/pyproject.toml",
+            }))
+        );
+    }
+
+    #[test]
     fn test_clear_env_progress_returns_to_none() {
         let mut doc = RuntimeStateDoc::new();
         doc.set_env_progress("uv", &serde_json::json!({ "phase": "offline_hit" }))

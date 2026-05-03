@@ -150,6 +150,7 @@ export type EnvProgressPhase =
   | { phase: "install_complete"; elapsed_ms: number }
   | { phase: "creating_venv" }
   | { phase: "installing_packages"; packages: string[] }
+  | { phase: "project_preparing"; source: string; project_path: string }
   | { phase: "ready"; env_path: string; python_path: string }
   | { phase: "error"; message: string };
 

@@ -693,6 +693,37 @@ describe("SyncEngine", () => {
       expect(received[0].kernel.name).toBe("python3");
       engine.stop();
     });
+
+    it("preserves project preparation env progress from state sync", () => {
+      const state = makeRuntimeState({});
+      state.env.progress = {
+        env_type: "uv",
+        phase: "project_preparing",
+        source: "uv:pyproject",
+        project_path: "/tmp/project/pyproject.toml",
+      };
+
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        runtimeStateSyncEvent(state),
+      ]);
+
+      const engine = createEngine();
+      engine.start();
+
+      const received: RuntimeState[] = [];
+      engine.runtimeState$.subscribe((s) => received.push(s));
+
+      transport.deliver(Array.from([0x05, 1]));
+
+      expect(received).toHaveLength(1);
+      expect(received[0].env.progress).toEqual({
+        env_type: "uv",
+        phase: "project_preparing",
+        source: "uv:pyproject",
+        project_path: "/tmp/project/pyproject.toml",
+      });
+      engine.stop();
+    });
   });
 
   // ── Execution transitions ─────────────────────────────────────
