@@ -924,38 +924,13 @@ pub(crate) async fn handle(
                         }
                     }
 
-                    // Resolve the conda prefix: prefix: → direct path,
-                    // name: → search standard dirs, create if not found.
-                    // Track whether the env is daemon-owned (safe to
-                    // auto-rebuild) vs. user-managed (prefix: field or
-                    // pre-existing named env).
-                    let (conda_prefix, is_daemon_owned_env) = if let Some(ref prefix) =
-                        env_config.prefix
-                    {
-                        // Explicit prefix: path from environment.yml — user-managed
-                        (prefix.clone(), false)
-                    } else if let Some(ref name) = env_config.name {
-                        match crate::project_file::find_named_conda_env(name) {
-                            Some(found) => (found, false), // Pre-existing user env
-                            None => (
-                                crate::project_file::default_conda_envs_dir().join(name),
-                                true,
-                            ),
-                        }
-                    } else {
-                        // No name or prefix — use a hash-based env in cache
-                        let cache_dir = crate::paths::default_cache_dir().join("conda-envs");
-                        let conda_deps_tmp = kernel_env::CondaDependencies {
-                            dependencies: env_config.dependencies.clone(),
-                            channels: env_config.channels.clone(),
-                            python: env_config.python.clone(),
-                            env_id: None,
-                        };
-                        (
-                            cache_dir.join(kernel_env::conda::compute_env_hash(&conda_deps_tmp)),
-                            true,
-                        )
-                    };
+                    // Resolve the conda prefix: prefix: -> direct path,
+                    // name: -> search standard dirs, create if not found.
+                    // Daemon-created envs are scoped by project directory so
+                    // different projects with the same env name get isolated
+                    // prefixes (prevents concurrent clobbering).
+                    let (conda_prefix, is_daemon_owned_env) =
+                        crate::project_file::resolve_conda_env_yml_prefix(&env_config, yml);
 
                     // Merge env.yml deps with any CRDT notebook deps (additive)
                     let mut all_deps = env_config.dependencies.clone();

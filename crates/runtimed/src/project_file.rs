@@ -206,6 +206,73 @@ pub fn default_conda_envs_dir() -> PathBuf {
         .join("envs")
 }
 
+/// Resolve the conda prefix for a daemon-created `conda:env_yml` environment.
+///
+/// When the daemon needs to create a new named env (not pre-existing on the
+/// system), the path is scoped to the project directory so that different
+/// projects using the same `name:` field in their `environment.yaml` get
+/// isolated prefixes. Without this, concurrent notebooks sharing the same
+/// env name but different dep sets can clobber each other - the rattler
+/// Installer removes packages not in the current notebook's specs.
+///
+/// Returns `(prefix_path, is_daemon_owned)`.
+///
+/// - `prefix:` field -> use that path directly (user-managed)
+/// - `name:` found on system -> use that path (user-managed)
+/// - `name:` not found -> daemon-owned, project-scoped cache path
+/// - no name or prefix -> hash-based cache path (daemon-owned)
+pub fn resolve_conda_env_yml_prefix(
+    env_config: &EnvironmentYmlConfig,
+    yml_path: &Path,
+) -> (PathBuf, bool) {
+    if let Some(ref prefix) = env_config.prefix {
+        // Explicit prefix: path from environment.yml - user-managed
+        (prefix.clone(), false)
+    } else if let Some(ref name) = env_config.name {
+        match find_named_conda_env(name) {
+            Some(found) => (found, false), // Pre-existing user env
+            None => {
+                // Daemon-created: scope by project dir so different projects
+                // with the same env name get isolated prefixes.
+                let cache_dir = crate::paths::default_cache_dir().join("conda-envs");
+                let project_hash = compute_project_scope_hash(yml_path);
+                (cache_dir.join(format!("{}-{}", name, project_hash)), true)
+            }
+        }
+    } else {
+        // No name or prefix - use a hash-based env in cache
+        let cache_dir = crate::paths::default_cache_dir().join("conda-envs");
+        let conda_deps_tmp = kernel_env::CondaDependencies {
+            dependencies: env_config.dependencies.clone(),
+            channels: env_config.channels.clone(),
+            python: env_config.python.clone(),
+            env_id: None,
+        };
+        (
+            cache_dir.join(kernel_env::conda::compute_env_hash(&conda_deps_tmp)),
+            true,
+        )
+    }
+}
+
+/// Compute a short hash that scopes a conda env to its project directory.
+///
+/// Uses the canonical parent directory of the environment.yaml file as the
+/// scope key - two environment.yaml files in the same directory get the same
+/// hash, different directories get different hashes even with identical
+/// content.
+fn compute_project_scope_hash(yml_path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let canonical = yml_path
+        .parent()
+        .and_then(|p| p.canonicalize().ok())
+        .unwrap_or_else(|| yml_path.to_path_buf());
+    let mut hasher = Sha256::new();
+    hasher.update(canonical.to_string_lossy().as_bytes());
+    let hash = hasher.finalize();
+    hex::encode(hash)[..12].to_string()
+}
+
 /// Get the python path within a conda prefix.
 pub fn conda_python_path(prefix: &Path) -> PathBuf {
     #[cfg(target_os = "windows")]
@@ -625,5 +692,94 @@ mod tests {
         assert_eq!(python, PathBuf::from("/opt/conda/envs/test/bin/python"));
         #[cfg(target_os = "windows")]
         assert_eq!(python, PathBuf::from("/opt/conda/envs/test/python.exe"));
+    }
+
+    #[test]
+    fn test_resolve_conda_env_yml_prefix_with_prefix_field() {
+        let temp = TempDir::new().unwrap();
+        write_file(
+            temp.path(),
+            "environment.yml",
+            "prefix: /custom/path\ndependencies:\n  - numpy\n",
+        );
+        let config = parse_environment_yml(&temp.path().join("environment.yml")).unwrap();
+        let (prefix, is_daemon_owned) =
+            resolve_conda_env_yml_prefix(&config, &temp.path().join("environment.yml"));
+        assert_eq!(prefix, PathBuf::from("/custom/path"));
+        assert!(!is_daemon_owned);
+    }
+
+    #[test]
+    fn test_resolve_conda_env_yml_prefix_daemon_created_scoped_by_project() {
+        // Two different project dirs with the same env name should get
+        // different daemon-owned prefixes (project-scoped isolation).
+        let temp1 = TempDir::new().unwrap();
+        let temp2 = TempDir::new().unwrap();
+        let yml_content = "name: shared-env\ndependencies:\n  - numpy\n";
+        write_file(temp1.path(), "environment.yml", yml_content);
+        write_file(temp2.path(), "environment.yml", yml_content);
+
+        let config1 = parse_environment_yml(&temp1.path().join("environment.yml")).unwrap();
+        let config2 = parse_environment_yml(&temp2.path().join("environment.yml")).unwrap();
+        let (prefix1, owned1) =
+            resolve_conda_env_yml_prefix(&config1, &temp1.path().join("environment.yml"));
+        let (prefix2, owned2) =
+            resolve_conda_env_yml_prefix(&config2, &temp2.path().join("environment.yml"));
+
+        assert!(owned1, "daemon-created envs should be daemon-owned");
+        assert!(owned2, "daemon-created envs should be daemon-owned");
+        assert_ne!(
+            prefix1, prefix2,
+            "different project dirs must get different prefixes"
+        );
+        // Both should start with the env name
+        let name1 = prefix1.file_name().unwrap().to_string_lossy();
+        let name2 = prefix2.file_name().unwrap().to_string_lossy();
+        assert!(
+            name1.starts_with("shared-env-"),
+            "prefix should start with env name"
+        );
+        assert!(
+            name2.starts_with("shared-env-"),
+            "prefix should start with env name"
+        );
+    }
+
+    #[test]
+    fn test_resolve_conda_env_yml_prefix_same_dir_same_hash() {
+        // Same project dir should produce the same prefix
+        let temp = TempDir::new().unwrap();
+        write_file(
+            temp.path(),
+            "environment.yml",
+            "name: myenv\ndependencies:\n  - numpy\n",
+        );
+        let config = parse_environment_yml(&temp.path().join("environment.yml")).unwrap();
+        let (prefix1, _) =
+            resolve_conda_env_yml_prefix(&config, &temp.path().join("environment.yml"));
+        let (prefix2, _) =
+            resolve_conda_env_yml_prefix(&config, &temp.path().join("environment.yml"));
+        assert_eq!(prefix1, prefix2, "same project dir must produce same prefix");
+    }
+
+    #[test]
+    fn test_resolve_conda_env_yml_prefix_no_name_no_prefix() {
+        // No name or prefix: should use hash-based path
+        let temp = TempDir::new().unwrap();
+        write_file(
+            temp.path(),
+            "environment.yml",
+            "dependencies:\n  - numpy\n",
+        );
+        let config = parse_environment_yml(&temp.path().join("environment.yml")).unwrap();
+        let (prefix, is_daemon_owned) =
+            resolve_conda_env_yml_prefix(&config, &temp.path().join("environment.yml"));
+        assert!(is_daemon_owned);
+        // Should be under the cache dir
+        let cache_dir = crate::paths::default_cache_dir().join("conda-envs");
+        assert!(
+            prefix.starts_with(&cache_dir),
+            "no-name prefix should be under cache dir"
+        );
     }
 }

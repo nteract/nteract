@@ -1040,21 +1040,8 @@ pub(crate) fn missing_conda_env_yml_decision(
     }
 
     let config = crate::project_file::parse_environment_yml(&detected.path).ok()?;
-    let conda_prefix = if let Some(ref prefix) = config.prefix {
-        prefix.clone()
-    } else if let Some(ref name) = config.name {
-        crate::project_file::find_named_conda_env(name)
-            .unwrap_or_else(|| crate::project_file::default_conda_envs_dir().join(name))
-    } else {
-        let cache_dir = crate::paths::default_cache_dir().join("conda-envs");
-        let conda_deps_tmp = kernel_env::CondaDependencies {
-            dependencies: config.dependencies.clone(),
-            channels: config.channels.clone(),
-            python: config.python.clone(),
-            env_id: None,
-        };
-        cache_dir.join(kernel_env::conda::compute_env_hash(&conda_deps_tmp))
-    };
+    let (conda_prefix, _is_daemon_owned) =
+        crate::project_file::resolve_conda_env_yml_prefix(&config, &detected.path);
 
     if crate::project_file::conda_python_path(&conda_prefix).exists() {
         return None;
@@ -3202,31 +3189,11 @@ pub(crate) async fn auto_launch_kernel(
             }
         };
 
-        // Track whether the env is daemon-owned (safe to auto-rebuild)
-        // vs. user-managed (prefix: field or pre-existing named env).
-        let (conda_prefix, is_daemon_owned_env) = if let Some(ref prefix) = env_config.prefix {
-            (prefix.clone(), false) // User-specified path — never auto-delete
-        } else if let Some(ref name) = env_config.name {
-            match crate::project_file::find_named_conda_env(name) {
-                Some(found) => (found, false), // Pre-existing user env — never auto-delete
-                None => (
-                    crate::project_file::default_conda_envs_dir().join(name),
-                    true,
-                ),
-            }
-        } else {
-            let cache_dir = crate::paths::default_cache_dir().join("conda-envs");
-            let conda_deps_tmp = kernel_env::CondaDependencies {
-                dependencies: env_config.dependencies.clone(),
-                channels: env_config.channels.clone(),
-                python: env_config.python.clone(),
-                env_id: None,
-            };
-            (
-                cache_dir.join(kernel_env::conda::compute_env_hash(&conda_deps_tmp)),
-                true,
-            )
-        };
+        // Resolve conda prefix: daemon-created envs are scoped by project
+        // directory so different projects with the same env name get isolated
+        // prefixes (prevents concurrent clobbering).
+        let (conda_prefix, is_daemon_owned_env) =
+            crate::project_file::resolve_conda_env_yml_prefix(&env_config, &yml_path);
 
         let mut all_deps = env_config.dependencies.clone();
         if let Some(crdt_deps) = metadata_snapshot.as_ref().and_then(get_inline_conda_deps) {
