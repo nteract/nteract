@@ -477,6 +477,10 @@ async fn test_external_settings_json_edit_survives_settings_sync_ack() {
     let saved_json = std::fs::read_to_string(&settings_json_path).unwrap();
     let saved: SyncedSettings = serde_json::from_str(&saved_json).unwrap();
     assert_eq!(saved.default_python_env, PythonEnvType::Conda);
+    assert!(
+        !settings_dir.join("settings.automerge").exists(),
+        "external settings.json edits must not recreate legacy Automerge settings persistence"
+    );
 
     pool_client.shutdown().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
