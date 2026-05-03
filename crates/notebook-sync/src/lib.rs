@@ -54,6 +54,7 @@ pub mod broadcast;
 pub mod connect;
 pub mod error;
 pub mod execution_wait;
+pub mod execution_watch;
 pub mod handle;
 pub mod presence;
 pub mod relay;
@@ -69,6 +70,7 @@ pub use execution_wait::{
     await_execution_terminal, ExecutionTerminalError, ExecutionTerminalState,
     DEFAULT_OUTPUT_SYNC_GRACE,
 };
+pub use execution_watch::{ExecutionProgressState, ExecutionTerminalReason, ExecutionWatcher};
 pub use handle::DocHandle;
 pub use relay::RelayHandle;
 pub use shared::SharedDocState;

@@ -11,7 +11,6 @@ members = [
     "crates/notebook-wire",
     "crates/notebook-doc",
     "crates/runtime-doc",
-    "crates/runtime-projection",
     "crates/notebook-protocol",
     "crates/notebook-sync",
     "crates/xtask",

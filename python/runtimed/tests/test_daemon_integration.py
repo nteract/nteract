@@ -2220,6 +2220,35 @@ class TestExecuteCell:
         finally:
             await client.close()
 
+    async def test_execution_watch_streams_terminal_progress_and_matches_result(self, notebook):
+        """execution.watch() streams RuntimeStateDoc progress for one execution."""
+        await notebook.start()
+
+        cell = await notebook.cells.create(
+            "import time\nfor i in range(3):\n    print(i)\n    time.sleep(0.05)"
+        )
+        await asyncio.sleep(0.5)
+
+        execution = await cell.execute()
+        progresses = []
+        async for progress in execution.watch(timeout_secs=30.0):
+            progresses.append(progress)
+
+        assert progresses, "Expected at least one progress snapshot"
+        final = progresses[-1]
+        assert final.terminal is True
+        assert final.terminal_reason == "done"
+        assert final.execution_id == execution.execution_id
+        assert final.cell_id == execution.cell_id
+        assert final.success is True
+        assert "0" in final.stdout
+        assert "2" in final.stdout
+
+        result = await execution.result(timeout_secs=30.0)
+        assert result.success
+        assert result.execution_id == execution.execution_id
+        assert result.stdout == final.stdout
+
     async def test_await_execution_shorthand(self, notebook):
         """await execution works as shorthand for execution.result()."""
         await notebook.start()

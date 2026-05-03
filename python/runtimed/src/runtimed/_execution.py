@@ -8,11 +8,13 @@ Delegates to existing session methods for waiting and streaming.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from runtimed._internals import (
         AsyncSession,
+        ExecutionProgress,
         ExecutionResult,
     )
 
@@ -121,6 +123,27 @@ class Execution:
         return await self._session.wait_for_execution(
             self._cell_id, self._execution_id, timeout_secs
         )
+
+    def watch(self, timeout_secs: float | None = None) -> AsyncIterator[ExecutionProgress]:
+        """Stream progress snapshots for this execution.
+
+        The stream is backed by RuntimeStateDoc changes. Intermediate updates
+        are best-effort/coalesced, but the final emitted snapshot is
+        authoritative.
+
+        Example::
+
+            async for progress in execution.watch():
+                print(progress.status, progress.stdout)
+
+        Args:
+            timeout_secs: Optional maximum time for the stream. When reached,
+                the stream emits a terminal timeout progress snapshot.
+
+        Yields:
+            ExecutionProgress snapshots for this execution.
+        """
+        return self._session.watch_execution(self._cell_id, self._execution_id, timeout_secs)
 
     async def cancel(self) -> None:
         """Cancel this execution by interrupting the kernel.

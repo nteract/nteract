@@ -21,13 +21,13 @@ mod output_resolver;
 mod session_core;
 
 use async_client::AsyncClient;
-use async_session::AsyncSession;
+use async_session::{AsyncSession, ExecutionProgressStream};
 use error::RuntimedError;
 
 use output::{
-    Cell, CompletionItem, CompletionResult, ExecutionEvent, ExecutionResult, HistoryEntry,
-    NotebookConnectionInfo, Output, PyCommDocEntry, PyEnvState, PyKernelState, PyQueueEntry,
-    PyRuntimeState, QueueState, SyncEnvironmentResult,
+    Cell, CompletionItem, CompletionResult, ExecutionEvent, ExecutionProgress, ExecutionResult,
+    HistoryEntry, NotebookConnectionInfo, Output, PyCommDocEntry, PyEnvState, PyKernelState,
+    PyQueueEntry, PyRuntimeState, QueueState, SyncEnvironmentResult,
 };
 
 /// Launch the desktop notebook app, optionally opening a specific notebook.
@@ -115,10 +115,12 @@ fn _internals(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Session types (used internally by Python wrappers)
     m.add_class::<AsyncSession>()?;
+    m.add_class::<ExecutionProgressStream>()?;
 
     // Output types
     m.add_class::<Cell>()?;
     m.add_class::<ExecutionResult>()?;
+    m.add_class::<ExecutionProgress>()?;
     m.add_class::<ExecutionEvent>()?;
     m.add_class::<Output>()?;
     m.add_class::<SyncEnvironmentResult>()?;

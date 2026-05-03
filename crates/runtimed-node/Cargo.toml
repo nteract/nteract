@@ -18,7 +18,6 @@ notebook-protocol = { path = "../notebook-protocol" }
 notebook-doc = { path = "../notebook-doc" }
 notebook-sync = { path = "../notebook-sync" }
 runtime-doc = { path = "../runtime-doc" }
-runtime-projection = { path = "../runtime-projection" }
 runt-workspace = { path = "../runt-workspace" }
 nteract-predicate = { path = "../nteract-predicate" }
 arrow = { version = "54", default-features = false, features = ["ipc"] }

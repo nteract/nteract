@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+use crate::ExecutionState;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionTransition {
     pub execution_id: String,
     pub cell_id: String,
@@ -10,7 +12,7 @@ pub struct ExecutionTransition {
     pub execution_count: Option<i64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ExecutionTransitionKind {
     Started,
@@ -22,8 +24,8 @@ pub enum ExecutionTransitionKind {
 ///
 /// Keep this behavior in parity with `packages/runtimed/src/runtime-state.ts`.
 pub fn diff_executions(
-    prev: &HashMap<String, runtime_doc::ExecutionState>,
-    curr: &HashMap<String, runtime_doc::ExecutionState>,
+    prev: &HashMap<String, ExecutionState>,
+    curr: &HashMap<String, ExecutionState>,
 ) -> Vec<ExecutionTransition> {
     let mut transitions = Vec::new();
 
@@ -73,7 +75,7 @@ pub fn diff_executions(
 
 fn transition(
     execution_id: &str,
-    entry: &runtime_doc::ExecutionState,
+    entry: &ExecutionState,
     kind: ExecutionTransitionKind,
 ) -> ExecutionTransition {
     ExecutionTransition {
@@ -88,8 +90,8 @@ fn transition(
 mod tests {
     use super::*;
 
-    fn exec(status: &str, count: Option<i64>) -> runtime_doc::ExecutionState {
-        runtime_doc::ExecutionState {
+    fn exec(status: &str, count: Option<i64>) -> ExecutionState {
+        ExecutionState {
             cell_id: "cell-1".to_string(),
             status: status.to_string(),
             execution_count: count,

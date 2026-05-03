@@ -11,6 +11,7 @@ from runtimed._execution import Execution as Execution
 from runtimed._internals import Cell as Cell
 from runtimed._internals import EnvState as EnvState
 from runtimed._internals import ExecutionEvent as ExecutionEvent
+from runtimed._internals import ExecutionProgress as ExecutionProgress
 from runtimed._internals import ExecutionResult as ExecutionResult
 from runtimed._internals import KernelState as KernelState
 from runtimed._internals import Output as Output
