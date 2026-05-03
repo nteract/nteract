@@ -453,9 +453,9 @@ impl Session {
         let mut rx = handle.subscribe_runtime_state();
         let tsfn = json_callback(callback)?;
         let task = tokio::spawn(async move {
-            emit_json(&tsfn, &*rx.borrow());
+            emit_json(&tsfn, &*rx.borrow_and_update());
             while rx.changed().await.is_ok() {
-                emit_json(&tsfn, &*rx.borrow());
+                emit_json(&tsfn, &*rx.borrow_and_update());
             }
         });
         Ok(EventSubscription::new(task))
@@ -480,9 +480,9 @@ impl Session {
         let mut rx = handle.subscribe_runtime_state();
         let tsfn = json_callback(callback)?;
         let task = tokio::spawn(async move {
-            let mut prev = rx.borrow().executions.clone();
+            let mut prev = rx.borrow_and_update().executions.clone();
             while rx.changed().await.is_ok() {
-                let curr = rx.borrow().executions.clone();
+                let curr = rx.borrow_and_update().executions.clone();
                 for transition in diff_executions(&prev, &curr) {
                     emit_json(&tsfn, &transition);
                 }
@@ -525,7 +525,7 @@ impl Session {
             let mut prev: Option<runtime_doc::ExecutionState> = None;
             loop {
                 let (entry, comms) = {
-                    let state = rx.borrow().clone();
+                    let state = rx.borrow_and_update().clone();
                     (state.executions.get(&execution_id).cloned(), state.comms)
                 };
                 if let Some(entry) = entry {
@@ -627,9 +627,9 @@ impl Session {
         let mut rx = handle.subscribe_status();
         let tsfn = json_callback(callback)?;
         let task = tokio::spawn(async move {
-            emit_json(&tsfn, &*rx.borrow());
+            emit_json(&tsfn, &*rx.borrow_and_update());
             while rx.changed().await.is_ok() {
-                emit_json(&tsfn, &*rx.borrow());
+                emit_json(&tsfn, &*rx.borrow_and_update());
             }
         });
         Ok(EventSubscription::new(task))
