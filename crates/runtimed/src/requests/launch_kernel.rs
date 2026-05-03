@@ -1084,10 +1084,21 @@ pub(crate) async fn handle(
                         )
                         .await
                         {
-                            warn!(
-                                "[notebook-sync] conda:env_yml sync into existing env failed: {}, continuing with existing env",
-                                e
-                            );
+                            let details =
+                                format!("conda:env_yml sync into existing env failed: {}", e);
+                            error!("[notebook-sync] {}", details);
+                            reset_starting_state_with_outcome(
+                                room,
+                                None,
+                                ResetOutcome::Error {
+                                    reason: Some(
+                                        runtime_doc::KernelErrorReason::CondaEnvBuildFailed,
+                                    ),
+                                    details: &details,
+                                },
+                            )
+                            .await;
+                            return NotebookResponse::Error { error: details };
                         }
                         // Terminal phase so the banner clears. Matches the env_yml path in
                         // notebook_sync_server::metadata::auto_launch_kernel.
