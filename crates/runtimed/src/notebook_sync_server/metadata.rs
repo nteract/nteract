@@ -3320,10 +3320,20 @@ pub(crate) async fn auto_launch_kernel(
             )
             .await
             {
-                warn!(
-                    "[notebook-sync] conda:env_yml sync into existing env failed: {}, continuing with existing env",
-                    e
-                );
+                let details = format!("conda:env_yml sync into existing env failed: {}", e);
+                error!("[notebook-sync] {}", details);
+                if let Err(e) = room.state.with_doc(|sd| {
+                    sd.set_lifecycle_with_error_details(
+                        &RuntimeLifecycle::Error,
+                        Some(KernelErrorReason::CondaEnvBuildFailed),
+                        Some(&details),
+                    )?;
+                    sd.clear_env_progress()?;
+                    Ok(())
+                }) {
+                    warn!("[runtime-state] {}", e);
+                }
+                return;
             }
             // The banner stays lit until a terminal phase is written. Emit Ready so
             // it clears whether the sync completed or we fell through to the existing env.

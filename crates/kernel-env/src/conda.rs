@@ -1050,8 +1050,93 @@ pub async fn sync_dependencies(
         },
     );
 
+    // Post-install verification: confirm every requested package is present
+    // in conda-meta. The rattler Installer performs a transactional unlink-then-
+    // link sequence; if it fails mid-transaction the prefix can be left without
+    // packages that were previously installed. Catching this here prevents the
+    // caller from launching a kernel against an inconsistent env.
+    let missing = verify_packages_installed(&env.env_path, &deps.dependencies);
+    if !missing.is_empty() {
+        return Err(anyhow!(
+            "Post-sync verification failed: packages missing from conda-meta after install: [{}]",
+            missing.join(", ")
+        ));
+    }
+
     info!("Conda dependencies synced successfully");
     Ok(())
+}
+
+/// Verify that every package name in `required` has a corresponding
+/// `<name>-*.json` entry in the env's `conda-meta/` directory.
+///
+/// Returns the list of package names that are missing. An empty vec means
+/// all required packages are present.
+///
+/// Used as a post-install gate: the rattler Installer's transactional
+/// unlink-then-link can leave the prefix inconsistent if it fails between
+/// the two phases. Checking conda-meta after install catches this before
+/// the kernel launches against a broken env.
+pub fn verify_packages_installed(env_path: &std::path::Path, required: &[String]) -> Vec<String> {
+    /// Extract the bare package name from a conda spec like "numpy>=1.24"
+    /// or "conda-forge::scipy". Mirrors notebook_doc::metadata::extract_package_name
+    /// without pulling in that crate dependency.
+    fn extract_pkg_name(spec: &str) -> String {
+        let spec = spec.trim();
+        // Strip conda channel qualifier (e.g. "conda-forge::numpy" -> "numpy")
+        let spec = spec.rsplit_once("::").map_or(spec, |(_, name)| name);
+        spec.split(&['>', '<', '=', '!', '~', '[', ';', '@', ' '][..])
+            .next()
+            .unwrap_or(spec)
+            .to_lowercase()
+    }
+
+    let meta_dir = env_path.join("conda-meta");
+    let installed_names: std::collections::HashSet<String> = match std::fs::read_dir(&meta_dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let fname = e.file_name();
+                let fname = fname.to_string_lossy().to_string();
+                if !fname.ends_with(".json") || fname == "history" {
+                    return None;
+                }
+                // conda-meta filenames: <name>-<version>-<build>.json
+                // Split on '-' from the right: the last two segments are
+                // build and version; everything before is the package name.
+                let stem = fname.strip_suffix(".json")?;
+                let mut parts: Vec<&str> = stem.rsplitn(3, '-').collect();
+                parts.reverse();
+                if parts.len() >= 3 {
+                    Some(parts[0].to_lowercase())
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        Err(_) => std::collections::HashSet::new(),
+    };
+
+    required
+        .iter()
+        .filter_map(|spec| {
+            let name = extract_pkg_name(spec);
+            // Skip base packages that are always present; the caller may have
+            // included them in the dep list but they aren't user-visible if missing.
+            if name == "ipykernel"
+                || name == "ipywidgets"
+                || name == "anywidget"
+                || name == "nbformat"
+            {
+                return None;
+            }
+            if installed_names.contains(&name) {
+                None
+            } else {
+                Some(name)
+            }
+        })
+        .collect()
 }
 
 /// No-op cleanup (cached environments are kept for reuse).
