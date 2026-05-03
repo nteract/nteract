@@ -137,6 +137,34 @@ impl TrustedPackageStore {
         Ok(true)
     }
 
+    pub(crate) fn seed_defaults(&self, ecosystem: &'static str, specs: &[&str]) -> Result<()> {
+        let StoreInner::Sqlite { conn } = self.inner.as_ref() else {
+            return Ok(());
+        };
+
+        let approved_at = chrono::Utc::now().to_rfc3339();
+        let mut conn = conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("trusted package store mutex poisoned"))?;
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                r#"
+                INSERT INTO trusted_packages (ecosystem, normalized_name, approved_at, source)
+                VALUES (?1, ?2, ?3, ?4)
+                ON CONFLICT(ecosystem, normalized_name) DO NOTHING
+                "#,
+            )?;
+            for spec in specs {
+                if let Some(name) = normalize_package_name(spec) {
+                    stmt.execute(params![ecosystem, name, approved_at, "daemon-default"])?;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     fn approved_raw_specs(&self, ecosystem: &'static str, specs: &[String]) -> Result<Vec<String>> {
         let StoreInner::Sqlite { conn } = self.inner.as_ref() else {
             return Ok(vec![]);
@@ -417,6 +445,55 @@ mod tests {
         mixed.uv_dependencies = vec!["pandas>=2".into(), "polars".into()];
         store.enrich_info(&mut mixed).unwrap();
         assert_eq!(mixed.approved_uv_dependencies, vec!["pandas>=2"]);
+    }
+
+    #[test]
+    fn seed_defaults_pre_approves_packages() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = TrustedPackageStore::open(tmp.path().join("trusted.sqlite")).unwrap();
+
+        store
+            .seed_defaults("pypi", &["pandas", "matplotlib"])
+            .unwrap();
+
+        let info = runt_trust::TrustInfo {
+            status: runt_trust::TrustStatus::Untrusted,
+            uv_dependencies: vec!["pandas>=2".into(), "matplotlib".into()],
+            approved_uv_dependencies: vec![],
+            conda_dependencies: vec![],
+            approved_conda_dependencies: vec![],
+            conda_channels: vec![],
+            pixi_dependencies: vec![],
+            approved_pixi_dependencies: vec![],
+            pixi_pypi_dependencies: vec![],
+            approved_pixi_pypi_dependencies: vec![],
+            pixi_channels: vec![],
+        };
+        assert!(store.all_dependencies_approved(&info).unwrap());
+    }
+
+    #[test]
+    fn seed_defaults_does_not_overwrite_existing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = TrustedPackageStore::open(tmp.path().join("trusted.sqlite")).unwrap();
+
+        let info = runt_trust::TrustInfo {
+            status: runt_trust::TrustStatus::Untrusted,
+            uv_dependencies: vec!["pandas".into()],
+            approved_uv_dependencies: vec![],
+            conda_dependencies: vec![],
+            approved_conda_dependencies: vec![],
+            conda_channels: vec![],
+            pixi_dependencies: vec![],
+            approved_pixi_dependencies: vec![],
+            pixi_pypi_dependencies: vec![],
+            approved_pixi_pypi_dependencies: vec![],
+            pixi_channels: vec![],
+        };
+        store.add_from_info(&info, "user-approval").unwrap();
+        store.seed_defaults("pypi", &["pandas"]).unwrap();
+
+        assert!(store.all_dependencies_approved(&info).unwrap());
     }
 
     #[cfg(unix)]
