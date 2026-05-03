@@ -38,7 +38,7 @@ pub enum SyncClientError {
 /// Client for the Automerge settings sync service.
 ///
 /// Holds a local Automerge document replica that stays in sync with the
-/// daemon's canonical copy via the Automerge sync protocol.
+/// daemon's live copy via the Automerge sync protocol.
 pub struct SyncClient<S> {
     doc: AutoCommit,
     peer_state: sync::State,

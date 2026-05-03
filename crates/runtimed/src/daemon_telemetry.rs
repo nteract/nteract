@@ -42,7 +42,7 @@ async fn try_send_daemon_heartbeat(daemon: &Arc<Daemon>, client: &reqwest::Clien
         let id = runtimed_client::settings_doc::ensure_install_id(&mut settings_doc);
         let generated = !had_id;
         if generated {
-            persist_settings(&mut settings_doc);
+            persist_settings(&settings_doc, &daemon.config.resolved_settings_json_path());
         }
         let snapshot = settings_doc.get_all();
         (snapshot, id, generated)
@@ -91,17 +91,12 @@ async fn try_send_daemon_heartbeat(daemon: &Arc<Daemon>, client: &reqwest::Clien
     {
         let mut settings_doc = daemon.settings.write().await;
         settings_doc.put_u64("telemetry_last_daemon_ping_at", now);
-        persist_settings(&mut settings_doc);
+        persist_settings(&settings_doc, &daemon.config.resolved_settings_json_path());
     }
 }
 
-fn persist_settings(doc: &mut runtimed_client::settings_doc::SettingsDoc) {
-    let automerge_path = runtimed_client::default_settings_doc_path();
-    let json_path = runtimed_client::settings_json_path();
-    if let Err(e) = doc.save_to_file(&automerge_path) {
-        tracing::warn!("[telemetry] failed to save Automerge doc: {e}");
-    }
-    if let Err(e) = doc.save_json_mirror(&json_path) {
-        tracing::warn!("[telemetry] failed to write JSON mirror: {e}");
+fn persist_settings(doc: &runtimed_client::settings_doc::SettingsDoc, json_path: &std::path::Path) {
+    if let Err(e) = doc.save_json_mirror(json_path) {
+        tracing::warn!("[telemetry] failed to write settings.json: {e}");
     }
 }

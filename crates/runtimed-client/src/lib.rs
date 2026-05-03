@@ -222,11 +222,6 @@ pub fn connections_dir() -> PathBuf {
     daemon_base_dir().join("connections")
 }
 
-/// Get the default path for the persisted Automerge settings document.
-pub fn default_settings_doc_path() -> PathBuf {
-    daemon_base_dir().join("settings.automerge")
-}
-
 /// Get the path to the settings JSON Schema file.
 pub fn settings_schema_path() -> PathBuf {
     dirs::config_dir()

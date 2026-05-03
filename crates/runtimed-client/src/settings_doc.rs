@@ -1,9 +1,9 @@
 //! Automerge-backed settings document for cross-window sync.
 //!
 //! Wraps an Automerge `AutoCommit` document with typed accessors for
-//! application settings. The daemon holds the canonical copy; each connected
+//! application settings. The daemon holds the live copy; each connected
 //! notebook window holds a local replica that syncs over the Automerge sync
-//! protocol.
+//! protocol. On disk, `settings.json` is canonical.
 //!
 //! The document uses nested maps for environment-specific settings:
 //!
@@ -485,41 +485,50 @@ impl SettingsDoc {
         Self { doc }
     }
 
-    /// Load a settings document from a saved binary, or create a new one with
-    /// defaults if the file doesn't exist or is invalid.
+    /// Load the canonical JSON settings, migrate a legacy Automerge settings
+    /// document once when JSON is missing, or create a new document with
+    /// defaults.
     ///
-    /// If `settings_json_path` points to an existing `settings.json`, its values
-    /// are migrated into the new Automerge document.
-    ///
-    /// Existing Automerge docs with old flat keys (`default_uv_packages`,
-    /// `default_conda_packages`) are migrated to the nested structure on load.
+    /// The returned `SettingsDoc` is still the in-memory sync document used by
+    /// the live settings protocol. On disk, `settings.json` is the source of
+    /// truth; `settings.automerge` is read only as a migration source when the
+    /// JSON file does not exist.
     pub fn load_or_create(automerge_path: &Path, settings_json_path: Option<&Path>) -> Self {
-        // Try loading existing Automerge document
+        if let Some(json_path) = settings_json_path {
+            if json_path.exists() {
+                match std::fs::read_to_string(json_path)
+                    .ok()
+                    .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
+                {
+                    Some(json) => {
+                        info!("[settings] Loaded canonical settings from {:?}", json_path);
+                        return Self::from_json(&json);
+                    }
+                    None => {
+                        log::warn!(
+                            "[settings] Failed to load canonical settings.json from {:?}; trying legacy Automerge settings before defaults",
+                            json_path
+                        );
+                    }
+                }
+            }
+        }
+
+        // One-time migration from the legacy Automerge settings document.
         if automerge_path.exists() {
             if let Ok(data) = std::fs::read(automerge_path) {
                 if let Ok(doc) = AutoCommit::load(&data) {
-                    info!("[settings] Loaded Automerge doc from {:?}", automerge_path);
+                    info!(
+                        "[settings] Migrating legacy Automerge settings from {:?}",
+                        automerge_path
+                    );
                     let mut settings = Self { doc };
                     settings.migrate_flat_to_nested();
                     settings.migrate_null_keep_alive();
 
-                    // Reconcile with settings.json so manual edits made while the
-                    // daemon was stopped are picked up (the file watcher only
-                    // catches changes that happen after it starts).
                     if let Some(json_path) = settings_json_path {
-                        if json_path.exists() {
-                            if let Ok(contents) = std::fs::read_to_string(json_path) {
-                                if let Ok(json) = serde_json::from_str(&contents) {
-                                    if settings.apply_json_changes(&json) {
-                                        info!("[settings] Reconciled Automerge doc with settings.json");
-                                        if let Err(e) = settings.save_to_file(automerge_path) {
-                                            log::warn!(
-                                                "[settings] Failed to persist reconciled Automerge doc: {e}"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
+                        if let Err(e) = settings.save_json_mirror(json_path) {
+                            log::warn!("[settings] Failed to write migrated settings.json: {e}");
                         }
                     }
 
@@ -528,21 +537,14 @@ impl SettingsDoc {
             }
         }
 
-        // Try migrating from settings.json
+        info!("[settings] Creating new settings doc with defaults");
+        let settings = Self::new();
         if let Some(json_path) = settings_json_path {
-            if json_path.exists() {
-                if let Ok(contents) = std::fs::read_to_string(json_path) {
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) {
-                        info!("[settings] Migrating from {:?}", json_path);
-                        return Self::from_json(&json);
-                    }
-                }
+            if let Err(e) = settings.save_json_mirror(json_path) {
+                log::warn!("[settings] Failed to write default settings.json: {e}");
             }
         }
-
-        // Fall back to defaults
-        info!("[settings] Creating new settings doc with defaults");
-        Self::new()
+        settings
     }
 
     /// Create a settings document from parsed JSON (for migration from settings.json).
@@ -710,7 +712,7 @@ impl SettingsDoc {
         std::fs::write(path, data)
     }
 
-    /// Write a human-readable JSON mirror of the settings (for fallback/inspection).
+    /// Write the canonical human-readable JSON settings file.
     ///
     /// Injects a `$schema` key pointing to the companion schema file so editors
     /// can provide autocomplete and validation.
@@ -1544,7 +1546,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_or_create_persists_json_reconcile_into_existing_automerge_doc() {
+    fn test_load_or_create_prefers_json_over_existing_automerge_doc() {
         let tmp = TempDir::new().unwrap();
         let automerge_path = tmp.path().join("settings.automerge");
         let json_path = tmp.path().join("settings.json");
@@ -1568,10 +1570,70 @@ mod tests {
         let persisted = SettingsDoc::load_or_create(&automerge_path, None);
         assert_eq!(
             persisted.get("default_python_env").as_deref(),
-            Some("conda"),
-            "settings.json edits made while the daemon was stopped must persist into settings.automerge"
+            Some("uv"),
+            "loading canonical settings.json must not rewrite the legacy Automerge file"
         );
-        assert_eq!(persisted.get_list("uv.default_packages"), vec!["numpy"]);
+        assert_eq!(
+            persisted.get_list("uv.default_packages"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn test_load_or_create_migrates_legacy_automerge_to_json_when_json_missing() {
+        let tmp = TempDir::new().unwrap();
+        let automerge_path = tmp.path().join("settings.automerge");
+        let json_path = tmp.path().join("settings.json");
+
+        let mut legacy_doc = SettingsDoc::new();
+        legacy_doc.put("default_python_env", "conda");
+        legacy_doc.put_list("uv.default_packages", &["numpy".to_string()]);
+        legacy_doc.save_to_file(&automerge_path).unwrap();
+
+        let migrated = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
+        assert_eq!(migrated.get("default_python_env").as_deref(), Some("conda"));
+
+        let saved_json = std::fs::read_to_string(&json_path).unwrap();
+        let saved: SyncedSettings = serde_json::from_str(&saved_json).unwrap();
+        assert_eq!(saved.default_python_env, PythonEnvType::Conda);
+        assert_eq!(saved.uv.default_packages, vec!["numpy"]);
+    }
+
+    #[test]
+    fn test_load_or_create_recovers_from_invalid_json_with_legacy_automerge() {
+        let tmp = TempDir::new().unwrap();
+        let automerge_path = tmp.path().join("settings.automerge");
+        let json_path = tmp.path().join("settings.json");
+
+        let mut legacy_doc = SettingsDoc::new();
+        legacy_doc.put("default_python_env", "pixi");
+        legacy_doc.put_list("conda.default_packages", &["scipy".to_string()]);
+        legacy_doc.save_to_file(&automerge_path).unwrap();
+        std::fs::write(&json_path, "{ not valid json").unwrap();
+
+        let recovered = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
+        assert_eq!(recovered.get("default_python_env").as_deref(), Some("pixi"));
+
+        let saved_json = std::fs::read_to_string(&json_path).unwrap();
+        let saved: SyncedSettings = serde_json::from_str(&saved_json).unwrap();
+        assert_eq!(saved.default_python_env, PythonEnvType::Pixi);
+        assert_eq!(saved.conda.default_packages, vec!["scipy"]);
+    }
+
+    #[test]
+    fn test_load_or_create_repairs_invalid_json_without_legacy_automerge() {
+        let tmp = TempDir::new().unwrap();
+        let automerge_path = tmp.path().join("settings.automerge");
+        let json_path = tmp.path().join("settings.json");
+
+        std::fs::write(&json_path, "{ not valid json").unwrap();
+
+        let recovered = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
+        assert_eq!(recovered.get_all(), SyncedSettings::default());
+
+        let saved_json = std::fs::read_to_string(&json_path).unwrap();
+        let saved: SyncedSettings = serde_json::from_str(&saved_json).unwrap();
+        assert_eq!(saved, SyncedSettings::default());
     }
 
     #[test]

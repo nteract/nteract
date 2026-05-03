@@ -6,22 +6,22 @@ nteract Desktop settings control default behavior for new notebooks, appearance,
 
 | Setting | Options | Default | Stored In |
 |---------|---------|---------|-----------|
-| Theme | light, dark, system | system | Synced (Automerge) + settings file |
-| Default runtime | python, deno | python | Synced (Automerge) + settings file |
-| Default Python env | uv, conda | uv | Synced (Automerge) + settings file |
-| Default uv packages | list of strings | (empty) | Synced (Automerge) + settings file |
-| Default conda packages | list of strings | (empty) | Synced (Automerge) + settings file |
-| Keep alive secs | integer | 30 | Synced (Automerge) + settings file |
-| Onboarding completed | boolean | false | Synced (Automerge) + settings file |
+| Theme | light, dark, system | system | `settings.json` + live Automerge sync |
+| Default runtime | python, deno | python | `settings.json` + live Automerge sync |
+| Default Python env | uv, conda | uv | `settings.json` + live Automerge sync |
+| Default uv packages | list of strings | (empty) | `settings.json` + live Automerge sync |
+| Default conda packages | list of strings | (empty) | `settings.json` + live Automerge sync |
+| Keep alive secs | integer | 30 | `settings.json` + live Automerge sync |
+| Onboarding completed | boolean | false | `settings.json` + live Automerge sync |
 
 ## How Settings Sync Works
 
-Settings are synced across all notebook windows via the runtimed daemon using Automerge. The daemon holds the canonical document; each notebook window maintains a local replica.
+Settings are persisted in `settings.json` and synced across all notebook windows via the runtimed daemon using an in-memory Automerge document. Each notebook window maintains a local replica.
 
-- **Source of truth:** The Automerge document in the daemon
-- **Persistence:** Settings are also written to `settings.json` in the same nested format
+- **Source of truth:** `settings.json`
+- **Live sync:** The daemon keeps an in-memory Automerge settings document for cross-window updates
 - **External edits:** The daemon watches `settings.json` for external changes (manual edits, CLI tools) and propagates them to all connected windows automatically
-- **Fallback:** When the daemon is unavailable, settings are read directly from `settings.json`
+- **Migration:** A legacy `settings.automerge` file is read only when `settings.json` is missing, then written out as JSON
 - **Theme special case:** Theme also uses webview localStorage to prevent a flash of unstyled content on startup
 
 When you change a setting in any window, it propagates to all other open windows in real time.
@@ -47,7 +47,7 @@ Environment-specific settings (packages, future: channels) live under `uv/` and 
 
 ## Settings File
 
-Settings are persisted to a JSON file shared across all notebook windows. The daemon is the sole writer; the notebook app reads the same nested JSON format as a fallback when the daemon is unavailable.
+Settings are persisted to a JSON file shared across all notebook windows. The daemon and CLI write the same nested JSON format.
 
 | Platform | Path |
 |----------|------|
@@ -55,7 +55,7 @@ Settings are persisted to a JSON file shared across all notebook windows. The da
 | Linux | `~/.config/nteract/settings.json` |
 | Windows | `C:\Users\<User>\AppData\Roaming\nteract\settings.json` |
 
-The file is created automatically when you first change a setting. You can also edit it by hand — changes are detected and applied automatically when the daemon is running.
+The file is created automatically on daemon startup. You can also edit it by hand — changes are detected and applied automatically when the daemon is running.
 
 Example:
 

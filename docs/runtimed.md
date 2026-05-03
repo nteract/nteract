@@ -118,7 +118,7 @@ Length-prefixed binary framing over a single Unix socket (Unix) or named pipe (W
 
 ### Settings.json file watcher
 
-The daemon watches `~/.config/nteract/settings.json` for external edits. Changes are debounced (500ms), applied to the Automerge settings doc, persisted as Automerge binary (not back to JSON, to avoid formatting churn), and broadcast to all connected sync clients.
+The daemon watches `~/.config/nteract/settings.json` for external edits. Changes are debounced (500ms), applied to the in-memory Automerge settings doc, and broadcast to all connected sync clients. The JSON file is the persistent source of truth; legacy `settings.automerge` is read only as a one-time migration source when JSON is missing.
 
 ### Service management
 
@@ -202,7 +202,7 @@ ROOT/
     default_packages: ["scipy"]
 ```
 
-The daemon holds the canonical document, persisted to `~/.cache/runt/settings.automerge` with a JSON mirror at `~/.config/nteract/settings.json`. Backward-compatible migration from flat keys (`default_uv_packages: "numpy, pandas"`) to nested structures.
+The daemon holds a live in-memory Automerge document for sync. Persistence is canonical JSON at `~/.config/nteract/settings.json`. Legacy `~/.cache/runt/settings.automerge` is migration-only: when JSON is missing, it is loaded once and written out as JSON. Backward-compatible migration from flat keys (`default_uv_packages: "numpy, pandas"`) to nested structures still runs during that import.
 
 **Wire protocol**: Length-prefixed binary frames (4-byte BE length + Automerge sync message). Bidirectional, long-lived connections. Broadcast channel notifies all peers when any peer changes a setting.
 

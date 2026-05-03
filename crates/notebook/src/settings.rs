@@ -6,8 +6,9 @@
 //! - Windows: C:\Users\<User>\AppData\Roaming\nteract\settings.json
 //!
 //! Settings are synced across all peers (notebook windows, MCP clients) via an
-//! Automerge document owned by the daemon. The daemon writes the JSON mirror to
-//! disk. This module reads settings as a fallback when the daemon is unavailable.
+//! in-memory Automerge document owned by the daemon. `settings.json` is the
+//! persistent source of truth. This module reads settings as a fallback when the
+//! daemon is unavailable.
 //!
 //! Uses `runtimed::settings_doc::SyncedSettings` as the canonical settings type.
 

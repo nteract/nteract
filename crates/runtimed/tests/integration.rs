@@ -92,10 +92,8 @@ fn test_config(temp_dir: &TempDir) -> DaemonConfig {
         // sequential `EADDRINUSE` retries push daemon boot past the
         // test's `wait_for_daemon` timeout. Skip straight to OS-assigned.
         use_preferred_blob_port: false,
-        // Pin settings files per-temp-dir so parallel daemons don't
-        // contend on the global `~/.cache/runt*/settings.automerge` +
-        // `~/.config/runt*/settings.json` pair at boot.
-        settings_doc_path: Some(temp_dir.path().join("settings.automerge")),
+        // Pin settings.json per-temp-dir so parallel daemons don't contend on
+        // the global `~/.config/runt*/settings.json` at boot.
         settings_json_path: Some(temp_dir.path().join("settings.json")),
         ..Default::default()
     }
@@ -433,9 +431,7 @@ async fn test_external_settings_json_edit_survives_settings_sync_ack() {
     let mut config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
     let settings_dir = temp_dir.path().canonicalize().unwrap();
-    let settings_doc_path = settings_dir.join("settings.automerge");
     let settings_json_path = settings_dir.join("settings.json");
-    config.settings_doc_path = Some(settings_doc_path);
     config.settings_json_path = Some(settings_json_path.clone());
 
     let initial = serde_json::to_string_pretty(&SyncedSettings::default()).unwrap();
@@ -475,12 +471,16 @@ async fn test_external_settings_json_edit_survives_settings_sync_ack() {
 
     // `recv_changes` sends any required sync ack before returning. Give the
     // daemon a short window to process that ack; a regression would persist
-    // the stale client value back to the JSON mirror here.
+    // the stale client value back to settings.json here.
     sleep(Duration::from_millis(500)).await;
 
     let saved_json = std::fs::read_to_string(&settings_json_path).unwrap();
     let saved: SyncedSettings = serde_json::from_str(&saved_json).unwrap();
     assert_eq!(saved.default_python_env, PythonEnvType::Conda);
+    assert!(
+        !settings_dir.join("settings.automerge").exists(),
+        "external settings.json edits must not recreate legacy Automerge settings persistence"
+    );
 
     pool_client.shutdown().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
@@ -495,9 +495,7 @@ async fn test_settings_json_mirror_write_does_not_feedback_loop() {
     let mut config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
     let settings_dir = temp_dir.path().canonicalize().unwrap();
-    let settings_doc_path = settings_dir.join("settings.automerge");
     let settings_json_path = settings_dir.join("settings.json");
-    config.settings_doc_path = Some(settings_doc_path);
     config.settings_json_path = Some(settings_json_path.clone());
 
     let initial = serde_json::to_string_pretty(&SyncedSettings::default()).unwrap();
@@ -529,7 +527,7 @@ async fn test_settings_json_mirror_write_does_not_feedback_loop() {
         .expect("observer sync should remain connected");
     assert_eq!(observed.theme, ThemeMode::Dark);
 
-    // The daemon persists the JSON mirror for the writer's Automerge change.
+    // The daemon persists settings.json for the writer's Automerge change.
     // The settings.json watcher will see that filesystem event; it must
     // recognize the mirror already matches the doc and avoid broadcasting
     // another settings change back to peers.
@@ -2352,12 +2350,12 @@ async fn test_pool_size_config_honored() {
     )
     .unwrap();
 
-    // Create a custom settings doc path for this test
-    let settings_doc_path = temp_dir.path().join("settings.amg");
+    // Create a custom legacy Automerge path for this test.
+    let automerge_path = temp_dir.path().join("settings.amg");
 
     // Test 1: Verify that from_json() correctly imports pool sizes during initial migration
     let settings_doc = runtimed_client::settings_doc::SettingsDoc::load_or_create(
-        &settings_doc_path,
+        &automerge_path,
         Some(&settings_path),
     );
 

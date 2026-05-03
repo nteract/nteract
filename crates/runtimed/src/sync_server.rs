@@ -43,7 +43,6 @@ pub async fn handle_settings_sync_connection<R, W>(
     settings: Arc<RwLock<SettingsDoc>>,
     changed_tx: broadcast::Sender<()>,
     mut changed_rx: broadcast::Receiver<()>,
-    automerge_path: PathBuf,
     json_path: PathBuf,
 ) -> anyhow::Result<()>
 where
@@ -87,7 +86,7 @@ where
                         let doc_changed = before != after;
 
                         if doc_changed {
-                            persist_settings(&mut doc, &automerge_path, &json_path);
+                            persist_settings(&doc, &json_path);
                             let _ = changed_tx.send(());
                         }
 
@@ -114,12 +113,9 @@ where
     }
 }
 
-/// Persist the settings document to disk (both Automerge binary and JSON mirror).
-fn persist_settings(doc: &mut SettingsDoc, automerge_path: &Path, json_path: &Path) {
-    if let Err(e) = doc.save_to_file(automerge_path) {
-        warn!("[sync] Failed to save Automerge doc: {}", e);
-    }
+/// Persist the settings document to the canonical JSON file.
+fn persist_settings(doc: &SettingsDoc, json_path: &Path) {
     if let Err(e) = doc.save_json_mirror(json_path) {
-        warn!("[sync] Failed to write JSON mirror: {}", e);
+        warn!("[sync] Failed to write settings.json: {}", e);
     }
 }
