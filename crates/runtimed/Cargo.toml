@@ -72,7 +72,7 @@ http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["tokio"] }
 
 # Automerge CRDT for settings sync
-automerge = "0.8"
+automerge = { workspace = true }
 automerge-recovery = { path = "../automerge-recovery" }
 
 # Shared notebook document types (cell CRUD, metadata, sync)

@@ -10,7 +10,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-automerge = "0.8"
+automerge = { workspace = true }
 automerge-recovery = { path = "../automerge-recovery" }
 notebook-doc = { path = "../notebook-doc" }
 runtime-doc = { path = "../runtime-doc" }
