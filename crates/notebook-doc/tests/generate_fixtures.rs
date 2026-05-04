@@ -6,9 +6,10 @@
 //! execution counts, etc.) and saves the full doc to `packages/runtimed/tests/fixtures/`.
 //!
 //! Outputs mirror the production shape exactly: inline manifest objects are
-//! written into `RuntimeStateDoc.executions.{eid}.outputs` via `set_outputs`.
-//! Every output carries a deterministic `output_id` (UUIDv5 derived from the
-//! scenario + execution_id + index) so regenerating fixtures does not churn.
+//! written through `RuntimeStateDoc::set_outputs`, which stores them in the
+//! execution output map keyed by `output_id`. Every output carries a deterministic
+//! `output_id` (UUIDv5 derived from the scenario + execution_id + index) so
+//! regenerating fixtures does not churn.
 //!
 //! The frontend tests load these docs into a WASM "server" handle, then use
 //! DirectTransport to sync to a fresh WASM client handle — driving the real
