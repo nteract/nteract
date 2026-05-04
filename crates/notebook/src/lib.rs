@@ -326,10 +326,11 @@ use tauri::{RunEvent, WindowEvent};
 #[derive(Clone, Serialize)]
 struct DaemonReadyPayload {
     notebook_id: String,
-    /// Current Tauri relay generation for this window. Frontend bootstrap uses
-    /// this as an acknowledgement token so a stale bootstrap cannot release a
-    /// newer relay generation.
-    sync_generation: u64,
+    /// Current Tauri relay bootstrap epoch for this window. Frontend bootstrap
+    /// uses this as an acknowledgement token so a stale WASM reset cannot
+    /// release a newer relay generation. This is transport bookkeeping, not an
+    /// Automerge sync generation.
+    relay_generation: u64,
     cell_count: usize,
     needs_trust_approval: bool,
     /// Whether this notebook is in-memory only (no on-disk path).
@@ -511,7 +512,7 @@ async fn initialize_notebook_sync_open(
 
     let ready_payload = DaemonReadyPayload {
         notebook_id: info.notebook_id.clone(),
-        sync_generation: current_generation,
+        relay_generation: current_generation,
         cell_count: info.cell_count,
         needs_trust_approval: info.needs_trust_approval,
         ephemeral: info.ephemeral,
@@ -586,7 +587,7 @@ async fn initialize_notebook_sync_create(
 
     let ready_payload = DaemonReadyPayload {
         notebook_id: info.notebook_id.clone(),
-        sync_generation: current_generation,
+        relay_generation: current_generation,
         cell_count: info.cell_count,
         needs_trust_approval: info.needs_trust_approval,
         ephemeral: info.ephemeral,
@@ -649,7 +650,7 @@ async fn initialize_notebook_sync_attach(
     // the payload with sensible defaults for an ephemeral clone.
     let ready_payload = DaemonReadyPayload {
         notebook_id: notebook_id.clone(),
-        sync_generation: current_generation,
+        relay_generation: current_generation,
         cell_count: 0,
         needs_trust_approval: false,
         ephemeral: true,

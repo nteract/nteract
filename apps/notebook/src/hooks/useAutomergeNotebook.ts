@@ -1,4 +1,4 @@
-import { useNotebookHost } from "@nteract/notebook-host";
+import { useNotebookHost, type DaemonReadyPayload } from "@nteract/notebook-host";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NotebookTransport, SessionStatus, SyncableHandle } from "runtimed";
 import {
@@ -224,10 +224,16 @@ export function useAutomergeNotebook() {
   }, []);
 
   const notifyRelayReady = useCallback(
-    (generation?: number) =>
-      host.relay
-        .notifySyncReady(generation)
-        .catch((e: unknown) => logger.warn("[automerge-notebook] Failed to signal sync ready:", e)),
+    (relayGeneration?: number) => {
+      if (relayGeneration === undefined) {
+        logger.warn(
+          "[automerge-notebook] Signaling relay ready without a relay generation; active gates will reject it",
+        );
+      }
+      return host.relay
+        .notifySyncReady(relayGeneration)
+        .catch((e: unknown) => logger.warn("[automerge-notebook] Failed to signal sync ready:", e));
+    },
     [host.relay],
   );
 
@@ -389,7 +395,7 @@ export function useAutomergeNotebook() {
         // bootstrap reset has run. Otherwise buffered daemon frames can mark
         // the session interactive, then resetForBootstrap() emits pending
         // afterward with no later status frame to recover.
-        return notifyRelayReady(bootstrapped.readyInfo?.sync_generation);
+        return notifyRelayReady(bootstrapped.readyInfo?.relay_generation);
       })
       .catch((error) => {
         logger.error("[automerge-notebook] Bootstrap failed", error);
@@ -401,7 +407,7 @@ export function useAutomergeNotebook() {
 
     // ── Daemon lifecycle ─────────────────────────────────────────
 
-    const lifecycleSub = new Observable<{ sync_generation?: number }>((subscriber) =>
+    const lifecycleSub = new Observable<DaemonReadyPayload>((subscriber) =>
       host.daemonEvents.onReadyLive((payload) => subscriber.next(payload)),
     )
       .pipe(
@@ -420,7 +426,7 @@ export function useAutomergeNotebook() {
             bootstrap(() => cancelled)
               .then((bootstrapped) => {
                 if (!bootstrapped || cancelled) return;
-                return notifyRelayReady(readyPayload.sync_generation);
+                return notifyRelayReady(readyPayload.relay_generation);
               })
               .catch((err: unknown) => {
                 logger.error("[automerge-notebook] lifecycle bootstrap failed:", err);

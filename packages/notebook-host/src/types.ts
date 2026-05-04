@@ -68,8 +68,11 @@ export interface TyposquatWarning {
 
 export interface DaemonReadyPayload {
   notebook_id?: string;
-  /** Tauri relay generation used to acknowledge the matching frontend bootstrap. */
-  sync_generation?: number;
+  /**
+   * Tauri relay bootstrap epoch used to acknowledge the matching frontend
+   * WASM reset. This is transport bookkeeping, not an Automerge sync counter.
+   */
+  relay_generation?: number;
   cell_count?: number;
   needs_trust_approval?: boolean;
   /** In-memory-only notebook (no on-disk path). Drives the always-dirty asterisk. */

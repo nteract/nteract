@@ -29,7 +29,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "get_daemon_ready_info":
         return Promise.resolve({
           notebook_id: "nb-1",
-          sync_generation: 3,
+          relay_generation: 3,
           cell_count: 2,
           needs_trust_approval: false,
           ephemeral: true,
@@ -302,7 +302,7 @@ describe("createTauriHost()", () => {
     // Mock returns the canned ready info (ephemeral=true, runtime=python).
     expect(received).toContainEqual({
       notebook_id: "nb-1",
-      sync_generation: 3,
+      relay_generation: 3,
       cell_count: 2,
       needs_trust_approval: false,
       ephemeral: true,
