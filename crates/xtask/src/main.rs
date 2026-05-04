@@ -2015,7 +2015,9 @@ fn cmd_pi(pi_args: &[String]) {
     command.arg("--extension").arg(extension_path);
     command.args(pi_args);
     command.env("NTERACT_RUNTIMED_NODE_PATH", node_path);
-    command.env("NTERACT_SOCKET_PATH", socket_path);
+    // Socket selection flows through apply_worktree_env -> RUNTIMED_DEV +
+    // RUNTIMED_WORKSPACE_PATH, which runtimed-node's defaultSocketPath()
+    // resolves to the same per-worktree socket printed above.
     apply_worktree_env(&mut command, true);
 
     let status = command.status().unwrap_or_else(|e| {
