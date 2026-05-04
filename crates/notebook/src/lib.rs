@@ -204,7 +204,7 @@ impl SyncReadyState {
         match gates.get_mut(label) {
             Some(gate) => {
                 gate.generation = generation;
-                let _ = gate.tx.send(false);
+                gate.tx.send_replace(false);
             }
             None => {
                 gates.insert(
@@ -230,7 +230,7 @@ impl SyncReadyState {
         };
         match gates.get_mut(label) {
             Some(gate) if generation == Some(gate.generation) => {
-                let _ = gate.tx.send(true);
+                gate.tx.send_replace(true);
                 true
             }
             Some(_) => false,
@@ -908,6 +908,23 @@ mod tests {
         assert!(!*rx.borrow());
         assert!(sync_ready.set_ready("notebook-1", Some(3)));
         assert!(*rx.borrow());
+    }
+
+    #[test]
+    fn sync_ready_reset_overrides_preseeded_ready() {
+        let sync_ready = SyncReadyState::default();
+
+        assert!(
+            sync_ready.set_ready("notebook-1", None),
+            "a cold-start ack before relay setup is accepted as a preseed"
+        );
+
+        sync_ready.reset_for_generation("notebook-1", 1);
+        let rx = sync_ready.subscribe("notebook-1");
+        assert!(
+            !*rx.borrow(),
+            "relay setup must reset any preseeded ready flag before subscribing"
+        );
     }
 }
 

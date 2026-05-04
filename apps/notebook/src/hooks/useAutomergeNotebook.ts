@@ -226,7 +226,7 @@ export function useAutomergeNotebook() {
   const notifyRelayReady = useCallback(
     (relayGeneration?: number) => {
       if (relayGeneration === undefined) {
-        logger.warn(
+        logger.debug(
           "[automerge-notebook] Signaling relay ready without a relay generation; active gates will reject it",
         );
       }
