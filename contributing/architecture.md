@@ -64,7 +64,7 @@ Editing is local-first for responsiveness. Execution is always against synced st
 
 ### 5. Binary Separation via Manifests
 
-Live cell outputs are stored as RuntimeStateDoc manifests with content-addressed blob references. This keeps large binary data (images, plots) out of NotebookDoc while still giving late joiners the daemon-authored output state.
+Live cell outputs are stored as RuntimeStateDoc manifests keyed by `output_id` within each execution, with content-addressed blob references for large payloads. This keeps large binary data (images, plots) out of NotebookDoc while still giving late joiners the daemon-authored output state.
 
 **Implications:**
 - Output rendering is driven by RuntimeStateDoc sync, not output broadcasts

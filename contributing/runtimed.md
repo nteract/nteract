@@ -63,7 +63,9 @@ writes execution entry     →   executions/{eid}:          → watches queue
                                                            ← writes outputs
                                executions/{eid}:
                                  status: "done"
-                                 outputs: [hash1, hash2]
+                                 outputs:
+                                   oid1: { seq: 0, manifest: {...} }
+                                   oid2: { seq: 1, manifest: {...} }
 ```
 
 Execution is CRDT-driven — the coordinator writes execution entries (with source + sequence number) to RuntimeStateDoc. The runtime agent discovers new entries via Automerge sync and processes them in order. RPC (`RuntimeAgentRequest`/`RuntimeAgentResponse`) is only used for lifecycle operations: `LaunchKernel`, `InterruptExecution`, `ShutdownKernel`, `Complete`, `GetHistory`, `SendComm`.

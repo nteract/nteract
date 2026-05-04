@@ -1442,6 +1442,10 @@ impl RuntimeStateDoc {
     }
 
     fn next_output_seq(&self, outputs: &automerge::ObjId) -> u64 {
+        // The daemon writes live execution outputs serially, so `seq` is
+        // monotonic in production. Concurrent appenders can tie; projection
+        // remains deterministic because `output_entries_sorted` falls back to
+        // `output_id` ordering.
         self.output_entries_sorted(outputs)
             .into_iter()
             .map(|(_, seq, _)| seq)
