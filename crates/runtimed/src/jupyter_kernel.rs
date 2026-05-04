@@ -2518,14 +2518,22 @@ impl KernelConnection for JupyterKernel {
                                 *delta = blob_store_large_state_values(delta, &coalesce_blob_store).await;
                             }
                             if let Err(e) = coalesce_state.with_doc(|sd| {
-                                sd.fork_and_merge(|f| {
-                                    f.set_actor(&coalesce_actor_id);
-                                    for (comm_id, delta) in &batch {
-                                        if let Err(e) = f.merge_comm_state_delta(comm_id, delta) {
-                                            warn!("[runtime-state] {}", e);
+                                let heads = sd.get_heads();
+                                sd.transact_at_heads_recovering(
+                                    &heads,
+                                    Some(&coalesce_actor_id),
+                                    "runtime-state-comm-coalesce-transaction",
+                                    |sd| {
+                                        for (comm_id, delta) in &batch {
+                                            if let Err(e) =
+                                                sd.merge_comm_state_delta(comm_id, delta)
+                                            {
+                                                warn!("[runtime-state] {}", e);
+                                            }
                                         }
-                                    }
-                                });
+                                        Ok(())
+                                    },
+                                )?;
                                 Ok(())
                             }) {
                                 warn!("[runtime-state] {}", e);
