@@ -534,7 +534,7 @@ impl RuntimeStateDoc {
     /// Used after catching an automerge panic (upstream MissingOps bug in
     /// `collector.rs`). See `NotebookDoc::rebuild_from_save` for details.
     pub fn rebuild_from_save(&mut self) -> bool {
-        catch_automerge_panic("runtime-state-doc-rebuild-from-save", || {
+        match catch_automerge_panic("runtime-state-doc-rebuild-from-save", || {
             let actor = self.doc.get_actor().clone();
             let bytes = self.doc.save();
             match AutoCommit::load(&bytes) {
@@ -545,8 +545,13 @@ impl RuntimeStateDoc {
                 }
                 Err(_) => false,
             }
-        })
-        .unwrap_or_default()
+        }) {
+            Ok(rebuilt) => rebuilt,
+            Err(err) => {
+                tracing::error!("[runtime-state] rebuild_from_save itself panicked: {}", err);
+                false
+            }
+        }
     }
 
     /// Compact the document if its serialized size exceeds `threshold` bytes.

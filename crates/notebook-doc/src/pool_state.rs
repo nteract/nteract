@@ -358,9 +358,9 @@ impl PoolDoc {
         }
     }
 
-    /// Round-trip save→load to rebuild internal automerge indices.
+    /// Round-trip save->load to rebuild internal automerge indices.
     pub fn rebuild_from_save(&mut self) -> bool {
-        catch_automerge_panic("pool-doc-rebuild-from-save", || {
+        match catch_automerge_panic("pool-doc-rebuild-from-save", || {
             let actor = self.doc.get_actor().clone();
             let bytes = self.doc.save();
             match AutoCommit::load(&bytes) {
@@ -371,8 +371,15 @@ impl PoolDoc {
                 }
                 Err(_) => false,
             }
-        })
-        .unwrap_or_default()
+        }) {
+            Ok(rebuilt) => rebuilt,
+            Err(err) => {
+                #[cfg(feature = "persistence")]
+                log::error!("[pool-doc] rebuild_from_save itself panicked: {}", err);
+                let _ = &err; // suppress unused warning when persistence is off
+                false
+            }
+        }
     }
 }
 
