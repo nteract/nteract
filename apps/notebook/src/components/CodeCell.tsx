@@ -132,7 +132,9 @@ export const CodeCell = memo(function CodeCell({
   const executionId = useCellExecutionId(cell.id);
   const execution = useExecution(executionId);
   const executionCount = execution?.execution_count ?? null;
-  const hasConstrainedIframeOutput = anyOutputNeedsIsolation(outputs);
+  // CodeCell leaves OutputArea in its default `isolated="auto"` mode, so this
+  // matches whether the output row will render in the isolated iframe.
+  const hasIsolatedOutput = anyOutputNeedsIsolation(outputs);
 
   // Check cell metadata for visibility (JupyterLab convention)
   const isSourceHidden =
@@ -145,10 +147,10 @@ export const CodeCell = memo(function CodeCell({
   const bothHidden = isSourceHidden && (isOutputsHidden || outputs.length === 0);
 
   useEffect(() => {
-    if (!hasConstrainedIframeOutput || isOutputsHidden || outputs.length === 0) {
+    if (!hasIsolatedOutput || isOutputsHidden || outputs.length === 0) {
       setIsIframeOutputExpanded(false);
     }
-  }, [hasConstrainedIframeOutput, isOutputsHidden, outputs.length]);
+  }, [hasIsolatedOutput, isOutputsHidden, outputs.length]);
 
   // Register EditorView with the cursor registry for remote cursor rendering.
   // We use a ref + polling approach because the EditorView is created async
@@ -409,9 +411,9 @@ export const CodeCell = memo(function CodeCell({
         outputRightGutterContent={
           outputs.length > 0 &&
           !isOutputsHidden &&
-          (hasConstrainedIframeOutput || onToggleOutputsHidden) ? (
+          (hasIsolatedOutput || onToggleOutputsHidden) ? (
             <>
-              {hasConstrainedIframeOutput && (
+              {hasIsolatedOutput && (
                 <button
                   type="button"
                   tabIndex={-1}
@@ -421,10 +423,10 @@ export const CodeCell = memo(function CodeCell({
                     onFocus();
                   }}
                   className={cn(
-                    "flex items-center justify-center rounded border p-1 transition-colors",
+                    "flex items-center justify-center rounded p-1 transition-colors",
                     isIframeOutputExpanded
-                      ? "border-ring/40 bg-accent text-foreground"
-                      : "border-transparent text-muted-foreground/40 hover:text-foreground",
+                      ? "bg-accent text-foreground"
+                      : "text-muted-foreground/40 hover:text-foreground",
                   )}
                   title={isIframeOutputExpanded ? "Constrain output height" : "Expand output"}
                 >
