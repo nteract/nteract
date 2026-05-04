@@ -462,11 +462,15 @@ impl RuntimeStateDoc {
     /// [`merging_two_forks_with_shared_actor_returns_duplicate_seq_error`]
     /// pins this invariant.
     ///
-    /// Use this for any fork whose merge crosses an `.await` point.
-    /// The `actor` argument is set verbatim — the caller controls
-    /// whether the actor is stable per task (e.g.
-    /// `"rt:kernel:abc:iopub"`) or unique per fork (e.g.
-    /// `format!("runtimed:state:interrupt:{}", Uuid::new_v4())`).
+    /// Prefer
+    /// [`transact_at_heads_recovering`](Self::transact_at_heads_recovering)
+    /// when the writes can be computed after async work and applied at a
+    /// captured baseline. A transaction keeps actor sequencing on the live
+    /// document and avoids creating a second document that must later merge.
+    ///
+    /// If a true fork must cross an `.await` point, the `actor` argument is
+    /// set verbatim. The caller controls whether the actor is stable per task
+    /// (e.g. `"rt:kernel:abc:iopub"`) or unique per fork.
     ///
     /// Prefer a stable per-task actor for long-running loops that fork
     /// many times in sequence — each unique actor consumes space in
@@ -513,11 +517,79 @@ impl RuntimeStateDoc {
         }
     }
 
+    /// Apply mutations as a transaction isolated at `heads`, then integrate
+    /// them back into the live document.
+    ///
+    /// This is the async-safe alternative to taking a fork before an `.await`
+    /// and merging it later: callers capture the baseline heads before the
+    /// await, then re-acquire the document lock and run the mutation at that
+    /// historical view. The live document owns the actor sequence, so repeated
+    /// isolated transactions can share one stable actor without producing
+    /// duplicate sequence numbers.
+    ///
+    /// The closure is invoked exactly once. Prepare non-deterministic values
+    /// before calling this method if they need to be reused outside the
+    /// transaction; the helper does not retry conflicts by re-running `f`.
+    pub fn transact_at_heads_recovering<F, T>(
+        &mut self,
+        heads: &[automerge::ChangeHash],
+        actor: Option<&str>,
+        label: &str,
+        f: F,
+    ) -> Result<T, RuntimeStateError>
+    where
+        F: FnOnce(&mut RuntimeStateDoc) -> Result<T, RuntimeStateError>,
+    {
+        use std::cell::Cell;
+
+        let original_actor = self.doc.get_actor().clone();
+        let isolated = Cell::new(false);
+        let mut recovery_panic = None;
+
+        let result = catch_automerge_panic(label, || {
+            if let Some(actor) = actor {
+                self.doc.set_actor(ActorId::from(actor.as_bytes()));
+            }
+            self.doc.isolate(heads);
+            isolated.set(true);
+            let result = f(self);
+            self.doc.integrate();
+            isolated.set(false);
+            result
+        });
+
+        if isolated.get() {
+            if let Err(err) = catch_automerge_panic(format!("{label}:integrate"), || {
+                self.doc.integrate();
+            }) {
+                recovery_panic = Some(err);
+            }
+        }
+
+        if let Err(err) = catch_automerge_panic(format!("{label}:restore-actor"), || {
+            self.doc.set_actor(original_actor);
+        }) {
+            recovery_panic.get_or_insert(err);
+        }
+
+        match (result, recovery_panic) {
+            (Ok(Ok(value)), None) => Ok(value),
+            (Ok(Err(source)), None) => Err(source),
+            (Err(err), _) | (_, Some(err)) => {
+                if !self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label).into());
+                }
+                Err(AutomergeOperationError::Panic(err).into())
+            }
+        }
+    }
+
     /// Fork, apply mutations on the fork, and merge back.
     ///
-    /// Convenience wrapper for synchronous fork+merge blocks. For async
-    /// gaps (where an `.await` separates the read from the write), use
-    /// [`fork`](Self::fork) and [`merge`](Self::merge) directly.
+    /// This is only for synchronous compatibility with older call sites.
+    /// Prefer [`transact_at_heads_recovering`](Self::transact_at_heads_recovering)
+    /// for new document-owned mutation helpers, especially when the mutation
+    /// is based on heads captured before async work.
     pub fn fork_and_merge<F>(&mut self, f: F)
     where
         F: FnOnce(&mut RuntimeStateDoc),
@@ -4050,6 +4122,92 @@ mod tests {
     }
 
     #[test]
+    fn isolated_transactions_with_same_actor_at_same_heads_do_not_duplicate_seq() {
+        let mut doc = RuntimeStateDoc::new();
+        let heads = doc.get_heads();
+
+        doc.transact_at_heads_recovering(
+            &heads,
+            Some("rt:kernel:shared"),
+            "test-runtime-transaction-a",
+            |doc| {
+                doc.create_execution("exec-a", "cell-a")?;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        doc.transact_at_heads_recovering(
+            &heads,
+            Some("rt:kernel:shared"),
+            "test-runtime-transaction-b",
+            |doc| {
+                doc.create_execution("exec-b", "cell-b")?;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let state = doc.read_state();
+        assert_eq!(state.executions["exec-a"].cell_id, "cell-a");
+        assert_eq!(state.executions["exec-b"].cell_id, "cell-b");
+    }
+
+    #[test]
+    fn isolated_transaction_composes_with_live_changes_after_baseline() {
+        let mut doc = RuntimeStateDoc::new();
+        let heads = doc.get_heads();
+
+        doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Busy))
+            .unwrap();
+
+        doc.transact_at_heads_recovering(
+            &heads,
+            Some("rt:kernel:coalesce"),
+            "test-runtime-transaction-compose",
+            |doc| {
+                doc.create_execution("exec-1", "cell-1")?;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let state = doc.read_state();
+        assert_eq!(
+            state.kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Busy)
+        );
+        assert_eq!(state.executions["exec-1"].cell_id, "cell-1");
+    }
+
+    #[test]
+    fn isolated_transaction_panic_restores_actor_and_keeps_doc_usable() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_actor("runtime:original");
+        let heads = doc.get_heads();
+
+        let result = doc.transact_at_heads_recovering(
+            &heads,
+            Some("runtime:panic"),
+            "test-runtime-transaction-panic",
+            |_doc| -> Result<(), RuntimeStateError> {
+                panic!("injected runtime transaction panic")
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(RuntimeStateError::AutomergeRecovery(_))
+        ));
+        assert_eq!(
+            format!("{}", doc.doc().get_actor()),
+            format!("{}", ActorId::from("runtime:original".as_bytes()))
+        );
+
+        doc.set_lifecycle(&RuntimeLifecycle::Error).unwrap();
+        assert_eq!(doc.read_state().kernel.lifecycle, RuntimeLifecycle::Error);
+    }
+
+    #[test]
     fn test_set_outputs() {
         let mut doc = RuntimeStateDoc::new();
         doc.create_execution("exec-1", "cell-1").unwrap();
@@ -4859,9 +5017,8 @@ mod tests {
         // filter should strip the kernel echo and retain the frontend
         // write, even though both changes ride the same sync message.
         //
-        // Production writes go through `fork_and_merge`, so each write
-        // creates an independent change tagged with the fork's actor.
-        // We model that here by forking the donor separately for each
+        // Production writes tag changes with the actor that authored the
+        // field. We model that here by forking the donor separately for each
         // actor identity.
         let mut receiver = RuntimeStateDoc::new();
         receiver.set_actor("rt:kernel:deadbeef");

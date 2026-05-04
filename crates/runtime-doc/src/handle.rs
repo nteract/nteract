@@ -9,7 +9,9 @@ use crate::{ForeignSyncView, RuntimeStateDoc, RuntimeStateError};
 
 /// Handle to a per-notebook RuntimeStateDoc.
 ///
-/// All mutations go through `with_doc` (sync) or `fork`/`merge` (async).
+/// Mutations go through `with_doc` for synchronous document-owned writes.
+/// Use RuntimeStateDoc transactions inside `with_doc` when applying writes at
+/// captured heads; keep `fork`/`merge` for true async fork work.
 /// Notification is automatic via heads comparison. Clone is cheap.
 ///
 /// Uses `std::sync::Mutex`, not `tokio::sync::RwLock`. Automerge writes are
