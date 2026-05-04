@@ -94,6 +94,14 @@ fn main() {
             let release = args.iter().any(|a| a == "--release");
             cmd_mcp(print_config, release);
         }
+        "pi" => {
+            let pi_args: Vec<String> = if args.get(1).is_some_and(|arg| arg == "--") {
+                args[2..].to_vec()
+            } else {
+                args[1..].to_vec()
+            };
+            cmd_pi(&pi_args);
+        }
         "mcp-inspector" => cmd_mcp_inspector(),
         "lint" => {
             let fix = args.iter().any(|a| a == "--fix");
@@ -173,6 +181,7 @@ MCP:
   run-mcp [--release]        Build and run the nteract-dev MCP supervisor (proxy + daemon + auto-restart)
   run-mcp --print-config     Print MCP client config JSON (for Zed, Claude, etc.)
   mcp-inspector              Launch MCPJam Inspector UI to test runt mcp (MCP Apps)
+  pi [args...]               Build local @runtimed/node assets and run Pi with the nteract extension
 
 Linting:
   lint                       Check formatting and linting (Rust fmt, JS/TS, Python)
@@ -594,6 +603,7 @@ fn pnpm_install_reason() -> Option<&'static str> {
         Path::new("packages/runtimed-node/package.json"),
         Path::new("packages/runtimed/package.json"),
         Path::new("packages/sift/package.json"),
+        Path::new("plugins/nteract/pi/package.json"),
     ] {
         let Some(manifest_time) = modified_time(manifest) else {
             return Some("could not read package manifest timestamps");
@@ -1948,6 +1958,115 @@ fn cmd_mcp_inspector() {
     if !status.success() {
         exit(status.code().unwrap_or(1));
     }
+}
+
+fn cmd_pi(pi_args: &[String]) {
+    ensure_workspace_root_cwd();
+    require_pnpm();
+    ensure_pnpm_install();
+
+    let local_pi = local_pi_binary();
+    if !local_pi.exists() {
+        eprintln!(
+            "Error: local Pi binary was not found at {}",
+            local_pi.display()
+        );
+        eprintln!("Run `pnpm install` and try again.");
+        exit(1);
+    }
+
+    if pi_passthrough_without_extension(pi_args) {
+        let status = Command::new(local_pi)
+            .args(pi_args)
+            .status()
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to run Pi: {e}");
+                exit(1);
+            });
+        exit_on_failed_status("pi", status);
+        return;
+    }
+
+    println!("Building @runtimed/node debug binding...");
+    run_cmd(
+        pnpm_bin(),
+        &["--dir", "packages/runtimed-node", "build:debug"],
+    );
+
+    if !dev_daemon_running() {
+        eprintln!("Error: no dev daemon detected for this worktree.");
+        eprintln!("Start one in another terminal first:");
+        eprintln!();
+        eprintln!("  cargo xtask dev-daemon");
+        exit(1);
+    }
+
+    let extension_path = canonical_path("plugins/nteract/pi/extensions/repl.ts");
+    let node_path = canonical_path("packages/runtimed-node/src/index.cjs");
+    let socket_path = dev_socket_path();
+
+    println!("Starting Pi with nteract extension...");
+    println!("  extension: {}", extension_path.display());
+    println!("  runtimed-node: {}", node_path.display());
+    println!("  socket: {}", socket_path.display());
+    println!();
+
+    let mut command = Command::new(local_pi);
+    command.arg("--extension").arg(extension_path);
+    command.args(pi_args);
+    command.env("NTERACT_RUNTIMED_NODE_PATH", node_path);
+    command.env("NTERACT_SOCKET_PATH", socket_path);
+    apply_worktree_env(&mut command, true);
+
+    let status = command.status().unwrap_or_else(|e| {
+        eprintln!("Failed to run Pi: {e}");
+        exit(1);
+    });
+    exit_on_failed_status("pi", status);
+}
+
+fn pi_passthrough_without_extension(args: &[String]) -> bool {
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "--help" | "-h" | "--version" | "-v"))
+    {
+        return true;
+    }
+
+    matches!(
+        args.first().map(String::as_str),
+        Some("install" | "remove" | "uninstall" | "update" | "list" | "config")
+    )
+}
+
+fn local_pi_binary() -> PathBuf {
+    let mut path = PathBuf::from("plugins/nteract/pi/node_modules/.bin/pi");
+    if cfg!(windows) {
+        path.set_extension("cmd");
+    }
+    path
+}
+
+fn canonical_path(path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
+    fs::canonicalize(path).unwrap_or_else(|e| {
+        eprintln!("Failed to resolve {}: {e}", path.display());
+        exit(1);
+    })
+}
+
+fn dev_socket_path() -> PathBuf {
+    let workspace = runt_workspace::get_workspace_path().unwrap_or_else(|| {
+        eprintln!("Error: could not resolve current git worktree.");
+        exit(1);
+    });
+    let hash = runt_workspace::worktree_hash(&workspace);
+    dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(runt_workspace::cache_namespace())
+        .join("worktrees")
+        .join(hash)
+        .join("runtimed.sock")
 }
 
 fn cmd_dev_daemon(release: bool) {
