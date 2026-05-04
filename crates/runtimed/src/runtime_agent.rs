@@ -30,6 +30,7 @@
 //! 6. On shutdown or daemon disconnect, runtime agent exits
 
 use std::collections::{HashMap, HashSet};
+use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -336,44 +337,76 @@ pub async fn run_runtime_agent(
                                 if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
                                     // Apply sync and extract data we need for async
                                     // work, all in one lock acquisition.
-                                    let sync_result = ctx.state.with_doc(|sd| {
-                                        // Snapshot comm state before applying sync so we can
-                                        // detect frontend-originated widget state changes.
-                                        let comms_before = sd.read_state().comms;
+                                    //
+                                    // Wrapped in catch_unwind because automerge 0.8 can
+                                    // panic with PatchLogMismatch in BatchApply::apply
+                                    // when concurrent sync messages interleave actor
+                                    // table mutations (automerge/automerge#1187). Without
+                                    // catch_unwind the panic kills the entire runtime
+                                    // agent process, taking the kernel with it. By
+                                    // catching it, we rebuild the doc via save/load
+                                    // (clearing corrupted indices) and reset sync state
+                                    // to force a fresh handshake.
+                                    let sync_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                                        ctx.state.with_doc(|sd| {
+                                            // Snapshot comm state before applying sync so we can
+                                            // detect frontend-originated widget state changes.
+                                            let comms_before = sd.read_state().comms;
 
-                                        // Per-change actor filter: diff comm state against a
-                                        // foreign-only view of the post-sync doc.
-                                        match sd.receive_sync_and_foreign_comms(
-                                            &mut coordinator_sync_state,
-                                            msg,
-                                            |actor| !actor.to_bytes().starts_with(b"rt:kernel:"),
-                                        ) {
-                                            Ok(view) if !view.applied_actors.is_empty() => {
-                                                let queued = sd.get_queued_executions();
-                                                let comm_updates = match view.foreign_comms {
-                                                    Some(foreign_comms) => {
-                                                        diff_comm_state(&comms_before, &foreign_comms)
-                                                    }
-                                                    None => {
-                                                        debug!(
-                                                            "[runtime-agent] Skipping comm forward: {} applied change(s) were all self-kernel echoes",
-                                                            view.applied_actors.len()
-                                                        );
-                                                        Vec::new()
-                                                    }
-                                                };
-                                                Ok(Some((queued, comm_updates)))
+                                            // Per-change actor filter: diff comm state against a
+                                            // foreign-only view of the post-sync doc.
+                                            match sd.receive_sync_and_foreign_comms(
+                                                &mut coordinator_sync_state,
+                                                msg,
+                                                |actor| !actor.to_bytes().starts_with(b"rt:kernel:"),
+                                            ) {
+                                                Ok(view) if !view.applied_actors.is_empty() => {
+                                                    let queued = sd.get_queued_executions();
+                                                    let comm_updates = match view.foreign_comms {
+                                                        Some(foreign_comms) => {
+                                                            diff_comm_state(&comms_before, &foreign_comms)
+                                                        }
+                                                        None => {
+                                                            debug!(
+                                                                "[runtime-agent] Skipping comm forward: {} applied change(s) were all self-kernel echoes",
+                                                                view.applied_actors.len()
+                                                            );
+                                                            Vec::new()
+                                                        }
+                                                    };
+                                                    Ok(Some((queued, comm_updates)))
+                                                }
+                                                Ok(_) => Ok(None),
+                                                Err(e) => {
+                                                    warn!(
+                                                        "[runtime-agent] Failed to apply RuntimeStateSync: {}",
+                                                        e
+                                                    );
+                                                    Ok(None)
+                                                }
                                             }
-                                            Ok(_) => Ok(None),
-                                            Err(e) => {
-                                                warn!(
-                                                    "[runtime-agent] Failed to apply RuntimeStateSync: {}",
-                                                    e
-                                                );
-                                                Ok(None)
-                                            }
+                                        })
+                                    }));
+                                    let sync_result = match sync_result {
+                                        Ok(inner) => inner,
+                                        Err(panic_payload) => {
+                                            let msg = crate::task_supervisor::panic_payload_to_string(panic_payload);
+                                            error!(
+                                                "[runtime-agent] Automerge panicked during RuntimeStateSync \
+                                                 (upstream bug automerge/automerge#1187): {}",
+                                                msg
+                                            );
+                                            // Rebuild doc via save/load to clear corrupted
+                                            // indices, then reset sync state for a fresh
+                                            // handshake.
+                                            let _ = ctx.state.with_doc(|sd| {
+                                                sd.rebuild_from_save();
+                                                Ok(())
+                                            });
+                                            coordinator_sync_state = automerge::sync::State::new();
+                                            Ok(None)
                                         }
-                                    });
+                                    };
 
                                     // Async work outside the lock
                                     if let Ok(Some((queued, comm_updates))) = sync_result {
@@ -417,17 +450,37 @@ pub async fn run_runtime_agent(
                                         }
                                     }
 
-                                    // Send sync reply
-                                    let reply_encoded = ctx.state.with_doc(|sd| {
-                                        Ok(sd.generate_sync_message(&mut coordinator_sync_state)
-                                            .map(|reply| reply.encode()))
-                                    }).ok().flatten();
-                                    if let Some(encoded) = reply_encoded {
-                                        let _ = send_typed_frame(
-                                            &mut writer,
-                                            NotebookFrameType::RuntimeStateSync,
-                                            &encoded,
-                                        ).await;
+                                    // Send sync reply -- also wrapped in catch_unwind
+                                    // because generate_sync_message can trigger the
+                                    // same PatchLog/MissingOps panics.
+                                    let reply_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                                        ctx.state.with_doc(|sd| {
+                                            Ok(sd.generate_sync_message(&mut coordinator_sync_state)
+                                                .map(|reply| reply.encode()))
+                                        }).ok().flatten()
+                                    }));
+                                    match reply_result {
+                                        Ok(Some(encoded)) => {
+                                            let _ = send_typed_frame(
+                                                &mut writer,
+                                                NotebookFrameType::RuntimeStateSync,
+                                                &encoded,
+                                            ).await;
+                                        }
+                                        Ok(None) => {}
+                                        Err(panic_payload) => {
+                                            let msg = crate::task_supervisor::panic_payload_to_string(panic_payload);
+                                            error!(
+                                                "[runtime-agent] Automerge panicked during generate_sync_message \
+                                                 (upstream bug automerge/automerge#1187): {}",
+                                                msg
+                                            );
+                                            let _ = ctx.state.with_doc(|sd| {
+                                                sd.rebuild_from_save();
+                                                Ok(())
+                                            });
+                                            coordinator_sync_state = automerge::sync::State::new();
+                                        }
                                     }
                                 }
                             }
