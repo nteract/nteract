@@ -278,11 +278,12 @@ class DataTable {
     }
 
     const t = this.theme;
-    const numCols = this.columns.length;
     const numRows = this.rows.length;
+    const totalCols = this.columns.length;
+    const MIN_COL_W = 6;
 
-    // Calculate column widths: max of header, type, stat, and data
-    const colWidths = this.columns.map((col, ci) => {
+    // Calculate natural column widths: max of header, type, stat, and data
+    const naturalWidths = this.columns.map((col, ci) => {
       let w = col.length;
       w = Math.max(w, (this.colTypes[ci] ?? "").length);
       const statStr = formatStat(this.colStats[ci] ?? null);
@@ -293,14 +294,35 @@ class DataTable {
       return w;
     });
 
-    // Clamp total width — shrink columns proportionally if needed
-    const borderOverhead = 1 + numCols * 3; // "│ " + " │ " * (n-1) + " │"
+    // Greedily fit columns left-to-right within the available width.
+    // Each column costs its width + 3 chars of border ("│ " + " │").
+    let budget = width - 1; // leading "│"
+    let visibleCount = 0;
+    for (let i = 0; i < totalCols; i++) {
+      const colCost = Math.max(naturalWidths[i], MIN_COL_W) + 3;
+      if (budget - colCost < 0 && visibleCount > 0) break;
+      budget -= colCost;
+      visibleCount++;
+    }
+    visibleCount = Math.max(1, visibleCount);
+    const hiddenCols = totalCols - visibleCount;
+
+    // Slice to visible columns
+    const columns = this.columns.slice(0, visibleCount);
+    const colTypes = this.colTypes.slice(0, visibleCount);
+    const colStats = this.colStats.slice(0, visibleCount);
+    const rows = this.rows.map((r) => r.slice(0, visibleCount));
+    const numCols = columns.length;
+    const colWidths = naturalWidths.slice(0, visibleCount);
+
+    // Shrink proportionally only if still over budget after column pruning
+    const borderOverhead = 1 + numCols * 3;
     const totalColWidth = colWidths.reduce((a, b) => a + b, 0);
     const availableForCols = width - borderOverhead;
     if (totalColWidth > availableForCols && availableForCols > numCols) {
       const ratio = availableForCols / totalColWidth;
       for (let i = 0; i < numCols; i++) {
-        colWidths[i] = Math.max(3, Math.floor(colWidths[i] * ratio));
+        colWidths[i] = Math.max(MIN_COL_W, Math.floor(colWidths[i] * ratio));
       }
     }
 
@@ -315,7 +337,7 @@ class DataTable {
     };
 
     // Detect numeric columns for right-alignment
-    const isNumeric = this.colTypes.map((dt) => /int|float|decimal|uint/.test(dt));
+    const isNumeric = colTypes.map((dt) => /int|float|decimal|uint/.test(dt));
 
     const align = (s: string, ci: number, w: number) => (isNumeric[ci] ? rpad(s, w) : pad(s, w));
 
@@ -326,7 +348,7 @@ class DataTable {
     lines.push(topBorder);
 
     // ── Column headers ──
-    const headerCells = this.columns.map((col, ci) =>
+    const headerCells = columns.map((col, ci) =>
       t.fg("accent", t.bold(pad(col, colWidths[ci]))),
     );
     lines.push(
@@ -334,14 +356,14 @@ class DataTable {
     );
 
     // ── Type row ──
-    const typeCells = this.colTypes.map((dt, ci) => t.fg("dim", pad(dt, colWidths[ci])));
+    const typeCells = colTypes.map((dt, ci) => t.fg("dim", pad(dt, colWidths[ci])));
     lines.push(
       t.fg("muted", "│") + " " + typeCells.join(t.fg("muted", " │ ")) + " " + t.fg("muted", "│"),
     );
 
     // ── Sparkline row ──
-    const sparkCells = this.colStats.map((stats, ci) => {
-      const spark = sparklineForColumn(this.rows, ci, stats, this.colTypes[ci] ?? "", colWidths[ci]);
+    const sparkCells = colStats.map((stats, ci) => {
+      const spark = sparklineForColumn(rows, ci, stats, colTypes[ci] ?? "", colWidths[ci]);
       return t.fg("dim", pad(spark, colWidths[ci]));
     });
     lines.push(
@@ -349,7 +371,7 @@ class DataTable {
     );
 
     // ── Stats row ──
-    const statCells = this.colStats.map((stats, ci) => {
+    const statCells = colStats.map((stats, ci) => {
       const statStr = formatStat(stats);
       return t.fg("dim", pad(statStr, colWidths[ci]));
     });
@@ -363,7 +385,7 @@ class DataTable {
 
     // ── Data rows ──
     for (let r = 0; r < numRows; r++) {
-      const row = this.rows[r];
+      const row = rows[r];
       const cells = row.map((v, ci) => align(v, ci, colWidths[ci]));
       const rowStr =
         t.fg("muted", "│") + " " + cells.join(t.fg("muted", " │ ")) + " " + t.fg("muted", "│");
@@ -375,8 +397,9 @@ class DataTable {
     lines.push(botBorder);
 
     // ── Footer info ──
-    const showing = numRows < this.totalRows ? `showing ${numRows} of ` : "";
-    const info = t.fg("dim", `${showing}${this.totalRows} rows × ${numCols} columns`);
+    const showingRows = numRows < this.totalRows ? `showing ${numRows} of ` : "";
+    const hiddenSuffix = hiddenCols > 0 ? ` (${hiddenCols} more columns)` : "";
+    const info = t.fg("dim", `${showingRows}${this.totalRows} rows × ${totalCols} columns${hiddenSuffix}`);
     lines.push(info);
 
     // Indent all lines to align with Out[n]: prompt
@@ -652,7 +675,8 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
             const text =
               (_context.lastComponent instanceof Text ? _context.lastComponent : undefined) ??
               new Text("", 0, 0);
-            const tableLines = dt.render(200);
+            const termWidth = process.stdout.columns || 120;
+            const tableLines = dt.render(termWidth - indent);
             // Put first table line on the Out[n]: line instead of below it
             const indentStr = " ".repeat(indent);
             if (tableLines.length > 0 && tableLines[0].startsWith(indentStr)) {
