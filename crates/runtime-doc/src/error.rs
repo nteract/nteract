@@ -8,6 +8,14 @@ pub enum RuntimeStateError {
     InvalidProgressShape,
     #[error("automerge: {0}")]
     Automerge(#[from] AutomergeError),
+    #[error("automerge recovery: {0}")]
+    AutomergeRecovery(Box<automerge_recovery::AutomergeOperationError>),
     #[error("RuntimeStateDoc mutex poisoned")]
     LockPoisoned,
+}
+
+impl From<automerge_recovery::AutomergeOperationError> for RuntimeStateError {
+    fn from(error: automerge_recovery::AutomergeOperationError) -> Self {
+        Self::AutomergeRecovery(Box::new(error))
+    }
 }

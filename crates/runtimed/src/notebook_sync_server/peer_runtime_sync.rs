@@ -6,7 +6,6 @@ use tracing::{debug, warn};
 
 use crate::connection::NotebookFrameType;
 
-use super::catch_automerge_panic;
 use super::peer_writer::PeerWriter;
 use super::NotebookRoom;
 
@@ -82,19 +81,14 @@ pub(super) async fn handle_runtime_state_frame(
         .state
         .with_doc(|state_doc| {
             let before = runtime_file_save_fingerprint(state_doc);
-            let recv_result = catch_automerge_panic("state-receive-sync", || {
-                state_doc.receive_sync_message_with_changes(state_peer_state, message)
-            });
-            let had_changes = match recv_result {
-                Ok(Ok(changed)) => changed,
-                Ok(Err(e)) => {
-                    warn!("[notebook-sync] state receive_sync_message error: {}", e);
-                    return Ok(None);
-                }
+            let had_changes = match state_doc.receive_sync_message_with_changes_recovering(
+                state_peer_state,
+                message,
+                "state-receive-sync",
+            ) {
+                Ok(changed) => changed,
                 Err(e) => {
-                    warn!("{}", e);
-                    state_doc.rebuild_from_save();
-                    *state_peer_state = sync::State::new();
+                    warn!("[notebook-sync] state receive_sync_message error: {}", e);
                     return Ok(None);
                 }
             };
@@ -188,19 +182,14 @@ fn generate_runtime_state_sync_message(
     state_peer_state: &mut sync::State,
     label: &str,
 ) -> Option<Vec<u8>> {
-    match catch_automerge_panic(label, || {
-        state_doc
-            .generate_sync_message(state_peer_state)
-            .map(|msg| msg.encode())
-    }) {
-        Ok(encoded) => encoded,
+    match state_doc.generate_sync_message_recovering(state_peer_state, label) {
+        Ok(message) => message.map(|msg| msg.encode()),
         Err(e) => {
-            warn!("{}", e);
-            state_doc.rebuild_from_save();
-            *state_peer_state = sync::State::new();
-            state_doc
-                .generate_sync_message(state_peer_state)
-                .map(|msg| msg.encode())
+            warn!(
+                "[notebook-sync] runtime state sync generation failed: {}",
+                e
+            );
+            None
         }
     }
 }

@@ -7,9 +7,7 @@ use tracing::{info, warn};
 
 use crate::connection::{self, NotebookFrameType};
 
-use super::{
-    catch_automerge_panic, streaming_load_cells, NotebookRoom, STATE_SYNC_COMPACT_THRESHOLD,
-};
+use super::{streaming_load_cells, NotebookRoom, STATE_SYNC_COMPACT_THRESHOLD};
 
 pub(crate) async fn send_session_status<W>(
     writer: &mut W,
@@ -70,22 +68,11 @@ where
     // holding the write lock across async I/O.
     let initial_encoded = {
         let mut doc = room.doc.write().await;
-        match catch_automerge_panic("initial-doc-sync", || {
-            doc.generate_sync_message(&mut sync_state.peer_state)
-                .map(|msg| msg.encode())
-        }) {
-            Ok(encoded) => encoded,
+        match doc.generate_sync_message_recovering(&mut sync_state.peer_state, "initial-doc-sync") {
+            Ok(message) => message.map(|msg| msg.encode()),
             Err(e) => {
-                warn!("{}", e);
-                sync_state.peer_state = sync::State::new();
-                if doc.rebuild_from_save() {
-                    doc.generate_sync_message(&mut sync_state.peer_state)
-                        .map(|msg| msg.encode())
-                } else {
-                    // Cell-count guard prevented rebuild — skip sync message,
-                    // fresh peer_state will trigger full re-sync on next exchange
-                    None
-                }
+                warn!("[notebook-sync] initial doc sync failed: {}", e);
+                None
             }
         }
     };
@@ -119,20 +106,15 @@ where
             if state_doc.compact_if_oversized(COMPACTION_THRESHOLD) {
                 info!("[notebook-sync] Compacted oversized RuntimeStateDoc before initial sync");
             }
-            match catch_automerge_panic("initial-state-sync", || {
-                state_doc.generate_sync_message_bounded_encoded(
-                    state_peer_state,
-                    STATE_SYNC_COMPACT_THRESHOLD,
-                )
-            }) {
+            match state_doc.generate_sync_message_bounded_encoded_recovering(
+                state_peer_state,
+                STATE_SYNC_COMPACT_THRESHOLD,
+                "initial-state-sync",
+            ) {
                 Ok(encoded) => Ok(encoded),
                 Err(e) => {
-                    warn!("{}", e);
-                    state_doc.rebuild_from_save();
-                    *state_peer_state = sync::State::new();
-                    Ok(state_doc
-                        .generate_sync_message(state_peer_state)
-                        .map(|msg| msg.encode()))
+                    warn!("[notebook-sync] initial runtime state sync failed: {}", e);
+                    Ok(None)
                 }
             }
         })

@@ -87,6 +87,7 @@ use automerge::{
     transaction::{CommitOptions, Transactable},
     ActorId, AutoCommit, AutomergeError, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT,
 };
+use automerge_recovery::{catch_automerge_panic, AutomergeOperationError};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -494,6 +495,26 @@ impl RuntimeStateDoc {
         self.doc.merge(&mut other.doc)
     }
 
+    /// Merge another runtime-state document, rebuilding both documents if Automerge panics.
+    pub fn merge_recovering(
+        &mut self,
+        other: &mut RuntimeStateDoc,
+        label: &str,
+    ) -> Result<Vec<automerge::ChangeHash>, AutomergeOperationError> {
+        match catch_automerge_panic(label, || self.doc.merge(&mut other.doc)) {
+            Ok(Ok(changes)) => Ok(changes),
+            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+            Err(err) => {
+                let self_rebuilt = self.rebuild_from_save();
+                let other_rebuilt = other.rebuild_from_save();
+                if !self_rebuilt || !other_rebuilt {
+                    return Err(AutomergeOperationError::rebuild_failed(label));
+                }
+                Err(AutomergeOperationError::Panic(err))
+            }
+        }
+    }
+
     /// Fork, apply mutations on the fork, and merge back.
     ///
     /// Convenience wrapper for synchronous fork+merge blocks. For async
@@ -513,16 +534,19 @@ impl RuntimeStateDoc {
     /// Used after catching an automerge panic (upstream MissingOps bug in
     /// `collector.rs`). See `NotebookDoc::rebuild_from_save` for details.
     pub fn rebuild_from_save(&mut self) -> bool {
-        let actor = self.doc.get_actor().clone();
-        let bytes = self.doc.save();
-        match AutoCommit::load(&bytes) {
-            Ok(mut doc) => {
-                doc.set_actor(actor);
-                self.doc = doc;
-                true
+        catch_automerge_panic("runtime-state-doc-rebuild-from-save", || {
+            let actor = self.doc.get_actor().clone();
+            let bytes = self.doc.save();
+            match AutoCommit::load(&bytes) {
+                Ok(mut doc) => {
+                    doc.set_actor(actor);
+                    self.doc = doc;
+                    true
+                }
+                Err(_) => false,
             }
-            Err(_) => false,
-        }
+        })
+        .unwrap_or_default()
     }
 
     /// Compact the document if its serialized size exceeds `threshold` bytes.
@@ -2387,6 +2411,26 @@ impl RuntimeStateDoc {
         self.doc.sync().generate_sync_message(peer_state)
     }
 
+    /// Generate a sync message, recovering from Automerge panics by rebuilding
+    /// this doc, resetting peer sync state, and retrying once.
+    pub fn generate_sync_message_recovering(
+        &mut self,
+        peer_state: &mut sync::State,
+        label: &str,
+    ) -> Result<Option<sync::Message>, AutomergeOperationError> {
+        match catch_automerge_panic(label, || self.generate_sync_message(peer_state)) {
+            Ok(message) => Ok(message),
+            Err(_err) => {
+                *peer_state = sync::State::new();
+                if !self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label));
+                }
+                catch_automerge_panic(label, || self.generate_sync_message(peer_state))
+                    .map_err(AutomergeOperationError::Panic)
+            }
+        }
+    }
+
     /// Generate a sync message, compacting the doc if the encoded message
     /// would exceed `max_encoded_bytes`.
     ///
@@ -2422,6 +2466,31 @@ impl RuntimeStateDoc {
             .map(|m| m.encode())
     }
 
+    /// Generate a bounded encoded sync message, recovering from Automerge panics
+    /// by rebuilding this doc, resetting peer sync state, and retrying once.
+    pub fn generate_sync_message_bounded_encoded_recovering(
+        &mut self,
+        peer_state: &mut sync::State,
+        max_encoded_bytes: usize,
+        label: &str,
+    ) -> Result<Option<Vec<u8>>, AutomergeOperationError> {
+        match catch_automerge_panic(label, || {
+            self.generate_sync_message_bounded_encoded(peer_state, max_encoded_bytes)
+        }) {
+            Ok(message) => Ok(message),
+            Err(_err) => {
+                *peer_state = sync::State::new();
+                if !self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label));
+                }
+                catch_automerge_panic(label, || {
+                    self.generate_sync_message_bounded_encoded(peer_state, max_encoded_bytes)
+                })
+                .map_err(AutomergeOperationError::Panic)
+            }
+        }
+    }
+
     /// Receive a sync message with change stripping (read-only enforcement).
     ///
     /// The daemon is the sole authority for runtime state. Any changes a
@@ -2451,6 +2520,27 @@ impl RuntimeStateDoc {
         Ok(())
     }
 
+    /// Receive a read-only sync message, recovering from Automerge panics by
+    /// rebuilding this doc and resetting peer sync state.
+    pub fn receive_sync_message_recovering(
+        &mut self,
+        peer_state: &mut sync::State,
+        message: sync::Message,
+        label: &str,
+    ) -> Result<(), AutomergeOperationError> {
+        match catch_automerge_panic(label, || self.receive_sync_message(peer_state, message)) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+            Err(err) => {
+                *peer_state = sync::State::new();
+                if !self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label));
+                }
+                Err(AutomergeOperationError::Panic(err))
+            }
+        }
+    }
+
     /// Receive a sync message accepting client writes.
     ///
     /// Unlike `receive_sync_message()` which strips client changes, this
@@ -2468,6 +2558,29 @@ impl RuntimeStateDoc {
         self.doc.sync().receive_sync_message(peer_state, message)?;
         let heads_after = self.doc.get_heads();
         Ok(heads_before != heads_after)
+    }
+
+    /// Receive a writable sync message, recovering from Automerge panics by
+    /// rebuilding this doc and resetting peer sync state.
+    pub fn receive_sync_message_with_changes_recovering(
+        &mut self,
+        peer_state: &mut sync::State,
+        message: sync::Message,
+        label: &str,
+    ) -> Result<bool, AutomergeOperationError> {
+        match catch_automerge_panic(label, || {
+            self.receive_sync_message_with_changes(peer_state, message)
+        }) {
+            Ok(Ok(changed)) => Ok(changed),
+            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+            Err(err) => {
+                *peer_state = sync::State::new();
+                if !self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label));
+                }
+                Err(AutomergeOperationError::Panic(err))
+            }
+        }
     }
 
     /// Apply a sync message and return both the list of applied-change
@@ -2578,6 +2691,34 @@ impl RuntimeStateDoc {
             applied_actors,
             foreign_comms: Some(foreign_comms),
         })
+    }
+
+    /// Receive a writable sync message and compute a foreign-actor comm view,
+    /// recovering from Automerge panics by rebuilding this doc and resetting
+    /// peer sync state.
+    pub fn receive_sync_and_foreign_comms_recovering<F>(
+        &mut self,
+        peer_state: &mut sync::State,
+        message: sync::Message,
+        is_foreign: F,
+        label: &str,
+    ) -> Result<ForeignSyncView, AutomergeOperationError>
+    where
+        F: Fn(&ActorId) -> bool,
+    {
+        match catch_automerge_panic(label, || {
+            self.receive_sync_and_foreign_comms(peer_state, message, is_foreign)
+        }) {
+            Ok(Ok(view)) => Ok(view),
+            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+            Err(err) => {
+                *peer_state = sync::State::new();
+                if !self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label));
+                }
+                Err(AutomergeOperationError::Panic(err))
+            }
+        }
     }
 }
 

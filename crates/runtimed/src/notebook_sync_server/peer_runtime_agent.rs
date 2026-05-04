@@ -68,8 +68,18 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     let doc_sync_msg = {
         let mut doc = room.doc.write().await;
         // Generate our sync message (full doc state for fresh peer)
-        doc.generate_sync_message(&mut doc_sync_state)
-            .map(|msg| msg.encode())
+        match doc
+            .generate_sync_message_recovering(&mut doc_sync_state, "peer-runtime-agent-doc-init")
+        {
+            Ok(message) => message.map(|msg| msg.encode()),
+            Err(e) => {
+                warn!(
+                    "[notebook-sync] runtime-agent initial doc sync failed: {}",
+                    e
+                );
+                None
+            }
+        }
     };
     if let Some(encoded) = doc_sync_msg {
         if let Err(e) =
@@ -85,12 +95,11 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     let mut state_sync_state = automerge::sync::State::new();
     let state_sync_msg = room
         .state
-        .with_doc(|sd| {
-            Ok(sd.generate_sync_message_bounded_encoded(
-                &mut state_sync_state,
-                STATE_SYNC_COMPACT_THRESHOLD,
-            ))
-        })
+        .generate_sync_message_bounded_encoded_recovering(
+            &mut state_sync_state,
+            STATE_SYNC_COMPACT_THRESHOLD,
+            "peer-runtime-agent-state-init",
+        )
         .ok()
         .flatten();
     if let Some(encoded) = state_sync_msg {
@@ -183,18 +192,36 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                     NotebookFrameType::AutomergeSync => {
                         if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
                             let mut doc = room.doc.write().await;
-                            if doc.receive_sync_message(&mut doc_sync_state, msg).is_ok() {
-                                let _ = room.broadcasts.changed_tx.send(());
+                            match doc.receive_sync_message_recovering(
+                                &mut doc_sync_state,
+                                msg,
+                                "peer-runtime-agent-doc",
+                            ) {
+                                Ok(()) => {
+                                    let _ = room.broadcasts.changed_tx.send(());
+                                }
+                                Err(e) => {
+                                    warn!("[notebook-sync] Agent doc sync receive failed: {}", e);
+                                }
                             }
                             // Send sync reply
-                            if let Some(reply) = doc.generate_sync_message(&mut doc_sync_state) {
-                                let encoded = reply.encode();
-                                if let Err(e) = agent_writer.send_frame(
-                                    NotebookFrameType::AutomergeSync,
-                                    encoded,
-                                ) {
-                                    warn!("[notebook-sync] Failed to queue doc sync reply to runtime agent: {}", e);
-                                    break;
+                            match doc.generate_sync_message_recovering(
+                                &mut doc_sync_state,
+                                "peer-runtime-agent-doc-reply",
+                            ) {
+                                Ok(Some(reply)) => {
+                                    let encoded = reply.encode();
+                                    if let Err(e) = agent_writer.send_frame(
+                                        NotebookFrameType::AutomergeSync,
+                                        encoded,
+                                    ) {
+                                        warn!("[notebook-sync] Failed to queue doc sync reply to runtime agent: {}", e);
+                                        break;
+                                    }
+                                }
+                                Ok(None) => {}
+                                Err(e) => {
+                                    warn!("[notebook-sync] Agent doc sync reply failed: {}", e);
                                 }
                             }
                         }
@@ -205,18 +232,32 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                             let mut runtime_file_dirty = false;
                             let reply_encoded = room.state.with_doc(|sd| {
                                 let before = runtime_file_save_fingerprint(sd);
-                                if let Ok(changed) = sd.receive_sync_message_with_changes(
-                                    &mut state_sync_state, msg,
+                                match sd.receive_sync_message_with_changes_recovering(
+                                    &mut state_sync_state,
+                                    msg,
+                                    "peer-runtime-agent-state",
                                 ) {
-                                    if changed {
-                                        state_changed = true;
-                                        if runtime_file_save_fingerprint(sd) != before {
-                                            runtime_file_dirty = true;
+                                    Ok(changed) => {
+                                        if changed {
+                                            state_changed = true;
+                                            if runtime_file_save_fingerprint(sd) != before {
+                                                runtime_file_dirty = true;
+                                            }
+                                            // Notification handled by with_doc heads check
                                         }
-                                        // Notification handled by with_doc heads check
+                                    }
+                                    Err(e) => {
+                                        warn!("[notebook-sync] Agent state sync receive failed: {}", e);
+                                        return Ok(None);
                                     }
                                 }
-                                Ok(sd.generate_sync_message(&mut state_sync_state)
+                                Ok(sd
+                                    .generate_sync_message_recovering(
+                                        &mut state_sync_state,
+                                        "peer-runtime-agent-state-reply",
+                                    )
+                                    .ok()
+                                    .flatten()
                                     .map(|reply| reply.encode()))
                             }).ok().flatten();
                             if let Some(encoded) = reply_encoded {
@@ -261,14 +302,23 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
             _ = changed_rx.recv() => {
                 while changed_rx.try_recv().is_ok() {}
                 let mut doc = room.doc.write().await;
-                if let Some(msg) = doc.generate_sync_message(&mut doc_sync_state) {
-                    let encoded = msg.encode();
-                    if let Err(e) = agent_writer.send_frame(
-                        NotebookFrameType::AutomergeSync,
-                        encoded,
-                    ) {
-                        warn!("[notebook-sync] Failed to queue doc sync to runtime agent: {}", e);
-                        break;
+                match doc.generate_sync_message_recovering(
+                    &mut doc_sync_state,
+                    "peer-runtime-agent-doc-outbound",
+                ) {
+                    Ok(Some(msg)) => {
+                        let encoded = msg.encode();
+                        if let Err(e) = agent_writer.send_frame(
+                            NotebookFrameType::AutomergeSync,
+                            encoded,
+                        ) {
+                            warn!("[notebook-sync] Failed to queue doc sync to runtime agent: {}", e);
+                            break;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        warn!("[notebook-sync] Agent outbound doc sync failed: {}", e);
                     }
                 }
             }
@@ -276,10 +326,15 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
             // RuntimeStateDoc changes → sync to runtime agent
             _ = state_changed_rx.recv() => {
                 while state_changed_rx.try_recv().is_ok() {}
-                let encoded = room.state.with_doc(|sd| {
-                    Ok(sd.generate_sync_message(&mut state_sync_state)
-                        .map(|msg| msg.encode()))
-                }).ok().flatten();
+                let encoded = room
+                    .state
+                    .generate_sync_message_recovering(
+                        &mut state_sync_state,
+                        "peer-runtime-agent-state-outbound",
+                    )
+                    .ok()
+                    .flatten()
+                    .map(|msg| msg.encode());
                 if let Some(encoded) = encoded {
                     if let Err(e) = agent_writer.send_frame(
                         NotebookFrameType::RuntimeStateSync,

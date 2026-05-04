@@ -8,6 +8,7 @@
 use automerge::sync;
 use automerge::sync::SyncDoc;
 use automerge::AutoCommit;
+use automerge_recovery::{catch_automerge_panic, AutomergeOperationError};
 use log::warn;
 use notebook_doc::presence::PresenceState;
 use runtime_doc::RuntimeStateDoc;
@@ -86,6 +87,39 @@ impl SharedDocState {
             .receive_sync_message(&mut self.peer_state, message)
     }
 
+    pub(crate) fn generate_sync_message_recovering(
+        &mut self,
+        label: &str,
+    ) -> Result<Option<sync::Message>, AutomergeOperationError> {
+        match catch_automerge_panic(label, || self.generate_sync_message()) {
+            Ok(message) => Ok(message),
+            Err(_err) => {
+                if !self.rebuild_doc() {
+                    return Err(AutomergeOperationError::rebuild_failed(label));
+                }
+                catch_automerge_panic(label, || self.generate_sync_message())
+                    .map_err(AutomergeOperationError::Panic)
+            }
+        }
+    }
+
+    pub(crate) fn receive_sync_message_recovering(
+        &mut self,
+        message: sync::Message,
+        label: &str,
+    ) -> Result<(), AutomergeOperationError> {
+        match catch_automerge_panic(label, || self.receive_sync_message(message)) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+            Err(err) => {
+                if !self.rebuild_doc() {
+                    return Err(AutomergeOperationError::rebuild_failed(label));
+                }
+                Err(AutomergeOperationError::Panic(err))
+            }
+        }
+    }
+
     // ── RuntimeStateDoc sync ────────────────────────────────────────
 
     /// Generate an outgoing sync reply for the RuntimeStateDoc.
@@ -94,6 +128,14 @@ impl SharedDocState {
             .doc_mut()
             .sync()
             .generate_sync_message(&mut self.state_peer_state)
+    }
+
+    pub(crate) fn generate_state_sync_message_recovering(
+        &mut self,
+        label: &str,
+    ) -> Result<Option<sync::Message>, AutomergeOperationError> {
+        self.state_doc
+            .generate_sync_message_recovering(&mut self.state_peer_state, label)
     }
 
     /// Apply an incoming RuntimeStateSync message from the daemon.
@@ -114,19 +156,80 @@ impl SharedDocState {
             .receive_sync_message(&mut self.state_peer_state, message)
     }
 
+    pub(crate) fn receive_state_sync_message_recovering(
+        &mut self,
+        message: sync::Message,
+        label: &str,
+    ) -> Result<(), AutomergeOperationError> {
+        match catch_automerge_panic(label, || self.receive_state_sync_message(message)) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+            Err(err) => {
+                if !self.rebuild_state_doc() {
+                    return Err(AutomergeOperationError::rebuild_failed(label));
+                }
+                Err(AutomergeOperationError::Panic(err))
+            }
+        }
+    }
+
     /// Rebuild the RuntimeStateDoc via save→load and reset its sync state.
     ///
     /// Used after catching an automerge panic during `RuntimeStateSync`
     /// processing — the same recovery pattern as `rebuild_shared_doc_state`
     /// for the notebook doc, but targeting the state doc.
-    pub fn rebuild_state_doc(&mut self) {
-        if !self.state_doc.rebuild_from_save() {
+    pub fn rebuild_state_doc(&mut self) -> bool {
+        let rebuilt = self.state_doc.rebuild_from_save();
+        if !rebuilt {
             warn!(
                 "[notebook-sync] Failed to rebuild RuntimeStateDoc after panic; \
                  resetting state sync protocol only"
             );
         }
         self.state_peer_state = sync::State::new();
+        rebuilt
+    }
+
+    fn rebuild_doc(&mut self) -> bool {
+        let rebuilt = catch_automerge_panic("notebook-sync-rebuild-doc", || {
+            let actor = self.doc.get_actor().clone();
+            let pre_cell_count = notebook_doc::get_cells_from_doc(&self.doc).len();
+            let bytes = self.doc.save();
+            match AutoCommit::load(&bytes) {
+                Ok(mut doc) => {
+                    let post_cell_count = notebook_doc::get_cells_from_doc(&doc).len();
+                    if post_cell_count < pre_cell_count {
+                        warn!(
+                            "[notebook-sync] rebuild doc would lose cells ({} -> {}), resetting sync state only",
+                            pre_cell_count, post_cell_count
+                        );
+                        return false;
+                    }
+                    doc.set_actor(actor);
+                    self.doc = doc;
+                    true
+                }
+                Err(e) => {
+                    warn!(
+                        "[notebook-sync] failed to rebuild doc after panic: {}; resetting sync state only",
+                        e
+                    );
+                    false
+                }
+            }
+        });
+
+        self.peer_state = sync::State::new();
+        match rebuilt {
+            Ok(rebuilt) => rebuilt,
+            Err(e) => {
+                warn!(
+                    "[notebook-sync] panic while rebuilding doc after panic: {}; resetting sync state only",
+                    e
+                );
+                false
+            }
+        }
     }
 
     #[cfg(test)]
