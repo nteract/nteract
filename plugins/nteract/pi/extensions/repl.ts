@@ -152,6 +152,45 @@ function resolveSocketPath(rn: RuntimedNode): string {
   return rn.defaultSocketPath();
 }
 
+// --- bootstrap detection -----------------------------------------------------
+
+const INSTALL_HINT =
+  "The nteract daemon (runtimed) isn't installed yet.\n" +
+  "Quick install:  curl -fsSL https://sh.nteract.io | bash\n" +
+  "Or visit:       https://nteract.io";
+
+type BootstrapStatus =
+  | { kind: "ready"; rn: RuntimedNode }
+  | { kind: "missing"; reason: "binding" | "daemon" };
+
+function findOnPath(cmd: string): string | undefined {
+  const dirs = (process.env.PATH ?? "").split(path.delimiter);
+  for (const dir of dirs) {
+    if (!dir) continue;
+    const candidate = path.join(dir, cmd);
+    if (existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+function detectBootstrap(): BootstrapStatus {
+  const rn = loadRuntimedNode();
+  if (!rn) return { kind: "missing", reason: "binding" };
+  // Explicit socket override wins: assume the operator knows what they're doing.
+  if (process.env.NTERACT_SOCKET_PATH) return { kind: "ready", rn };
+  // Cache dir presence is a coarse "has this daemon ever run" check; the socket
+  // file itself only exists while the daemon is running, but the parent dir
+  // sticks around once any nteract install has touched the system.
+  const channels = ["nightly", "stable"] as const;
+  const sockets = channels.map((ch) => rn.socketPathForChannel(ch));
+  const installed =
+    sockets.some((s) => existsSync(s)) ||
+    sockets.some((s) => existsSync(path.dirname(s))) ||
+    Boolean(findOnPath("runt")) ||
+    Boolean(findOnPath("runt-nightly"));
+  return installed ? { kind: "ready", rn } : { kind: "missing", reason: "daemon" };
+}
+
 // --- DataTable TUI component --------------------------------------------------
 
 type Theme = {
@@ -553,11 +592,34 @@ const PYTHON_PARAMS = Type.Object({
 });
 
 export default function nteractReplExtension(pi: ExtensionAPI) {
-  const rn = loadRuntimedNode();
-  if (!rn) {
-    console.error("[nteract-repl] runtimed-node not loaded; python tool will not be registered.");
+  const bootstrap = detectBootstrap();
+  if (bootstrap.kind === "missing") {
+    // Surface a one-liner toast each session so the user sees the hint without
+    // having to invoke the tool first.
+    pi.on("session_start", async (_event, ctx) => {
+      ctx.ui.notify(INSTALL_HINT, "warning");
+    });
+    // Register python_repl with a stub execute() so the LLM can still advertise
+    // the capability and surface install guidance the moment it tries to run
+    // Python. Throwing routes the message into the tool-result channel that the
+    // model relays back to the user.
+    pi.registerTool({
+      name: "python_repl",
+      label: "Python REPL",
+      description:
+        "Execute Python in your persistent REPL. Requires the nteract daemon (runtimed). " +
+        "If unavailable, recommend the user install with `curl -fsSL https://sh.nteract.io | bash` " +
+        "or download the desktop app at https://nteract.io.",
+      promptSnippet:
+        "python_repl: requires the nteract daemon. Install with `curl -fsSL https://sh.nteract.io | bash` or via https://nteract.io.",
+      parameters: PYTHON_PARAMS,
+      async execute() {
+        throw new Error(INSTALL_HINT);
+      },
+    });
     return;
   }
+  const rn = bootstrap.rn;
 
   let session: Session | null = null;
   let opening: Promise<Session> | null = null;
