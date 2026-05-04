@@ -1,3 +1,4 @@
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 
@@ -87,6 +88,126 @@ impl RuntimeStateHandle {
             let _ = self.changed_tx.send(());
         }
         Ok(())
+    }
+
+    /// Apply an inbound sync message with panic recovery.
+    ///
+    /// Automerge 0.8 can panic with PatchLogMismatch during
+    /// `receive_sync_message` when concurrent sync messages interleave
+    /// actor table mutations (upstream bug automerge/automerge#1187).
+    /// This method catches the panic inside the mutex guard (before the
+    /// guard drops, so poison never occurs), rebuilds the doc via
+    /// save/load, and resets `peer_state` for a fresh handshake.
+    ///
+    /// `sync_op` receives `(&mut RuntimeStateDoc, &mut sync::State)` and
+    /// should call whichever receive variant is needed (e.g.,
+    /// `receive_sync_message`, `receive_sync_message_with_changes`, or
+    /// `receive_sync_and_foreign_comms`). On panic recovery, the closure's
+    /// return value is lost and `Ok(None)` is returned.
+    pub fn receive_sync_recovering<F, T>(
+        &self,
+        peer_state: &mut automerge::sync::State,
+        sync_op: F,
+    ) -> Result<Option<T>, RuntimeStateError>
+    where
+        F: FnOnce(
+            &mut RuntimeStateDoc,
+            &mut automerge::sync::State,
+        ) -> Result<T, RuntimeStateError>,
+    {
+        let mut sd = self
+            .doc
+            .lock()
+            .map_err(|_| RuntimeStateError::LockPoisoned)?;
+        let heads_before = sd.get_heads();
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| sync_op(&mut sd, peer_state)));
+        match result {
+            Ok(Ok(val)) => {
+                if sd.get_heads() != heads_before {
+                    let _ = self.changed_tx.send(());
+                }
+                Ok(Some(val))
+            }
+            Ok(Err(e)) => {
+                if sd.get_heads() != heads_before {
+                    let _ = self.changed_tx.send(());
+                }
+                Err(e)
+            }
+            Err(panic_payload) => {
+                let msg = crate::panic_payload_to_string(panic_payload);
+                tracing::error!(
+                    "[runtime-state] Automerge panicked during receive_sync \
+                     (upstream bug automerge/automerge#1187): {}",
+                    msg
+                );
+                sd.rebuild_from_save();
+                *peer_state = automerge::sync::State::new();
+                Ok(None)
+            }
+        }
+    }
+
+    /// Generate an outbound sync message with panic recovery.
+    ///
+    /// Same recovery strategy as `receive_sync_recovering`: on panic,
+    /// rebuilds via save/load and resets `peer_state`. Returns `None`
+    /// both when there is nothing to send and on panic recovery.
+    pub fn generate_sync_recovering(
+        &self,
+        peer_state: &mut automerge::sync::State,
+    ) -> Option<Vec<u8>> {
+        let mut sd = match self.doc.lock() {
+            Ok(guard) => guard,
+            Err(_) => return None,
+        };
+        match std::panic::catch_unwind(AssertUnwindSafe(|| {
+            sd.generate_sync_message(peer_state).map(|msg| msg.encode())
+        })) {
+            Ok(encoded) => encoded,
+            Err(panic_payload) => {
+                let msg = crate::panic_payload_to_string(panic_payload);
+                tracing::error!(
+                    "[runtime-state] Automerge panicked during generate_sync_message \
+                     (upstream bug automerge/automerge#1187): {}",
+                    msg
+                );
+                sd.rebuild_from_save();
+                *peer_state = automerge::sync::State::new();
+                None
+            }
+        }
+    }
+
+    /// Generate a bounded sync message with panic recovery.
+    ///
+    /// Compacts the doc if the encoded message exceeds `max_encoded_bytes`.
+    /// On panic, rebuilds and resets peer state.
+    pub fn generate_sync_bounded_recovering(
+        &self,
+        peer_state: &mut automerge::sync::State,
+        max_encoded_bytes: usize,
+    ) -> Option<Vec<u8>> {
+        let mut sd = match self.doc.lock() {
+            Ok(guard) => guard,
+            Err(_) => return None,
+        };
+        match std::panic::catch_unwind(AssertUnwindSafe(|| {
+            sd.generate_sync_message_bounded_encoded(peer_state, max_encoded_bytes)
+        })) {
+            Ok(encoded) => encoded,
+            Err(panic_payload) => {
+                let msg = crate::panic_payload_to_string(panic_payload);
+                tracing::error!(
+                    "[runtime-state] Automerge panicked during generate_sync_message_bounded \
+                     (upstream bug automerge/automerge#1187): {}",
+                    msg
+                );
+                sd.rebuild_from_save();
+                *peer_state = automerge::sync::State::new();
+                None
+            }
+        }
     }
 
     /// Read-only access. No notification.

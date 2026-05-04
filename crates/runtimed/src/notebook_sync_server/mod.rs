@@ -135,6 +135,35 @@ pub(crate) fn catch_automerge_panic<T>(label: &str, f: impl FnOnce() -> T) -> Re
     }
 }
 
+/// Run a sync operation on a NotebookDoc with panic recovery.
+///
+/// On success, returns the closure's value. On panic (automerge#1187 /
+/// MissingOps), rebuilds the doc via save/load and resets `sync_state`
+/// for a fresh handshake. Returns `None` on recovery.
+///
+/// The caller must already hold the `RwLock<NotebookDoc>` write guard.
+/// catch_unwind runs inside the guard so the lock is never poisoned.
+pub(crate) fn doc_sync_recovering<T>(
+    label: &str,
+    doc: &mut crate::notebook_doc::NotebookDoc,
+    sync_state: &mut automerge::sync::State,
+    f: impl FnOnce(&mut crate::notebook_doc::NotebookDoc, &mut automerge::sync::State) -> T,
+) -> Option<T> {
+    match std::panic::catch_unwind(AssertUnwindSafe(|| f(doc, sync_state))) {
+        Ok(val) => Some(val),
+        Err(payload) => {
+            let msg = crate::task_supervisor::panic_payload_to_string(payload);
+            tracing::error!(
+                "[{label}] Automerge panicked during NotebookDoc sync \
+                 (upstream bug automerge/automerge#1187): {msg}"
+            );
+            doc.rebuild_from_save();
+            *sync_state = automerge::sync::State::new();
+            None
+        }
+    }
+}
+
 /// A message sent through the runtime agent channel.
 pub enum RuntimeAgentMessage {
     /// Fire-and-forget command - no response expected.
