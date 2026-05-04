@@ -1176,9 +1176,9 @@ pub(crate) async fn apply_ipynb_changes(
     // Detect wholesale file replacement: the current doc has cells, the
     // external file has cells, but they share zero cell IDs. This happens
     // when an external process (e.g. an AI agent) writes a completely new
-    // notebook to the same path. Route through the rebuild path which is
-    // atomic (fork → delete all → re-add all → merge) rather than the
-    // incremental path which mixes direct mutations with fork+merge.
+    // notebook to the same path. Route through the rebuild path so the cell
+    // list is replaced atomically instead of trying to infer an incremental
+    // edit script across unrelated IDs.
     let no_common_cells = !current_ids.is_empty()
         && !external_ids.is_empty()
         && !current_ids.iter().any(|id| external_map.contains_key(id));
@@ -1193,14 +1193,10 @@ pub(crate) async fn apply_ipynb_changes(
     }
 
     // If order changed or the file was wholesale-replaced, rebuild the
-    // cell list. Use fork + merge so the structural rebuild from disk
-    // composes with concurrent CRDT changes rather than overwriting them.
-    //
-    // This path still uses a current-head fork because the file watcher
-    // compares disk content against `last_save_sources` rather than mutating a
-    // historical document clone. New historical writes should prefer
-    // `transact_at_heads_recovering` so actor restoration and panic recovery
-    // stay document-owned.
+    // cell list as a document-owned transaction. The baseline is the current
+    // live document because the file watcher compares disk content against
+    // `last_save_sources`; using a transaction avoids minting a parallel fork
+    // actor while keeping actor restoration and panic recovery document-owned.
     if order_changed || no_common_cells {
         debug!(
             "[notebook-watch] {} — rebuilding cell list",
@@ -1215,86 +1211,103 @@ pub(crate) async fn apply_ipynb_changes(
         // saved_sources `.await`s (deadlock prevention).
         let deferred_executions = {
             let mut doc = room.doc.write().await;
-            // Synchronous fork+merge inside the write guard — no `.await`
-            // between fork and merge. A stable actor is safe here because
-            // no other fork of this doc can exist concurrently.
-            let mut fork = doc.fork_with_actor("runtimed:filesystem");
+            let current_execution_ids: HashMap<String, String> = current_cells
+                .iter()
+                .filter_map(|cell| {
+                    doc.get_execution_id(&cell.id)
+                        .map(|execution_id| (cell.id.clone(), execution_id))
+                })
+                .collect();
+            let heads = doc.get_heads();
 
-            // Delete all current cells and re-add in external order on the fork
-            for cell in &current_cells {
-                let _ = fork.delete_cell(&cell.id);
-            }
+            match doc.transact_at_heads_recovering(
+                &heads,
+                Some("runtimed:filesystem"),
+                "file-watcher-order-transaction",
+                |doc| {
+                    // Delete all current cells and re-add in external order.
+                    for cell in &current_cells {
+                        let _ = doc.delete_cell(&cell.id);
+                    }
 
-            let mut deferred: Vec<DeferredExecution> = Vec::new();
+                    let mut deferred: Vec<DeferredExecution> = Vec::new();
 
-            for (index, ext_cell) in external_cells.iter().enumerate() {
-                if fork
-                    .add_cell(index, &ext_cell.id, &ext_cell.cell_type)
-                    .is_ok()
-                {
-                    let _ = fork.update_source(&ext_cell.id, &ext_cell.source);
+                    for (index, ext_cell) in external_cells.iter().enumerate() {
+                        if doc
+                            .add_cell(index, &ext_cell.id, &ext_cell.cell_type)
+                            .is_ok()
+                        {
+                            let _ = doc.update_source(&ext_cell.id, &ext_cell.source);
 
-                    // For existing cells with running kernel: preserve current execution_id
-                    // (outputs live in RuntimeStateDoc, keyed by execution_id)
-                    // For new cells: defer state_doc writes until after doc lock is released
-                    if has_running_kernel {
-                        if let Some(_current) = current_map.get(ext_cell.id.as_str()) {
-                            // Existing cell - preserve in-progress state (execution_id stays)
-                            // execution_count is in RuntimeStateDoc via execution_id
-                            if let Some(eid) = doc.get_execution_id(&ext_cell.id) {
-                                let _ = fork.set_execution_id(&ext_cell.id, Some(&eid));
+                            // For existing cells with running kernel: preserve current execution_id
+                            // (outputs live in RuntimeStateDoc, keyed by execution_id)
+                            // For new cells: defer state_doc writes until after doc lock is released
+                            if has_running_kernel {
+                                if current_map.contains_key(ext_cell.id.as_str()) {
+                                    // Existing cell - preserve in-progress state (execution_id stays)
+                                    // execution_count is in RuntimeStateDoc via execution_id
+                                    if let Some(eid) = current_execution_ids.get(&ext_cell.id) {
+                                        let _ =
+                                            doc.set_execution_id(&ext_cell.id, Some(eid.as_str()));
+                                    }
+                                } else {
+                                    // New cell - collect for deferred state_doc write
+                                    let ext_outputs = converted_outputs
+                                        .get(ext_cell.id.as_str())
+                                        .map(|v| v.as_slice())
+                                        .unwrap_or(&[]);
+                                    let parsed_ec: Option<i64> =
+                                        ext_cell.execution_count.parse().ok();
+                                    if !ext_outputs.is_empty() || parsed_ec.is_some() {
+                                        let synthetic_eid = uuid::Uuid::new_v4().to_string();
+                                        let _ = doc
+                                            .set_execution_id(&ext_cell.id, Some(&synthetic_eid));
+                                        deferred.push(DeferredExecution {
+                                            synthetic_eid,
+                                            cell_id: ext_cell.id.clone(),
+                                            outputs: ext_outputs,
+                                            execution_count: parsed_ec,
+                                        });
+                                    }
+                                }
+                            } else {
+                                let ext_outputs = converted_outputs
+                                    .get(ext_cell.id.as_str())
+                                    .map(|v| v.as_slice())
+                                    .unwrap_or(&[]);
+                                let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
+                                if !ext_outputs.is_empty() || parsed_ec.is_some() {
+                                    let synthetic_eid = uuid::Uuid::new_v4().to_string();
+                                    let _ =
+                                        doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
+                                    deferred.push(DeferredExecution {
+                                        synthetic_eid,
+                                        cell_id: ext_cell.id.clone(),
+                                        outputs: ext_outputs,
+                                        execution_count: parsed_ec,
+                                    });
+                                }
                             }
-                        } else {
-                            // New cell - collect for deferred state_doc write
-                            let ext_outputs = converted_outputs
+                            let ext_assets = converted_assets
                                 .get(ext_cell.id.as_str())
-                                .map(|v| v.as_slice())
-                                .unwrap_or(&[]);
-                            let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
-                            if !ext_outputs.is_empty() || parsed_ec.is_some() {
-                                let synthetic_eid = uuid::Uuid::new_v4().to_string();
-                                let _ = fork.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
-                                deferred.push(DeferredExecution {
-                                    synthetic_eid,
-                                    cell_id: ext_cell.id.clone(),
-                                    outputs: ext_outputs,
-                                    execution_count: parsed_ec,
-                                });
-                            }
-                        }
-                    } else {
-                        let ext_outputs = converted_outputs
-                            .get(ext_cell.id.as_str())
-                            .map(|v| v.as_slice())
-                            .unwrap_or(&[]);
-                        let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
-                        if !ext_outputs.is_empty() || parsed_ec.is_some() {
-                            let synthetic_eid = uuid::Uuid::new_v4().to_string();
-                            let _ = fork.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
-                            deferred.push(DeferredExecution {
-                                synthetic_eid,
-                                cell_id: ext_cell.id.clone(),
-                                outputs: ext_outputs,
-                                execution_count: parsed_ec,
-                            });
+                                .unwrap_or(&empty_assets);
+                            let _ = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets);
+                            let ext_attachments = converted_attachments
+                                .get(ext_cell.id.as_str())
+                                .unwrap_or(&empty_attachments);
+                            let _ = doc.set_cell_attachments(&ext_cell.id, ext_attachments);
                         }
                     }
-                    let ext_assets = converted_assets
-                        .get(ext_cell.id.as_str())
-                        .unwrap_or(&empty_assets);
-                    let _ = fork.set_cell_resolved_assets(&ext_cell.id, ext_assets);
-                    let ext_attachments = converted_attachments
-                        .get(ext_cell.id.as_str())
-                        .unwrap_or(&empty_attachments);
-                    let _ = fork.set_cell_attachments(&ext_cell.id, ext_attachments);
+
+                    Ok(deferred)
+                },
+            ) {
+                Ok(deferred) => deferred,
+                Err(e) => {
+                    warn!("[file-watcher] order transaction failed: {}", e);
+                    Vec::new()
                 }
             }
-
-            if let Err(e) = doc.merge_recovering(&mut fork, "file-watcher-order-merge") {
-                warn!("[file-watcher] order merge failed: {}", e);
-            }
-
-            deferred
         }; // doc guard dropped here
 
         // Apply deferred state_doc writes
@@ -1399,182 +1412,177 @@ pub(crate) async fn apply_ipynb_changes(
     // across `.await`).
     let (changed, deferred_execs) = {
         let mut doc = room.doc.write().await;
-        let mut changed = false;
+        let heads = doc.get_heads();
+        match doc.transact_at_heads_recovering(
+            &heads,
+            Some("runtimed:filesystem"),
+            "file-watcher-update-transaction",
+            |doc| {
+                let mut changed = false;
 
-        for cell_id in cells_to_delete {
-            debug!("[notebook-watch] Deleting cell: {}", cell_id);
-            if let Ok(true) = doc.delete_cell(&cell_id) {
-                changed = true;
-            }
-        }
-
-        // For source updates on existing cells, use fork + merge so that
-        // external edits compose with concurrent CRDT changes rather than
-        // overwriting them. This path uses a current-head fork because source
-        // comparison is anchored on `last_save_sources`; new historical writes
-        // should prefer `transact_at_heads_recovering`.
-        //
-        // Source comparison uses last_save_sources (what we wrote to disk)
-        // instead of the live CRDT (which may have progressed with new user
-        // typing since the save). This prevents the file watcher from
-        // treating our own autosave as an "external change" and overwriting
-        // the user's recent edits. Only genuine external changes (git pull,
-        // external editor) — where the disk content differs from what we
-        // last saved — trigger a source update.
-        // Synchronous fork+merge inside the write guard — a stable actor
-        // is safe here because no other fork of this doc can exist
-        // concurrently.
-        let mut source_fork = Some(doc.fork_with_actor("runtimed:filesystem"));
-
-        let mut deferred_execs: Vec<DeferredExecution> = Vec::new();
-        // Track cells whose execution_id should be cleared (no new outputs)
-        let mut clear_execution_ids: Vec<String> = Vec::new();
-
-        // Process external cells in order (add new or update existing)
-        for (index, ext_cell) in external_cells.iter().enumerate() {
-            if let Some(current_cell) = current_map.get(ext_cell.id.as_str()) {
-                // Cell exists — check if source genuinely changed externally.
-                // Compare disk content against what we last saved, NOT the live
-                // CRDT. If disk matches our last save, the change is from our
-                // own autosave and should be ignored (the CRDT may have
-                // progressed with new typing since then).
-                let saved_source = saved_sources_snapshot.get(ext_cell.id.as_str());
-                let is_external_change = match saved_source {
-                    Some(saved) => ext_cell.source != *saved,
-                    None => current_cell.source != ext_cell.source,
-                };
-
-                if is_external_change {
-                    debug!("[notebook-watch] Updating source for cell: {}", ext_cell.id);
-                    if let Some(ref mut fork) = source_fork {
-                        let _ = fork.update_source(&ext_cell.id, &ext_cell.source);
-                        changed = true;
-                    } else if let Ok(true) = doc.update_source(&ext_cell.id, &ext_cell.source) {
+                for cell_id in cells_to_delete {
+                    debug!("[notebook-watch] Deleting cell: {}", cell_id);
+                    if let Ok(true) = doc.delete_cell(&cell_id) {
                         changed = true;
                     }
                 }
 
-                // Update cell type if changed
-                if current_cell.cell_type != ext_cell.cell_type {
-                    debug!(
-                        "[notebook-watch] Cell type changed for {}: {} -> {}",
-                        ext_cell.id, current_cell.cell_type, ext_cell.cell_type
-                    );
-                    // Cell type changes require recreating the cell (rare case)
-                    // For now, just log - full support would need more work
-                }
+                // Source comparison uses last_save_sources (what we wrote to disk)
+                // instead of the live CRDT (which may have progressed with new user
+                // typing since the save). This prevents the file watcher from
+                // treating our own autosave as an "external change" and overwriting
+                // the user's recent edits. Only genuine external changes (git pull,
+                // external editor) — where the disk content differs from what we
+                // last saved — trigger a source update.
+                let mut deferred_execs: Vec<DeferredExecution> = Vec::new();
+                // Track cells whose execution_id should be cleared (no new outputs)
+                let mut clear_execution_ids: Vec<String> = Vec::new();
 
-                // Preserve outputs and execution_count if kernel is running
-                if !has_running_kernel {
-                    let ext_outputs = converted_outputs
-                        .get(ext_cell.id.as_str())
-                        .map(|v| v.as_slice())
-                        .unwrap_or(&[]);
-                    let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
+                // Process external cells in order (add new or update existing)
+                for (index, ext_cell) in external_cells.iter().enumerate() {
+                    if let Some(current_cell) = current_map.get(ext_cell.id.as_str()) {
+                        // Cell exists — check if source genuinely changed externally.
+                        // Compare disk content against what we last saved, NOT the live
+                        // CRDT. If disk matches our last save, the change is from our
+                        // own autosave and should be ignored (the CRDT may have
+                        // progressed with new typing since then).
+                        let saved_source = saved_sources_snapshot.get(ext_cell.id.as_str());
+                        let is_external_change = match saved_source {
+                            Some(saved) => ext_cell.source != *saved,
+                            None => current_cell.source != ext_cell.source,
+                        };
 
-                    // Compare external outputs and execution_count against
-                    // pre-snapshotted RuntimeStateDoc state
-                    let current_eid = doc.get_execution_id(&ext_cell.id);
-                    let (current_outputs, current_ec) = current_execution_state
-                        .get(ext_cell.id.as_str())
-                        .cloned()
-                        .unwrap_or((Vec::new(), None));
+                        if is_external_change {
+                            debug!("[notebook-watch] Updating source for cell: {}", ext_cell.id);
+                            if doc.update_source(&ext_cell.id, &ext_cell.source).is_ok() {
+                                changed = true;
+                            }
+                        }
 
-                    let outputs_changed = current_outputs.as_slice() != ext_outputs;
-                    let ec_changed = current_ec != parsed_ec;
-
-                    if outputs_changed || ec_changed {
-                        if !ext_outputs.is_empty() || parsed_ec.is_some() {
+                        // Update cell type if changed
+                        if current_cell.cell_type != ext_cell.cell_type {
                             debug!(
-                                "[notebook-watch] Updating outputs/execution_count for cell: {}",
-                                ext_cell.id
+                                "[notebook-watch] Cell type changed for {}: {} -> {}",
+                                ext_cell.id, current_cell.cell_type, ext_cell.cell_type
                             );
-                            let synthetic_eid = uuid::Uuid::new_v4().to_string();
-                            let _ = doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
-                            deferred_execs.push(DeferredExecution {
-                                synthetic_eid,
-                                cell_id: ext_cell.id.clone(),
-                                outputs: ext_outputs,
-                                execution_count: parsed_ec,
-                            });
+                            // Cell type changes require recreating the cell (rare case)
+                            // For now, just log - full support would need more work
+                        }
+
+                        // Preserve outputs and execution_count if kernel is running
+                        if !has_running_kernel {
+                            let ext_outputs = converted_outputs
+                                .get(ext_cell.id.as_str())
+                                .map(|v| v.as_slice())
+                                .unwrap_or(&[]);
+                            let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
+
+                            // Compare external outputs and execution_count against
+                            // pre-snapshotted RuntimeStateDoc state
+                            let current_eid = doc.get_execution_id(&ext_cell.id);
+                            let (current_outputs, current_ec) = current_execution_state
+                                .get(ext_cell.id.as_str())
+                                .cloned()
+                                .unwrap_or((Vec::new(), None));
+
+                            let outputs_changed = current_outputs.as_slice() != ext_outputs;
+                            let ec_changed = current_ec != parsed_ec;
+
+                            if outputs_changed || ec_changed {
+                                if !ext_outputs.is_empty() || parsed_ec.is_some() {
+                                    debug!(
+                                        "[notebook-watch] Updating outputs/execution_count for cell: {}",
+                                        ext_cell.id
+                                    );
+                                    let synthetic_eid = uuid::Uuid::new_v4().to_string();
+                                    let _ =
+                                        doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
+                                    deferred_execs.push(DeferredExecution {
+                                        synthetic_eid,
+                                        cell_id: ext_cell.id.clone(),
+                                        outputs: ext_outputs,
+                                        execution_count: parsed_ec,
+                                    });
+                                    changed = true;
+                                } else if current_eid.is_some() {
+                                    clear_execution_ids.push(ext_cell.id.clone());
+                                    changed = true;
+                                }
+                            }
+                        }
+
+                        let ext_assets = converted_assets
+                            .get(ext_cell.id.as_str())
+                            .unwrap_or(&empty_assets);
+                        if current_cell.resolved_assets != *ext_assets {
+                            if let Ok(true) = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets)
+                            {
+                                changed = true;
+                            }
+                        }
+                        let ext_attachments = converted_attachments
+                            .get(ext_cell.id.as_str())
+                            .unwrap_or(&empty_attachments);
+                        if current_cell.attachments != *ext_attachments {
+                            if let Ok(true) = doc.set_cell_attachments(&ext_cell.id, ext_attachments)
+                            {
+                                changed = true;
+                            }
+                        }
+                    } else {
+                        // New cell - add it
+                        // New cells don't have any in-progress state, so always use external values
+                        debug!(
+                            "[notebook-watch] Adding new cell at index {}: {}",
+                            index, ext_cell.id
+                        );
+                        if doc
+                            .add_cell(index, &ext_cell.id, &ext_cell.cell_type)
+                            .is_ok()
+                        {
                             changed = true;
-                        } else if current_eid.is_some() {
-                            clear_execution_ids.push(ext_cell.id.clone());
-                            changed = true;
+                            let _ = doc.update_source(&ext_cell.id, &ext_cell.source);
+                            let ext_outputs = converted_outputs
+                                .get(ext_cell.id.as_str())
+                                .map(|v| v.as_slice())
+                                .unwrap_or(&[]);
+                            let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
+                            if !ext_outputs.is_empty() || parsed_ec.is_some() {
+                                let synthetic_eid = uuid::Uuid::new_v4().to_string();
+                                let _ = doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
+                                deferred_execs.push(DeferredExecution {
+                                    synthetic_eid,
+                                    cell_id: ext_cell.id.clone(),
+                                    outputs: ext_outputs,
+                                    execution_count: parsed_ec,
+                                });
+                            }
+                            let ext_assets = converted_assets
+                                .get(ext_cell.id.as_str())
+                                .unwrap_or(&empty_assets);
+                            let _ = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets);
+                            let ext_attachments = converted_attachments
+                                .get(ext_cell.id.as_str())
+                                .unwrap_or(&empty_attachments);
+                            let _ = doc.set_cell_attachments(&ext_cell.id, ext_attachments);
                         }
                     }
                 }
 
-                let ext_assets = converted_assets
-                    .get(ext_cell.id.as_str())
-                    .unwrap_or(&empty_assets);
-                if current_cell.resolved_assets != *ext_assets {
-                    if let Ok(true) = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets) {
-                        changed = true;
-                    }
+                // Apply clear_execution_ids before integrating the transaction.
+                for cell_id in &clear_execution_ids {
+                    let _ = doc.set_execution_id(cell_id, None);
                 }
-                let ext_attachments = converted_attachments
-                    .get(ext_cell.id.as_str())
-                    .unwrap_or(&empty_attachments);
-                if current_cell.attachments != *ext_attachments {
-                    if let Ok(true) = doc.set_cell_attachments(&ext_cell.id, ext_attachments) {
-                        changed = true;
-                    }
-                }
-            } else {
-                // New cell - add it
-                // New cells don't have any in-progress state, so always use external values
-                debug!(
-                    "[notebook-watch] Adding new cell at index {}: {}",
-                    index, ext_cell.id
-                );
-                if doc
-                    .add_cell(index, &ext_cell.id, &ext_cell.cell_type)
-                    .is_ok()
-                {
-                    changed = true;
-                    let _ = doc.update_source(&ext_cell.id, &ext_cell.source);
-                    let ext_outputs = converted_outputs
-                        .get(ext_cell.id.as_str())
-                        .map(|v| v.as_slice())
-                        .unwrap_or(&[]);
-                    let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
-                    if !ext_outputs.is_empty() || parsed_ec.is_some() {
-                        let synthetic_eid = uuid::Uuid::new_v4().to_string();
-                        let _ = doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
-                        deferred_execs.push(DeferredExecution {
-                            synthetic_eid,
-                            cell_id: ext_cell.id.clone(),
-                            outputs: ext_outputs,
-                            execution_count: parsed_ec,
-                        });
-                    }
-                    let ext_assets = converted_assets
-                        .get(ext_cell.id.as_str())
-                        .unwrap_or(&empty_assets);
-                    let _ = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets);
-                    let ext_attachments = converted_attachments
-                        .get(ext_cell.id.as_str())
-                        .unwrap_or(&empty_attachments);
-                    let _ = doc.set_cell_attachments(&ext_cell.id, ext_attachments);
-                }
+
+                Ok((changed, deferred_execs))
+            },
+        ) {
+            Ok(result) => result,
+            Err(e) => {
+                warn!("[file-watcher] update transaction failed: {}", e);
+                (false, Vec::new())
             }
         }
-
-        // Apply clear_execution_ids before merge
-        for cell_id in &clear_execution_ids {
-            let _ = doc.set_execution_id(cell_id, None);
-        }
-
-        // Merge source fork back — source changes from disk compose with
-        // post-save CRDT changes via Automerge's text CRDT merge.
-        if let Some(ref mut fork) = source_fork {
-            if let Err(e) = doc.merge_recovering(fork, "file-watcher-source-merge") {
-                warn!("[file-watcher] source merge failed: {}", e);
-            }
-        }
-
-        (changed, deferred_execs)
     }; // doc guard dropped here
 
     // Apply deferred state_doc writes

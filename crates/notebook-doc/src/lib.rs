@@ -292,10 +292,15 @@ impl NotebookDoc {
     /// test `merging_two_forks_with_shared_actor_returns_duplicate_seq_error`
     /// in `runtime_state.rs`.
     ///
-    /// Use this for any fork whose merge crosses an `.await` point. The
-    /// `actor` argument is set verbatim — the caller controls whether
-    /// the actor is stable per task (e.g. `"rt:kernel:abc:iopub"`) or
-    /// unique per fork (e.g. `format!("runtimed:assets:{}", Uuid::new_v4())`).
+    /// Prefer
+    /// [`transact_at_heads_recovering`](Self::transact_at_heads_recovering)
+    /// when the writes can be computed after async work and applied at a
+    /// captured baseline. A transaction keeps actor sequencing on the live
+    /// document and avoids creating a second document that must later merge.
+    ///
+    /// If a true fork must cross an `.await` point, the `actor` argument is
+    /// set verbatim. The caller controls whether the actor is stable per task
+    /// (e.g. `"rt:kernel:abc:iopub"`) or unique per fork.
     ///
     /// Prefer a stable per-task actor for long-running loops that fork
     /// many times in sequence — each unique actor consumes space in
@@ -303,8 +308,6 @@ impl NotebookDoc {
     /// sites where concurrent forks from the same logical task can
     /// overlap across the async gap.
     ///
-    /// For notebook writes that can be expressed after the async work, prefer
-    /// [`transact_at_heads_recovering`](Self::transact_at_heads_recovering).
     /// For synchronous fork+merge blocks, use
     /// [`fork_and_merge`](Self::fork_and_merge).
     pub fn fork_with_actor(&mut self, actor: impl AsRef<str>) -> Self {
@@ -423,10 +426,10 @@ impl NotebookDoc {
 
     /// Fork the document, apply mutations on the fork, and merge back.
     ///
-    /// This is the preferred way to apply mutations that should compose
-    /// with concurrent edits rather than overwriting them. The closure
-    /// receives a forked doc; any mutations on it are merged back after
-    /// the closure returns.
+    /// This is only for synchronous compatibility with older call sites.
+    /// Prefer [`transact_at_heads_recovering`](Self::transact_at_heads_recovering)
+    /// for new document-owned mutation helpers, especially when the mutation
+    /// is based on heads captured before async work.
     ///
     /// ```ignore
     /// doc.fork_and_merge(|fork| {
@@ -435,9 +438,10 @@ impl NotebookDoc {
     /// });
     /// ```
     ///
-    /// For async work between fork and merge, use [`fork`](Self::fork)
-    /// and [`merge`](Self::merge) directly — the fork must be created
-    /// before the `.await` and merged after.
+    /// Do not use this as the default async mutation pattern. Capture heads
+    /// before the await and call
+    /// [`transact_at_heads_recovering`](Self::transact_at_heads_recovering)
+    /// when applying the computed writes.
     pub fn fork_and_merge<F>(&mut self, f: F)
     where
         F: FnOnce(&mut NotebookDoc),

@@ -989,9 +989,17 @@ async fn resign_trusted_snapshot(room: &NotebookRoom) -> Result<bool, String> {
 
     auto_sign_in_place(&mut snapshot)?;
 
-    doc.fork_and_merge(|fork| {
-        let _ = fork.set_metadata_snapshot(&snapshot);
-    });
+    let heads = doc.get_heads();
+    doc.transact_at_heads_recovering(
+        &heads,
+        Some("runtimed:metadata"),
+        "metadata-resign-transaction",
+        |doc| {
+            doc.set_metadata_snapshot(&snapshot)?;
+            Ok(())
+        },
+    )
+    .map_err(|e| format!("write trust signature: {}", e))?;
     drop(doc);
 
     // Persist the new signature to disk so reopening after a restart keeps
@@ -1326,7 +1334,8 @@ pub(crate) enum CapturedEnvRuntime {
 ///   overwritten only if empty (the brand-new notebook case). Existing
 ///   non-empty deps are left alone so user-edited lists aren't clobbered.
 ///
-/// Uses `fork_and_merge` per the async-CRDT-mutation rule.
+/// Uses a document-owned transaction so metadata writes keep one stable
+/// runtimed actor and still inherit Automerge recovery handling.
 ///
 /// Returns `true` if any field was updated.
 pub(crate) async fn capture_env_into_metadata(
@@ -1335,50 +1344,62 @@ pub(crate) async fn capture_env_into_metadata(
     user_defaults: &[String],
     env_id: &str,
 ) -> bool {
-    let mut changed = false;
     let mut doc = room.doc.write().await;
-    doc.fork_and_merge(|fork| {
-        let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
+    let heads = doc.get_heads();
+    let changed = match doc.transact_at_heads_recovering(
+        &heads,
+        Some("runtimed:metadata"),
+        "metadata-capture-env-transaction",
+        |doc| {
+            let mut changed = false;
+            let mut snap = doc.get_metadata_snapshot().unwrap_or_default();
 
-        if snap.runt.env_id.is_none() {
-            snap.runt.env_id = Some(env_id.to_string());
-            changed = true;
-        }
+            if snap.runt.env_id.is_none() {
+                snap.runt.env_id = Some(env_id.to_string());
+                changed = true;
+            }
 
-        match runtime {
-            CapturedEnvRuntime::Uv => {
-                let uv =
-                    snap.runt
-                        .uv
-                        .get_or_insert_with(|| notebook_doc::metadata::UvInlineMetadata {
+            match runtime {
+                CapturedEnvRuntime::Uv => {
+                    let uv = snap.runt.uv.get_or_insert_with(|| {
+                        notebook_doc::metadata::UvInlineMetadata {
                             dependencies: Vec::new(),
                             requires_python: None,
                             prerelease: None,
-                        });
-                if uv.dependencies.is_empty() && !user_defaults.is_empty() {
-                    uv.dependencies = user_defaults.to_vec();
-                    changed = true;
-                }
-            }
-            CapturedEnvRuntime::Conda => {
-                let conda = snap.runt.conda.get_or_insert_with(|| {
-                    notebook_doc::metadata::CondaInlineMetadata {
-                        dependencies: Vec::new(),
-                        channels: vec!["conda-forge".to_string()],
-                        python: None,
+                        }
+                    });
+                    if uv.dependencies.is_empty() && !user_defaults.is_empty() {
+                        uv.dependencies = user_defaults.to_vec();
+                        changed = true;
                     }
-                });
-                if conda.dependencies.is_empty() && !user_defaults.is_empty() {
-                    conda.dependencies = user_defaults.to_vec();
-                    changed = true;
+                }
+                CapturedEnvRuntime::Conda => {
+                    let conda = snap.runt.conda.get_or_insert_with(|| {
+                        notebook_doc::metadata::CondaInlineMetadata {
+                            dependencies: Vec::new(),
+                            channels: vec!["conda-forge".to_string()],
+                            python: None,
+                        }
+                    });
+                    if conda.dependencies.is_empty() && !user_defaults.is_empty() {
+                        conda.dependencies = user_defaults.to_vec();
+                        changed = true;
+                    }
                 }
             }
-        }
 
-        if changed {
-            let _ = fork.set_metadata_snapshot(&snap);
+            if changed {
+                doc.set_metadata_snapshot(&snap)?;
+            }
+            Ok(changed)
+        },
+    ) {
+        Ok(changed) => changed,
+        Err(e) => {
+            warn!("[notebook-sync] metadata capture transaction failed: {}", e);
+            false
         }
-    });
+    };
     drop(doc);
     if changed {
         // Notify the autosave debouncer so the capture lands in the .ipynb
@@ -1445,43 +1466,58 @@ pub(crate) async fn flush_launched_deps_to_metadata(
         return false;
     };
 
-    let mut changed = false;
     let mut doc = room.doc.write().await;
-    doc.fork_and_merge(|fork| {
-        let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
-        match runtime {
-            CapturedEnvRuntime::Uv => {
-                let uv =
-                    snap.runt
-                        .uv
-                        .get_or_insert_with(|| notebook_doc::metadata::UvInlineMetadata {
+    let heads = doc.get_heads();
+    let changed = match doc.transact_at_heads_recovering(
+        &heads,
+        Some("runtimed:metadata"),
+        "metadata-flush-deps-transaction",
+        |doc| {
+            let mut changed = false;
+            let mut snap = doc.get_metadata_snapshot().unwrap_or_default();
+            match runtime {
+                CapturedEnvRuntime::Uv => {
+                    let uv = snap.runt.uv.get_or_insert_with(|| {
+                        notebook_doc::metadata::UvInlineMetadata {
                             dependencies: Vec::new(),
                             requires_python: None,
                             prerelease: None,
-                        });
-                if uv.dependencies != new_deps {
-                    uv.dependencies = new_deps.clone();
-                    changed = true;
-                }
-            }
-            CapturedEnvRuntime::Conda => {
-                let conda = snap.runt.conda.get_or_insert_with(|| {
-                    notebook_doc::metadata::CondaInlineMetadata {
-                        dependencies: Vec::new(),
-                        channels: vec!["conda-forge".to_string()],
-                        python: None,
+                        }
+                    });
+                    if uv.dependencies != new_deps {
+                        uv.dependencies = new_deps.clone();
+                        changed = true;
                     }
-                });
-                if conda.dependencies != new_deps {
-                    conda.dependencies = new_deps.clone();
-                    changed = true;
+                }
+                CapturedEnvRuntime::Conda => {
+                    let conda = snap.runt.conda.get_or_insert_with(|| {
+                        notebook_doc::metadata::CondaInlineMetadata {
+                            dependencies: Vec::new(),
+                            channels: vec!["conda-forge".to_string()],
+                            python: None,
+                        }
+                    });
+                    if conda.dependencies != new_deps {
+                        conda.dependencies = new_deps.clone();
+                        changed = true;
+                    }
                 }
             }
+            if changed {
+                doc.set_metadata_snapshot(&snap)?;
+            }
+            Ok(changed)
+        },
+    ) {
+        Ok(changed) => changed,
+        Err(e) => {
+            warn!(
+                "[notebook-sync] metadata deps flush transaction failed: {}",
+                e
+            );
+            false
         }
-        if changed {
-            let _ = fork.set_metadata_snapshot(&snap);
-        }
-    });
+    };
     drop(doc);
     changed
 }
@@ -4630,51 +4666,56 @@ pub(crate) async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, 
         }
     };
 
-    // Get all code cells
-    let cells: Vec<(String, String)> = {
-        let doc = room.doc.read().await;
-        doc.get_cells()
+    // Capture the code cells and heads before formatting so the eventual
+    // writes are applied as an isolated transaction at this baseline.
+    let (cells, baseline_heads) = {
+        let mut doc = room.doc.write().await;
+        let cells: Vec<(String, String)> = doc
+            .get_cells()
             .into_iter()
             .filter(|cell| cell.cell_type == "code" && !cell.source.trim().is_empty())
             .map(|cell| (cell.id, cell.source))
-            .collect()
+            .collect();
+        (cells, doc.get_heads())
     };
 
     if cells.is_empty() {
         return Ok(0);
     }
 
-    // Fork BEFORE formatting so the baseline is the pre-format doc state.
-    // Formatting ops on the fork are concurrent with any user edits on the
-    // live doc, and Automerge's text CRDT merges them cleanly.
-    let mut fork = {
-        let mut doc = room.doc.write().await;
-        doc.fork_with_actor(format!(
-            "{}:{}",
-            formatter_actor(&runtime),
-            uuid::Uuid::new_v4()
-        ))
-    };
-
-    let mut formatted_count = 0;
+    let mut formatted_updates: Vec<(String, String)> = Vec::new();
     for (cell_id, source) in cells {
         if let Some(fmt) = format_source(&source, &runtime).await {
-            if fork.update_source(&cell_id, &fmt).is_ok() {
-                formatted_count += 1;
-            }
+            formatted_updates.push((cell_id, fmt));
         }
     }
 
+    let formatted_count = formatted_updates.len();
     if formatted_count > 0 {
         let mut doc = room.doc.write().await;
-        if let Err(e) = doc.merge_recovering(&mut fork, "save-format-merge") {
-            warn!("[format] merge failed: {}", e);
+        match doc.transact_at_heads_recovering(
+            &baseline_heads,
+            Some(&formatter_actor(&runtime)),
+            "save-format-transaction",
+            |doc| {
+                let mut changed = false;
+                for (cell_id, fmt) in &formatted_updates {
+                    changed |= doc.update_source(cell_id, fmt)?;
+                }
+                Ok(changed)
+            },
+        ) {
+            Ok(changed) => {
+                if changed {
+                    let _ = room.broadcasts.changed_tx.send(());
+                }
+                info!(
+                    "[format] Formatted {} code cells (runtime: {})",
+                    formatted_count, runtime
+                );
+            }
+            Err(e) => warn!("[format] transaction failed: {}", e),
         }
-        let _ = room.broadcasts.changed_tx.send(());
-        info!(
-            "[format] Formatted {} code cells (runtime: {})",
-            formatted_count, runtime
-        );
     }
 
     Ok(formatted_count)
