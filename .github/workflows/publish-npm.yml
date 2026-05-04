@@ -25,6 +25,14 @@ concurrency:
   group: npm-publish-stable
   cancel-in-progress: false
 
+env:
+  # Bake the stable channel into the published binding. runt-workspace reads
+  # this at compile time via option_env!("RUNT_BUILD_CHANNEL") and falls back
+  # to Nightly when unset, so without this defaultSocketPath() in the
+  # published @runtimed/node would resolve under ~/.cache/runt-nightly. Source
+  # builds (no env) intentionally stay on the Nightly default.
+  RUNT_BUILD_CHANNEL: stable
+
 jobs:
   native:
     name: Native package (${{ matrix.target }})
