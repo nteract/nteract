@@ -173,6 +173,9 @@ fn apply_incoming_settings_sync_frame(
             })
         }
         Err(AutomergeOperationError::Panic(error)) => {
+            // We cannot prove the inbound client edit applied cleanly after a
+            // receive-side panic. Rebuild from durable JSON truth and resync
+            // instead of replaying the same message into a recovered document.
             let reply = recover_settings_doc_reset_peer_and_retry_generate(
                 doc,
                 peer_state,
@@ -202,9 +205,6 @@ fn recover_settings_doc_reset_peer_and_retry_generate(
         "[sync] Rebuilding settings doc from JSON after Automerge panic: {}",
         error
     );
-    // A receive-side panic means we cannot prove the inbound client edit
-    // applied cleanly. Rebuild from durable JSON truth and resync the peer
-    // instead of replaying the same sync message into a recovered document.
     recover_settings_doc_from_json_or_snapshot(doc, json_path, fallback);
     *peer_state = sync::State::new();
 
