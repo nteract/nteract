@@ -2926,7 +2926,8 @@ class TestTrustApproval:
         # Both are valid: the key invariant is that the daemon does NOT
         # silently fall back to a pool env.
         assert lifecycle_tag in ("AwaitingEnvBuild", "PreparingEnv"), (
-            f"expected lifecycle=AwaitingEnvBuild or PreparingEnv after env.yml; got {lifecycle_tag!r}"
+            "expected lifecycle=AwaitingEnvBuild or PreparingEnv after env.yml; "
+            f"got {lifecycle_tag!r}"
         )
         if lifecycle_tag == "AwaitingEnvBuild":
             assert kernel_state.error_reason == KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING
