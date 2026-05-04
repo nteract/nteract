@@ -3450,6 +3450,31 @@ mod tests {
     }
 
     #[test]
+    fn pi_passthrough_only_for_management_and_metadata_commands() {
+        let cases = [
+            (&[][..], false),
+            (&["--help"][..], true),
+            (&["-h"][..], true),
+            (&["--version"][..], true),
+            (&["-v"][..], true),
+            (&["install"][..], true),
+            (&["remove"][..], true),
+            (&["uninstall"][..], true),
+            (&["update"][..], true),
+            (&["list"][..], true),
+            (&["config"][..], true),
+            (&["-p", "exit"][..], false),
+            (&["run"][..], false),
+            (&["--extension", "other.ts"][..], false),
+        ];
+
+        for (args, expected) in cases {
+            let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+            assert_eq!(pi_passthrough_without_extension(&args), expected);
+        }
+    }
+
+    #[test]
     fn default_vite_port_is_stable_for_workspace() {
         let workspace = Path::new("/workspace/example");
         let port = runt_workspace::vite_port_for_workspace(workspace);
