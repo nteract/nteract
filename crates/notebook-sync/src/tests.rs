@@ -794,6 +794,15 @@ mod tests {
         }
     }
 
+    fn stream_output(output_id: &str, text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "output_type": "stream",
+            "output_id": output_id,
+            "name": "stdout",
+            "text": {"inline": text},
+        })
+    }
+
     #[test]
     fn get_cell_execution_count_falls_back_to_notebook_doc() {
         let (handle, _shared, _rx, _cmd_rx) = test_handle_with_shared();
@@ -868,11 +877,7 @@ mod tests {
         use crate::execution_wait::{await_execution_terminal, ExecutionTerminalState};
 
         let (handle, shared, _rx, _cmd_rx) = test_handle_with_shared();
-        let outputs = vec![serde_json::json!({
-            "output_type": "stream",
-            "name": "stdout",
-            "text": {"inline": "hello"},
-        })];
+        let outputs = vec![stream_output("await-done-output", "hello")];
 
         set_execution(&shared, "exec-1", "cell-1", "done", &outputs, Some(5));
 
@@ -903,11 +908,7 @@ mod tests {
         let shared_for_task = shared.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            let outputs = vec![serde_json::json!({
-                "output_type": "stream",
-                "name": "stdout",
-                "text": {"inline": "ok"},
-            })];
+            let outputs = vec![stream_output("await-transition-output", "ok")];
             set_execution(
                 &shared_for_task,
                 "exec-1",
@@ -978,11 +979,7 @@ mod tests {
         use crate::execution_wait::await_execution_terminal;
 
         let (handle, shared, _rx, _cmd_rx) = test_handle_with_shared();
-        let outputs = vec![serde_json::json!({
-            "output_type": "stream",
-            "name": "stdout",
-            "text": {"inline": "result data"},
-        })];
+        let outputs = vec![stream_output("await-kernel-error-output", "result data")];
         set_execution(&shared, "exec-1", "cell-1", "done", &outputs, Some(4));
         // Kernel is now flagged as error AFTER the execution completed.
         {
@@ -1020,11 +1017,7 @@ mod tests {
             st.state_doc
                 .append_output(
                     "exec-1",
-                    &serde_json::json!({
-                        "output_type": "stream",
-                        "name": "stdout",
-                        "text": {"inline": "late-arriving"},
-                    }),
+                    &stream_output("await-late-output", "late-arriving"),
                 )
                 .unwrap();
         });
