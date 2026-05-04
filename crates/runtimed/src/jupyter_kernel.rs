@@ -1373,12 +1373,21 @@ impl KernelConnection for JupyterKernel {
                                                 Some(&iopub_kernel_actor_id),
                                                 "runtime-state-iopub-stream-transaction",
                                                 |sd| {
-                                                    Ok(sd.upsert_stream_output(
+                                                    match sd.upsert_stream_output(
                                                         &eid,
                                                         stream_name,
                                                         &manifest_json,
                                                         known_state.as_ref(),
-                                                    )?)
+                                                    ) {
+                                                        Ok(result) => Ok(result),
+                                                        Err(e) => {
+                                                            warn!(
+                                                                "[jupyter-kernel] Failed to upsert stream output: {}",
+                                                                e
+                                                            );
+                                                            Err(e.into())
+                                                        }
+                                                    }
                                                 },
                                             ) {
                                             Ok(result) => result,
@@ -1561,6 +1570,10 @@ impl KernelConnection for JupyterKernel {
                                                     Some(&iopub_kernel_actor_id),
                                                     "runtime-state-iopub-output-transaction",
                                                     |sd| {
+                                                        // Preserve the old fork+merge behavior:
+                                                        // append errors are logged but do not
+                                                        // turn the transaction into a recovery
+                                                        // failure.
                                                         if let Err(e) = sd
                                                             .append_output(&eid, &manifest_json)
                                                         {
@@ -1798,6 +1811,10 @@ impl KernelConnection for JupyterKernel {
                                                     Some(&iopub_kernel_actor_id),
                                                     "runtime-state-iopub-error-transaction",
                                                     |sd| {
+                                                        // Preserve the old fork+merge behavior:
+                                                        // append errors are logged but do not
+                                                        // turn the transaction into a recovery
+                                                        // failure.
                                                         if let Err(e) = sd
                                                             .append_output(&eid, &manifest_json)
                                                         {
