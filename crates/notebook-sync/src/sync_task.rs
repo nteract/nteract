@@ -494,10 +494,10 @@ impl SyncReactor {
                                 self.io.notebook_id, e
                             );
                         }
-                        Err(AutomergeOperationError::RebuildFailed { label }) => {
+                        Err(AutomergeOperationError::RebuildFailed { label, source }) => {
                             warn!(
-                                "[notebook-sync] Failed to rebuild after sync panic for {}: {}",
-                                self.io.notebook_id, label
+                                "[notebook-sync] Failed to rebuild after sync panic for {}: {}: {}",
+                                self.io.notebook_id, label, source
                             );
                             return;
                         }
@@ -655,10 +655,10 @@ impl SyncReactor {
                                 self.io.notebook_id, e
                             );
                         }
-                        Err(AutomergeOperationError::RebuildFailed { label }) => {
+                        Err(AutomergeOperationError::RebuildFailed { label, source }) => {
                             warn!(
-                                "[notebook-sync] Failed to rebuild after RuntimeStateSync panic for {}: {}",
-                                self.io.notebook_id, label
+                                "[notebook-sync] Failed to rebuild after RuntimeStateSync panic for {}: {}: {}",
+                                self.io.notebook_id, label, source
                             );
                             return;
                         }
@@ -1404,7 +1404,7 @@ mod tests {
                 reactor.handle_incoming_frame(&frame, &mut writer).await;
 
                 if !later_update_sent {
-                    daemon_state.rebuild_state_doc();
+                    let _ = daemon_state.rebuild_state_doc();
                     daemon_state
                         .state_doc
                         .create_execution_with_source("exec-2", "cell-2", "y = 2", 2)

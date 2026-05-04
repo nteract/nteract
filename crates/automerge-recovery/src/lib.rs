@@ -35,8 +35,12 @@ pub enum AutomergeOperationError {
     },
     #[error(transparent)]
     Panic(#[from] AutomergeRecoveryError),
-    #[error("[{label}] failed to rebuild document after Automerge panic")]
-    RebuildFailed { label: String },
+    #[error("[{label}] failed to rebuild document after Automerge panic: {source}")]
+    RebuildFailed {
+        label: String,
+        #[source]
+        source: AutomergeRebuildError,
+    },
 }
 
 impl AutomergeOperationError {
@@ -47,10 +51,37 @@ impl AutomergeOperationError {
         }
     }
 
-    pub fn rebuild_failed(label: impl Into<String>) -> Self {
+    pub fn rebuild_failed(label: impl Into<String>, source: AutomergeRebuildError) -> Self {
         Self::RebuildFailed {
             label: label.into(),
+            source,
         }
+    }
+}
+
+/// Error returned when save/load rebuild cannot safely replace a document.
+#[derive(Debug, thiserror::Error)]
+pub enum AutomergeRebuildError {
+    #[error(transparent)]
+    Panic(#[from] AutomergeRecoveryError),
+    #[error("load failed: {source}")]
+    Load {
+        #[source]
+        source: Box<automerge::AutomergeError>,
+    },
+    #[error("rebuilt notebook would lose cells ({before} -> {after})")]
+    CellLoss { before: usize, after: usize },
+}
+
+impl AutomergeRebuildError {
+    pub fn load(source: automerge::AutomergeError) -> Self {
+        Self::Load {
+            source: Box::new(source),
+        }
+    }
+
+    pub fn cell_loss(before: usize, after: usize) -> Self {
+        Self::CellLoss { before, after }
     }
 }
 

@@ -172,7 +172,13 @@ impl RuntimeStateHandle {
         }) {
             Ok(()) => Ok(()),
             Err(err) => {
-                sd.rebuild_from_save();
+                if let Err(source) = sd.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(
+                        "runtime-state-handle-test",
+                        source,
+                    )
+                    .into());
+                }
                 Err(AutomergeOperationError::Panic(err).into())
             }
         }

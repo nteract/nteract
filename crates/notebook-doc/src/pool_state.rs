@@ -30,7 +30,7 @@ use automerge::{
     sync, sync::SyncDoc, transaction::Transactable, ActorId, AutoCommit, AutomergeError, ObjType,
     ReadDoc, Value, ROOT,
 };
-use automerge_recovery::{catch_automerge_panic, AutomergeOperationError};
+use automerge_recovery::{catch_automerge_panic, AutomergeOperationError, AutomergeRebuildError};
 use serde::{Deserialize, Serialize};
 
 // ── Snapshot types ───────────────────────────────────────────────────
@@ -308,8 +308,8 @@ impl PoolDoc {
             Ok(message) => Ok(message),
             Err(_err) => {
                 *peer_state = sync::State::new();
-                if !self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(label));
+                if let Err(source) = self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
                 catch_automerge_panic(label, || self.generate_sync_message(peer_state))
                     .map_err(AutomergeOperationError::Panic)
@@ -350,8 +350,8 @@ impl PoolDoc {
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
             Err(err) => {
                 *peer_state = sync::State::new();
-                if !self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(label));
+                if let Err(source) = self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
                 Err(AutomergeOperationError::Panic(err))
             }
@@ -359,7 +359,7 @@ impl PoolDoc {
     }
 
     /// Round-trip save→load to rebuild internal automerge indices.
-    pub fn rebuild_from_save(&mut self) -> bool {
+    pub fn rebuild_from_save(&mut self) -> Result<(), AutomergeRebuildError> {
         catch_automerge_panic("pool-doc-rebuild-from-save", || {
             let actor = self.doc.get_actor().clone();
             let bytes = self.doc.save();
@@ -367,12 +367,11 @@ impl PoolDoc {
                 Ok(mut doc) => {
                     doc.set_actor(actor);
                     self.doc = doc;
-                    true
+                    Ok(())
                 }
-                Err(_) => false,
+                Err(source) => Err(AutomergeRebuildError::load(source)),
             }
-        })
-        .unwrap_or_default()
+        })?
     }
 }
 
@@ -423,7 +422,7 @@ mod tests {
             .unwrap()
             .is_none());
 
-        assert!(doc.rebuild_from_save());
+        assert!(doc.rebuild_from_save().is_ok());
         peer_state = sync::State::new();
 
         assert_eq!(doc.doc().get_actor(), &actor);
