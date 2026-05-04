@@ -414,6 +414,10 @@ impl EventSubscription {
     }
 }
 
+/// Spawns subscription watchers on the napi-managed Tokio runtime.
+///
+/// The `Session.on*` methods are synchronous N-API entry points, so they cannot
+/// rely on an ambient Tokio task context being present on the calling thread.
 fn spawn_event_task<F>(future: F) -> tokio::task::JoinHandle<()>
 where
     F: std::future::Future<Output = ()> + Send + 'static,
