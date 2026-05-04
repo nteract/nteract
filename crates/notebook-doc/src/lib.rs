@@ -282,14 +282,14 @@ impl NotebookDoc {
         }
     }
 
-    /// Fork the document and set a distinct actor ID on the fork in one step.
+    /// Fork the document and set a caller-chosen actor ID on the fork.
     ///
-    /// Forks inherit the parent's actor ID, and Automerge tracks ops by
-    /// `(actor, seq)`. Two concurrent forks that share an actor will each
-    /// produce ops at seq `N`, `N+1`, …; the first merge lands and the
-    /// second returns `DuplicateSeqNumber` — silently dropping writes if
-    /// the error is ignored. See the regression test
-    /// `merging_two_forks_with_shared_actor_returns_duplicate_seq_error`
+    /// Automerge forks receive a new random actor by default because an actor
+    /// ID identifies one linear stream of changes. If two concurrent forks are
+    /// forced to share an actor, they can each produce ops at seq `N`, `N+1`,
+    /// …; the first merge lands and the second returns `DuplicateSeqNumber`,
+    /// silently dropping writes if the error is ignored. See the regression
+    /// test `merging_two_forks_with_shared_actor_returns_duplicate_seq_error`
     /// in `runtime_state.rs`.
     ///
     /// Use this for any fork whose merge crosses an `.await` point. The
@@ -303,10 +303,10 @@ impl NotebookDoc {
     /// sites where concurrent forks from the same logical task can
     /// overlap across the async gap.
     ///
+    /// For notebook writes that can be expressed after the async work, prefer
+    /// [`transact_at_heads_recovering`](Self::transact_at_heads_recovering).
     /// For synchronous fork+merge blocks, use
-    /// [`fork_and_merge`](Self::fork_and_merge) — actor collisions are
-    /// harmless there because the merge completes before any other fork
-    /// of the same parent can exist.
+    /// [`fork_and_merge`](Self::fork_and_merge).
     pub fn fork_with_actor(&mut self, actor: impl AsRef<str>) -> Self {
         let mut fork = self.fork();
         fork.set_actor(actor.as_ref());
@@ -1168,13 +1168,13 @@ impl NotebookDoc {
         self.doc.save()
     }
 
-    /// Round-trip save→load to rebuild internal automerge indices.
+    /// Round-trip save→load to rebuild internal Automerge indices.
     ///
-    /// Used after catching an automerge panic (upstream MissingOps bug in
-    /// `collector.rs`). `save()` serializes via `op_set.export()` (safe),
-    /// and `load()` reconstructs all internal data structures from scratch.
-    /// This is the document-level equivalent of automerge-repo's
-    /// `decodeSyncState(encodeSyncState(state))` round-trip hack.
+    /// Used as a containment step after catching an Automerge panic inside a
+    /// document-owned recovery boundary. `save()` serializes via
+    /// `op_set.export()` and `load()` reconstructs internal data structures
+    /// from scratch. This is separate from peer recovery, which resets that
+    /// peer's `sync::State` so the next message starts from a fresh handshake.
     ///
     /// Includes a defensive cell-count guard: if the rebuilt doc would have
     /// fewer cells, the rebuild is skipped to prevent silent cell loss when

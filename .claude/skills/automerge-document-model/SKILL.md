@@ -193,8 +193,11 @@ Creates a new document containing only changes up to `heads`:
 3. Extracts changes for those hashes and applies them
 
 **Much more expensive than fork()** — it doesn't clone; it replays
-changes from scratch. Used for time-travel views. nteract avoids this
-in production paths due to automerge/automerge#1327.
+changes from scratch. Use it for time-travel views and diagnostics, not
+as the default async mutation primitive. The pinned nteract Automerge
+0.9 desktop patch fixes the historical MissingOps/fork_at regression
+that previously made this path unsafe, but document-owned transaction
+helpers are still preferred for writes at captured heads.
 
 ### merge(other)
 
@@ -209,11 +212,13 @@ pub fn merge(&mut self, other: &mut Self) -> Result<Vec<ChangeHash>, AutomergeEr
 Merge extracts changes from `other` that `self` doesn't have and applies
 them. After merge, `self` contains all ops from both documents.
 
-**The DuplicateSeqNumber trap:** If two forks share the same ActorId
-(because `fork()` clones the actor and the caller forgot to change it),
-both will produce changes with the same `(actor, seq)` pair. The second
-merge returns `DuplicateSeqNumber`. nteract's `fork_with_actor()` exists
-specifically to prevent this.
+**The DuplicateSeqNumber trap:** Automerge forks receive a new random
+actor by default. If callers override that and force two concurrent
+forks to share the same ActorId, both can produce changes with the same
+`(actor, seq)` pair. The second merge returns `DuplicateSeqNumber`.
+nteract's `fork_with_actor()` exists for the cases where we need a
+specific actor for attribution/filtering; the caller must choose an actor
+that is not used by another concurrent fork.
 
 ## The AutoCommit Wrapper
 
@@ -245,9 +250,10 @@ incremental materialization. `diff_incremental()` returns patches and
 advances the cursor. This is how nteract's WASM side computes
 `CellChangeset` — by diffing the PatchLog after receiving sync frames.
 
-## Why #1187 Panics Happen
+## Historical #1187 / #1327 Panic Class
 
-The panic occurs in `BatchApply::apply()` during `PatchLog::migrate_actors()`:
+Older Automerge builds could panic in `BatchApply::apply()` during
+`PatchLog::migrate_actors()`:
 
 1. **Setup:** Two peers sync concurrently. Peer A introduces actor X;
    Peer B introduces actor Y.
@@ -268,10 +274,14 @@ The panic occurs in `BatchApply::apply()` during `PatchLog::migrate_actors()`:
 - The ChangeGraph is rebuilt from column metadata
 - `sync::State::new()` starts a fresh sync handshake
 
-**Why catch_unwind is needed:** The panic happens inside `receive_sync_message`
-→ `load_incremental` → `apply_changes` → `BatchApply::apply`. Since this
-is an automerge bug (not a logic error in nteract), catching and rebuilding
-is the correct workaround until upstream fixes the actor migration logic.
+**Current nteract status:** the workspace uses a pinned nteract Automerge
+0.9 desktop patch that covers the historical MissingOps/fork_at regression,
+and notebook-doc now has `transact_at_heads_recovering(...)` for writes
+against captured heads. We still keep document-level panic recovery around
+Automerge receive/generate/merge/transaction boundaries as a containment
+layer: catch while the document lock/owner still holds the guard, rebuild
+from save/load if needed, reset that peer's `sync::State`, and do not treat
+panic recovery as normal control flow.
 
 ## Document Size Factors
 
@@ -320,11 +330,35 @@ doc.fork_and_merge(|fork| {
 });
 ```
 
-Safe for synchronous blocks — actor collision is harmless because
-merge completes before any concurrent fork exists. No unique actor
-needed.
+Safe for synchronous blocks: the helper creates, mutates, and merges the
+fork before returning. Do not force a shared actor inside the closure
+unless that actor cannot overlap with another concurrent fork.
 
-### fork_with_actor for Async Mutations
+### transact_at_heads_recovering for Async Notebook Mutations
+
+```rust
+let baseline_heads = doc.get_heads();
+// ... async work ...
+doc.transact_at_heads_recovering(
+    &baseline_heads,
+    Some("runtimed:formatter"),
+    "formatter-transaction",
+    |doc| {
+        doc.update_source(cell_id, formatted)?;
+        Ok(())
+    },
+)?;
+```
+
+Preferred for notebook-doc async writes that can be expressed as a
+mutation against a captured baseline. The helper uses Automerge's
+isolate/integrate transaction path, restores the original actor, and
+keeps panic recovery inside the document boundary. Because the live doc
+owns the actor sequence, repeated historical transactions can use one
+stable actor without the duplicate-sequence risk that independent forks
+have.
+
+### fork_with_actor for Async Forks
 
 ```rust
 let mut fork = doc.fork_with_actor("runtimed:iopub:kernel-abc");
@@ -333,8 +367,9 @@ fork.set_outputs(cell_id, outputs);
 doc.merge(&mut fork)?;
 ```
 
-Required when the fork crosses an `.await` — another fork might exist
-concurrently, and shared actors cause DuplicateSeqNumber on merge.
+Use this when the worker must carry an editable fork across an `.await`.
+Another fork might exist concurrently, so shared actors cause
+DuplicateSeqNumber on merge.
 
 ## Decision Framework
 
@@ -342,12 +377,13 @@ concurrently, and shared actors cause DuplicateSeqNumber on merge.
 |-----------|----------|
 | Need to recover from corrupted indices | `save()` → `load()` round-trip (rebuilds OpSet from columns) |
 | Need to check if peer has specific changes | `change_graph.has_change(&hash)` (O(1) hash lookup) |
-| Need document at earlier point | `fork_at(heads)` — expensive, avoid in hot paths |
-| Need concurrent async mutations | `fork_with_actor()` — unique actor per concurrent fork |
-| Need synchronous batch mutation | `fork_and_merge()` — shared actor is safe |
+| Need document at earlier point | `fork_at(heads)` — expensive, OK for views/diagnostics |
+| Need async notebook write from captured heads | `transact_at_heads_recovering()` — preferred historical mutation helper |
+| Need concurrent async fork | `fork_with_actor()` — unique actor per concurrent fork |
+| Need synchronous batch mutation | `fork_and_merge()` |
 | Need to shrink document bytes | `save()` uses columnar + DEFLATE; no history compaction available |
 | Need to understand document size | Count ops, actors, tombstones; save() gives compressed size |
-| Debugging a panic in apply | Check actor table ordering; likely #1187-class bug; catch_unwind + rebuild |
+| Debugging a panic in apply | Check actor table ordering; document-level catch/rebuild/reset contains the failure |
 | Need incremental save for wire | `save_after(heads)` for changes since last sync point |
 
 ## Key Source Files
@@ -359,10 +395,10 @@ concurrently, and shared actors cause DuplicateSeqNumber on merge.
 | `automerge/src/change.rs` | `Change` struct, actor_id/seq/deps/hash accessors |
 | `automerge/src/change_graph.rs` | `ChangeGraph` DAG, heads, clock computation, causal queries |
 | `automerge/src/op_set2/op_set.rs` | `OpSet` columnar storage, actor table, object index |
-| `automerge/src/op_set2/change/batch.rs` | `BatchApply::apply`, actor migration, the #1187 panic site |
-| `automerge/src/patches/patch_log.rs` | `PatchLog`, `migrate_actors` — the function that panics |
+| `automerge/src/op_set2/change/batch.rs` | `BatchApply::apply`, actor migration, historical #1187 panic site |
+| `automerge/src/patches/patch_log.rs` | `PatchLog`, `migrate_actors` |
 | `automerge/src/types.rs` | `OpId`, `ActorId`, `ObjId`, `ElemId`, `OpType` |
 | `automerge/src/storage/` | Columnar encoding, Document format, change parsing |
-| `notebook-doc/src/lib.rs` | nteract's `NotebookDoc` wrapper: fork/merge/save/load/rebuild |
+| `notebook-doc/src/lib.rs` | nteract's `NotebookDoc` wrapper: transactions, fork/merge, save/load/rebuild |
 | `notebook-sync/src/shared.rs` | `SharedDocState`, `rebuild_state_doc`, dual-doc management |
-| `notebook-sync/src/sync_task.rs` | catch_unwind guards, `rebuild_shared_doc_state` with cell-count guard |
+| `notebook-sync/src/sync_task.rs` | Calls into document-owned recovery helpers from the biased sync loop |

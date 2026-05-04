@@ -147,7 +147,8 @@ connection. Daemon as authoritative server, clients as syncing peers.
 **Where nteract is ahead:**
 - `required_heads` is a clean causal ordering primitive that neither
   automerge-repo nor samod has in exactly this form
-- The catch_unwind + rebuild pattern handles automerge bugs gracefully
+- Document-owned Automerge recovery helpers rebuild and reset peer sync
+  state without poisoning shared locks
 - Per-cell O(1) WASM accessors avoid full-doc materialization
 
 **Where nteract could learn from upstream:**
@@ -210,14 +211,15 @@ If you need to add a new Automerge-synced document to the protocol
      sync state directly; daemon carries `pool_peer_state` in the peer
      loop. Choose this when sync-task's biased select isn't the right
      priority model for the new stream
-3. **Add catch_unwind guards** for both receive and generate paths
-4. **Add a rebuild function** following the save→load→reset pattern
+3. **Add document-owned recovery helpers** for both receive and generate paths
+4. **Add a rebuild function** following the save→load→reset pattern, plus
+   peer `sync::State` reset and generate retry semantics where appropriate
 5. **Update the biased select loop** (SharedDocState pattern) or the
    relevant owner's frame handler (separate ownership)
 6. **Consider subscription scope** — does every peer need this stream,
    or only specific consumers?
-7. **Test with concurrent mutation** — the automerge#1187 panic only
-   manifests under concurrent sync, so single-peer tests miss it
+7. **Test with concurrent mutation** — actor/heads bugs only manifest under
+   concurrent sync or historical-head writes, so single-peer tests miss them
 
 ## Design Decision Checklist
 

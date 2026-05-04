@@ -49,7 +49,7 @@ impl RuntimeStateHandle {
         result
     }
 
-    /// Fork at current heads for async work. Never uses fork_at (automerge#1327).
+    /// Fork at current heads for async runtime-state work.
     pub fn fork(&self, actor_label: &str) -> Result<RuntimeStateDoc, RuntimeStateError> {
         let mut sd = self
             .doc

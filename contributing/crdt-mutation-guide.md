@@ -97,19 +97,46 @@ The bridge uses `externalChangeAnnotation` to prevent echo: inbound changes are 
 
 4. **Don't bypass the bridge for source text.** The CodeMirror bridge handles character-level sync. Using `update_source` (Myers diff) from the UI would conflict with the bridge's splice tracking.
 
-5. **Don't mutate the doc directly after an async gap.** If you read doc state, await something (subprocess, network, I/O), then write back, use `fork()` + `merge()` instead. Direct mutation after an async gap overwrites concurrent edits. See below.
+5. **Don't mutate the doc directly after an async gap.** If you read doc state, await something (subprocess, network, I/O), then write back, use a document-owned reconciliation helper. Prefer `NotebookDoc::transact_at_heads_recovering(...)` when the write can be expressed against captured baseline heads. Use `fork_with_actor(...)` + `merge_recovering(...)` only when you must carry a forked document through the async work. Direct mutation after an async gap overwrites concurrent edits. See below.
 
 6. **Don't `put_object()` at a key that another peer also creates.** Two independent `put_object(ROOT, "cells", Map)` calls from different Automerge actors create two *distinct* Map objects at the same key — an Automerge conflict. One wins; the loser's children (cells, deps, etc.) become invisible. Document structure (Maps, Lists at well-known keys like `cells` and `metadata`) must be created by exactly one peer — the daemon, in `new_inner()`. All other peers receive it via Automerge sync. This is why `NotebookDoc::bootstrap()` only seeds `schema_version` (a scalar), not the full document skeleton.
 
-## Fork+Merge for Async Mutations (Daemon-Side)
+## Async Mutations (Daemon-Side)
 
-When daemon code needs to read from the CRDT, do async work, and write results back, it **must** fork the doc before the async work and merge afterward. This treats the daemon's changes as concurrent with any edits that arrived during the async gap.
+When daemon code needs to read from the CRDT, do async work, and write results back, it **must** reconcile against the document state that existed before the async gap. The preferred notebook-doc pattern is a historical transaction: capture heads before the await, re-acquire the document lock after the await, then run `NotebookDoc::transact_at_heads_recovering(...)`.
+
+```rust
+// 1. Capture baseline heads BEFORE async work.
+let baseline_heads = {
+    let mut doc = room.doc.write().await;
+    doc.get_heads()
+};
+
+// 2. Do async work.
+let result = expensive_subprocess().await;
+
+// 3. Re-acquire the live doc and apply the mutation at the baseline view.
+let mut doc = room.doc.write().await;
+doc.transact_at_heads_recovering(
+    &baseline_heads,
+    Some("runtimed:formatter"),
+    "formatter-transaction",
+    |doc| {
+        doc.update_source(&cell_id, &result)?;
+        Ok(())
+    },
+)?;
+```
+
+This uses Automerge's isolate/integrate transaction path under the document helper. The live document owns the actor sequence, so repeated transactions can share one stable actor without creating duplicate `(actor, seq)` changes. The helper also keeps panic capture and rebuild inside the document boundary.
+
+Use `fork_with_actor(...)` + `merge_recovering(...)` when the async worker genuinely needs an editable fork before the await. The fork must use an actor that cannot overlap with another concurrent fork from the same parent.
 
 ```rust
 // 1. Fork BEFORE async work
 let fork = {
     let mut doc = room.doc.write().await;
-    doc.fork()
+    doc.fork_with_actor("runtimed:external-worker")
 };
 
 // 2. Do async work
@@ -119,12 +146,17 @@ let result = expensive_subprocess().await;
 let mut fork = fork;
 fork.update_source(&cell_id, &result).ok();
 let mut doc = room.doc.write().await;
-doc.merge(&mut fork).ok();
+doc.merge_recovering(&mut fork, "external-worker-merge").ok();
 ```
 
-**Why this matters:** Without fork+merge, the async gap is a data loss window. If a user types while ruff formats, or another peer edits while the file watcher processes, the write-back silently overwrites those changes. Fork+merge lets Automerge's text CRDT compose both sets of changes.
+**Why this matters:** Without transaction/fork reconciliation, the async gap is a data loss window. If a user types while ruff formats, or another peer edits while the file watcher processes, the write-back silently overwrites those changes. Historical transactions and fork+merge both let Automerge compose the daemon write with concurrent text CRDT changes.
 
-**Do not use `fork_at(heads)` / `fork_at_and_merge(...)` in daemon mutation paths right now.** `fork_at(...)` currently triggers automerge/automerge#1327 (`MissingOps` in the change collector) on documents with interleaved text splices and merges. For file-watcher and other external-content merges, compare against the saved-on-disk baseline (`last_save_sources`), then `fork()` at current heads and `merge()`.
+Do not use `fork_at(heads)` as the historical write primitive. The old
+MissingOps panic is covered by the pinned nteract Automerge 0.9 desktop patch,
+but `fork_at` still builds a separate historical document with its own actor
+stream and should be reserved for views/diagnostics. Use document-owned
+transaction helpers for historical writes so actor sequencing, restoration,
+integration, and panic recovery stay centralized.
 
 ### Helpers for Synchronous Blocks
 
@@ -139,7 +171,7 @@ doc.fork_and_merge(|fork| {
 
 ```
 
-These encapsulate the fork-before/merge-after pattern. For **async** work between fork and merge, use `fork()` and `merge()` directly — the fork must be created before the `.await` and merged after.
+These encapsulate the fork-before/merge-after pattern for synchronous edits. For **async** notebook-doc writes, prefer `transact_at_heads_recovering(...)`; if a fork must cross the `.await`, create it before the async work with `fork_with_actor(...)` and merge it after with `merge_recovering(...)`.
 
 ### Adoption Status
 
@@ -147,12 +179,12 @@ All async CRDT mutation paths in the daemon are now protected:
 
 | Path | Protection |
 |------|-----------|
-| ExecuteCell / RunAllCells formatting | `fork()` before `tokio::spawn`, merge in task |
+| ExecuteCell / RunAllCells formatting | `transact_at_heads_recovering(...)` against captured format heads |
 | `format_notebook_cells` (Cmd+S) | `fork()` before format loop, merge after |
-| File watcher source updates | Compare against `last_save_sources`, then `fork()` + merge |
-| File watcher order-changed rebuild | Compare against `last_save_sources`, then `fork()` + merge |
+| File watcher source updates | Compare against `last_save_sources`, then `fork_with_actor(...)` + `merge_recovering(...)` |
+| File watcher order-changed rebuild | Compare against `last_save_sources`, then `fork_with_actor(...)` + `merge_recovering(...)` |
 | `UpdateDisplayData` IOPub | `fork()` before blob I/O, merge after |
-| `process_markdown_assets` | `fork()` before async resolution, merge after |
+| `process_markdown_assets` | `transact_at_heads_recovering(...)` against captured metadata heads |
 | `handle_sync_environment` | Fresh read (no CRDT write, only in-memory state) |
 
 ## Future Direction

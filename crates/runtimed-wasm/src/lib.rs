@@ -1,9 +1,9 @@
 //! WASM bindings for runtimed notebook document operations.
 //!
-//! Compiled from the same `automerge = "0.7"` crate as the daemon,
-//! guaranteeing wire-compatible sync messages. The frontend imports
-//! this WASM module instead of `@automerge/automerge` to avoid
-//! version mismatch issues that produce phantom cells.
+//! Compiled from the same workspace `automerge` dependency as the daemon,
+//! guaranteeing wire-compatible sync messages. The frontend imports this WASM
+//! module instead of `@automerge/automerge` to avoid version mismatch issues
+//! that produce phantom cells.
 
 // Allow `expect()` and `unwrap()` in tests
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
@@ -155,11 +155,12 @@ pub enum FrameEvent {
     },
     /// Sync error recovered — doc rebuilt and sync state normalized.
     ///
-    /// Emitted when `receive_sync_message` fails (e.g. automerge MissingOps
-    /// bug). The WASM layer automatically rebuilds the doc via save→load and
-    /// normalizes sync state via encode→decode round-trip (preserving
-    /// `shared_heads`, clearing transient state). The optional `reply`
-    /// contains a fresh sync message to restart negotiation.
+    /// Emitted when `receive_sync_message` fails or an Automerge operation
+    /// panics inside the WASM recovery boundary. The WASM layer automatically
+    /// rebuilds the doc via save→load and normalizes sync state via
+    /// encode→decode round-trip (preserving `shared_heads`, clearing transient
+    /// state). The optional `reply` contains a fresh sync message to restart
+    /// negotiation.
     SyncError {
         /// True if the document advanced before the error (partial apply).
         /// When true, the SyncEngine should trigger a full materialization

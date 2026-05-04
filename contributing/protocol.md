@@ -223,7 +223,11 @@ The notebook document is a CRDT shared between two peers:
 - **Frontend (WASM)** — `NotebookHandle` from `crates/runtimed-wasm`, compiled to WASM and loaded in the webview. Cell mutations (add, delete, edit source) happen instantly in the local WASM document.
 - **Daemon** — `NotebookDoc` from `crates/notebook-doc`. The canonical document used for kernel execution, output writing, and persistence.
 
-Both sides use the same Rust `automerge = "0.7"` crate, which guarantees schema compatibility (the JS `@automerge/automerge` package uses different CRDT types for string fields).
+Both sides use the workspace Rust `automerge` dependency from the pinned
+`nteract/automerge` desktop patch commit. Keeping the daemon and WASM peer on
+that one Rust crate is the compatibility contract; the frontend does not use the
+JS `@automerge/automerge` package for notebook state because its CRDT/string
+types and release cadence are a separate compatibility surface.
 
 ### Sync flow
 

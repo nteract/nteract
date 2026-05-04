@@ -1196,10 +1196,11 @@ pub(crate) async fn apply_ipynb_changes(
     // cell list. Use fork + merge so the structural rebuild from disk
     // composes with concurrent CRDT changes rather than overwriting them.
     //
-    // We use fork() (at current heads) instead of fork_at(save_heads)
-    // because fork_at triggers an automerge bug (MissingOps panic in
-    // the change collector) when the document has a complex history of
-    // interleaved text splices and merges. See automerge/automerge#1327.
+    // This path still uses a current-head fork because the file watcher
+    // compares disk content against `last_save_sources` rather than mutating a
+    // historical document clone. New historical writes should prefer
+    // `transact_at_heads_recovering` so actor restoration and panic recovery
+    // stay document-owned.
     if order_changed || no_common_cells {
         debug!(
             "[notebook-watch] {} — rebuilding cell list",
@@ -1409,8 +1410,9 @@ pub(crate) async fn apply_ipynb_changes(
 
         // For source updates on existing cells, use fork + merge so that
         // external edits compose with concurrent CRDT changes rather than
-        // overwriting them. We use fork() instead of fork_at(save_heads)
-        // to avoid the automerge MissingOps bug (automerge/automerge#1327).
+        // overwriting them. This path uses a current-head fork because source
+        // comparison is anchored on `last_save_sources`; new historical writes
+        // should prefer `transact_at_heads_recovering`.
         //
         // Source comparison uses last_save_sources (what we wrote to disk)
         // instead of the live CRDT (which may have progressed with new user

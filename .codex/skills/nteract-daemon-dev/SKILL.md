@@ -23,7 +23,7 @@ Use this skill to avoid talking to the wrong daemon and to keep daemon-backed ve
 - Let the human launch the notebook GUI from their own terminal.
 - If a test or script depends on notebook execution, blob resolution, or MCP server behavior, confirm it is pointed at the worktree daemon first.
 - Use `default_socket_path()` for the current process. Reach for `socket_path_for_channel(...)` only when you intentionally need stable/nightly discovery that ignores `RUNTIMED_SOCKET_PATH`.
-- **Any daemon code that reads CRDT state, does async work, then writes back must use `fork()` + `merge()`.** For synchronous blocks use `doc.fork_and_merge(|fork| { ... })`. See `contributing/crdt-mutation-guide.md` and `.codex/skills/nteract-notebook-sync/references/crdt-ownership.md`.
+- **Any daemon code that reads CRDT state, does async work, then writes back must reconcile against the pre-await heads.** Prefer `NotebookDoc::transact_at_heads_recovering(...)` for notebook-doc writes; use `fork_with_actor(...)` + `merge_recovering(...)` only when an editable fork must cross the await. For synchronous blocks use `doc.fork_and_merge(|fork| { ... })`. See `contributing/crdt-mutation-guide.md` and `.codex/skills/nteract-notebook-sync/references/crdt-ownership.md`.
 
 ## Quick Start
 

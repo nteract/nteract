@@ -15,13 +15,14 @@
 
 ## Fork+Merge for Daemon Async Mutations
 
-Any daemon code that reads from the CRDT doc, does async work (subprocess, I/O, network), then writes back **must** use `fork()` + `merge()`. Direct mutation after an async gap can silently overwrite concurrent edits.
+Any daemon code that reads from the CRDT doc, does async work (subprocess, I/O, network), then writes back **must** reconcile against the pre-await document state. Direct mutation after an async gap can silently overwrite concurrent edits.
 
-- **Async pattern:** `fork()` before the `.await`, mutate the fork, `merge()` after. The fork must be created *before* async work starts.
+- **Preferred async notebook-doc pattern:** capture heads before the `.await`, then use `doc.transact_at_heads_recovering(...)` after reacquiring the live doc.
+- **Forked async pattern:** when a worker must carry an editable document through the `.await`, use `fork_with_actor(...)` before the async work, mutate the fork, then `merge_recovering(...)` after.
 - **Sync pattern:** `doc.fork_and_merge(|fork| { ... })` — handles fork/merge ordering automatically.
-- **Historic save comparison:** compare against `last_save_sources`, then `fork()` at current heads and `merge()`. Avoid `fork_at(...)` in current daemon paths because of automerge/automerge#1327.
+- **Historic save comparison:** compare against `last_save_sources`, then use a transaction or forked merge against the live doc. Do not use `fork_at(...)` for historical writes; keep it for views/diagnostics.
 
-Key methods on `NotebookDoc`: `fork()`, `get_heads()`, `merge()`, `fork_and_merge(f)`.
+Key methods on `NotebookDoc`: `get_heads()`, `transact_at_heads_recovering(...)`, `fork_with_actor(...)`, `merge_recovering(...)`, `fork_and_merge(f)`.
 
 ## Common review questions
 
@@ -29,4 +30,4 @@ Key methods on `NotebookDoc`: `fork()`, `get_heads()`, `merge()`, `fork_and_merg
 - Is this change re-writing daemon-authored state from the frontend?
 - Is the change on the local-mutation path, inbound sync path, or both?
 - Does the sync rollback or retry logic preserve convergence if delivery fails?
-- Does this code read doc state, await something, then write back? If so, is it using fork+merge?
+- Does this code read doc state, await something, then write back? If so, is it using a historical transaction or forked merge?

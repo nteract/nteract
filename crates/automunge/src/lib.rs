@@ -4,9 +4,9 @@
 //! documents. Used by both `notebook-doc` (NotebookDoc) and `runtime-doc`
 //! (RuntimeStateDoc) to avoid duplicating these helpers across crates.
 //!
-//! Named after automorph (codeberg.org/dpp/automorph), which we may adopt
-//! when it ships automerge 0.8 support. Until then, this is the single
-//! source of truth for JSON/Automerge conversion.
+//! Named after automorph (codeberg.org/dpp/automorph), which we may adopt if it
+//! can cover the workspace Automerge API we need. Until then, this is the
+//! single source of truth for JSON/Automerge conversion.
 
 use automerge::{transaction::Transactable, AutoCommit, AutomergeError, ObjId, ObjType, ReadDoc};
 

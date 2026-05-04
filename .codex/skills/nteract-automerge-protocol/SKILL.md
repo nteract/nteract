@@ -43,7 +43,7 @@ Before changing code, answer these in notes or in your head:
 - Do not write to the CRDT in response to a daemon broadcast that mirrors a daemon-authored CRDT change.
 - Keep sync state per remote peer. Automerge `sync::State` tracks `shared_heads`, `last_sent_heads`, `their_heads`, `their_need`, `their_have`, `sent_hashes`, `in_flight`, and capabilities; sharing it across peers causes duplicate, missing, or suppressed sync messages.
 - Respect Automerge's in-flight behavior. `generate_sync_message` may return `None` while an earlier message is unacknowledged; flushing code must not assume every local mutation immediately yields bytes.
-- Prefer narrow transactions and explicit mutation APIs. For async work, fork before the await and merge after; for synchronous blocks use the local fork-and-merge helpers if available.
+- Prefer narrow transactions and explicit mutation APIs. For notebook-doc async work, capture heads before the await and use `transact_at_heads_recovering(...)` after reacquiring the document. Use `fork_with_actor(...)` + `merge_recovering(...)` only when a forked document must cross the await; for synchronous blocks use local fork-and-merge helpers.
 - Never independently `put_object` into shared structural keys from multiple actors. Concurrent object creation at the same key creates conflicts and can hide child data.
 - Use Automerge heads/change hashes for convergence checks, not JSON equality of materialized projections.
 

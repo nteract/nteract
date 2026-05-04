@@ -5,15 +5,15 @@ description: >
   debugging sync failures, changing reconnection logic, adding new sync
   streams, or reasoning about why peers converge (or don't). Covers
   sync::State lifecycle, bloom filters, in-flight suppression, and the
-  nteract catch_unwind recovery pattern.
+  nteract document-level recovery pattern.
 ---
 
 # Automerge Sync Internals
 
 Use this skill when working on sync behavior: reconnection, peer state,
-convergence bugs, new frame types, or catch_unwind recovery. This encodes
-knowledge from reading the actual automerge sync implementation, not just
-the docs.
+convergence bugs, new frame types, or document-level Automerge recovery.
+This encodes knowledge from reading the actual automerge sync implementation,
+not just the docs.
 
 ## How Automerge Sync Actually Works
 
@@ -148,39 +148,23 @@ while the daemon carries `pool_peer_state` in the peer loop.
 The mutex is `std::sync::Mutex` (not tokio), never held across `.await`.
 Recovery from mutex poisoning: `unwrap_or_else(|e| e.into_inner())`.
 
-### catch_unwind Recovery Pattern
+### Document-Level Recovery Pattern
 
-automerge 0.7 has a known panic in `BatchApply::apply` when the internal
-patch log actor table gets out of order during concurrent sync
-(automerge/automerge#1187). Both sync handlers use the same pattern:
+The workspace uses a pinned nteract Automerge 0.9 desktop patch that fixes
+the historical MissingOps/fork_at regression, but Automerge is still treated
+as a fallible boundary in user-facing sync paths. Recovery must live inside
+the document owner while the mutex/guard is still held; catching outside the
+document helper can poison the mutex before rebuild runs.
 
 ```rust
-// Step 1: catch_unwind around receive_sync_message
-let recv_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-    state.receive_sync_message(msg)
-}));
-match recv_result {
-    Ok(Ok(())) => {}
-    Ok(Err(e)) => { warn!(...); return; }
-    Err(_panic) => {
-        rebuild_shared_doc_state(&mut state);
-        return;
-    }
-}
+// receive panic: rebuild document, reset this peer state, do not claim applied
+state.receive_sync_message_recovering(msg, "notebook-sync-receive");
 
-// Step 2: catch_unwind around generate_sync_message (can also panic)
-match std::panic::catch_unwind(AssertUnwindSafe(|| {
-    state.generate_sync_message().map(|msg| msg.encode())
-})) {
-    Ok(bytes) => bytes,
-    Err(_) => {
-        rebuild_shared_doc_state(&mut state);
-        None
-    }
-}
+// generate panic: rebuild document, reset this peer state, retry once
+let bytes = state.generate_sync_message_recovering("notebook-sync-outbound");
 ```
 
-**Rebuild for notebook doc** (`rebuild_shared_doc_state`):
+**Rebuild for notebook doc** (`SharedDocState::rebuild_doc`):
 1. `save()` the doc to bytes
 2. `AutoCommit::load()` from those bytes (clears corrupted indices)
 3. **Cell-count guard:** if rebuilt doc has fewer cells, skip rebuild
@@ -262,17 +246,18 @@ The sync task must keep draining incoming frames. Any command handler that
 blocks waiting for a specific response starves broadcasts, state sync,
 and sync replies. Use waiters/pending-request registration instead.
 
-### 4. Forgetting catch_unwind on new sync handlers
+### 4. Bypassing document-level recovery on new sync handlers
 
 If you add a new Automerge sync stream (e.g., PoolStateSync `0x06`),
-it needs the same catch_unwind + rebuild pattern. Any `receive_sync_message`
-or `generate_sync_message` call on a concurrently-synced document is
-vulnerable to automerge#1187.
+it needs document-owned receive/generate helpers with panic capture,
+rebuild, peer `sync::State` reset, and generate retry semantics. Do not
+call `receive_sync_message` or `generate_sync_message` directly from a
+task loop that can lose the document guard before recovery runs.
 
 ### 5. Skipping the cell-count guard
 
 `save()` on a panic-corrupted doc may drop ops, producing fewer cells.
-The guard in `rebuild_shared_doc_state` prevents silent cell loss by
+The guard in `SharedDocState::rebuild_doc` prevents silent cell loss by
 falling back to sync-state-only reset when the rebuilt doc has fewer cells.
 
 ### 6. Holding the mutex across I/O
@@ -350,7 +335,7 @@ wait (see #2457 for the ordering rationale).
 | `automerge/src/sync/bloom.rs` | `BloomFilter`, 1% FP rate params |
 | `automerge-repo/.../DocSynchronizer.ts` | Per-peer `#syncStates`, `beginSync` encode/decode hack |
 | `samod/subduction-sans-io/src/engine.rs` | `handle_connection_lost` -- simplest correct reconnection |
-| `crates/notebook-sync/src/sync_task.rs` | Biased select, catch_unwind, rebuild |
+| `crates/notebook-sync/src/sync_task.rs` | Biased select, document recovery calls |
 | `crates/notebook-sync/src/shared.rs` | `SharedDocState`, dual sync states |
 | `crates/notebook-sync/src/handle.rs` | `send_request_after_heads`, `current_heads_hex`, `confirm_sync` |
 | `crates/runtimed/src/notebook_sync_server/peer_writer.rs` | `wait_for_required_heads`, daemon-side causal gate |
@@ -365,7 +350,7 @@ When you need to decide how to handle sync state:
 | Transport disconnect + reconnect | Reset sync::State (new() or encode/decode round-trip) |
 | automerge panic caught | Rebuild doc (save/load), reset sync::State |
 | Local mutation happened | Do nothing -- next generate_sync_message handles it |
-| Adding a new sync stream | New frame type, new sync::State field, catch_unwind guard |
+| Adding a new sync stream | New frame type, new sync::State field, document-owned recovery helper |
 | Peer lost all data (empty heads) | Already handled -- receive_sync_message resets sent_hashes |
 | Switching read-only to read-write | set_read_only() handles reset + SyncReset flag |
 | Need daemon to see edits before executing | Use `required_heads` (not confirm_sync) |
