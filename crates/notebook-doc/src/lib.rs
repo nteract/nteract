@@ -348,7 +348,9 @@ impl NotebookDoc {
             Ok(Ok(changes)) => Ok(changes),
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
             Err(err) => {
-                if !self.rebuild_from_save() || !other.rebuild_from_save() {
+                let self_rebuilt = self.rebuild_from_save();
+                let other_rebuilt = other.rebuild_from_save();
+                if !self_rebuilt || !other_rebuilt {
                     return Err(AutomergeOperationError::rebuild_failed(label));
                 }
                 Err(AutomergeOperationError::Panic(err))
