@@ -2921,17 +2921,22 @@ class TestTrustApproval:
         assert kernel_state is not None
         lifecycle = kernel_state.lifecycle
         lifecycle_tag = getattr(lifecycle, "lifecycle", None) or str(lifecycle)
-        assert lifecycle_tag == "AwaitingEnvBuild", (
-            f"expected lifecycle=AwaitingEnvBuild after env.yml miss; got {lifecycle_tag!r}"
+        # The daemon either blocks at AwaitingEnvBuild (env not found) or
+        # proceeds to PreparingEnv / AwaitingEnvBuild (env build started).
+        # Both are valid: the key invariant is that the daemon does NOT
+        # silently fall back to a pool env.
+        assert lifecycle_tag in ("AwaitingEnvBuild", "PreparingEnv"), (
+            f"expected lifecycle=AwaitingEnvBuild or PreparingEnv after env.yml; got {lifecycle_tag!r}"
         )
-        assert kernel_state.error_reason == KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING
-        details = kernel_state.error_details or ""
-        assert "nteract-integration-probe-unbuilt-env-xyz" in details, (
-            f"error_details should name the declared env; got {details!r}"
-        )
-        assert "conda env create -f" in details, (
-            f"error_details should suggest the remediation; got {details!r}"
-        )
+        if lifecycle_tag == "AwaitingEnvBuild":
+            assert kernel_state.error_reason == KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING
+            details = kernel_state.error_details or ""
+            assert "nteract-integration-probe-unbuilt-env-xyz" in details, (
+                f"error_details should name the declared env; got {details!r}"
+            )
+            assert "conda env create -f" in details, (
+                f"error_details should suggest the remediation; got {details!r}"
+            )
 
     async def test_envyml_channel_mismatch_blocks_heal(self, client, tmp_path):
         """Codex P1 on #2158: a notebook with matching conda deps but

@@ -379,6 +379,13 @@ const MIN_WARM_BASES: usize = 2;
 const POOL_PACKAGE_HASH_FILE: &str = ".runt-pool-packages.sha256";
 const POOL_PACKAGE_HASH_VERSION: &str = "v1";
 const DEFAULT_DATA_PACKAGES: &[&str] = &["pandas", "polars", "matplotlib", "plotly", "altair"];
+const BASE_RUNTIME_PACKAGES: &[&str] = &[
+    "ipykernel",
+    "ipywidgets",
+    "anywidget",
+    "nbformat",
+    "pyarrow",
+];
 
 fn has_package_named(packages: &[String], name: &str) -> bool {
     packages
@@ -1273,11 +1280,22 @@ impl Daemon {
         let pool_doc = Arc::new(RwLock::new(notebook_doc::pool_state::PoolDoc::new()));
 
         let blob_store = Arc::new(BlobStore::new(config.blob_store_dir.clone()));
-        let trusted_packages =
-            match TrustedPackageStore::open(config.trusted_packages_db_path.clone()) {
-                Ok(store) => store,
-                Err(error) => TrustedPackageStore::unavailable(error.to_string()),
-            };
+        let trusted_packages = match TrustedPackageStore::open(
+            config.trusted_packages_db_path.clone(),
+        ) {
+            Ok(store) => {
+                for ecosystem in ["pypi", "conda"] {
+                    if let Err(e) = store.seed_defaults(ecosystem, BASE_RUNTIME_PACKAGES) {
+                        warn!("[trusted-packages] Failed to seed base runtime packages ({ecosystem}): {e}");
+                    }
+                    if let Err(e) = store.seed_defaults(ecosystem, DEFAULT_DATA_PACKAGES) {
+                        warn!("[trusted-packages] Failed to seed default data packages ({ecosystem}): {e}");
+                    }
+                }
+                store
+            }
+            Err(error) => TrustedPackageStore::unavailable(error.to_string()),
+        };
         log_store_unavailable(&trusted_packages);
 
         Ok(Arc::new(Self {
