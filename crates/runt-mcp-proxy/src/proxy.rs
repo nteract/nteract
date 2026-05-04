@@ -734,6 +734,24 @@ impl McpProxy {
         self.state.read().await.last_restart_time
     }
 
+    /// Explicitly shut down the child process before the proxy exits.
+    ///
+    /// Without this, Tokio runtime teardown races the detached `wait_for_child`
+    /// task — if the runtime drops first, the `shutdown_tx` signal from
+    /// `ManagedChildTransport::Drop` is never processed and the child survives
+    /// as an orphan, holding its daemon peer connection open and preventing room
+    /// eviction.
+    pub async fn shutdown_child(&self) {
+        let old = {
+            let mut state = self.state.write().await;
+            state.child_client.take()
+        };
+        if let Some(child) = old {
+            info!("Shutting down child process before proxy exit");
+            let _ = child.cancel().await;
+        }
+    }
+
     // ── Internal helpers ──────────────────────────────────────────────
 
     async fn try_forward_tool_call(
