@@ -8,7 +8,7 @@
 use automerge::sync;
 use automerge::sync::SyncDoc;
 use automerge::AutoCommit;
-use automerge_recovery::{catch_automerge_panic, AutomergeOperationError};
+use automerge_recovery::{catch_automerge_panic, AutomergeOperationError, AutomergeRebuildError};
 use log::warn;
 use notebook_doc::presence::PresenceState;
 use runtime_doc::RuntimeStateDoc;
@@ -94,8 +94,8 @@ impl SharedDocState {
         match catch_automerge_panic(label, || self.generate_sync_message()) {
             Ok(message) => Ok(message),
             Err(_err) => {
-                if !self.rebuild_doc() {
-                    return Err(AutomergeOperationError::rebuild_failed(label));
+                if let Err(source) = self.rebuild_doc() {
+                    return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
                 catch_automerge_panic(label, || self.generate_sync_message())
                     .map_err(AutomergeOperationError::Panic)
@@ -112,8 +112,8 @@ impl SharedDocState {
             Ok(Ok(())) => Ok(()),
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
             Err(err) => {
-                if !self.rebuild_doc() {
-                    return Err(AutomergeOperationError::rebuild_failed(label));
+                if let Err(source) = self.rebuild_doc() {
+                    return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
                 Err(AutomergeOperationError::Panic(err))
             }
@@ -165,8 +165,8 @@ impl SharedDocState {
             Ok(Ok(())) => Ok(()),
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
             Err(err) => {
-                if !self.rebuild_state_doc() {
-                    return Err(AutomergeOperationError::rebuild_failed(label));
+                if let Err(source) = self.rebuild_state_doc() {
+                    return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
                 Err(AutomergeOperationError::Panic(err))
             }
@@ -178,19 +178,20 @@ impl SharedDocState {
     /// Used after catching an automerge panic during `RuntimeStateSync`
     /// processing — the same recovery pattern as `rebuild_doc` for the
     /// notebook doc, but targeting the state doc.
-    pub fn rebuild_state_doc(&mut self) -> bool {
+    pub fn rebuild_state_doc(&mut self) -> Result<(), AutomergeRebuildError> {
         let rebuilt = self.state_doc.rebuild_from_save();
-        if !rebuilt {
+        if let Err(err) = &rebuilt {
             warn!(
-                "[notebook-sync] Failed to rebuild RuntimeStateDoc after panic; \
-                 resetting state sync protocol only"
+                "[notebook-sync] Failed to rebuild RuntimeStateDoc after panic: {}; \
+                 resetting state sync protocol only",
+                err
             );
         }
         self.state_peer_state = sync::State::new();
         rebuilt
     }
 
-    fn rebuild_doc(&mut self) -> bool {
+    fn rebuild_doc(&mut self) -> Result<(), AutomergeRebuildError> {
         let rebuilt = catch_automerge_panic("notebook-sync-rebuild-doc", || {
             let actor = self.doc.get_actor().clone();
             let pre_cell_count = notebook_doc::get_cells_from_doc(&self.doc).len();
@@ -203,18 +204,21 @@ impl SharedDocState {
                             "[notebook-sync] rebuild doc would lose cells ({} -> {}), resetting sync state only",
                             pre_cell_count, post_cell_count
                         );
-                        return false;
+                        return Err(AutomergeRebuildError::cell_loss(
+                            pre_cell_count,
+                            post_cell_count,
+                        ));
                     }
                     doc.set_actor(actor);
                     self.doc = doc;
-                    true
+                    Ok(())
                 }
                 Err(e) => {
                     warn!(
                         "[notebook-sync] failed to rebuild doc after panic: {}; resetting sync state only",
                         e
                     );
-                    false
+                    Err(AutomergeRebuildError::load(e))
                 }
             }
         });
@@ -227,7 +231,7 @@ impl SharedDocState {
                     "[notebook-sync] panic while rebuilding doc after panic: {}; resetting sync state only",
                     e
                 );
-                false
+                Err(e.into())
             }
         }
     }
@@ -259,7 +263,7 @@ mod tests {
             "peer state should suppress duplicate messages before rebuild"
         );
 
-        state.rebuild_state_doc();
+        assert!(state.rebuild_state_doc().is_ok());
 
         let runtime_state = state.state_doc.read_state();
         assert!(

@@ -81,7 +81,7 @@ use automerge::sync;
 use automerge::sync::SyncDoc;
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{ActorId, AutoCommit, AutomergeError, LoadOptions, ObjId, ObjType, ReadDoc};
-use automerge_recovery::{catch_automerge_panic, AutomergeOperationError};
+use automerge_recovery::{catch_automerge_panic, AutomergeOperationError, AutomergeRebuildError};
 
 /// Re-export so downstream crates (runtimed-wasm) can set text encoding
 /// without depending on automerge directly.
@@ -351,10 +351,11 @@ impl NotebookDoc {
             Ok(Ok(changes)) => Ok(changes),
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
             Err(err) => {
-                let self_rebuilt = self.rebuild_from_save();
-                let other_rebuilt = other.rebuild_from_save();
-                if !self_rebuilt || !other_rebuilt {
-                    return Err(AutomergeOperationError::rebuild_failed(label));
+                if let Err(source) = self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label, source));
+                }
+                if let Err(source) = other.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
                 Err(AutomergeOperationError::Panic(err))
             }
@@ -420,8 +421,8 @@ impl NotebookDoc {
             (Ok(Ok(value)), None) => Ok(value),
             (Ok(Err(source)), None) => Err(AutomergeOperationError::automerge(label, source)),
             (Err(err), _) | (_, Some(err)) => {
-                if !self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(label));
+                if let Err(source) = self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
                 Err(AutomergeOperationError::Panic(err))
             }
@@ -1187,7 +1188,7 @@ impl NotebookDoc {
     /// Includes a defensive cell-count guard: if the rebuilt doc would have
     /// fewer cells, the rebuild is skipped to prevent silent cell loss when
     /// `save()` on a panic-corrupted doc drops ops from the serialized bytes.
-    pub fn rebuild_from_save(&mut self) -> bool {
+    pub fn rebuild_from_save(&mut self) -> Result<(), AutomergeRebuildError> {
         catch_automerge_panic("notebook-doc-rebuild-from-save", || {
             let actor = self.doc.get_actor().clone();
             let pre_cell_count = self.cell_count();
@@ -1201,16 +1202,18 @@ impl NotebookDoc {
                             "[notebook-doc] rebuild_from_save would lose cells ({} → {}), skipping",
                             pre_cell_count, post_cell_count
                         );
-                        return false;
+                        return Err(AutomergeRebuildError::cell_loss(
+                            pre_cell_count,
+                            post_cell_count,
+                        ));
                     }
                     doc.set_actor(actor);
                     self.doc = doc;
-                    true
+                    Ok(())
                 }
-                Err(_) => false,
+                Err(source) => Err(AutomergeRebuildError::load(source)),
             }
-        })
-        .unwrap_or_default()
+        })?
     }
 
     /// Save the document to a file.
@@ -2101,8 +2104,8 @@ impl NotebookDoc {
             Ok(message) => Ok(message),
             Err(_err) => {
                 *peer_state = sync::State::new();
-                if !self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(label));
+                if let Err(source) = self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
                 catch_automerge_panic(label, || self.generate_sync_message(peer_state))
                     .map_err(AutomergeOperationError::Panic)
@@ -2133,8 +2136,8 @@ impl NotebookDoc {
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
             Err(err) => {
                 *peer_state = sync::State::new();
-                if !self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(label));
+                if let Err(source) = self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
                 Err(AutomergeOperationError::Panic(err))
             }
@@ -2903,7 +2906,7 @@ mod tests {
             .unwrap()
             .is_none());
 
-        assert!(doc.rebuild_from_save());
+        assert!(doc.rebuild_from_save().is_ok());
         peer_state = sync::State::new();
 
         assert_eq!(doc.doc().get_actor(), &actor);

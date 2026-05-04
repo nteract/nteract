@@ -87,7 +87,7 @@ use automerge::{
     transaction::{CommitOptions, Transactable},
     ActorId, AutoCommit, AutomergeError, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT,
 };
-use automerge_recovery::{catch_automerge_panic, AutomergeOperationError};
+use automerge_recovery::{catch_automerge_panic, AutomergeOperationError, AutomergeRebuildError};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -503,10 +503,11 @@ impl RuntimeStateDoc {
             Ok(Ok(changes)) => Ok(changes),
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
             Err(err) => {
-                let self_rebuilt = self.rebuild_from_save();
-                let other_rebuilt = other.rebuild_from_save();
-                if !self_rebuilt || !other_rebuilt {
-                    return Err(AutomergeOperationError::rebuild_failed(label));
+                if let Err(source) = self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label, source));
+                }
+                if let Err(source) = other.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
                 Err(AutomergeOperationError::Panic(err))
             }
@@ -532,7 +533,7 @@ impl RuntimeStateDoc {
     /// Used as a containment step after catching an Automerge panic inside a
     /// document-owned recovery boundary. See `NotebookDoc::rebuild_from_save`
     /// for the notebook-doc variant with a cell-count guard.
-    pub fn rebuild_from_save(&mut self) -> bool {
+    pub fn rebuild_from_save(&mut self) -> Result<(), AutomergeRebuildError> {
         catch_automerge_panic("runtime-state-doc-rebuild-from-save", || {
             let actor = self.doc.get_actor().clone();
             let bytes = self.doc.save();
@@ -540,12 +541,11 @@ impl RuntimeStateDoc {
                 Ok(mut doc) => {
                     doc.set_actor(actor);
                     self.doc = doc;
-                    true
+                    Ok(())
                 }
-                Err(_) => false,
+                Err(source) => Err(AutomergeRebuildError::load(source)),
             }
-        })
-        .unwrap_or_default()
+        })?
     }
 
     /// Compact the document if its serialized size exceeds `threshold` bytes.
@@ -2421,8 +2421,8 @@ impl RuntimeStateDoc {
             Ok(message) => Ok(message),
             Err(_err) => {
                 *peer_state = sync::State::new();
-                if !self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(label));
+                if let Err(source) = self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
                 catch_automerge_panic(label, || self.generate_sync_message(peer_state))
                     .map_err(AutomergeOperationError::Panic)
@@ -2454,8 +2454,11 @@ impl RuntimeStateDoc {
             encoded.len(),
             max_encoded_bytes,
         );
-        if !self.rebuild_from_save() {
-            tracing::warn!("[runtime-state] Compaction failed during bounded sync generation");
+        if let Err(err) = self.rebuild_from_save() {
+            tracing::warn!(
+                "[runtime-state] Compaction failed during bounded sync generation: {}",
+                err
+            );
             return Some(encoded);
         }
         *peer_state = sync::State::new();
@@ -2479,8 +2482,8 @@ impl RuntimeStateDoc {
             Ok(message) => Ok(message),
             Err(_err) => {
                 *peer_state = sync::State::new();
-                if !self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(label));
+                if let Err(source) = self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
                 catch_automerge_panic(label, || {
                     self.generate_sync_message_bounded_encoded(peer_state, max_encoded_bytes)
@@ -2532,8 +2535,8 @@ impl RuntimeStateDoc {
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
             Err(err) => {
                 *peer_state = sync::State::new();
-                if !self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(label));
+                if let Err(source) = self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
                 Err(AutomergeOperationError::Panic(err))
             }
@@ -2574,8 +2577,8 @@ impl RuntimeStateDoc {
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
             Err(err) => {
                 *peer_state = sync::State::new();
-                if !self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(label));
+                if let Err(source) = self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
                 Err(AutomergeOperationError::Panic(err))
             }
@@ -2712,8 +2715,8 @@ impl RuntimeStateDoc {
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
             Err(err) => {
                 *peer_state = sync::State::new();
-                if !self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(label));
+                if let Err(source) = self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
                 Err(AutomergeOperationError::Panic(err))
             }

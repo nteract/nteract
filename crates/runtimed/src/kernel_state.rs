@@ -182,11 +182,17 @@ impl KernelState {
                     sd.set_queue(None, &doc_queued)?;
                     match sd.trim_executions(MAX_EXECUTION_ENTRIES) {
                         Ok(trimmed) if trimmed > 0 => {
-                            sd.rebuild_from_save();
-                            debug!(
-                                "[kernel-state] Compacted RuntimeStateDoc after trimming {} executions",
-                                trimmed
-                            );
+                            match sd.rebuild_from_save() {
+                                Ok(()) => {
+                                    debug!(
+                                        "[kernel-state] Compacted RuntimeStateDoc after trimming {} executions",
+                                        trimmed
+                                    );
+                                }
+                                Err(err) => {
+                                    warn!("[runtime-state] Failed to compact RuntimeStateDoc: {}", err);
+                                }
+                            }
                         }
                         Err(e) => {
                             warn!("[runtime-state] {}", e);
