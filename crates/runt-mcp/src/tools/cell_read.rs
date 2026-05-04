@@ -71,9 +71,9 @@ pub async fn get_cell(
     // Get execution_count from RuntimeStateDoc (the source of truth)
     let ec = get_cell_execution_count_from_runtime(&handle, cell_id);
 
-    // Outputs live in RuntimeStateDoc keyed by execution_id. Fetch them
-    // via the dedicated lookup rather than reading a (now-gone) field
-    // on CellSnapshot.
+    // Outputs live in RuntimeStateDoc under execution_id/output_id. Fetch
+    // them via the dedicated lookup rather than reading a (now-gone) field on
+    // CellSnapshot.
     let mut raw_outputs = handle.get_cell_outputs(cell_id).unwrap_or_default();
 
     // If the cell has been executed but outputs haven't synced yet,
@@ -180,8 +180,8 @@ pub async fn get_all_cells(
     let slice = &cells[start.min(cells.len())..end.min(cells.len())];
 
     // Build cell status map, execution count map, and comms from RuntimeState.
-    // Outputs live in RuntimeStateDoc keyed by execution_id; fetch them in
-    // bulk once so large notebooks don't pay O(N) state-doc reads.
+    // Outputs live in RuntimeStateDoc under execution_id/output_id; fetch them
+    // in bulk once so large notebooks don't pay O(N) state-doc reads.
     let cell_status_map = build_cell_status_map(&handle);
     let cell_ec_map = build_cell_execution_count_map(&handle);
     let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);

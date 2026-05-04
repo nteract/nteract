@@ -19,7 +19,7 @@ Any daemon code that reads from the CRDT doc, does async work (subprocess, I/O, 
 
 - **Preferred async notebook-doc pattern:** capture heads before the `.await`, then use `doc.transact_at_heads_recovering(...)` after reacquiring the live doc.
 - **Forked async pattern:** when a worker must carry an editable document through the `.await`, use `fork_with_actor(...)` before the async work, mutate the fork, then `merge_recovering(...)` after.
-- **Sync pattern:** `doc.fork_and_merge(|fork| { ... })` — handles fork/merge ordering automatically.
+- **Synchronous pattern:** mutate the live doc through typed methods, or use a document-owned transaction helper when actor restoration/recovery matters. `doc.fork_and_merge(|fork| { ... })` is for older isolated-draft call sites.
 - **Historic save comparison:** compare against `last_save_sources`, then use a transaction or forked merge against the live doc. Do not use `fork_at(...)` for historical writes; keep it for views/diagnostics.
 
 Key methods on `NotebookDoc`: `get_heads()`, `transact_at_heads_recovering(...)`, `fork_with_actor(...)`, `merge_recovering(...)`, `fork_and_merge(f)`.

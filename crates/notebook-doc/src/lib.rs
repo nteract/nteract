@@ -11,9 +11,9 @@
 //!
 //! ## Document schema (v4)
 //!
-//! Outputs live in `RuntimeStateDoc` (keyed by `execution_id`) with
-//! per-output `output_id` UUIDs on their manifests — they are not stored
-//! in the notebook doc itself.
+//! Outputs live in `RuntimeStateDoc` (keyed by `execution_id` and then
+//! `output_id`) with per-output UUIDs on their manifests — they are not
+//! stored in the notebook doc itself.
 //!
 //! ```text
 //! ROOT/
@@ -63,7 +63,7 @@ use std::collections::HashMap;
 /// - **2** — Fractional indexing: `cells` is a `Map` keyed by cell ID, each cell has a `position` field.
 /// - **3** — Outputs moved to RuntimeStateDoc: cell outputs are no longer stored in the notebook doc.
 /// - **4** — Addressable outputs: `OutputManifest` carries a required `output_id` (UUIDv4).
-///   Outputs live in RuntimeStateDoc keyed by `execution_id`; manifests carry `output_id`.
+///   Outputs live in RuntimeStateDoc keyed by `execution_id` and then `output_id`.
 ///
 /// v1–v2 predate the nteract 2.0 pre-release series and are no longer
 /// supported. `load_or_create_inner` discards pre-v3 documents on load.
