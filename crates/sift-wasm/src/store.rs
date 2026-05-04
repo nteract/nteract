@@ -84,6 +84,10 @@ impl DataStore {
     }
 }
 
+fn cell_is_null(column: &dyn Array, row: usize) -> bool {
+    matches!(column.data_type(), DataType::Null) || column.is_null(row)
+}
+
 // Global store: handle → DataStore
 static STORES: Mutex<Option<HashMap<u32, DataStore>>> = Mutex::new(None);
 static NEXT_HANDLE: Mutex<u32> = Mutex::new(1);
@@ -247,7 +251,7 @@ pub fn is_null(handle: u32, row: usize, col: usize) -> Result<bool, JsValue> {
     with_store(handle, |s| {
         let (batch_idx, local_row) = s.resolve_row(row).unwrap_or((0, 0));
         let column = s.batches[batch_idx].column(col);
-        column.is_null(local_row)
+        cell_is_null(column.as_ref(), local_row)
     })
     .map_err(|e| JsValue::from_str(&e))
 }
@@ -306,7 +310,7 @@ fn format_timestamp_ms(ms: i64, tz: Option<&str>, has_time: bool) -> String {
 }
 
 fn cell_string_for(store: &DataStore, col: usize, column: &dyn Array, local_row: usize) -> String {
-    if column.is_null(local_row) {
+    if cell_is_null(column, local_row) {
         return String::new();
     }
 
@@ -358,7 +362,7 @@ fn cell_string_for(store: &DataStore, col: usize, column: &dyn Array, local_row:
 }
 
 fn cell_f64_for(column: &dyn Array, local_row: usize) -> f64 {
-    if column.is_null(local_row) {
+    if cell_is_null(column, local_row) {
         return f64::NAN;
     }
 
@@ -410,7 +414,7 @@ fn viewport_cells_for(s: &DataStore, rows: &[u32]) -> ViewportCells {
         let batch = &s.batches[batch_idx];
         for col in 0..s.num_cols {
             let column = batch.column(col);
-            let is_null = column.is_null(local_row);
+            let is_null = cell_is_null(column.as_ref(), local_row);
             out.nulls.push(is_null);
             if is_null {
                 out.strings.push(String::new());
@@ -444,7 +448,7 @@ pub fn get_cell_string(handle: u32, row: usize, col: usize) -> Result<String, Js
             None => return String::new(),
         };
         let column = s.batches[batch_idx].column(col);
-        if column.is_null(local_row) {
+        if cell_is_null(column.as_ref(), local_row) {
             return String::new();
         }
 
@@ -463,7 +467,7 @@ pub fn get_cell_f64(handle: u32, row: usize, col: usize) -> Result<f64, JsValue>
             None => return f64::NAN,
         };
         let column = s.batches[batch_idx].column(col);
-        if column.is_null(local_row) {
+        if cell_is_null(column.as_ref(), local_row) {
             return f64::NAN;
         }
 
@@ -514,7 +518,7 @@ pub fn store_value_counts(handle: u32, col: usize) -> Result<JsValue, JsValue> {
                         ArrayFormatter::try_new(column.as_ref(), &Default::default())
                     {
                         for i in 0..column.len() {
-                            if !column.is_null(i) {
+                            if !cell_is_null(column.as_ref(), i) {
                                 *freq.entry(formatter.value(i).to_string()).or_insert(0) += 1;
                             }
                         }
@@ -988,7 +992,7 @@ pub fn store_filtered_value_counts(
                         for i in 0..n {
                             if global_row + i < mask.len()
                                 && mask[global_row + i] != 0
-                                && !column.is_null(i)
+                                && !cell_is_null(column.as_ref(), i)
                             {
                                 *freq.entry(formatter.value(i).to_string()).or_insert(0) += 1;
                             }
@@ -1794,7 +1798,7 @@ fn get_string_value(arr: &dyn Array, row: usize) -> String {
     if let Some(s) = nteract_predicate::arrow_utils::string_at(arr, row) {
         return s;
     }
-    if arr.is_null(row) {
+    if cell_is_null(arr, row) {
         return String::new();
     }
     match arr.data_type() {
@@ -1820,7 +1824,8 @@ fn get_string_value(arr: &dyn Array, row: usize) -> String {
 mod tests {
     use super::*;
     use arrow::array::{
-        ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray, StructArray,
+        ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, NullArray, StringArray,
+        StructArray,
     };
     use arrow::datatypes::{Field, Schema};
     use std::collections::HashMap;
@@ -2065,5 +2070,35 @@ mod tests {
             out.nulls,
             vec![false, false, false, false, false, false, true, false]
         );
+    }
+
+    #[test]
+    fn viewport_cells_treat_null_arrays_as_null_cells() {
+        let schema = Arc::new(Schema::new(vec![Field::new("empty", DataType::Null, true)]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(NullArray::new(3)) as ArrayRef])
+            .expect("record batch");
+        let store = DataStore {
+            batches: vec![batch],
+            batch_offsets: vec![0],
+            total_rows: 3,
+            num_cols: 1,
+            col_names: vec!["empty".to_string()],
+            col_types: vec!["categorical".to_string()],
+            col_timezones: vec![None],
+            original_columns: HashMap::new(),
+        };
+
+        let out = viewport_cells_for(&store, &[0, 2]);
+
+        assert_eq!(out.rows, vec![0, 2]);
+        assert_eq!(out.strings, vec!["", ""]);
+        assert_eq!(out.numeric_values, vec![None, None]);
+        assert_eq!(out.nulls, vec![true, true]);
+        assert!(cell_is_null(store.batches[0].column(0).as_ref(), 1));
+        assert_eq!(
+            cell_string_for(&store, 0, store.batches[0].column(0).as_ref(), 1),
+            ""
+        );
+        assert!(cell_f64_for(store.batches[0].column(0).as_ref(), 1).is_nan());
     }
 }
