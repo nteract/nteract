@@ -8,6 +8,8 @@ pub enum RuntimeStateError {
     InvalidProgressShape,
     #[error("automerge: {0}")]
     Automerge(#[from] AutomergeError),
+    #[error("automerge recovery: {0}")]
+    AutomergeRecovery(#[from] automerge_recovery::AutomergeOperationError),
     #[error("RuntimeStateDoc mutex poisoned")]
     LockPoisoned,
 }

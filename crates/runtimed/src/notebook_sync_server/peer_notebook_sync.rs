@@ -3,7 +3,6 @@ use tracing::warn;
 
 use crate::connection::NotebookFrameType;
 
-use super::catch_automerge_panic;
 use super::peer_writer::PeerWriter;
 use super::{
     check_and_broadcast_sync_state, check_and_update_trust_state, process_markdown_assets,
@@ -27,19 +26,10 @@ pub(super) async fn handle_notebook_doc_frame(
 
         let heads_before = doc.get_heads();
 
-        let recv_result = catch_automerge_panic("doc-receive-sync", || {
-            doc.receive_sync_message(peer_state, message)
-        });
-        match recv_result {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                warn!("[notebook-sync] receive_sync_message error: {}", e);
-                return Ok(NotebookDocFrameOutcome::Skipped);
-            }
+        match doc.receive_sync_message_recovering(peer_state, message, "doc-receive-sync") {
+            Ok(()) => {}
             Err(e) => {
-                warn!("{}", e);
-                doc.rebuild_from_save();
-                *peer_state = sync::State::new();
+                warn!("[notebook-sync] receive_sync_message error: {}", e);
                 return Ok(NotebookDocFrameOutcome::Skipped);
             }
         }
@@ -52,20 +42,11 @@ pub(super) async fn handle_notebook_doc_frame(
         // Notify other peers in this room.
         let _ = room.broadcasts.changed_tx.send(());
 
-        let encoded = match catch_automerge_panic("doc-sync-reply", || {
-            doc.generate_sync_message(peer_state)
-                .map(|reply| reply.encode())
-        }) {
-            Ok(encoded) => encoded,
+        let encoded = match doc.generate_sync_message_recovering(peer_state, "doc-sync-reply") {
+            Ok(message) => message.map(|reply| reply.encode()),
             Err(e) => {
-                warn!("{}", e);
-                *peer_state = sync::State::new();
-                if doc.rebuild_from_save() {
-                    doc.generate_sync_message(peer_state)
-                        .map(|reply| reply.encode())
-                } else {
-                    None
-                }
+                warn!("[notebook-sync] doc sync reply failed: {}", e);
+                None
             }
         };
 
@@ -117,20 +98,11 @@ pub(super) async fn forward_notebook_doc_broadcast(
 ) -> anyhow::Result<()> {
     let encoded = {
         let mut doc = room.doc.write().await;
-        match catch_automerge_panic("doc-broadcast", || {
-            doc.generate_sync_message(peer_state)
-                .map(|msg| msg.encode())
-        }) {
-            Ok(encoded) => encoded,
+        match doc.generate_sync_message_recovering(peer_state, "doc-broadcast") {
+            Ok(message) => message.map(|msg| msg.encode()),
             Err(e) => {
-                warn!("{}", e);
-                *peer_state = sync::State::new();
-                if doc.rebuild_from_save() {
-                    doc.generate_sync_message(peer_state)
-                        .map(|msg| msg.encode())
-                } else {
-                    None
-                }
+                warn!("[notebook-sync] doc broadcast failed: {}", e);
+                None
             }
         }
     };
@@ -151,17 +123,11 @@ pub(super) async fn queue_doc_sync(
 ) -> anyhow::Result<()> {
     let encoded = {
         let mut doc = room.doc.write().await;
-        match catch_automerge_panic("broadcast-doc-changes", || {
-            doc.generate_sync_message(peer_state)
-                .map(|msg| msg.encode())
-        }) {
-            Ok(encoded) => encoded,
+        match doc.generate_sync_message_recovering(peer_state, "broadcast-doc-changes") {
+            Ok(message) => message.map(|msg| msg.encode()),
             Err(e) => {
-                warn!("{}", e);
-                doc.rebuild_from_save();
-                *peer_state = sync::State::new();
-                doc.generate_sync_message(peer_state)
-                    .map(|msg| msg.encode())
+                warn!("[notebook-sync] queue doc sync failed: {}", e);
+                None
             }
         }
     };

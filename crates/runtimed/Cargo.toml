@@ -73,6 +73,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 
 # Automerge CRDT for settings sync
 automerge = "0.8"
+automerge-recovery = { path = "../automerge-recovery" }
 
 # Shared notebook document types (cell CRUD, metadata, sync)
 notebook-doc = { path = "../notebook-doc", features = ["persistence"] }

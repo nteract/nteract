@@ -5,9 +5,9 @@ use std::str::FromStr;
 use automerge::ChangeHash;
 use notebook_doc::{diff::DocChangeset, NotebookDoc};
 
-use crate::notebook_sync_server::{
-    catch_automerge_panic, check_and_update_trust_state, NotebookRoom,
-};
+use automerge_recovery::catch_automerge_panic;
+
+use crate::notebook_sync_server::{check_and_update_trust_state, NotebookRoom};
 use crate::protocol::NotebookResponse;
 
 #[derive(Debug)]

@@ -8,6 +8,7 @@
 use automerge::sync;
 use automerge::sync::SyncDoc;
 use automerge::AutoCommit;
+use automerge_recovery::{catch_automerge_panic, AutomergeOperationError};
 use log::warn;
 use notebook_doc::presence::PresenceState;
 use runtime_doc::RuntimeStateDoc;
@@ -86,6 +87,35 @@ impl SharedDocState {
             .receive_sync_message(&mut self.peer_state, message)
     }
 
+    pub(crate) fn generate_sync_message_recovering(
+        &mut self,
+        label: &str,
+    ) -> Result<Option<sync::Message>, AutomergeOperationError> {
+        match catch_automerge_panic(label, || self.generate_sync_message()) {
+            Ok(message) => Ok(message),
+            Err(_err) => {
+                self.rebuild_doc();
+                catch_automerge_panic(label, || self.generate_sync_message())
+                    .map_err(AutomergeOperationError::Panic)
+            }
+        }
+    }
+
+    pub(crate) fn receive_sync_message_recovering(
+        &mut self,
+        message: sync::Message,
+        label: &str,
+    ) -> Result<(), AutomergeOperationError> {
+        match catch_automerge_panic(label, || self.receive_sync_message(message)) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+            Err(err) => {
+                self.rebuild_doc();
+                Err(AutomergeOperationError::Panic(err))
+            }
+        }
+    }
+
     // ── RuntimeStateDoc sync ────────────────────────────────────────
 
     /// Generate an outgoing sync reply for the RuntimeStateDoc.
@@ -94,6 +124,14 @@ impl SharedDocState {
             .doc_mut()
             .sync()
             .generate_sync_message(&mut self.state_peer_state)
+    }
+
+    pub(crate) fn generate_state_sync_message_recovering(
+        &mut self,
+        label: &str,
+    ) -> Result<Option<sync::Message>, AutomergeOperationError> {
+        self.state_doc
+            .generate_sync_message_recovering(&mut self.state_peer_state, label)
     }
 
     /// Apply an incoming RuntimeStateSync message from the daemon.
@@ -114,6 +152,21 @@ impl SharedDocState {
             .receive_sync_message(&mut self.state_peer_state, message)
     }
 
+    pub(crate) fn receive_state_sync_message_recovering(
+        &mut self,
+        message: sync::Message,
+        label: &str,
+    ) -> Result<(), AutomergeOperationError> {
+        match catch_automerge_panic(label, || self.receive_state_sync_message(message)) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+            Err(err) => {
+                self.rebuild_state_doc();
+                Err(AutomergeOperationError::Panic(err))
+            }
+        }
+    }
+
     /// Rebuild the RuntimeStateDoc via save→load and reset its sync state.
     ///
     /// Used after catching an automerge panic during `RuntimeStateSync`
@@ -127,6 +180,35 @@ impl SharedDocState {
             );
         }
         self.state_peer_state = sync::State::new();
+    }
+
+    fn rebuild_doc(&mut self) {
+        let actor = self.doc.get_actor().clone();
+        let pre_cell_count = notebook_doc::get_cells_from_doc(&self.doc).len();
+        let bytes = self.doc.save();
+        match AutoCommit::load(&bytes) {
+            Ok(mut doc) => {
+                let post_cell_count = notebook_doc::get_cells_from_doc(&doc).len();
+                if post_cell_count < pre_cell_count {
+                    warn!(
+                        "[notebook-sync] rebuild doc would lose cells ({} -> {}), resetting sync state only",
+                        pre_cell_count, post_cell_count
+                    );
+                    self.peer_state = sync::State::new();
+                    return;
+                }
+                doc.set_actor(actor);
+                self.doc = doc;
+                self.peer_state = sync::State::new();
+            }
+            Err(e) => {
+                warn!(
+                    "[notebook-sync] failed to rebuild doc after panic: {}; resetting sync state only",
+                    e
+                );
+                self.peer_state = sync::State::new();
+            }
+        }
     }
 
     #[cfg(test)]

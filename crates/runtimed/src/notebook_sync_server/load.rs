@@ -560,15 +560,11 @@ where
                 doc.set_cell_attachments(&cell.id, attachment_refs)
                     .map_err(|e| format!("Failed to set attachments for {}: {}", cell.id, e))?;
             }
-            match catch_automerge_panic("streaming-load-cells", || {
-                doc.generate_sync_message(peer_state).map(|m| m.encode())
-            }) {
-                Ok(encoded) => encoded,
+            match doc.generate_sync_message_recovering(peer_state, "streaming-load-cells") {
+                Ok(message) => message.map(|m| m.encode()),
                 Err(e) => {
-                    warn!("{}", e);
-                    doc.rebuild_from_save();
-                    *peer_state = sync::State::new();
-                    doc.generate_sync_message(peer_state).map(|m| m.encode())
+                    warn!("[streaming-load] cell sync generation failed: {}", e);
+                    None
                 }
             }
         };
@@ -678,15 +674,11 @@ where
             if let Err(e) = doc.set_metadata_snapshot(&meta) {
                 warn!("[streaming-load] Failed to set metadata: {}", e);
             }
-            match catch_automerge_panic("streaming-load-meta", || {
-                doc.generate_sync_message(peer_state).map(|m| m.encode())
-            }) {
-                Ok(encoded) => encoded,
+            match doc.generate_sync_message_recovering(peer_state, "streaming-load-meta") {
+                Ok(message) => message.map(|m| m.encode()),
                 Err(e) => {
-                    warn!("{}", e);
-                    doc.rebuild_from_save();
-                    *peer_state = sync::State::new();
-                    doc.generate_sync_message(peer_state).map(|m| m.encode())
+                    warn!("[streaming-load] metadata sync generation failed: {}", e);
+                    None
                 }
             }
         };
@@ -1297,11 +1289,8 @@ pub(crate) async fn apply_ipynb_changes(
                 }
             }
 
-            if let Err(e) =
-                catch_automerge_panic("file-watcher-order-merge", || doc.merge(&mut fork))
-            {
-                warn!("{}", e);
-                doc.rebuild_from_save();
+            if let Err(e) = doc.merge_recovering(&mut fork, "file-watcher-order-merge") {
+                warn!("[file-watcher] order merge failed: {}", e);
             }
 
             deferred
@@ -1578,9 +1567,8 @@ pub(crate) async fn apply_ipynb_changes(
         // Merge source fork back — source changes from disk compose with
         // post-save CRDT changes via Automerge's text CRDT merge.
         if let Some(ref mut fork) = source_fork {
-            if let Err(e) = catch_automerge_panic("file-watcher-source-merge", || doc.merge(fork)) {
-                warn!("{}", e);
-                doc.rebuild_from_save();
+            if let Err(e) = doc.merge_recovering(fork, "file-watcher-source-merge") {
+                warn!("[file-watcher] source merge failed: {}", e);
             }
         }
 

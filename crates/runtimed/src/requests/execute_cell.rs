@@ -6,7 +6,7 @@ use runtime_doc::RuntimeLifecycle;
 use tracing::warn;
 
 use crate::notebook_sync_server::{
-    catch_automerge_panic, detect_room_runtime, format_source, formatter_actor, NotebookRoom,
+    detect_room_runtime, format_source, formatter_actor, NotebookRoom,
 };
 use crate::protocol::NotebookResponse;
 use crate::requests::guarded;
@@ -94,11 +94,8 @@ async fn handle_inner(
                         ));
                         if fork.update_source(&cell_id_clone, &formatted).is_ok() {
                             let mut doc = room_clone.doc.write().await;
-                            if let Err(e) =
-                                catch_automerge_panic("format-merge", || doc.merge(&mut fork))
-                            {
-                                warn!("{}", e);
-                                doc.rebuild_from_save();
+                            if let Err(e) = doc.merge_recovering(&mut fork, "format-merge") {
+                                warn!("[format] merge failed: {}", e);
                             }
                             let _ = room_clone.broadcasts.changed_tx.send(());
                         }

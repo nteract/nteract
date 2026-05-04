@@ -6,6 +6,7 @@ members = [
     "crates/runt-workspace",
     "crates/kernel-launch",
     "crates/kernel-env",
+    "crates/automerge-recovery",
     "crates/notebook",
     "crates/automunge",
     "crates/notebook-wire",

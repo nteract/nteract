@@ -669,9 +669,8 @@ pub(crate) async fn process_markdown_assets(room: &NotebookRoom) {
 
     let persist_bytes = {
         let mut doc = room.doc.write().await;
-        if let Err(e) = catch_automerge_panic("metadata-merge", || doc.merge(&mut fork)) {
-            warn!("{}", e);
-            doc.rebuild_from_save();
+        if let Err(e) = doc.merge_recovering(&mut fork, "metadata-merge") {
+            warn!("[metadata] merge failed: {}", e);
         }
         doc.save()
     };
@@ -4648,9 +4647,8 @@ pub(crate) async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, 
 
     if formatted_count > 0 {
         let mut doc = room.doc.write().await;
-        if let Err(e) = catch_automerge_panic("save-format-merge", || doc.merge(&mut fork)) {
-            warn!("{}", e);
-            doc.rebuild_from_save();
+        if let Err(e) = doc.merge_recovering(&mut fork, "save-format-merge") {
+            warn!("[format] merge failed: {}", e);
         }
         let _ = room.broadcasts.changed_tx.send(());
         info!(

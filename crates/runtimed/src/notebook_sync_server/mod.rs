@@ -25,7 +25,6 @@
 //! - Multiple windows share the same kernel
 
 use std::collections::HashMap;
-use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -113,27 +112,6 @@ const KERNEL_BROADCAST_CAPACITY: usize = 256;
 /// If the encoded message exceeds this, compact before sending. Leaves
 /// 20 MiB headroom under the 100 MiB frame limit.
 const STATE_SYNC_COMPACT_THRESHOLD: usize = 80 * 1024 * 1024;
-
-/// Catch panics from automerge internal operations.
-///
-/// Automerge 0.7.4 (and 0.8.0) has a known bug where the change collector
-/// panics with `MissingOps` when internal op-set indices become inconsistent
-/// (see `op_set2/change/collector.rs:761`). This affects `generate_sync_message`,
-/// `fork_at`, `merge`, and `get_changes`.
-///
-/// After catching a panic, callers should call `rebuild_from_save()` on the
-/// affected doc to round-trip save->load and rebuild clean internal indices.
-pub(crate) fn catch_automerge_panic<T>(label: &str, f: impl FnOnce() -> T) -> Result<T, String> {
-    match std::panic::catch_unwind(AssertUnwindSafe(f)) {
-        Ok(val) => Ok(val),
-        Err(payload) => {
-            let msg = crate::task_supervisor::panic_payload_to_string(payload);
-            Err(format!(
-                "[{label}] automerge panicked (upstream bug, see automerge collector.rs MissingOps): {msg}"
-            ))
-        }
-    }
-}
 
 /// A message sent through the runtime agent channel.
 pub enum RuntimeAgentMessage {

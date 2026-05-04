@@ -343,10 +343,11 @@ pub async fn run_runtime_agent(
 
                                         // Per-change actor filter: diff comm state against a
                                         // foreign-only view of the post-sync doc.
-                                        match sd.receive_sync_and_foreign_comms(
+                                        match sd.receive_sync_and_foreign_comms_recovering(
                                             &mut coordinator_sync_state,
                                             msg,
                                             |actor| !actor.to_bytes().starts_with(b"rt:kernel:"),
+                                            "runtime-agent-state-receive",
                                         ) {
                                             Ok(view) if !view.applied_actors.is_empty() => {
                                                 let queued = sd.get_queued_executions();
@@ -418,10 +419,15 @@ pub async fn run_runtime_agent(
                                     }
 
                                     // Send sync reply
-                                    let reply_encoded = ctx.state.with_doc(|sd| {
-                                        Ok(sd.generate_sync_message(&mut coordinator_sync_state)
-                                            .map(|reply| reply.encode()))
-                                    }).ok().flatten();
+                                    let reply_encoded = ctx
+                                        .state
+                                        .generate_sync_message_recovering(
+                                            &mut coordinator_sync_state,
+                                            "runtime-agent-state-reply",
+                                        )
+                                        .ok()
+                                        .flatten()
+                                        .map(|reply| reply.encode());
                                     if let Some(encoded) = reply_encoded {
                                         let _ = send_typed_frame(
                                             &mut writer,
@@ -525,10 +531,15 @@ pub async fn run_runtime_agent(
             _ = state_changed_rx.recv() => {
                 while state_changed_rx.try_recv().is_ok() {}
 
-                let encoded = ctx.state.with_doc(|sd| {
-                    Ok(sd.generate_sync_message(&mut coordinator_sync_state)
-                        .map(|msg| msg.encode()))
-                }).ok().flatten();
+                let encoded = ctx
+                    .state
+                    .generate_sync_message_recovering(
+                        &mut coordinator_sync_state,
+                        "runtime-agent-state-outbound",
+                    )
+                    .ok()
+                    .flatten()
+                    .map(|msg| msg.encode());
                 if let Some(encoded) = encoded {
                     if let Err(e) = send_typed_frame(
                         &mut writer,
