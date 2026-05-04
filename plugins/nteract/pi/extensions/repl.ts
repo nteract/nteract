@@ -591,7 +591,12 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
               (_context.lastComponent instanceof Text ? _context.lastComponent : undefined) ??
               new Text("", 0, 0);
             const tableLines = dt.render(200);
-            text.setText(`${promptStr}\n${tableLines.join("\n")}`);
+            // Put first table line on the Out[n]: line instead of below it
+            const indentStr = " ".repeat(indent);
+            if (tableLines.length > 0 && tableLines[0].startsWith(indentStr)) {
+              tableLines[0] = `${promptStr} ${tableLines[0].slice(indent)}`;
+            }
+            text.setText(tableLines.join("\n"));
             return text;
           }
         } catch {}
