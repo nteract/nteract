@@ -523,6 +523,16 @@ function findParquetBlobPath(result: CellResult): string | undefined {
 
 // --- extension ---------------------------------------------------------------
 
+// Braille frames for the "waiting on first token" spinner shown in `In [*]:`
+// before any input_json_delta arrives. Anthropic validates the JSON server-side,
+// so the gap between toolcall_start and the first delta can be hundreds of ms.
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPINNER_INTERVAL_MS = 80;
+
+type InCallState = {
+  spinner?: { frame: number; timer: ReturnType<typeof setInterval> };
+};
+
 const PYTHON_PARAMS = Type.Object({
   code: Type.String({
     description:
@@ -599,7 +609,7 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
     }
   }
 
-  pi.registerTool({
+  pi.registerTool<typeof PYTHON_PARAMS, unknown, InCallState>({
     name: "python_repl",
     label: "Python REPL",
     description:
@@ -622,6 +632,36 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
       const count = nextExecCount;
       const prompt = count != null ? `In [${count}]:` : "In [*]:";
       const promptStr = theme.fg("accent", theme.bold(prompt));
+
+      // Anthropic gates input_json_delta on server-side validation, so there is
+      // a visible pause between toolcall_start and the first token of `code`.
+      // Show a braille spinner in the prompt slot until either the first
+      // character streams in or the call resolves another way.
+      const state = _context.state as InCallState;
+      const waitingForFirstToken =
+        !code && !_context.executionStarted && !_context.argsComplete && !_context.isError;
+      if (waitingForFirstToken) {
+        if (!state.spinner) {
+          const timer = setInterval(() => {
+            const s = state.spinner;
+            if (!s) return;
+            s.frame = (s.frame + 1) % SPINNER_FRAMES.length;
+            _context.invalidate();
+          }, SPINNER_INTERVAL_MS);
+          // Don't keep the event loop alive on the spinner alone.
+          timer.unref?.();
+          state.spinner = { frame: 0, timer };
+        }
+        const frame = SPINNER_FRAMES[state.spinner.frame];
+        text.setText(`${promptStr} ${theme.fg("muted", frame)}`);
+        return text;
+      }
+
+      if (state.spinner) {
+        clearInterval(state.spinner.timer);
+        state.spinner = undefined;
+      }
+
       const lines = highlightCode(code, "python");
       // Indent continuation lines to align with first line after prompt
       const pad = " ".repeat(prompt.length + 1);
