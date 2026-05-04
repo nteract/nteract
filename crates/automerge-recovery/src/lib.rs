@@ -31,7 +31,7 @@ pub enum AutomergeOperationError {
     Automerge {
         label: String,
         #[source]
-        source: automerge::AutomergeError,
+        source: Box<automerge::AutomergeError>,
     },
     #[error(transparent)]
     Panic(#[from] AutomergeRecoveryError),
@@ -43,7 +43,7 @@ impl AutomergeOperationError {
     pub fn automerge(label: impl Into<String>, source: automerge::AutomergeError) -> Self {
         Self::Automerge {
             label: label.into(),
-            source,
+            source: Box::new(source),
         }
     }
 
@@ -86,16 +86,20 @@ mod tests {
 
     #[test]
     fn returns_normal_closure_value() {
-        let value = catch_automerge_panic("normal", || 42).unwrap();
-        assert_eq!(value, 42);
+        match catch_automerge_panic("normal", || 42) {
+            Ok(value) => assert_eq!(value, 42),
+            Err(error) => panic!("expected normal value, got {error}"),
+        }
     }
 
     #[test]
     fn captures_string_panic_payload() {
-        let error = catch_automerge_panic("string", || {
+        let error = match catch_automerge_panic("string", || {
             std::panic::panic_any("owned payload".to_string())
-        })
-        .unwrap_err();
+        }) {
+            Ok(_) => panic!("expected panic capture"),
+            Err(error) => error,
+        };
 
         assert_eq!(error.label, "string");
         assert_eq!(error.panic_message, "owned payload");
@@ -103,7 +107,10 @@ mod tests {
 
     #[test]
     fn captures_str_panic_payload() {
-        let error = catch_automerge_panic("str", || panic!("borrowed payload")).unwrap_err();
+        let error = match catch_automerge_panic("str", || panic!("borrowed payload")) {
+            Ok(_) => panic!("expected panic capture"),
+            Err(error) => error,
+        };
 
         assert_eq!(error.label, "str");
         assert_eq!(error.panic_message, "borrowed payload");
@@ -111,8 +118,10 @@ mod tests {
 
     #[test]
     fn captures_unknown_panic_payload() {
-        let error =
-            catch_automerge_panic("unknown", || std::panic::panic_any(17usize)).unwrap_err();
+        let error = match catch_automerge_panic("unknown", || std::panic::panic_any(17usize)) {
+            Ok(_) => panic!("expected panic capture"),
+            Err(error) => error,
+        };
 
         assert_eq!(error.label, "unknown");
         assert_eq!(error.panic_message, "unknown panic");
