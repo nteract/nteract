@@ -1078,12 +1078,10 @@ impl KernelConnection for JupyterKernel {
         let iopub_comm_seq = comm_seq.clone();
         let iopub_stream_terminals = stream_terminals.clone();
         let state_for_iopub = shared.state.clone();
-        // Stable per-task actor IDs. Each long-running task (iopub, shell,
-        // coalesce) processes messages sequentially within its own loop, so
-        // one actor per task is sufficient — Automerge's `(actor, seq)`
-        // invariant holds as long as no two concurrent forks share an actor.
-        // The widget-echo filter matches on the `rt:kernel:` prefix, which
-        // all three still carry.
+        // IOPub and shell still create true async forks, so they keep distinct
+        // task actors until those paths move to transactions. Transactional
+        // comm coalescing uses the base kernel actor because Automerge keeps
+        // the live document's actor sequence linear.
         let iopub_actor_id = format!("{kernel_actor_id}:iopub");
 
         // Create coalescing channel early so the IOPub task can capture the sender.
@@ -2476,13 +2474,12 @@ impl KernelConnection for JupyterKernel {
         let mut coalesce_rx = coalesce_rx;
         let coalesce_state = shared.state.clone();
         let coalesce_blob_store = shared.blob_store.clone();
-        // Coalesced comm writes must carry the kernel actor ID so the
+        // Coalesced comm writes must carry a kernel actor ID so the
         // runtime agent's actor filter in `receive_sync_and_foreign_comms`
-        // recognizes them as self-authored echoes and doesn't forward
-        // them back to the kernel. Without this, fork writes use an
-        // unrelated actor and the filter lets them through, re-triggering
-        // the amplification loop.
-        let coalesce_actor_id = format!("{kernel_actor_id}:coalesce");
+        // recognizes them as self-authored echoes. This path writes through a
+        // transaction on the live doc, so it can use the base kernel actor
+        // instead of minting a coalesce sub-actor.
+        let coalesce_kernel_actor_id = kernel_actor_id.clone();
         let coalesce_panic_cmd_tx = cmd_tx.clone();
         let comm_coalesce_task = spawn_supervised(
             "comm-coalesce",
@@ -2521,7 +2518,7 @@ impl KernelConnection for JupyterKernel {
                                 let heads = sd.get_heads();
                                 sd.transact_at_heads_recovering(
                                     &heads,
-                                    Some(&coalesce_actor_id),
+                                    Some(&coalesce_kernel_actor_id),
                                     "runtime-state-comm-coalesce-transaction",
                                     |sd| {
                                         for (comm_id, delta) in &batch {
