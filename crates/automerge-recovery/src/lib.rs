@@ -83,6 +83,10 @@ pub fn catch_automerge_panic<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::{
+        sync, sync::SyncDoc, transaction::Transactable, ActorId, AutoCommit, ChangeHash, ObjType,
+        ReadDoc, ROOT,
+    };
 
     #[test]
     fn returns_normal_closure_value() {
@@ -125,5 +129,146 @@ mod tests {
 
         assert_eq!(error.label, "unknown");
         assert_eq!(error.panic_message, "unknown panic");
+    }
+
+    #[test]
+    fn captures_real_missing_ops_panic_from_historical_fork_at() {
+        let (mut daemon, old_heads) = build_missing_ops_historical_fork_doc();
+        let error = catch_automerge_panic("missing-ops-fork-at", || daemon.fork_at(&old_heads))
+            .expect_err("historical fork_at should trigger Automerge MissingOps panic");
+
+        assert!(error.panic_message.contains("MissingOps"));
+    }
+
+    #[test]
+    fn missing_ops_operation_matrix_identifies_fork_at_edge() {
+        let (mut daemon, old_heads) = build_missing_ops_historical_fork_doc();
+        let current_heads = daemon.get_heads();
+
+        let get_changes =
+            catch_automerge_panic("missing-ops-get-changes", || daemon.get_changes(&old_heads));
+        assert!(get_changes.is_ok(), "get_changes should not panic");
+
+        let diff = catch_automerge_panic("missing-ops-diff", || {
+            daemon.diff(&old_heads, &current_heads)
+        });
+        assert!(diff.is_ok(), "diff should not panic");
+
+        let save_after =
+            catch_automerge_panic("missing-ops-save-after", || daemon.save_after(&old_heads));
+        assert!(save_after.is_ok(), "save_after should not panic");
+
+        let mut sync_state = sync::State::new();
+        let generate_sync_message = catch_automerge_panic("missing-ops-generate-sync", || {
+            daemon.sync().generate_sync_message(&mut sync_state)
+        });
+        assert!(
+            generate_sync_message.is_ok(),
+            "generate_sync_message should not panic"
+        );
+
+        let fork_at = catch_automerge_panic("missing-ops-fork-at", || daemon.fork_at(&old_heads));
+        assert!(fork_at.is_err(), "fork_at should expose the panic edge");
+    }
+
+    #[test]
+    fn save_load_rebuild_does_not_clear_historical_fork_at_panic() {
+        let (mut daemon, old_heads) = build_missing_ops_historical_fork_doc();
+        let bytes = daemon.save();
+        let mut rebuilt = AutoCommit::load(&bytes).expect("saved bad doc should reload");
+
+        let fork_at = catch_automerge_panic("rebuilt-missing-ops-fork-at", || {
+            rebuilt.fork_at(&old_heads)
+        });
+        assert!(
+            fork_at.is_err(),
+            "save/load rebuild does not repair this fork_at edge"
+        );
+    }
+
+    fn build_missing_ops_historical_fork_doc() -> (AutoCommit, Vec<ChangeHash>) {
+        let mut daemon = AutoCommit::new();
+        daemon.set_actor(ActorId::from(b"daemon" as &[u8]));
+
+        let text = daemon.put_object(ROOT, "source", ObjType::Text).unwrap();
+        daemon
+            .splice_text(&text, 0, 0, "# notebook cell\n")
+            .unwrap();
+        daemon.commit();
+
+        let mut peer = AutoCommit::new();
+        peer.set_actor(ActorId::from(b"wasm" as &[u8]));
+        let mut peer_sync = sync::State::new();
+        let mut daemon_sync = sync::State::new();
+        sync_docs_until_quiet(&mut daemon, &mut daemon_sync, &mut peer, &mut peer_sync);
+
+        let mut checkpoint_heads = Vec::new();
+
+        for i in 0..=200 {
+            let pos = peer.text(&text).unwrap().len();
+            peer.splice_text(
+                &text,
+                pos,
+                0,
+                &format!("{}", (b'a' + (i % 26) as u8) as char),
+            )
+            .unwrap();
+            peer.commit();
+
+            if i % 10 == 0 {
+                sync_one_message(&mut peer, &mut peer_sync, &mut daemon, &mut daemon_sync);
+
+                let mut fork = daemon.fork();
+                fork.set_actor(ActorId::from(format!("d:f{}", i).as_bytes()));
+                fork.put(ROOT, "exec_count", (i / 10) as i64).unwrap();
+                fork.commit();
+                daemon.merge(&mut fork).unwrap();
+
+                sync_one_message(&mut daemon, &mut daemon_sync, &mut peer, &mut peer_sync);
+            }
+
+            if i == 100 {
+                checkpoint_heads.push(daemon.get_heads());
+            }
+        }
+
+        let old_heads = checkpoint_heads.pop().unwrap();
+        (daemon, old_heads)
+    }
+
+    fn sync_docs_until_quiet(
+        left: &mut AutoCommit,
+        left_sync: &mut sync::State,
+        right: &mut AutoCommit,
+        right_sync: &mut sync::State,
+    ) {
+        for _ in 0..20 {
+            let mut progressed = false;
+            if let Some(msg) = left.sync().generate_sync_message(left_sync) {
+                right.sync().receive_sync_message(right_sync, msg).unwrap();
+                progressed = true;
+            }
+            if let Some(msg) = right.sync().generate_sync_message(right_sync) {
+                left.sync().receive_sync_message(left_sync, msg).unwrap();
+                progressed = true;
+            }
+            if !progressed {
+                break;
+            }
+        }
+    }
+
+    fn sync_one_message(
+        from: &mut AutoCommit,
+        from_sync: &mut sync::State,
+        to: &mut AutoCommit,
+        to_sync: &mut sync::State,
+    ) {
+        if let Some(msg) = from.sync().generate_sync_message(from_sync) {
+            to.sync().receive_sync_message(to_sync, msg).unwrap();
+        }
+        if let Some(msg) = to.sync().generate_sync_message(to_sync) {
+            from.sync().receive_sync_message(from_sync, msg).unwrap();
+        }
     }
 }
