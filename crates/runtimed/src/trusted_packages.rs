@@ -473,6 +473,47 @@ mod tests {
     }
 
     #[test]
+    fn seed_defaults_covers_conda_ecosystem() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = TrustedPackageStore::open(tmp.path().join("trusted.sqlite")).unwrap();
+
+        store
+            .seed_defaults("conda", &["pandas", "matplotlib"])
+            .unwrap();
+
+        let info = runt_trust::TrustInfo {
+            status: runt_trust::TrustStatus::Untrusted,
+            uv_dependencies: vec![],
+            approved_uv_dependencies: vec![],
+            conda_dependencies: vec!["pandas".into(), "matplotlib".into()],
+            approved_conda_dependencies: vec![],
+            conda_channels: vec![],
+            pixi_dependencies: vec![],
+            approved_pixi_dependencies: vec![],
+            pixi_pypi_dependencies: vec![],
+            approved_pixi_pypi_dependencies: vec![],
+            pixi_channels: vec![],
+        };
+        assert!(store.all_dependencies_approved(&info).unwrap());
+
+        // Pypi ecosystem should NOT see conda-seeded packages
+        let pypi_only = runt_trust::TrustInfo {
+            status: runt_trust::TrustStatus::Untrusted,
+            uv_dependencies: vec!["pandas".into()],
+            approved_uv_dependencies: vec![],
+            conda_dependencies: vec![],
+            approved_conda_dependencies: vec![],
+            conda_channels: vec![],
+            pixi_dependencies: vec![],
+            approved_pixi_dependencies: vec![],
+            pixi_pypi_dependencies: vec![],
+            approved_pixi_pypi_dependencies: vec![],
+            pixi_channels: vec![],
+        };
+        assert!(!store.all_dependencies_approved(&pypi_only).unwrap());
+    }
+
+    #[test]
     fn seed_defaults_does_not_overwrite_existing() {
         let tmp = tempfile::TempDir::new().unwrap();
         let store = TrustedPackageStore::open(tmp.path().join("trusted.sqlite")).unwrap();

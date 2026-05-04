@@ -1280,19 +1280,22 @@ impl Daemon {
         let pool_doc = Arc::new(RwLock::new(notebook_doc::pool_state::PoolDoc::new()));
 
         let blob_store = Arc::new(BlobStore::new(config.blob_store_dir.clone()));
-        let trusted_packages =
-            match TrustedPackageStore::open(config.trusted_packages_db_path.clone()) {
-                Ok(store) => {
-                    if let Err(e) = store.seed_defaults("pypi", BASE_RUNTIME_PACKAGES) {
-                        warn!("[trusted-packages] Failed to seed base runtime packages: {e}");
+        let trusted_packages = match TrustedPackageStore::open(
+            config.trusted_packages_db_path.clone(),
+        ) {
+            Ok(store) => {
+                for ecosystem in ["pypi", "conda"] {
+                    if let Err(e) = store.seed_defaults(ecosystem, BASE_RUNTIME_PACKAGES) {
+                        warn!("[trusted-packages] Failed to seed base runtime packages ({ecosystem}): {e}");
                     }
-                    if let Err(e) = store.seed_defaults("pypi", DEFAULT_DATA_PACKAGES) {
-                        warn!("[trusted-packages] Failed to seed default data packages: {e}");
+                    if let Err(e) = store.seed_defaults(ecosystem, DEFAULT_DATA_PACKAGES) {
+                        warn!("[trusted-packages] Failed to seed default data packages ({ecosystem}): {e}");
                     }
-                    store
                 }
-                Err(error) => TrustedPackageStore::unavailable(error.to_string()),
-            };
+                store
+            }
+            Err(error) => TrustedPackageStore::unavailable(error.to_string()),
+        };
         log_store_unavailable(&trusted_packages);
 
         Ok(Arc::new(Self {
