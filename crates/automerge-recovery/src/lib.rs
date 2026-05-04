@@ -171,6 +171,21 @@ mod tests {
             "generate_sync_message should not panic"
         );
 
+        let (mut isolated_doc, isolated_heads) = build_missing_ops_historical_fork_doc();
+        let isolated_transaction =
+            catch_automerge_panic("missing-ops-isolated-transaction", || {
+                isolated_doc.isolate(&isolated_heads);
+                must(
+                    isolated_doc.put(ROOT, "isolated", true),
+                    "isolated transaction write should succeed",
+                );
+                isolated_doc.integrate();
+            });
+        assert!(
+            isolated_transaction.is_ok(),
+            "isolated AutoCommit transaction should not panic"
+        );
+
         let fork_at = catch_automerge_panic("missing-ops-fork-at", || daemon.fork_at(&old_heads));
         assert!(fork_at.is_err(), "fork_at should expose the panic edge");
     }

@@ -627,10 +627,10 @@ pub(crate) fn compute_env_sync_diff(
 /// isolated markdown rendering can rewrite those refs to blob URLs.
 pub(crate) async fn process_markdown_assets(room: &NotebookRoom) {
     let notebook_path = room.file_binding.path().await.filter(|p| p.exists());
-    // Fork BEFORE async resolution so the fork's baseline predates
-    // any concurrent edits. Asset updates on the fork are treated as
-    // concurrent with user edits via Automerge's CRDT merge.
-    let (markdown_cells, mut fork) = {
+    // Capture heads BEFORE async resolution. Later, write resolved assets in
+    // an isolated transaction at this baseline so the update composes with
+    // concurrent user edits without creating a fork/merge actor.
+    let (markdown_cells, baseline_heads) = {
         let mut doc = room.doc.write().await;
         let cells: Vec<(String, String, HashMap<String, String>, AttachmentRefs)> = doc
             .get_cells()
@@ -638,11 +638,11 @@ pub(crate) async fn process_markdown_assets(room: &NotebookRoom) {
             .filter(|cell| cell.cell_type == "markdown")
             .map(|cell| (cell.id, cell.source, cell.resolved_assets, cell.attachments))
             .collect();
-        let fork = doc.fork_with_actor(format!("runtimed:assets:{}", uuid::Uuid::new_v4()));
-        (cells, fork)
+        let heads = doc.get_heads();
+        (cells, heads)
     };
 
-    let mut any_changed = false;
+    let mut asset_updates = Vec::new();
     for (cell_id, source, existing_assets, attachments) in markdown_cells {
         let mut desired_assets =
             resolve_markdown_assets(&source, notebook_path.as_deref(), None, &room.blob_store)
@@ -653,24 +653,44 @@ pub(crate) async fn process_markdown_assets(room: &NotebookRoom) {
         desired_assets.extend(resolved_attachment_assets(&source, &attachments));
 
         if desired_assets != existing_assets {
-            if let Err(e) = fork.set_cell_resolved_assets(&cell_id, &desired_assets) {
-                warn!(
-                    "[notebook-sync] Failed to sync resolved markdown assets for {}: {}",
-                    cell_id, e
-                );
-            }
-            any_changed = true;
+            asset_updates.push((cell_id, desired_assets));
         }
     }
 
-    if !any_changed {
+    if asset_updates.is_empty() {
         return;
     }
 
     let persist_bytes = {
         let mut doc = room.doc.write().await;
-        if let Err(e) = doc.merge_recovering(&mut fork, "metadata-merge") {
-            warn!("[metadata] merge failed: {}", e);
+        let wrote_assets = match doc.transact_at_heads_recovering(
+            &baseline_heads,
+            Some("runtimed:assets"),
+            "metadata-assets-transaction",
+            |doc| {
+                let mut wrote_assets = false;
+                for (cell_id, desired_assets) in &asset_updates {
+                    match doc.set_cell_resolved_assets(cell_id, desired_assets) {
+                        Ok(changed) => wrote_assets |= changed,
+                        Err(e) => {
+                            warn!(
+                                "[notebook-sync] Failed to sync resolved markdown assets for {}: {}",
+                                cell_id, e
+                            );
+                        }
+                    }
+                }
+                Ok(wrote_assets)
+            },
+        ) {
+            Ok(wrote_assets) => wrote_assets,
+            Err(e) => {
+                warn!("[metadata] asset transaction failed: {}", e);
+                false
+            }
+        };
+        if !wrote_assets {
+            return;
         }
         doc.save()
     };

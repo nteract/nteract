@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use automerge::ChangeHash;
 use runtime_doc::RuntimeLifecycle;
 use tracing::warn;
 
@@ -55,12 +56,13 @@ async fn handle_inner(
                 }
             }
 
-            let (source, execution_id) =
+            let (source, execution_id, format_heads) =
                 match queue_cell_if_current(room, &cell_id, observed_heads.as_deref()).await {
                     QueueCellResult::Queued {
                         source,
                         execution_id,
-                    } => (source, execution_id),
+                        format_heads,
+                    } => (source, execution_id, format_heads),
                     QueueCellResult::AlreadyActive { execution_id } => {
                         return NotebookResponse::CellQueued {
                             cell_id,
@@ -70,34 +72,29 @@ async fn handle_inner(
                     QueueCellResult::Response(response) => return *response,
                 };
 
-            // Best-effort background formatting via fork+merge
-            let fork = {
-                let mut doc = room.doc.write().await;
-                doc.fork()
-            };
             let room_clone = Arc::clone(room);
             let cell_id_clone = cell_id.clone();
             let source_clone = source.clone();
             spawn_best_effort("cell-formatter", async move {
                 if let Some(runtime) = detect_room_runtime(&room_clone).await {
                     if let Some(formatted) = format_source(&source_clone, &runtime).await {
-                        // Actor is assigned here (not via fork_with_actor)
-                        // because the formatter identity depends on the
-                        // runtime, which is detected after the fork was
-                        // created. The UUID suffix keeps concurrent
-                        // formatter forks from colliding on `(actor, seq)`.
-                        let mut fork = fork;
-                        fork.set_actor(&format!(
-                            "{}:{}",
-                            formatter_actor(&runtime),
-                            uuid::Uuid::new_v4()
-                        ));
-                        if fork.update_source(&cell_id_clone, &formatted).is_ok() {
-                            let mut doc = room_clone.doc.write().await;
-                            if let Err(e) = doc.merge_recovering(&mut fork, "format-merge") {
-                                warn!("[format] merge failed: {}", e);
+                        let mut doc = room_clone.doc.write().await;
+                        match doc.transact_at_heads_recovering(
+                            &format_heads,
+                            Some(&formatter_actor(&runtime)),
+                            "format-transaction",
+                            |doc| {
+                                let changed = doc.update_source(&cell_id_clone, &formatted)?;
+                                Ok(changed)
+                            },
+                        ) {
+                            Ok(true) => {
+                                let _ = room_clone.broadcasts.changed_tx.send(());
                             }
-                            let _ = room_clone.broadcasts.changed_tx.send(());
+                            Ok(false) => {}
+                            Err(e) => {
+                                warn!("[format] transaction failed: {}", e);
+                            }
                         }
                     }
                 }
@@ -118,6 +115,7 @@ enum QueueCellResult {
     Queued {
         source: String,
         execution_id: String,
+        format_heads: Vec<ChangeHash>,
     },
     AlreadyActive {
         execution_id: String,
@@ -198,10 +196,12 @@ async fn queue_cell_if_current(
 
     let source = cell.source;
     let _ = doc.set_execution_id(cell_id, Some(&execution_id));
+    let format_heads = doc.get_heads();
     let _ = room.broadcasts.changed_tx.send(());
 
     QueueCellResult::Queued {
         source,
         execution_id,
+        format_heads,
     }
 }

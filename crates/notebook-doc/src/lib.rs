@@ -358,6 +358,69 @@ impl NotebookDoc {
         }
     }
 
+    /// Apply mutations as a transaction isolated at `heads`, then integrate
+    /// them back into the live document.
+    ///
+    /// This is the async-safe alternative to taking a fork before an `.await`
+    /// and merging it later: callers capture the baseline heads before the
+    /// await, then re-acquire the document lock and run the mutation at that
+    /// historical view. The live document owns the actor sequence, so repeated
+    /// isolated transactions can share one stable actor without producing
+    /// duplicate sequence numbers.
+    pub fn transact_at_heads_recovering<F, T>(
+        &mut self,
+        heads: &[automerge::ChangeHash],
+        actor: Option<&str>,
+        label: &str,
+        f: F,
+    ) -> Result<T, AutomergeOperationError>
+    where
+        F: FnOnce(&mut NotebookDoc) -> Result<T, AutomergeError>,
+    {
+        use std::cell::Cell;
+
+        let original_actor = self.doc.get_actor().clone();
+        let isolated = Cell::new(false);
+        let mut recovery_panic = None;
+
+        let result = catch_automerge_panic(label, || {
+            if let Some(actor) = actor {
+                self.doc.set_actor(ActorId::from(actor.as_bytes()));
+            }
+            self.doc.isolate(heads);
+            isolated.set(true);
+            let result = f(self);
+            self.doc.integrate();
+            isolated.set(false);
+            result
+        });
+
+        if isolated.get() {
+            if let Err(err) = catch_automerge_panic(format!("{label}:integrate"), || {
+                self.doc.integrate();
+            }) {
+                recovery_panic = Some(err);
+            }
+        }
+
+        if let Err(err) = catch_automerge_panic(format!("{label}:restore-actor"), || {
+            self.doc.set_actor(original_actor);
+        }) {
+            recovery_panic.get_or_insert(err);
+        }
+
+        match (result, recovery_panic) {
+            (Ok(Ok(value)), None) => Ok(value),
+            (Ok(Err(source)), None) => Err(AutomergeOperationError::automerge(label, source)),
+            (Err(err), _) | (_, Some(err)) => {
+                if !self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label));
+                }
+                Err(AutomergeOperationError::Panic(err))
+            }
+        }
+    }
+
     /// Fork the document, apply mutations on the fork, and merge back.
     ///
     /// This is the preferred way to apply mutations that should compose
@@ -2840,6 +2903,107 @@ mod tests {
             .generate_sync_message_recovering(&mut peer_state, "test-generate")
             .unwrap()
             .is_some());
+    }
+
+    #[test]
+    fn isolated_transactions_with_same_actor_at_same_heads_do_not_duplicate_seq() {
+        let mut doc = NotebookDoc::new_with_actor("test-notebook", "runtimed:notebook");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source("cell-1", "x = 1\n").unwrap();
+        let heads = doc.get_heads();
+
+        doc.transact_at_heads_recovering(
+            &heads,
+            Some("runtimed:formatter"),
+            "isolated-format-a",
+            |doc| {
+                doc.update_source("cell-1", "x = 2\n")?;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        doc.transact_at_heads_recovering(
+            &heads,
+            Some("runtimed:formatter"),
+            "isolated-format-b",
+            |doc| {
+                doc.set_cell_tags("cell-1", vec!["formatted".to_string()])?;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let cell = doc.get_cell("cell-1").unwrap();
+        assert!(cell.source.contains("x = 2"));
+        assert_eq!(
+            cell.metadata
+                .get("tags")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            cell.metadata
+                .get("tags")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|tags| tags.first())
+                .and_then(serde_json::Value::as_str),
+            Some("formatted")
+        );
+    }
+
+    #[test]
+    fn isolated_transaction_composes_with_live_changes_after_baseline() {
+        let mut doc = NotebookDoc::new_with_actor("test-notebook", "runtimed:notebook");
+        doc.add_cell(0, "cell-1", "markdown").unwrap();
+        doc.update_source("cell-1", "![plot](plot.png)\n").unwrap();
+        let heads = doc.get_heads();
+
+        doc.set_cell_source_hidden("cell-1", true).unwrap();
+
+        let mut assets = HashMap::new();
+        assets.insert("plot.png".to_string(), "blob:plot".to_string());
+        doc.transact_at_heads_recovering(
+            &heads,
+            Some("runtimed:assets"),
+            "isolated-assets",
+            |doc| doc.set_cell_resolved_assets("cell-1", &assets),
+        )
+        .unwrap();
+
+        let cell = doc.get_cell("cell-1").unwrap();
+        assert_eq!(
+            cell.resolved_assets.get("plot.png").map(String::as_str),
+            Some("blob:plot")
+        );
+        assert!(
+            cell.metadata
+                .pointer("/jupyter/source_hidden")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            "live metadata change should survive isolated asset write"
+        );
+    }
+
+    #[test]
+    fn isolated_transaction_panic_restores_actor_and_keeps_doc_usable() {
+        let mut doc = NotebookDoc::new_with_actor("test-notebook", "runtimed:notebook");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        let heads = doc.get_heads();
+        let original_actor = doc.doc().get_actor().clone();
+
+        let result = doc.transact_at_heads_recovering(
+            &heads,
+            Some("runtimed:formatter"),
+            "isolated-panic",
+            |_doc| -> Result<(), AutomergeError> { panic!("injected isolated transaction panic") },
+        );
+
+        assert!(matches!(result, Err(AutomergeOperationError::Panic(_))));
+        assert_eq!(doc.doc().get_actor(), &original_actor);
+        doc.update_source("cell-1", "x = 1\n").unwrap();
+        assert_eq!(doc.get_cell("cell-1").unwrap().source, "x = 1\n");
     }
 
     #[test]
