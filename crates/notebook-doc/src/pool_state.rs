@@ -360,16 +360,19 @@ impl PoolDoc {
 
     /// Round-trip save→load to rebuild internal automerge indices.
     pub fn rebuild_from_save(&mut self) -> bool {
-        let actor = self.doc.get_actor().clone();
-        let bytes = self.doc.save();
-        match AutoCommit::load(&bytes) {
-            Ok(mut doc) => {
-                doc.set_actor(actor);
-                self.doc = doc;
-                true
+        catch_automerge_panic("pool-doc-rebuild-from-save", || {
+            let actor = self.doc.get_actor().clone();
+            let bytes = self.doc.save();
+            match AutoCommit::load(&bytes) {
+                Ok(mut doc) => {
+                    doc.set_actor(actor);
+                    self.doc = doc;
+                    true
+                }
+                Err(_) => false,
             }
-            Err(_) => false,
-        }
+        })
+        .unwrap_or_default()
     }
 }
 

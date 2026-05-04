@@ -495,7 +495,7 @@ impl RuntimeStateDoc {
         self.doc.merge(&mut other.doc)
     }
 
-    /// Merge another runtime-state document, rebuilding this document if Automerge panics.
+    /// Merge another runtime-state document, rebuilding both documents if Automerge panics.
     pub fn merge_recovering(
         &mut self,
         other: &mut RuntimeStateDoc,
@@ -505,7 +505,7 @@ impl RuntimeStateDoc {
             Ok(Ok(changes)) => Ok(changes),
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
             Err(err) => {
-                if !self.rebuild_from_save() {
+                if !self.rebuild_from_save() || !other.rebuild_from_save() {
                     return Err(AutomergeOperationError::rebuild_failed(label));
                 }
                 Err(AutomergeOperationError::Panic(err))
@@ -532,16 +532,19 @@ impl RuntimeStateDoc {
     /// Used after catching an automerge panic (upstream MissingOps bug in
     /// `collector.rs`). See `NotebookDoc::rebuild_from_save` for details.
     pub fn rebuild_from_save(&mut self) -> bool {
-        let actor = self.doc.get_actor().clone();
-        let bytes = self.doc.save();
-        match AutoCommit::load(&bytes) {
-            Ok(mut doc) => {
-                doc.set_actor(actor);
-                self.doc = doc;
-                true
+        catch_automerge_panic("runtime-state-doc-rebuild-from-save", || {
+            let actor = self.doc.get_actor().clone();
+            let bytes = self.doc.save();
+            match AutoCommit::load(&bytes) {
+                Ok(mut doc) => {
+                    doc.set_actor(actor);
+                    self.doc = doc;
+                    true
+                }
+                Err(_) => false,
             }
-            Err(_) => false,
-        }
+        })
+        .unwrap_or_default()
     }
 
     /// Compact the document if its serialized size exceeds `threshold` bytes.

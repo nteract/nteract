@@ -499,6 +499,7 @@ impl SyncReactor {
                                 "[notebook-sync] Failed to rebuild after sync panic for {}: {}",
                                 self.io.notebook_id, label
                             );
+                            return;
                         }
                         Err(e) => {
                             warn!(
@@ -659,6 +660,7 @@ impl SyncReactor {
                                 "[notebook-sync] Failed to rebuild after RuntimeStateSync panic for {}: {}",
                                 self.io.notebook_id, label
                             );
+                            return;
                         }
                         Err(e) => {
                             warn!(

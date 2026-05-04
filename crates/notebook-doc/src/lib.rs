@@ -338,7 +338,7 @@ impl NotebookDoc {
         self.doc.merge(&mut other.doc)
     }
 
-    /// Merge another document's changes, rebuilding this document if Automerge panics.
+    /// Merge another document's changes, rebuilding both documents if Automerge panics.
     pub fn merge_recovering(
         &mut self,
         other: &mut NotebookDoc,
@@ -348,7 +348,7 @@ impl NotebookDoc {
             Ok(Ok(changes)) => Ok(changes),
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
             Err(err) => {
-                if !self.rebuild_from_save() {
+                if !self.rebuild_from_save() || !other.rebuild_from_save() {
                     return Err(AutomergeOperationError::rebuild_failed(label));
                 }
                 Err(AutomergeOperationError::Panic(err))
@@ -1115,26 +1115,29 @@ impl NotebookDoc {
     /// fewer cells, the rebuild is skipped to prevent silent cell loss when
     /// `save()` on a panic-corrupted doc drops ops from the serialized bytes.
     pub fn rebuild_from_save(&mut self) -> bool {
-        let actor = self.doc.get_actor().clone();
-        let pre_cell_count = self.cell_count();
-        let bytes = self.doc.save();
-        match AutoCommit::load(&bytes) {
-            Ok(mut doc) => {
-                let post_cell_count = get_cells_from_doc(&doc).len();
-                if post_cell_count < pre_cell_count {
-                    #[cfg(feature = "persistence")]
-                    warn!(
-                        "[notebook-doc] rebuild_from_save would lose cells ({} → {}), skipping",
-                        pre_cell_count, post_cell_count
-                    );
-                    return false;
+        catch_automerge_panic("notebook-doc-rebuild-from-save", || {
+            let actor = self.doc.get_actor().clone();
+            let pre_cell_count = self.cell_count();
+            let bytes = self.doc.save();
+            match AutoCommit::load(&bytes) {
+                Ok(mut doc) => {
+                    let post_cell_count = get_cells_from_doc(&doc).len();
+                    if post_cell_count < pre_cell_count {
+                        #[cfg(feature = "persistence")]
+                        warn!(
+                            "[notebook-doc] rebuild_from_save would lose cells ({} → {}), skipping",
+                            pre_cell_count, post_cell_count
+                        );
+                        return false;
+                    }
+                    doc.set_actor(actor);
+                    self.doc = doc;
+                    true
                 }
-                doc.set_actor(actor);
-                self.doc = doc;
-                true
+                Err(_) => false,
             }
-            Err(_) => false,
-        }
+        })
+        .unwrap_or_default()
     }
 
     /// Save the document to a file.
