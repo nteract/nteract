@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub struct StreamOutputState {
-    pub index: usize,
+    pub output_id: String,
     pub blob_hash: String,
 }
 

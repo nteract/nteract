@@ -4,6 +4,8 @@ use automerge::AutomergeError;
 pub enum RuntimeStateError {
     #[error("scaffold map '{0}' missing; doc may be corrupt")]
     MissingScaffold(&'static str),
+    #[error("output manifest is missing a non-empty output_id")]
+    MissingOutputId,
     #[error("env progress phase must serialize as an object")]
     InvalidProgressShape,
     #[error("automerge: {0}")]

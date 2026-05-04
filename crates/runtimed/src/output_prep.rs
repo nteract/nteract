@@ -18,14 +18,14 @@ use runtime_doc::RuntimeStateDoc;
 #[derive(Debug, Clone)]
 pub(crate) struct DisplayUpdateTarget {
     execution_id: String,
-    output_idx: usize,
+    output_id: String,
     manifest: OutputManifest,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct DisplayManifestUpdate {
     execution_id: String,
-    output_idx: usize,
+    output_id: String,
     manifest_json: serde_json::Value,
 }
 
@@ -318,7 +318,7 @@ pub(crate) fn collect_display_update_targets(
         let mut targets = Vec::new();
         for (exec_id, target_output_id) in &index_entries {
             let outputs = state_doc.get_outputs(exec_id);
-            for (output_idx, output_value) in outputs.into_iter().enumerate() {
+            for output_value in outputs {
                 let manifest: OutputManifest = match serde_json::from_value(output_value) {
                     Ok(m) => m,
                     Err(_) => continue,
@@ -326,7 +326,7 @@ pub(crate) fn collect_display_update_targets(
                 if manifest.output_id() == target_output_id {
                     targets.push(DisplayUpdateTarget {
                         execution_id: exec_id.clone(),
-                        output_idx,
+                        output_id: target_output_id.clone(),
                         manifest,
                     });
                 }
@@ -337,12 +337,12 @@ pub(crate) fn collect_display_update_targets(
         state_doc
             .get_all_outputs()
             .into_iter()
-            .filter_map(|(execution_id, output_idx, output_value)| {
+            .filter_map(|(execution_id, output_id, output_value)| {
                 let manifest: OutputManifest = serde_json::from_value(output_value).ok()?;
                 (output_store::get_display_id(&manifest).as_deref() == Some(display_id)).then_some(
                     DisplayUpdateTarget {
                         execution_id,
-                        output_idx,
+                        output_id,
                         manifest,
                     },
                 )
@@ -373,7 +373,7 @@ pub(crate) async fn build_display_manifest_updates(
         {
             updates.push(DisplayManifestUpdate {
                 execution_id: target.execution_id,
-                output_idx: target.output_idx,
+                output_id: target.output_id,
                 manifest_json: updated.to_json(),
             });
         }
@@ -385,12 +385,12 @@ pub(crate) async fn build_display_manifest_updates(
 pub(crate) fn apply_display_manifest_updates(
     state_doc: &mut RuntimeStateDoc,
     updates: &[DisplayManifestUpdate],
-) -> Result<bool, automerge::AutomergeError> {
+) -> Result<bool, runtime_doc::RuntimeStateError> {
     let mut found = false;
     for update in updates {
         found |= state_doc.replace_output(
             &update.execution_id,
-            update.output_idx,
+            &update.output_id,
             &update.manifest_json,
         )?;
     }

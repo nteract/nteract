@@ -26,19 +26,10 @@
 //!       status: Str         ("queued" | "running" | "done" | "error")
 //!       execution_count: Int|null
 //!       success: Bool|null
-//!       outputs: List[Map]  (inline manifests with blob refs)
-//!         {output}/
-//!           output_id: Str  (UUIDv4, stable addressable identity)
-//!           output_type: Str
-//!           data: Map { mime_type: Map { blob: Str, size: Uint } }  (display_data/execute_result)
-//!           metadata: Map (JSON)
-//!           execution_count: Int|null (execute_result only)
-//!           transient: Map { display_id: Str }
-//!           name: Str (stream only)
-//!           text: Map { blob: Str, size: Uint } (stream only)
-//!           ename: Str (error only)
-//!           evalue: Str (error only)
-//!           traceback: Map { blob: Str, size: Uint } (error only)
+//!       outputs: Map  (keyed by output_id)
+//!         {output_id}/
+//!           seq: Uint       (projection order within this execution)
+//!           manifest: Map   (inline output manifest with blob refs)
 //!   env/
 //!     in_sync: bool
 //!     added: List[Str]     (packages in metadata but not in kernel)
@@ -68,7 +59,8 @@
 //!       prerelease: Str|null
 //!       extras: Str           (JSON-encoded ProjectFileExtras)
 //!   display_index/          Map (keyed by display_id)
-//!     {display_id}: List[Str]  (entries: "execution_id\0output_id")
+//!     {display_id}/         Map
+//!       {execution_id\0output_id}: Bool
 //!   comms/                 Map (keyed by comm_id)
 //!     {comm_id}/           Map
 //!       target_name: Str
@@ -1150,7 +1142,7 @@ impl RuntimeStateDoc {
         self.doc.put(&entry, "status", "queued")?;
         self.doc.put(&entry, "execution_count", ScalarValue::Null)?;
         self.doc.put(&entry, "success", ScalarValue::Null)?;
-        self.doc.put_object(&entry, "outputs", ObjType::List)?;
+        self.doc.put_object(&entry, "outputs", ObjType::Map)?;
         Ok(())
     }
 
@@ -1187,7 +1179,7 @@ impl RuntimeStateDoc {
         self.doc.put(&entry, "status", "queued")?;
         self.doc.put(&entry, "execution_count", ScalarValue::Null)?;
         self.doc.put(&entry, "success", ScalarValue::Null)?;
-        self.doc.put_object(&entry, "outputs", ObjType::List)?;
+        self.doc.put_object(&entry, "outputs", ObjType::Map)?;
         self.doc.put(&entry, "source", source)?;
         self.doc.put(&entry, "seq", ScalarValue::Uint(seq))?;
         Ok(true)
@@ -1322,7 +1314,7 @@ impl RuntimeStateDoc {
                 _ => None,
             });
 
-        let outputs = self.read_json_list(&entry, "outputs");
+        let outputs = self.get_outputs(execution_id);
 
         let source = self.read_opt_str(&entry, "source");
 
@@ -1366,10 +1358,10 @@ impl RuntimeStateDoc {
         queued
     }
 
-    // ── Output storage (keyed by execution_id) ──────────────────────
+    // ── Output storage (keyed by execution_id/output_id) ────────────
 
-    /// Get the ObjId for the `executions/{execution_id}/outputs` list, if it exists.
-    fn get_output_list(&self, execution_id: &str) -> Option<automerge::ObjId> {
+    /// Get the ObjId for the `executions/{execution_id}/outputs` map, if it exists.
+    fn get_output_map(&self, execution_id: &str) -> Option<automerge::ObjId> {
         let executions = self.get_map("executions")?;
         let (_, entry) = self.doc.get(&executions, execution_id).ok().flatten()?;
         self.doc
@@ -1377,53 +1369,155 @@ impl RuntimeStateDoc {
             .ok()
             .flatten()
             .and_then(|(value, id)| match value {
-                Value::Object(ObjType::List) => Some(id),
+                Value::Object(ObjType::Map) => Some(id),
                 _ => None,
             })
     }
 
-    /// Ensure the `executions/{execution_id}/outputs` list exists, creating it if absent.
+    /// Ensure the `executions/{execution_id}/outputs` map exists, creating it if absent.
     /// Returns `None` if the execution entry doesn't exist (stale IOPub race).
-    fn ensure_output_list(&mut self, execution_id: &str) -> Option<automerge::ObjId> {
+    fn ensure_output_map(&mut self, execution_id: &str) -> Option<automerge::ObjId> {
         let executions = self.get_map("executions")?;
         let (_, entry) = self.doc.get(&executions, execution_id).ok().flatten()?;
         match self.doc.get(&entry, "outputs").ok().flatten() {
-            Some((Value::Object(ObjType::List), id)) => Some(id),
-            _ => self.doc.put_object(&entry, "outputs", ObjType::List).ok(),
+            Some((Value::Object(ObjType::Map), id)) => Some(id),
+            _ => self.doc.put_object(&entry, "outputs", ObjType::Map).ok(),
         }
     }
 
-    /// Append a single output manifest to the output list for an execution.
+    fn get_output_entry(&self, execution_id: &str, output_id: &str) -> Option<automerge::ObjId> {
+        let outputs = self.get_output_map(execution_id)?;
+        self.doc
+            .get(&outputs, output_id)
+            .ok()
+            .flatten()
+            .and_then(|(value, id)| match value {
+                Value::Object(ObjType::Map) => Some(id),
+                _ => None,
+            })
+    }
+
+    fn read_output_seq(&self, output_entry: &automerge::ObjId) -> Option<u64> {
+        self.doc
+            .get(output_entry, "seq")
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| match value {
+                Value::Scalar(s) => match s.as_ref() {
+                    ScalarValue::Uint(n) => Some(*n),
+                    ScalarValue::Int(n) if *n >= 0 => Some(*n as u64),
+                    _ => None,
+                },
+                _ => None,
+            })
+    }
+
+    fn read_output_manifest(&self, output_entry: &automerge::ObjId) -> Option<serde_json::Value> {
+        automunge::read_json_value(&self.doc, output_entry, "manifest")
+    }
+
+    fn output_entries_sorted(
+        &self,
+        outputs: &automerge::ObjId,
+    ) -> Vec<(String, u64, serde_json::Value)> {
+        let mut entries = Vec::new();
+        for output_id in self.doc.keys(outputs) {
+            let Some((Value::Object(ObjType::Map), output_entry)) =
+                self.doc.get(outputs, &output_id).ok().flatten()
+            else {
+                continue;
+            };
+            let Some(seq) = self.read_output_seq(&output_entry) else {
+                continue;
+            };
+            let Some(manifest) = self.read_output_manifest(&output_entry) else {
+                continue;
+            };
+            entries.push((output_id, seq, manifest));
+        }
+        entries.sort_by(|(left_id, left_seq, _), (right_id, right_seq, _)| {
+            left_seq.cmp(right_seq).then_with(|| left_id.cmp(right_id))
+        });
+        entries
+    }
+
+    fn next_output_seq(&self, outputs: &automerge::ObjId) -> u64 {
+        self.output_entries_sorted(outputs)
+            .into_iter()
+            .map(|(_, seq, _)| seq)
+            .max()
+            .map_or(0, |seq| seq.saturating_add(1))
+    }
+
+    fn output_is_latest(
+        &self,
+        outputs: &automerge::ObjId,
+        output_entry: &automerge::ObjId,
+    ) -> bool {
+        let Some(seq) = self.read_output_seq(output_entry) else {
+            return false;
+        };
+        self.output_entries_sorted(outputs)
+            .into_iter()
+            .map(|(_, entry_seq, _)| entry_seq)
+            .max()
+            == Some(seq)
+    }
+
+    fn display_id_for_manifest(manifest: &serde_json::Value) -> Option<&str> {
+        manifest
+            .get("transient")
+            .and_then(|t| t.get("display_id"))
+            .and_then(|d| d.as_str())
+    }
+
+    fn write_output_manifest(
+        &mut self,
+        output_entry: &automerge::ObjId,
+        manifest: &serde_json::Value,
+    ) -> Result<(), AutomergeError> {
+        automunge::update_json_at_key(&mut self.doc, output_entry, "manifest", manifest)
+    }
+
+    /// Append or replace a single output manifest for an execution.
     ///
-    /// The manifest is written as an Automerge Map at the list position.
-    /// Creates the `outputs/{execution_id}` list if it doesn't exist.
+    /// The manifest is written under `outputs/{output_id}` and ordered by a
+    /// daemon-authored `seq`. Creates the execution output map if it doesn't exist.
     /// Also updates `display_index` if the manifest has a `display_id`.
-    /// Returns the output index, or `Ok(0)` if the execution entry is missing.
+    /// Returns the output_id, or the manifest output_id if the execution entry is missing.
     pub fn append_output(
         &mut self,
         execution_id: &str,
         manifest: &serde_json::Value,
-    ) -> Result<usize, AutomergeError> {
-        let Some(list_id) = self.ensure_output_list(execution_id) else {
-            return Ok(0);
+    ) -> Result<String, RuntimeStateError> {
+        let output_id = extract_output_id(manifest).ok_or(RuntimeStateError::MissingOutputId)?;
+        let Some(outputs) = self.ensure_output_map(execution_id) else {
+            return Ok(output_id);
         };
-        let len = self.doc.length(&list_id);
-        automunge::insert_json_at_index(&mut self.doc, &list_id, len, manifest)?;
 
-        // Update display_index if the manifest has a display_id and output_id
-        if let Some(display_id) = manifest
-            .get("transient")
-            .and_then(|t| t.get("display_id"))
-            .and_then(|d| d.as_str())
-        {
-            if let Some(output_id) = manifest.get("output_id").and_then(|o| o.as_str()) {
-                if !output_id.is_empty() {
-                    self.add_display_index_entry(display_id, execution_id, output_id);
-                }
+        let output_entry = match self.doc.get(&outputs, &output_id).ok().flatten() {
+            Some((Value::Object(ObjType::Map), id)) => id,
+            _ => {
+                let id = self.doc.put_object(&outputs, &output_id, ObjType::Map)?;
+                let seq = self.next_output_seq(&outputs);
+                self.doc.put(&id, "seq", ScalarValue::Uint(seq))?;
+                id
+            }
+        };
+
+        if let Some(old_manifest) = self.read_output_manifest(&output_entry) {
+            if let Some(display_id) = Self::display_id_for_manifest(&old_manifest) {
+                self.remove_display_index_entry(display_id, execution_id, &output_id);
             }
         }
 
-        Ok(len)
+        self.write_output_manifest(&output_entry, manifest)?;
+
+        if let Some(display_id) = Self::display_id_for_manifest(manifest) {
+            self.add_display_index_entry(display_id, execution_id, &output_id);
+        }
+
+        Ok(output_id)
     }
 
     /// Replace all outputs for an execution.
@@ -1433,7 +1527,7 @@ impl RuntimeStateDoc {
         &mut self,
         execution_id: &str,
         manifests: &[serde_json::Value],
-    ) -> Result<bool, AutomergeError> {
+    ) -> Result<bool, RuntimeStateError> {
         let Some(executions) = self.get_map("executions") else {
             return Ok(false);
         };
@@ -1441,23 +1535,19 @@ impl RuntimeStateDoc {
             return Ok(false);
         };
 
-        // Delete existing list and create fresh
+        // Delete existing output map and create fresh.
         self.remove_display_index_entries_for_execution(execution_id);
         let _ = self.doc.delete(&entry, "outputs");
-        let list_id = self.doc.put_object(&entry, "outputs", ObjType::List)?;
+        let outputs = self.doc.put_object(&entry, "outputs", ObjType::Map)?;
         for (i, manifest) in manifests.iter().enumerate() {
-            automunge::insert_json_at_index(&mut self.doc, &list_id, i, manifest)?;
-            // Update display_index for manifests with display_id
-            if let Some(display_id) = manifest
-                .get("transient")
-                .and_then(|t| t.get("display_id"))
-                .and_then(|d| d.as_str())
-            {
-                if let Some(output_id) = manifest.get("output_id").and_then(|o| o.as_str()) {
-                    if !output_id.is_empty() {
-                        self.add_display_index_entry(display_id, execution_id, output_id);
-                    }
-                }
+            let output_id =
+                extract_output_id(manifest).ok_or(RuntimeStateError::MissingOutputId)?;
+            let output_entry = self.doc.put_object(&outputs, &output_id, ObjType::Map)?;
+            self.doc
+                .put(&output_entry, "seq", ScalarValue::Uint(i as u64))?;
+            self.write_output_manifest(&output_entry, manifest)?;
+            if let Some(display_id) = Self::display_id_for_manifest(manifest) {
+                self.add_display_index_entry(display_id, execution_id, &output_id);
             }
         }
         Ok(true)
@@ -1504,8 +1594,8 @@ impl RuntimeStateDoc {
 
     /// Add an entry to the display_index for a given display_id.
     ///
-    /// Each entry is stored as a JSON string `"execution_id\0output_id"` in
-    /// an Automerge List under `display_index/{display_id}`.
+    /// Each entry is stored as a map key `"execution_id\0output_id"` under
+    /// `display_index/{display_id}`.
     pub fn add_display_index_entry(
         &mut self,
         display_id: &str,
@@ -1515,18 +1605,38 @@ impl RuntimeStateDoc {
         let Some(index_map) = self.get_map("display_index") else {
             return;
         };
-        let list_id = match self.doc.get(&index_map, display_id).ok().flatten() {
-            Some((Value::Object(ObjType::List), id)) => id,
+        let display_entries = match self.doc.get(&index_map, display_id).ok().flatten() {
+            Some((Value::Object(ObjType::Map), id)) => id,
             _ => {
-                let Ok(id) = self.doc.put_object(&index_map, display_id, ObjType::List) else {
+                let Ok(id) = self.doc.put_object(&index_map, display_id, ObjType::Map) else {
                     return;
                 };
                 id
             }
         };
         let entry = format!("{}\0{}", execution_id, output_id);
-        let len = self.doc.length(&list_id);
-        let _ = self.doc.insert(&list_id, len, entry);
+        let _ = self.doc.put(&display_entries, entry, true);
+    }
+
+    fn remove_display_index_entry(
+        &mut self,
+        display_id: &str,
+        execution_id: &str,
+        output_id: &str,
+    ) {
+        let Some(index_map) = self.get_map("display_index") else {
+            return;
+        };
+        let Some((Value::Object(ObjType::Map), display_entries)) =
+            self.doc.get(&index_map, display_id).ok().flatten()
+        else {
+            return;
+        };
+        let entry = format!("{}\0{}", execution_id, output_id);
+        let _ = self.doc.delete(&display_entries, entry.as_str());
+        if self.doc.keys(&display_entries).next().is_none() {
+            let _ = self.doc.delete(&index_map, display_id);
+        }
     }
 
     /// Remove all display_index entries that reference the given execution_id.
@@ -1538,26 +1648,21 @@ impl RuntimeStateDoc {
         };
         let display_ids: Vec<String> = self.doc.keys(&index_map).collect();
         for display_id in display_ids {
-            let Some((Value::Object(ObjType::List), list_id)) =
+            let Some((Value::Object(ObjType::Map), display_entries)) =
                 self.doc.get(&index_map, &display_id).ok().flatten()
             else {
                 continue;
             };
             let prefix = format!("{}\0", execution_id);
-            let mut to_remove = Vec::new();
-            for i in 0..self.doc.length(&list_id) {
-                if let Some((Value::Scalar(s), _)) = self.doc.get(&list_id, i).ok().flatten() {
-                    if let automerge::ScalarValue::Str(entry) = s.as_ref() {
-                        if entry.starts_with(&prefix) {
-                            to_remove.push(i);
-                        }
-                    }
-                }
+            let to_remove: Vec<String> = self
+                .doc
+                .keys(&display_entries)
+                .filter(|entry| entry.starts_with(&prefix))
+                .collect();
+            for entry in to_remove {
+                let _ = self.doc.delete(&display_entries, entry.as_str());
             }
-            for i in to_remove.into_iter().rev() {
-                let _ = self.doc.delete(&list_id, i);
-            }
-            if self.doc.length(&list_id) == 0 {
+            if self.doc.keys(&display_entries).next().is_none() {
                 let _ = self.doc.delete(&index_map, &display_id);
             }
         }
@@ -1568,19 +1673,15 @@ impl RuntimeStateDoc {
         let Some(index_map) = self.get_map("display_index") else {
             return Vec::new();
         };
-        let Some((Value::Object(ObjType::List), list_id)) =
+        let Some((Value::Object(ObjType::Map), display_entries)) =
             self.doc.get(&index_map, display_id).ok().flatten()
         else {
             return Vec::new();
         };
         let mut entries = Vec::new();
-        for i in 0..self.doc.length(&list_id) {
-            if let Some((Value::Scalar(s), _)) = self.doc.get(&list_id, i).ok().flatten() {
-                if let automerge::ScalarValue::Str(entry) = s.as_ref() {
-                    if let Some((eid, oid)) = entry.split_once('\0') {
-                        entries.push((eid.to_string(), oid.to_string()));
-                    }
-                }
+        for entry in self.doc.keys(&display_entries) {
+            if let Some((eid, oid)) = entry.split_once('\0') {
+                entries.push((eid.to_string(), oid.to_string()));
             }
         }
         entries
@@ -1588,12 +1689,12 @@ impl RuntimeStateDoc {
 
     /// Update or insert a stream output for an execution.
     ///
-    /// If `known_state` is provided, validates that the output at the cached index
+    /// If `known_state` is provided, validates that the cached output_id
     /// still has the expected blob hash (via `text.blob`). If validation passes,
     /// replaces in place. If validation fails (hash mismatch, index out of bounds,
     /// or no state), appends a new output.
     ///
-    /// Returns `(updated: bool, output_index: usize)` where `updated` is true if an
+    /// Returns `(updated: bool, output_id)` where `updated` is true if an
     /// existing output was replaced in place, false if a new output was appended.
     pub fn upsert_stream_output(
         &mut self,
@@ -1601,22 +1702,27 @@ impl RuntimeStateDoc {
         _stream_name: &str,
         manifest: &serde_json::Value,
         known_state: Option<&StreamOutputState>,
-    ) -> Result<(bool, usize), AutomergeError> {
-        let Some(list_id) = self.ensure_output_list(execution_id) else {
-            return Ok((false, 0));
+    ) -> Result<(bool, String), RuntimeStateError> {
+        let manifest_output_id =
+            extract_output_id(manifest).ok_or(RuntimeStateError::MissingOutputId)?;
+        let Some(outputs) = self.ensure_output_map(execution_id) else {
+            return Ok((false, manifest_output_id));
         };
-        let output_count = self.doc.length(&list_id);
 
         // Validate cached state if provided
         if let Some(state) = known_state {
-            // Must be the last output — if something was appended after (e.g., stderr
+            // Must be the last output - if something was appended after (e.g., stderr
             // between two stdout messages), we should append instead of updating
-            if state.index + 1 == output_count {
+            if let Some(output_entry) = self.get_output_entry(execution_id, &state.output_id) {
+                let is_latest = self.output_is_latest(&outputs, &output_entry);
                 // Read the existing output and check text content ref against state.blob_hash.
                 // ContentRef is either {"blob": "hash", "size": N} or {"inline": "text"}.
                 // The cached blob_hash stores the blob hash or the inline content itself.
-                if let Some(existing) = automunge::read_json_value(&self.doc, &list_id, state.index)
-                {
+                if is_latest {
+                    let existing = self.read_output_manifest(&output_entry);
+                    let Some(existing) = existing else {
+                        return Ok((false, self.append_output(execution_id, manifest)?));
+                    };
                     let current_id = existing.get("text").and_then(|t| {
                         t.get("blob")
                             .and_then(|b| b.as_str())
@@ -1642,13 +1748,8 @@ impl RuntimeStateDoc {
                         // only updating changed fields (text, llm_preview).
                         // This avoids delete+insert which generates tombstones
                         // for the entire Map on every stream coalescence.
-                        automunge::update_json_at_index(
-                            &mut self.doc,
-                            &list_id,
-                            state.index,
-                            &patched,
-                        )?;
-                        return Ok((true, state.index));
+                        self.replace_output(execution_id, &state.output_id, &patched)?;
+                        return Ok((true, state.output_id.clone()));
                     }
                 }
             }
@@ -1656,11 +1757,11 @@ impl RuntimeStateDoc {
         }
 
         // No valid state, append new output
-        automunge::insert_json_at_index(&mut self.doc, &list_id, output_count, manifest)?;
-        Ok((false, output_count))
+        let output_id = self.append_output(execution_id, manifest)?;
+        Ok((false, output_id))
     }
 
-    /// Replace an output at a specific index for an execution.
+    /// Replace an output by output_id for an execution.
     ///
     /// Used by UpdateDisplayData handling for in-place manifest updates.
     /// Reuses the existing Map object and only updates changed fields to
@@ -1668,53 +1769,55 @@ impl RuntimeStateDoc {
     pub fn replace_output(
         &mut self,
         execution_id: &str,
-        output_idx: usize,
+        output_id: &str,
         manifest: &serde_json::Value,
-    ) -> Result<bool, AutomergeError> {
-        let Some(list_id) = self.get_output_list(execution_id) else {
+    ) -> Result<bool, RuntimeStateError> {
+        let Some(output_entry) = self.get_output_entry(execution_id, output_id) else {
             return Ok(false);
         };
-        if output_idx >= self.doc.length(&list_id) {
-            return Ok(false);
+
+        if let Some(old_manifest) = self.read_output_manifest(&output_entry) {
+            if let Some(display_id) = Self::display_id_for_manifest(&old_manifest) {
+                self.remove_display_index_entry(display_id, execution_id, output_id);
+            }
         }
-        automunge::update_json_at_index(&mut self.doc, &list_id, output_idx, manifest)?;
+
+        self.write_output_manifest(&output_entry, manifest)?;
+
+        if let Some(display_id) = Self::display_id_for_manifest(manifest) {
+            self.add_display_index_entry(display_id, execution_id, output_id);
+        }
+
         Ok(true)
     }
 
     /// Read all outputs for an execution.
     pub fn get_outputs(&self, execution_id: &str) -> Vec<serde_json::Value> {
-        let Some(list_id) = self.get_output_list(execution_id) else {
+        let Some(outputs) = self.get_output_map(execution_id) else {
             return Vec::new();
         };
-        let len = self.doc.length(&list_id);
-        let mut out = Vec::with_capacity(len);
-        for i in 0..len {
-            if let Some(val) = automunge::read_json_value(&self.doc, &list_id, i) {
-                out.push(val);
-            }
-        }
-        out
+        self.output_entries_sorted(&outputs)
+            .into_iter()
+            .map(|(_, _, manifest)| manifest)
+            .collect()
     }
 
     /// Get all outputs across all executions.
     ///
-    /// Returns `(execution_id, output_index, manifest)` triples.
+    /// Returns `(execution_id, output_id, manifest)` triples.
     /// Used by UpdateDisplayData to find outputs with matching display_id.
-    pub fn get_all_outputs(&self) -> Vec<(String, usize, serde_json::Value)> {
+    pub fn get_all_outputs(&self) -> Vec<(String, String, serde_json::Value)> {
         let Some(executions) = self.get_map("executions") else {
             return Vec::new();
         };
         let mut results = Vec::new();
         for exec_id in self.doc.keys(&executions) {
             if let Some((_, entry)) = self.doc.get(&executions, &exec_id).ok().flatten() {
-                if let Some((Value::Object(ObjType::List), list_id)) =
+                if let Some((Value::Object(ObjType::Map), outputs)) =
                     self.doc.get(&entry, "outputs").ok().flatten()
                 {
-                    let len = self.doc.length(&list_id);
-                    for i in 0..len {
-                        if let Some(val) = automunge::read_json_value(&self.doc, &list_id, i) {
-                            results.push((exec_id.clone(), i, val));
-                        }
+                    for (output_id, _, manifest) in self.output_entries_sorted(&outputs) {
+                        results.push((exec_id.clone(), output_id, manifest));
                     }
                 }
             }
@@ -3056,6 +3159,7 @@ mod tests {
     fn test_stream(blob: &str) -> serde_json::Value {
         serde_json::json!({
             "output_type": "stream",
+            "output_id": format!("stream-{blob}"),
             "name": "stdout",
             "text": {"blob": blob, "size": blob.len()}
         })
@@ -3065,6 +3169,7 @@ mod tests {
     fn test_stream_inline(text: &str) -> serde_json::Value {
         serde_json::json!({
             "output_type": "stream",
+            "output_id": format!("stream-inline-{text}"),
             "name": "stdout",
             "text": {"inline": text}
         })
@@ -3074,6 +3179,7 @@ mod tests {
     fn test_display(blob: &str) -> serde_json::Value {
         serde_json::json!({
             "output_type": "display_data",
+            "output_id": format!("display-{blob}"),
             "data": {"text/plain": {"blob": blob, "size": blob.len()}}
         })
     }
@@ -3505,6 +3611,7 @@ mod tests {
         for i in 0..50 {
             let manifest = serde_json::json!({
                 "output_type": "stream",
+                "output_id": format!("stream-{}", i),
                 "name": "stdout",
                 "text": {"blob": format!("hash-{}", i), "size": 1000 + i}
             });
@@ -4054,10 +4161,10 @@ mod tests {
         doc.create_execution("exec-1", "cell-1").unwrap();
         let m_a = test_stream("hash-a");
         let m_b = test_stream("hash-b");
-        let idx0 = doc.append_output("exec-1", &m_a).unwrap();
-        assert_eq!(idx0, 0);
-        let idx1 = doc.append_output("exec-1", &m_b).unwrap();
-        assert_eq!(idx1, 1);
+        let id0 = doc.append_output("exec-1", &m_a).unwrap();
+        assert_eq!(id0, "stream-hash-a");
+        let id1 = doc.append_output("exec-1", &m_b).unwrap();
+        assert_eq!(id1, "stream-hash-b");
 
         assert_eq!(doc.get_outputs("exec-1"), vec![m_a, m_b]);
     }
@@ -4236,13 +4343,17 @@ mod tests {
         doc.append_output("exec-1", &m_a).unwrap();
         doc.append_output("exec-1", &m_b).unwrap();
 
-        assert!(doc.replace_output("exec-1", 1, &m_c).unwrap());
+        assert!(doc
+            .replace_output("exec-1", "display-hash-b", &m_c)
+            .unwrap());
         assert_eq!(doc.get_outputs("exec-1"), vec![m_a, m_c]);
 
-        // Out of bounds
-        assert!(!doc.replace_output("exec-1", 5, &m_d).unwrap());
+        // Unknown output_id
+        assert!(!doc
+            .replace_output("exec-1", "missing-output", &m_d)
+            .unwrap());
         // Nonexistent execution
-        assert!(!doc.replace_output("nope", 0, &m_d).unwrap());
+        assert!(!doc.replace_output("nope", "display-hash-d", &m_d).unwrap());
     }
 
     #[test]
@@ -4253,6 +4364,7 @@ mod tests {
         // Original manifest has an extra key (display_id)
         let original = serde_json::json!({
             "output_type": "display_data",
+            "output_id": "display-original",
             "display_id": "plot-1",
             "data": {"text/plain": {"blob": "h1", "size": 2}}
         });
@@ -4261,9 +4373,11 @@ mod tests {
         // Replacement manifest omits display_id
         let replacement = serde_json::json!({
             "output_type": "display_data",
+            "output_id": "display-original",
             "data": {"text/plain": {"blob": "h2", "size": 2}}
         });
-        doc.replace_output("exec-1", 0, &replacement).unwrap();
+        doc.replace_output("exec-1", "display-original", &replacement)
+            .unwrap();
 
         let outputs = doc.get_outputs("exec-1");
         assert_eq!(outputs.len(), 1);
@@ -4278,11 +4392,11 @@ mod tests {
 
         let manifest = test_stream("hash-a");
         // No known state → append
-        let (updated, idx) = doc
+        let (updated, output_id) = doc
             .upsert_stream_output("exec-1", "stdout", &manifest, None)
             .unwrap();
         assert!(!updated);
-        assert_eq!(idx, 0);
+        assert_eq!(output_id, "stream-hash-a");
         assert_eq!(doc.get_outputs("exec-1"), vec![manifest]);
     }
 
@@ -4294,16 +4408,18 @@ mod tests {
         doc.append_output("exec-1", &m_a).unwrap();
 
         let state = StreamOutputState {
-            index: 0,
+            output_id: "stream-hash-a".to_string(),
             blob_hash: "hash-a".to_string(),
         };
         let m_b = test_stream("hash-b");
-        let (updated, idx) = doc
+        let (updated, output_id) = doc
             .upsert_stream_output("exec-1", "stdout", &m_b, Some(&state))
             .unwrap();
         assert!(updated);
-        assert_eq!(idx, 0);
-        assert_eq!(doc.get_outputs("exec-1"), vec![m_b]);
+        assert_eq!(output_id, "stream-hash-a");
+        let mut expected = m_b;
+        expected["output_id"] = serde_json::Value::String("stream-hash-a".to_string());
+        assert_eq!(doc.get_outputs("exec-1"), vec![expected]);
     }
 
     #[test]
@@ -4315,16 +4431,18 @@ mod tests {
 
         // blob_hash stores the inline content itself for inline ContentRefs
         let state = StreamOutputState {
-            index: 0,
+            output_id: "stream-inline-***".to_string(),
             blob_hash: "***".to_string(),
         };
         let m_b = test_stream_inline("******");
-        let (updated, idx) = doc
+        let (updated, output_id) = doc
             .upsert_stream_output("exec-1", "stdout", &m_b, Some(&state))
             .unwrap();
         assert!(updated);
-        assert_eq!(idx, 0);
-        assert_eq!(doc.get_outputs("exec-1"), vec![m_b]);
+        assert_eq!(output_id, "stream-inline-***");
+        let mut expected = m_b;
+        expected["output_id"] = serde_json::Value::String("stream-inline-***".to_string());
+        assert_eq!(doc.get_outputs("exec-1"), vec![expected]);
     }
 
     #[test]
@@ -4336,17 +4454,19 @@ mod tests {
         doc.append_output("exec-1", &m_a).unwrap();
 
         let state = StreamOutputState {
-            index: 0,
+            output_id: "stream-inline-small".to_string(),
             blob_hash: "small".to_string(),
         };
         // Transition to blob when content grows past threshold
         let m_b = test_stream("blob-hash-after-growth");
-        let (updated, idx) = doc
+        let (updated, output_id) = doc
             .upsert_stream_output("exec-1", "stdout", &m_b, Some(&state))
             .unwrap();
         assert!(updated);
-        assert_eq!(idx, 0);
-        assert_eq!(doc.get_outputs("exec-1"), vec![m_b]);
+        assert_eq!(output_id, "stream-inline-small");
+        let mut expected = m_b;
+        expected["output_id"] = serde_json::Value::String("stream-inline-small".to_string());
+        assert_eq!(doc.get_outputs("exec-1"), vec![expected]);
     }
 
     #[test]
@@ -4357,15 +4477,15 @@ mod tests {
         doc.append_output("exec-1", &m_a).unwrap();
 
         let state = StreamOutputState {
-            index: 0,
+            output_id: "stream-hash-a".to_string(),
             blob_hash: "wrong-hash".to_string(),
         };
         let m_b = test_stream("hash-b");
-        let (updated, idx) = doc
+        let (updated, output_id) = doc
             .upsert_stream_output("exec-1", "stdout", &m_b, Some(&state))
             .unwrap();
         assert!(!updated);
-        assert_eq!(idx, 1);
+        assert_eq!(output_id, "stream-hash-b");
         assert_eq!(doc.get_outputs("exec-1"), vec![m_a, m_b]);
     }
 
@@ -4396,7 +4516,7 @@ mod tests {
         doc.append_output("exec-1", &m_a).unwrap();
 
         let state = StreamOutputState {
-            index: 0,
+            output_id: "original-id-abc".to_string(),
             blob_hash: "hash-a".to_string(),
         };
         let m_b = serde_json::json!({
@@ -4405,11 +4525,11 @@ mod tests {
             "name": "stdout",
             "text": {"blob": "hash-b", "size": 10}
         });
-        let (updated, idx) = doc
+        let (updated, output_id) = doc
             .upsert_stream_output("exec-1", "stdout", &m_b, Some(&state))
             .unwrap();
         assert!(updated);
-        assert_eq!(idx, 0);
+        assert_eq!(output_id, "original-id-abc");
 
         let outputs = doc.get_outputs("exec-1");
         assert_eq!(outputs.len(), 1);
@@ -4443,7 +4563,7 @@ mod tests {
         let size_after_first = doc.doc.save().len();
 
         let mut state = StreamOutputState {
-            index: 0,
+            output_id: "stream-uuid".to_string(),
             blob_hash: "hash-0".to_string(),
         };
 
@@ -4455,13 +4575,13 @@ mod tests {
                 "name": "stdout",
                 "text": {"blob": &new_hash, "size": 100 + i}
             });
-            let (updated, idx) = doc
+            let (updated, output_id) = doc
                 .upsert_stream_output("exec-1", "stdout", &manifest, Some(&state))
                 .unwrap();
             assert!(updated);
-            assert_eq!(idx, 0);
+            assert_eq!(output_id, "stream-uuid");
             state = StreamOutputState {
-                index: 0,
+                output_id: "stream-uuid".to_string(),
                 blob_hash: new_hash,
             };
         }
@@ -4497,9 +4617,9 @@ mod tests {
 
         // Check that all expected entries are present (order across execution_ids
         // depends on Automerge key iteration order, so use contains)
-        assert!(all.contains(&("exec-1".to_string(), 0, m1)));
-        assert!(all.contains(&("exec-1".to_string(), 1, m2)));
-        assert!(all.contains(&("exec-2".to_string(), 0, m3)));
+        assert!(all.contains(&("exec-1".to_string(), "stream-h1".to_string(), m1)));
+        assert!(all.contains(&("exec-1".to_string(), "stream-h2".to_string(), m2)));
+        assert!(all.contains(&("exec-2".to_string(), "stream-h3".to_string(), m3)));
     }
 
     #[test]

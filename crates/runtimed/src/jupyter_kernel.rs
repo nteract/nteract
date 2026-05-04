@@ -1383,7 +1383,7 @@ impl KernelConnection for JupyterKernel {
                                                                 "[jupyter-kernel] Failed to upsert stream output: {}",
                                                                 e
                                                             );
-                                                            Err(e.into())
+                                                            Err(e)
                                                         }
                                                     }
                                                 },
@@ -1395,13 +1395,13 @@ impl KernelConnection for JupyterKernel {
                                             }
                                         };
 
-                                        let (_updated, output_index) = upsert_result;
+                                        let (_updated, output_id) = upsert_result;
                                         let mut terminals = iopub_stream_terminals.lock().await;
                                         terminals.set_output_state(
                                             &eid,
                                             stream_name,
                                             StreamOutputState {
-                                                index: output_index,
+                                                output_id,
                                                 blob_hash: blob_hash.clone(),
                                             },
                                         );
@@ -1660,9 +1660,9 @@ impl KernelConnection for JupyterKernel {
                                                         Some(&iopub_kernel_actor_id),
                                                         "runtime-state-iopub-display-update-transaction",
                                                         |sd| {
-                                                            Ok(apply_display_manifest_updates(
+                                                            apply_display_manifest_updates(
                                                                 sd, &updates,
-                                                            )?)
+                                                            )
                                                         },
                                                     );
                                                 match updated {
