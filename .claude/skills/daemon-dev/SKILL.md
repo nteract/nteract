@@ -127,19 +127,25 @@ Prefer these over `get_cells()` which materializes everything.
 
 ```rust
 // Fork BEFORE async work — captures the baseline
-let fork = {
+let baseline_heads = {
     let mut doc = room.doc.write().await;
-    doc.fork()
+    doc.get_heads()
 };
 
 // Async work happens here (ruff, network, etc.)
 let result = do_async_work().await;
 
-// Apply on fork, then merge back
-let mut fork = fork;
-fork.update_source(&cell_id, &result).ok();
+// Apply against the captured baseline after reacquiring the live doc
 let mut doc = room.doc.write().await;
-doc.merge(&mut fork).ok();
+doc.transact_at_heads_recovering(
+    &baseline_heads,
+    Some("runtimed:formatter"),
+    "formatter-transaction",
+    |doc| {
+        doc.update_source(&cell_id, &result)?;
+        Ok(())
+    },
+).ok();
 ```
 
 For synchronous mutation blocks (no `.await` between fork and merge), prefer the helpers:
@@ -149,9 +155,9 @@ doc.fork_and_merge(|fork| {
 });
 ```
 
-Do not use `fork_at(...)` in current daemon code paths. The file watcher now compares against `last_save_sources` and uses `fork()` at current heads because `fork_at(...)` can trigger automerge/automerge#1327 on complex text histories.
+Use `fork_with_actor(...)` + `merge_recovering(...)` only when the async worker must carry an editable fork across the `.await`. Do not use `fork_at(...)` for historical writes; keep it for views/diagnostics and prefer document-owned transaction helpers.
 
-Key methods on `NotebookDoc`: `fork()`, `get_heads()`, `merge()`, `fork_and_merge(f)`.
+Key methods on `NotebookDoc`: `get_heads()`, `transact_at_heads_recovering(...)`, `fork_with_actor(...)`, `merge_recovering(...)`, `fork_and_merge(f)`.
 
 All async CRDT mutation paths in the daemon are now protected — see #1216.
 

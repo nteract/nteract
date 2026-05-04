@@ -2479,9 +2479,9 @@ impl KernelConnection for JupyterKernel {
         // Coalesced comm writes must carry the kernel actor ID so the
         // runtime agent's actor filter in `receive_sync_and_foreign_comms`
         // recognizes them as self-authored echoes and doesn't forward
-        // them back to the kernel. Without this, writes inherit the
-        // doc's default actor (`runtimed:state`) and the filter lets
-        // them through, re-triggering the amplification loop.
+        // them back to the kernel. Without this, fork writes use an
+        // unrelated actor and the filter lets them through, re-triggering
+        // the amplification loop.
         let coalesce_actor_id = format!("{kernel_actor_id}:coalesce");
         let coalesce_panic_cmd_tx = cmd_tx.clone();
         let comm_coalesce_task = spawn_supervised(

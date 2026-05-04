@@ -442,23 +442,23 @@ impl RuntimeStateDoc {
     /// Automerge fork. Changes made on the fork are independent of the
     /// original — call [`merge`](Self::merge) to reconcile them.
     ///
-    /// **Important:** Forks inherit the parent's actor ID. Call
-    /// [`set_actor`](Self::set_actor) on the fork to assign a distinct
-    /// identity (e.g., `"runtimed:state:cell-error"`) before making any
-    /// mutations to avoid `DuplicateSeqNumber` errors on merge.
+    /// Automerge forks receive a new random actor by default. Set a stable
+    /// actor only when downstream filtering or attribution requires it, and do
+    /// not reuse that actor for concurrent forks that can both write before
+    /// merging.
     pub fn fork(&mut self) -> Self {
         Self {
             doc: self.doc.fork(),
         }
     }
 
-    /// Fork the document and set a distinct actor ID on the fork in one step.
+    /// Fork the document and set a caller-chosen actor ID on the fork.
     ///
-    /// Forks inherit the parent's actor ID, and Automerge tracks ops by
-    /// `(actor, seq)`. Two concurrent forks that share an actor will
-    /// each produce ops at seq `N`, `N+1`, …; the first merge lands and
-    /// the second returns `DuplicateSeqNumber` — silently dropping
-    /// writes if the error is ignored. The regression test
+    /// Automerge forks receive a new random actor by default because an actor
+    /// ID identifies one linear stream of changes. If two concurrent forks are
+    /// forced to share an actor, they can each produce ops at seq `N`, `N+1`,
+    /// …; the first merge lands and the second returns `DuplicateSeqNumber`,
+    /// silently dropping writes if the error is ignored. The regression test
     /// [`merging_two_forks_with_shared_actor_returns_duplicate_seq_error`]
     /// pins this invariant.
     ///
@@ -475,9 +475,7 @@ impl RuntimeStateDoc {
     /// overlap across the async gap.
     ///
     /// For synchronous fork+merge blocks, use
-    /// [`fork_and_merge`](Self::fork_and_merge) — actor collisions are
-    /// harmless there because the merge completes before any other
-    /// fork of the same parent can exist.
+    /// [`fork_and_merge`](Self::fork_and_merge).
     pub fn fork_with_actor(&mut self, actor: impl AsRef<str>) -> Self {
         let mut fork = self.fork();
         fork.set_actor(actor.as_ref());
@@ -529,10 +527,11 @@ impl RuntimeStateDoc {
         let _ = self.merge(&mut fork);
     }
 
-    /// Round-trip save→load to rebuild internal automerge indices.
+    /// Round-trip save→load to rebuild internal Automerge indices.
     ///
-    /// Used after catching an automerge panic (upstream MissingOps bug in
-    /// `collector.rs`). See `NotebookDoc::rebuild_from_save` for details.
+    /// Used as a containment step after catching an Automerge panic inside a
+    /// document-owned recovery boundary. See `NotebookDoc::rebuild_from_save`
+    /// for the notebook-doc variant with a cell-count guard.
     pub fn rebuild_from_save(&mut self) -> bool {
         catch_automerge_panic("runtime-state-doc-rebuild-from-save", || {
             let actor = self.doc.get_actor().clone();
@@ -3945,7 +3944,7 @@ mod tests {
         let mut doc = RuntimeStateDoc::new();
         let mut fork = doc.fork();
 
-        // Fork inherits parent actor — must set a distinct one
+        // Fork receives an actor distinct from the parent.
         fork.set_actor("runtimed:state:cell-error");
 
         // Verify the fork's actor is different from the parent
