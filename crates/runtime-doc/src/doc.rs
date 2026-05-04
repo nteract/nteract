@@ -2513,7 +2513,7 @@ impl RuntimeStateDoc {
             need: message.need,
             have: message.have,
             changes: sync::ChunkList::empty(),
-            supported_capabilities: message.supported_capabilities,
+            flags: message.flags,
             version: message.version,
         };
         self.doc.sync().receive_sync_message(peer_state, filtered)?;

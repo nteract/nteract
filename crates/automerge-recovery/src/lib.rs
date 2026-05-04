@@ -133,19 +133,17 @@ mod tests {
     }
 
     #[test]
-    fn captures_real_missing_ops_panic_from_historical_fork_at() {
+    fn historical_fork_at_missing_ops_regression_is_fixed_by_desktop_patch() {
         let (mut daemon, old_heads) = build_missing_ops_historical_fork_doc();
-        let error =
-            match catch_automerge_panic("missing-ops-fork-at", || daemon.fork_at(&old_heads)) {
-                Ok(_) => panic!("historical fork_at should trigger Automerge MissingOps panic"),
-                Err(error) => error,
-            };
-
-        assert!(error.panic_message.contains("MissingOps"));
+        let fork_at = catch_automerge_panic("missing-ops-fork-at", || daemon.fork_at(&old_heads));
+        assert!(
+            fork_at.is_ok(),
+            "desktop-patched Automerge should not panic on historical fork_at"
+        );
     }
 
     #[test]
-    fn missing_ops_operation_matrix_identifies_fork_at_edge() {
+    fn missing_ops_operation_matrix_stays_non_panicking() {
         let (mut daemon, old_heads) = build_missing_ops_historical_fork_doc();
         let current_heads = daemon.get_heads();
 
@@ -187,11 +185,11 @@ mod tests {
         );
 
         let fork_at = catch_automerge_panic("missing-ops-fork-at", || daemon.fork_at(&old_heads));
-        assert!(fork_at.is_err(), "fork_at should expose the panic edge");
+        assert!(fork_at.is_ok(), "fork_at should not panic");
     }
 
     #[test]
-    fn save_load_rebuild_does_not_clear_historical_fork_at_panic() {
+    fn save_load_rebuild_preserves_fixed_historical_fork_at_behavior() {
         let (mut daemon, old_heads) = build_missing_ops_historical_fork_doc();
         let bytes = daemon.save();
         let mut rebuilt = must(AutoCommit::load(&bytes), "saved bad doc should reload");
@@ -200,8 +198,8 @@ mod tests {
             rebuilt.fork_at(&old_heads)
         });
         assert!(
-            fork_at.is_err(),
-            "save/load rebuild does not repair this fork_at edge"
+            fork_at.is_ok(),
+            "desktop-patched Automerge should keep historical fork_at non-panicking after save/load"
         );
     }
 

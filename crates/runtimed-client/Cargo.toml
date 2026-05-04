@@ -31,7 +31,7 @@ dirs = "6"
 base64 = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
 uuid = { workspace = true }
-automerge = "0.8"
+automerge = { workspace = true }
 schemars = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 
