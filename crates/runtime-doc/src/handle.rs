@@ -1,7 +1,11 @@
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 
-use crate::{RuntimeStateDoc, RuntimeStateError};
+use automerge::sync;
+#[cfg(test)]
+use automerge_recovery::{catch_automerge_panic, AutomergeOperationError};
+
+use crate::{ForeignSyncView, RuntimeStateDoc, RuntimeStateError};
 
 /// Handle to a per-notebook RuntimeStateDoc.
 ///
@@ -66,27 +70,76 @@ impl RuntimeStateHandle {
             .lock()
             .map_err(|_| RuntimeStateError::LockPoisoned)?;
         let heads_before = sd.get_heads();
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sd.merge(fork))) {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => {
-                // Normal error: doc is unchanged (error fires before mutation).
-                return Err(e.into());
-            }
-            Err(_panic) => {
-                // Panic during apply: doc may be half-merged. Rebuild from save.
-                tracing::warn!(
-                    "[runtime-state] merge panicked, rebuilding from save to restore consistency"
-                );
-                sd.rebuild_from_save();
-                return Err(RuntimeStateError::MissingScaffold(
-                    "merge panicked, rebuilt from save",
-                ));
+        match sd.merge_recovering(fork, "runtime-state-merge") {
+            Ok(_) => {}
+            Err(err) => {
+                tracing::warn!("[runtime-state] {}", err);
+                return Err(err.into());
             }
         }
         if sd.get_heads() != heads_before {
             let _ = self.changed_tx.send(());
         }
         Ok(())
+    }
+
+    pub fn generate_sync_message_recovering(
+        &self,
+        peer_state: &mut sync::State,
+        label: &str,
+    ) -> Result<Option<sync::Message>, RuntimeStateError> {
+        let mut sd = self
+            .doc
+            .lock()
+            .map_err(|_| RuntimeStateError::LockPoisoned)?;
+        sd.generate_sync_message_recovering(peer_state, label)
+            .map_err(Into::into)
+    }
+
+    pub fn generate_sync_message_bounded_encoded_recovering(
+        &self,
+        peer_state: &mut sync::State,
+        max_encoded_bytes: usize,
+        label: &str,
+    ) -> Result<Option<Vec<u8>>, RuntimeStateError> {
+        let mut sd = self
+            .doc
+            .lock()
+            .map_err(|_| RuntimeStateError::LockPoisoned)?;
+        sd.generate_sync_message_bounded_encoded_recovering(peer_state, max_encoded_bytes, label)
+            .map_err(Into::into)
+    }
+
+    pub fn receive_sync_message_with_changes_recovering(
+        &self,
+        peer_state: &mut sync::State,
+        message: sync::Message,
+        label: &str,
+    ) -> Result<bool, RuntimeStateError> {
+        let mut sd = self
+            .doc
+            .lock()
+            .map_err(|_| RuntimeStateError::LockPoisoned)?;
+        sd.receive_sync_message_with_changes_recovering(peer_state, message, label)
+            .map_err(Into::into)
+    }
+
+    pub fn receive_sync_and_foreign_comms_recovering<F>(
+        &self,
+        peer_state: &mut sync::State,
+        message: sync::Message,
+        is_foreign: F,
+        label: &str,
+    ) -> Result<ForeignSyncView, RuntimeStateError>
+    where
+        F: Fn(&automerge::ActorId) -> bool,
+    {
+        let mut sd = self
+            .doc
+            .lock()
+            .map_err(|_| RuntimeStateError::LockPoisoned)?;
+        sd.receive_sync_and_foreign_comms_recovering(peer_state, message, is_foreign, label)
+            .map_err(Into::into)
     }
 
     /// Read-only access. No notification.
@@ -104,6 +157,23 @@ impl RuntimeStateHandle {
     /// Subscribe to change notifications.
     pub fn subscribe(&self) -> broadcast::Receiver<()> {
         self.changed_tx.subscribe()
+    }
+
+    #[cfg(test)]
+    fn recover_injected_panic_for_test(&self) -> Result<(), RuntimeStateError> {
+        let mut sd = self
+            .doc
+            .lock()
+            .map_err(|_| RuntimeStateError::LockPoisoned)?;
+        match catch_automerge_panic("runtime-state-handle-test", || {
+            panic!("injected runtime-state panic")
+        }) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                sd.rebuild_from_save();
+                Err(AutomergeOperationError::Panic(err).into())
+            }
+        }
     }
 }
 
@@ -156,6 +226,21 @@ mod tests {
             .unwrap();
         assert!(rx.try_recv().is_ok());
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn recovery_panic_inside_handle_does_not_poison_mutex() {
+        let handle = make_handle();
+        let err = handle
+            .recover_injected_panic_for_test()
+            .expect_err("injected panic should be reported");
+        assert!(err.to_string().contains("injected runtime-state panic"));
+
+        handle.with_doc(|sd| sd.set_lifecycle(&busy())).unwrap();
+        assert_eq!(
+            handle.read(|sd| sd.read_state().kernel.lifecycle).unwrap(),
+            busy()
+        );
     }
 
     #[test]

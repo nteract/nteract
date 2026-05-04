@@ -7,7 +7,6 @@ use tracing::{debug, warn};
 
 use crate::connection::{self, NotebookFrameType};
 
-use super::catch_automerge_panic;
 use super::peer_writer::PeerWriter;
 
 pub(super) async fn send_initial_pool_sync<W>(
@@ -20,19 +19,11 @@ where
 {
     let initial_pool_encoded = {
         let mut pool_doc = daemon.pool_doc.write().await;
-        match catch_automerge_panic("initial-pool-sync", || {
-            pool_doc
-                .generate_sync_message(pool_peer_state)
-                .map(|msg| msg.encode())
-        }) {
-            Ok(encoded) => encoded,
+        match pool_doc.generate_sync_message_recovering(pool_peer_state, "initial-pool-sync") {
+            Ok(message) => message.map(|msg| msg.encode()),
             Err(e) => {
-                warn!("{}", e);
-                pool_doc.rebuild_from_save();
-                *pool_peer_state = sync::State::new();
-                pool_doc
-                    .generate_sync_message(pool_peer_state)
-                    .map(|msg| msg.encode())
+                warn!("[notebook-sync] initial pool sync failed: {}", e);
+                None
             }
         }
     };
@@ -53,19 +44,14 @@ pub(super) async fn handle_pool_state_frame(
     let reply_encoded = {
         let mut pool_doc = daemon.pool_doc.write().await;
 
-        let recv_result = catch_automerge_panic("pool-receive-sync", || {
-            pool_doc.receive_sync_message(pool_peer_state, message)
-        });
-        match recv_result {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                warn!("[notebook-sync] pool receive_sync_message error: {}", e);
-                return Ok(false);
-            }
+        match pool_doc.receive_sync_message_recovering(
+            pool_peer_state,
+            message,
+            "pool-receive-sync",
+        ) {
+            Ok(()) => {}
             Err(e) => {
-                warn!("{}", e);
-                pool_doc.rebuild_from_save();
-                *pool_peer_state = sync::State::new();
+                warn!("[notebook-sync] pool receive_sync_message error: {}", e);
                 return Ok(false);
             }
         }
@@ -125,19 +111,11 @@ fn generate_pool_sync_message(
     pool_peer_state: &mut sync::State,
     label: &str,
 ) -> Option<Vec<u8>> {
-    match catch_automerge_panic(label, || {
-        pool_doc
-            .generate_sync_message(pool_peer_state)
-            .map(|msg| msg.encode())
-    }) {
-        Ok(encoded) => encoded,
+    match pool_doc.generate_sync_message_recovering(pool_peer_state, label) {
+        Ok(message) => message.map(|msg| msg.encode()),
         Err(e) => {
-            warn!("{}", e);
-            pool_doc.rebuild_from_save();
-            *pool_peer_state = sync::State::new();
-            pool_doc
-                .generate_sync_message(pool_peer_state)
-                .map(|msg| msg.encode())
+            warn!("[notebook-sync] pool sync generation failed: {}", e);
+            None
         }
     }
 }

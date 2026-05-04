@@ -81,6 +81,7 @@ use automerge::sync;
 use automerge::sync::SyncDoc;
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{ActorId, AutoCommit, AutomergeError, LoadOptions, ObjId, ObjType, ReadDoc};
+use automerge_recovery::{catch_automerge_panic, AutomergeOperationError};
 
 /// Re-export so downstream crates (runtimed-wasm) can set text encoding
 /// without depending on automerge directly.
@@ -335,6 +336,24 @@ impl NotebookDoc {
         other: &mut NotebookDoc,
     ) -> Result<Vec<automerge::ChangeHash>, AutomergeError> {
         self.doc.merge(&mut other.doc)
+    }
+
+    /// Merge another document's changes, rebuilding this document if Automerge panics.
+    pub fn merge_recovering(
+        &mut self,
+        other: &mut NotebookDoc,
+        label: &str,
+    ) -> Result<Vec<automerge::ChangeHash>, AutomergeOperationError> {
+        match catch_automerge_panic(label, || self.doc.merge(&mut other.doc)) {
+            Ok(Ok(changes)) => Ok(changes),
+            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+            Err(err) => {
+                if !self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label));
+                }
+                Err(AutomergeOperationError::Panic(err))
+            }
+        }
     }
 
     /// Fork the document, apply mutations on the fork, and merge back.
@@ -1995,6 +2014,26 @@ impl NotebookDoc {
         self.doc.sync().generate_sync_message(peer_state)
     }
 
+    /// Generate a sync message, recovering from Automerge panics by rebuilding
+    /// this doc, resetting peer sync state, and retrying once.
+    pub fn generate_sync_message_recovering(
+        &mut self,
+        peer_state: &mut sync::State,
+        label: &str,
+    ) -> Result<Option<sync::Message>, AutomergeOperationError> {
+        match catch_automerge_panic(label, || self.generate_sync_message(peer_state)) {
+            Ok(message) => Ok(message),
+            Err(_err) => {
+                *peer_state = sync::State::new();
+                if !self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label));
+                }
+                catch_automerge_panic(label, || self.generate_sync_message(peer_state))
+                    .map_err(AutomergeOperationError::Panic)
+            }
+        }
+    }
+
     /// Receive and apply a sync message from a peer.
     pub fn receive_sync_message(
         &mut self,
@@ -2002,6 +2041,28 @@ impl NotebookDoc {
         message: sync::Message,
     ) -> Result<(), AutomergeError> {
         self.doc.sync().receive_sync_message(peer_state, message)
+    }
+
+    /// Receive a sync message, recovering from Automerge panics by rebuilding
+    /// this doc and resetting peer sync state. A recovered panic is reported as
+    /// an error so callers do not treat the incoming message as applied.
+    pub fn receive_sync_message_recovering(
+        &mut self,
+        peer_state: &mut sync::State,
+        message: sync::Message,
+        label: &str,
+    ) -> Result<(), AutomergeOperationError> {
+        match catch_automerge_panic(label, || self.receive_sync_message(peer_state, message)) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+            Err(err) => {
+                *peer_state = sync::State::new();
+                if !self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label));
+                }
+                Err(AutomergeOperationError::Panic(err))
+            }
+        }
     }
 
     // ── Provenance queries ──────────────────────────────────────────
@@ -2748,6 +2809,32 @@ mod tests {
         assert_eq!(doc.schema_version(), Some(SCHEMA_VERSION));
         assert_eq!(doc.get_metadata("runtime"), None);
         assert!(doc.get_metadata_snapshot().is_none());
+    }
+
+    #[test]
+    fn recovering_sync_generation_preserves_actor_and_resets_peer_state() {
+        let mut doc = NotebookDoc::new_with_actor("test-notebook", "recovery-actor");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        let actor = doc.doc().get_actor().clone();
+        let mut peer_state = sync::State::new();
+
+        assert!(doc
+            .generate_sync_message_recovering(&mut peer_state, "test-generate")
+            .unwrap()
+            .is_some());
+        assert!(doc
+            .generate_sync_message_recovering(&mut peer_state, "test-generate")
+            .unwrap()
+            .is_none());
+
+        assert!(doc.rebuild_from_save());
+        peer_state = sync::State::new();
+
+        assert_eq!(doc.doc().get_actor(), &actor);
+        assert!(doc
+            .generate_sync_message_recovering(&mut peer_state, "test-generate")
+            .unwrap()
+            .is_some());
     }
 
     #[test]

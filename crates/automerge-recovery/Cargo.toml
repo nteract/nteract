@@ -1,0 +1,14 @@
+[package]
+name = "automerge-recovery"
+version = "0.1.0"
+edition.workspace = true
+description = "Small panic recovery helpers for Automerge operations"
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+automerge = "0.8"
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

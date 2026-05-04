@@ -30,6 +30,7 @@ use automerge::{
     sync, sync::SyncDoc, transaction::Transactable, ActorId, AutoCommit, AutomergeError, ObjType,
     ReadDoc, Value, ROOT,
 };
+use automerge_recovery::{catch_automerge_panic, AutomergeOperationError};
 use serde::{Deserialize, Serialize};
 
 // ── Snapshot types ───────────────────────────────────────────────────
@@ -296,6 +297,26 @@ impl PoolDoc {
         self.doc.sync().generate_sync_message(peer_state)
     }
 
+    /// Generate a sync message, recovering from Automerge panics by rebuilding
+    /// this doc, resetting peer sync state, and retrying once.
+    pub fn generate_sync_message_recovering(
+        &mut self,
+        peer_state: &mut sync::State,
+        label: &str,
+    ) -> Result<Option<sync::Message>, AutomergeOperationError> {
+        match catch_automerge_panic(label, || self.generate_sync_message(peer_state)) {
+            Ok(message) => Ok(message),
+            Err(_err) => {
+                *peer_state = sync::State::new();
+                if !self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label));
+                }
+                catch_automerge_panic(label, || self.generate_sync_message(peer_state))
+                    .map_err(AutomergeOperationError::Panic)
+            }
+        }
+    }
+
     /// Receive a sync message from a client.
     ///
     /// **Read-only enforcement:** strips all `changes` from the client
@@ -313,6 +334,28 @@ impl PoolDoc {
             .sync()
             .receive_sync_message(peer_state, message)
             .map(|_| ())
+    }
+
+    /// Receive a sync message, recovering from Automerge panics by rebuilding
+    /// this doc and resetting peer sync state. A recovered panic is reported as
+    /// an error so callers do not treat the incoming message as applied.
+    pub fn receive_sync_message_recovering(
+        &mut self,
+        peer_state: &mut sync::State,
+        message: sync::Message,
+        label: &str,
+    ) -> Result<(), AutomergeOperationError> {
+        match catch_automerge_panic(label, || self.receive_sync_message(peer_state, message)) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+            Err(err) => {
+                *peer_state = sync::State::new();
+                if !self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label));
+                }
+                Err(AutomergeOperationError::Panic(err))
+            }
+        }
     }
 
     /// Round-trip save→load to rebuild internal automerge indices.
@@ -343,6 +386,48 @@ mod tests {
         assert_eq!(state.uv.pool_size, 0);
         assert_eq!(state.uv.error, None);
         assert_eq!(state.conda.available, 0);
+    }
+
+    #[test]
+    fn recovering_pool_sync_generation_preserves_actor_and_resets_peer_state() {
+        let mut doc = PoolDoc::new();
+        doc.doc_mut()
+            .set_actor(ActorId::from("pool-recovery".as_bytes()));
+        let actor = doc.doc().get_actor().clone();
+        doc.write_state(&PoolState {
+            uv: RuntimePoolState {
+                available: 1,
+                warming: 0,
+                pool_size: 2,
+                error: None,
+                failed_package: None,
+                error_kind: None,
+                consecutive_failures: 0,
+                retry_in_secs: 0,
+            },
+            conda: RuntimePoolState::default(),
+            pixi: RuntimePoolState::default(),
+        })
+        .unwrap();
+        let mut peer_state = sync::State::new();
+
+        assert!(doc
+            .generate_sync_message_recovering(&mut peer_state, "pool-test-generate")
+            .unwrap()
+            .is_some());
+        assert!(doc
+            .generate_sync_message_recovering(&mut peer_state, "pool-test-generate")
+            .unwrap()
+            .is_none());
+
+        assert!(doc.rebuild_from_save());
+        peer_state = sync::State::new();
+
+        assert_eq!(doc.doc().get_actor(), &actor);
+        assert!(doc
+            .generate_sync_message_recovering(&mut peer_state, "pool-test-generate")
+            .unwrap()
+            .is_some());
     }
 
     #[test]

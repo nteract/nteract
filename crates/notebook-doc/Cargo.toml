@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 automerge = "0.8"
+automerge-recovery = { path = "../automerge-recovery" }
 ciborium = "0.2"
 loro_fractional_index = { workspace = true }
 serde = { version = "1", features = ["derive"] }

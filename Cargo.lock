@@ -625,6 +625,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "automerge-recovery"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "automunge"
 version = "0.2.3"
 dependencies = [
@@ -4538,6 +4546,7 @@ name = "notebook-doc"
 version = "0.3.3"
 dependencies = [
  "automerge",
+ "automerge-recovery",
  "automunge",
  "ciborium",
  "hex",
@@ -4570,6 +4579,7 @@ name = "notebook-sync"
 version = "0.3.3"
 dependencies = [
  "automerge",
+ "automerge-recovery",
  "log",
  "notebook-doc",
  "notebook-protocol",
@@ -7037,6 +7047,7 @@ name = "runtime-doc"
 version = "0.2.3"
 dependencies = [
  "automerge",
+ "automerge-recovery",
  "automunge",
  "serde",
  "serde_json",
@@ -7053,6 +7064,7 @@ dependencies = [
  "anyhow",
  "async-rust-lsp",
  "automerge",
+ "automerge-recovery",
  "base64 0.22.1",
  "build-metadata",
  "bytes",

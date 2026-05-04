@@ -18,11 +18,11 @@
 //! via `DocHandle::with_doc`. This task is purely for network synchronization.
 
 use std::collections::HashMap;
-use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use automerge::{sync, AutoCommit, ChangeHash};
+use automerge::{sync, ChangeHash};
+use automerge_recovery::AutomergeOperationError;
 use log::{debug, info, warn};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -44,42 +44,6 @@ const CONFIRM_SYNC_RETRY: Duration = Duration::from_millis(200);
 const STATE_SYNC_QUIET_TIMEOUT: Duration = Duration::from_millis(200);
 const STATE_SYNC_MAX_TIMEOUT: Duration = Duration::from_secs(2);
 const MAINTENANCE_TICK: Duration = Duration::from_millis(50);
-
-/// Rebuild a `SharedDocState` after an automerge panic by round-tripping
-/// save→load to clear corrupted internal indices, then resetting the
-/// peer sync state to force a fresh handshake with the daemon.
-///
-/// Includes a defensive cell-count guard: if the rebuilt doc would have
-/// fewer cells than the original, the rebuild is skipped (only sync state
-/// is reset). This prevents silent cell loss when `save()` on a
-/// panic-corrupted doc drops ops from the serialized bytes.
-fn rebuild_shared_doc_state(state: &mut SharedDocState) {
-    let actor = state.doc.get_actor().clone();
-    let pre_cell_count = notebook_doc::get_cells_from_doc(&state.doc).len();
-    let bytes = state.doc.save();
-    match AutoCommit::load(&bytes) {
-        Ok(mut doc) => {
-            let post_cell_count = notebook_doc::get_cells_from_doc(&doc).len();
-            if post_cell_count < pre_cell_count {
-                warn!(
-                    "[notebook-sync] rebuild_shared_doc_state would lose cells \
-                     ({} → {}), keeping original doc and resetting sync state only",
-                    pre_cell_count, post_cell_count
-                );
-                state.peer_state = sync::State::new();
-                return;
-            }
-            doc.set_actor(actor);
-            state.doc = doc;
-            state.peer_state = sync::State::new();
-            info!("[notebook-sync] Rebuilt doc and reset sync state after automerge panic");
-        }
-        Err(e) => {
-            warn!("[notebook-sync] Failed to rebuild doc after panic: {}", e);
-            state.peer_state = sync::State::new();
-        }
-    }
-}
 
 /// Commands that require socket I/O (not document mutations).
 ///
@@ -518,61 +482,39 @@ impl SyncReactor {
                     }
                 };
 
-                // Apply and generate ack — lock held only for Automerge operations.
-                //
-                // The receive_sync_message call is wrapped in catch_unwind because
-                // automerge 0.7 has a known panic in BatchApply::apply when the
-                // internal patch log actor table gets out of order during concurrent
-                // sync (automerge/automerge#1187). Without catch_unwind, the panic
-                // poisons the Mutex and renders the session permanently unusable.
-                // By catching it, the MutexGuard drops normally and subsequent
-                // operations can still succeed.
+                // Apply and generate ack while the mutex guard is alive so panic
+                // recovery can rebuild the document without poisoning the mutex.
                 let ack_bytes = {
                     let mut state = self.io.doc.lock().unwrap_or_else(|e| e.into_inner());
-                    let recv_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                        state.receive_sync_message(msg)
-                    }));
-                    match recv_result {
-                        Ok(Ok(())) => {}
-                        Ok(Err(e)) => {
+                    match state.receive_sync_message_recovering(msg, "notebook-sync-receive") {
+                        Ok(()) => {}
+                        Err(AutomergeOperationError::Panic(e)) => {
+                            warn!(
+                                "[notebook-sync] Recovered from sync panic for {}: {}",
+                                self.io.notebook_id, e
+                            );
+                        }
+                        Err(AutomergeOperationError::RebuildFailed { label }) => {
+                            warn!(
+                                "[notebook-sync] Failed to rebuild after sync panic for {}: {}",
+                                self.io.notebook_id, label
+                            );
+                        }
+                        Err(e) => {
                             warn!(
                                 "[notebook-sync] Failed to apply sync message for {}: {}",
                                 self.io.notebook_id, e
                             );
                             return;
                         }
-                        Err(panic_payload) => {
-                            let msg = if let Some(s) = panic_payload.downcast_ref::<String>() {
-                                s.as_str()
-                            } else if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                                s
-                            } else {
-                                "unknown panic"
-                            };
-                            warn!(
-                                "[notebook-sync] Automerge panicked during sync for {} \
-                             (upstream bug automerge/automerge#1187): {}",
-                                self.io.notebook_id, msg
-                            );
-                            // Rebuild doc via save→load to clear corrupted indices,
-                            // then reset peer state to force a fresh sync handshake.
-                            rebuild_shared_doc_state(&mut state);
-                            return;
-                        }
                     }
-                    // Guard generate_sync_message — the collector can also panic
-                    // with MissingOps even after a successful receive.
-                    match std::panic::catch_unwind(AssertUnwindSafe(|| {
-                        state.generate_sync_message().map(|msg| msg.encode())
-                    })) {
-                        Ok(bytes) => bytes,
-                        Err(_) => {
+                    match state.generate_sync_message_recovering("notebook-sync-reply") {
+                        Ok(message) => message.map(|msg| msg.encode()),
+                        Err(e) => {
                             warn!(
-                            "[notebook-sync] Automerge panicked in generate_sync_message for {} \
-                             (upstream MissingOps bug)",
-                            self.io.notebook_id
-                        );
-                            rebuild_shared_doc_state(&mut state);
+                                "[notebook-sync] Failed to generate sync reply for {}: {}",
+                                self.io.notebook_id, e
+                            );
                             None
                         }
                     }
@@ -698,58 +640,43 @@ impl SyncReactor {
                     }
                 };
 
-                // Apply and generate reply — same pattern as AutomergeSync.
-                //
-                // Wrapped in catch_unwind because automerge 0.7 can panic in
-                // receive_sync_message / generate_sync_message on the state
-                // doc under the same concurrent-sync conditions that trigger
-                // the notebook doc panic (automerge/automerge#1187). Without
-                // catch_unwind, the panic kills the sync task, which closes
-                // the socket and causes the MCP connection to drop — any
-                // locally-pending notebook mutations (e.g. a cell creation)
-                // that hadn't been synced yet are lost on reconnect.
+                // Apply and generate reply while the mutex guard is alive so
+                // recovery can rebuild the RuntimeStateDoc without poisoning it.
                 let (reply_bytes, runtime_state) = {
                     let mut state = self.io.doc.lock().unwrap_or_else(|e| e.into_inner());
-                    let recv_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                        state.receive_state_sync_message(msg)
-                    }));
-                    match recv_result {
-                        Ok(Ok(())) => {}
-                        Ok(Err(e)) => {
+                    match state
+                        .receive_state_sync_message_recovering(msg, "runtime-state-sync-receive")
+                    {
+                        Ok(()) => {}
+                        Err(AutomergeOperationError::Panic(e)) => {
+                            warn!(
+                                "[notebook-sync] Recovered from RuntimeStateSync panic for {}: {}",
+                                self.io.notebook_id, e
+                            );
+                        }
+                        Err(AutomergeOperationError::RebuildFailed { label }) => {
+                            warn!(
+                                "[notebook-sync] Failed to rebuild after RuntimeStateSync panic for {}: {}",
+                                self.io.notebook_id, label
+                            );
+                        }
+                        Err(e) => {
                             warn!(
                                 "[notebook-sync] Failed to apply RuntimeStateSync for {}: {}",
                                 self.io.notebook_id, e
                             );
                             return;
                         }
-                        Err(panic_payload) => {
-                            let msg = if let Some(s) = panic_payload.downcast_ref::<String>() {
-                                s.as_str()
-                            } else if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                                s
-                            } else {
-                                "unknown panic"
-                            };
-                            warn!(
-                                "[notebook-sync] Automerge panicked during RuntimeStateSync for {} \
-                                 (upstream bug automerge/automerge#1187): {}",
-                                self.io.notebook_id, msg
-                            );
-                            state.rebuild_state_doc();
-                            return;
-                        }
                     };
-                    let reply_bytes = match std::panic::catch_unwind(AssertUnwindSafe(|| {
-                        state.generate_state_sync_message().map(|msg| msg.encode())
-                    })) {
-                        Ok(bytes) => bytes,
-                        Err(_) => {
+                    let reply_bytes = match state
+                        .generate_state_sync_message_recovering("runtime-state-sync-reply")
+                    {
+                        Ok(message) => message.map(|msg| msg.encode()),
+                        Err(e) => {
                             warn!(
-                                "[notebook-sync] Automerge panicked in generate_state_sync_message \
-                                 for {} (upstream MissingOps bug)",
-                                self.io.notebook_id
+                                "[notebook-sync] Failed to generate RuntimeStateSync reply for {}: {}",
+                                self.io.notebook_id, e
                             );
-                            state.rebuild_state_doc();
                             None
                         }
                     };
@@ -1039,7 +966,10 @@ async fn send_doc_sync_message<W: AsyncWrite + Unpin>(
 ) -> Result<bool, SyncError> {
     let msg_bytes = {
         let mut state = doc.lock().unwrap_or_else(|e| e.into_inner());
-        state.generate_sync_message().map(|msg| msg.encode())
+        state
+            .generate_sync_message_recovering("notebook-sync-outbound")
+            .map_err(|e| SyncError::Protocol(e.to_string()))?
+            .map(|msg| msg.encode())
     };
 
     if let Some(bytes) = msg_bytes {
@@ -1066,7 +996,10 @@ async fn send_state_sync_message<W: AsyncWrite + Unpin>(
 ) -> Result<(), SyncError> {
     let msg_bytes = {
         let mut state = doc.lock().unwrap_or_else(|e| e.into_inner());
-        state.generate_state_sync_message().map(|msg| msg.encode())
+        state
+            .generate_state_sync_message_recovering("runtime-state-sync-outbound")
+            .map_err(|e| SyncError::Protocol(e.to_string()))?
+            .map(|msg| msg.encode())
     };
 
     if let Some(bytes) = msg_bytes {
@@ -1168,6 +1101,7 @@ fn apply_sync_status(
 mod tests {
     use super::*;
 
+    use automerge::AutoCommit;
     use notebook_protocol::connection::send_typed_json_frame;
     use notebook_protocol::protocol::{
         InitialLoadPhaseWire, NotebookDocPhaseWire, NotebookRequestEnvelope,
@@ -1424,13 +1358,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
     async fn runtime_state_sync_panic_is_caught_and_later_updates_still_apply() {
-        // Probe for a known recovery gap: catching an inbound RuntimeStateSync
-        // panic keeps the task alive, but the daemon peer state can still
-        // believe the client received the dropped change. A fuller fix likely
-        // needs a runtime-state peer reset/rejoin path, not just catch_unwind.
-        // Remove #[ignore] once that peer reset/rejoin path exists.
+        // Recovery resets the runtime-state peer state. After the daemon peer
+        // also rejoins with fresh sync state, later updates still apply.
         let mut reactor = test_reactor();
         {
             let mut state = reactor.io.doc.lock().unwrap();
@@ -1472,6 +1402,7 @@ mod tests {
                 reactor.handle_incoming_frame(&frame, &mut writer).await;
 
                 if !later_update_sent {
+                    daemon_state.rebuild_state_doc();
                     daemon_state
                         .state_doc
                         .create_execution_with_source("exec-2", "cell-2", "y = 2", 2)
