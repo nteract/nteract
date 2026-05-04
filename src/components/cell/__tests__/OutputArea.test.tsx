@@ -34,8 +34,8 @@ vi.mock("@/components/isolated", async () => {
 
   const MockIsolatedFrame = React.forwardRef<
     typeof mockFrameHandle,
-    { allowWheelBoundaryScroll?: boolean; onReady?: () => void }
-  >(function MockIsolatedFrame({ allowWheelBoundaryScroll, onReady }, ref) {
+    { allowWheelBoundaryScroll?: boolean; autoHeight?: boolean; onReady?: () => void }
+  >(function MockIsolatedFrame({ allowWheelBoundaryScroll, autoHeight, onReady }, ref) {
     React.useImperativeHandle(ref, () => mockFrameHandle);
 
     React.useEffect(() => {
@@ -45,6 +45,7 @@ vi.mock("@/components/isolated", async () => {
     return (
       <div
         data-allow-wheel-boundary-scroll={String(allowWheelBoundaryScroll)}
+        data-auto-height={String(autoHeight)}
         data-testid="isolated-frame"
       />
     );
@@ -68,6 +69,10 @@ function makeMarkdownOutput(content = "```python\nprint('hello')\n```"): Jupyter
 
 describe("OutputArea iframe theme sync", () => {
   beforeEach(() => {
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 800,
+    });
     mockDarkMode = false;
     mockColorTheme = undefined;
     mockFrameHandle.send.mockClear();
@@ -120,5 +125,27 @@ describe("OutputArea iframe theme sync", () => {
     expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
       "true",
     );
+  });
+
+  it("constrains isolated iframe outputs to a viewport-sized output well by default", () => {
+    const { container, getByTestId } = render(
+      <OutputArea outputs={makeMarkdownOutput()} isolated />,
+    );
+
+    const outputContent = container.querySelector('[data-slot="output-area"] > div');
+
+    expect(getByTestId("isolated-frame").getAttribute("data-auto-height")).toBe("true");
+    expect(outputContent?.getAttribute("class") ?? "").toContain("overflow-y-auto");
+    expect((outputContent as HTMLElement | null)?.style.maxHeight).toBe("600px");
+  });
+
+  it("can expand isolated iframe outputs past the default output well cap", () => {
+    const { container, getByTestId } = render(
+      <OutputArea outputs={makeMarkdownOutput()} isolated expandIframeOutputs />,
+    );
+
+    expect(getByTestId("isolated-frame").getAttribute("data-auto-height")).toBe("true");
+    const outputContent = container.querySelector('[data-slot="output-area"] > div') as HTMLElement;
+    expect(outputContent.style.maxHeight).toBe("");
   });
 });

@@ -1,5 +1,11 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
-import { ChevronRight, Code2, EyeOff } from "lucide-react";
+import {
+  ChevronRight,
+  Code2,
+  EyeOff,
+  SquareDashedMousePointer,
+  SquareMousePointer,
+} from "lucide-react";
 import {
   lazy,
   memo,
@@ -13,7 +19,7 @@ import {
 } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
-import { OutputArea } from "@/components/cell/OutputArea";
+import { anyOutputNeedsIsolation, OutputArea } from "@/components/cell/OutputArea";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import type { SupportedLanguage } from "@/components/editor/languages";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
@@ -116,6 +122,7 @@ export const CodeCell = memo(function CodeCell({
   const isGroupExecuting = useIsGroupExecuting(hiddenGroupCellIds);
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
+  const [isIframeOutputExpanded, setIsIframeOutputExpanded] = useState(false);
   const presence = usePresenceContext();
   const { extension: crdtBridgeExt, bridge } = useCrdtBridge(cell.id);
   // Subscribe to outputs via the per-execution / per-output stores rather
@@ -125,6 +132,9 @@ export const CodeCell = memo(function CodeCell({
   const executionId = useCellExecutionId(cell.id);
   const execution = useExecution(executionId);
   const executionCount = execution?.execution_count ?? null;
+  // CodeCell leaves OutputArea in its default `isolated="auto"` mode, so this
+  // matches whether the output row will render in the isolated iframe.
+  const hasIsolatedOutput = anyOutputNeedsIsolation(outputs);
 
   // Check cell metadata for visibility (JupyterLab convention)
   const isSourceHidden =
@@ -135,6 +145,12 @@ export const CodeCell = memo(function CodeCell({
   // Fully collapsed when source is hidden AND there's nothing else to show
   // (outputs explicitly hidden, or no outputs at all).
   const bothHidden = isSourceHidden && (isOutputsHidden || outputs.length === 0);
+
+  useEffect(() => {
+    if (!hasIsolatedOutput || isOutputsHidden || outputs.length === 0) {
+      setIsIframeOutputExpanded(false);
+    }
+  }, [hasIsolatedOutput, isOutputsHidden, outputs.length]);
 
   // Register EditorView with the cursor registry for remote cursor rendering.
   // We use a ref + polling approach because the EditorView is created async
@@ -388,20 +404,49 @@ export const CodeCell = memo(function CodeCell({
               onSearchMatchCount={onSearchMatchCount}
               onLinkClick={handleLinkClick}
               onIframeMouseDown={onFocus}
+              expandIframeOutputs={isIframeOutputExpanded}
             />
           )
         }
         outputRightGutterContent={
-          onToggleOutputsHidden && outputs.length > 0 && !isOutputsHidden ? (
-            <button
-              type="button"
-              tabIndex={-1}
-              onClick={() => onToggleOutputsHidden(true)}
-              className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-foreground"
-              title="Hide outputs"
-            >
-              <EyeOff className="h-3.5 w-3.5" />
-            </button>
+          outputs.length > 0 && !isOutputsHidden && (hasIsolatedOutput || onToggleOutputsHidden) ? (
+            <>
+              {hasIsolatedOutput && (
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  aria-pressed={isIframeOutputExpanded}
+                  onClick={() => {
+                    setIsIframeOutputExpanded((expanded) => !expanded);
+                    onFocus();
+                  }}
+                  className={cn(
+                    "flex items-center justify-center rounded p-1 transition-colors",
+                    isIframeOutputExpanded
+                      ? "bg-accent text-foreground"
+                      : "text-muted-foreground/40 hover:text-foreground",
+                  )}
+                  title={isIframeOutputExpanded ? "Constrain output height" : "Expand output"}
+                >
+                  {isIframeOutputExpanded ? (
+                    <SquareMousePointer className="h-3.5 w-3.5" />
+                  ) : (
+                    <SquareDashedMousePointer className="h-3.5 w-3.5" />
+                  )}
+                </button>
+              )}
+              {onToggleOutputsHidden && (
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={() => onToggleOutputsHidden(true)}
+                  className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-foreground"
+                  title="Hide outputs"
+                >
+                  <EyeOff className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </>
           ) : undefined
         }
         hideOutput={outputs.length === 0 || bothHidden}

@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   CommBridgeManager,
   type IframeToParentMessage,
@@ -20,6 +20,32 @@ import { cn } from "@/lib/utils";
 
 const handleIframeError = (err: { message: string; stack?: string }) =>
   console.error("[OutputArea] iframe error:", err);
+
+const DEFAULT_OUTPUT_WELL_VIEWPORT_RATIO = 0.75;
+const MIN_OUTPUT_WELL_HEIGHT = 360;
+
+function getDefaultOutputWellMaxHeight(): number {
+  if (typeof window === "undefined") return 720;
+  return Math.max(
+    MIN_OUTPUT_WELL_HEIGHT,
+    Math.floor(window.innerHeight * DEFAULT_OUTPUT_WELL_VIEWPORT_RATIO),
+  );
+}
+
+function useDefaultOutputWellMaxHeight(): number {
+  const [height, setHeight] = useState(getDefaultOutputWellMaxHeight);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setHeight(getDefaultOutputWellMaxHeight());
+    };
+
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  return height;
+}
 
 import type { JupyterOutput } from "./jupyter-output";
 // Re-export so existing imports continue to work.
@@ -46,6 +72,11 @@ interface OutputAreaProps {
    * Maximum height before scrolling. Set to enable scroll behavior.
    */
   maxHeight?: number;
+  /**
+   * When true, isolated iframe outputs grow to their full rendered height
+   * instead of using the output max-height cap.
+   */
+  expandIframeOutputs?: boolean;
   /**
    * Additional CSS classes for the container.
    */
@@ -149,7 +180,7 @@ function outputNeedsIsolation(
  * Check if any outputs in the array need iframe isolation.
  * If any output needs isolation, ALL outputs should go to the iframe.
  */
-function anyOutputNeedsIsolation(
+export function anyOutputNeedsIsolation(
   outputs: JupyterOutput[],
   priority: readonly string[] = DEFAULT_PRIORITY,
 ): boolean {
@@ -246,6 +277,7 @@ export function OutputArea({
   collapsed = false,
   onToggleCollapse,
   maxHeight,
+  expandIframeOutputs = false,
   className,
   renderers,
   priority = DEFAULT_PRIORITY,
@@ -268,6 +300,7 @@ export function OutputArea({
 
   const darkMode = useDarkMode();
   const colorTheme = useColorTheme();
+  const defaultOutputWellMaxHeight = useDefaultOutputWellMaxHeight();
   const maxHeightStyle = useMemo(
     () => (maxHeight ? { maxHeight: `${maxHeight}px` } : undefined),
     [maxHeight],
@@ -285,6 +318,11 @@ export function OutputArea({
   const shouldIsolate =
     outputs.length > 0 &&
     (isolated === true || (isolated === "auto" && anyOutputNeedsIsolation(outputs, priority)));
+  const shouldConstrainIsolatedOutput = shouldIsolate && !expandIframeOutputs;
+  const isolatedOutputWellMaxHeight = maxHeight ?? defaultOutputWellMaxHeight;
+  const isolatedOutputWellStyle = shouldConstrainIsolatedOutput
+    ? { maxHeight: `${isolatedOutputWellMaxHeight}px` }
+    : undefined;
 
   // When preloading, we render the iframe even with no outputs (hidden)
   // This allows it to bootstrap ahead of time for instant rendering
@@ -546,8 +584,12 @@ export function OutputArea({
       {!collapsed && (
         <div
           id={id}
-          className={cn("space-y-2", maxHeight && "overflow-y-auto")}
-          style={maxHeightStyle}
+          className={cn(
+            "space-y-2",
+            !shouldIsolate && maxHeight && "overflow-y-auto",
+            shouldConstrainIsolatedOutput && "overflow-y-auto",
+          )}
+          style={shouldIsolate ? isolatedOutputWellStyle : maxHeightStyle}
         >
           {/* Preloaded or active isolated frame */}
           {(shouldIsolate || showPreloadedIframe) && (
@@ -557,7 +599,8 @@ export function OutputArea({
                 darkMode={darkMode}
                 colorTheme={colorTheme}
                 minHeight={24}
-                maxHeight={maxHeight ?? 2000}
+                maxHeight={isolatedOutputWellMaxHeight}
+                autoHeight={shouldIsolate}
                 allowWheelBoundaryScroll
                 onReady={handleFrameReady}
                 onLinkClick={onLinkClick}

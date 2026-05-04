@@ -313,6 +313,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     // Use ref to track ready state for send callback (avoids stale closure)
     const isReadyRef = useRef(false);
     const [height, setHeight] = useState(minHeight);
+    const measuredHeightRef = useRef(minHeight);
     // Track if content has been rendered (for revealOnRender mode)
     const [isContentRendered, setIsContentRendered] = useState(false);
     // Track if the iframe is reloading (DOM move caused browser to tear down)
@@ -353,6 +354,22 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     onErrorRef.current = onError;
     onMessageRef.current = onMessage;
     allowWheelBoundaryScrollRef.current = allowWheelBoundaryScroll;
+
+    const applyMeasuredHeight = useCallback(
+      (contentHeight: number) => {
+        measuredHeightRef.current = contentHeight;
+        const newHeight = autoHeight
+          ? Math.max(minHeight, contentHeight)
+          : Math.max(minHeight, Math.min(maxHeight, contentHeight));
+        setHeight(newHeight);
+        onResizeRef.current?.(newHeight);
+      },
+      [autoHeight, maxHeight, minHeight],
+    );
+
+    useEffect(() => {
+      applyMeasuredHeight(measuredHeightRef.current);
+    }, [applyMeasuredHeight]);
 
     // Create blob URL on mount (only once, with initial darkMode)
     useEffect(() => {
@@ -525,22 +542,14 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
               transport.onNotification(NTERACT_RESIZE, (params) => {
                 const p = params as { height?: number };
                 if (p.height != null) {
-                  const newHeight = autoHeight
-                    ? Math.max(minHeight, p.height)
-                    : Math.max(minHeight, Math.min(maxHeight, p.height));
-                  setHeight(newHeight);
-                  onResizeRef.current?.(newHeight);
+                  applyMeasuredHeight(p.height);
                 }
               });
               transport.onNotification(NTERACT_RENDER_COMPLETE, (params) => {
                 const p = params as { height?: number };
                 if (p.height != null) {
                   setIsContentRendered(true);
-                  const newHeight = autoHeight
-                    ? Math.max(minHeight, p.height)
-                    : Math.max(minHeight, Math.min(maxHeight, p.height));
-                  setHeight(newHeight);
-                  onResizeRef.current?.(newHeight);
+                  applyMeasuredHeight(p.height);
                 }
               });
               transport.onNotification(NTERACT_LINK_CLICK, (params) => {
@@ -625,11 +634,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
 
           case "resize":
             if (data.payload?.height != null) {
-              const newHeight = autoHeight
-                ? Math.max(minHeight, data.payload.height)
-                : Math.max(minHeight, Math.min(maxHeight, data.payload.height));
-              setHeight(newHeight);
-              onResizeRef.current?.(newHeight);
+              applyMeasuredHeight(data.payload.height);
             }
             break;
 
@@ -637,11 +642,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
             // Content has been rendered - reveal iframe if in revealOnRender mode
             if (data.payload?.height != null) {
               setIsContentRendered(true);
-              const newHeight = autoHeight
-                ? Math.max(minHeight, data.payload.height)
-                : Math.max(minHeight, Math.min(maxHeight, data.payload.height));
-              setHeight(newHeight);
-              onResizeRef.current?.(newHeight);
+              applyMeasuredHeight(data.payload.height);
             }
             break;
 
@@ -681,7 +682,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
 
       window.addEventListener("message", handleMessage);
       return () => window.removeEventListener("message", handleMessage);
-    }, [initialContent, minHeight, maxHeight, autoHeight]);
+    }, [initialContent, applyMeasuredHeight]);
 
     // Clean up JSON-RPC transport on unmount
     useEffect(() => {

@@ -138,7 +138,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 {/* Output row right gutter — always rendered as spacer for consistent width */}
                 <div
                   className={cn(
-                    "flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-1 select-none",
+                    "sticky top-2 flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-1 select-none",
                     outputRightGutterContent && "opacity-100 transition-opacity duration-150",
                     outputRightGutterContent &&
                       "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",

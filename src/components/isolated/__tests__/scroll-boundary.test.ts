@@ -85,6 +85,33 @@ describe("scroll-boundary", () => {
     expect(scrollContainer.scrollBy).not.toHaveBeenCalled();
   });
 
+  it("scrolls the next ancestor when the nearest scroll ancestor is at a boundary", () => {
+    const notebookScroller = document.createElement("div");
+    notebookScroller.style.overflowY = "auto";
+    setScrollMetrics(notebookScroller, 2000, 600);
+    notebookScroller.scrollTop = 200;
+    notebookScroller.scrollBy = vi.fn();
+
+    const outputWell = document.createElement("div");
+    outputWell.style.overflowY = "auto";
+    setScrollMetrics(outputWell, 1000, 400);
+    outputWell.scrollTop = 600;
+    outputWell.scrollBy = vi.fn();
+
+    const iframe = document.createElement("iframe");
+    outputWell.appendChild(iframe);
+    notebookScroller.appendChild(outputWell);
+    document.body.appendChild(notebookScroller);
+
+    scrollFrameWheelBoundary(iframe, { deltaY: 160 });
+
+    expect(outputWell.scrollBy).not.toHaveBeenCalled();
+    expect(notebookScroller.scrollBy).toHaveBeenCalledWith({
+      top: 160,
+      behavior: "auto",
+    });
+  });
+
   it("falls back to the owning window when no scroll ancestor exists", () => {
     const iframe = document.createElement("iframe");
     document.body.appendChild(iframe);
