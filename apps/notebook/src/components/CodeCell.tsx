@@ -409,9 +409,7 @@ export const CodeCell = memo(function CodeCell({
           )
         }
         outputRightGutterContent={
-          outputs.length > 0 &&
-          !isOutputsHidden &&
-          (hasIsolatedOutput || onToggleOutputsHidden) ? (
+          outputs.length > 0 && !isOutputsHidden && (hasIsolatedOutput || onToggleOutputsHidden) ? (
             <>
               {hasIsolatedOutput && (
                 <button
