@@ -5,8 +5,6 @@ use std::str::FromStr;
 use automerge::ChangeHash;
 use notebook_doc::{diff::DocChangeset, NotebookDoc};
 
-use automerge_recovery::catch_automerge_panic;
-
 use crate::notebook_sync_server::{check_and_update_trust_state, NotebookRoom};
 use crate::protocol::NotebookResponse;
 
@@ -148,10 +146,11 @@ fn diff_from_observed_heads(
     observed: &[ChangeHash],
 ) -> GuardResult<DocChangeset> {
     let current = doc.get_heads();
-    catch_automerge_panic("guarded-action-diff", || {
-        notebook_doc::diff::diff_doc(doc.doc_mut(), observed, &current)
-    })
-    .map_err(|_| rejected("Notebook state changed unexpectedly. Review before running again."))
+    Ok(notebook_doc::diff::diff_doc(
+        doc.doc_mut(),
+        observed,
+        &current,
+    ))
 }
 
 fn parse_heads(heads: &[String]) -> GuardResult<Vec<ChangeHash>> {

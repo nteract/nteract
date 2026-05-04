@@ -11,7 +11,7 @@ use crate::{ForeignSyncView, RuntimeStateDoc, RuntimeStateError};
 ///
 /// Mutations go through `with_doc` for synchronous document-owned writes.
 /// Use RuntimeStateDoc transactions inside `with_doc` when applying writes at
-/// captured heads; keep `fork`/`merge` for true async fork work.
+/// captured heads.
 /// Notification is automatic via heads comparison. Clone is cheap.
 ///
 /// Uses `std::sync::Mutex`, not `tokio::sync::RwLock`. Automerge writes are
@@ -49,40 +49,6 @@ impl RuntimeStateHandle {
             let _ = self.changed_tx.send(());
         }
         result
-    }
-
-    /// Fork at current heads for async runtime-state work.
-    pub fn fork(&self, actor_label: &str) -> Result<RuntimeStateDoc, RuntimeStateError> {
-        let mut sd = self
-            .doc
-            .lock()
-            .map_err(|_| RuntimeStateError::LockPoisoned)?;
-        Ok(sd.fork_with_actor(actor_label))
-    }
-
-    /// Merge a fork back. Notifies if heads changed.
-    ///
-    /// If merge panics (Automerge's apply path is not transactional),
-    /// catches the unwind and rebuilds the doc via save/load to restore
-    /// a consistent state. The fork's writes are lost but the session
-    /// continues.
-    pub fn merge(&self, fork: &mut RuntimeStateDoc) -> Result<(), RuntimeStateError> {
-        let mut sd = self
-            .doc
-            .lock()
-            .map_err(|_| RuntimeStateError::LockPoisoned)?;
-        let heads_before = sd.get_heads();
-        match sd.merge_recovering(fork, "runtime-state-merge") {
-            Ok(_) => {}
-            Err(err) => {
-                tracing::warn!("[runtime-state] {}", err);
-                return Err(err.into());
-            }
-        }
-        if sd.get_heads() != heads_before {
-            let _ = self.changed_tx.send(());
-        }
-        Ok(())
     }
 
     /// Run a document-owned transaction at the current heads.
@@ -220,10 +186,6 @@ mod tests {
         RuntimeLifecycle::Running(KernelActivity::Busy)
     }
 
-    fn idle() -> RuntimeLifecycle {
-        RuntimeLifecycle::Running(KernelActivity::Idle)
-    }
-
     #[test]
     fn with_doc_notifies_on_change() {
         let handle = make_handle();
@@ -269,16 +231,6 @@ mod tests {
             handle.read(|sd| sd.read_state().kernel.lifecycle).unwrap(),
             busy()
         );
-    }
-
-    #[test]
-    fn fork_and_merge_notifies() {
-        let handle = make_handle();
-        let mut rx = handle.subscribe();
-        let mut fork = handle.fork("test-fork").unwrap();
-        fork.set_lifecycle(&idle()).unwrap();
-        handle.merge(&mut fork).unwrap();
-        assert!(rx.try_recv().is_ok());
     }
 
     #[test]
