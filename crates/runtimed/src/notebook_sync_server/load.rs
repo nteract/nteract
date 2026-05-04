@@ -1305,6 +1305,8 @@ pub(crate) async fn apply_ipynb_changes(
                 Ok(deferred) => deferred,
                 Err(e) => {
                     warn!("[file-watcher] order transaction failed: {}", e);
+                    // Do not create RuntimeStateDoc executions for cells that
+                    // failed to commit to the notebook doc.
                     Vec::new()
                 }
             }

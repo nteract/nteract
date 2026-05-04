@@ -4690,22 +4690,27 @@ pub(crate) async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, 
         }
     }
 
-    let formatted_count = formatted_updates.len();
-    if formatted_count > 0 {
+    let mut formatted_count = 0;
+    if !formatted_updates.is_empty() {
         let mut doc = room.doc.write().await;
         match doc.transact_at_heads_recovering(
             &baseline_heads,
             Some(&formatter_actor(&runtime)),
             "save-format-transaction",
             |doc| {
+                let mut applied = 0;
                 let mut changed = false;
                 for (cell_id, fmt) in &formatted_updates {
-                    changed |= doc.update_source(cell_id, fmt)?;
+                    if let Ok(cell_changed) = doc.update_source(cell_id, fmt) {
+                        applied += 1;
+                        changed |= cell_changed;
+                    }
                 }
-                Ok(changed)
+                Ok((applied, changed))
             },
         ) {
-            Ok(changed) => {
+            Ok((applied, changed)) => {
+                formatted_count = applied;
                 if changed {
                     let _ = room.broadcasts.changed_tx.send(());
                 }

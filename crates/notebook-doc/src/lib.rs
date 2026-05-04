@@ -370,6 +370,10 @@ impl NotebookDoc {
     /// historical view. The live document owns the actor sequence, so repeated
     /// isolated transactions can share one stable actor without producing
     /// duplicate sequence numbers.
+    ///
+    /// The closure is invoked exactly once. Prepare non-deterministic values
+    /// before calling this method if they need to be reused outside the
+    /// transaction; the helper does not retry conflicts by re-running `f`.
     pub fn transact_at_heads_recovering<F, T>(
         &mut self,
         heads: &[automerge::ChangeHash],
