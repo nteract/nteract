@@ -1,7 +1,7 @@
 import { render, waitFor } from "@testing-library/react";
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { NTERACT_RENDERER_READY, NTERACT_THEME } from "../rpc-methods";
+import { NTERACT_RENDERER_READY, NTERACT_RESIZE, NTERACT_THEME } from "../rpc-methods";
 
 const { MockJsonRpcTransport } = vi.hoisted(() => {
   class MockJsonRpcTransport {
@@ -89,6 +89,31 @@ describe("IsolatedFrame theme updates", () => {
         isDark: false,
         colorTheme: "cream",
       });
+    });
+  });
+
+  it("re-applies the last measured content height when autoHeight changes", async () => {
+    const { container, rerender } = render(
+      <IsolatedFrame darkMode={false} maxHeight={2000} autoHeight={false} />,
+    );
+    const iframe = container.querySelector("iframe") as HTMLIFrameElement;
+    const iframeWindow = iframe.contentWindow as Window;
+
+    dispatchIframeReady(iframeWindow);
+
+    const transport = MockJsonRpcTransport.instances[0];
+    expect(transport).toBeDefined();
+
+    act(() => {
+      transport.notificationHandlers.get(NTERACT_RESIZE)?.({ height: 2600 });
+    });
+
+    expect(iframe.style.height).toBe("2000px");
+
+    rerender(<IsolatedFrame darkMode={false} maxHeight={2000} autoHeight />);
+
+    await waitFor(() => {
+      expect(iframe.style.height).toBe("2600px");
     });
   });
 });
