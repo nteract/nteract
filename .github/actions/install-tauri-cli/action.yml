@@ -1,0 +1,19 @@
+name: Install Tauri CLI
+description: Install cargo-tauri on Windows via upstream release asset with source-build fallback.
+
+inputs:
+  version:
+    description: Tauri CLI version to install.
+    required: false
+    default: "2.11.0"
+
+runs:
+  using: composite
+  steps:
+    - name: Install Tauri CLI
+      shell: pwsh
+      env:
+        TAURI_CLI_VERSION: ${{ inputs.version }}
+      run: |
+        Set-ExecutionPolicy Unrestricted -Scope Process -Force
+        ./scripts/ci/install-tauri-cli.ps1

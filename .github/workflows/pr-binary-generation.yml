@@ -104,15 +104,38 @@ jobs:
         if: runner.os != 'Windows'
         run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
 
-      - name: Install cargo-binstall (Windows)
+      - name: Install tauri-cli (Unix)
+        if: runner.os != 'Windows'
+        run: cargo binstall tauri-cli --no-confirm --locked --force
+
+      - name: Install tauri-cli (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Set-ExecutionPolicy Unrestricted -Scope Process -Force
-          iex (iwr "https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.ps1").Content
-
-      - name: Install tauri-cli
-        run: cargo binstall tauri-cli --no-confirm --locked --force
+          $ErrorActionPreference = "Stop"
+          $ProgressPreference = "SilentlyContinue"
+          $version = "2.11.0"
+          $target = "x86_64-pc-windows-msvc"
+          $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $HOME ".cargo" }
+          $cargoBin = Join-Path $cargoHome "bin"
+          New-Item -ItemType Directory -Force -Path $cargoBin | Out-Null
+          Add-Content -Path $env:GITHUB_PATH -Value $cargoBin
+          $env:PATH = "$cargoBin;$env:PATH"
+          $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+          try {
+            $url = "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v$version/cargo-tauri-$target.zip"
+            $zip = Join-Path $tmp "cargo-tauri.zip"
+            Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+            Expand-Archive -Path $zip -DestinationPath $tmp -Force
+            Copy-Item -Path (Join-Path $tmp "cargo-tauri.exe") -Destination (Join-Path $cargoBin "cargo-tauri.exe") -Force
+          } catch {
+            Write-Warning "Direct Tauri CLI download failed: $_"
+            cargo install tauri-cli --version $version --locked --force
+          } finally {
+            Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+          }
+          cargo tauri --version
 
       - name: Bake PR + commit into version
         id: version
