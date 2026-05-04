@@ -85,6 +85,26 @@ impl RuntimeStateHandle {
         Ok(())
     }
 
+    /// Run a document-owned transaction at the current heads.
+    ///
+    /// Use this for synchronous writes that previously forked only to assign
+    /// an actor. The handle owns locking and change notification; Automerge
+    /// owns the actor sequence on the live document.
+    pub fn transact_at_current_heads<F, T>(
+        &self,
+        actor: Option<&str>,
+        label: &str,
+        f: F,
+    ) -> Result<T, RuntimeStateError>
+    where
+        F: FnOnce(&mut RuntimeStateDoc) -> Result<T, RuntimeStateError>,
+    {
+        self.with_doc(|sd| {
+            let heads = sd.get_heads();
+            sd.transact_at_heads_recovering(&heads, actor, label, f)
+        })
+    }
+
     pub fn generate_sync_message_recovering(
         &self,
         peer_state: &mut sync::State,
@@ -259,6 +279,31 @@ mod tests {
         fork.set_lifecycle(&idle()).unwrap();
         handle.merge(&mut fork).unwrap();
         assert!(rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn transact_at_current_heads_notifies_with_stable_actor() {
+        let handle = make_handle();
+        let mut rx = handle.subscribe();
+
+        handle
+            .transact_at_current_heads(Some("rt:kernel:test"), "handle-transaction-a", |sd| {
+                sd.create_execution("exec-a", "cell-a")?;
+                Ok(())
+            })
+            .unwrap();
+        handle
+            .transact_at_current_heads(Some("rt:kernel:test"), "handle-transaction-b", |sd| {
+                sd.create_execution("exec-b", "cell-b")?;
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_ok());
+        let state = handle.read(|sd| sd.read_state()).unwrap();
+        assert_eq!(state.executions["exec-a"].cell_id, "cell-a");
+        assert_eq!(state.executions["exec-b"].cell_id, "cell-b");
     }
 
     #[test]

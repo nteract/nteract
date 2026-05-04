@@ -1078,11 +1078,11 @@ impl KernelConnection for JupyterKernel {
         let iopub_comm_seq = comm_seq.clone();
         let iopub_stream_terminals = stream_terminals.clone();
         let state_for_iopub = shared.state.clone();
-        // IOPub and shell still create true async forks, so they keep distinct
-        // task actors until those paths move to transactions. Transactional
-        // comm coalescing uses the base kernel actor because Automerge keeps
-        // the live document's actor sequence linear.
+        // Display updates still mutate a fork across an async manifest helper,
+        // so IOPub keeps a task actor for that path. Synchronous IOPub writes
+        // use transactions with the base kernel actor.
         let iopub_actor_id = format!("{kernel_actor_id}:iopub");
+        let iopub_kernel_actor_id = kernel_actor_id.clone();
 
         // Create coalescing channel early so the IOPub task can capture the sender.
         let (coalesce_tx, coalesce_rx) = mpsc::unbounded_channel::<(String, serde_json::Value)>();
@@ -1368,51 +1368,45 @@ impl KernelConnection for JupyterKernel {
                                                 String::new()
                                             };
 
-                                        let mut fork = match state_for_iopub.fork(&iopub_actor_id) {
-                                            Ok(f) => f,
+                                        let upsert_result = match state_for_iopub
+                                            .transact_at_current_heads(
+                                                Some(&iopub_kernel_actor_id),
+                                                "runtime-state-iopub-stream-transaction",
+                                                |sd| {
+                                                    match sd.upsert_stream_output(
+                                                        &eid,
+                                                        stream_name,
+                                                        &manifest_json,
+                                                        known_state.as_ref(),
+                                                    ) {
+                                                        Ok(result) => Ok(result),
+                                                        Err(e) => {
+                                                            warn!(
+                                                                "[jupyter-kernel] Failed to upsert stream output: {}",
+                                                                e
+                                                            );
+                                                            Err(e.into())
+                                                        }
+                                                    }
+                                                },
+                                            ) {
+                                            Ok(result) => result,
                                             Err(e) => {
-                                                warn!("[runtime-state] fork: {}", e);
+                                                warn!("[runtime-state] {}", e);
                                                 continue;
                                             }
                                         };
 
-                                        let upsert_result = fork.upsert_stream_output(
+                                        let (_updated, output_index) = upsert_result;
+                                        let mut terminals = iopub_stream_terminals.lock().await;
+                                        terminals.set_output_state(
                                             &eid,
                                             stream_name,
-                                            &manifest_json,
-                                            known_state.as_ref(),
+                                            StreamOutputState {
+                                                index: output_index,
+                                                blob_hash: blob_hash.clone(),
+                                            },
                                         );
-
-                                        let merge_ok = match state_for_iopub.merge(&mut fork) {
-                                            Ok(()) => true,
-                                            Err(e) => {
-                                                warn!("[runtime-state] merge: {}", e);
-                                                false
-                                            }
-                                        };
-
-                                        if merge_ok {
-                                            match &upsert_result {
-                                                Ok((_updated, output_index)) => {
-                                                    let mut terminals =
-                                                        iopub_stream_terminals.lock().await;
-                                                    terminals.set_output_state(
-                                                        &eid,
-                                                        stream_name,
-                                                        StreamOutputState {
-                                                            index: *output_index,
-                                                            blob_hash: blob_hash.clone(),
-                                                        },
-                                                    );
-                                                }
-                                                Err(e) => {
-                                                    warn!(
-                                                    "[jupyter-kernel] Failed to upsert stream output: {}",
-                                                    e
-                                                );
-                                                }
-                                            }
-                                        }
                                     }
                                 }
 
@@ -1571,25 +1565,28 @@ impl KernelConnection for JupyterKernel {
                                                 }
                                             };
 
-                                            let mut fork =
-                                                match state_for_iopub.fork(&iopub_actor_id) {
-                                                    Ok(f) => f,
-                                                    Err(e) => {
-                                                        warn!("[runtime-state] fork: {}", e);
-                                                        continue;
-                                                    }
-                                                };
-
-                                            if let Err(e) = fork.append_output(&eid, &manifest_json)
+                                            if let Err(e) = state_for_iopub
+                                                .transact_at_current_heads(
+                                                    Some(&iopub_kernel_actor_id),
+                                                    "runtime-state-iopub-output-transaction",
+                                                    |sd| {
+                                                        // Preserve the old fork+merge behavior:
+                                                        // append errors are logged but do not
+                                                        // turn the transaction into a recovery
+                                                        // failure.
+                                                        if let Err(e) = sd
+                                                            .append_output(&eid, &manifest_json)
+                                                        {
+                                                            warn!(
+                                                                "[jupyter-kernel] Failed to append output to state doc: {}",
+                                                                e
+                                                            );
+                                                        }
+                                                        Ok(())
+                                                    },
+                                                )
                                             {
-                                                warn!(
-                                                "[jupyter-kernel] Failed to append output to state doc: {}",
-                                                e
-                                            );
-                                            }
-
-                                            if let Err(e) = state_for_iopub.merge(&mut fork) {
-                                                warn!("[runtime-state] merge: {}", e);
+                                                warn!("[runtime-state] {}", e);
                                             }
                                         }
 
@@ -1809,25 +1806,28 @@ impl KernelConnection for JupyterKernel {
                                                 }
                                             };
 
-                                            let mut fork =
-                                                match state_for_iopub.fork(&iopub_actor_id) {
-                                                    Ok(f) => f,
-                                                    Err(e) => {
-                                                        warn!("[runtime-state] fork: {}", e);
-                                                        continue;
-                                                    }
-                                                };
-
-                                            if let Err(e) = fork.append_output(&eid, &manifest_json)
+                                            if let Err(e) = state_for_iopub
+                                                .transact_at_current_heads(
+                                                    Some(&iopub_kernel_actor_id),
+                                                    "runtime-state-iopub-error-transaction",
+                                                    |sd| {
+                                                        // Preserve the old fork+merge behavior:
+                                                        // append errors are logged but do not
+                                                        // turn the transaction into a recovery
+                                                        // failure.
+                                                        if let Err(e) = sd
+                                                            .append_output(&eid, &manifest_json)
+                                                        {
+                                                            warn!(
+                                                                "[jupyter-kernel] Failed to append error output to state doc: {}",
+                                                                e
+                                                            );
+                                                        }
+                                                        Ok(())
+                                                    },
+                                                )
                                             {
-                                                warn!(
-                                                "[jupyter-kernel] Failed to append error output to state doc: {}",
-                                                e
-                                            );
-                                            }
-
-                                            if let Err(e) = state_for_iopub.merge(&mut fork) {
-                                                warn!("[runtime-state] merge: {}", e);
+                                                warn!("[runtime-state] {}", e);
                                             }
                                         }
 
