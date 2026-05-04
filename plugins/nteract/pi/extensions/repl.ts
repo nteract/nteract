@@ -77,7 +77,7 @@ type CellResult = {
   executionCount?: number;
   status: string; // "done" | "error" | "timeout" | "kernel_error"
   success: boolean;
-  outputs: JsOutput[];
+  outputs?: JsOutput[];
 };
 
 type QueuedExecution = {
@@ -340,17 +340,18 @@ function formatResult(result: CellResult): {
   content: (TextContent | ImageContent)[];
   isError: boolean;
 } {
+  const outputs = result.outputs ?? [];
   const isError =
     result.status === "error" ||
     result.status === "kernel_error" ||
     result.status === "kernel_failed" ||
-    result.outputs.some((o) => o.outputType === "error");
+    outputs.some((o) => o.outputType === "error");
 
   const parts: (TextContent | ImageContent)[] = [];
   const header = `cell ${result.cellId} [${result.executionCount ?? "?"}] ${result.status}`;
   const textChunks: string[] = [];
 
-  for (const o of result.outputs) {
+  for (const o of outputs) {
     switch (o.outputType) {
       case "stream": {
         const prefix = o.name === "stderr" ? "[stderr] " : "";
@@ -419,7 +420,7 @@ function formatResult(result: CellResult): {
 }
 
 function findParquetBlobPath(result: CellResult): string | undefined {
-  for (const o of result.outputs) {
+  for (const o of result.outputs ?? []) {
     if (!o.blobPathsJson) continue;
     try {
       const paths = JSON.parse(o.blobPathsJson);

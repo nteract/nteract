@@ -414,6 +414,13 @@ impl EventSubscription {
     }
 }
 
+fn spawn_event_task<F>(future: F) -> tokio::task::JoinHandle<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    napi::bindgen_prelude::spawn(future)
+}
+
 fn json_callback(callback: Function<'_, (String,), ()>) -> Result<JsonCallback> {
     callback
         .build_threadsafe_function::<String>()
@@ -453,7 +460,7 @@ impl Session {
         };
         let mut rx = handle.subscribe_runtime_state();
         let tsfn = json_callback(callback)?;
-        let task = tokio::spawn(async move {
+        let task = spawn_event_task(async move {
             emit_json(&tsfn, &*rx.borrow_and_update());
             while rx.changed().await.is_ok() {
                 emit_json(&tsfn, &*rx.borrow_and_update());
@@ -480,7 +487,7 @@ impl Session {
         };
         let mut rx = handle.subscribe_runtime_state();
         let tsfn = json_callback(callback)?;
-        let task = tokio::spawn(async move {
+        let task = spawn_event_task(async move {
             let mut prev = rx.borrow_and_update().executions.clone();
             while rx.changed().await.is_ok() {
                 let curr = rx.borrow_and_update().executions.clone();
@@ -521,7 +528,7 @@ impl Session {
             )
         };
         let tsfn = json_callback(callback)?;
-        let task = tokio::spawn(async move {
+        let task = spawn_event_task(async move {
             let fallback_cell_id = cell_id.unwrap_or_default();
             let mut watcher =
                 notebook_sync::ExecutionWatcher::new(&handle, fallback_cell_id, execution_id);
@@ -566,7 +573,7 @@ impl Session {
         };
         let mut rx = handle.subscribe();
         let tsfn = json_callback(callback)?;
-        let task = tokio::spawn(async move {
+        let task = spawn_event_task(async move {
             while rx.changed().await.is_ok() {
                 let _ = tsfn.call("null".to_string(), ThreadsafeFunctionCallMode::NonBlocking);
             }
@@ -588,7 +595,7 @@ impl Session {
                 .resubscribe()
         };
         let tsfn = json_callback(callback)?;
-        let task = tokio::spawn(async move {
+        let task = spawn_event_task(async move {
             while let Some(broadcast) = rx.recv().await {
                 emit_json(&tsfn, &broadcast);
             }
@@ -614,7 +621,7 @@ impl Session {
         };
         let mut rx = handle.subscribe_status();
         let tsfn = json_callback(callback)?;
-        let task = tokio::spawn(async move {
+        let task = spawn_event_task(async move {
             emit_json(&tsfn, &*rx.borrow_and_update());
             while rx.changed().await.is_ok() {
                 emit_json(&tsfn, &*rx.borrow_and_update());
