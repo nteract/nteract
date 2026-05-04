@@ -20,11 +20,14 @@
 //! ```
 
 use std::path::Path;
+#[cfg(debug_assertions)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use automerge::sync;
 use automerge::sync::SyncDoc;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, AutomergeError, ObjId, ObjType, ReadDoc};
+use automerge_recovery::{catch_automerge_panic, AutomergeOperationError, AutomergeRecoveryError};
 use log::info;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -450,6 +453,11 @@ pub struct SettingsDoc {
     doc: AutoCommit,
 }
 
+#[cfg(debug_assertions)]
+static PANIC_ON_NEXT_GENERATE_SYNC_CALLS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(debug_assertions)]
+static PANIC_ON_NEXT_RECEIVE_SYNC_CALLS: AtomicUsize = AtomicUsize::new(0);
+
 impl SettingsDoc {
     /// Create a new empty settings document with defaults.
     pub fn new() -> Self {
@@ -458,6 +466,14 @@ impl SettingsDoc {
 
         // Root-level scalars (Automerge stores strings; enums are serialized via Display)
         let _ = doc.put(automerge::ROOT, "theme", defaults.theme.to_string());
+        let _ = doc.put(
+            automerge::ROOT,
+            "color_theme",
+            match defaults.color_theme {
+                ColorTheme::Classic => "classic",
+                ColorTheme::Cream => "cream",
+            },
+        );
         let _ = doc.put(
             automerge::ROOT,
             "default_runtime",
@@ -500,6 +516,11 @@ impl SettingsDoc {
             let _ = doc.put_object(&conda_id, "default_packages", ObjType::List);
         }
 
+        // Nested pixi map with empty package list
+        if let Ok(pixi_id) = doc.put_object(automerge::ROOT, "pixi", ObjType::Map) {
+            let _ = doc.put_object(&pixi_id, "default_packages", ObjType::List);
+        }
+
         Self { doc }
     }
 
@@ -520,7 +541,7 @@ impl SettingsDoc {
                 {
                     Some(json) => {
                         info!("[settings] Loaded canonical settings from {:?}", json_path);
-                        return Self::from_json(&json);
+                        return Self::from_json_value(&json);
                     }
                     None => {
                         log::warn!(
@@ -565,12 +586,15 @@ impl SettingsDoc {
         settings
     }
 
-    /// Create a settings document from parsed JSON (for migration from settings.json).
-    fn from_json(json: &serde_json::Value) -> Self {
+    /// Create a settings document from parsed canonical settings JSON.
+    pub fn from_json_value(json: &serde_json::Value) -> Self {
         let mut settings = Self::new();
 
         if let Some(theme) = json.get("theme").and_then(|v| v.as_str()) {
             settings.put("theme", theme);
+        }
+        if let Some(color_theme) = json.get("color_theme").and_then(|v| v.as_str()) {
+            settings.put("color_theme", color_theme);
         }
         if let Some(runtime) = json.get("default_runtime").and_then(|v| v.as_str()) {
             settings.put("default_runtime", runtime);
@@ -659,7 +683,18 @@ impl SettingsDoc {
             settings.put_list("conda.default_packages", &conda_packages);
         }
 
+        let pixi_packages = Self::extract_packages_from_json(json, "pixi");
+        if !pixi_packages.is_empty() {
+            settings.put_list("pixi.default_packages", &pixi_packages);
+        }
+
         settings
+    }
+
+    /// Create a settings document from a materialized settings snapshot.
+    pub fn from_synced_settings(settings: &SyncedSettings) -> Self {
+        let json = serde_json::to_value(settings).unwrap_or_else(|_| serde_json::Value::Null);
+        Self::from_json_value(&json)
     }
 
     /// Extract packages from a nested JSON key (e.g. `uv.default_packages`).
@@ -1059,6 +1094,19 @@ impl SettingsDoc {
         self.doc.sync().generate_sync_message(peer_state)
     }
 
+    /// Generate a sync message while capturing Automerge panics at the document boundary.
+    pub fn generate_sync_message_recovering(
+        &mut self,
+        label: impl Into<String>,
+        peer_state: &mut sync::State,
+    ) -> Result<Option<sync::Message>, AutomergeRecoveryError> {
+        catch_automerge_panic(label, || {
+            #[cfg(debug_assertions)]
+            Self::panic_if_requested(&PANIC_ON_NEXT_GENERATE_SYNC_CALLS, "generate sync");
+            self.generate_sync_message(peer_state)
+        })
+    }
+
     /// Receive and apply a sync message from a peer.
     pub fn receive_sync_message(
         &mut self,
@@ -1066,6 +1114,25 @@ impl SettingsDoc {
         message: sync::Message,
     ) -> Result<(), AutomergeError> {
         self.doc.sync().receive_sync_message(peer_state, message)
+    }
+
+    /// Receive a sync message while capturing Automerge panics at the document boundary.
+    pub fn receive_sync_message_recovering(
+        &mut self,
+        label: impl Into<String>,
+        peer_state: &mut sync::State,
+        message: sync::Message,
+    ) -> Result<(), AutomergeOperationError> {
+        let label = label.into();
+        match catch_automerge_panic(label.clone(), || {
+            #[cfg(debug_assertions)]
+            Self::panic_if_requested(&PANIC_ON_NEXT_RECEIVE_SYNC_CALLS, "receive sync");
+            self.receive_sync_message(peer_state, message)
+        }) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+            Err(error) => Err(AutomergeOperationError::Panic(error)),
+        }
     }
 
     /// Current document heads. Used to detect whether a sync exchange
@@ -1087,7 +1154,12 @@ impl SettingsDoc {
         let mut changed = false;
 
         // Scalar fields — only update if present in JSON and different
-        for key in &["theme", "default_runtime", "default_python_env"] {
+        for key in &[
+            "theme",
+            "color_theme",
+            "default_runtime",
+            "default_python_env",
+        ] {
             if let Some(value) = json.get(key).and_then(|v| v.as_str()) {
                 let current = self.get(key);
                 if current.as_deref() != Some(value) {
@@ -1115,6 +1187,15 @@ impl SettingsDoc {
             let conda_packages = Self::extract_packages_from_json(json, "conda");
             if self.get_list("conda.default_packages") != conda_packages {
                 self.put_list("conda.default_packages", &conda_packages);
+                changed = true;
+            }
+        }
+
+        // Pixi packages
+        if json.get("pixi").is_some() {
+            let pixi_packages = Self::extract_packages_from_json(json, "pixi");
+            if self.get_list("pixi.default_packages") != pixi_packages {
+                self.put_list("pixi.default_packages", &pixi_packages);
                 changed = true;
             }
         }
@@ -1248,6 +1329,30 @@ impl SettingsDoc {
 
         changed
     }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn __panic_on_next_generate_sync_calls_for_test(count: usize) {
+        PANIC_ON_NEXT_GENERATE_SYNC_CALLS.store(count, Ordering::SeqCst);
+    }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn __panic_on_next_receive_sync_calls_for_test(count: usize) {
+        PANIC_ON_NEXT_RECEIVE_SYNC_CALLS.store(count, Ordering::SeqCst);
+    }
+
+    #[cfg(debug_assertions)]
+    fn panic_if_requested(counter: &AtomicUsize, operation: &str) {
+        if counter
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                count.checked_sub(1)
+            })
+            .is_ok()
+        {
+            panic!("injected settings {operation} panic");
+        }
+    }
 }
 
 impl Default for SettingsDoc {
@@ -1326,6 +1431,7 @@ mod tests {
         assert_eq!(settings.pixi_pool_size, DEFAULT_POOL_SIZE);
         assert!(settings.uv.default_packages.is_empty());
         assert!(settings.conda.default_packages.is_empty());
+        assert!(settings.pixi.default_packages.is_empty());
         assert!(settings.install_default_data_packages);
     }
 
@@ -1914,11 +2020,13 @@ mod tests {
         let json = serde_json::json!({
             "uv": { "default_packages": ["numpy", "pandas"] },
             "conda": { "default_packages": ["scipy"] },
+            "pixi": { "default_packages": ["polars"] },
         });
         let changed = doc.apply_json_changes(&json);
         assert!(changed);
         assert_eq!(doc.get_list("uv.default_packages"), vec!["numpy", "pandas"]);
         assert_eq!(doc.get_list("conda.default_packages"), vec!["scipy"]);
+        assert_eq!(doc.get_list("pixi.default_packages"), vec!["polars"]);
     }
 
     #[test]
@@ -2063,12 +2171,85 @@ mod tests {
             "keep_alive_secs": null
         });
 
-        let doc = SettingsDoc::from_json(&json);
+        let doc = SettingsDoc::from_json_value(&json);
         let settings = doc.get_all();
 
         // Should be MAX_KEEP_ALIVE_SECS, not the default 30s
         assert_eq!(settings.keep_alive_secs, MAX_KEEP_ALIVE_SECS);
         assert_eq!(settings.theme, ThemeMode::Dark);
+    }
+
+    #[test]
+    fn test_from_json_value_imports_color_theme_and_pixi_packages() {
+        let json = serde_json::json!({
+            "theme": "dark",
+            "color_theme": "cream",
+            "pixi": { "default_packages": ["numpy", "polars"] },
+        });
+
+        let doc = SettingsDoc::from_json_value(&json);
+        let settings = doc.get_all();
+
+        assert_eq!(settings.theme, ThemeMode::Dark);
+        assert_eq!(settings.color_theme, ColorTheme::Cream);
+        assert_eq!(
+            settings.pixi.default_packages,
+            vec!["numpy".to_string(), "polars".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_from_synced_settings_round_trips_pixi_packages() {
+        let settings = SyncedSettings {
+            color_theme: ColorTheme::Cream,
+            pixi: PixiDefaults {
+                default_packages: vec!["numpy".to_string(), "polars".to_string()],
+            },
+            ..SyncedSettings::default()
+        };
+
+        let doc = SettingsDoc::from_synced_settings(&settings);
+        assert_eq!(doc.get_all(), settings);
+    }
+
+    #[test]
+    fn test_recovering_generate_sync_catches_injected_panic() {
+        let mut doc = SettingsDoc::new();
+        let mut peer_state = sync::State::new();
+
+        SettingsDoc::__panic_on_next_generate_sync_calls_for_test(1);
+        let error = doc
+            .generate_sync_message_recovering("settings-test-generate", &mut peer_state)
+            .expect_err("injected panic should be captured");
+
+        assert_eq!(error.label, "settings-test-generate");
+        assert!(error.panic_message.contains("generate sync"));
+    }
+
+    #[test]
+    fn test_recovering_receive_sync_catches_injected_panic() {
+        let mut sender = SettingsDoc::new();
+        sender.put("theme", "dark");
+        let mut sender_state = sync::State::new();
+        let message = sender
+            .generate_sync_message(&mut sender_state)
+            .expect("sender should generate sync message");
+
+        let mut receiver = SettingsDoc::new();
+        let mut receiver_state = sync::State::new();
+
+        SettingsDoc::__panic_on_next_receive_sync_calls_for_test(1);
+        let error = receiver
+            .receive_sync_message_recovering("settings-test-receive", &mut receiver_state, message)
+            .expect_err("injected panic should be captured");
+
+        match error {
+            AutomergeOperationError::Panic(error) => {
+                assert_eq!(error.label, "settings-test-receive");
+                assert!(error.panic_message.contains("receive sync"));
+            }
+            other => panic!("expected panic recovery error, got {other:?}"),
+        }
     }
 
     #[test]

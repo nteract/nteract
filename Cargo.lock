@@ -7124,6 +7124,7 @@ name = "runtimed-client"
 version = "2.4.3"
 dependencies = [
  "automerge",
+ "automerge-recovery",
  "base64 0.22.1",
  "build-metadata",
  "chrono",
