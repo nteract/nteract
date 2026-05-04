@@ -47,6 +47,11 @@ interface OutputAreaProps {
    */
   maxHeight?: number;
   /**
+   * When true, isolated iframe outputs grow to their full rendered height
+   * instead of using the output max-height cap.
+   */
+  expandIframeOutputs?: boolean;
+  /**
    * Additional CSS classes for the container.
    */
   className?: string;
@@ -149,7 +154,7 @@ function outputNeedsIsolation(
  * Check if any outputs in the array need iframe isolation.
  * If any output needs isolation, ALL outputs should go to the iframe.
  */
-function anyOutputNeedsIsolation(
+export function anyOutputNeedsIsolation(
   outputs: JupyterOutput[],
   priority: readonly string[] = DEFAULT_PRIORITY,
 ): boolean {
@@ -246,6 +251,7 @@ export function OutputArea({
   collapsed = false,
   onToggleCollapse,
   maxHeight,
+  expandIframeOutputs = false,
   className,
   renderers,
   priority = DEFAULT_PRIORITY,
@@ -558,6 +564,7 @@ export function OutputArea({
                 colorTheme={colorTheme}
                 minHeight={24}
                 maxHeight={maxHeight ?? 2000}
+                autoHeight={expandIframeOutputs}
                 allowWheelBoundaryScroll
                 onReady={handleFrameReady}
                 onLinkClick={onLinkClick}

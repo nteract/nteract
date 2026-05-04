@@ -34,8 +34,8 @@ vi.mock("@/components/isolated", async () => {
 
   const MockIsolatedFrame = React.forwardRef<
     typeof mockFrameHandle,
-    { allowWheelBoundaryScroll?: boolean; onReady?: () => void }
-  >(function MockIsolatedFrame({ allowWheelBoundaryScroll, onReady }, ref) {
+    { allowWheelBoundaryScroll?: boolean; autoHeight?: boolean; onReady?: () => void }
+  >(function MockIsolatedFrame({ allowWheelBoundaryScroll, autoHeight, onReady }, ref) {
     React.useImperativeHandle(ref, () => mockFrameHandle);
 
     React.useEffect(() => {
@@ -45,6 +45,7 @@ vi.mock("@/components/isolated", async () => {
     return (
       <div
         data-allow-wheel-boundary-scroll={String(allowWheelBoundaryScroll)}
+        data-auto-height={String(autoHeight)}
         data-testid="isolated-frame"
       />
     );
@@ -120,5 +121,13 @@ describe("OutputArea iframe theme sync", () => {
     expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
       "true",
     );
+  });
+
+  it("can expand isolated iframe outputs past the default height cap", () => {
+    const { getByTestId } = render(
+      <OutputArea outputs={makeMarkdownOutput()} isolated expandIframeOutputs />,
+    );
+
+    expect(getByTestId("isolated-frame").getAttribute("data-auto-height")).toBe("true");
   });
 });
