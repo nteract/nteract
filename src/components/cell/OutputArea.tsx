@@ -587,7 +587,7 @@ export function OutputArea({
           className={cn(
             "space-y-2",
             !shouldIsolate && maxHeight && "overflow-y-auto",
-            shouldConstrainIsolatedOutput && "overflow-y-auto overscroll-contain",
+            shouldConstrainIsolatedOutput && "overflow-y-auto",
           )}
           style={shouldIsolate ? isolatedOutputWellStyle : maxHeightStyle}
         >

@@ -43,6 +43,19 @@ export function findVerticalScrollAncestor(start: Element | null): HTMLElement |
   return null;
 }
 
+function findVerticalScrollConsumer(start: Element | null, deltaY: number): HTMLElement | null {
+  let element = start instanceof HTMLElement ? start : (start?.parentElement ?? null);
+
+  while (element) {
+    if (canScrollVertically(element) && canConsumeScrollDelta(element, deltaY)) {
+      return element;
+    }
+    element = element.parentElement;
+  }
+
+  return null;
+}
+
 export function scrollFrameWheelBoundary(
   iframe: HTMLIFrameElement | null,
   params: NteractWheelBoundaryParams,
@@ -54,11 +67,8 @@ export function scrollFrameWheelBoundary(
     return;
   }
 
-  const scrollTarget = findVerticalScrollAncestor(iframe?.parentElement ?? null);
+  const scrollTarget = findVerticalScrollConsumer(iframe?.parentElement ?? null, deltaY);
   if (scrollTarget) {
-    if (!canConsumeScrollDelta(scrollTarget, deltaY)) {
-      return;
-    }
     scrollTarget.scrollBy({ top: deltaY, behavior: "auto" });
     return;
   }
