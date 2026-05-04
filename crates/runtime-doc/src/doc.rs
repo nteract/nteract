@@ -2522,6 +2522,12 @@ impl RuntimeStateDoc {
 
     /// Receive a read-only sync message, recovering from Automerge panics by
     /// rebuilding this doc and resetting peer sync state.
+    ///
+    /// Unlike `generate_sync_message_recovering`, this does not retry after
+    /// rebuild. The inbound `sync::Message` is moved into `receive_sync_message`
+    /// and consumed by Automerge's apply path, so it cannot be replayed. The
+    /// caller's next outbound sync (via the generate path) will trigger a fresh
+    /// handshake from the rebuilt state.
     pub fn receive_sync_message_recovering(
         &mut self,
         peer_state: &mut sync::State,
@@ -2562,6 +2568,10 @@ impl RuntimeStateDoc {
 
     /// Receive a writable sync message, recovering from Automerge panics by
     /// rebuilding this doc and resetting peer sync state.
+    ///
+    /// No retry after rebuild: the inbound `sync::Message` is consumed by the
+    /// failed attempt and cannot be replayed. See
+    /// `receive_sync_message_recovering` for details.
     pub fn receive_sync_message_with_changes_recovering(
         &mut self,
         peer_state: &mut sync::State,
@@ -2696,6 +2706,10 @@ impl RuntimeStateDoc {
     /// Receive a writable sync message and compute a foreign-actor comm view,
     /// recovering from Automerge panics by rebuilding this doc and resetting
     /// peer sync state.
+    ///
+    /// No retry after rebuild: the inbound `sync::Message` is consumed by the
+    /// failed attempt and cannot be replayed. See
+    /// `receive_sync_message_recovering` for details.
     pub fn receive_sync_and_foreign_comms_recovering<F>(
         &mut self,
         peer_state: &mut sync::State,

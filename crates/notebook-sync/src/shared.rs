@@ -103,6 +103,9 @@ impl SharedDocState {
         }
     }
 
+    /// No retry after rebuild: the inbound `sync::Message` is consumed by the
+    /// failed attempt and cannot be replayed. The next outbound sync triggers a
+    /// fresh handshake from the rebuilt state.
     pub(crate) fn receive_sync_message_recovering(
         &mut self,
         message: sync::Message,
@@ -156,6 +159,9 @@ impl SharedDocState {
             .receive_sync_message(&mut self.state_peer_state, message)
     }
 
+    /// No retry after rebuild: the inbound `sync::Message` is consumed by the
+    /// failed attempt and cannot be replayed. The next outbound sync triggers a
+    /// fresh handshake from the rebuilt state.
     pub(crate) fn receive_state_sync_message_recovering(
         &mut self,
         message: sync::Message,

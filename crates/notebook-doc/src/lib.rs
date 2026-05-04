@@ -2114,6 +2114,12 @@ impl NotebookDoc {
     /// Receive a sync message, recovering from Automerge panics by rebuilding
     /// this doc and resetting peer sync state. A recovered panic is reported as
     /// an error so callers do not treat the incoming message as applied.
+    ///
+    /// Unlike `generate_sync_message_recovering`, this does not retry after
+    /// rebuild. The inbound `sync::Message` is moved into `receive_sync_message`
+    /// and consumed by Automerge's apply path, so it cannot be replayed. The
+    /// caller's next outbound sync (via the generate path) will trigger a fresh
+    /// handshake from the rebuilt state.
     pub fn receive_sync_message_recovering(
         &mut self,
         peer_state: &mut sync::State,
