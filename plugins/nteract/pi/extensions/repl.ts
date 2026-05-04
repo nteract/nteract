@@ -590,7 +590,7 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
     renderCall(args, theme, _context) {
       const text =
         (_context.lastComponent as InstanceType<typeof Text> | undefined) ?? new Text("", 0, 0);
-      const code = args?.code ?? "";
+      const code = (args?.code ?? "").replace(/^\n+/, "");
       const count = nextExecCount;
       const prompt = count != null ? `In [${count}]:` : "In [*]:";
       const promptStr = theme.fg("accent", theme.bold(prompt));
@@ -670,8 +670,8 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
         .map((c: any) => c.text)
         .join("\n");
 
-      // Strip the "cell cell-xxx [n] status" header we put in the text content
-      const body = textContent.replace(/^cell cell-[^\n]*\n?/, "").trim();
+      // Strip the "cell <id> [n] status" header we put in the text content
+      const body = textContent.replace(/^cell \S* \[[^\]]*\] \S*\n?/, "").trim();
 
       const text =
         (_context.lastComponent instanceof Text ? _context.lastComponent : undefined) ??
