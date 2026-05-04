@@ -184,6 +184,59 @@ function formatStat(stats: ColumnStats | null): string {
   }
 }
 
+const SPARK_CHARS = "▁▂▃▄▅▆▇█";
+
+function sparkline(values: number[], width: number): string {
+  if (values.length === 0 || width <= 0) return "";
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const bins = new Array(Math.min(width, 8)).fill(0);
+  if (min === max) {
+    return SPARK_CHARS[3].repeat(bins.length);
+  }
+  const range = max - min;
+  for (const v of values) {
+    const bi = Math.min(Math.floor(((v - min) / range) * bins.length), bins.length - 1);
+    bins[bi]++;
+  }
+  const maxCount = Math.max(...bins);
+  return bins
+    .map((c) => SPARK_CHARS[maxCount === 0 ? 0 : Math.round((c / maxCount) * (SPARK_CHARS.length - 1))])
+    .join("");
+}
+
+function sparklineForColumn(
+  rows: string[][],
+  ci: number,
+  stats: ColumnStats | null,
+  colType: string,
+  width: number,
+): string {
+  if (stats?.kind === "boolean") {
+    const t = stats.true_count ?? 0;
+    const f = stats.false_count ?? 0;
+    const total = t + f;
+    if (total === 0) return "";
+    const barW = Math.min(width, 8);
+    const filled = Math.round((t / total) * barW);
+    return SPARK_CHARS[SPARK_CHARS.length - 1].repeat(filled) +
+      SPARK_CHARS[0].repeat(barW - filled);
+  }
+  if (stats?.kind === "numeric" || /int|float|decimal|uint/.test(colType)) {
+    const nums: number[] = [];
+    for (const row of rows) {
+      const n = parseFloat(row[ci]);
+      if (!isNaN(n)) nums.push(n);
+    }
+    return sparkline(nums, width);
+  }
+  if (stats?.kind === "string" && stats.top && stats.top.length > 0) {
+    const counts = stats.top.map(([, c]) => c);
+    return sparkline(counts, Math.min(width, counts.length));
+  }
+  return "";
+}
+
 class DataTable {
   private columns: string[];
   private rows: string[][];
@@ -286,7 +339,16 @@ class DataTable {
       t.fg("muted", "│") + " " + typeCells.join(t.fg("muted", " │ ")) + " " + t.fg("muted", "│"),
     );
 
-    // ── Stats row (sparkline or range) ──
+    // ── Sparkline row ──
+    const sparkCells = this.colStats.map((stats, ci) => {
+      const spark = sparklineForColumn(this.rows, ci, stats, this.colTypes[ci] ?? "", colWidths[ci]);
+      return t.fg("dim", pad(spark, colWidths[ci]));
+    });
+    lines.push(
+      t.fg("muted", "│") + " " + sparkCells.join(t.fg("muted", " │ ")) + " " + t.fg("muted", "│"),
+    );
+
+    // ── Stats row ──
     const statCells = this.colStats.map((stats, ci) => {
       const statStr = formatStat(stats);
       return t.fg("dim", pad(statStr, colWidths[ci]));
