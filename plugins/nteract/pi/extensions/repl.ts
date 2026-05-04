@@ -201,7 +201,10 @@ function sparkline(values: number[], width: number): string {
   }
   const maxCount = Math.max(...bins);
   return bins
-    .map((c) => SPARK_CHARS[maxCount === 0 ? 0 : Math.round((c / maxCount) * (SPARK_CHARS.length - 1))])
+    .map(
+      (c) =>
+        SPARK_CHARS[maxCount === 0 ? 0 : Math.round((c / maxCount) * (SPARK_CHARS.length - 1))],
+    )
     .join("");
 }
 
@@ -219,8 +222,9 @@ function sparklineForColumn(
     if (total === 0) return "";
     const barW = Math.min(width, 8);
     const filled = Math.round((t / total) * barW);
-    return SPARK_CHARS[SPARK_CHARS.length - 1].repeat(filled) +
-      SPARK_CHARS[0].repeat(barW - filled);
+    return (
+      SPARK_CHARS[SPARK_CHARS.length - 1].repeat(filled) + SPARK_CHARS[0].repeat(barW - filled)
+    );
   }
   if (stats?.kind === "numeric" || /int|float|decimal|uint/.test(colType)) {
     const nums: number[] = [];
@@ -348,9 +352,7 @@ class DataTable {
     lines.push(topBorder);
 
     // ── Column headers ──
-    const headerCells = columns.map((col, ci) =>
-      t.fg("accent", t.bold(pad(col, colWidths[ci]))),
-    );
+    const headerCells = columns.map((col, ci) => t.fg("accent", t.bold(pad(col, colWidths[ci]))));
     lines.push(
       t.fg("muted", "│") + " " + headerCells.join(t.fg("muted", " │ ")) + " " + t.fg("muted", "│"),
     );
@@ -399,7 +401,10 @@ class DataTable {
     // ── Footer info ──
     const showingRows = numRows < this.totalRows ? `showing ${numRows} of ` : "";
     const hiddenSuffix = hiddenCols > 0 ? ` (${hiddenCols} more columns)` : "";
-    const info = t.fg("dim", `${showingRows}${this.totalRows} rows × ${totalCols} columns${hiddenSuffix}`);
+    const info = t.fg(
+      "dim",
+      `${showingRows}${this.totalRows} rows × ${totalCols} columns${hiddenSuffix}`,
+    );
     lines.push(info);
 
     // Indent all lines to align with Out[n]: prompt
