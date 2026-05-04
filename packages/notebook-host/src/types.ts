@@ -68,6 +68,11 @@ export interface TyposquatWarning {
 
 export interface DaemonReadyPayload {
   notebook_id?: string;
+  /**
+   * Tauri relay bootstrap epoch used to acknowledge the matching frontend
+   * WASM reset. This is transport bookkeeping, not an Automerge sync counter.
+   */
+  relay_generation?: number;
   cell_count?: number;
   needs_trust_approval?: boolean;
   /** In-memory-only notebook (no on-disk path). Drives the always-dirty asterisk. */
@@ -168,7 +173,7 @@ export interface HostRelay {
    * `notify_sync_ready` Tauri command. No-op in hosts where the main
    * process doesn't buffer (e.g., a browser-served host).
    */
-  notifySyncReady(): Promise<void>;
+  notifySyncReady(generation?: number): Promise<void>;
 }
 
 /**

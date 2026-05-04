@@ -169,8 +169,9 @@ struct DaemonStatusState(Arc<Mutex<Option<runtimed::client::DaemonProgress>>>);
 /// This prevents frame loss when the JS `SyncEngine` hasn't subscribed yet
 /// (race between relay start and `engine.start()` + `webview.listen()`).
 ///
-/// On the first connection the relay blocks until the JS calls `notify_sync_ready`.
-/// On reconnection the flag is already `true`, so frames flow immediately.
+/// Each relay generation blocks until the JS calls `notify_sync_ready` after
+/// completing that generation's WASM bootstrap/reset. This keeps buffered
+/// daemon frames from being applied to a stale or not-yet-reset handle.
 ///
 /// Also caches the most-recent `daemon:ready` payload per window so that
 /// `notify_sync_ready` can re-emit it for late-mounted JS listeners. Tauri
@@ -179,45 +180,90 @@ struct DaemonStatusState(Arc<Mutex<Option<runtimed::client::DaemonProgress>>>);
 /// Re-emitting on sync-ready closes that race.
 #[derive(Clone, Default)]
 struct SyncReadyState {
-    senders: Arc<Mutex<HashMap<String, tokio::sync::watch::Sender<bool>>>>,
+    gates: Arc<Mutex<HashMap<String, SyncReadyGate>>>,
     last_ready: Arc<Mutex<HashMap<String, DaemonReadyPayload>>>,
 }
 
+struct SyncReadyGate {
+    generation: u64,
+    tx: tokio::sync::watch::Sender<bool>,
+}
+
 impl SyncReadyState {
+    /// Prepare a fresh relay generation for a window.
+    ///
+    /// The frontend SyncEngine listener may survive reconnects, but the WASM
+    /// handle and bootstrap status do not. Reset the gate for every relay
+    /// generation so frames flow only after JS has rebuilt the handle and
+    /// emitted its pending session status for that generation.
+    fn reset_for_generation(&self, label: &str, generation: u64) {
+        let mut gates = match self.gates.lock() {
+            Ok(s) => s,
+            Err(e) => e.into_inner(),
+        };
+        match gates.get_mut(label) {
+            Some(gate) => {
+                gate.generation = generation;
+                gate.tx.send_replace(false);
+            }
+            None => {
+                gates.insert(
+                    label.to_string(),
+                    SyncReadyGate {
+                        generation,
+                        tx: tokio::sync::watch::channel(false).0,
+                    },
+                );
+            }
+        }
+    }
+
     /// Mark a window's relay as ready to emit frames.
     ///
     /// If the relay hasn't subscribed yet (JS signaled before the Rust
     /// connection finished), creates the entry pre-seeded to `true` so
     /// the later `subscribe()` picks it up immediately.
-    fn set_ready(&self, label: &str) {
-        let mut senders = match self.senders.lock() {
+    fn set_ready(&self, label: &str, generation: Option<u64>) -> bool {
+        let mut gates = match self.gates.lock() {
             Ok(s) => s,
             Err(e) => e.into_inner(),
         };
-        match senders.get(label) {
-            Some(tx) => {
-                let _ = tx.send(true);
+        match gates.get_mut(label) {
+            Some(gate) if generation == Some(gate.generation) => {
+                gate.tx.send_replace(true);
+                true
             }
+            Some(_) => false,
             None => {
                 // Pre-seed: JS signaled before the relay subscribed.
-                senders.insert(label.to_string(), tokio::sync::watch::channel(true).0);
+                gates.insert(
+                    label.to_string(),
+                    SyncReadyGate {
+                        generation: generation.unwrap_or(0),
+                        tx: tokio::sync::watch::channel(true).0,
+                    },
+                );
+                true
             }
         }
     }
 
     /// Get a receiver for the readiness flag, creating the entry if needed.
     ///
-    /// The receiver starts at the sender's current value: `false` on first
-    /// connection, `true` on reconnection (since the JS listener persists).
+    /// The receiver starts at the sender's current value. `setup_sync_receivers`
+    /// resets it to `false` for each relay generation before subscribing.
     fn subscribe(&self, label: &str) -> tokio::sync::watch::Receiver<bool> {
-        let mut senders = match self.senders.lock() {
+        let mut gates = match self.gates.lock() {
             Ok(s) => s,
             Err(e) => e.into_inner(),
         };
-        let tx = senders
+        let gate = gates
             .entry(label.to_string())
-            .or_insert_with(|| tokio::sync::watch::channel(false).0);
-        tx.subscribe()
+            .or_insert_with(|| SyncReadyGate {
+                generation: 0,
+                tx: tokio::sync::watch::channel(false).0,
+            });
+        gate.tx.subscribe()
     }
 
     /// Record the most-recent `daemon:ready` payload for this window, so
@@ -280,6 +326,11 @@ use tauri::{RunEvent, WindowEvent};
 #[derive(Clone, Serialize)]
 struct DaemonReadyPayload {
     notebook_id: String,
+    /// Current Tauri relay bootstrap epoch for this window. Frontend bootstrap
+    /// uses this as an acknowledgement token so a stale WASM reset cannot
+    /// release a newer relay generation. This is transport bookkeeping, not an
+    /// Automerge sync generation.
+    relay_generation: u64,
     cell_count: usize,
     needs_trust_approval: bool,
     /// Whether this notebook is in-memory only (no on-disk path).
@@ -461,6 +512,7 @@ async fn initialize_notebook_sync_open(
 
     let ready_payload = DaemonReadyPayload {
         notebook_id: info.notebook_id.clone(),
+        relay_generation: current_generation,
         cell_count: info.cell_count,
         needs_trust_approval: info.needs_trust_approval,
         ephemeral: info.ephemeral,
@@ -535,6 +587,7 @@ async fn initialize_notebook_sync_create(
 
     let ready_payload = DaemonReadyPayload {
         notebook_id: info.notebook_id.clone(),
+        relay_generation: current_generation,
         cell_count: info.cell_count,
         needs_trust_approval: info.needs_trust_approval,
         ephemeral: info.ephemeral,
@@ -597,6 +650,7 @@ async fn initialize_notebook_sync_attach(
     // the payload with sensible defaults for an ephemeral clone.
     let ready_payload = DaemonReadyPayload {
         notebook_id: notebook_id.clone(),
+        relay_generation: current_generation,
         cell_count: 0,
         needs_trust_approval: false,
         ephemeral: true,
@@ -654,13 +708,11 @@ async fn setup_sync_receivers(
     let notebook_id_for_relay = notebook_id.clone();
     let sync_generation_for_cleanup = sync_generation.clone();
 
-    // Subscribe to the per-window readiness gate. On the first connection this
-    // starts at `false` (relay waits until JS calls `notify_sync_ready`). On
-    // reconnection the flag is already `true` so the relay proceeds immediately.
-    let mut ready_rx = window
-        .app_handle()
-        .state::<SyncReadyState>()
-        .subscribe(window.label());
+    // Subscribe to the per-window readiness gate. Every relay generation starts
+    // paused until the frontend has completed its matching WASM bootstrap.
+    let sync_ready = window.app_handle().state::<SyncReadyState>();
+    sync_ready.reset_for_generation(window.label(), current_generation);
+    let mut ready_rx = sync_ready.subscribe(window.label());
 
     tokio::spawn(async move {
         // Wait for the frontend SyncEngine to signal readiness. Daemon frames
@@ -771,7 +823,10 @@ async fn setup_sync_receivers(
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_commit_hash, next_available_sample_path, reopen_action, ReopenAction};
+    use super::{
+        extract_commit_hash, next_available_sample_path, reopen_action, ReopenAction,
+        SyncReadyState,
+    };
     use tempfile::TempDir;
 
     #[test]
@@ -816,6 +871,60 @@ mod tests {
     #[test]
     fn reopen_action_ignores_reopen_events_when_a_window_is_visible() {
         assert_eq!(reopen_action(true, 1), None);
+    }
+
+    #[test]
+    fn sync_ready_rejects_stale_generation_ack() {
+        let sync_ready = SyncReadyState::default();
+        sync_ready.reset_for_generation("notebook-1", 1);
+        assert!(sync_ready.set_ready("notebook-1", Some(1)));
+
+        sync_ready.reset_for_generation("notebook-1", 2);
+        assert!(
+            !sync_ready.set_ready("notebook-1", Some(1)),
+            "old bootstrap ack must not release a newer relay generation"
+        );
+
+        let rx = sync_ready.subscribe("notebook-1");
+        assert!(
+            !*rx.borrow(),
+            "stale ready ack should leave the newer relay generation gated"
+        );
+        assert!(sync_ready.set_ready("notebook-1", Some(2)));
+        assert!(*rx.borrow());
+    }
+
+    #[test]
+    fn sync_ready_rejects_missing_generation_for_active_gate() {
+        let sync_ready = SyncReadyState::default();
+        sync_ready.reset_for_generation("notebook-1", 3);
+
+        assert!(
+            !sync_ready.set_ready("notebook-1", None),
+            "generation-less ready ack must not bypass an active relay gate"
+        );
+
+        let rx = sync_ready.subscribe("notebook-1");
+        assert!(!*rx.borrow());
+        assert!(sync_ready.set_ready("notebook-1", Some(3)));
+        assert!(*rx.borrow());
+    }
+
+    #[test]
+    fn sync_ready_reset_overrides_preseeded_ready() {
+        let sync_ready = SyncReadyState::default();
+
+        assert!(
+            sync_ready.set_ready("notebook-1", None),
+            "a cold-start ack before relay setup is accepted as a preseed"
+        );
+
+        sync_ready.reset_for_generation("notebook-1", 1);
+        let rx = sync_ready.subscribe("notebook-1");
+        assert!(
+            !*rx.borrow(),
+            "relay setup must reset any preseeded ready flag before subscribing"
+        );
     }
 }
 
@@ -2573,12 +2682,24 @@ async fn reconnect_to_daemon(
 /// Called once after `engine.start()` in `useAutomergeNotebook`. On
 /// reconnection the flag persists, so the new relay proceeds immediately.
 #[tauri::command]
-fn notify_sync_ready(window: tauri::Window, sync_ready: tauri::State<'_, SyncReadyState>) {
-    info!(
-        "[notebook-sync] Frontend sync ready for '{}'",
-        window.label()
-    );
-    sync_ready.set_ready(window.label());
+fn notify_sync_ready(
+    window: tauri::Window,
+    sync_ready: tauri::State<'_, SyncReadyState>,
+    generation: Option<u64>,
+) {
+    if sync_ready.set_ready(window.label(), generation) {
+        info!(
+            "[notebook-sync] Frontend sync ready for '{}'{}",
+            window.label(),
+            generation.map_or_else(String::new, |g| format!(" (gen {g})"))
+        );
+    } else {
+        warn!(
+            "[notebook-sync] Ignoring stale frontend sync ready for '{}'{}",
+            window.label(),
+            generation.map_or_else(String::new, |g| format!(" (gen {g})"))
+        );
+    }
     // Note: we do NOT re-emit `daemon:ready` here. `notifySyncReady()` is
     // called from `useAutomergeNotebook`, whose useEffect runs BEFORE the
     // App.tsx useEffects that subscribe to `host.daemonEvents.onReady(...)`.
