@@ -579,8 +579,8 @@ impl RuntimeStateDoc {
             (Ok(Ok(value)), None) => Ok(value),
             (Ok(Err(source)), None) => Err(source),
             (Err(err), _) | (_, Some(err)) => {
-                if !self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(label).into());
+                if let Err(source) = self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(label, source).into());
                 }
                 Err(AutomergeOperationError::Panic(err).into())
             }
@@ -4168,7 +4168,7 @@ mod tests {
 
         doc.transact_at_heads_recovering(
             &heads,
-            Some("rt:kernel:coalesce"),
+            Some("rt:kernel:shared"),
             "test-runtime-transaction-compose",
             |doc| {
                 doc.create_execution("exec-1", "cell-1")?;
