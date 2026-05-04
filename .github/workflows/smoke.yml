@@ -53,14 +53,8 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
-      - name: Install cargo-binstall
-        shell: pwsh
-        run: |
-          Set-ExecutionPolicy Unrestricted -Scope Process -Force
-          iex (iwr "https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.ps1").Content
-
       - name: Install Tauri CLI
-        run: cargo binstall tauri-cli --no-confirm --locked --force
+        uses: ./.github/actions/install-tauri-cli
 
       # Build the MCP output widget HTML. runt-mcp's include_str! needs it
       # before we compile the Rust binaries.

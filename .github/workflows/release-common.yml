@@ -652,12 +652,17 @@ jobs:
 
       - name: Install cargo-binstall
         shell: pwsh
+        env:
+          BINSTALL_VERSION: v1.18.1
         run: |
           Set-ExecutionPolicy Unrestricted -Scope Process -Force
           iex (iwr "https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.ps1").Content
 
-      - name: Install Tauri CLI and trusted-signing-cli
-        run: cargo binstall tauri-cli trusted-signing-cli --no-confirm --locked --force
+      - name: Install Tauri CLI
+        uses: ./.github/actions/install-tauri-cli
+
+      - name: Install trusted-signing-cli
+        run: cargo binstall trusted-signing-cli --no-confirm --locked --force
 
       - name: Set version in tauri.conf.json
         shell: pwsh
