@@ -1155,8 +1155,12 @@ async fn test_save_notebook_to_disk_with_outputs() {
     }
     room.state
         .with_doc(|sd| {
-            let output: serde_json::Value =
-                serde_json::json!({"output_type": "stream", "name": "stdout", "text": ["hello\n"]});
+            let output: serde_json::Value = serde_json::json!({
+                "output_type": "stream",
+                "output_id": "test-output-1",
+                "name": "stdout",
+                "text": ["hello\n"]
+            });
             sd.create_execution(eid, "cell1")?;
             sd.set_execution_count(eid, 1)?;
             sd.set_outputs(eid, &[output])?;
@@ -7483,6 +7487,7 @@ async fn test_save_preserves_outputs_when_execution_in_flight() {
         .with_doc(|sd| {
             let output = serde_json::json!({
                 "output_type": "stream",
+                "output_id": "old-output-1",
                 "name": "stdout",
                 "text": ["hello\n"]
             });
@@ -7548,6 +7553,7 @@ async fn test_save_writes_empty_outputs_when_cell_execution_id_cleared() {
         .with_doc(|sd| {
             let output = serde_json::json!({
                 "output_type": "stream",
+                "output_id": "clear-output-1",
                 "name": "stdout",
                 "text": ["hello\n"]
             });
@@ -7637,6 +7643,7 @@ async fn test_autosave_fires_on_runtime_file_dirty_without_self_loop() {
         .with_doc(|sd| {
             let output = serde_json::json!({
                 "output_type": "stream",
+                "output_id": "autosave-output-1",
                 "name": "stdout",
                 "text": ["hi\n"]
             });

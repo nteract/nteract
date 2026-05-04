@@ -69,7 +69,7 @@ impl Dimensions for TermDimensions {
 pub struct StreamTerminals {
     terminals: HashMap<StreamKey, Term<VoidListener>>,
     processors: HashMap<StreamKey, Processor>,
-    /// Output state for each (execution_id, stream_name) - tracks index and last hash for validation.
+    /// Output state for each (execution_id, stream_name) - tracks output_id and last hash for validation.
     output_states: HashMap<StreamKey, StreamOutputState>,
 }
 
@@ -143,7 +143,7 @@ impl StreamTerminals {
 
     /// Get the output state for a stream (if known).
     ///
-    /// Returns the state (index + manifest hash) we last wrote for this stream.
+    /// Returns the state (output_id + manifest hash) we last wrote for this stream.
     /// Used to validate before updating in place.
     pub fn get_output_state(
         &self,
@@ -156,7 +156,7 @@ impl StreamTerminals {
 
     /// Set the output state for a stream.
     ///
-    /// Called after upserting a stream output to track its position and hash
+    /// Called after upserting a stream output to track its identity and hash
     /// for future validation.
     pub fn set_output_state(
         &mut self,
@@ -558,12 +558,12 @@ mod tests {
             "cell-1",
             "stdout",
             StreamOutputState {
-                index: 0,
+                output_id: "stdout-output-1".to_string(),
                 blob_hash: "hash1".to_string(),
             },
         );
         let state = terminals.get_output_state("cell-1", "stdout").unwrap();
-        assert_eq!(state.index, 0);
+        assert_eq!(state.output_id, "stdout-output-1");
         assert_eq!(state.blob_hash, "hash1");
 
         // Different stream gets different state
@@ -571,7 +571,7 @@ mod tests {
             "cell-1",
             "stderr",
             StreamOutputState {
-                index: 1,
+                output_id: "stderr-output-1".to_string(),
                 blob_hash: "hash2".to_string(),
             },
         );
@@ -579,15 +579,15 @@ mod tests {
             terminals
                 .get_output_state("cell-1", "stderr")
                 .unwrap()
-                .index,
-            1
+                .output_id,
+            "stderr-output-1"
         );
         assert_eq!(
             terminals
                 .get_output_state("cell-1", "stdout")
                 .unwrap()
-                .index,
-            0
+                .output_id,
+            "stdout-output-1"
         );
 
         // Update state (e.g., after new stream message)
@@ -595,7 +595,7 @@ mod tests {
             "cell-1",
             "stdout",
             StreamOutputState {
-                index: 0,
+                output_id: "stdout-output-2".to_string(),
                 blob_hash: "hash3".to_string(),
             },
         );

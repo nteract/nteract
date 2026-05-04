@@ -6,10 +6,10 @@
  * and contain daemon-only mutations (outputs, execution counts) that can't be
  * done with WASM handles alone.
  *
- * Outputs mirror production exactly: inline manifest objects in
- * `RuntimeStateDoc.executions.{eid}.outputs`, each carrying a stable
- * `output_id` (UUIDv5-derived for reproducibility). The WASM handle exposes
- * them via `get_cell_outputs(cell_id)` as an array of narrowed manifests.
+ * Outputs mirror production exactly: inline manifest objects in RuntimeStateDoc's
+ * execution output map, each keyed by a stable `output_id` (UUIDv5-derived for
+ * reproducibility). The WASM handle exposes them via `get_cell_outputs(cell_id)`
+ * as an array of narrowed manifests.
  *
  * The flow:
  * 1. Rust generates a NotebookDoc + RuntimeStateDoc with daemon mutations.

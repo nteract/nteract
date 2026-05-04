@@ -15,6 +15,20 @@ use crate::blob_store::BlobStore;
 use crate::output_store::{self, OutputManifest, DEFAULT_INLINE_THRESHOLD};
 use runtime_doc::RuntimeStateDoc;
 
+#[derive(Debug, Clone)]
+pub(crate) struct DisplayUpdateTarget {
+    execution_id: String,
+    output_id: String,
+    manifest: OutputManifest,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DisplayManifestUpdate {
+    execution_id: String,
+    output_id: String,
+    manifest_json: serde_json::Value,
+}
+
 /// Store widget buffers in the blob store and replace values in the state
 /// dict with ContentRef objects at the given buffer_paths.
 ///
@@ -290,6 +304,99 @@ pub(crate) fn media_to_display_data(media: &jupyter_protocol::Media) -> serde_js
     })
 }
 
+/// Collect output manifests that currently match a display_id.
+///
+/// Uses the `display_index` for O(1) lookup of matching outputs and falls back
+/// to a full scan if the index has no entries (legacy outputs before indexing).
+pub(crate) fn collect_display_update_targets(
+    state_doc: &RuntimeStateDoc,
+    display_id: &str,
+) -> Vec<DisplayUpdateTarget> {
+    let index_entries = state_doc.get_display_index_entries(display_id);
+
+    if !index_entries.is_empty() {
+        let mut targets = Vec::new();
+        for (exec_id, target_output_id) in &index_entries {
+            let outputs = state_doc.get_outputs(exec_id);
+            for output_value in outputs {
+                let manifest: OutputManifest = match serde_json::from_value(output_value) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                if manifest.output_id() == target_output_id {
+                    targets.push(DisplayUpdateTarget {
+                        execution_id: exec_id.clone(),
+                        output_id: target_output_id.clone(),
+                        manifest,
+                    });
+                }
+            }
+        }
+        targets
+    } else {
+        state_doc
+            .get_all_outputs()
+            .into_iter()
+            .filter_map(|(execution_id, output_id, output_value)| {
+                let manifest: OutputManifest = serde_json::from_value(output_value).ok()?;
+                (output_store::get_display_id(&manifest).as_deref() == Some(display_id)).then_some(
+                    DisplayUpdateTarget {
+                        execution_id,
+                        output_id,
+                        manifest,
+                    },
+                )
+            })
+            .collect()
+    }
+}
+
+/// Build updated manifest values without holding a RuntimeStateDoc borrow.
+pub(crate) async fn build_display_manifest_updates(
+    targets: Vec<DisplayUpdateTarget>,
+    display_id: &str,
+    new_data: &serde_json::Value,
+    new_metadata: &serde_json::Map<String, serde_json::Value>,
+    blob_store: &BlobStore,
+) -> Result<Vec<DisplayManifestUpdate>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut updates = Vec::new();
+    for target in targets {
+        if let Some(updated) = output_store::update_manifest_display_data(
+            &target.manifest,
+            display_id,
+            new_data,
+            new_metadata,
+            blob_store,
+            DEFAULT_INLINE_THRESHOLD,
+        )
+        .await?
+        {
+            updates.push(DisplayManifestUpdate {
+                execution_id: target.execution_id,
+                output_id: target.output_id,
+                manifest_json: updated.to_json(),
+            });
+        }
+    }
+    Ok(updates)
+}
+
+/// Apply pre-built display manifest updates to the current RuntimeStateDoc.
+pub(crate) fn apply_display_manifest_updates(
+    state_doc: &mut RuntimeStateDoc,
+    updates: &[DisplayManifestUpdate],
+) -> Result<bool, runtime_doc::RuntimeStateError> {
+    let mut found = false;
+    for update in updates {
+        found |= state_doc.replace_output(
+            &update.execution_id,
+            &update.output_id,
+            &update.manifest_json,
+        )?;
+    }
+    Ok(found)
+}
+
 /// Update an output by display_id when outputs are inline manifests.
 ///
 /// Updates all outputs matching a display_id with new data and metadata.
@@ -298,6 +405,7 @@ pub(crate) fn media_to_display_data(media: &jupyter_protocol::Media) -> serde_js
 /// to a full scan if the index has no entries (legacy outputs before indexing).
 ///
 /// Returns true if at least one output was updated, false otherwise.
+#[cfg(test)]
 pub(crate) async fn update_output_by_display_id_with_manifests(
     state_doc: &mut RuntimeStateDoc,
     display_id: &str,
@@ -305,61 +413,11 @@ pub(crate) async fn update_output_by_display_id_with_manifests(
     new_metadata: &serde_json::Map<String, serde_json::Value>,
     blob_store: &BlobStore,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    let index_entries = state_doc.get_display_index_entries(display_id);
-
-    if !index_entries.is_empty() {
-        let mut found = false;
-        for (exec_id, target_output_id) in &index_entries {
-            let outputs = state_doc.get_outputs(exec_id);
-            for (output_idx, output_value) in outputs.into_iter().enumerate() {
-                let manifest: OutputManifest = match serde_json::from_value(output_value) {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
-                if manifest.output_id() != target_output_id {
-                    continue;
-                }
-                if let Some(updated) = output_store::update_manifest_display_data(
-                    &manifest,
-                    display_id,
-                    new_data,
-                    new_metadata,
-                    blob_store,
-                    DEFAULT_INLINE_THRESHOLD,
-                )
-                .await?
-                {
-                    state_doc.replace_output(exec_id, output_idx, &updated.to_json())?;
-                    found = true;
-                }
-            }
-        }
-        Ok(found)
-    } else {
-        // Fallback: full scan for outputs without display_index entries
-        let outputs = state_doc.get_all_outputs();
-        let mut found = false;
-        for (exec_id, output_idx, output_value) in outputs {
-            let manifest: OutputManifest = match serde_json::from_value(output_value) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            if let Some(updated) = output_store::update_manifest_display_data(
-                &manifest,
-                display_id,
-                new_data,
-                new_metadata,
-                blob_store,
-                DEFAULT_INLINE_THRESHOLD,
-            )
-            .await?
-            {
-                state_doc.replace_output(&exec_id, output_idx, &updated.to_json())?;
-                found = true;
-            }
-        }
-        Ok(found)
-    }
+    let targets = collect_display_update_targets(state_doc, display_id);
+    let updates =
+        build_display_manifest_updates(targets, display_id, new_data, new_metadata, blob_store)
+            .await?;
+    apply_display_manifest_updates(state_doc, &updates).map_err(Into::into)
 }
 
 /// A cell queued for execution.

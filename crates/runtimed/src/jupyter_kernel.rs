@@ -30,9 +30,9 @@ use uuid::Uuid;
 
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
 use crate::output_prep::{
-    blob_store_large_state_values, escape_glob_pattern, extract_buffer_paths,
-    media_to_display_data, message_content_to_nbformat, store_widget_buffers,
-    update_output_by_display_id_with_manifests, QueueCommand,
+    apply_display_manifest_updates, blob_store_large_state_values, build_display_manifest_updates,
+    collect_display_update_targets, escape_glob_pattern, extract_buffer_paths,
+    media_to_display_data, message_content_to_nbformat, store_widget_buffers, QueueCommand,
 };
 use crate::output_store::{self, ContentRef, OutputManifest, DEFAULT_INLINE_THRESHOLD};
 use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast};
@@ -1078,10 +1078,8 @@ impl KernelConnection for JupyterKernel {
         let iopub_comm_seq = comm_seq.clone();
         let iopub_stream_terminals = stream_terminals.clone();
         let state_for_iopub = shared.state.clone();
-        // Display updates still mutate a fork across an async manifest helper,
-        // so IOPub keeps a task actor for that path. Synchronous IOPub writes
-        // use transactions with the base kernel actor.
-        let iopub_actor_id = format!("{kernel_actor_id}:iopub");
+        // IOPub writes use transactions with the base kernel actor. Async
+        // blob/manifest work is completed before the document transaction.
         let iopub_kernel_actor_id = kernel_actor_id.clone();
 
         // Create coalescing channel early so the IOPub task can capture the sender.
@@ -1385,7 +1383,7 @@ impl KernelConnection for JupyterKernel {
                                                                 "[jupyter-kernel] Failed to upsert stream output: {}",
                                                                 e
                                                             );
-                                                            Err(e.into())
+                                                            Err(e)
                                                         }
                                                     }
                                                 },
@@ -1397,13 +1395,13 @@ impl KernelConnection for JupyterKernel {
                                             }
                                         };
 
-                                        let (_updated, output_index) = upsert_result;
+                                        let (_updated, output_id) = upsert_result;
                                         let mut terminals = iopub_stream_terminals.lock().await;
                                         terminals.set_output_state(
                                             &eid,
                                             stream_name,
                                             StreamOutputState {
-                                                index: output_index,
+                                                output_id,
                                                 blob_hash: blob_hash.clone(),
                                             },
                                         );
@@ -1616,14 +1614,6 @@ impl KernelConnection for JupyterKernel {
 
                                 JupyterMessageContent::UpdateDisplayData(update) => {
                                     if let Some(ref display_id) = update.transient.display_id {
-                                        let mut fork = match state_for_iopub.fork(&iopub_actor_id) {
-                                            Ok(f) => f,
-                                            Err(e) => {
-                                                warn!("[runtime-state] fork: {}", e);
-                                                continue;
-                                            }
-                                        };
-
                                         let data_value =
                                             serde_json::to_value(&update.data).unwrap_or_default();
 
@@ -1644,8 +1634,18 @@ impl KernelConnection for JupyterKernel {
                                         )
                                         .await;
 
-                                        let updated = update_output_by_display_id_with_manifests(
-                                            &mut fork,
+                                        let targets = match state_for_iopub.read(|sd| {
+                                            collect_display_update_targets(sd, display_id)
+                                        }) {
+                                            Ok(targets) => targets,
+                                            Err(e) => {
+                                                warn!("[runtime-state] {}", e);
+                                                continue;
+                                            }
+                                        };
+
+                                        let updates = build_display_manifest_updates(
+                                            targets,
                                             display_id,
                                             &data_value,
                                             &update.metadata,
@@ -1653,22 +1653,35 @@ impl KernelConnection for JupyterKernel {
                                         )
                                         .await;
 
-                                        match updated {
-                                            Ok(true) => {
-                                                if let Err(e) = state_for_iopub.merge(&mut fork) {
-                                                    warn!("[runtime-state] merge: {}", e);
-                                                } else {
-                                                    debug!(
-                                                        "[jupyter-kernel] Updated display_id={}",
-                                                        display_id
+                                        match updates {
+                                            Ok(updates) => {
+                                                let updated = state_for_iopub
+                                                    .transact_at_current_heads(
+                                                        Some(&iopub_kernel_actor_id),
+                                                        "runtime-state-iopub-display-update-transaction",
+                                                        |sd| {
+                                                            apply_display_manifest_updates(
+                                                                sd, &updates,
+                                                            )
+                                                        },
                                                     );
+                                                match updated {
+                                                    Ok(true) => {
+                                                        debug!(
+                                                            "[jupyter-kernel] Updated display_id={}",
+                                                            display_id
+                                                        );
+                                                    }
+                                                    Ok(false) => {
+                                                        error!(
+                                                            "[jupyter-kernel] No output found for display_id={}",
+                                                            display_id
+                                                        );
+                                                    }
+                                                    Err(e) => {
+                                                        warn!("[runtime-state] {}", e);
+                                                    }
                                                 }
-                                            }
-                                            Ok(false) => {
-                                                error!(
-                                                    "[jupyter-kernel] No output found for display_id={}",
-                                                    display_id
-                                                );
                                             }
                                             Err(e) => {
                                                 error!(
@@ -2265,7 +2278,7 @@ impl KernelConnection for JupyterKernel {
         let shell_pending_completions = pending_completions.clone();
         let shell_state = shared.state.clone();
         let shell_blob_store = shared.blob_store.clone();
-        let shell_actor_id = format!("{kernel_actor_id}:shell");
+        let shell_kernel_actor_id = kernel_actor_id.clone();
 
         let shell_panic_cmd_tx = cmd_tx.clone();
         let shell_reader_task = spawn_supervised(
@@ -2313,26 +2326,29 @@ impl KernelConnection for JupyterKernel {
                                                     };
 
                                                 let eid = execution_id.clone().unwrap_or_default();
-                                                let mut fork =
-                                                    match shell_state.fork(&shell_actor_id) {
-                                                        Ok(f) => f,
-                                                        Err(e) => {
-                                                            warn!("[runtime-state] fork: {}", e);
-                                                            continue;
-                                                        }
-                                                    };
-
-                                                if let Err(e) =
-                                                    fork.append_output(&eid, &manifest_json)
+                                                if let Err(e) = shell_state
+                                                    .transact_at_current_heads(
+                                                        Some(&shell_kernel_actor_id),
+                                                        "runtime-state-shell-page-transaction",
+                                                        |sd| {
+                                                            // Preserve the old fork+merge behavior:
+                                                            // append errors are logged but do not
+                                                            // turn the transaction into a recovery
+                                                            // failure.
+                                                            if let Err(e) = sd.append_output(
+                                                                &eid,
+                                                                &manifest_json,
+                                                            ) {
+                                                                warn!(
+                                                                    "[jupyter-kernel] Failed to append page output to state doc: {}",
+                                                                    e
+                                                                );
+                                                            }
+                                                            Ok(())
+                                                        },
+                                                    )
                                                 {
-                                                    warn!(
-                                                    "[jupyter-kernel] Failed to append page output to state doc: {}",
-                                                    e
-                                                );
-                                                }
-
-                                                if let Err(e) = shell_state.merge(&mut fork) {
-                                                    warn!("[runtime-state] merge: {}", e);
+                                                    warn!("[runtime-state] {}", e);
                                                 }
                                             }
                                         }
