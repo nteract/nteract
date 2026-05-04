@@ -160,7 +160,11 @@ integration, and panic recovery stay centralized.
 
 ### Helpers for Synchronous Blocks
 
-For mutation blocks with no `.await` between fork and merge, use the helpers to avoid ordering mistakes:
+For mutation blocks with no `.await`, mutate the live document through a typed
+document method while holding the document lock, or use a document-owned
+transaction helper when you need actor restoration and recovery handling.
+`fork_and_merge` remains for older synchronous call sites that need an isolated
+draft document, but it is not the preferred shape for new daemon mutations:
 
 ```rust
 // Fork at current heads, apply mutations, merge back
@@ -171,7 +175,9 @@ doc.fork_and_merge(|fork| {
 
 ```
 
-These encapsulate the fork-before/merge-after pattern for synchronous edits. For **async** notebook-doc writes, prefer `transact_at_heads_recovering(...)`; if a fork must cross the `.await`, create it before the async work with `fork_with_actor(...)` and merge it after with `merge_recovering(...)`.
+For **async** notebook-doc writes, prefer `transact_at_heads_recovering(...)`;
+if a fork must cross the `.await`, create it before the async work with
+`fork_with_actor(...)` and merge it after with `merge_recovering(...)`.
 
 ### Adoption Status
 
@@ -180,11 +186,12 @@ All async CRDT mutation paths in the daemon are now protected:
 | Path | Protection |
 |------|-----------|
 | ExecuteCell / RunAllCells formatting | `transact_at_heads_recovering(...)` against captured format heads |
-| `format_notebook_cells` (Cmd+S) | `fork()` before format loop, merge after |
-| File watcher source updates | Compare against `last_save_sources`, then `fork_with_actor(...)` + `merge_recovering(...)` |
-| File watcher order-changed rebuild | Compare against `last_save_sources`, then `fork_with_actor(...)` + `merge_recovering(...)` |
-| `UpdateDisplayData` IOPub | `fork()` before blob I/O, merge after |
+| `format_notebook_cells` (Cmd+S) | `transact_at_heads_recovering(...)` against captured format heads |
+| File watcher source updates | Compare against `last_save_sources`, then `transact_at_heads_recovering(...)` on the live doc |
+| File watcher order-changed rebuild | Compare against `last_save_sources`, then rebuild via `transact_at_heads_recovering(...)` |
+| `UpdateDisplayData` IOPub | Collect targets, await blob work outside the doc lock, then apply via `RuntimeStateHandle::transact_at_current_heads(...)` |
 | `process_markdown_assets` | `transact_at_heads_recovering(...)` against captured metadata heads |
+| Env metadata capture / hot-sync flush | `transact_at_heads_recovering(...)` under the `runtimed:metadata` actor |
 | `handle_sync_environment` | Fresh read (no CRDT write, only in-memory state) |
 
 ## Future Direction

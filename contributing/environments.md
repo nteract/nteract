@@ -415,7 +415,7 @@ A notebook is "captured" on first launch out of the pool. The daemon:
 1. Takes an entry from the pool (`runtimed-uv-{uuid}` / `runtimed-conda-{uuid}`).
 2. Computes `user_defaults = strip_base(prewarmed_packages, BASE_PACKAGES)`.
 3. Renames the env dir from the pool name to `{cache}/{compute_unified_env_hash(user_defaults, env_id)}/`.
-4. Writes `user_defaults` into `metadata.runt.{uv,conda}.dependencies` and ensures `metadata.runt.env_id` is set — both via `doc.fork_and_merge()` per the CRDT-mutation rule.
+4. Writes `user_defaults` into `metadata.runt.{uv,conda}.dependencies` and ensures `metadata.runt.env_id` is set via `doc.transact_at_heads_recovering(...)` per the CRDT-mutation rule.
 
 After this, the notebook is indistinguishable from an inline-deps notebook — the pool is a bootstrap optimisation, not a runtime dependency.
 
@@ -439,7 +439,7 @@ When a user runs `sync_environment` mid-session (adds packages to a running kern
 
 At eviction, after the runtime agent is shut down and before env cleanup:
 
-1. `flush_launched_deps_to_metadata` writes the kernel's post-sync dep list (via `effective_user_deps_from_launched`, which applies `strip_base`) into `metadata.runt.{uv,conda}.dependencies` using `fork_and_merge`.
+1. `flush_launched_deps_to_metadata` writes the kernel's post-sync dep list (via `effective_user_deps_from_launched`, which applies `strip_base`) into `metadata.runt.{uv,conda}.dependencies` using `doc.transact_at_heads_recovering(...)`.
 2. `save_notebook_to_disk` persists the updated metadata to the `.ipynb` synchronously.
 3. `rename_env_dir_to_unified_hash` moves the on-disk env from the pre-flush hash to the post-flush hash so the next reopen's `unified_env_on_disk` lookup hits. The rename is gated on save success and is explicitly scoped to the launched runtime (UV xor Conda), and skipped if the target path already exists.
 

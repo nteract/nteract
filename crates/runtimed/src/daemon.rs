@@ -3314,7 +3314,7 @@ impl Daemon {
                         .and_then(|uuid| rooms.get(&uuid).cloned())
                 };
                 if let Some(room) = maybe_room {
-                    // Outputs live in RuntimeStateDoc keyed by execution_id.
+                    // Outputs live in RuntimeStateDoc under execution_id/output_id.
                     // Collect cells + execution_ids under one doc read guard,
                     // drop it, then look up outputs under the state_doc read
                     // guard. Never hold both at once — the tokio-mutex lint

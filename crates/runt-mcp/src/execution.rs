@@ -149,8 +149,8 @@ pub async fn execute_and_wait(
     let outputs = if !output_manifests.is_empty() {
         output_resolver::resolve_cell_outputs_for_llm(&output_manifests, ctx).await
     } else {
-        // Outputs live in RuntimeStateDoc keyed by execution_id. Fetch via
-        // the explicit lookup — CellSnapshot no longer carries them.
+        // Outputs live in RuntimeStateDoc under execution_id/output_id. Fetch
+        // via the explicit lookup — CellSnapshot no longer carries them.
         let raw_outputs = handle.get_cell_outputs(cell_id).unwrap_or_default();
         if raw_outputs.is_empty() {
             Vec::new()
