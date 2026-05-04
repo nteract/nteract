@@ -7,8 +7,11 @@
  *
  * Config (env vars):
  *   NTERACT_RUNTIMED_NODE_PATH  override the runtimed-node package path.
- *   NTERACT_SOCKET_PATH         override the daemon socket path.
- *   NTERACT_CHANNEL             "stable" or "nightly" - picks the channel's socket.
+ *
+ * Daemon socket selection follows the runtimed-node contract:
+ * `RUNTIMED_SOCKET_PATH` overrides outright, `RUNTIMED_WORKSPACE_PATH` (or
+ * `RUNTIMED_DEV=1` plus a git checkout) selects the per-worktree dev daemon,
+ * otherwise the running channel is auto-detected.
  *
  * After editing, run `/reload` in pi.
  */
@@ -26,7 +29,6 @@ import { Type } from "typebox";
 
 type RuntimedNode = {
   defaultSocketPath(): string;
-  socketPathForChannel(channel: "stable" | "nightly"): string;
   PackageManager?: { Uv: "uv"; Conda: "conda"; Pixi: "pixi" };
   createNotebook(opts?: {
     runtime?: string;
@@ -136,22 +138,6 @@ function loadRuntimedNode(): RuntimedNode | null {
   return null;
 }
 
-function resolveSocketPath(rn: RuntimedNode): string {
-  if (process.env.NTERACT_SOCKET_PATH) return process.env.NTERACT_SOCKET_PATH;
-
-  const envChannel = process.env.NTERACT_CHANNEL;
-  if (envChannel === "stable" || envChannel === "nightly") {
-    return rn.socketPathForChannel(envChannel);
-  }
-
-  for (const channel of ["nightly", "stable"] as const) {
-    const socketPath = rn.socketPathForChannel(channel);
-    if (existsSync(socketPath)) return socketPath;
-  }
-
-  return rn.defaultSocketPath();
-}
-
 // --- bootstrap detection -----------------------------------------------------
 
 const INSTALL_HINT =
@@ -176,16 +162,15 @@ function findOnPath(cmd: string): string | undefined {
 function detectBootstrap(): BootstrapStatus {
   const rn = loadRuntimedNode();
   if (!rn) return { kind: "missing", reason: "binding" };
-  // Explicit socket override wins: assume the operator knows what they're doing.
-  if (process.env.NTERACT_SOCKET_PATH) return { kind: "ready", rn };
-  // Cache dir presence is a coarse "has this daemon ever run" check; the socket
-  // file itself only exists while the daemon is running, but the parent dir
-  // sticks around once any nteract install has touched the system.
-  const channels = ["nightly", "stable"] as const;
-  const sockets = channels.map((ch) => rn.socketPathForChannel(ch));
+  // defaultSocketPath() already honors RUNTIMED_SOCKET_PATH and the dev /
+  // worktree-aware resolution from runt-workspace, so this is the single point
+  // of truth. The socket file only exists while the daemon is running, but the
+  // parent cache dir survives shutdowns, so dir-existence covers "installed
+  // but stopped".
+  const socket = rn.defaultSocketPath();
   const installed =
-    sockets.some((s) => existsSync(s)) ||
-    sockets.some((s) => existsSync(path.dirname(s))) ||
+    existsSync(socket) ||
+    existsSync(path.dirname(socket)) ||
     Boolean(findOnPath("runt")) ||
     Boolean(findOnPath("runt-nightly"));
   return installed ? { kind: "ready", rn } : { kind: "missing", reason: "daemon" };
@@ -654,10 +639,11 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
       return opened;
     }
     opening = (async () => {
-      const socketPath = resolveSocketPath(rn);
+      // Omit socketPath so the binding resolves through defaultSocketPath(),
+      // which honors RUNTIMED_SOCKET_PATH / RUNTIMED_WORKSPACE_PATH and the
+      // channel auto-detect.
       session = await rn.createNotebook({
         runtime: "python",
-        socketPath,
         peerLabel: "pi",
         description: "pi Python REPL",
         dependencies,
