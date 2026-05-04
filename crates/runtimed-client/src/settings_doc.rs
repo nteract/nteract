@@ -693,7 +693,7 @@ impl SettingsDoc {
 
     /// Create a settings document from a materialized settings snapshot.
     pub fn from_synced_settings(settings: &SyncedSettings) -> Self {
-        let json = serde_json::to_value(settings).unwrap_or_else(|_| serde_json::Value::Null);
+        let json = serde_json::to_value(settings).unwrap_or(serde_json::Value::Null);
         Self::from_json_value(&json)
     }
 
