@@ -437,7 +437,12 @@ enum EnvCommands {
 /// Settings subcommands
 #[derive(Subcommand)]
 enum ConfigCommands {
-    /// List all current settings
+    /// Show all current settings (default)
+    Show,
+    /// Print the settings file path
+    Path,
+    /// Alias for `show`
+    #[command(hide = true)]
     List,
     /// Get a specific setting value
     Get {
@@ -4530,11 +4535,13 @@ async fn config_command(command: Option<ConfigCommands>) -> Result<()> {
     let settings_path = runt_workspace::settings_json_path();
 
     match command {
-        None | Some(ConfigCommands::List) => {
-            // Print all settings as pretty JSON
+        None | Some(ConfigCommands::Show) | Some(ConfigCommands::List) => {
             let settings = read_settings_from_file(&settings_path)?;
             let json = serde_json::to_string_pretty(&settings)?;
             println!("{json}");
+        }
+        Some(ConfigCommands::Path) => {
+            println!("{}", settings_path.display());
         }
         Some(ConfigCommands::Get { key }) => {
             validate_config_key(&key)?;
