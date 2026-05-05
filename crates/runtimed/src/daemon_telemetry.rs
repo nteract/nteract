@@ -33,22 +33,21 @@ async fn daemon_heartbeat_loop(daemon: Arc<Daemon>) {
 }
 
 async fn try_send_daemon_heartbeat(daemon: &Arc<Daemon>, client: &reqwest::Client) {
-    let (settings, install_id, id_was_generated) = {
-        let mut settings_doc = daemon.settings.write().await;
-        let had_id = settings_doc
-            .get("install_id")
-            .map(|s| !s.is_empty())
-            .unwrap_or(false);
-        let id = runtimed_client::settings_doc::ensure_install_id(&mut settings_doc);
-        let generated = !had_id;
-        if generated {
-            persist_settings(&settings_doc, &daemon.config.resolved_settings_json_path());
+    let install_id_update = match daemon
+        .update_settings_json(runtimed_client::settings_doc::ensure_install_id_in_settings)
+        .await
+    {
+        Ok(update) => update,
+        Err(e) => {
+            tracing::warn!("[telemetry] failed to ensure install_id in settings.json: {e}");
+            return;
         }
-        let snapshot = settings_doc.get_all();
-        (snapshot, id, generated)
     };
+    let (install_id, id_was_generated) = install_id_update.value;
+    let install_id_was_persisted = install_id_update.changed;
+    let settings = install_id_update.settings;
 
-    if id_was_generated {
+    if id_was_generated && install_id_was_persisted {
         tracing::info!("[telemetry] generated install_id");
     }
 
@@ -88,15 +87,12 @@ async fn try_send_daemon_heartbeat(daemon: &Arc<Daemon>, client: &reqwest::Clien
     }
 
     // Update timestamp and persist to disk so it survives daemon restarts
+    if let Err(e) = daemon
+        .update_settings_json(|settings| {
+            settings.telemetry_last_daemon_ping_at = Some(now);
+        })
+        .await
     {
-        let mut settings_doc = daemon.settings.write().await;
-        settings_doc.put_u64("telemetry_last_daemon_ping_at", now);
-        persist_settings(&settings_doc, &daemon.config.resolved_settings_json_path());
-    }
-}
-
-fn persist_settings(doc: &runtimed_client::settings_doc::SettingsDoc, json_path: &std::path::Path) {
-    if let Err(e) = doc.save_json_mirror(json_path) {
-        tracing::warn!("[telemetry] failed to write settings.json: {e}");
+        tracing::warn!("[telemetry] failed to persist daemon heartbeat timestamp: {e}");
     }
 }

@@ -388,11 +388,27 @@ fn default_install_default_data_packages() -> bool {
 /// users would look like they had never consented, and their heartbeats
 /// would stop at the next app launch.
 ///
-/// Called once on daemon startup. Idempotent.
-pub fn backfill_telemetry_consent(settings: &mut SyncedSettings) {
+/// Called once on daemon startup. Idempotent. Returns `true` when the
+/// settings snapshot changed.
+pub fn backfill_telemetry_consent(settings: &mut SyncedSettings) -> bool {
     if !settings.telemetry_consent_recorded && settings.onboarding_completed {
         settings.telemetry_consent_recorded = true;
+        return true;
     }
+    false
+}
+
+/// Ensure an install ID exists in a materialized settings snapshot.
+///
+/// Returns the install ID and whether it had to be generated.
+pub fn ensure_install_id_in_settings(settings: &mut SyncedSettings) -> (String, bool) {
+    if !settings.install_id.is_empty() {
+        return (settings.install_id.clone(), false);
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    settings.install_id = id.clone();
+    (id, true)
 }
 
 /// Ensure an `install_id` exists in the settings doc, generating one if needed.
@@ -443,6 +459,35 @@ pub fn write_settings_schema() -> std::io::Result<()> {
     }
     let schema = generate_settings_schema().map_err(std::io::Error::other)?;
     std::fs::write(&path, format!("{schema}\n"))
+}
+
+/// Read canonical settings JSON into a materialized settings snapshot.
+///
+/// This intentionally routes through `SettingsDoc::from_json_value` so legacy
+/// values and field-level type mismatches keep the same tolerant migration
+/// behavior as daemon startup.
+pub fn read_synced_settings_json(path: &Path) -> std::io::Result<SyncedSettings> {
+    let contents = std::fs::read_to_string(path)?;
+    let json =
+        serde_json::from_str::<serde_json::Value>(&contents).map_err(std::io::Error::other)?;
+    Ok(SettingsDoc::from_json_value(&json).get_all())
+}
+
+/// Write a materialized settings snapshot to canonical settings JSON.
+pub fn write_synced_settings_json(path: &Path, settings: &SyncedSettings) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut json_value = serde_json::to_value(settings).map_err(std::io::Error::other)?;
+    if let Some(obj) = json_value.as_object_mut() {
+        obj.insert(
+            "$schema".to_string(),
+            serde_json::Value::String("./settings.schema.json".to_string()),
+        );
+    }
+    let json = serde_json::to_string_pretty(&json_value).map_err(std::io::Error::other)?;
+    std::fs::write(path, format!("{json}\n"))
 }
 
 /// Wrapper around an Automerge document storing application settings.
@@ -779,19 +824,8 @@ impl SettingsDoc {
     /// Injects a `$schema` key pointing to the companion schema file so editors
     /// can provide autocomplete and validation.
     pub fn save_json_mirror(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let settings = self.get_all();
-        let mut json_value = serde_json::to_value(&settings).map_err(std::io::Error::other)?;
-        if let Some(obj) = json_value.as_object_mut() {
-            obj.insert(
-                "$schema".to_string(),
-                serde_json::Value::String("./settings.schema.json".to_string()),
-            );
-        }
-        let json = serde_json::to_string_pretty(&json_value).map_err(std::io::Error::other)?;
-        std::fs::write(path, format!("{json}\n"))
+        write_synced_settings_json(path, &settings)
     }
 
     // ── Scalar accessors ─────────────────────────────────────────────
@@ -1505,7 +1539,7 @@ mod tests {
             telemetry_consent_recorded: false,
             ..Default::default()
         };
-        backfill_telemetry_consent(&mut s);
+        assert!(backfill_telemetry_consent(&mut s));
         assert!(s.telemetry_consent_recorded);
     }
 
@@ -1513,8 +1547,22 @@ mod tests {
     fn test_backfill_telemetry_consent_noop_for_fresh_installs() {
         let mut s = SyncedSettings::default();
         // onboarding_completed defaults to false
-        backfill_telemetry_consent(&mut s);
+        assert!(!backfill_telemetry_consent(&mut s));
         assert!(!s.telemetry_consent_recorded);
+    }
+
+    #[test]
+    fn test_ensure_install_id_in_settings_generates_once() {
+        let mut s = SyncedSettings::default();
+
+        let (id, generated) = ensure_install_id_in_settings(&mut s);
+        assert!(generated);
+        assert!(!id.is_empty());
+        assert_eq!(s.install_id, id);
+
+        let (again, generated) = ensure_install_id_in_settings(&mut s);
+        assert!(!generated);
+        assert_eq!(again, id);
     }
 
     #[test]
