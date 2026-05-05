@@ -44,6 +44,8 @@ const CONFIRM_SYNC_RETRY: Duration = Duration::from_millis(200);
 const STATE_SYNC_QUIET_TIMEOUT: Duration = Duration::from_millis(200);
 const STATE_SYNC_MAX_TIMEOUT: Duration = Duration::from_secs(2);
 const MAINTENANCE_TICK: Duration = Duration::from_millis(50);
+const CLIENT_HEARTBEAT_INTERVAL: Duration =
+    Duration::from_millis(notebook_doc::presence::DEFAULT_HEARTBEAT_MS);
 
 /// Commands that require socket I/O (not document mutations).
 ///
@@ -233,6 +235,8 @@ where
     let mut reactor = SyncReactor::new(doc, snapshot_tx, runtime_state_tx, status_tx, broadcast_tx);
     let mut maintenance = tokio::time::interval(MAINTENANCE_TICK);
     maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut heartbeat = tokio::time::interval(CLIENT_HEARTBEAT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         reactor.state.loop_count += 1;
@@ -240,15 +244,20 @@ where
         // Keep the inbound frame pump hot. Commands must only register work
         // and write immediate outbound frames; waits resolve from the normal
         // frame path so the daemon never backs up behind a command subloop.
+        // The heartbeat tick sits ahead of the frame pump so a busy inbound
+        // stream cannot starve the daemon idle-deadline refresh.
         enum SelectResult {
             Frame(Option<std::io::Result<connection::TypedNotebookFrame>>),
             Changed(Option<()>),
             Command(Option<SyncCommand>),
             Maintenance,
+            Heartbeat,
         }
 
         let select_result = tokio::select! {
             biased;
+
+            _ = heartbeat.tick() => SelectResult::Heartbeat,
 
             // Incoming frame from daemon (cancel-safe: actor owns read_exact)
             frame = framed_reader.recv() => SelectResult::Frame(frame),
@@ -335,6 +344,16 @@ where
                     break;
                 }
             }
+
+            SelectResult::Heartbeat => {
+                if let Err(e) = send_client_heartbeat(&mut writer).await {
+                    warn!(
+                        "[notebook-sync] Failed to send heartbeat for {}: {}",
+                        reactor.io.notebook_id, e
+                    );
+                    break;
+                }
+            }
         }
     }
 
@@ -345,6 +364,14 @@ where
         "[notebook-sync] Stopped for {} after {} loop iterations",
         reactor.io.notebook_id, reactor.state.loop_count
     );
+}
+
+async fn send_client_heartbeat<W: AsyncWrite + Unpin>(writer: &mut W) -> Result<(), SyncError> {
+    let payload = notebook_doc::presence::encode_heartbeat("local")
+        .map_err(|e| SyncError::Protocol(format!("encode heartbeat: {e}")))?;
+    connection::send_typed_frame(writer, NotebookFrameType::Presence, &payload)
+        .await
+        .map_err(SyncError::Io)
 }
 
 // =========================================================================

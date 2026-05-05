@@ -2728,3 +2728,50 @@ async fn test_create_notebook_default_manager_with_deps() {
     pool_client.shutdown().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
+
+/// The Rust notebook-sync client sends presence heartbeats while idle so
+/// long-lived MCP/Python sessions are not mistaken for orphaned peers.
+#[tokio::test(start_paused = true)]
+async fn test_notebook_sync_heartbeat_keeps_idle_peer_connected() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut config = test_config(&temp_dir);
+    config.idle_peer_timeout_ms = Some(20_000);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let result = connect::connect_create(
+        socket_path.clone(),
+        "python",
+        None,
+        "heartbeat-peer",
+        false,
+        None,
+        vec![],
+    )
+    .await
+    .expect("client should connect");
+    let client = result.handle;
+    assert_session_ready(&client, "heartbeat client").await;
+
+    // The daemon timeout is 20s and notebook-sync heartbeats every 15s.
+    // Advancing past the timeout proves the background heartbeat refreshed
+    // the daemon deadline without any tool call or document mutation.
+    tokio::time::advance(Duration::from_secs(35)).await;
+    tokio::task::yield_now().await;
+
+    assert_eq!(
+        client.status().connection,
+        notebook_sync::status::ConnectionState::Connected,
+        "notebook-sync heartbeat should keep an idle peer connected past idle_peer_timeout"
+    );
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}

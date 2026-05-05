@@ -65,6 +65,10 @@ pub struct DaemonConfig {
     /// Override for room eviction delay (milliseconds). Used in tests.
     /// If None, uses the user's `keep_alive_secs` setting.
     pub room_eviction_delay_ms: Option<u64>,
+    /// Override for idle peer timeout (milliseconds). Used in tests.
+    /// If None, uses the production default or the shorter test default when
+    /// `room_eviction_delay_ms` is set.
+    pub idle_peer_timeout_ms: Option<u64>,
     /// Maximum age (in seconds) for content-addressed cached environments.
     /// Environments older than this are evicted by the GC loop.
     pub env_cache_max_age_secs: u64,
@@ -105,6 +109,7 @@ impl Default for DaemonConfig {
             max_age_secs: 172800, // 2 days
             lock_dir: None,
             room_eviction_delay_ms: None,
+            idle_peer_timeout_ms: None,
             env_cache_max_age_secs: 86400, // 1 day
             env_cache_max_count: 10,
             use_preferred_blob_port: true,
@@ -1484,16 +1489,19 @@ impl Daemon {
     /// any inbound frames before the daemon forcibly disconnects it.
     ///
     /// This is a safety net for orphaned connections (e.g. a proxy process that
-    /// exited without cleanly closing its socket). Keep this long enough that
-    /// quiet notebook and MCP sessions are not treated as dead just because a
-    /// human stepped away. In test mode the timeout is shorter to keep tests fast.
+    /// exited without cleanly closing its socket). Live clients send request
+    /// frames on activity and presence heartbeats while idle. In test mode the
+    /// timeout is shorter to keep tests fast.
     pub fn idle_peer_timeout(&self) -> std::time::Duration {
+        if let Some(ms) = self.config.idle_peer_timeout_ms {
+            return std::time::Duration::from_millis(ms);
+        }
         if self.config.room_eviction_delay_ms.is_some() {
             // Tests: 30 seconds
             return std::time::Duration::from_secs(30);
         }
-        // Production: 1 hour
-        std::time::Duration::from_secs(60 * 60)
+        // Production: 5 minutes
+        std::time::Duration::from_secs(300)
     }
 
     /// Run the daemon server.

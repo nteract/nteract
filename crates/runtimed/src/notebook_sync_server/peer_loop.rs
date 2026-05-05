@@ -154,10 +154,9 @@ where
     // arm wins mid-payload (see issue + production diagnostics).
     let mut framed_reader = connection::FramedReader::spawn(reader, 16);
 
-    // Idle peer timeout: disconnect peers that stop sending inbound frames.
-    // This is a coarse orphan guard for processes that died without closing
-    // their socket; live notebook and MCP peers send presence/request/sync
-    // traffic often enough to keep the deadline fresh.
+    // Idle peer timeout: disconnect peers that stop sending client intent.
+    // Automerge/state sync frames are reflexive, so they do not prove the
+    // peer process is still healthy. Requests and presence heartbeats do.
     let idle_peer_timeout = daemon.idle_peer_timeout();
     let idle_deadline = tokio::time::sleep(idle_peer_timeout);
     tokio::pin!(idle_deadline);
@@ -205,7 +204,16 @@ where
                     Some(Err(e)) => return Err(e.into()),
                     None => return Ok(()), // clean EOF
                 };
-                idle_deadline.as_mut().reset(tokio::time::Instant::now() + idle_peer_timeout);
+                // Reset only for frames that represent genuine client intent.
+                // Automerge sync and state sync frames can be reflexive: daemon
+                // writes trigger client ACKs, which can keep an orphan peer
+                // alive forever if they refresh this deadline.
+                if matches!(
+                    frame.frame_type,
+                    NotebookFrameType::Request | NotebookFrameType::Presence
+                ) {
+                    idle_deadline.as_mut().reset(tokio::time::Instant::now() + idle_peer_timeout);
+                }
                 match frame.frame_type {
                             NotebookFrameType::AutomergeSync => {
                                 let notebook_doc_effects = match handle_notebook_doc_frame(
