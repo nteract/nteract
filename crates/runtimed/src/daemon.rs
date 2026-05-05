@@ -1484,16 +1484,16 @@ impl Daemon {
     /// any inbound frames before the daemon forcibly disconnects it.
     ///
     /// This is a safety net for orphaned connections (e.g. a proxy process that
-    /// exited without cleanly closing its socket). In production the MCP child
-    /// sends periodic Automerge sync and presence frames, so a healthy peer
-    /// never hits this. In test mode the timeout is shorter to keep tests fast.
+    /// exited without cleanly closing its socket). Keep this long enough that
+    /// quiet notebook and MCP sessions are not treated as dead just because a
+    /// human stepped away. In test mode the timeout is shorter to keep tests fast.
     pub fn idle_peer_timeout(&self) -> std::time::Duration {
         if self.config.room_eviction_delay_ms.is_some() {
             // Tests: 30 seconds
             return std::time::Duration::from_secs(30);
         }
-        // Production: 5 minutes
-        std::time::Duration::from_secs(300)
+        // Production: 1 hour
+        std::time::Duration::from_secs(60 * 60)
     }
 
     /// Run the daemon server.

@@ -1,5 +1,5 @@
 import { useNotebookHost } from "@nteract/notebook-host";
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { sendPresenceFrame } from "runtimed";
 import { logger } from "../lib/logger";
 import {
@@ -7,6 +7,42 @@ import {
   encode_focus_presence,
   encode_selection_presence,
 } from "../wasm/runtimed-wasm/runtimed_wasm.js";
+
+const HEARTBEAT_INTERVAL_MS = 15_000;
+
+function encodeCborText(value: string): Uint8Array {
+  const bytes = new TextEncoder().encode(value);
+  if (bytes.length < 24) {
+    return new Uint8Array([0x60 + bytes.length, ...bytes]);
+  }
+  if (bytes.length <= 0xff) {
+    return new Uint8Array([0x78, bytes.length, ...bytes]);
+  }
+  if (bytes.length <= 0xffff) {
+    return new Uint8Array([0x79, bytes.length >> 8, bytes.length & 0xff, ...bytes]);
+  }
+  throw new Error("presence heartbeat peer_id is too long");
+}
+
+function encodeHeartbeatPresence(peerId: string): Uint8Array {
+  const typeKey = encodeCborText("type");
+  const typeValue = encodeCborText("heartbeat");
+  const peerIdKey = encodeCborText("peer_id");
+  const peerIdValue = encodeCborText(peerId);
+  const payload = new Uint8Array(
+    1 + typeKey.length + typeValue.length + peerIdKey.length + peerIdValue.length,
+  );
+  let offset = 0;
+  payload[offset++] = 0xa2;
+  payload.set(typeKey, offset);
+  offset += typeKey.length;
+  payload.set(typeValue, offset);
+  offset += typeValue.length;
+  payload.set(peerIdKey, offset);
+  offset += peerIdKey.length;
+  payload.set(peerIdValue, offset);
+  return payload;
+}
 
 // ── Hook ─────────────────────────────────────────────────────────────
 
@@ -29,6 +65,28 @@ export function usePresence(
 ) {
   const host = useNotebookHost();
   const transport = host.transport;
+
+  useEffect(() => {
+    if (!peerId) return;
+
+    const sendHeartbeat = () => {
+      if (!transport.connected) return;
+      let payload: Uint8Array;
+      try {
+        payload = encodeHeartbeatPresence(peerId);
+      } catch (e) {
+        logger.warn("[presence] encode heartbeat failed:", e);
+        return;
+      }
+      sendPresenceFrame(transport, payload).catch((e: unknown) =>
+        logger.debug("[presence] send heartbeat failed:", e),
+      );
+    };
+
+    sendHeartbeat();
+    const interval = window.setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [peerId, transport]);
 
   const setCursor = useCallback(
     (cellId: string, line: number, column: number) => {

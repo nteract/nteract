@@ -29,15 +29,36 @@ export function setMetadataTransport(transport: NotebookTransport | null): void 
   _transport = transport;
 }
 
+function clearHandleAfterWasmError(context: string, error: unknown): void {
+  logger.warn(`[notebook-metadata] ${context} failed; clearing WASM handle:`, error);
+  _handle = null;
+  _snapshotCache = null;
+  _fingerprint = null;
+}
+
 /**
  * Read the current metadata snapshot from the WASM handle as a typed object.
  * Returns null if no handle is set or the WASM method returns a non-object.
  */
 function readSnapshot(): NotebookMetadataSnapshot | null {
-  const raw = _handle?.get_metadata_snapshot();
-  return raw && typeof raw === "object"
-    ? (raw as NotebookMetadataSnapshot)
-    : null;
+  try {
+    const raw = _handle?.get_metadata_snapshot();
+    return raw && typeof raw === "object"
+      ? (raw as NotebookMetadataSnapshot)
+      : null;
+  } catch (error) {
+    clearHandleAfterWasmError("get_metadata_snapshot", error);
+    return null;
+  }
+}
+
+function readFingerprint(): string | null {
+  try {
+    return _handle?.get_metadata_fingerprint() ?? null;
+  } catch (error) {
+    clearHandleAfterWasmError("get_metadata_fingerprint", error);
+    return null;
+  }
 }
 
 /**
@@ -52,7 +73,7 @@ function readSnapshot(): NotebookMetadataSnapshot | null {
  * during high-frequency output streaming.
  */
 export function notifyMetadataChanged(): void {
-  const newFingerprint = _handle?.get_metadata_fingerprint() ?? null;
+  const newFingerprint = readFingerprint();
   if (newFingerprint === _fingerprint) return;
   _fingerprint = newFingerprint;
   _snapshotCache = readSnapshot();
@@ -66,7 +87,7 @@ export function notifyMetadataChanged(): void {
  * itself changed and the old fingerprint is meaningless.
  */
 function forceNotifyMetadataChanged(): void {
-  _fingerprint = _handle?.get_metadata_fingerprint() ?? null;
+  _fingerprint = readFingerprint();
   _snapshotCache = readSnapshot();
   for (const cb of _subscribers) cb();
 }
@@ -127,7 +148,12 @@ export function useDetectRuntime(): "python" | "deno" | null {
   // Subscribe to metadata changes so we re-render when the doc updates.
   useSyncExternalStore(subscribe, getSnapshot);
   if (!_handle) return null;
-  return (_handle.detect_runtime() as "python" | "deno") ?? null;
+  try {
+    return (_handle.detect_runtime() as "python" | "deno") ?? null;
+  } catch (error) {
+    clearHandleAfterWasmError("detect_runtime", error);
+    return null;
+  }
 }
 
 /**

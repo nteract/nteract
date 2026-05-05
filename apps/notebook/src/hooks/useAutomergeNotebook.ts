@@ -190,7 +190,12 @@ export function useAutomergeNotebook() {
 
     const handle = NotebookHandle.create_empty_with_actor(`human:${sessionIdRef.current}`);
 
-    handleRef.current?.free();
+    const previousHandle = handleRef.current;
+    if (previousHandle) {
+      setNotebookHandle(null);
+      handleRef.current = null;
+      previousHandle.free();
+    }
     handleRef.current = handle;
     handle.set_mime_priority(DEFAULT_MIME_PRIORITY);
     let initialBlobPort = getBlobPort();

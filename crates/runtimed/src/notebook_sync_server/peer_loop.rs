@@ -155,8 +155,9 @@ where
     let mut framed_reader = connection::FramedReader::spawn(reader, 16);
 
     // Idle peer timeout: disconnect peers that stop sending inbound frames.
-    // This is the safety net for orphaned connections where the remote process
-    // exited without closing its socket (e.g. proxy runtime teardown race).
+    // This is a coarse orphan guard for processes that died without closing
+    // their socket; live notebook and MCP peers send presence/request/sync
+    // traffic often enough to keep the deadline fresh.
     let idle_peer_timeout = daemon.idle_peer_timeout();
     let idle_deadline = tokio::time::sleep(idle_peer_timeout);
     tokio::pin!(idle_deadline);
@@ -189,8 +190,6 @@ where
             }
 
             // Idle peer timeout: no inbound frames within the deadline.
-            // Fires when the remote peer is an orphan (process exited without
-            // closing the socket) or genuinely idle beyond the configured limit.
             _ = &mut idle_deadline => {
                 warn!(
                     "[notebook-sync] Idle peer timeout for {} (peer_id={}, no inbound frames for {:?})",
@@ -206,18 +205,7 @@ where
                     Some(Err(e)) => return Err(e.into()),
                     None => return Ok(()), // clean EOF
                 };
-                // Reset idle deadline only for frames that represent genuine
-                // client intent — Request (tool calls) and Presence (cursor/focus).
-                // Automerge sync and state sync frames are reflexive: the daemon
-                // sends changes, the client ACKs. That loop would keep an orphan
-                // peer alive forever because daemon-side writes trigger client
-                // responses indefinitely.
-                if matches!(
-                    frame.frame_type,
-                    NotebookFrameType::Request | NotebookFrameType::Presence
-                ) {
-                    idle_deadline.as_mut().reset(tokio::time::Instant::now() + idle_peer_timeout);
-                }
+                idle_deadline.as_mut().reset(tokio::time::Instant::now() + idle_peer_timeout);
                 match frame.frame_type {
                             NotebookFrameType::AutomergeSync => {
                                 let notebook_doc_effects = match handle_notebook_doc_frame(
