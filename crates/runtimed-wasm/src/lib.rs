@@ -2092,6 +2092,16 @@ pub fn encode_focus_presence(
         .map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// Encode a heartbeat as a presence frame payload (CBOR).
+///
+/// The desktop client sends these on a fixed interval so the daemon's
+/// idle-peer timeout (which only resets on Request and Presence frames)
+/// does not fire on a quiet but live notebook window.
+#[wasm_bindgen]
+pub fn encode_heartbeat_presence(peer_id: &str) -> Result<Vec<u8>, JsError> {
+    presence::encode_heartbeat(peer_id).map_err(|e| JsError::new(&e.to_string()))
+}
+
 /// Encode a clear-channel message as a presence frame payload (CBOR).
 /// Removes a single presence channel (e.g. cursor or selection) for this peer.
 #[wasm_bindgen]

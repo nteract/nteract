@@ -2728,3 +2728,89 @@ async fn test_create_notebook_default_manager_with_deps() {
     pool_client.shutdown().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
+
+/// Heartbeat presence frames must keep a quiet but live peer connected past
+/// the daemon's `idle_peer_timeout`. Without this the desktop client - which
+/// only sends Presence on cursor/focus events - gets kicked after 5 minutes
+/// of no typing and the WASM frontend trips a stale-handle render during the
+/// daemon-disconnect re-bootstrap.
+#[tokio::test]
+async fn test_heartbeat_keeps_idle_peer_connected() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut config = test_config(&temp_dir);
+    // Compress the timeout so the test runs in seconds, not 30s.
+    config.idle_peer_timeout_ms = Some(1500);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let result = connect::connect_create(
+        socket_path.clone(),
+        "python",
+        None,
+        "heartbeat-peer",
+        false,
+        None,
+        vec![],
+    )
+    .await
+    .expect("client should connect");
+    let client = result.handle;
+    assert_session_ready(&client, "heartbeat client").await;
+
+    // Drive heartbeats every 500ms (3× under the 1500ms timeout) for ~3.5s.
+    // That's well past the timeout — if the daemon were resetting the deadline
+    // only on Request frames the connection would have died by ~1.5s.
+    let heartbeat_handle = client.clone();
+    let heartbeats = tokio::spawn(async move {
+        for _ in 0..7 {
+            let payload = notebook_doc::presence::encode_heartbeat("heartbeat-peer")
+                .expect("encode heartbeat");
+            heartbeat_handle
+                .send_presence(payload)
+                .await
+                .expect("send heartbeat");
+            sleep(Duration::from_millis(500)).await;
+        }
+    });
+
+    sleep(Duration::from_millis(3500)).await;
+    assert_eq!(
+        client.status().connection,
+        notebook_sync::status::ConnectionState::Connected,
+        "heartbeats should keep the peer Connected past idle_peer_timeout"
+    );
+
+    heartbeats.await.expect("heartbeat task should finish");
+
+    // Stop heartbeats. Now the deadline runs to completion and the daemon
+    // disconnects. The DocHandle observes the close and flips to Disconnected.
+    let mut status_rx = client.subscribe_status();
+    let disconnect_deadline = Duration::from_millis(3500);
+    let disconnect_observed = tokio::time::timeout(disconnect_deadline, async {
+        loop {
+            if status_rx.borrow().connection == notebook_sync::status::ConnectionState::Disconnected
+            {
+                return;
+            }
+            if status_rx.changed().await.is_err() {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(
+        disconnect_observed.is_ok(),
+        "peer should disconnect once heartbeats stop (status={:?})",
+        client.status()
+    );
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
