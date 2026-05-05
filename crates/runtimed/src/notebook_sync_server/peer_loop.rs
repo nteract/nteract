@@ -206,8 +206,18 @@ where
                     Some(Err(e)) => return Err(e.into()),
                     None => return Ok(()), // clean EOF
                 };
-                // Reset idle deadline — this peer is alive.
-                idle_deadline.as_mut().reset(tokio::time::Instant::now() + idle_peer_timeout);
+                // Reset idle deadline only for frames that represent genuine
+                // client intent — Request (tool calls) and Presence (cursor/focus).
+                // Automerge sync and state sync frames are reflexive: the daemon
+                // sends changes, the client ACKs. That loop would keep an orphan
+                // peer alive forever because daemon-side writes trigger client
+                // responses indefinitely.
+                if matches!(
+                    frame.frame_type,
+                    NotebookFrameType::Request | NotebookFrameType::Presence
+                ) {
+                    idle_deadline.as_mut().reset(tokio::time::Instant::now() + idle_peer_timeout);
+                }
                 match frame.frame_type {
                             NotebookFrameType::AutomergeSync => {
                                 let notebook_doc_effects = match handle_notebook_doc_frame(
