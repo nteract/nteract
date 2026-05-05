@@ -47,6 +47,14 @@ export type {
   TextAttribution,
 } from "./handle";
 
+// Notebook handle host
+export {
+  NotebookHandleHost,
+  type HostedNotebookHandle,
+  type NotebookHandleHostOptions,
+  type NotebookHandleSlot,
+} from "./notebook-handle-host";
+
 // Text attribution events
 export {
   createTextAttributionEvent,
