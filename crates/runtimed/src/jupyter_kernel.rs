@@ -1186,12 +1186,12 @@ impl KernelConnection for JupyterKernel {
                                         if let (Some(cid), Some(eid)) =
                                             (cell_id.clone(), execution_id.clone())
                                         {
-                                            if let Err(e) = iopub_cmd_tx.try_send(
-                                                QueueCommand::ExecutionDone {
+                                            if let Err(e) =
+                                                iopub_cmd_tx.try_send(QueueCommand::ExecutionDone {
                                                     cell_id: cid.clone(),
                                                     execution_id: eid.clone(),
-                                                },
-                                            ) {
+                                                })
+                                            {
                                                 warn!(
                                                     "[jupyter-kernel] ExecutionDone dropped for cell={} execution={}: {} — client may hang",
                                                     cid, eid, e
@@ -1865,10 +1865,12 @@ impl KernelConnection for JupyterKernel {
                                             }
                                         }
 
-                                        if let Err(e) = iopub_cmd_tx.try_send(QueueCommand::CellError {
-                                            cell_id: cid.clone(),
-                                            execution_id: eid.clone(),
-                                        }) {
+                                        if let Err(e) =
+                                            iopub_cmd_tx.try_send(QueueCommand::CellError {
+                                                cell_id: cid.clone(),
+                                                execution_id: eid.clone(),
+                                            })
+                                        {
                                             warn!(
                                                 "[jupyter-kernel] CellError dropped for cell={} execution={}: {} — client may hang",
                                                 cid, eid, e
@@ -2189,7 +2191,10 @@ impl KernelConnection for JupyterKernel {
                 }
                 warn!("[jupyter-kernel] iopub loop exited, signaling KernelDied");
                 if let Err(e) = iopub_cmd_tx.try_send(QueueCommand::KernelDied) {
-                    warn!("[jupyter-kernel] KernelDied signal dropped from iopub exit: {}", e);
+                    warn!(
+                        "[jupyter-kernel] KernelDied signal dropped from iopub exit: {}",
+                        e
+                    );
                 }
             },
             move |_| {
