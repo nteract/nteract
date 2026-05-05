@@ -1498,7 +1498,7 @@ pub(crate) async fn handle(
         // Always pass the room UUID so the agent's RuntimeAgent
         // handshake finds the room in the UUID-keyed rooms map.
         let notebook_id = room.id.to_string();
-        let runtime_agent_id = format!("runtime-agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let runtime_agent_id = format!("runtime-agent:{}", uuid::Uuid::new_v4().simple());
         let socket_path = daemon.socket_path().clone();
 
         // Set provenance + bump generation + create oneshot BEFORE spawn

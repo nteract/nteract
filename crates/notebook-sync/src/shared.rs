@@ -108,6 +108,7 @@ impl SharedDocState {
         message: sync::Message,
         label: &str,
     ) -> Result<(), AutomergeOperationError> {
+        let retry_message = message.clone();
         match catch_automerge_panic(label, || self.receive_sync_message(message)) {
             Ok(Ok(())) => Ok(()),
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
@@ -115,7 +116,11 @@ impl SharedDocState {
                 if let Err(source) = self.rebuild_doc() {
                     return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
-                Err(AutomergeOperationError::Panic(err))
+                match catch_automerge_panic(label, || self.receive_sync_message(retry_message)) {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+                    Err(_) => Err(AutomergeOperationError::Panic(err)),
+                }
             }
         }
     }
@@ -161,6 +166,7 @@ impl SharedDocState {
         message: sync::Message,
         label: &str,
     ) -> Result<(), AutomergeOperationError> {
+        let retry_message = message.clone();
         match catch_automerge_panic(label, || self.receive_state_sync_message(message)) {
             Ok(Ok(())) => Ok(()),
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
@@ -168,7 +174,13 @@ impl SharedDocState {
                 if let Err(source) = self.rebuild_state_doc() {
                     return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
-                Err(AutomergeOperationError::Panic(err))
+                match catch_automerge_panic(label, || {
+                    self.receive_state_sync_message(retry_message)
+                }) {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+                    Err(_) => Err(AutomergeOperationError::Panic(err)),
+                }
             }
         }
     }

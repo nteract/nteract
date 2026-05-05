@@ -82,6 +82,8 @@ use automerge::{
 use automerge_recovery::{catch_automerge_panic, AutomergeOperationError, AutomergeRebuildError};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
     KernelActivity, KernelErrorReason, ProjectContext, ProjectFile, ProjectFileExtras,
@@ -338,6 +340,9 @@ pub struct RuntimeStateDoc {
     doc: AutoCommit,
 }
 
+#[cfg(test)]
+static PANIC_ON_NEXT_RECEIVE_SYNC_CALLS: AtomicUsize = AtomicUsize::new(0);
+
 impl RuntimeStateDoc {
     /// Create a new `RuntimeStateDoc` for the **daemon** with schema scaffolded.
     ///
@@ -384,6 +389,27 @@ impl RuntimeStateDoc {
 
     pub fn new_empty() -> Self {
         Self::try_new_empty().unwrap_or_else(|err| panic!("seed runtime state schema: {err}"))
+    }
+
+    #[cfg(test)]
+    fn __panic_on_next_receive_sync_calls_for_test(count: usize) {
+        PANIC_ON_NEXT_RECEIVE_SYNC_CALLS.store(count, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    fn panic_if_receive_sync_requested_for_test(label: &str) {
+        if PANIC_ON_NEXT_RECEIVE_SYNC_CALLS
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                if count > 0 {
+                    Some(count - 1)
+                } else {
+                    None
+                }
+            })
+            .is_ok()
+        {
+            panic!("injected RuntimeStateDoc {label} panic");
+        }
     }
 
     fn schema_seed_doc() -> Result<AutoCommit, RuntimeStateError> {
@@ -2684,6 +2710,9 @@ impl RuntimeStateDoc {
         peer_state: &mut sync::State,
         message: sync::Message,
     ) -> Result<(), AutomergeError> {
+        #[cfg(test)]
+        Self::panic_if_receive_sync_requested_for_test("receive sync");
+
         if !message.changes.is_empty() {
             tracing::debug!(
                 "[runtime-state] Stripped {} change(s) from client RuntimeStateDoc sync message",
@@ -2711,6 +2740,7 @@ impl RuntimeStateDoc {
         message: sync::Message,
         label: &str,
     ) -> Result<(), AutomergeOperationError> {
+        let retry_message = message.clone();
         match catch_automerge_panic(label, || self.receive_sync_message(peer_state, message)) {
             Ok(Ok(())) => Ok(()),
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
@@ -2719,7 +2749,13 @@ impl RuntimeStateDoc {
                 if let Err(source) = self.rebuild_from_save() {
                     return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
-                Err(AutomergeOperationError::Panic(err))
+                match catch_automerge_panic(label, || {
+                    self.receive_sync_message(peer_state, retry_message)
+                }) {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+                    Err(_) => Err(AutomergeOperationError::Panic(err)),
+                }
             }
         }
     }
@@ -2737,6 +2773,9 @@ impl RuntimeStateDoc {
         peer_state: &mut sync::State,
         message: sync::Message,
     ) -> Result<bool, AutomergeError> {
+        #[cfg(test)]
+        Self::panic_if_receive_sync_requested_for_test("receive sync with changes");
+
         let heads_before = self.doc.get_heads();
         self.doc.sync().receive_sync_message(peer_state, message)?;
         let heads_after = self.doc.get_heads();
@@ -2751,6 +2790,7 @@ impl RuntimeStateDoc {
         message: sync::Message,
         label: &str,
     ) -> Result<bool, AutomergeOperationError> {
+        let retry_message = message.clone();
         match catch_automerge_panic(label, || {
             self.receive_sync_message_with_changes(peer_state, message)
         }) {
@@ -2761,7 +2801,13 @@ impl RuntimeStateDoc {
                 if let Err(source) = self.rebuild_from_save() {
                     return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
-                Err(AutomergeOperationError::Panic(err))
+                match catch_automerge_panic(label, || {
+                    self.receive_sync_message_with_changes(peer_state, retry_message)
+                }) {
+                    Ok(Ok(changed)) => Ok(changed),
+                    Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+                    Err(_) => Err(AutomergeOperationError::Panic(err)),
+                }
             }
         }
     }
@@ -2795,6 +2841,9 @@ impl RuntimeStateDoc {
     where
         F: Fn(&ActorId) -> bool,
     {
+        #[cfg(test)]
+        Self::panic_if_receive_sync_requested_for_test("receive sync and foreign comms");
+
         let heads_before = self.doc.get_heads();
         self.doc.sync().receive_sync_message(peer_state, message)?;
 
@@ -2889,8 +2938,9 @@ impl RuntimeStateDoc {
     where
         F: Fn(&ActorId) -> bool,
     {
+        let retry_message = message.clone();
         match catch_automerge_panic(label, || {
-            self.receive_sync_and_foreign_comms(peer_state, message, is_foreign)
+            self.receive_sync_and_foreign_comms(peer_state, message, &is_foreign)
         }) {
             Ok(Ok(view)) => Ok(view),
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
@@ -2899,7 +2949,13 @@ impl RuntimeStateDoc {
                 if let Err(source) = self.rebuild_from_save() {
                     return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
-                Err(AutomergeOperationError::Panic(err))
+                match catch_automerge_panic(label, || {
+                    self.receive_sync_and_foreign_comms(peer_state, retry_message, is_foreign)
+                }) {
+                    Ok(Ok(view)) => Ok(view),
+                    Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+                    Err(_) => Err(AutomergeOperationError::Panic(err)),
+                }
             }
         }
     }
@@ -5136,6 +5192,97 @@ mod tests {
         // Object values are always written (no deep comparison)
         let delta = serde_json::json!({"nested": {"a": 1}});
         doc.merge_comm_state_delta("w1", &delta).unwrap();
+    }
+
+    #[test]
+    fn receive_sync_with_changes_retries_original_message_after_panic_rebuild() {
+        let mut receiver = RuntimeStateDoc::new_empty();
+        let mut receiver_sync = sync::State::new();
+
+        let mut donor = RuntimeStateDoc::new();
+        donor
+            .create_execution_with_source("exec-retry", "cell-retry", "x = 1", 1)
+            .unwrap();
+        let mut donor_sync = sync::State::new();
+        if let Some(handshake) = receiver.generate_sync_message(&mut receiver_sync) {
+            donor
+                .doc
+                .sync()
+                .receive_sync_message(&mut donor_sync, handshake)
+                .expect("donor receives receiver handshake");
+        }
+        let message = donor
+            .generate_sync_message(&mut donor_sync)
+            .expect("donor should advertise execution");
+
+        RuntimeStateDoc::__panic_on_next_receive_sync_calls_for_test(1);
+        let changed = receiver
+            .receive_sync_message_with_changes_recovering(
+                &mut receiver_sync,
+                message,
+                "receive-sync-retry-test",
+            )
+            .expect("recovery should retry the original message");
+
+        assert!(changed, "retried message should apply donor changes");
+        assert!(
+            receiver.read_state().executions.contains_key("exec-retry"),
+            "execution from the panic-triggering frame should not be dropped"
+        );
+    }
+
+    #[test]
+    fn receive_sync_and_foreign_comms_retries_original_message_after_panic_rebuild() {
+        let mut receiver = RuntimeStateDoc::new();
+        receiver.set_actor("rt:kernel:deadbeef");
+        let mut receiver_sync = sync::State::new();
+
+        let mut donor = receiver.fork();
+        donor.fork_and_merge(|f| {
+            f.set_actor("human:peer");
+            f.put_comm(
+                "human-widget",
+                "j.w",
+                "",
+                "",
+                &serde_json::json!({"value": 2}),
+                0,
+            )
+            .unwrap();
+        });
+        let mut donor_sync = sync::State::new();
+        if let Some(handshake) = receiver.generate_sync_message(&mut receiver_sync) {
+            donor
+                .doc
+                .sync()
+                .receive_sync_message(&mut donor_sync, handshake)
+                .expect("donor receives receiver handshake");
+        }
+        let message = donor
+            .generate_sync_message(&mut donor_sync)
+            .expect("donor should advertise comm change");
+
+        RuntimeStateDoc::__panic_on_next_receive_sync_calls_for_test(1);
+        let view = receiver
+            .receive_sync_and_foreign_comms_recovering(
+                &mut receiver_sync,
+                message,
+                |actor| !actor.to_bytes().starts_with(b"rt:kernel:"),
+                "receive-sync-foreign-retry-test",
+            )
+            .expect("recovery should retry the original message");
+
+        assert!(
+            view.applied_actors
+                .iter()
+                .any(|actor| actor.to_bytes().starts_with(b"human:")),
+            "retried message should report the applied frontend actor"
+        );
+        let foreign_comms = view.foreign_comms.expect("foreign comm view");
+        assert!(
+            foreign_comms.contains_key("human-widget"),
+            "foreign comm from the panic-triggering frame should not be dropped"
+        );
     }
 
     #[test]
