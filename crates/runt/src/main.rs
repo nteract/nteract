@@ -633,23 +633,64 @@ fn enable_virtual_terminal_processing() {}
 /// The app automatically captures its working directory at startup for untitled
 /// notebooks, so we don't need to pass --cwd explicitly.
 fn open_notebook(path: Option<PathBuf>, runtime: Option<String>) -> Result<()> {
-    // Convert relative paths to absolute
-    let abs_path = path.map(|p| {
-        if p.is_relative() {
-            std::env::current_dir().unwrap_or_default().join(p)
-        } else {
-            p
-        }
-    });
+    let launch = open_notebook_launch_args(path, runtime);
+    let extra_args = launch
+        .extra_args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
 
+    runt_workspace::open_notebook_app(launch.path.as_deref(), &extra_args)
+        .map_err(|e| anyhow::anyhow!(e))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct OpenNotebookLaunchArgs {
+    path: Option<PathBuf>,
+    extra_args: Vec<String>,
+}
+
+fn open_notebook_launch_args(
+    path: Option<PathBuf>,
+    runtime: Option<String>,
+) -> OpenNotebookLaunchArgs {
     let mut extra_args = Vec::new();
-    if let Some(ref r) = runtime {
-        extra_args.push("--runtime");
+
+    // Match `runt shutdown <uuid>`: a bare UUID is an untitled daemon
+    // notebook ID, even if the current directory contains a file with that name.
+    let path = match path {
+        Some(p) => {
+            if let Some(notebook_id) = notebook_id_from_uuid_arg(&p) {
+                extra_args.push("--notebook-id".to_string());
+                extra_args.push(notebook_id);
+                None
+            } else {
+                Some(absolute_path(p))
+            }
+        }
+        None => None,
+    };
+
+    if let Some(r) = runtime {
+        extra_args.push("--runtime".to_string());
         extra_args.push(r);
     }
 
-    runt_workspace::open_notebook_app(abs_path.as_deref(), &extra_args)
-        .map_err(|e| anyhow::anyhow!(e))
+    OpenNotebookLaunchArgs { path, extra_args }
+}
+
+fn notebook_id_from_uuid_arg(path: &Path) -> Option<String> {
+    let value = path.as_os_str().to_str()?;
+    Uuid::parse_str(value).ok()?;
+    Some(value.to_string())
+}
+
+fn absolute_path(path: PathBuf) -> PathBuf {
+    if path.is_relative() {
+        std::env::current_dir().unwrap_or_default().join(path)
+    } else {
+        path
+    }
 }
 
 async fn async_main(command: Option<Commands>) -> Result<()> {
@@ -5487,6 +5528,85 @@ async fn inspect_notebook(path: &PathBuf, full_outputs: bool, json_output: bool)
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn open_notebook_uuid_arg_launches_by_notebook_id() {
+        let notebook_id = "44201500-2c0f-40b1-9b9b-1ae672a563bf";
+
+        let args = open_notebook_launch_args(Some(PathBuf::from(notebook_id)), None);
+
+        assert_eq!(
+            args,
+            OpenNotebookLaunchArgs {
+                path: None,
+                extra_args: vec!["--notebook-id".to_string(), notebook_id.to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn open_notebook_uuid_arg_keeps_runtime_flag() {
+        let notebook_id = "44201500-2c0f-40b1-9b9b-1ae672a563bf";
+
+        let args =
+            open_notebook_launch_args(Some(PathBuf::from(notebook_id)), Some("python".into()));
+
+        assert_eq!(
+            args,
+            OpenNotebookLaunchArgs {
+                path: None,
+                extra_args: vec![
+                    "--notebook-id".to_string(),
+                    notebook_id.to_string(),
+                    "--runtime".to_string(),
+                    "python".to_string(),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn open_notebook_relative_path_still_launches_by_absolute_path() {
+        let args = open_notebook_launch_args(Some(PathBuf::from("notebook.ipynb")), None);
+
+        assert_eq!(
+            args,
+            OpenNotebookLaunchArgs {
+                path: Some(std::env::current_dir().unwrap().join("notebook.ipynb")),
+                extra_args: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn open_notebook_absolute_path_stays_absolute() {
+        let path = PathBuf::from("/tmp/notebook.ipynb");
+
+        let args = open_notebook_launch_args(Some(path.clone()), None);
+
+        assert_eq!(
+            args,
+            OpenNotebookLaunchArgs {
+                path: Some(path),
+                extra_args: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn open_notebook_without_path_keeps_runtime_only() {
+        let args = open_notebook_launch_args(None, Some("deno".into()));
+
+        assert_eq!(
+            args,
+            OpenNotebookLaunchArgs {
+                path: None,
+                extra_args: vec!["--runtime".to_string(), "deno".to_string()],
+            }
+        );
+    }
+
     /// Test that the shutdown command correctly identifies UUIDs vs file paths.
     /// This is critical for handling both saved notebooks (paths) and untitled
     /// notebooks (UUIDs).
