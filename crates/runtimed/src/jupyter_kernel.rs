@@ -1186,11 +1186,26 @@ impl KernelConnection for JupyterKernel {
                                         if let (Some(cid), Some(eid)) =
                                             (cell_id.clone(), execution_id.clone())
                                         {
-                                            let _ = iopub_cmd_tx.try_send(
+                                            if let Err(e) = iopub_cmd_tx.try_send(
                                                 QueueCommand::ExecutionDone {
-                                                    cell_id: cid,
-                                                    execution_id: eid,
+                                                    cell_id: cid.clone(),
+                                                    execution_id: eid.clone(),
                                                 },
+                                            ) {
+                                                warn!(
+                                                    "[jupyter-kernel] ExecutionDone dropped for cell={} execution={}: {} — client may hang",
+                                                    cid, eid, e
+                                                );
+                                            }
+                                        } else if execution_id.is_some() && cell_id.is_none() {
+                                            // Status=Idle with a parent execution_id but no
+                                            // cell_id means the cell_id_map lookup failed —
+                                            // either the map is poisoned or the execution_id
+                                            // wasn't registered (non-execute request like
+                                            // kernel_info). Only warn for execute-range IDs.
+                                            debug!(
+                                                "[jupyter-kernel] Status=Idle with execution_id={:?} but no cell_id (non-execute or map miss)",
+                                                execution_id
                                             );
                                         }
                                     }
@@ -1603,11 +1618,17 @@ impl KernelConnection for JupyterKernel {
                                             ),
                                             Some(crate::user_error::UserErrorOutput::Rich(_))
                                         ) {
-                                            let _ =
+                                            if let Err(e) =
                                                 iopub_cmd_tx.try_send(QueueCommand::CellError {
                                                     cell_id: cid.clone(),
-                                                    execution_id: eid,
-                                                });
+                                                    execution_id: eid.clone(),
+                                                })
+                                            {
+                                                warn!(
+                                                    "[jupyter-kernel] CellError (rich traceback) dropped for cell={} execution={}: {}",
+                                                    cid, eid, e
+                                                );
+                                            }
                                         }
                                     }
                                 }
@@ -1844,10 +1865,15 @@ impl KernelConnection for JupyterKernel {
                                             }
                                         }
 
-                                        let _ = iopub_cmd_tx.try_send(QueueCommand::CellError {
+                                        if let Err(e) = iopub_cmd_tx.try_send(QueueCommand::CellError {
                                             cell_id: cid.clone(),
-                                            execution_id: eid,
-                                        });
+                                            execution_id: eid.clone(),
+                                        }) {
+                                            warn!(
+                                                "[jupyter-kernel] CellError dropped for cell={} execution={}: {} — client may hang",
+                                                cid, eid, e
+                                            );
+                                        }
                                     }
                                 }
 
@@ -2162,9 +2188,12 @@ impl KernelConnection for JupyterKernel {
                     }
                 }
                 warn!("[jupyter-kernel] iopub loop exited, signaling KernelDied");
-                let _ = iopub_cmd_tx.try_send(QueueCommand::KernelDied);
+                if let Err(e) = iopub_cmd_tx.try_send(QueueCommand::KernelDied) {
+                    warn!("[jupyter-kernel] KernelDied signal dropped from iopub exit: {}", e);
+                }
             },
             move |_| {
+                // Best-effort in panic handler — can't log, just try to signal
                 let _ = iopub_panic_cmd_tx.try_send(QueueCommand::KernelDied);
             },
         );
