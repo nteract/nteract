@@ -311,6 +311,12 @@ async fn main() -> ExitCode {
         }
     }
 
+    // Shut down the child process before exiting. Without this, the Tokio
+    // runtime teardown races the `wait_for_child` detached task — if the
+    // runtime drops first, the child survives as an orphan, holding its
+    // daemon peer connection open and preventing room eviction.
+    proxy_ref.shutdown_child().await;
+
     ExitCode::SUCCESS
 }
 
