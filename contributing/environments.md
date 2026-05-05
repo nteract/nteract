@@ -308,7 +308,7 @@ The diagrams show two main layers:
 
 1. **Frontend** (blue) — React hooks that invoke Tauri commands, listen for typed notebook frames, and project daemon-authored runtime state from RuntimeStateDoc. `useDaemonKernel.ts` handles kernel actions and ephemeral runtime events. Output **rendering** is driven by RuntimeStateDoc manifests (`materialize-cells.ts`, `notebook-outputs.ts`, and `manifest-resolution.ts`), not output broadcasts.
 
-2. **runtimed Daemon** (indigo) — A singleton background process that owns kernel processes and manages prewarmed UV and Conda environment pools. The daemon runs the detection priority chain: metadata inline deps first, then PEP 723 cell metadata (`uv:pep723`), then closest project file, then prewarmed pool. Communicates via length-prefixed JSON over Unix domain sockets (or Windows named pipes). Also runs an Automerge CRDT sync server for cross-window settings and notebook state.
+2. **runtimed Daemon** (indigo) — A singleton background process that owns kernel processes and manages prewarmed UV and Conda environment pools. The daemon runs the detection priority chain: metadata inline deps first, then PEP 723 cell metadata (`uv:pep723`), then closest project file, then prewarmed pool. Communicates via length-prefixed JSON over Unix domain sockets (or Windows named pipes). Also runs Automerge sync streams for notebook state and for the live projection of canonical `settings.json`.
 
 3. **External Tools** (grey) — `uv` for pip-compatible package management, `rattler` for conda solving/installing, and `deno` for TypeScript notebooks.
 

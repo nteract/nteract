@@ -79,12 +79,32 @@ Execution is CRDT-driven — the coordinator writes execution entries (with sour
 | Info file (legacy) | Pre-socket discovery fallback | `~/Library/Caches/<cache_namespace>/daemon.json` (macOS) / `~/.cache/<cache_namespace>/daemon.json` (Linux) |
 | Environments | Prewarmed venvs | `~/Library/Caches/<cache_namespace>/envs/` (macOS) / `~/.cache/<cache_namespace>/envs/` (Linux) |
 | Blob store | Content-addressed outputs | `~/Library/Caches/<cache_namespace>/blobs/` (macOS) / `~/.cache/<cache_namespace>/blobs/` (Linux) |
+| Settings | Canonical user settings JSON + schema | Channel config namespace via `settings_json_path()` and `settings_schema_path()` |
 | Notebook docs | Persisted Automerge docs | `~/Library/Caches/<cache_namespace>/notebook-docs/` (macOS) / `~/.cache/<cache_namespace>/notebook-docs/` (Linux) |
 | Snapshots | Pre-delete safety copies | `~/Library/Caches/<cache_namespace>/notebook-docs/snapshots/` (macOS) / `~/.cache/<cache_namespace>/notebook-docs/snapshots/` (Linux) |
 
 `<cache_namespace>` is `runt` for stable builds and `runt-nightly` for nightly builds. Source builds default to nightly unless `RUNT_BUILD_CHANNEL=stable`.
 
 **Daemon discovery is socket-first.** Clients connect to the socket and send a `GetDaemonInfo` request; the daemon answers from live state. The on-disk `daemon.json` exists only as a fallback for older daemons that don't recognise the request — it will be removed once every daemon in the wild speaks `GetDaemonInfo`. New code should not depend on `daemon.json`. See `crates/runtimed-client/src/singleton.rs::query_daemon_info`.
+
+## Settings Authority
+
+`settings.json` is the durable source of truth for user settings. The Automerge
+`SettingsDoc` is a live sync projection used for cross-window settings updates
+over the `SettingsSync` channel.
+
+Daemon-owned settings writes mutate and persist `SyncedSettings` JSON first,
+then refresh the projection and broadcast `settings_changed` only when the saved
+snapshot changes. Client-originated sync edits are accepted through
+`SettingsDoc` and written to `settings.json` only after the daemon proves the
+sync message applied. Mirror writes from daemon sync must not feed back through
+the file watcher as a second settings broadcast.
+
+External `settings.json` edits are authoritative. The file watcher applies them
+to the in-memory projection and broadcasts the resulting settings change. If
+Automerge sync recovery is needed, rebuild the projection from `settings.json`;
+if that JSON is invalid, keep the last-known-good in-memory snapshot for sync
+continuity and never overwrite the file as part of recovery.
 
 ## Security Model
 
@@ -292,7 +312,7 @@ crates/runtimed-client/
 ├── src/output_resolver.rs       # Shared Rust manifest resolution
 ├── src/resolved_output.rs       # Output resolution types
 ├── src/protocol.rs              # Client-side protocol helpers and typed request wrappers
-├── src/settings_doc.rs          # Settings Automerge document, schema, migration
+├── src/settings_doc.rs          # Settings JSON schema, materialization, and sync projection
 ├── src/singleton.rs             # File-based daemon discovery/locking helpers
 ├── src/sync_client.rs           # Settings sync client library
 └── src/service.rs               # Cross-platform service install/uninstall helpers

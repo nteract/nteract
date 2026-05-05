@@ -286,7 +286,7 @@ const isDark = await browser.execute(() => {
 
 ### Daemon-Independent Testing
 
-Some features interact with the global runtimed daemon (Automerge-based settings sync). If the daemon is running, it may override default values on mount. If it's not running, the app falls back to localStorage.
+Some features interact with the global runtimed daemon (settings sync backed by canonical `settings.json`). If the daemon is running, it may override default values on mount. If it's not running, the app falls back to localStorage.
 
 **The rule: never assert initial state. Always click first, then assert the result.**
 

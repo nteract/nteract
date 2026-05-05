@@ -1,9 +1,10 @@
-//! Automerge-backed settings document for cross-window sync.
+//! Automerge projection for cross-window settings sync.
 //!
-//! Wraps an Automerge `AutoCommit` document with typed accessors for
-//! application settings. The daemon holds the live copy; each connected
-//! notebook window holds a local replica that syncs over the Automerge sync
-//! protocol. On disk, `settings.json` is canonical.
+//! `settings.json` is the durable source of truth. `SettingsDoc` wraps an
+//! Automerge `AutoCommit` document as the live projection that the daemon and
+//! notebook windows use to exchange settings changes over the sync protocol.
+//! Daemon-owned writes mutate and persist canonical JSON first, then refresh
+//! this projection; successful client sync writes are mirrored back to JSON.
 //!
 //! The document uses nested maps for environment-specific settings:
 //!
