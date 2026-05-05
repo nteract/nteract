@@ -21,8 +21,9 @@ use automerge::AutoCommit;
 use log::{debug, info};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use notebook_protocol::connection::{
     self, Handshake, NotebookConnectionInfo, ProtocolCapabilities, PROTOCOL_V4,
@@ -392,6 +393,7 @@ where
     let (status_tx, status_rx) = watch::channel(SyncStatus::connected_pending());
     let (changed_tx, changed_rx) = mpsc::unbounded_channel();
     let (cmd_tx, cmd_rx) = mpsc::channel::<sync_task::SyncCommand>(32);
+    let heartbeat_cmd_tx = cmd_tx.clone();
     let (broadcast_tx, broadcast_rx) = tokio::sync::broadcast::channel::<NotebookBroadcast>(64);
 
     let handle = DocHandle::new(
@@ -428,7 +430,59 @@ where
         );
     });
 
+    spawn_presence_heartbeat(heartbeat_cmd_tx, presence_heartbeat_interval());
+
     Ok((handle, broadcast_rx.into()))
+}
+
+/// Default heartbeat interval for full-peer client connections (15s).
+///
+/// Matches `notebook_doc::presence::DEFAULT_HEARTBEAT_MS` so room presence TTL
+/// pruning (3× heartbeat) and the daemon's idle-peer timeout both stay
+/// comfortably ahead of an idle-but-live MCP or Python client.
+fn presence_heartbeat_interval() -> Duration {
+    Duration::from_millis(notebook_doc::presence::DEFAULT_HEARTBEAT_MS)
+}
+
+/// Spawn a background task that sends a heartbeat presence frame at `interval`.
+///
+/// The desktop frontend is a relay peer and runs its own heartbeat in
+/// `apps/notebook/src/hooks/usePresence.ts`. This covers everyone else who
+/// connects via `build_and_spawn` (runt-mcp, runtimed-py, integration tests):
+/// without it, a quiet but live MCP session gets disconnected after the
+/// daemon's idle-peer timeout.
+///
+/// The task exits on the first send failure - which fires when the sync
+/// task drops `cmd_rx` after the user drops their `DocHandle`.
+fn spawn_presence_heartbeat(cmd_tx: mpsc::Sender<sync_task::SyncCommand>, interval: Duration) {
+    let payload = match notebook_doc::presence::encode_heartbeat("local") {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            debug!("[notebook-sync] heartbeat encode failed: {e}");
+            return;
+        }
+    };
+
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let (reply_tx, reply_rx) = oneshot::channel();
+            if cmd_tx
+                .send(sync_task::SyncCommand::SendPresence {
+                    data: payload.clone(),
+                    reply: reply_tx,
+                })
+                .await
+                .is_err()
+            {
+                return;
+            }
+            // Drain the reply so the oneshot doesn't leak; ignore the result.
+            let _ = reply_rx.await;
+        }
+    });
 }
 
 // =========================================================================
