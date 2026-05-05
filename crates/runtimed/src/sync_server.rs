@@ -1,8 +1,10 @@
 //! Automerge sync protocol handler for settings synchronization.
 //!
 //! Handles a single client connection that has already been routed by the
-//! daemon's unified socket. Exchanges Automerge sync messages to keep a
-//! shared settings document in sync across all notebook windows.
+//! daemon's unified socket. The durable settings state is canonical
+//! `settings.json`; this handler exchanges Automerge sync messages for the
+//! live `SettingsDoc` projection, persists successfully applied client changes
+//! back to JSON, and rebuilds the projection from JSON during recovery.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

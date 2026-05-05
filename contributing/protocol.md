@@ -59,6 +59,9 @@ The notebook app communicates with runtimed over a Unix socket (named pipe on Wi
 4. **Broadcasts** — JSON messages the daemon pushes to all connected clients for ephemeral comm messages and environment progress
 5. **Presence and session control** — binary presence updates plus daemon-originated readiness/status frames
 
+Settings sync is a special Automerge stream: the Automerge document is the live
+transport/projection, while `settings.json` remains the durable settings store.
+
 ## Connection Topology
 
 ```
@@ -112,7 +115,7 @@ the same OS user and holding the socket path can intentionally use the daemon.
 | Handshake | Authority exposed |
 |-----------|-------------------|
 | `Pool` | Pool status, environment claims/returns, daemon status/admin requests including shutdown |
-| `SettingsSync` | Read/write access to the user's synced settings document |
+| `SettingsSync` | Read/write sync access to the live projection of canonical `settings.json`; successful client changes are persisted by the daemon |
 | `NotebookSync` | Peer access to a notebook room and its runtime-state sync |
 | `OpenNotebook` | Load or create a file-backed notebook from a path |
 | `CreateNotebook` | Create an untitled or ephemeral notebook room |
