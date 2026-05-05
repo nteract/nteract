@@ -1,5 +1,28 @@
 import type { Observable } from "rxjs";
-import type { ExecutionTransition, RuntimeState, SessionStatus } from "runtimed";
+
+export type NotebookDocPhase = "pending" | "syncing" | "interactive";
+export type RuntimeStatePhase = "pending" | "syncing" | "ready";
+
+export type InitialLoadPhase =
+  | { phase: "not_needed" }
+  | { phase: "streaming" }
+  | { phase: "ready" }
+  | { phase: "failed"; reason: string };
+
+export interface SessionStatus {
+  notebook_doc: NotebookDocPhase;
+  runtime_state: RuntimeStatePhase;
+  initial_load: InitialLoadPhase;
+}
+
+export interface ExecutionTransition {
+  execution_id: string;
+  cell_id: string;
+  kind: "started" | "done" | "error";
+  execution_count: number | null;
+}
+
+export type RuntimeState = Record<string, unknown>;
 
 export type RuntimeKind = "python" | "deno" | (string & {});
 export type PackageManager = "uv" | "conda" | "pixi";
