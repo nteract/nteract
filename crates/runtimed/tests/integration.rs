@@ -2730,17 +2730,17 @@ async fn test_create_notebook_default_manager_with_deps() {
 }
 
 /// `notebook-sync::connect` clients (runt-mcp, runtimed-py, integration tests)
-/// get an auto-heartbeat task spawned in `build_and_spawn`. A quiet but live
-/// peer must survive past the daemon's idle_peer_timeout solely on that
-/// background traffic; otherwise headless MCP and Python sessions regress to
-/// the original "kicked after 5 minutes of silence" failure that the desktop
-/// hook fixes only for the webview.
-#[tokio::test]
+/// get an auto-heartbeat that fires from `sync_task::run`'s biased select. A
+/// quiet but live peer must survive past the daemon's idle_peer_timeout solely
+/// on that traffic; otherwise headless MCP and Python sessions regress to the
+/// original "kicked after 5 minutes of silence" failure that the desktop hook
+/// fixes only for the webview.
+#[tokio::test(start_paused = true)]
 async fn test_auto_heartbeat_keeps_idle_peer_connected() {
     let temp_dir = TempDir::new().unwrap();
     let mut config = test_config(&temp_dir);
     // Sit just above the 15s default heartbeat interval so the second tick
-    // lands in time to reset the deadline without dragging the test past 30s.
+    // lands in time to reset the deadline.
     config.idle_peer_timeout_ms = Some(20_000);
     let socket_path = config.socket_path.clone();
 
@@ -2766,10 +2766,13 @@ async fn test_auto_heartbeat_keeps_idle_peer_connected() {
     let client = result.handle;
     assert_session_ready(&client, "heartbeat client").await;
 
-    // Send nothing from the test. Auto-heartbeats from build_and_spawn fire at
-    // t≈0 and t≈15s; without them the 20s idle deadline would have expired by
-    // the 22s mark.
-    sleep(Duration::from_secs(22)).await;
+    // Advance virtual time past the 20s daemon timeout. With heartbeats
+    // disabled the deadline would have expired by t=20s; with the auto-
+    // heartbeat firing every 15s from sync_task's biased select arm, the
+    // peer stays Connected at t=35s.
+    tokio::time::advance(Duration::from_secs(35)).await;
+    tokio::task::yield_now().await;
+
     assert_eq!(
         client.status().connection,
         notebook_sync::ConnectionState::Connected,
