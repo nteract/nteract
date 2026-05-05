@@ -9,7 +9,7 @@ use jupyter_protocol::{
 use petname::petname;
 use uuid::Uuid;
 
-use runtimelib::{
+use jupyter_zmq_client::{
     create_client_control_connection, create_client_iopub_connection,
     create_client_shell_connection_with_identity, create_client_stdin_connection_with_identity,
     peek_ports_with_listeners, peer_identity_for_session, runtime_dir, KernelspecDir, Result,

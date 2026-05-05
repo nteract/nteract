@@ -12,7 +12,7 @@ use tabled::{settings::Style, Table, Tabled};
 mod kernel_client;
 
 use crate::kernel_client::KernelClient;
-use runtimelib::{
+use jupyter_zmq_client::{
     create_client_heartbeat_connection, create_client_shell_connection_with_identity,
     find_kernelspec, peer_identity_for_session, runtime_dir, ConnectionInfo,
 };
@@ -1500,14 +1500,14 @@ async fn console(kernel_name: Option<&str>, cmd: Option<&str>, verbose: bool) ->
     let connection_info = client.connection_info();
     let session_id = client.session_id();
 
-    let identity = runtimelib::peer_identity_for_session(session_id)?;
-    let shell = runtimelib::create_client_shell_connection_with_identity(
+    let identity = jupyter_zmq_client::peer_identity_for_session(session_id)?;
+    let shell = jupyter_zmq_client::create_client_shell_connection_with_identity(
         connection_info,
         session_id,
         identity.clone(),
     )
     .await?;
-    let mut stdin_conn = runtimelib::create_client_stdin_connection_with_identity(
+    let mut stdin_conn = jupyter_zmq_client::create_client_stdin_connection_with_identity(
         connection_info,
         session_id,
         identity,
@@ -1516,7 +1516,7 @@ async fn console(kernel_name: Option<&str>, cmd: Option<&str>, verbose: bool) ->
     let (mut shell_writer, mut shell_reader) = shell.split();
 
     let mut iopub =
-        runtimelib::create_client_iopub_connection(connection_info, "", session_id).await?;
+        jupyter_zmq_client::create_client_iopub_connection(connection_info, "", session_id).await?;
 
     let kernel_name = connection_info
         .kernel_name
