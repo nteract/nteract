@@ -46,9 +46,9 @@ futures = "0.3"
 bytes = "1"
 base64 = "0.22"
 tokio = { version = "1.36.0", features = ["full"] }
-runtimelib = { git = "https://github.com/runtimed/runtimed", rev = "f982d30bc6c3ed699f7e0356703dea4f85ac7b64", default-features = false }
-jupyter-protocol = { git = "https://github.com/runtimed/runtimed", rev = "f982d30bc6c3ed699f7e0356703dea4f85ac7b64" }
-nbformat = { git = "https://github.com/runtimed/runtimed", rev = "f982d30bc6c3ed699f7e0356703dea4f85ac7b64" }
+jupyter-zmq-client = { version = "1.0.0", default-features = false }
+jupyter-protocol = "2.0.1"
+nbformat = "3.0.0"
 automerge = { git = "https://github.com/nteract/automerge", rev = "4a605a43586e08de090bb1321b661b15c1e71962" }
 thiserror = "2"
 schemars = "1"

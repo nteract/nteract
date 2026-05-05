@@ -37,7 +37,7 @@ dirs = "6"
 # Jupyter kernel management
 jupyter-protocol = { workspace = true }
 nbformat = { workspace = true }
-runtimelib = { workspace = true, features = ["tokio-runtime", "aws-lc-rs"] }
+jupyter-zmq-client = { workspace = true, features = ["tokio-runtime", "aws-lc-rs"] }
 petname = "2"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 clap = { version = "4", features = ["derive"] }

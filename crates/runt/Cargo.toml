@@ -16,7 +16,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 jupyter-protocol = { workspace = true }
-runtimelib = { workspace = true, features = ["tokio-runtime", "aws-lc-rs"] }
+jupyter-zmq-client = { workspace = true, features = ["tokio-runtime", "aws-lc-rs"] }
 runtimed-client = { path = "../runtimed-client" }
 notebook-doc = { path = "../notebook-doc", features = ["persistence"] }
 runt-workspace = { path = "../runt-workspace" }

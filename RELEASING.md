@@ -78,11 +78,11 @@ cargo xtask build
 
 ### Testing with local library changes
 
-To test against unpublished runtimelib/jupyter-protocol changes, add to the root `Cargo.toml`:
+To test against unpublished jupyter-zmq-client/jupyter-protocol changes, add to the root `Cargo.toml`:
 
 ```toml
 [patch.crates-io]
-runtimelib = { path = "../runtimed/crates/runtimelib" }
+jupyter-zmq-client = { path = "../runtimed/crates/jupyter-zmq-client" }
 jupyter-protocol = { path = "../runtimed/crates/jupyter-protocol" }
 ```
 

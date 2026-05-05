@@ -181,7 +181,7 @@ kernel.session.send(
 ```
 
 - Mirrors how ipykernel's own `publish_display_data` calls `Session.send` — `ident` is the IOPub topic (bytes), `parent` is the parent header dict.
-- No new transport: runtimelib already serializes trailing `buffers: Vec<Bytes>` as ZMQ frames on send (`RawMessage::from_jupyter_message`), and the receive side parses them back (`into_jupyter_message`). ipywidgets exercises this path today.
+- No new transport: jupyter-zmq-client already serializes trailing `buffers: Vec<Bytes>` as ZMQ frames on send (`RawMessage::from_jupyter_message`), and the receive side parses them back (`into_jupyter_message`). ipywidgets exercises this path today.
 
 ### Agent side: buffer preflight + ref MIME resolution
 

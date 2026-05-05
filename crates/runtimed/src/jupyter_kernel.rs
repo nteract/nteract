@@ -100,9 +100,11 @@ pub struct InterruptHandle {
 
 impl InterruptHandle {
     pub async fn interrupt(&self) -> Result<()> {
-        let mut control =
-            runtimelib::create_client_control_connection(&self.connection_info, &self.session_id)
-                .await?;
+        let mut control = jupyter_zmq_client::create_client_control_connection(
+            &self.connection_info,
+            &self.session_id,
+        )
+        .await?;
 
         let request: JupyterMessage = InterruptRequest {}.into();
         control.send(request).await?;
@@ -153,7 +155,7 @@ pub struct JupyterKernel {
     /// Path to the connection file.
     connection_file: Option<PathBuf>,
     /// Shell writer for sending execute requests.
-    shell_writer: Option<runtimelib::DealerSendConnection>,
+    shell_writer: Option<jupyter_zmq_client::DealerSendConnection>,
     /// IPC socket path prefix for cleanup (Unix only).
     #[cfg(unix)]
     ipc_prefix: Option<PathBuf>,
@@ -1001,7 +1003,7 @@ impl KernelConnection for JupyterKernel {
             iopub_endpoint,
             launch_started.elapsed().as_millis()
         );
-        let mut iopub = match runtimelib::create_client_iopub_connection(
+        let mut iopub = match jupyter_zmq_client::create_client_iopub_connection(
             &connection_info,
             "",
             &session_id,
@@ -2171,7 +2173,7 @@ impl KernelConnection for JupyterKernel {
 
         // ── Shell connection ─────────────────────────────────────────────
 
-        let identity = runtimelib::peer_identity_for_session(&session_id)?;
+        let identity = jupyter_zmq_client::peer_identity_for_session(&session_id)?;
         let shell_endpoint = connection_info.shell_url();
         let shell_connect_started = std::time::Instant::now();
         info!(
@@ -2180,7 +2182,7 @@ impl KernelConnection for JupyterKernel {
             shell_endpoint,
             launch_started.elapsed().as_millis()
         );
-        let mut shell = match runtimelib::create_client_shell_connection_with_identity(
+        let mut shell = match jupyter_zmq_client::create_client_shell_connection_with_identity(
             &connection_info,
             &session_id,
             identity,
@@ -2459,7 +2461,8 @@ impl KernelConnection for JupyterKernel {
 
                     let check = async {
                         let mut hb =
-                            runtimelib::create_client_heartbeat_connection(&hb_conn_info).await?;
+                            jupyter_zmq_client::create_client_heartbeat_connection(&hb_conn_info)
+                                .await?;
                         hb.single_heartbeat().await
                     };
 
@@ -2642,7 +2645,8 @@ impl KernelConnection for JupyterKernel {
             .ok_or_else(|| anyhow::anyhow!("No kernel running"))?;
 
         let mut control =
-            runtimelib::create_client_control_connection(connection_info, &self.session_id).await?;
+            jupyter_zmq_client::create_client_control_connection(connection_info, &self.session_id)
+                .await?;
 
         let request: JupyterMessage = InterruptRequest {}.into();
         control.send(request).await?;

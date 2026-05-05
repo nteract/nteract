@@ -2,7 +2,7 @@
 
 A fast, modern toolkit for Jupyter notebooks. Native desktop app with instant startup, realtime sync across windows and agents, and intelligent environment management.
 
-Built on [runtimelib](https://crates.io/crates/runtimelib) and [jupyter-protocol](https://crates.io/crates/jupyter-protocol).
+Built on [jupyter-zmq-client](https://crates.io/crates/jupyter-zmq-client) and [jupyter-protocol](https://crates.io/crates/jupyter-protocol).
 
 ## Install
 
@@ -195,7 +195,7 @@ cargo clippy --all-targets -- -D warnings               # Lint Rust
 The underlying Rust libraries are published to crates.io:
 
 - [`jupyter-protocol`](https://crates.io/crates/jupyter-protocol) — Jupyter messaging protocol
-- [`runtimelib`](https://crates.io/crates/runtimelib) — Jupyter kernel interactions over ZeroMQ
+- [`jupyter-zmq-client`](https://crates.io/crates/jupyter-zmq-client) - Jupyter kernel interactions over ZeroMQ
 - [`nbformat`](https://crates.io/crates/nbformat) — Notebook parsing
 
 ## Contributing
