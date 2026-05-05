@@ -2,7 +2,7 @@ import { useNotebookHost, type DaemonReadyPayload } from "@nteract/notebook-host
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NotebookTransport, SessionStatus, SyncableHandle } from "runtimed";
 import {
-  DEFAULT_MIME_PRIORITY,
+  NotebookHandleHost,
   SyncEngine,
   isDisplayCapableJupyterOutput,
   isInitialLoadFailed,
@@ -48,7 +48,6 @@ import {
 import type { JupyterOutput, NotebookCell } from "../types";
 import init, { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 
-// Module-level WASM init — runs before React renders.
 const wasmReady: Promise<void> = init().then(() => {
   logger.info("[automerge-notebook] WASM initialized");
 });
@@ -78,6 +77,19 @@ export function useAutomergeNotebook() {
   const interactiveReadyRef = useRef(false);
   const latestSessionStatusRef = useRef<SessionStatus | null>(null);
   const prevPathRef = useRef<string | null>(null);
+
+  const [handleHost] = useState(
+    () =>
+      new NotebookHandleHost<NotebookHandle>({
+        actorLabel: () => `human:${sessionIdRef.current}`,
+        createHandle: (actorLabel) => NotebookHandle.create_empty_with_actor(actorLabel),
+        getBlobPort,
+        publishHandle: setNotebookHandle,
+        ready: wasmReady,
+        refreshBlobPort,
+        slot: handleRef,
+      }),
+  );
 
   // SyncEngine and transport refs — stable across re-renders.
   const engineRef = useRef<SyncEngine | null>(null);
@@ -156,11 +168,14 @@ export function useAutomergeNotebook() {
     replaceNotebookCells(newCells);
   }, []);
 
-  const refreshCanAcceptCellMutations = useCallback((handle = handleRef.current) => {
-    const canAccept = handle?.has_cells_map() ?? false;
-    setCanAcceptCellMutations(canAccept);
-    return canAccept;
-  }, []);
+  const refreshCanAcceptCellMutations = useCallback(
+    (handle = handleHost.current) => {
+      const canAccept = handle?.has_cells_map() ?? false;
+      setCanAcceptCellMutations(canAccept);
+      return canAccept;
+    },
+    [handleHost],
+  );
 
   /**
    * Guard + commit helper for WASM mutations.
@@ -168,7 +183,7 @@ export function useAutomergeNotebook() {
    */
   const commitMutation = useCallback(
     (mutate: (handle: NotebookHandle) => boolean) => {
-      const handle = handleRef.current;
+      const handle = handleHost.current;
       const engine = engineRef.current;
       if (!handle || !engine) {
         logger.debug("[automerge-notebook] commitMutation skipped: no handle/engine");
@@ -179,53 +194,34 @@ export function useAutomergeNotebook() {
       engine.flush();
       return true;
     },
-    [rematerializeCellsSync],
+    [handleHost, rematerializeCellsSync],
   );
 
   // ── Bootstrap ──────────────────────────────────────────────────────
 
-  const bootstrap = useCallback(async (isCancelled: () => boolean = () => false) => {
-    await wasmReady;
-    if (isCancelled()) return false;
+  const bootstrap = useCallback(
+    async (isCancelled: () => boolean = () => false) => {
+      const bootstrapped = await handleHost.bootstrap(isCancelled);
+      if (!bootstrapped) return false;
 
-    const handle = NotebookHandle.create_empty_with_actor(`human:${sessionIdRef.current}`);
+      interactiveReadyRef.current = false;
+      latestSessionStatusRef.current = null;
+      setCanAcceptCellMutations(false);
+      setLoadError(null);
+      setIsLoading(true);
 
-    // Drop the metadata module's reference BEFORE freeing the prior handle.
-    // Renders that fire during the await below (e.g. the daemon-disconnect
-    // re-bootstrap) must not call into a freed wasm-bindgen pointer.
-    setNotebookHandle(null);
-    handleRef.current?.free();
-    handleRef.current = handle;
-    handle.set_mime_priority(DEFAULT_MIME_PRIORITY);
-    let initialBlobPort = getBlobPort();
-    if (initialBlobPort === null) {
-      initialBlobPort = await refreshBlobPort();
-    }
-    // React StrictMode can run the effect cleanup while the blob-port
-    // refresh is pending. Cleanup frees the WASM handle, so make sure this
-    // async continuation still owns the current handle before calling into it.
-    if (isCancelled() || handleRef.current !== handle) return false;
-    if (initialBlobPort !== null) {
-      handle.set_blob_port(initialBlobPort);
-    }
-    setNotebookHandle(handle);
+      // Flush initial sync message through the engine.
+      const engine = engineRef.current;
+      if (engine) {
+        engine.resetForBootstrap();
+        engine.flush();
+      }
 
-    interactiveReadyRef.current = false;
-    latestSessionStatusRef.current = null;
-    setCanAcceptCellMutations(false);
-    setLoadError(null);
-    setIsLoading(true);
-
-    // Flush initial sync message through the engine.
-    const engine = engineRef.current;
-    if (engine) {
-      engine.resetForBootstrap();
-      engine.flush();
-    }
-
-    logger.info("[automerge-notebook] Bootstrap: empty handle, awaiting sync");
-    return true;
-  }, []);
+      logger.info("[automerge-notebook] Bootstrap: empty handle, awaiting sync");
+      return true;
+    },
+    [handleHost],
+  );
 
   const notifyRelayReady = useCallback(
     (relayGeneration?: number) => {
@@ -250,7 +246,7 @@ export function useAutomergeNotebook() {
     // and any other consumer. One socket, one listener path.
     const transport = host.transport;
     const engine = new SyncEngine({
-      getHandle: () => handleRef.current as SyncableHandle | null,
+      getHandle: () => handleHost.current as SyncableHandle | null,
       transport,
       logger,
     });
@@ -283,7 +279,7 @@ export function useAutomergeNotebook() {
     // Initial sync completion → full materialization.
     const initialSyncSub = engine.initialSyncComplete$.subscribe(() => {
       logger.info("[automerge-notebook] Notebook interactive, materializing");
-      const handle = handleRef.current;
+      const handle = handleHost.current;
       if (handle) {
         materializeCells(handle)
           .then(() => {
@@ -329,7 +325,7 @@ export function useAutomergeNotebook() {
         concatMap((changeset) =>
           from(
             materializeChangeset(changeset, {
-              getHandle: () => handleRef.current,
+              getHandle: () => handleHost.current,
               materializeCells,
               outputCache: outputCacheRef.current,
             })
@@ -338,7 +334,7 @@ export function useAutomergeNotebook() {
                 // from the canonical notebook doc so <CellLabel> / future
                 // Out[N] readers see the current execution, not whatever
                 // RuntimeStateDoc entry happened to land last.
-                const handle = handleRef.current;
+                const handle = handleHost.current;
                 if (!handle) return;
                 refreshCanAcceptCellMutations(handle);
                 const pointerRefresh = planCellPointerRefresh(changeset);
@@ -475,16 +471,21 @@ export function useAutomergeNotebook() {
       resetRuntimeStoresProjection();
       resetPoolState();
       setCanAcceptCellMutations(false);
-      setNotebookHandle(null);
-      handleRef.current?.free();
-      handleRef.current = null;
+      handleHost.clear();
     };
-  }, [bootstrap, host, materializeCells, notifyRelayReady, refreshCanAcceptCellMutations]);
+  }, [
+    bootstrap,
+    handleHost,
+    host,
+    materializeCells,
+    notifyRelayReady,
+    refreshCanAcceptCellMutations,
+  ]);
 
   // ── Cell mutations ─────────────────────────────────────────────────
 
   const updateCellSource = useCallback((cellId: string, source: string) => {
-    const handle = handleRef.current;
+    const handle = handleHost.current;
     const engine = engineRef.current;
     if (!handle || !engine) return;
 
@@ -497,7 +498,7 @@ export function useAutomergeNotebook() {
 
   const addCell = useCallback(
     (cellType: "code" | "markdown" | "raw", afterCellId?: string | null): NotebookCell | null => {
-      const handle = handleRef.current;
+      const handle = handleHost.current;
       const engine = engineRef.current;
 
       if (!handle || !engine) {
@@ -569,7 +570,7 @@ export function useAutomergeNotebook() {
     (cellIds: string | string[]) => {
       const ids = Array.isArray(cellIds) ? cellIds : [cellIds];
       if (ids.length === 0) return false;
-      const handle = handleRef.current;
+      const handle = handleHost.current;
       const engine = engineRef.current;
       if (!handle || !engine) {
         logger.debug("[automerge-notebook] clearOutputs skipped: no handle/engine");
@@ -679,7 +680,7 @@ export function useAutomergeNotebook() {
 
   // ── Public interface ───────────────────────────────────────────────
 
-  const getHandle = useCallback(() => handleRef.current, []);
+  const getHandle = useCallback(() => handleHost.current, [handleHost]);
   const triggerSync = useCallback(() => engineRef.current?.scheduleFlush(), []);
   const localActor = `human:${sessionIdRef.current}`;
 
