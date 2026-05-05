@@ -656,6 +656,8 @@ fn open_notebook_launch_args(
 ) -> OpenNotebookLaunchArgs {
     let mut extra_args = Vec::new();
 
+    // Match `runt shutdown <uuid>`: a bare UUID is an untitled daemon
+    // notebook ID, even if the current directory contains a file with that name.
     let path = match path {
         Some(p) => {
             if let Some(notebook_id) = notebook_id_from_uuid_arg(&p) {
@@ -5572,6 +5574,21 @@ mod tests {
             args,
             OpenNotebookLaunchArgs {
                 path: Some(std::env::current_dir().unwrap().join("notebook.ipynb")),
+                extra_args: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn open_notebook_absolute_path_stays_absolute() {
+        let path = PathBuf::from("/tmp/notebook.ipynb");
+
+        let args = open_notebook_launch_args(Some(path.clone()), None);
+
+        assert_eq!(
+            args,
+            OpenNotebookLaunchArgs {
+                path: Some(path),
                 extra_args: vec![],
             }
         );
