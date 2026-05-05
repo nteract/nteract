@@ -30,7 +30,7 @@ use crate::connection::{self, Handshake};
 use crate::notebook_sync_server::{NotebookRooms, PathIndex};
 use crate::paths::{default_cache_dir, default_socket_path, pool_env_root};
 use crate::protocol::{BlobRequest, BlobResponse, Request, Response};
-use crate::settings_doc::SettingsDoc;
+use crate::settings_doc::{SettingsDoc, SyncedSettings};
 use crate::singleton::DaemonLock;
 use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 use crate::trusted_packages::{log_store_unavailable, TrustedPackageStore};
@@ -1107,6 +1107,12 @@ pub struct DaemonAlreadyRunning {
     pub info: Box<DaemonInfo>,
 }
 
+pub(crate) struct SettingsJsonUpdate<T> {
+    pub value: T,
+    pub settings: SyncedSettings,
+    pub changed: bool,
+}
+
 impl Daemon {
     /// Get the daemon's Unix socket path.
     pub fn socket_path(&self) -> &PathBuf {
@@ -1116,6 +1122,49 @@ impl Daemon {
     /// Get the default Python environment type from settings.
     pub async fn default_python_env(&self) -> crate::settings_doc::PythonEnvType {
         self.settings.read().await.get_all().default_python_env
+    }
+
+    /// Mutate canonical `settings.json` first, then refresh the in-memory
+    /// Automerge projection used by settings sync.
+    ///
+    /// If the file is absent, the current in-memory projection seeds the new
+    /// JSON file. Invalid JSON is returned as an error and is never overwritten.
+    pub(crate) async fn update_settings_json<T>(
+        &self,
+        mutator: impl FnOnce(&mut SyncedSettings) -> T,
+    ) -> anyhow::Result<SettingsJsonUpdate<T>> {
+        let json_path = self.config.resolved_settings_json_path();
+        let update = {
+            let mut doc = self.settings.write().await;
+            let current = match crate::settings_doc::read_synced_settings_json(&json_path) {
+                Ok(settings) => settings,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => doc.get_all(),
+                Err(error) => return Err(error.into()),
+            };
+
+            let mut next = current.clone();
+            let value = mutator(&mut next);
+            if next == current {
+                return Ok(SettingsJsonUpdate {
+                    value,
+                    settings: next,
+                    changed: false,
+                });
+            }
+
+            crate::settings_doc::write_synced_settings_json(&json_path, &next)?;
+            *doc = SettingsDoc::from_synced_settings(&next);
+
+            SettingsJsonUpdate {
+                value,
+                settings: next,
+                changed: true,
+            }
+        };
+
+        let _ = self.settings_changed.send(());
+
+        Ok(update)
     }
 
     /// Get the default pixi packages from settings.
@@ -1258,15 +1307,20 @@ impl Daemon {
         // client happens to connect and trigger `persist_settings` in
         // `sync_server.rs` — a daemon that boots, runs briefly with no
         // settings-window interaction, and exits would drop the backfill.
-        if crate::settings_doc::backfill_telemetry_consent_in_doc(&mut settings) {
+        let mut startup_settings = settings.get_all();
+        if crate::settings_doc::backfill_telemetry_consent(&mut startup_settings) {
             tracing::info!(
                 "[settings] Backfilled telemetry_consent_recorded for an existing onboarded install"
             );
-            if let Err(e) = settings.save_json_mirror(&json_path) {
+            if let Err(e) =
+                crate::settings_doc::write_synced_settings_json(&json_path, &startup_settings)
+            {
                 tracing::warn!(
                     "[settings] Failed to persist backfilled settings.json: {}",
                     e
                 );
+            } else {
+                settings = SettingsDoc::from_synced_settings(&startup_settings);
             }
         }
 
@@ -5288,6 +5342,80 @@ mod tests {
         assert_eq!(
             legacy_settings_doc_path(&config),
             settings_json.with_file_name("settings.automerge")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_settings_json_persists_refreshes_doc_and_broadcasts() {
+        let temp_dir = TempDir::new().unwrap();
+        let daemon = Daemon::new(lease_test_config(&temp_dir)).unwrap();
+        let mut settings_rx = daemon.settings_changed.subscribe();
+
+        let outcome = daemon
+            .update_settings_json(|settings| {
+                settings.theme = crate::settings_doc::ThemeMode::Dark;
+                "mutated"
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.value, "mutated");
+        assert!(outcome.changed);
+        assert_eq!(outcome.settings.theme, crate::settings_doc::ThemeMode::Dark);
+
+        let saved = crate::settings_doc::read_synced_settings_json(
+            &daemon.config.resolved_settings_json_path(),
+        )
+        .unwrap();
+        assert_eq!(saved.theme, crate::settings_doc::ThemeMode::Dark);
+        assert_eq!(
+            daemon.settings.read().await.get_all().theme,
+            crate::settings_doc::ThemeMode::Dark
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(1), settings_rx.recv())
+            .await
+            .expect("settings_changed should broadcast")
+            .expect("settings_changed channel should stay open");
+    }
+
+    #[tokio::test]
+    async fn update_settings_json_noop_does_not_broadcast() {
+        let temp_dir = TempDir::new().unwrap();
+        let daemon = Daemon::new(lease_test_config(&temp_dir)).unwrap();
+        let mut settings_rx = daemon.settings_changed.subscribe();
+
+        let outcome = daemon.update_settings_json(|_| ()).await.unwrap();
+
+        assert!(!outcome.changed);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), settings_rx.recv())
+                .await
+                .is_err(),
+            "no-op settings updates must not broadcast"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_settings_json_invalid_json_is_not_overwritten() {
+        let temp_dir = TempDir::new().unwrap();
+        let daemon = Daemon::new(lease_test_config(&temp_dir)).unwrap();
+        let settings_json_path = daemon.config.resolved_settings_json_path();
+        std::fs::write(&settings_json_path, "{ invalid json").unwrap();
+
+        let result = daemon
+            .update_settings_json(|settings| {
+                settings.theme = crate::settings_doc::ThemeMode::Dark;
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read_to_string(&settings_json_path).unwrap(),
+            "{ invalid json"
+        );
+        assert_ne!(
+            daemon.settings.read().await.get_all().theme,
+            crate::settings_doc::ThemeMode::Dark
         );
     }
 
