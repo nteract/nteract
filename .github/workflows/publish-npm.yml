@@ -114,6 +114,28 @@ jobs:
       - name: Pack wrapper package
         run: pnpm --dir packages/runtimed-node pack --pack-destination "$RUNNER_TEMP"
 
+      - name: Verify wrapper package manifest
+        run: |
+          tar -xOf "$RUNNER_TEMP"/runtimed-node-*.tgz package/package.json > "$RUNNER_TEMP/wrapper-package.json"
+          node <<'NODE'
+          const fs = require("node:fs");
+          const manifest = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/wrapper-package.json`, "utf8"));
+          const deps = manifest.dependencies ?? {};
+          const optionalDeps = manifest.optionalDependencies ?? {};
+
+          if (deps.runtimed) {
+            throw new Error(`@runtimed/node tarball must not depend on private package runtimed; found ${deps.runtimed}`);
+          }
+
+          for (const [section, entries] of Object.entries({ dependencies: deps, optionalDependencies: optionalDeps })) {
+            for (const [name, version] of Object.entries(entries)) {
+              if (String(version).startsWith("workspace:")) {
+                throw new Error(`${section}.${name} still uses workspace protocol in packed manifest`);
+              }
+            }
+          }
+          NODE
+
       - name: Publish wrapper package
         run: npm publish "$RUNNER_TEMP"/runtimed-node-*.tgz --tag latest --access public --provenance
 
@@ -145,6 +167,26 @@ jobs:
 
       - name: Pack Pi package
         run: pnpm --dir plugins/nteract/pi pack --pack-destination "$RUNNER_TEMP"
+
+      - name: Verify Pi package manifest
+        run: |
+          tar -xOf "$RUNNER_TEMP"/nteract-pi-*.tgz package/package.json > "$RUNNER_TEMP/pi-package.json"
+          node <<'NODE'
+          const fs = require("node:fs");
+          const pi = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/pi-package.json`, "utf8"));
+          const wrapper = JSON.parse(fs.readFileSync("packages/runtimed-node/package.json", "utf8"));
+          const deps = pi.dependencies ?? {};
+
+          if (deps["@runtimed/node"] !== wrapper.version) {
+            throw new Error(`@nteract/pi must depend on @runtimed/node ${wrapper.version}; found ${deps["@runtimed/node"]}`);
+          }
+
+          for (const [name, version] of Object.entries(deps)) {
+            if (String(version).startsWith("workspace:")) {
+              throw new Error(`dependencies.${name} still uses workspace protocol in packed manifest`);
+            }
+          }
+          NODE
 
       - name: Publish Pi package
         run: npm publish "$RUNNER_TEMP"/nteract-pi-*.tgz --tag latest --access public --provenance
