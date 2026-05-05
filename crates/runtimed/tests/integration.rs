@@ -2728,3 +2728,57 @@ async fn test_create_notebook_default_manager_with_deps() {
     pool_client.shutdown().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
+
+/// `notebook-sync::connect` clients (runt-mcp, runtimed-py, integration tests)
+/// get an auto-heartbeat that fires from `sync_task::run`'s biased select. A
+/// quiet but live peer must survive past the daemon's idle_peer_timeout solely
+/// on that traffic; otherwise headless MCP and Python sessions regress to the
+/// original "kicked after 5 minutes of silence" failure that the desktop hook
+/// fixes only for the webview.
+#[tokio::test(start_paused = true)]
+async fn test_auto_heartbeat_keeps_idle_peer_connected() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut config = test_config(&temp_dir);
+    // Sit just above the 15s default heartbeat interval so the second tick
+    // lands in time to reset the deadline.
+    config.idle_peer_timeout_ms = Some(20_000);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let result = connect::connect_create(
+        socket_path.clone(),
+        "python",
+        None,
+        "heartbeat-peer",
+        false,
+        None,
+        vec![],
+    )
+    .await
+    .expect("client should connect");
+    let client = result.handle;
+    assert_session_ready(&client, "heartbeat client").await;
+
+    // Advance virtual time past the 20s daemon timeout. With heartbeats
+    // disabled the deadline would have expired by t=20s; with the auto-
+    // heartbeat firing every 15s from sync_task's biased select arm, the
+    // peer stays Connected at t=35s.
+    tokio::time::advance(Duration::from_secs(35)).await;
+    tokio::task::yield_now().await;
+
+    assert_eq!(
+        client.status().connection,
+        notebook_sync::ConnectionState::Connected,
+        "auto-heartbeat should keep the peer Connected past idle_peer_timeout"
+    );
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}

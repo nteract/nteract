@@ -190,6 +190,10 @@ export function useAutomergeNotebook() {
 
     const handle = NotebookHandle.create_empty_with_actor(`human:${sessionIdRef.current}`);
 
+    // Drop the metadata module's reference BEFORE freeing the prior handle.
+    // Renders that fire during the await below (e.g. the daemon-disconnect
+    // re-bootstrap) must not call into a freed wasm-bindgen pointer.
+    setNotebookHandle(null);
     handleRef.current?.free();
     handleRef.current = handle;
     handle.set_mime_priority(DEFAULT_MIME_PRIORITY);
