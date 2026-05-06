@@ -1,66 +1,73 @@
 ---
 name: daemon-dev
-description: Develop, debug, and manage the runtimed daemon. Use when working on daemon code, debugging kernel issues, or managing daemon lifecycle.
+description: >
+  Develop, debug, and manage the runtimed daemon, Python bindings, build system,
+  and Python bindings. Use when working on daemon code, kernel issues,
+  maturin builds, or xtask workflows.
 ---
 
-# Daemon Development (runtimed)
+# Daemon Development
 
 ## Quick Reference
 
 | Task | Command |
 |------|---------|
 | Start dev daemon | `cargo xtask dev-daemon` |
-| Install nightly (Linux/headless only) | `./scripts/install-nightly` |
-| Check status | `./target/debug/runt daemon status` |
-| Check status (JSON) | `./target/debug/runt daemon status --json` |
+| Full build | `cargo xtask build` |
+| Rust-only rebuild | `cargo xtask build --rust-only` |
+| Run bundled binary | `cargo xtask run` |
+| WASM rebuild | `cargo xtask wasm` |
+| Install nightly (Linux) | `./scripts/install-nightly` |
+| Daemon status | `./target/debug/runt daemon status` |
+| Daemon status (JSON) | `./target/debug/runt daemon status --json` |
 | Tail logs | `./target/debug/runt daemon logs -f` |
 | List kernels | `./target/debug/runt ps` |
 | List notebooks | `./target/debug/runt notebooks` |
 | Flush pool | `./target/debug/runt daemon flush` |
 | Stop daemon | `./target/debug/runt daemon stop` |
-| Run tests | `cargo test -p runtimed` |
-
-## Why the Daemon Exists
-
-Each notebook window is a separate Tauri process. Without coordination: race conditions on prewarmed environments, wasted resources from duplicate pools, and slow cold starts. The daemon is a singleton that prewarms environments and hands them out.
+| Run daemon tests | `cargo test -p runtimed` |
+| Lint | `cargo xtask lint --fix` |
 
 ## Architecture
 
-The daemon (`runtimed`) is a singleton process that communicates with notebook windows over a Unix socket. Key components:
+The daemon (`runtimed`) is a singleton coordinating notebook windows over a Unix socket. Without it: race conditions on prewarmed environments, wasted resources, slow cold starts.
 
-- **Unix socket** — IPC endpoint for all notebook windows
-- **Lock file** — Singleton guarantee (only one daemon runs)
-- **Info file** (`daemon.json`) — Legacy discovery fallback; new code should query the live daemon over the socket
-- **UV Pool + Conda Pool** — Prewarmed Python environments (configurable pool size)
-- **Blob store** — Content-addressed output storage (`blobs/`)
-- **Notebook docs** — Persisted Automerge documents (`notebook-docs/`)
+**Components:** Unix socket (IPC), lock file (singleton guarantee), UV/Conda pools (prewarmed envs), blob store (content-addressed outputs), notebook-docs (persisted Automerge documents).
 
-## Development Workflow
+**Protocol:** Length-prefixed typed frames over Unix socket. Preamble → JSON handshake → Automerge sync → steady state. Frame types: AutomergeSync (0x00), Request (0x01), Response (0x02), Broadcast (0x03), Presence (0x04), RuntimeStateSync (0x05), PoolStateSync (0x06), SessionControl (0x07).
 
-### Let the notebook start it (default)
+**CRDT ownership:** Frontend WASM writes cell source, position, type, metadata. Daemon writes RuntimeStateDoc (outputs, execution counts, comms, trust, env progress, project context). Write to CRDT only from the owning side.
 
-The notebook app auto-connects to or starts the daemon. If unavailable, falls back to in-process prewarming.
+## Build System
 
-### Install from source (Linux / headless)
+### How `cargo xtask build` works (4 phases)
 
-When you change daemon code and want the system service to pick it up on a cloud box or headless Linux machine:
+0. **Artifact check** — verify gitignored WASM + renderer-plugin outputs exist; run `cargo xtask wasm` if missing.
+1. **Single Rust compilation** — `cargo build -p runtimed -p runt -p mcp-supervisor -p notebook`. Sidecars copied to `crates/notebook/binaries/`.
+2. **Frontend build** — `pnpm build` (TypeScript + Vite). `--rust-only` skips this.
+3. **Tauri link** — `cargo tauri build --debug --no-bundle` with embedded frontend assets.
+
+All Rust targets build in one `cargo build` call to avoid feature-unification recompilation. WASM outputs are gitignored; `runtimed`'s `build.rs` panics if missing.
+
+### WASM rebuild
+
+Run after changing `crates/runtimed-wasm/`, `crates/sift-wasm/`, `crates/notebook-doc/`, `crates/notebook-wire/`, or `scripts/build-renderer-plugins.ts`:
 
 ```bash
-./scripts/install-nightly
+cargo xtask wasm             # all (runtimed-wasm + sift-wasm + renderer plugins)
+cargo xtask wasm runtimed    # only runtimed-wasm
+cargo xtask wasm sift        # only sift-wasm
 ```
 
-Builds runtimed + runt + nteract-mcp (release), installs them to `~/.local/share/runt-nightly/bin/` with channel-suffixed names, writes + starts the systemd user unit on first install, upgrades in place on subsequent runs. On macOS it refuses by default — use the nteract Nightly app (it auto-updates). Pass `--on-macos` to override, `--replace-installed-app` if an app bundle is already present.
-
-Verify: `runt-nightly daemon status`.
+## Development Workflow
 
 ### Fast iteration
 
 ```bash
-# Terminal 1: Run dev daemon
+# Terminal 1
 cargo xtask dev-daemon
 
-# Terminal 2: Build once, iterate on Rust
-cargo xtask build                 # Full build (includes frontend)
+# Terminal 2
 cargo xtask build --rust-only     # Fast rebuild (reuses frontend assets)
 cargo xtask run                   # Run the bundled binary
 ```
@@ -73,284 +80,154 @@ cargo test -p runtimed --test integration       # Integration tests only
 cargo test -p runtimed test_daemon_ping_pong    # Specific test
 ```
 
-Integration tests use temp directories for socket/lock files to avoid conflicts.
+### Per-worktree isolation
 
-## Notebook Room Lifecycle
+`cargo xtask dev-daemon`, `cargo xtask notebook`, and `cargo xtask run-mcp` derive the git worktree automatically. State lives at `<cache>/runt-nightly/worktrees/{hash}/`. Set `RUNTIMED_DEV=1` and `RUNTIMED_WORKSPACE_PATH="$(pwd)"` only for raw `./target/debug/runt` commands outside xtask.
 
-Each open notebook has a **room** (`NotebookRoom` in `notebook_sync_server/room.rs`), keyed by UUID in `NotebookRooms`. A secondary `PathIndex` maps canonical `.ipynb` paths to room UUIDs.
+## Python Bindings
 
-### Autosave
+### Two venvs
 
-Debounced: 2s quiet period, 10s max interval via `spawn_autosave_debouncer`. Frontend dirty state is cleared from save state/confirmations, not a room broadcast. Explicit Cmd+S also runs cell formatting (ruff/deno fmt). Skips untitled notebooks and notebooks mid-load.
+| Venv | Path | Purpose |
+|------|------|---------|
+| Workspace | `.venv` (repo root) | Day-to-day dev, MCP server |
+| Test | `python/runtimed/.venv` | Isolated pytest runs |
 
-### Saving an untitled notebook
+### Installation
 
-Room keys are always UUIDs (never change). When an untitled notebook is first saved:
-1. Canonicalizes save path
-2. Checks `path_index` for conflicts (`PathAlreadyOpen` error if collision)
-3. Inserts into `path_index: HashMap<PathBuf, Uuid>`
-4. Updates room's `path: RwLock<Option<PathBuf>>`
-5. Spawns file watcher for new path
-6. Updates room path state so peers update local path tracking
+```bash
+# Into workspace venv (most common — what `up rebuild=true` does)
+cd crates/runtimed-py
+VIRTUAL_ENV=../../.venv uv run --directory ../../python/runtimed maturin develop
 
-### Crash Recovery
+# Into test venv (for pytest)
+VIRTUAL_ENV=../../python/runtimed/.venv uv run --directory ../../python/runtimed maturin develop
+```
 
-Untitled notebooks persist to `notebook-docs/{hash}.automerge`. Before deletion on reopen, snapshots go to `notebook-docs/snapshots/` (max 5 per hash). Snapshots hold source and metadata only; outputs live in the per-notebook RuntimeStateDoc and are not persisted.
+Always set `VIRTUAL_ENV` explicitly — without it, the `.so` installs into whichever venv `uv run` resolves.
 
-### Multi-Window
+### Basic usage
 
-Multiple windows join the same room as separate Automerge peers. First window gets deterministic label; additional get UUID suffix.
+```python
+import asyncio, runtimed
 
-### Eviction
+async def main():
+    client = runtimed.Client()
+    async with await client.create_notebook() as notebook:
+        cell = await notebook.cells.create("print('hello')")
+        result = await cell.run()
+        print(result.stdout)  # "hello\n"
 
-When all peers disconnect, delayed eviction runs (default 30s via `keep_alive_secs` setting). If no reconnection: kernel shuts down, file watcher stops, room removed.
+        # Granular execution control
+        execution = await cell.execute()
+        print(execution.status)  # "queued" | "running" | "done" | "error"
+        result = await execution.result()
 
-## Per-Cell Accessors
+asyncio.run(main())
+```
 
-O(1) cell reads that avoid full-document materialization:
+### Output.data typing
 
-| Method | Returns |
-|--------|---------|
-| `get_cell_source(id)` | `Option<String>` |
-| `get_cell_type(id)` | `Option<String>` |
-| `get_cell_outputs(id)` | `Option<Vec<String>>` |
-| `get_cell_execution_count(id)` | `Option<String>` |
-| `get_cell_metadata(id)` | `Option<Value>` |
-| `get_cell_position(id)` | `Option<String>` |
-| `get_cell_ids()` | `Vec<String>` (position-sorted) |
+| MIME category | Python type | Notes |
+|---------------|-------------|-------|
+| Binary image (`image/png`) | `bytes` | Raw binary |
+| JSON (`application/json`) | `dict` | Parsed |
+| Text (`text/plain`, `text/html`) | `str` | UTF-8 |
+| LLM hint (`text/llm+plain`) | `str` | Synthesized blob URL |
 
-Prefer these over `get_cells()` which materializes everything.
+### Integration tests
+
+```bash
+RUNTIMED_SOCKET_PATH="$(./target/debug/runt daemon status --json | python3 -c 'import sys,json; print(json.load(sys.stdin)["socket_path"])')" \
+  python/runtimed/.venv/bin/python -m pytest python/runtimed/tests/test_daemon_integration.py -v
+```
+
+## MCP Server
+
+The MCP server ships as `runt mcp` (Rust). Run via `cargo xtask run-mcp` for development.
+
+**26 tools:** `list_active_notebooks`, `connect_notebook`, `create_notebook`, `save_notebook`, `show_notebook`, `interrupt_kernel`, `restart_kernel`, `add_dependency`, `remove_dependency`, `get_dependencies`, `sync_environment`, `create_cell`, `get_cell`, `get_all_cells`, `set_cell`, `delete_cell`, `move_cell`, `clear_outputs`, `set_cells_source_hidden`, `set_cells_outputs_hidden`, `add_cell_tags`, `remove_cell_tags`, `replace_match`, `replace_regex`, `execute_cell`, `run_all_cells`.
+
+## RuntimeStateDoc
+
+Daemon-authoritative Automerge document synced via frame 0x05. Frontend reads only (`useRuntimeState()`); Python reads via `notebook.runtime`.
+
+**Schema:** `kernel/{status, starting_phase, name, language, env_source}`, `queue/{executing, queued}`, `executions/{id → cell_id, status, execution_count, success}`, `env/{in_sync, added, removed}`, `trust/{status, needs_approval}`, `last_saved`.
+
+**Execution lifecycle:** Client sends `ExecuteCell` → daemon generates `execution_id` → writes to queue → status progresses through running/done/error → Python `Execution` handle polls for updates.
 
 ## Fork+Merge for Async CRDT Mutations
 
-**Critical invariant:** Any daemon code that reads doc state, does async work (subprocess, I/O, network), then writes back MUST use `fork()` + `merge()`. Direct mutation after an async gap overwrites concurrent edits.
+Any daemon code that reads doc state, does async work, then writes back MUST use `fork()` + `merge()`. Direct mutation after an async gap overwrites concurrent edits.
 
 ```rust
-// Fork BEFORE async work — captures the baseline
 let baseline_heads = {
     let mut doc = room.doc.write().await;
     doc.get_heads()
 };
-
-// Async work happens here (ruff, network, etc.)
 let result = do_async_work().await;
-
-// Apply against the captured baseline after reacquiring the live doc
 let mut doc = room.doc.write().await;
-doc.transact_at_heads_recovering(
-    &baseline_heads,
-    Some("runtimed:formatter"),
-    "formatter-transaction",
-    |doc| {
-        doc.update_source(&cell_id, &result)?;
-        Ok(())
-    },
-).ok();
+doc.transact_at_heads_recovering(&baseline_heads, Some("runtimed:formatter"), "tx", |doc| {
+    doc.update_source(&cell_id, &result)?;
+    Ok(())
+}).ok();
 ```
 
-For synchronous mutation blocks (no `.await` between fork and merge), prefer the helpers:
-```rust
-doc.fork_and_merge(|fork| {
-    fork.update_source(&cell_id, &new_source);
-});
-```
+For synchronous blocks: `doc.fork_and_merge(|fork| { ... })`.
 
-Use `fork_with_actor(...)` + `merge_recovering(...)` only when the async worker must carry an editable fork across the `.await`. Do not use `fork_at(...)` for historical writes; keep it for views/diagnostics and prefer document-owned transaction helpers.
+## Notebook Room Lifecycle
 
-Key methods on `NotebookDoc`: `get_heads()`, `transact_at_heads_recovering(...)`, `fork_with_actor(...)`, `merge_recovering(...)`, `fork_and_merge(f)`.
+Each open notebook has a room (`NotebookRoom`), keyed by UUID. A `PathIndex` maps canonical paths to room UUIDs.
 
-All async CRDT mutation paths in the daemon are now protected — see #1216.
+- **Autosave:** 2s quiet, 10s max interval. Skips untitled/mid-load notebooks.
+- **Multi-window:** Multiple windows join the same room as Automerge peers.
+- **Eviction:** All peers disconnect → delayed eviction (default 30s) → kernel shuts down, room removed.
+- **Crash recovery:** Untitled notebooks persist to `notebook-docs/{hash}.automerge`; snapshots in `notebook-docs/snapshots/`.
+
+## Key Invariants
+
+- `is_binary_mime()` has one canonical Rust implementation in `notebook-doc::mime` — single source of truth across all crates.
+- Iframe sandbox: `allow-same-origin` is forbidden.
+- Per-cell O(1) accessors must stay in sync across WASM, Rust, and Python.
+- Hold tokio mutex guards only within synchronous blocks (use block scoping, verify with `cargo test -p runtimed --test tokio_mutex_lint`).
+- Cell list renders in stable DOM order (sorted by ID) with CSS `order` for visual positioning.
 
 ## Code Structure
 
 ```
 crates/runtimed/src/
-  lib.rs                   — Public types, path helpers
-  main.rs                  — CLI entry point
-  daemon.rs                — Daemon state, pool management, connection routing
-  notebook_sync_server/    — Room lifecycle, peer sync loops, persistence, metadata/trust/project context
-  jupyter_kernel.rs        — JupyterKernel: process spawn, ZMQ socket wiring, IOPub output routing
-  output_prep.rs           — Output-prep helpers: QueueCommand, KernelStatus, QueuedCell, iopub → nbformat conversion, widget buffers, blob-store offload
-  runtime_agent.rs         — Process-isolated runtime agent: kernel lifecycle, IOPub, RuntimeStateDoc writes
-  runtime_agent_handle.rs  — Coordinator-side runtime agent process management
-  output_store.rs          — Output manifest creation, blob inlining threshold
-  blob_store.rs            — Content-addressed blob store with metadata sidecars
-  blob_server.rs           — HTTP read server for blobs
-  inline_env.rs            — Inline dependency environment caching
-  stream_terminal.rs       — Stream terminal output handling
-  singleton.rs             — Daemon singleton management (lock file, PID tracking)
-  kernel_ports.rs          — Daemon-owned five-port kernel reservations
-  process_groups.rs        — Cross-platform process-group cleanup helpers
-  markdown_assets.rs       — Markdown output asset rendering and resolution
-  terminal_size.rs         — Terminal size detection for kernel PTY
-  project_file.rs          — Unified project file discovery (pyproject, pixi, env.yml)
-  sync_server.rs           — Settings Automerge sync handler
+  daemon.rs                — State, pool management, connection routing
+  notebook_sync_server/    — Room lifecycle, peer sync, persistence
+  jupyter_kernel.rs        — Process spawn, ZMQ wiring, IOPub routing
+  output_prep.rs           — QueueCommand, iopub → nbformat, blob offload
+  runtime_agent.rs         — Kernel lifecycle, RuntimeStateDoc writes
+  blob_store.rs            — Content-addressed store with metadata sidecars
+  singleton.rs             — Lock file, PID tracking
 crates/runtimed-client/src/
-  lib.rs                   — Crate root
-  client.rs                — Client APIs used by Python bindings and MCP
-  daemon_paths.rs          — Shared socket/blob path resolution
-  output_resolver.rs       — Shared Rust manifest resolution
-  resolved_output.rs       — Output resolution types
-  singleton.rs             — File-based daemon discovery/locking helpers
-  protocol.rs              — Client-side protocol helpers and typed request wrappers
-  settings_doc.rs          — Settings Automerge document, schema, migration
-  sync_client.rs           — Settings sync client wrapper
-  service.rs               — System service install/uninstall helpers
-  runtime.rs               — Runtime enum (Python, Deno) and detection
+  client.rs                — Client APIs (Python bindings, MCP)
+  daemon_paths.rs          — Socket/blob path resolution
+  output_resolver.rs       — Manifest resolution
+  settings_doc.rs          — Settings Automerge schema
+crates/runtimed-py/        — PyO3/maturin bindings
+python/runtimed/           — Python SDK package
+python/nteract/            — MCP wrapper (launches `runt mcp`)
+python/gremlin/            — Autonomous notebook stress tester
 ```
-
-## Related Crates
-
-| Crate | What it owns |
-|-------|-------------|
-| `notebook-wire` | Frame bytes, preamble constants, frame caps, typed-frame enum, session-control status shapes |
-| `notebook-doc` | `NotebookDoc`: Automerge schema, cell CRUD, per-cell accessors, `CellChangeset` |
-| `notebook-protocol` | Wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast` |
-| `notebook-sync` | `DocHandle`: sync infrastructure, snapshot watch, per-cell accessors for Python |
-
-## RuntimeStateDoc
-
-Each notebook room has a **RuntimeStateDoc** — a daemon-authoritative Automerge document synced via frame type `0x05`. It replaces state-carrying broadcasts for kernel status, queue, env sync, and trust.
-
-### Schema
-
-```
-ROOT/
-  kernel/
-    status: "idle" | "busy" | "starting" | "error" | "shutdown" | "not_started"
-    starting_phase: "" | "resolving" | "preparing_env" | "launching" | "connecting"
-    name, language, env_source: Str
-  queue/
-    executing: Str|null (cell_id)
-    executing_execution_id: Str|null
-    queued: List[Str] (cell_ids)
-    queued_execution_ids: List[Str]
-  executions/ Map (keyed by execution_id)
-    {id}/ { cell_id, status, execution_count, success }
-  env/ { in_sync, added, removed, channels_changed, deno_changed }
-  trust/ { status, needs_approval }
-  last_saved: Str|null (ISO timestamp)
-```
-
-### Who writes what
-
-- **Daemon only** writes to RuntimeStateDoc (kernel status, queue state, execution lifecycle, env sync, trust)
-- **Frontend reads only** via `useRuntimeState()` hook in `apps/notebook/src/lib/runtime-state.ts`
-- **Python reads** via `notebook.runtime` property (`RuntimeState` class)
-
-Key files: `crates/runtime-doc/src/doc.rs` (schema), `crates/runtime-doc/src/handle.rs` (handle), `apps/notebook/src/lib/runtime-state.ts` (frontend).
-
-## Execution Lifecycle
-
-Each cell execution is tracked by a unique `execution_id` (UUID):
-
-1. Client sends `ExecuteCell { cell_id }` → daemon generates `execution_id`
-2. Daemon writes `QueueEntry { cell_id, execution_id }` to RuntimeStateDoc queue
-3. When execution starts: status → `"running"`, execution_count assigned
-4. When done: status → `"done"` or `"error"`, success flag set
-5. Python `Execution` handle polls RuntimeStateDoc for lifecycle updates
-
-## Settings Sync
-
-Settings are synced via a **separate Automerge document** (not the notebook doc). The daemon holds the canonical copy and persists to disk. Any window can write; all others receive changes via sync.
-
-Key files: `crates/runtimed-client/src/settings_doc.rs` (schema), `src/hooks/useSyncedSettings.ts` (frontend).
 
 ## Troubleshooting
 
-### Daemon won't start (lock held)
+**Daemon lock held:** `runt daemon status` → check with `lsof`. Remove stale `daemon.lock` + `daemon.json` if crashed.
 
-```bash
-runt daemon status
-lsof ~/.cache/runt/daemon.lock
+**Pool not replenishing:** Verify `uv --version` and check `~/.cache/runt/envs/`.
 
-# If stale (crashed daemon), remove manually
-rm ~/.cache/runt/daemon.lock ~/.cache/runt/daemon.json
-```
+**Wrong daemon (Python):** If outputs return parse errors with hashes, the bindings connect to the wrong daemon (blob store is per-daemon). Set `RUNTIMED_SOCKET_PATH`.
 
-### Pool not replenishing
+**Build not reflected (Python):** Rebuild into the correct venv with explicit `VIRTUAL_ENV`. Or use `up rebuild=true`.
 
-```bash
-uv --version
-ls -la ~/.cache/runt/envs/
-```
+## Shipped App / System Daemon
 
-Check that uv/conda are installed and working.
+Production daemon installs as a system service (macOS: launchd, Linux: systemd user). Manage with `runt daemon {status,stop,start,logs,uninstall}`.
 
-## Stopping the Daemon
+**Key paths (macOS):** Binary at `~/Library/Application Support/runt/bin/runtimed`, socket at `~/Library/Caches/runt/runtimed.sock`, logs at `~/Library/Caches/runt/runtimed.log`.
 
-- `./target/debug/runt daemon stop` — stops only your worktree's daemon
-- `./scripts/install-nightly` — gracefully installs/reinstalls the full nightly stack (Linux/headless only; refuses on macOS by default)
-
-Avoid system-wide process killers (`pkill`, `killall`) — they affect every worktree and every other agent on the machine.
-
-## Shipped App Behavior
-
-Production daemon installs as a system service at login:
-- **macOS**: launchd plist in `~/Library/LaunchAgents/`
-- **Linux**: systemd user service in `~/.config/systemd/user/`
-
-### Managing the System Daemon
-
-```bash
-runt daemon status
-runt daemon stop
-runt daemon start
-runt daemon logs -f
-runt daemon uninstall   # Full uninstall
-```
-
-**macOS (if runt unavailable):**
-```bash
-launchctl bootout gui/$(id -u)/io.nteract.runtimed
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.nteract.runtimed.plist
-```
-
-**Key paths (macOS):**
-
-| File | Path |
-|------|------|
-| Installed binary | `~/Library/Application Support/runt/bin/runtimed` |
-| Service config | `~/Library/LaunchAgents/io.nteract.runtimed.plist` |
-| Socket | `~/Library/Caches/runt/runtimed.sock` |
-| Daemon info fallback | `~/Library/Caches/runt/daemon.json` |
-| Logs | `~/Library/Caches/runt/runtimed.log` |
-
-## Dev Mode: Per-Worktree Isolation
-
-Each git worktree can run its own isolated daemon.
-
-**xtask-managed commands:** `cargo xtask dev-daemon`, `cargo xtask notebook`,
-and `cargo xtask run-mcp` derive the current git worktree and pass
-`RUNTIMED_DEV=1` plus `RUNTIMED_WORKSPACE_PATH` to subprocesses. Conductor users
-get the same behavior from `CONDUCTOR_WORKSPACE_PATH`.
-
-No extra environment is needed for the normal two-terminal xtask workflow:
-
-```bash
-# Terminal 1
-cargo xtask dev-daemon
-
-# Terminal 2
-cargo xtask notebook
-```
-
-Set `RUNTIMED_DEV=1` and `RUNTIMED_WORKSPACE_PATH="$(pwd)"` only for raw
-`./target/debug/runt ...` commands or other processes not launched by xtask.
-
-**State location** (macOS: `~/Library/Caches/`, Linux: `~/.cache/`):
-
-```
-<cache>/runt-nightly/worktrees/{hash}/
-  runtimed.sock, runtimed.log, daemon.json, daemon.lock
-  envs/, blobs/, notebook-docs/
-```
-
-**Useful commands:**
-
-```bash
-./target/debug/runt daemon status           # Shows dev mode, worktree, version
-./target/debug/runt dev worktrees           # List all dev daemons
-./target/debug/runt daemon logs -f          # Tail logs
-./target/debug/runt daemon status --json    # Machine-readable (socket path, blob URL, etc.)
-```
+Use `./target/debug/runt daemon stop` to stop only your worktree's daemon. Avoid `pkill`/`killall` — they affect every worktree.

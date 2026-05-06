@@ -1,356 +1,262 @@
 ---
 name: automerge-sync
 description: >
-  Understand and work with Automerge sync protocol internals. Use when
-  debugging sync failures, changing reconnection logic, adding new sync
-  streams, or reasoning about why peers converge (or don't). Covers
-  sync::State lifecycle, bloom filters, in-flight suppression, and the
-  nteract document-level recovery pattern.
+  Automerge sync protocol internals, document model (OpSet, ChangeGraph,
+  fork/merge, save/load lifecycle), and higher-level protocol design
+  patterns. Use when debugging sync failures, reasoning about convergence,
+  changing reconnection logic, working with document structure, diagnosing
+  panics in op application, adding new sync streams, or evaluating
+  architectural patterns from automerge-repo and samod.
 ---
 
-# Automerge Sync Internals
+# Automerge Sync & Document Model
 
-Use this skill when working on sync behavior: reconnection, peer state,
-convergence bugs, new frame types, or document-level Automerge recovery.
-This encodes knowledge from reading the actual automerge sync implementation,
-not just the docs.
+## Document Model Essentials
 
-## How Automerge Sync Actually Works
+### Core Types
 
-The protocol is a back-and-forth negotiation between two peers over a
-reliable in-order stream. Each peer maintains a `sync::State` per remote
-peer. The loop is:
+| Type | Role | Key detail |
+|------|------|-----------|
+| `OpId(counter, actor_index)` | Universal op identifier | `ROOT` = `(0,0)`. Counter is per-actor monotonic. Actor index is position in actor table. |
+| `ActorId` | Peer identity (`TinyVec<[u8;16]>`) | Lexicographic byte ordering is load-bearing. nteract uses `"runtimed"`, `"human:<uuid>"`. |
+| `Change` | Batch of ops with causal deps | Has `actor_id`, `seq` (per-actor monotonic), `deps` (parent hashes), `hash` (SHA-256). |
+| `ChangeGraph` | DAG of history | `heads` = changes with no children. `has_change(&hash)` is O(1). Backs `required_heads`. |
+| `OpSet` | Materialized document (columnar) | Ops sorted by `(object, key, lamport_ts)`. Rebuilt from columns on `load()`. |
 
-1. Initiator calls `generate_sync_message()` with an empty `State`
-2. Receiver calls `receive_sync_message()` then `generate_sync_message()`
-3. Repeat until both return `None` (converged)
+**Actor table ordering:** `OpSet.actors` is a sorted `Vec<ActorId>`. Ops store only the index. If two documents disagree on index→actor mapping, ops are misinterpreted. This is the root of the historical #1187 panic class.
 
-**Source:** `rust/automerge/src/sync.rs` in `automerge/automerge`
+### The Automerge / AutoCommit Structs
 
-### What's In a Sync Message
+```rust
+// Automerge: raw document
+Automerge { queue: ChangeQueue, change_graph: ChangeGraph, deps: HashSet<ChangeHash>, ops: OpSet, actor: Actor }
 
-```
-Message {
-    heads: Vec<ChangeHash>,        // "here's what I have"
-    need: Vec<ChangeHash>,         // "I'm missing these specific changes"
-    have: Vec<Have>,               // bloom filter of what I have since last_sync
-    changes: ChunkList,            // actual change data to apply
-    flags: Option<MessageFlags>,   // capabilities + transient signals
-    version: MessageVersion,       // V1 or V2
-}
+// AutoCommit: wrapper nteract uses
+AutoCommit { doc: Automerge, transaction: Option<(PatchLog, TransactionInner)>,
+             patch_log: PatchLog, diff_cursor, save_cursor, isolation: Option<Vec<ChangeHash>> }
 ```
 
-The `Have` struct contains `last_sync` (heads at last successful sync) and a
-`BloomFilter` summarizing changes since then. The bloom filter has 1% false
-positive rate (10 bits/entry, 7 probes). False positives mean "I probably
-have this" -- the sender sends a change only if all peer bloom filters say
-they *don't* have it.
+**Auto-transaction:** Mutations open a transaction implicitly. Reads, `save()`, `fork()`, `merge()`, and `sync()` commit pending ops first.
 
-### The `sync::State` Fields
+**Isolation mode:** `isolate(heads)` limits visible state. Mutations while isolated depend on isolation heads, not tips. `integrate()` returns to latest.
 
-13 fields, but only `shared_heads` survives `encode()`/`decode()`:
+**PatchLog:** Tracks diffs for incremental materialization. nteract's WASM computes `CellChangeset` by diffing after sync frames.
 
-| Field | Purpose | Persists? |
-|-------|---------|-----------|
-| `shared_heads` | Hashes both peers agree they share | Yes |
-| `last_sent_heads` | Our heads when we last sent a message | No |
-| `their_heads` | Their most recently advertised heads | No |
-| `their_need` | Specific changes they requested | No |
-| `their_have` | Their bloom filter summaries | No |
-| `sent_hashes` | Changes we've already sent this session | No |
-| `in_flight` | True while awaiting ack (suppresses duplicate sends) | No |
-| `have_responded` | True after we've sent at least one message | No |
-| `their_capabilities` | MessageV2, SyncReset support | No |
-| `read_only` | We ignore their changes | No |
-| `peer_read_only` | They ignore our changes | No |
-| `needs_reset` | Next message gets SyncReset flag | No |
+### save() and load()
 
-**Critical insight:** `encode()` only serializes `shared_heads`. Everything
-else is session-ephemeral. This means:
+- **save()** serializes OpSet columns + ChangeGraph metadata + optional DEFLATE. Columnar format is canonical.
+- **load()** rebuilds OpSet from columns, reconstructs ChangeGraph, verifies heads.
+- **save/load round-trip clears corrupted indices** — the basis of nteract's `rebuild_from_save()` recovery.
+- **load_incremental()** adds changes to existing doc. This is what `receive_sync_message` calls internally.
+- **save_after(heads)** emits only changes after given heads (incremental saves).
 
-- `sync::State::new()` is safe for reconnection -- you lose optimization
-  (resend changes the peer already has) but never lose correctness
-- Persisting encoded sync state is only useful when reconnecting to the
-  *same* peer identity
-- The automerge-repo `beginSync` hack (encode/decode round-trip) exists
-  solely to clear `in_flight` and `sent_hashes` while preserving
-  `shared_heads`
+### Fork and Merge
+
+| Method | Semantics | Cost |
+|--------|-----------|------|
+| `fork()` | Deep clone + new random actor | O(doc size) |
+| `fork_at(heads)` | Replay changes up to heads into fresh doc | More expensive than fork; use for views/diagnostics |
+| `merge(other)` | Apply other's new changes to self | O(changes added) |
+
+**DuplicateSeqNumber trap:** Two concurrent forks sharing the same ActorId produce changes with identical `(actor, seq)`. The second merge fails. Use unique actors for concurrent forks.
+
+### Document Size
+
+| Factor | Growth | Notes |
+|--------|--------|-------|
+| Operations | O(total mutations) | Largest factor |
+| Tombstones | Accumulate forever | No built-in GC |
+| Actor table | O(unique peers) | Small per entry |
+| ChangeGraph | O(total changes) | Metadata per change |
+
+`save()` compacts via columnar + DEFLATE. No history compaction exists.
+
+## Sync Protocol Internals
+
+### Sync Message Structure
+
+```
+Message { heads, need, have: Vec<Have>, changes: ChunkList, flags, version }
+```
+
+- `heads`: "here's what I have"
+- `need`: "I'm missing these specific changes"
+- `have`: bloom filter (1% FP rate, 10 bits/entry, 7 probes) of changes since `last_sync`
+- `changes`: actual change data
+- Sender sends a change only if all peer bloom filters say they lack it
+
+### sync::State — Per-Peer Session
+
+| Field | Persists across encode/decode? | Purpose |
+|-------|-------------------------------|---------|
+| `shared_heads` | **Yes** | Hashes both peers agree they share |
+| `last_sent_heads` | No | Our heads at last send |
+| `their_heads` / `their_need` / `their_have` | No | Peer's last advertisement |
+| `sent_hashes` | No | Dedup already-sent changes |
+| `in_flight` | No | Suppresses duplicate sends while awaiting ack |
+| `have_responded` | No | True after first message sent |
+
+**Critical:** `encode()` only serializes `shared_heads`. All else is session-ephemeral. `sync::State::new()` is always safe for reconnection — you lose optimization (may resend) but keep correctness.
 
 ### In-Flight Suppression
 
-`generate_sync_message()` returns `None` when `in_flight` is `true` AND
-`last_sent_heads == our_heads` AND `have_responded` is `true`. This
-prevents duplicate messages while awaiting an ack.
+`generate_sync_message()` returns `None` when `in_flight && last_sent_heads == our_heads && have_responded`. Any incoming message sets `in_flight = false` (counts as ack). If you need a fresh exchange, reset sync state rather than working around `None`.
 
-`receive_sync_message()` always sets `in_flight = false` on entry -- any
-incoming message counts as an ack.
+### Change Selection
 
-**Mistake to avoid:** Don't try to work around `None` returns from
-`generate_sync_message()`. The suppression is correct. If you need to
-force a fresh exchange, reset the sync state.
-
-### How Changes Are Selected
-
-`generate_sync_message()` in `Automerge`:
-
-1. Compute `our_need` = missing deps from their advertised heads
-2. Build a bloom filter from our changes since `shared_heads`
-3. If they have `their_have` + `their_need`, compute which changes to send:
-   - Filter through their bloom filter (send what they probably don't have)
-   - Deduplicate against `sent_hashes`
-   - If sending >1/3 of the doc, send the whole doc as V2 (more efficient)
-4. The `Message.heads` we send becomes their next `their_heads` for us
-
-### How Changes Are Applied
-
-`receive_sync_message_inner()`:
-
-1. Set `in_flight = false` (ack)
-2. Process `MessageFlags` -- discover capabilities, handle SyncReset
-3. If changes present and not read-only, `load_incremental` them
-4. Advance `shared_heads` based on what we both now have
-5. Trim `sent_hashes` to only changes they haven't seen
-6. **Empty heads detection:** If they send `heads: []`, reset
-   `last_sent_heads` and `sent_hashes` to trigger full resync (they lost
-   all data)
+1. Compute needed deps from their advertised heads
+2. Build bloom filter from our changes since `shared_heads`
+3. Filter through their bloom (send what they probably lack), deduplicate against `sent_hashes`
+4. If sending >1/3 of doc, send whole doc as V2 (more efficient)
 
 ### Version Negotiation
 
-V1 is the original format. V2 allows compressed document encoding (faster
-first sync). Backward-compatible: V1 messages append a `MessageFlags`
-section that old implementations ignore. New implementations read the flags
-to discover V2 support. Once discovered, subsequent messages use V2.
+V1 is original; V2 allows compressed document encoding. Backward-compatible via `MessageFlags` appended to V1 messages. V2 discovered via flags, then used for subsequent messages.
 
-## nteract's Sync Architecture
+## nteract Sync Architecture
 
-nteract runs three sync streams over one socket connection:
+### Three Streams Over One Socket
 
-| Stream | Frame | Document | Ownership | Sync state location |
-|--------|-------|----------|-----------|---------------------|
-| Notebook | `0x00` AutomergeSync | `SharedDocState.doc` | Bidirectional | `notebook-sync::SharedDocState.peer_state` |
-| RuntimeState | `0x05` RuntimeStateSync | `SharedDocState.state_doc` | Daemon-authoritative | `notebook-sync::SharedDocState.state_peer_state` |
-| PoolState | `0x06` PoolStateSync | PoolDoc | Daemon-authoritative | Frontend owns pool-doc sync state; daemon peer loop carries `pool_peer_state` separately |
+| Stream | Frame | Document | Ownership |
+|--------|-------|----------|-----------|
+| Notebook | `0x00` AutomergeSync | `SharedDocState.doc` | Bidirectional |
+| RuntimeState | `0x05` RuntimeStateSync | `SharedDocState.state_doc` | Daemon-authoritative |
+| PoolState | `0x06` PoolStateSync | PoolDoc | Frontend owns sync state; daemon carries `pool_peer_state` separately |
 
-The notebook and runtime-state streams share the same
-`Arc<Mutex<SharedDocState>>` and each has its own `sync::State` within it.
-PoolStateSync is separate — the frontend manages its sync state directly
-while the daemon carries `pool_peer_state` in the peer loop.
+### Sync Task Loop (biased select!)
 
-### The Sync Task Loop
+Priority: **Frame** (drain socket) → **Changed** (outbound sync) → **Command** (RPC) → **Maintenance** (50ms tick).
 
-`sync_task.rs` runs a biased `tokio::select!` with priority:
+Mutex is `std::sync::Mutex`, never held across `.await`. Poison recovery: `unwrap_or_else(|e| e.into_inner())`.
 
-1. **Frame** (incoming daemon frames) -- highest, keeps socket drained
-2. **Changed** (local mutations) -- generates outbound sync
-3. **Command** (requests, confirm_sync) -- daemon RPC
-4. **Maintenance** (50ms tick) -- watchdog, confirm_sync retries
+### Document-Level Recovery
 
-The mutex is `std::sync::Mutex` (not tokio), never held across `.await`.
-Recovery from mutex poisoning: `unwrap_or_else(|e| e.into_inner())`.
-
-### Document-Level Recovery Pattern
-
-The workspace uses a pinned nteract Automerge 0.9 desktop patch that fixes
-the historical MissingOps/fork_at regression, but Automerge is still treated
-as a fallible boundary in user-facing sync paths. Recovery must live inside
-the document owner while the mutex/guard is still held; catching outside the
-document helper can poison the mutex before rebuild runs.
+Automerge is treated as a fallible boundary. Recovery lives inside the document owner while the guard is held.
 
 ```rust
-// receive panic: rebuild document, reset this peer state, do not claim applied
 state.receive_sync_message_recovering(msg, "notebook-sync-receive");
-
-// generate panic: rebuild document, reset this peer state, retry once
 let bytes = state.generate_sync_message_recovering("notebook-sync-outbound");
 ```
 
-**Rebuild for notebook doc** (`SharedDocState::rebuild_doc`):
-1. `save()` the doc to bytes
-2. `AutoCommit::load()` from those bytes (clears corrupted indices)
-3. **Cell-count guard:** if rebuilt doc has fewer cells, skip rebuild
-   (only reset sync state) to prevent silent cell loss
-4. Preserve actor ID
-5. `peer_state = sync::State::new()` to force fresh handshake
+**Rebuild procedure (notebook doc):**
+1. `save()` → `AutoCommit::load()` (clears corrupted indices)
+2. Cell-count guard: skip rebuild if fewer cells (prevents silent loss)
+3. Preserve actor ID
+4. `peer_state = sync::State::new()`
 
-**Rebuild for RuntimeStateDoc** (`rebuild_state_doc`):
-1. Round-trip `save()`/`load()` via `rebuild_from_save()`
-2. `state_peer_state = sync::State::new()`
+**Rebuild procedure (RuntimeStateDoc):** Round-trip via `rebuild_from_save()`, then `state_peer_state = sync::State::new()`.
 
-Both follow the principle: **reset transport state, preserve document truth.**
+Principle: **reset transport state, preserve document truth.**
 
-### Why Resetting `sync::State` Works
-
-When you set `peer_state = sync::State::new()`:
-- `shared_heads` becomes `[]` (empty)
-- `in_flight` becomes `false`
-- `have_responded` becomes `false`
-
-This means the next `generate_sync_message()` will:
-- Send our current heads
-- Build a bloom filter from *all* our changes (since shared_heads is empty)
-- The daemon will respond with any changes we're missing
-
-The cost is bandwidth (may resend changes the peer already has), but
-correctness is guaranteed. The bloom filter negotiation quickly converges
-to only sending what's actually missing.
-
-## Reconnection Patterns
-
-### nteract: Fresh State
-
-nteract uses `sync::State::new()` on every reconnection. This is correct
-because:
-- The daemon may have received changes from other peers during disconnect
-- The client may have applied local mutations during disconnect
-- A fresh handshake discovers what's missing from both sides
-- `SharedDocState::try_new()` initializes both `peer_state` and
-  `state_peer_state` as `sync::State::new()`
-
-### automerge-repo: Encode/Decode Round-Trip
-
-automerge-repo's `DocSynchronizer.beginSync()` does:
-```typescript
-const reparsedSyncState = A.decodeSyncState(A.encodeSyncState(syncState))
-```
-
-This preserves `shared_heads` but clears all session-ephemeral fields.
-The comment calls it a "HACK" to prevent infinite loops from failed
-in-flight messages. It's actually using the designed encode/decode contract
-correctly -- `encode()` only serializes what should survive reconnection.
-
-### samod: Remove and Forget
-
-samod's `SubductionEngine.handle_connection_lost()` removes the connection
-and calls `incremental.peer_disconnected(peer_id)`. No sync state is
-preserved. Each new connection starts fresh. This is the simplest correct
-approach.
-
-## Common Mistakes
-
-### 1. Sharing sync::State across peers
-
-Each remote peer needs its own `sync::State`. The state tracks what *that
-specific peer* has told us. Sharing it between peers causes:
-- Duplicate sends (already sent to peer A, but State thinks peer B needs it)
-- Missing sends (peer B never told us their heads, but State has peer A's)
-- In-flight suppression for the wrong peer
-
-### 2. Expecting generate_sync_message to always return something
-
-After local mutations, `generate_sync_message()` may return `None` if
-there's an in-flight unacked message. This is correct behavior.
-
-### 3. Blocking the frame reader
-
-The sync task must keep draining incoming frames. Any command handler that
-blocks waiting for a specific response starves broadcasts, state sync,
-and sync replies. Use waiters/pending-request registration instead.
-
-### 4. Bypassing document-level recovery on new sync handlers
-
-If you add a new Automerge sync stream (e.g., PoolStateSync `0x06`),
-it needs document-owned receive/generate helpers with panic capture,
-rebuild, peer `sync::State` reset, and generate retry semantics. Do not
-call `receive_sync_message` or `generate_sync_message` directly from a
-task loop that can lose the document guard before recovery runs.
-
-### 5. Skipping the cell-count guard
-
-`save()` on a panic-corrupted doc may drop ops, producing fewer cells.
-The guard in `SharedDocState::rebuild_doc` prevents silent cell loss by
-falling back to sync-state-only reset when the rebuilt doc has fewer cells.
-
-### 6. Holding the mutex across I/O
-
-The lock scope must be a block that drops before any `.await`. Compute
-the ack bytes inside the lock, send them outside it.
-
-### 7. Resetting sync state when you should preserve it
-
-Don't reset sync state just because local mutations happened. Reset it
-when the *transport* breaks (reconnect, panic recovery). Resetting
-after every mutation would make every sync round a full exchange.
-
-## Causal Ordering: confirm_sync and required_heads
-
-Two mechanisms ensure the daemon sees client edits before acting on them:
-
-### confirm_sync (client-side wait)
-
-`confirm_sync` blocks the client until the daemon has merged specific heads:
-
-1. Caller captures current heads via `DocHandle::confirm_sync()`
-2. A `ConfirmSync` command goes to the sync task with target heads
-3. The sync task registers target heads as a waiter
-4. Normal inbound `AutomergeSync` handling checks waiters after each receive
-5. When `shared_heads` include all target heads, the waiter resolves
-6. Timeout: 10s total, 200ms retry ticks
-
-This is non-blocking -- the frame loop keeps draining while the waiter
-resolves in the background.
-
-### required_heads (daemon-side wait, preferred)
-
-`required_heads` moves the wait to the daemon, eliminating the client-side
-round-trip:
+### Causal Ordering: required_heads (preferred)
 
 1. Client captures current heads via `DocHandle::current_heads_hex()`
-2. Client sends the request with `required_heads` in the envelope
-3. Daemon's `wait_for_required_heads()` checks if the notebook doc contains
-   all listed change hashes (containment check, not equality)
-4. If not yet present, subscribes to `changed_tx` and polls until all
-   heads arrive or 10s timeout
-5. Only then does the daemon evaluate the request
+2. Sends request with `required_heads` in envelope
+3. Daemon's `wait_for_required_heads()` checks containment via `get_change_by_hash`
+4. Defers processing until all heads arrive (10s timeout) or proceeds immediately
+5. Sync loop stays unblocked; only that specific request waits
 
-**Why required_heads is better:**
-- No client-side blocking -- the request is sent immediately
-- The main peer sync loop still drains frames while the wait runs, so
-  the required heads can arrive and other peers are unaffected. However,
-  later requests from the *same* peer remain queued behind the waiting
-  request (it runs inside the per-peer request worker)
-- Replaces the old `confirm_sync` → `execute_cell` two-step with a
-  single `execute_cell` request that carries its causal precondition
-
-**Used by:** `execute_cell`, `run_all_cells` (both MCP and frontend).
-Frontend captures current heads first, then triggers a fire-and-forget
-`flush()` to nudge the sync stream to deliver them. This preserves
-the causal baseline in `required_heads` while minimizing daemon-side
-wait (see #2457 for the ordering rationale).
-
-### Which to use
+**confirm_sync** (legacy alternative): Client-side waiter on `shared_heads`. Blocks client, daemon free. Still used for `SaveNotebook`.
 
 | Scenario | Use |
 |----------|-----|
-| Execute / run-all (need source synced) | `required_heads` via `send_request_after_heads` |
-| General "is my edit synced?" check | `confirm_sync` (still available) |
-| Client-initiated save (MCP `save_notebook`) | `confirm_sync` before `SaveNotebook` request -- ensures edits reach daemon |
-| Daemon-internal autosave | Neither -- daemon reads its own doc copy directly |
+| Execute / run-all | `required_heads` via `send_request_after_heads` |
+| Client-initiated save | `confirm_sync` before `SaveNotebook` request |
+| Daemon-internal autosave | Neither — daemon reads its own doc directly |
 
-## Key Source Files
+## Protocol Design Patterns
 
-| File | What to read |
-|------|-------------|
-| `automerge/src/sync.rs` | `generate_sync_message`, `receive_sync_message_inner`, `advance_heads` |
-| `automerge/src/sync/state.rs` | `State` struct, `encode`/`decode`, `set_read_only` |
-| `automerge/src/sync/bloom.rs` | `BloomFilter`, 1% FP rate params |
-| `automerge-repo/.../DocSynchronizer.ts` | Per-peer `#syncStates`, `beginSync` encode/decode hack |
-| `samod/subduction-sans-io/src/engine.rs` | `handle_connection_lost` -- simplest correct reconnection |
-| `crates/notebook-sync/src/sync_task.rs` | Biased select, document recovery calls |
-| `crates/notebook-sync/src/shared.rs` | `SharedDocState`, dual sync states |
-| `crates/notebook-sync/src/handle.rs` | `send_request_after_heads`, `current_heads_hex`, `confirm_sync` |
-| `crates/runtimed/src/notebook_sync_server/peer_writer.rs` | `wait_for_required_heads`, daemon-side causal gate |
-| `crates/runt-mcp/src/execution.rs` | MCP execute path using required_heads |
+### Architecture Comparison
+
+| | automerge-repo | samod | nteract |
+|-|---------------|-------|---------|
+| Topology | Mesh, transport-agnostic | Sans-IO state machine | Direct socket to single daemon |
+| Heads tracking | `RemoteHeadsSubscriptions` (pub/sub) | Per-peer monotonic counters on every message | `required_heads` (request-scoped causal gate) |
+| On disconnect | Keep sync state, encode/decode to clear in-flight | Clean slate (`peer_disconnected`) | Clean slate (`sync::State::new()`) |
+| Batch→Incremental | Bloom filter exchange → live sync frames | Fingerprint reconciliation → subscription push | Same as raw automerge |
+| Testability | Async, needs mocks | Pure sans-IO functions | Async select! loop |
+
+**nteract's `required_heads` is novel:** request-scoped causal gating where the daemon defers one request until preconditions are met while sync continues unblocked. Neither automerge-repo nor samod gates actions on causal preconditions this way.
+
+### Connection Lifecycle
+
+| System | On Disconnect | On Reconnect | Preserved |
+|--------|--------------|--------------|-----------|
+| automerge-repo | Keep sync state | encode/decode clears in-flight, keeps shared_heads | Sync state |
+| samod | Remove + `peer_disconnected` | Fresh handshake + batch sync | Nothing |
+| nteract | Clear session, stash target | `sync::State::new()` + full handshake | Session identity only |
+
+If reconnect latency becomes a problem, preserving `shared_heads` (automerge-repo approach) could reduce initial sync burst.
+
+## nteract Mutation Patterns
+
+| Scenario | Method |
+|----------|--------|
+| Synchronous batch mutation | `fork_and_merge(\|fork\| { ... })` |
+| Async write from captured heads | `transact_at_heads_recovering(&baseline_heads, actor, label, \|doc\| { ... })` |
+| Concurrent async fork | `fork_with_actor("runtimed:iopub:kernel-abc")` — unique actor per fork |
+| Per-cell O(1) reads (WASM) | Direct map lookups via `ObjIndex` |
+| Recovery from corrupted indices | `save()` → `load()` round-trip |
+
+### Historical #1187 Panic
+
+Concurrent sync can trigger `PatchLog::migrate_actors()` mismatch when actor table ordering shifts mid-batch. nteract's pinned Automerge 0.9 desktop patch covers this, plus `transact_at_heads_recovering` for writes at captured heads. Document-level catch/rebuild/reset remains as containment.
+
+## Adding a New Sync Stream
+
+1. **Allocate frame type** in `notebook-wire`
+2. **Choose ownership pattern:**
+   - SharedDocState pattern (notebook, runtime-state): doc + peer_state in `SharedDocState`, managed by `sync_task.rs`
+   - Separate ownership (pool-state): frontend owns sync state; daemon carries peer state in peer loop
+3. **Add document-owned recovery helpers** (receive + generate with panic capture, rebuild, peer state reset)
+4. **Add rebuild function** (save→load→reset pattern)
+5. **Update biased select loop** or relevant frame handler
+6. **Consider subscription scope** — every peer or specific consumers?
+7. **Test with concurrent mutation** — actor/heads bugs only manifest under concurrent sync
+
+## Invariants
+
+- Each remote peer gets its own `sync::State` — sharing causes duplicate/missing sends
+- `generate_sync_message()` returning `None` after local mutations is correct (in-flight suppression)
+- Keep the frame reader draining — use waiters, not blocking waits
+- Lock scope drops before `.await` — compute inside lock, send outside
+- Reset sync state on transport breaks (reconnect, panic), not on local mutations
+- Cell-count guard prevents silent cell loss during rebuild
+- Actor table is sorted lexicographically — disagreement corrupts OpIds
 
 ## Decision Framework
 
-When you need to decide how to handle sync state:
-
 | Situation | Action |
 |-----------|--------|
-| Transport disconnect + reconnect | Reset sync::State (new() or encode/decode round-trip) |
-| automerge panic caught | Rebuild doc (save/load), reset sync::State |
-| Local mutation happened | Do nothing -- next generate_sync_message handles it |
-| Adding a new sync stream | New frame type, new sync::State field, document-owned recovery helper |
-| Peer lost all data (empty heads) | Already handled -- receive_sync_message resets sent_hashes |
-| Switching read-only to read-write | set_read_only() handles reset + SyncReset flag |
-| Need daemon to see edits before executing | Use `required_heads` (not confirm_sync) |
+| Transport disconnect | Reset `sync::State` (new or encode/decode) |
+| Automerge panic caught | Rebuild doc (save/load), reset sync::State |
+| Local mutation | Let next `generate_sync_message` handle it |
+| Check if peer has changes | `change_graph.has_change(&hash)` — O(1) |
+| Document at earlier point | `fork_at(heads)` — expensive, views only |
+| Async notebook write at captured heads | `transact_at_heads_recovering()` |
+| Concurrent async fork | `fork_with_actor()` with unique actor |
+| Shrink document bytes | `save()` compacts; no history GC available |
+| Daemon must see edits before executing | `required_heads` (not confirm_sync) |
+| Adding a new sync stream | New frame type + sync::State + recovery helper |
+| Should this block client or daemon? | Prefer daemon-side waits (required_heads) |
+| Should protocol logic be async? | Consider sans-IO for testability (samod pattern) |
+
+## Key Source Files
+
+| File | Purpose |
+|------|---------|
+| `automerge/src/sync.rs` | `generate_sync_message`, `receive_sync_message_inner`, `advance_heads` |
+| `automerge/src/sync/state.rs` | `State` struct, `encode`/`decode` |
+| `automerge/src/automerge.rs` | Fork/merge/save/load, change application |
+| `automerge/src/autocommit.rs` | AutoCommit, auto-transaction, isolation, PatchLog |
+| `automerge/src/change_graph.rs` | ChangeGraph DAG, heads, causal queries |
+| `automerge/src/op_set2/op_set.rs` | OpSet columnar storage, actor table |
+| `crates/notebook-sync/src/sync_task.rs` | Biased select, document recovery calls |
+| `crates/notebook-sync/src/shared.rs` | `SharedDocState`, dual sync states, rebuild helpers |
+| `crates/notebook-sync/src/handle.rs` | `send_request_after_heads`, `current_heads_hex`, `confirm_sync` |
+| `crates/notebook-doc/src/lib.rs` | `NotebookDoc`: transactions, fork/merge, save/load/rebuild |
+| `crates/runtimed/src/notebook_sync_server/peer_writer.rs` | `wait_for_required_heads`, daemon causal gate |
+| `crates/runt-mcp/src/execution.rs` | MCP execute path using required_heads |
+| `automerge-repo/.../DocSynchronizer.ts` | Per-peer sync state, `beginSync` encode/decode |
+| `samod/subduction-sans-io/src/engine.rs` | Sans-IO protocol engine pattern |
+| `samod/subduction-sans-io/src/incremental.rs` | Subscription + counter-based live sync |

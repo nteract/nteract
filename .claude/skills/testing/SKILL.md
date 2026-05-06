@@ -1,9 +1,9 @@
 ---
 name: testing
-description: Run and write tests. Use when running tests, writing new tests, debugging test failures, or working with test infrastructure.
+description: Run tests, verify changes, and collect diagnostics. Use when running tests, writing new tests, verifying code changes before commit, or collecting logs for debugging.
 ---
 
-# Testing
+# Testing & Verification
 
 ## Quick Reference
 
@@ -12,193 +12,133 @@ description: Run and write tests. Use when running tests, writing new tests, deb
 | E2E | `e2e/specs/` | `cargo xtask e2e test` | WebdriverIO + Mocha |
 | Frontend unit | `src/**/__tests__/`, `apps/notebook/src/**/__tests__/` | `pnpm test` | Vitest + jsdom |
 | Rust unit | inline `#[cfg(test)]` | `cargo test` | built-in |
-| CLI behavior | `crates/runt/tests/*.hone` | `cargo hone test` | Hone (not yet published) |
+| CLI behavior | `crates/runt/tests/*.hone` | `cargo hone test` | Hone |
 | Python | `python/runtimed/tests/` | `pytest` | pytest |
+
+## Verification Workflow
+
+After making changes, run the narrowest credible test first, then broader checks.
+
+### Narrow Tests by Crate
+
+| Files changed | Test command |
+|---|---|
+| `crates/runtimed/src/**` | `cargo test -p runtimed` |
+| `crates/notebook-wire/src/**` | `cargo test -p notebook-wire && cargo test -p notebook-protocol` |
+| `crates/notebook-doc/src/**` | `cargo test -p notebook-doc` |
+| `crates/notebook-protocol/src/**` | `cargo test -p notebook-protocol` |
+| `crates/notebook-sync/src/**` | `cargo test -p notebook-sync` |
+| `crates/kernel-env/src/**` | `cargo test -p kernel-env` |
+| `crates/kernel-launch/src/**` | `cargo test -p kernel-launch` |
+| `crates/runt/src/**` | `cargo test -p runt` |
+| `crates/runt-workspace/src/**` | `cargo test -p runt-workspace` |
+| `crates/runtimed-py/src/**` | `up rebuild=true` |
+| `crates/runtimed-wasm/**` | `cargo xtask wasm` then `deno test --allow-read --allow-env --no-check` |
+| `apps/notebook/src/**` | `pnpm test:run` |
+| `python/runtimed/src/**` | `pytest python/runtimed/tests/test_session_unit.py -v` |
+
+Multiple crates: `cargo test -p runtimed -p notebook-doc`.
+
+### MCP Live Verification (when nteract-dev available)
+
+For daemon/kernel changes: `up rebuild=true` → `create_notebook` → `create_cell` with `1 + 1` → `execute_cell` → verify output is `2`.
+
+For CRDT/doc changes: `create_notebook` → `create_cell` → `get_cell` (verify source) → `set_cell` → `get_cell` (verify update).
+
+For kernel-env changes: `up rebuild=true` → `create_notebook` → execute `import sys; print(sys.executable)` → verify Python path.
+
+### Confidence Levels
+
+- **HIGH**: Narrow tests passed AND MCP live verification passed
+- **MEDIUM**: Narrow tests passed, MCP verification skipped
+- **LOW**: Only compilation checked
+
+Always run `cargo xtask lint` before committing.
 
 ## Frontend Unit Tests (Vitest)
 
-Config: `vitest.config.ts` (jsdom environment, globals enabled, setup in `./src/test-setup.ts`).
-
-**Running:**
+Config: `vitest.config.ts` (jsdom environment, globals enabled).
 
 ```bash
 pnpm test         # Watch mode
 pnpm test:run     # Run once
 ```
 
-**Test locations:**
-
-- `src/components/isolated/__tests__/` — Frame bridge, message protocol
-- `src/components/outputs/__tests__/` — Output renderers
-- `src/components/widgets/__tests__/` — Widget store, registry
-- `src/lib/__tests__/` — ErrorBoundary
-- `apps/notebook/src/lib/__tests__/` — Cursor registry, manifest resolution, materialize cells, runtime/project stores, kernel status, markdown assets
+Key locations: `src/components/isolated/__tests__/`, `src/components/outputs/__tests__/`, `src/components/widgets/__tests__/`, `apps/notebook/src/lib/__tests__/`.
 
 ## Rust Unit Tests
 
 ```bash
 cargo test                    # All workspace tests
 cargo test -p runtimed        # Specific crate
-cargo test -p notebook-doc    # Automerge doc tests
 cargo test -- --nocapture     # Show println! output
 ```
 
-**Key test crates:**
-
-| Crate | Tests |
-|-------|-------|
-| `kernel-launch` | Tool hashing, path resolution |
-| `notebook-doc` | Automerge document operations |
-| `runtimed` | Blob store/server, connections, daemon, kernel manager, notebook sync, output store, protocol, runtime, settings, stream terminal |
-
 ## Hone CLI Tests
 
-Declarative bash-based tests in `crates/runt/tests/*.hone`. Not yet published to crates.io.
+Declarative bash-based tests in `crates/runt/tests/*.hone`.
 
 ```bash
 cargo hone test               # All hone tests
 cargo hone test cli.hone      # Specific file
 ```
 
-**Available assertions:** `ASSERT exit_code == 0`, `ASSERT stdout contains "text"`, `ASSERT stdout matches /pattern/`, `ASSERT exit_code != 0`.
+Assertions: `ASSERT exit_code == 0`, `ASSERT stdout contains "text"`, `ASSERT stdout matches /pattern/`.
 
-**Test files:** `cli.hone`, `kernel_lifecycle.hone`, `ps.hone`, `start_errors.hone`, `exec_errors.hone`, `interrupt_errors.hone`, `stop_errors.hone`.
+## Python Tests
 
-## Python Tests (pytest)
-
-### Two Venvs
-
-| Venv | Path | Purpose |
-|------|------|---------|
-| Workspace venv | `.venv` (repo root) | MCP server and day-to-day dev |
-| Test venv | `python/runtimed/.venv` | Isolated pytest runs |
-
-### Setup
+Two venvs: workspace (`.venv` at root) for dev, and `python/runtimed/.venv` for isolated pytest.
 
 ```bash
-cd python/runtimed
-python -m venv .venv
-source .venv/bin/activate
+# Setup test venv
+cd python/runtimed && python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
+cd ../../crates/runtimed-py && VIRTUAL_ENV=../../python/runtimed/.venv maturin develop
 
-# Build native extension into test venv
-cd ../../crates/runtimed-py
-VIRTUAL_ENV=../../python/runtimed/.venv maturin develop
+# Run
+pytest python/runtimed/tests/test_session_unit.py -v          # Unit (no daemon)
+SKIP_INTEGRATION_TESTS=1 pytest python/runtimed/tests/ -v     # Skip integration
+RUNTIMED_INTEGRATION_TEST=1 pytest python/runtimed/tests/ -v  # CI mode (spawns daemon)
 ```
 
-### Test Categories
-
-| File | Type | Requires Daemon |
-|------|------|-----------------|
-| `test_session_unit.py` | Unit | No |
-| `test_daemon_integration.py` | Integration | Yes |
-| `test_ipython_bridge.py` | Integration | Yes |
-| `test_binary.py` | Binary/CLI | No |
+## E2E Tests
 
 ### Running
 
 ```bash
-# Unit tests only (fast, no daemon)
-pytest python/runtimed/tests/test_session_unit.py -v
-
-# Skip integration tests
-SKIP_INTEGRATION_TESTS=1 pytest python/runtimed/tests/ -v
-
-# Integration tests (requires running dev daemon)
-pytest python/runtimed/tests/test_daemon_integration.py -v
-
-# CI mode (spawns its own daemon)
-RUNTIMED_INTEGRATION_TEST=1 pytest python/runtimed/tests/ -v
+cargo xtask e2e build       # Build with WebDriver support (required first)
+cargo xtask e2e test        # Smoke/default run
+cargo xtask e2e test-all    # Full suite including fixtures
+cargo xtask e2e test-fixture <notebook> <spec>  # Single fixture test
 ```
 
-### Environment Variables
+### Adding Tests
 
-| Variable | Effect |
-|----------|--------|
-| `SKIP_INTEGRATION_TESTS=1` | Skip tests marked `@pytest.mark.integration` |
-| `RUNTIMED_INTEGRATION_TEST=1` | CI mode: spawns daemon automatically |
-| `RUNTIMED_SOCKET_PATH` | Override daemon socket location |
+**Fixture test:** Create notebook in `crates/notebook/fixtures/audit-test/`, create spec in `e2e/specs/`, add to `FIXTURE_SPECS` in `e2e/wdio.conf.js`, add to `crates/xtask/src/main.rs`, add to CI.
 
-## E2E Tests
+**Regular test:** Create spec in `e2e/specs/` — picked up automatically if not in `FIXTURE_SPECS`.
 
-### Running (Native Mode)
+### Helpers (e2e/helpers.js)
 
-```bash
-cargo xtask e2e build       # Build with WebDriver support
-cargo xtask e2e test        # Smoke/default E2E run
-cargo xtask e2e test-all    # Full suite, including fixture coverage
-```
+| Helper | Purpose |
+|--------|---------|
+| `waitForAppReady()` | Waits for toolbar (15s). Use in every `before()` hook |
+| `waitForKernelReady()` | Waits for kernel idle/busy (60s). Superset of above |
+| `executeFirstCell()` | Focuses first code cell, Shift+Enter |
+| `waitForCellOutput(cell)` | Waits for stream output |
+| `waitForOutputContaining(cell, text)` | Waits for specific output text |
+| `approveTrustDialog()` | Clicks "Trust & Install" |
+| `typeSlowly(text)` | Character-by-character (30ms). Required for CodeMirror |
+| `setupCodeCell()` | Finds/creates code cell, focuses editor, selects all |
 
-**Important:** Use `cargo xtask e2e build` (not plain `cargo build`) — the E2E binary embeds frontend assets and enables the webdriver feature.
+### wry WebDriver Constraints
 
-### Fixture Tests
+- Use `data-testid` attributes — text selectors return broken refs
+- Use `browser.execute()` + `browser.waitUntil()` — `executeAsync()` unsupported
+- Use `typeSlowly()` for CodeMirror — fast input drops characters
+- Use `browser.execute()` for iframe testing — `switchToFrame()` broken
 
-Fixture tests open a specific notebook and get a fresh app instance per test:
-
-```bash
-cargo xtask e2e test-fixture \
-  crates/notebook/fixtures/audit-test/1-vanilla.ipynb \
-  e2e/specs/prewarmed-uv.spec.js
-```
-
-### Current Fixture Mapping
-
-| Notebook | Spec | What it tests |
-|----------|------|---------------|
-| `1-vanilla.ipynb` | `prewarmed-uv.spec.js` | UV prewarmed environment pool |
-| `2-uv-inline.ipynb` | `uv-inline.spec.js` | UV inline dependency resolution |
-| `2-uv-inline.ipynb` | `trust-dialog-dismiss.spec.js` | Trust dialog dismiss flow |
-| `3-conda-inline.ipynb` | `conda-inline.spec.js` | Conda inline dependency resolution |
-| `10-deno.ipynb` | `deno.spec.js` | Deno kernel start + TypeScript execution |
-| `pyproject-project/5-pyproject.ipynb` | `uv-pyproject.spec.js` | pyproject.toml environment detection |
-| `14-cell-visibility.ipynb` | `cell-visibility.spec.js` | Cell source/output visibility toggling |
-| `15-run-all-output-lifecycle.ipynb` | `run-all-output-lifecycle.spec.js` | Run-all output lifecycle |
-| (directory-based pyproject fixture) | `untitled-pyproject.spec.js` | Untitled notebook with pyproject directory context |
-
-### Adding a New Fixture Test
-
-1. Choose or create a fixture notebook in `crates/notebook/fixtures/audit-test/`
-2. Create the spec at `e2e/specs/my-feature.spec.js`
-3. Add to `FIXTURE_SPECS` in `e2e/wdio.conf.js`
-4. Add it to the fixture coverage in `crates/xtask/src/main.rs` if it should participate in `cargo xtask e2e test-all`
-5. Add to CI in `.github/workflows/build.yml`
-6. Verify locally with `cargo xtask e2e test-fixture ...`
-
-### Adding a New Regular Test
-
-1. Create the spec at `e2e/specs/my-feature.spec.js`
-2. `cargo xtask e2e test` picks up non-fixture `*.spec.js` files automatically (anything not in `FIXTURE_SPECS`)
-
-### Shared Helpers (e2e/helpers.js)
-
-| Helper | What it does |
-|--------|-------------|
-| `waitForAppReady()` | Waits for toolbar (15s). Use in every `before()` hook. |
-| `waitForKernelReady()` | Waits for kernel idle/busy (60s). Superset of `waitForAppReady()`. |
-| `executeFirstCell()` | Focuses first code cell, hits Shift+Enter. Returns cell element. |
-| `waitForCellOutput(cell)` | Waits for stream output. Returns text. |
-| `waitForOutputContaining(cell, text)` | Waits for output containing specific text. |
-| `waitForErrorOutput(cell)` | Waits for error output. Returns text. |
-| `approveTrustDialog()` | Clicks "Trust & Install". |
-| `typeSlowly(text)` | Character-by-character typing (30ms). Required for CodeMirror. |
-| `setupCodeCell()` | Finds/creates code cell, focuses editor, selects all. |
-| `waitForNotebookSynced()` | Waits for Automerge sync + cells rendered. |
-
-### wry WebDriver Quirks
-
-- **Text selectors don't work.** `$("button*=Code")` returns broken refs. Use `data-testid` attributes or `browser.execute()` with DOM APIs.
-- **`browser.switchToFrame()` doesn't work.** Use the postMessage eval channel for iframe testing.
-- **`browser.executeAsync()` not supported.** Use `browser.execute()` + `browser.waitUntil()` polling.
-- **`browser.execute()` is your best friend.** Drop to raw DOM APIs when standard element methods fail.
-
-### Design Patterns
-
-- **Daemon-independent testing:** Never assert initial state. Always click first, then assert the result.
-- **Iframe testing:** Use the `{ type: "eval" }` postMessage channel (production code's `frame-html.ts`).
-- **Waiting:** Use `waitForAppReady()` for UI tests, `waitForKernelReady()` for code execution tests.
-- **CodeMirror input:** Always use `typeSlowly()`. CodeMirror drops characters with fast input.
-
-### Selectors Reference
+### Selectors
 
 `data-testid`: `notebook-toolbar`, `save-button`, `add-code-cell-button`, `add-markdown-cell-button`, `start-kernel-button`, `restart-kernel-button`, `interrupt-kernel-button`, `run-all-button`, `deps-toggle`, `trust-dialog`, `trust-approve-button`, `deps-panel`, `deps-add-input`.
 
@@ -206,13 +146,55 @@ cargo xtask e2e test-fixture \
 
 Other: `[data-cell-type="code"]`, `[data-cell-type="markdown"]`, `.cm-content[contenteditable="true"]`, `iframe[sandbox]`.
 
-### Troubleshooting
+## Diagnostics
 
-- **"E2E binary not found"** — Run `cargo xtask e2e build`.
-- **"No WebDriver server on port 4445"** — Run `cargo xtask e2e test` / `test-fixture` so xtask launches the app and waits for the embedded webdriver server.
-- **"Malformed type for elementId"** — wry text-selector bug. Use `data-testid` selectors.
-- **Timeout errors** — Kernel startup is slow on first run. Use 60s+ timeouts.
-- **Flaky tests** — Use `waitUntil()` not `pause()`, use `typeSlowly()`, use `data-testid`.
+### Collecting
+
+Use `env -i` for system diagnostics to avoid dev env vars (`RUNTIMED_DEV`, `RUNTIMED_WORKSPACE_PATH`) leaking through.
+
+```bash
+# Nightly (system)
+env -i HOME=$HOME /usr/local/bin/runt-nightly diagnostics
+
+# Stable (system)
+env -i HOME=$HOME /usr/local/bin/runt diagnostics
+
+# Dev daemon (no env -i needed)
+RUNTIMED_DEV=1 RUNTIMED_WORKSPACE_PATH="$(pwd)" ./target/debug/runt diagnostics
+```
+
+Other system commands follow the same `env -i` pattern:
+```bash
+env -i HOME=$HOME /usr/local/bin/runt-nightly daemon status
+env -i HOME=$HOME /usr/local/bin/runt-nightly daemon logs -f
+env -i HOME=$HOME /usr/local/bin/runt ps
+```
+
+### Archive Contents
+
+| File | Description |
+|------|-------------|
+| `runtimed.log` / `.log.1` | Daemon log (current / previous session) |
+| `notebook.log` / `.log.1` | Tauri app log (current / previous session) |
+| `daemon-status.json` | Daemon state, socket path, pool stats |
+| `doctor.json` | Health checks — binary, plist, launchd, socket |
+| `system-info.json` | OS version, architecture, channel |
+
+Read files from tarball without extracting:
+```bash
+tar xzf <archive>.tar.gz -O doctor.json
+tar xzf <archive>.tar.gz -O runtimed.log | grep -i 'error\|panic'
+```
+
+### What to Look For
+
+- **Ghost windows:** `Context for '...' missing` in notebook.log
+- **Daemon crashes:** Check `runtimed.log.1` (previous session)
+- **Upgrade failures:** Search `[upgrade]` in notebook.log
+- **Kernel issues:** Search `[daemon-kernel]` or `kernel_status`
+- **Sync errors:** Search `[notebook-sync]` or `daemon:disconnected`
+- **Frontend errors:** `webview:error` or `webview:warn` in notebook.log
+- **launchd issues:** Check `doctor.json` `launchd_service` status
 
 ## Test Philosophy
 
