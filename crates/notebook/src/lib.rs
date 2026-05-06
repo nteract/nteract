@@ -1374,8 +1374,6 @@ fn remove_system_cli(app: tauri::AppHandle) -> Result<(), String> {
 
 /// Ensure the daemon is running using Tauri's sidecar API.
 ///
-/// This replaces the old `ensure_daemon_running` flow that used ServiceManager directly.
-/// The new flow:
 /// 1. Ping to check if daemon is running
 /// 2. If not, spawn `runtimed install` via sidecar (which also starts it)
 /// 3. Wait for daemon to become ready
