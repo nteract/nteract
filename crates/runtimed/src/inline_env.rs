@@ -161,6 +161,17 @@ pub(crate) fn inline_deps_with_required_packages(deps: &[String]) -> Vec<String>
     effective
 }
 
+/// Return inline deps plus the managed packages expected in Conda/Pixi
+/// environments. `pip` is explicit so `%pip` uses the running environment's
+/// interpreter rather than depending on a package-manager default.
+pub(crate) fn inline_deps_with_conda_required_packages(deps: &[String]) -> Vec<String> {
+    let mut effective = inline_deps_with_required_packages(deps);
+    if !has_dep_named(&effective, "pip") {
+        effective.push("pip".to_string());
+    }
+    effective
+}
+
 /// Prepare a cached UV environment with the given inline dependencies.
 ///
 /// If a cached environment with the same deps already exists, returns it
@@ -197,7 +208,7 @@ pub async fn prepare_conda_inline_env(
     handler: Arc<dyn ProgressHandler>,
 ) -> Result<PreparedEnv> {
     let conda_deps = kernel_env::CondaDependencies {
-        dependencies: inline_deps_with_required_packages(deps),
+        dependencies: inline_deps_with_conda_required_packages(deps),
         channels: if channels.is_empty() {
             vec!["conda-forge".to_string()]
         } else {
@@ -252,7 +263,7 @@ pub async fn claim_pool_env_for_conda_inline_cache(
     channels: &[String],
     python: Option<&str>,
 ) {
-    let dependencies = inline_deps_with_required_packages(deps);
+    let dependencies = inline_deps_with_conda_required_packages(deps);
     let conda_deps = kernel_env::CondaDependencies {
         dependencies,
         channels: if channels.is_empty() {
@@ -609,7 +620,7 @@ pub fn check_conda_inline_cache(
     channels: &[String],
     python: Option<&str>,
 ) -> Option<PreparedEnv> {
-    let dependencies = inline_deps_with_required_packages(deps);
+    let dependencies = inline_deps_with_conda_required_packages(deps);
     let conda_deps = kernel_env::CondaDependencies {
         dependencies: dependencies.clone(),
         channels: if channels.is_empty() {
@@ -979,6 +990,32 @@ mod tests {
                 "pyarrow>=14".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn test_inline_deps_with_conda_required_packages_adds_pip() {
+        let deps = vec!["pandas".to_string(), "numpy".to_string()];
+        assert_eq!(
+            inline_deps_with_conda_required_packages(&deps),
+            vec![
+                "pandas".to_string(),
+                "numpy".to_string(),
+                "nbformat".to_string(),
+                "pyarrow>=14".to_string(),
+                "pip".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_inline_deps_with_conda_required_packages_does_not_duplicate_pip() {
+        let deps = vec![
+            "pandas".to_string(),
+            "pip>=24".to_string(),
+            "nbformat".to_string(),
+            "pyarrow>=14".to_string(),
+        ];
+        assert_eq!(inline_deps_with_conda_required_packages(&deps), deps);
     }
 
     #[test]

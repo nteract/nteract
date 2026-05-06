@@ -58,6 +58,7 @@ pub const CONDA_BASE_PACKAGES: &[&str] = &[
     "ipykernel",
     "ipywidgets",
     "anywidget",
+    "pip",
     "nbformat",
     "pyarrow>=14",
 ];
@@ -482,6 +483,7 @@ async fn install_conda_env(
     specs.push(MatchSpec::from_str("ipykernel", match_spec_options)?);
     specs.push(MatchSpec::from_str("ipywidgets", match_spec_options)?);
     specs.push(MatchSpec::from_str("anywidget", match_spec_options)?);
+    specs.push(MatchSpec::from_str("pip", match_spec_options)?);
     specs.push(MatchSpec::from_str("nbformat", match_spec_options)?);
     specs.push(MatchSpec::from_str("pyarrow>=14", match_spec_options)?);
 
@@ -489,6 +491,7 @@ async fn install_conda_env(
         if dep != "ipykernel"
             && dep != "ipywidgets"
             && dep != "anywidget"
+            && dep != "pip"
             && dep != "nbformat"
             && dep != "pyarrow>=14"
         {
@@ -663,7 +666,11 @@ pub async fn create_prewarmed_environment_in(
 
     tokio::fs::create_dir_all(cache_dir).await?;
 
-    let mut deps_list = vec!["ipykernel".to_string(), "ipywidgets".to_string()];
+    let mut deps_list = vec![
+        "ipykernel".to_string(),
+        "ipywidgets".to_string(),
+        "pip".to_string(),
+    ];
     if !extra_packages.is_empty() {
         info!("[prewarm] Including extra packages: {:?}", extra_packages);
         deps_list.extend(extra_packages.iter().cloned());
@@ -920,6 +927,7 @@ pub async fn sync_dependencies(
         MatchSpec::from_str("ipykernel", match_spec_options)?,
         MatchSpec::from_str("ipywidgets", match_spec_options)?,
         MatchSpec::from_str("anywidget", match_spec_options)?,
+        MatchSpec::from_str("pip", match_spec_options)?,
         MatchSpec::from_str("nbformat", match_spec_options)?,
         MatchSpec::from_str("pyarrow>=14", match_spec_options)?,
     ];
@@ -954,6 +962,7 @@ pub async fn sync_dependencies(
         if dep != "ipykernel"
             && dep != "ipywidgets"
             && dep != "anywidget"
+            && dep != "pip"
             && dep != "nbformat"
             && dep != "pyarrow>=14"
         {
@@ -1137,6 +1146,7 @@ fn build_spec_strings(deps: &CondaDependencies) -> Vec<String> {
     specs.push("ipykernel".to_string());
     specs.push("ipywidgets".to_string());
     specs.push("anywidget".to_string());
+    specs.push("pip".to_string());
     specs.push("nbformat".to_string());
     specs.push("pyarrow>=14".to_string());
 
@@ -1144,6 +1154,7 @@ fn build_spec_strings(deps: &CondaDependencies) -> Vec<String> {
         if dep != "ipykernel"
             && dep != "ipywidgets"
             && dep != "anywidget"
+            && dep != "pip"
             && dep != "nbformat"
             && dep != "pyarrow>=14"
         {

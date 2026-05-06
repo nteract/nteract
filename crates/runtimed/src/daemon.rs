@@ -387,6 +387,7 @@ const BASE_RUNTIME_PACKAGES: &[&str] = &[
     "ipykernel",
     "ipywidgets",
     "anywidget",
+    "pip",
     "nbformat",
     "pyarrow",
 ];
@@ -443,6 +444,7 @@ fn conda_prewarmed_packages(extra: &[String], install_default_data_packages: boo
         "ipykernel".to_string(),
         "ipywidgets".to_string(),
         "anywidget".to_string(),
+        "pip".to_string(),
     ];
     extend_default_packages(&mut packages, extra, install_default_data_packages);
     packages
@@ -453,6 +455,7 @@ fn pixi_prewarmed_packages(extra: &[String], install_default_data_packages: bool
         "ipykernel".to_string(),
         "ipywidgets".to_string(),
         "anywidget".to_string(),
+        "pip".to_string(),
     ];
     extend_default_packages(&mut packages, extra, install_default_data_packages);
     packages
@@ -5068,6 +5071,14 @@ mod tests {
         }
         assert!(packages.iter().any(|pkg| pkg == "nbformat"));
         assert!(packages.iter().any(|pkg| pkg == "pyarrow>=14"));
+    }
+
+    #[test]
+    fn test_conda_and_pixi_prewarmed_packages_include_pip() {
+        let conda = conda_prewarmed_packages(&[], false);
+        let pixi = pixi_prewarmed_packages(&[], false);
+        assert!(conda.iter().any(|pkg| pkg == "pip"));
+        assert!(pixi.iter().any(|pkg| pkg == "pip"));
     }
 
     #[test]

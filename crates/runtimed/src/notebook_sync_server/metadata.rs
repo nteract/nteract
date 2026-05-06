@@ -50,6 +50,24 @@ pub(crate) fn write_trust_to_runtime_state(room: &NotebookRoom, trust: &TrustSta
     }
 }
 
+async fn clear_environment_prepare_error_when_trust_blocks_launch(room: &NotebookRoom) {
+    let should_clear = room
+        .state
+        .read(|sd| {
+            let state = sd.read_state();
+            matches!(state.kernel.lifecycle, RuntimeLifecycle::Error)
+                && state.kernel.error_reason.as_deref()
+                    == Some(KernelErrorReason::EnvironmentPrepareFailed.as_str())
+        })
+        .unwrap_or(false);
+    if should_clear {
+        info!(
+            "[notebook-sync] Clearing stale environment prepare error because notebook trust now blocks launch"
+        );
+        reset_starting_state(room, None).await;
+    }
+}
+
 /// Check if a notebook's metadata snapshot has inline dependencies or Deno config.
 /// Returns the appropriate env_source if found ("uv:inline", "conda:inline", or "deno").
 ///
@@ -884,7 +902,12 @@ pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
 
         // Update RuntimeStateDoc so the frontend banner reacts immediately
         let ts = room.trust_state.read().await;
+        let trust_blocks_launch = trust_needs_approval(&ts.status);
         write_trust_to_runtime_state(room, &ts);
+        drop(ts);
+        if trust_blocks_launch {
+            clear_environment_prepare_error_when_trust_blocks_launch(room).await;
+        }
     } else {
         let current_info = {
             let ts = room.trust_state.read().await;
@@ -902,7 +925,12 @@ pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
                 *ts = new_trust;
             }
             let ts = room.trust_state.read().await;
+            let trust_blocks_launch = trust_needs_approval(&ts.status);
             write_trust_to_runtime_state(room, &ts);
+            drop(ts);
+            if trust_blocks_launch {
+                clear_environment_prepare_error_when_trust_blocks_launch(room).await;
+            }
         }
     }
 }
@@ -2296,6 +2324,128 @@ pub(crate) async fn reset_starting_state(
         .await;
 }
 
+fn env_progress_type_for_source(env_source: &str) -> &'static str {
+    // Current environment-prepare failures are Python package-manager paths.
+    // Keep unknown/legacy Python sources on the UV rail, which is also the
+    // historical fallback package manager.
+    if env_source.starts_with("conda:") {
+        "conda"
+    } else if env_source.starts_with("pixi:") {
+        "pixi"
+    } else {
+        "uv"
+    }
+}
+
+/// Publish a pre-spawn environment preparation failure into RuntimeStateDoc.
+///
+/// Request callers already receive an error response, but the UI's persistent
+/// state comes from RuntimeStateDoc. Without this write, clients stay in a
+/// starting lifecycle after a solver/install failure and render only
+/// "Initializing".
+///
+/// Current call sites are Python environment preparation paths, so this writes
+/// Python kernel info. Other runtime families should add a runtime-aware
+/// variant before reusing this helper.
+pub(crate) fn publish_environment_launch_error(
+    room: &NotebookRoom,
+    env_source: &str,
+    reason: Option<KernelErrorReason>,
+    details: &str,
+) {
+    let progress_value = serde_json::json!({
+        "phase": "error",
+        "message": details,
+    });
+    if let Err(e) = room.state.with_doc(|sd| {
+        sd.set_lifecycle_with_error_details(&RuntimeLifecycle::Error, reason, Some(details))?;
+        sd.set_kernel_info("python", "python", env_source)?;
+        sd.set_env_progress(env_progress_type_for_source(env_source), &progress_value)?;
+        Ok(())
+    }) {
+        error!(
+            "[runtime-state] failed to publish environment launch error: {}",
+            e
+        );
+    }
+}
+
+async fn trust_allows_auto_launch_error_publish(room: &NotebookRoom) -> bool {
+    check_and_update_trust_state(room).await;
+    let trust = room.trust_state.read().await;
+    matches!(
+        trust.status,
+        runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
+    )
+}
+
+async fn reset_and_publish_environment_launch_error(
+    room: &NotebookRoom,
+    env_source: &str,
+    reason: Option<KernelErrorReason>,
+    details: &str,
+) {
+    reset_starting_state(room, None).await;
+    if !trust_allows_auto_launch_error_publish(room).await {
+        info!(
+            "[notebook-sync] Suppressing auto-launch environment error because notebook trust now blocks launch"
+        );
+        return;
+    }
+    publish_environment_launch_error(room, env_source, reason, details);
+}
+
+async fn reset_auto_launch_error_with_trust_check(
+    room: &NotebookRoom,
+    expected_runtime_agent_id: Option<&str>,
+    reason: Option<KernelErrorReason>,
+    details: &str,
+) {
+    if trust_allows_auto_launch_error_publish(room).await {
+        reset_starting_state_with_outcome(
+            room,
+            expected_runtime_agent_id,
+            ResetOutcome::Error { reason, details },
+        )
+        .await;
+    } else {
+        info!(
+            "[notebook-sync] Suppressing auto-launch failure because notebook trust now blocks launch"
+        );
+        reset_starting_state(room, expected_runtime_agent_id).await;
+    }
+}
+
+async fn reset_and_publish_prewarmed_acquire_error(room: &NotebookRoom, env_source: &str) {
+    let details = format!(
+        "Failed to acquire prewarmed environment for {env_source}. Retry once the environment pool finishes warming."
+    );
+    error!("[notebook-sync] {}", details);
+    reset_and_publish_environment_launch_error(
+        room,
+        env_source,
+        Some(KernelErrorReason::EnvironmentPrepareFailed),
+        &details,
+    )
+    .await;
+}
+
+pub(crate) fn sync_environment_agent_error_response(error: String) -> NotebookResponse {
+    NotebookResponse::SyncEnvironmentFailed {
+        error,
+        needs_restart: false,
+    }
+}
+
+pub(crate) fn sync_environment_agent_communication_error_response(
+    error: String,
+) -> NotebookResponse {
+    NotebookResponse::SyncEnvironmentFailed {
+        error,
+        needs_restart: true,
+    }
+}
+
 /// Try to satisfy UV inline deps from the prewarmed pool.
 ///
 /// Takes the pool env first, then compares against its *actual* `prewarmed_packages`
@@ -2427,7 +2577,7 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
     room: &NotebookRoom,
     progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler>,
 ) -> Result<(crate::PooledEnv, Vec<String>), ()> {
-    let effective_deps = crate::inline_env::inline_deps_with_required_packages(deps);
+    let effective_deps = crate::inline_env::inline_deps_with_conda_required_packages(deps);
 
     // Only use pool for default conda-forge channel
     let is_default_channels =
@@ -2670,10 +2820,11 @@ pub(crate) async fn auto_launch_kernel(
     let (inline_source, pep723_deps) = if inline_source.is_some() {
         (inline_source, None)
     } else {
+        use notebook_protocol::connection::{EnvSource, PackageManager};
+
         let cells = room.doc.read().await.get_cells();
         match notebook_doc::pep723::find_pep723_in_cells(&cells) {
             Ok(Some(meta)) if !meta.dependencies.is_empty() => {
-                use notebook_protocol::connection::{EnvSource, PackageManager};
                 // Route PEP 723 deps based on user's default Python env
                 let pep723_source = match default_python_env {
                     crate::settings_doc::PythonEnvType::Pixi => {
@@ -2690,8 +2841,22 @@ pub(crate) async fn auto_launch_kernel(
             }
             Ok(_) => (None, None),
             Err(e) => {
-                warn!("[notebook-sync] PEP 723 parse error: {}", e);
-                (None, None)
+                let pep723_source = match default_python_env {
+                    crate::settings_doc::PythonEnvType::Pixi => {
+                        EnvSource::Pep723(PackageManager::Pixi)
+                    }
+                    _ => EnvSource::Pep723(PackageManager::Uv),
+                };
+                let details = format!("Invalid PEP 723 metadata in notebook: {}", e);
+                warn!("[notebook-sync] {}", details);
+                reset_and_publish_environment_launch_error(
+                    room,
+                    pep723_source.as_str(),
+                    Some(KernelErrorReason::EnvironmentPrepareFailed),
+                    &details,
+                )
+                .await;
+                return;
             }
         }
     };
@@ -2823,7 +2988,8 @@ pub(crate) async fn auto_launch_kernel(
                         }
                         Ok(None) => None,
                         Err(()) => {
-                            reset_starting_state(room, None).await;
+                            reset_and_publish_prewarmed_acquire_error(room, env_source.as_str())
+                                .await;
                             return;
                         }
                     }
@@ -2888,7 +3054,11 @@ pub(crate) async fn auto_launch_kernel(
                             }
                             Ok(None) => None,
                             Err(()) => {
-                                reset_starting_state(room, None).await;
+                                reset_and_publish_prewarmed_acquire_error(
+                                    room,
+                                    env_source.as_str(),
+                                )
+                                .await;
                                 return;
                             }
                         }
@@ -2920,7 +3090,7 @@ pub(crate) async fn auto_launch_kernel(
                     }
                     Ok(None) => None,
                     Err(()) => {
-                        reset_starting_state(room, None).await;
+                        reset_and_publish_prewarmed_acquire_error(room, prewarmed.as_str()).await;
                         return;
                     }
                 };
@@ -3008,8 +3178,15 @@ pub(crate) async fn auto_launch_kernel(
                     (env, Some(deps.clone()))
                 }
                 Err(e) => {
-                    error!("[notebook-sync] Failed to prepare PEP 723 env: {}", e);
+                    let details = format!("Failed to prepare PEP 723 environment: {}", e);
+                    error!("[notebook-sync] {}", details);
                     reset_starting_state(room, None).await;
+                    publish_environment_launch_error(
+                        room,
+                        env_source.as_str(),
+                        Some(KernelErrorReason::EnvironmentPrepareFailed),
+                        &details,
+                    );
                     return;
                 }
             }
@@ -3078,8 +3255,16 @@ pub(crate) async fn auto_launch_kernel(
                                 (env, Some(deps))
                             }
                             Err(e) => {
-                                error!("[notebook-sync] Failed to prepare inline env: {}", e);
+                                let details =
+                                    format!("Failed to prepare inline environment: {}", e);
+                                error!("[notebook-sync] {}", details);
                                 reset_starting_state(room, None).await;
+                                publish_environment_launch_error(
+                                    room,
+                                    env_source.as_str(),
+                                    Some(KernelErrorReason::EnvironmentPrepareFailed),
+                                    &details,
+                                );
                                 return;
                             }
                         }
@@ -3112,8 +3297,15 @@ pub(crate) async fn auto_launch_kernel(
                         (env, Some(deps))
                     }
                     Err(e) => {
-                        error!("[notebook-sync] Failed to prepare inline env: {}", e);
+                        let details = format!("Failed to prepare inline environment: {}", e);
+                        error!("[notebook-sync] {}", details);
                         reset_starting_state(room, None).await;
+                        publish_environment_launch_error(
+                            room,
+                            env_source.as_str(),
+                            Some(KernelErrorReason::EnvironmentPrepareFailed),
+                            &details,
+                        );
                         return;
                     }
                 }
@@ -3190,8 +3382,16 @@ pub(crate) async fn auto_launch_kernel(
                                 (env, Some(deps))
                             }
                             Err(e) => {
-                                error!("[notebook-sync] Failed to prepare conda inline env: {}", e);
+                                let details =
+                                    format!("Failed to prepare conda inline environment: {}", e);
+                                error!("[notebook-sync] {}", details);
                                 reset_starting_state(room, None).await;
+                                publish_environment_launch_error(
+                                    room,
+                                    env_source.as_str(),
+                                    Some(KernelErrorReason::EnvironmentPrepareFailed),
+                                    &details,
+                                );
                                 return;
                             }
                         }
@@ -3217,8 +3417,15 @@ pub(crate) async fn auto_launch_kernel(
             });
 
         let Some(yml_path) = yml_path else {
-            warn!("[notebook-sync] conda:env_yml but no environment.yml found");
-            reset_starting_state(room, None).await;
+            let details = "conda:env_yml requested but no environment.yml was found";
+            warn!("[notebook-sync] {}", details);
+            reset_and_publish_environment_launch_error(
+                room,
+                env_source.as_str(),
+                Some(KernelErrorReason::EnvironmentPrepareFailed),
+                details,
+            )
+            .await;
             return;
         };
 
@@ -3251,8 +3458,15 @@ pub(crate) async fn auto_launch_kernel(
         let env_config = match crate::project_file::parse_environment_yml(&yml_path) {
             Ok(config) => config,
             Err(e) => {
-                error!("[notebook-sync] Failed to parse environment.yml: {}", e);
-                reset_starting_state(room, None).await;
+                let details = format!("Failed to parse environment.yml: {}", e);
+                error!("[notebook-sync] {}", details);
+                reset_and_publish_environment_launch_error(
+                    room,
+                    env_source.as_str(),
+                    Some(KernelErrorReason::EnvironmentPrepareFailed),
+                    &details,
+                )
+                .await;
                 return;
             }
         };
@@ -3303,6 +3517,9 @@ pub(crate) async fn auto_launch_kernel(
             .collect();
         if !base_names.contains("ipykernel") {
             all_deps.push("ipykernel".to_string());
+        }
+        if !base_names.contains("pip") {
+            all_deps.push("pip".to_string());
         }
 
         let channels = if env_config.channels.is_empty() {
@@ -3369,17 +3586,13 @@ pub(crate) async fn auto_launch_kernel(
                             env_config.name.as_deref().unwrap_or("<env>"),
                         );
                         warn!("[notebook-sync] {}", details);
-                        if let Err(e) = room.state.with_doc(|sd| {
-                            sd.set_lifecycle_with_error_details(
-                                &RuntimeLifecycle::Error,
-                                None,
-                                Some(&details),
-                            )?;
-                            sd.clear_env_progress()?;
-                            Ok(())
-                        }) {
-                            warn!("[runtime-state] {}", e);
-                        }
+                        reset_and_publish_environment_launch_error(
+                            room,
+                            env_source.as_str(),
+                            None,
+                            &details,
+                        )
+                        .await;
                         return;
                     }
                 } else {
@@ -3410,17 +3623,13 @@ pub(crate) async fn auto_launch_kernel(
             {
                 let details = format!("conda:env_yml sync into existing env failed: {}", e);
                 error!("[notebook-sync] {}", details);
-                if let Err(e) = room.state.with_doc(|sd| {
-                    sd.set_lifecycle_with_error_details(
-                        &RuntimeLifecycle::Error,
-                        Some(KernelErrorReason::CondaEnvBuildFailed),
-                        Some(&details),
-                    )?;
-                    sd.clear_env_progress()?;
-                    Ok(())
-                }) {
-                    warn!("[runtime-state] {}", e);
-                }
+                reset_and_publish_environment_launch_error(
+                    room,
+                    env_source.as_str(),
+                    Some(KernelErrorReason::CondaEnvBuildFailed),
+                    &details,
+                )
+                .await;
                 return;
             }
             // The banner stays lit until a terminal phase is written. Emit Ready so
@@ -3449,17 +3658,13 @@ pub(crate) async fn auto_launch_kernel(
             if let Err(e) = tokio::fs::create_dir_all(parent).await {
                 let details = format!("Failed to create conda envs directory {:?}: {}", parent, e);
                 error!("[notebook-sync] {}", details);
-                if let Err(e) = room.state.with_doc(|sd| {
-                    sd.set_lifecycle_with_error_details(
-                        &RuntimeLifecycle::Error,
-                        Some(KernelErrorReason::CondaEnvBuildFailed),
-                        Some(&details),
-                    )?;
-                    sd.clear_env_progress()?;
-                    Ok(())
-                }) {
-                    warn!("[runtime-state] {}", e);
-                }
+                reset_and_publish_environment_launch_error(
+                    room,
+                    env_source.as_str(),
+                    Some(KernelErrorReason::CondaEnvBuildFailed),
+                    &details,
+                )
+                .await;
                 return;
             }
 
@@ -3503,17 +3708,13 @@ pub(crate) async fn auto_launch_kernel(
                         env_name_display, e
                     );
                     error!("[notebook-sync] {}", details);
-                    if let Err(e) = room.state.with_doc(|sd| {
-                        sd.set_lifecycle_with_error_details(
-                            &RuntimeLifecycle::Error,
-                            Some(KernelErrorReason::CondaEnvBuildFailed),
-                            Some(&details),
-                        )?;
-                        sd.clear_env_progress()?;
-                        Ok(())
-                    }) {
-                        warn!("[runtime-state] {}", e);
-                    }
+                    reset_and_publish_environment_launch_error(
+                        room,
+                        env_source.as_str(),
+                        Some(KernelErrorReason::CondaEnvBuildFailed),
+                        &details,
+                    )
+                    .await;
                     return;
                 }
             }
@@ -3525,7 +3726,7 @@ pub(crate) async fn auto_launch_kernel(
             .and_then(|s| s.runt.pixi.as_ref())
             .map(|p| p.dependencies.clone())
             .unwrap_or_default();
-        let deps = crate::inline_env::inline_deps_with_required_packages(&deps);
+        let deps = crate::inline_env::inline_deps_with_conda_required_packages(&deps);
         if !deps.is_empty() {
             info!("[notebook-sync] pixi:inline deps for pixi exec: {:?}", deps);
             (None, Some(deps))
@@ -3535,7 +3736,7 @@ pub(crate) async fn auto_launch_kernel(
     } else if matches!(env_source, EnvSource::Pep723(PackageManager::Pixi)) {
         // PEP 723 deps via pixi exec -w (same mechanism as pixi:inline)
         if let Some(ref deps) = pep723_deps {
-            let deps = crate::inline_env::inline_deps_with_required_packages(deps);
+            let deps = crate::inline_env::inline_deps_with_conda_required_packages(deps);
             info!("[notebook-sync] pixi:pep723 deps for pixi exec: {:?}", deps);
             (None, Some(deps))
         } else {
@@ -3561,24 +3762,13 @@ pub(crate) async fn auto_launch_kernel(
             Err(e) => {
                 let details = format!("Failed to prepare UV project environment: {e}");
                 error!("[notebook-sync] {}", details);
-                reset_starting_state(room, None).await;
-                let error_phase = kernel_env::EnvProgressPhase::Error {
-                    message: details.clone(),
-                };
-                if let Err(e) = room.state.with_doc(|sd| {
-                    sd.set_lifecycle_with_error_details(
-                        &RuntimeLifecycle::Error,
-                        None,
-                        Some(&details),
-                    )?;
-                    sd.set_kernel_info("python", "python", env_source.as_str())?;
-                    if let Ok(value) = serde_json::to_value(&error_phase) {
-                        sd.set_env_progress("uv", &value)?;
-                    }
-                    Ok(())
-                }) {
-                    warn!("[runtime-state] {}", e);
-                }
+                reset_and_publish_environment_launch_error(
+                    room,
+                    env_source.as_str(),
+                    Some(KernelErrorReason::EnvironmentPrepareFailed),
+                    &details,
+                )
+                .await;
                 return;
             }
         }
@@ -3845,13 +4035,11 @@ pub(crate) async fn auto_launch_kernel(
                         // string usually carries the stderr tail from
                         // `jupyter_kernel.rs` — exactly what the user
                         // needs to see.
-                        reset_starting_state_with_outcome(
+                        reset_auto_launch_error_with_trust_check(
                             room,
                             Some(&runtime_agent_id),
-                            ResetOutcome::Error {
-                                reason: None,
-                                details: &error,
-                            },
+                            None,
+                            &error,
                         )
                         .await;
                     }
@@ -3859,26 +4047,22 @@ pub(crate) async fn auto_launch_kernel(
                         warn!(
                             "[notebook-sync] Unexpected runtime agent response during auto-launch"
                         );
-                        reset_starting_state_with_outcome(
+                        reset_auto_launch_error_with_trust_check(
                             room,
                             Some(&runtime_agent_id),
-                            ResetOutcome::Error {
-                                reason: None,
-                                details: "Unexpected runtime agent response during kernel launch",
-                            },
+                            None,
+                            "Unexpected runtime agent response during kernel launch",
                         )
                         .await;
                     }
                     Err(e) => {
                         warn!("[notebook-sync] Agent communication error: {}", e);
                         let details = format!("Agent communication error: {e}");
-                        reset_starting_state_with_outcome(
+                        reset_auto_launch_error_with_trust_check(
                             room,
                             Some(&runtime_agent_id),
-                            ResetOutcome::Error {
-                                reason: None,
-                                details: &details,
-                            },
+                            None,
+                            &details,
                         )
                         .await;
                     }
@@ -3887,15 +4071,7 @@ pub(crate) async fn auto_launch_kernel(
             Err(e) => {
                 warn!("[notebook-sync] Failed to spawn runtime agent: {}", e);
                 let details = format!("Failed to spawn runtime agent: {e}");
-                reset_starting_state_with_outcome(
-                    room,
-                    None,
-                    ResetOutcome::Error {
-                        reason: None,
-                        details: &details,
-                    },
-                )
-                .await;
+                reset_auto_launch_error_with_trust_check(room, None, None, &details).await;
             }
         }
     }
@@ -4542,10 +4718,7 @@ pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResp
         }
         Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
             error!("[notebook-sync] SyncEnvironment failed: {}", error);
-            NotebookResponse::SyncEnvironmentFailed {
-                error,
-                needs_restart: true,
-            }
+            sync_environment_agent_error_response(error)
         }
         Ok(_) => {
             error!("[notebook-sync] SyncEnvironment received unexpected response type");
@@ -4559,10 +4732,10 @@ pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResp
                 "[notebook-sync] SyncEnvironment agent communication error: {}",
                 e
             );
-            NotebookResponse::SyncEnvironmentFailed {
-                error: format!("Agent communication error: {}", e),
-                needs_restart: false,
-            }
+            sync_environment_agent_communication_error_response(format!(
+                "Agent communication error: {}",
+                e
+            ))
         }
     }
 }

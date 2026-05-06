@@ -21,11 +21,11 @@ use crate::notebook_sync_server::{
     extract_pixi_toml_deps, format_conda_env_yml_build_details, get_inline_conda_channels,
     get_inline_conda_deps, get_inline_conda_python, get_inline_uv_deps, get_inline_uv_prerelease,
     missing_conda_env_yml_decision, project_environment_build_approved,
-    promote_inline_deps_to_project, publish_kernel_state_presence, reset_starting_state,
-    reset_starting_state_with_outcome, resolve_metadata_snapshot,
-    send_runtime_agent_request_with_kernel_ports, try_conda_pool_for_inline_deps,
-    try_uv_pool_for_inline_deps, unified_env_on_disk, CapturedEnvRuntime, NotebookRoom,
-    ResetOutcome,
+    promote_inline_deps_to_project, publish_environment_launch_error,
+    publish_kernel_state_presence, reset_starting_state, reset_starting_state_with_outcome,
+    resolve_metadata_snapshot, send_runtime_agent_request_with_kernel_ports,
+    try_conda_pool_for_inline_deps, try_uv_pool_for_inline_deps, unified_env_on_disk,
+    CapturedEnvRuntime, NotebookRoom, ResetOutcome,
 };
 use crate::protocol::NotebookResponse;
 use crate::requests::guarded;
@@ -563,22 +563,26 @@ pub(crate) async fn handle(
                     }
                     Ok(None) => None,
                     Err(()) => {
-                        // `acquire_prewarmed_env_with_capture`
-                        // already broadcast the error; bail out.
+                        let error = format!(
+                            "{} pool empty - no environment available",
+                            if matches!(parsed_resolved, EnvSource::Prewarmed(PackageManager::Uv)) {
+                                "UV"
+                            } else {
+                                "Conda"
+                            }
+                        );
+                        let details = format!(
+                            "Failed to acquire prewarmed environment for {}. {error}",
+                            parsed_resolved.as_str(),
+                        );
                         reset_starting_state(room, None).await;
-                        return NotebookResponse::Error {
-                            error: format!(
-                                "{} pool empty - no environment available",
-                                if matches!(
-                                    parsed_resolved,
-                                    EnvSource::Prewarmed(PackageManager::Uv)
-                                ) {
-                                    "UV"
-                                } else {
-                                    "Conda"
-                                }
-                            ),
-                        };
+                        publish_environment_launch_error(
+                            room,
+                            parsed_resolved.as_str(),
+                            Some(KernelErrorReason::EnvironmentPrepareFailed),
+                            &details,
+                        );
+                        return NotebookResponse::Error { error };
                     }
                 }
             }
@@ -652,10 +656,15 @@ pub(crate) async fn handle(
                     "[notebook-sync] Invalid PEP 723 metadata in notebook: {}",
                     e
                 );
+                let details = format!("Invalid PEP 723 metadata in notebook: {}", e);
                 reset_starting_state(room, None).await;
-                return NotebookResponse::Error {
-                    error: format!("Invalid PEP 723 metadata in notebook: {}", e),
-                };
+                publish_environment_launch_error(
+                    room,
+                    parsed_resolved.as_str(),
+                    Some(KernelErrorReason::EnvironmentPrepareFailed),
+                    &details,
+                );
+                return NotebookResponse::Error { error: details };
             }
         };
 
@@ -686,17 +695,29 @@ pub(crate) async fn handle(
                 }
                 Err(e) => {
                     error!("[notebook-sync] Failed to prepare PEP 723 env: {}", e);
+                    let details = format!("Failed to prepare PEP 723 environment: {}", e);
                     reset_starting_state(room, None).await;
-                    return NotebookResponse::Error {
-                        error: format!("Failed to prepare PEP 723 environment: {}", e),
-                    };
+                    publish_environment_launch_error(
+                        room,
+                        parsed_resolved.as_str(),
+                        Some(KernelErrorReason::EnvironmentPrepareFailed),
+                        &details,
+                    );
+                    return NotebookResponse::Error { error: details };
                 }
             }
         } else {
+            let details =
+                "No PEP 723 dependencies found in notebook cells for requested env_source \"uv:pep723\"";
             reset_starting_state(room, None).await;
+            publish_environment_launch_error(
+                room,
+                parsed_resolved.as_str(),
+                Some(KernelErrorReason::EnvironmentPrepareFailed),
+                details,
+            );
             return NotebookResponse::Error {
-                error: "No PEP 723 dependencies found in notebook cells for requested env_source \"uv:pep723\""
-                    .to_string(),
+                error: details.to_string(),
             };
         }
     } else if matches!(parsed_resolved, EnvSource::Inline(PackageManager::Uv)) {
@@ -762,10 +783,16 @@ pub(crate) async fn handle(
                                 (env, Some(deps))
                             }
                             Err(e) => {
+                                let details =
+                                    format!("Failed to prepare inline environment: {}", e);
                                 reset_starting_state(room, None).await;
-                                return NotebookResponse::Error {
-                                    error: format!("Failed to prepare inline environment: {}", e),
-                                };
+                                publish_environment_launch_error(
+                                    room,
+                                    parsed_resolved.as_str(),
+                                    Some(KernelErrorReason::EnvironmentPrepareFailed),
+                                    &details,
+                                );
+                                return NotebookResponse::Error { error: details };
                             }
                         }
                     }
@@ -793,10 +820,15 @@ pub(crate) async fn handle(
                         (env, Some(deps))
                     }
                     Err(e) => {
+                        let details = format!("Failed to prepare inline environment: {}", e);
                         reset_starting_state(room, None).await;
-                        return NotebookResponse::Error {
-                            error: format!("Failed to prepare inline environment: {}", e),
-                        };
+                        publish_environment_launch_error(
+                            room,
+                            parsed_resolved.as_str(),
+                            Some(KernelErrorReason::EnvironmentPrepareFailed),
+                            &details,
+                        );
+                        return NotebookResponse::Error { error: details };
                     }
                 }
             }
@@ -868,13 +900,16 @@ pub(crate) async fn handle(
                                 (env, Some(deps))
                             }
                             Err(e) => {
+                                let details =
+                                    format!("Failed to prepare conda inline environment: {}", e);
                                 reset_starting_state(room, None).await;
-                                return NotebookResponse::Error {
-                                    error: format!(
-                                        "Failed to prepare conda inline environment: {}",
-                                        e
-                                    ),
-                                };
+                                publish_environment_launch_error(
+                                    room,
+                                    parsed_resolved.as_str(),
+                                    Some(KernelErrorReason::EnvironmentPrepareFailed),
+                                    &details,
+                                );
+                                return NotebookResponse::Error { error: details };
                             }
                         }
                     }
@@ -975,13 +1010,17 @@ pub(crate) async fn handle(
                         }
                     }
 
-                    // Always include ipykernel
+                    // Always include ipykernel and pip. pip is explicit so
+                    // `%pip` installs into this prepared Conda environment.
                     let base_names: std::collections::HashSet<String> = all_deps
                         .iter()
                         .map(|d| notebook_doc::metadata::extract_package_name(d).to_lowercase())
                         .collect();
                     if !base_names.contains("ipykernel") {
                         all_deps.push("ipykernel".to_string());
+                    }
+                    if !base_names.contains("pip") {
+                        all_deps.push("pip".to_string());
                     }
 
                     let channels = if env_config.channels.is_empty() {
@@ -1048,15 +1087,13 @@ pub(crate) async fn handle(
                                         requested,
                                         env_config.name.as_deref().unwrap_or("<env>"),
                                     );
-                                    reset_starting_state_with_outcome(
+                                    reset_starting_state(room, None).await;
+                                    publish_environment_launch_error(
                                         room,
+                                        parsed_resolved.as_str(),
                                         None,
-                                        ResetOutcome::Error {
-                                            reason: None,
-                                            details: &details,
-                                        },
-                                    )
-                                    .await;
+                                        &details,
+                                    );
                                     return NotebookResponse::Error { error: details };
                                 }
                             } else {
@@ -1087,17 +1124,13 @@ pub(crate) async fn handle(
                             let details =
                                 format!("conda:env_yml sync into existing env failed: {}", e);
                             error!("[notebook-sync] {}", details);
-                            reset_starting_state_with_outcome(
+                            reset_starting_state(room, None).await;
+                            publish_environment_launch_error(
                                 room,
-                                None,
-                                ResetOutcome::Error {
-                                    reason: Some(
-                                        runtime_doc::KernelErrorReason::CondaEnvBuildFailed,
-                                    ),
-                                    details: &details,
-                                },
-                            )
-                            .await;
+                                parsed_resolved.as_str(),
+                                Some(KernelErrorReason::CondaEnvBuildFailed),
+                                &details,
+                            );
                             return NotebookResponse::Error { error: details };
                         }
                         // Terminal phase so the banner clears. Matches the env_yml path in
@@ -1131,17 +1164,13 @@ pub(crate) async fn handle(
                                 "Failed to create conda envs directory {:?}: {}",
                                 parent, e
                             );
-                            reset_starting_state_with_outcome(
+                            reset_starting_state(room, None).await;
+                            publish_environment_launch_error(
                                 room,
-                                None,
-                                ResetOutcome::Error {
-                                    reason: Some(
-                                        runtime_doc::KernelErrorReason::CondaEnvBuildFailed,
-                                    ),
-                                    details: &details,
-                                },
-                            )
-                            .await;
+                                parsed_resolved.as_str(),
+                                Some(KernelErrorReason::CondaEnvBuildFailed),
+                                &details,
+                            );
                             return NotebookResponse::Error { error: details };
                         }
                         match kernel_env::conda::prepare_environment_in(
@@ -1185,32 +1214,43 @@ pub(crate) async fn handle(
                                     "Failed to create conda env '{}' from environment.yml: {}",
                                     env_name_display, e
                                 );
-                                reset_starting_state_with_outcome(
+                                reset_starting_state(room, None).await;
+                                publish_environment_launch_error(
                                     room,
-                                    None,
-                                    ResetOutcome::Error {
-                                        reason: Some(
-                                            runtime_doc::KernelErrorReason::CondaEnvBuildFailed,
-                                        ),
-                                        details: &details,
-                                    },
-                                )
-                                .await;
+                                    parsed_resolved.as_str(),
+                                    Some(KernelErrorReason::CondaEnvBuildFailed),
+                                    &details,
+                                );
                                 return NotebookResponse::Error { error: details };
                             }
                         }
                     }
                 }
                 Err(e) => {
+                    let details = format!("Failed to parse environment.yml: {}", e);
                     reset_starting_state(room, None).await;
-                    return NotebookResponse::Error {
-                        error: format!("Failed to parse environment.yml: {}", e),
-                    };
+                    publish_environment_launch_error(
+                        room,
+                        parsed_resolved.as_str(),
+                        Some(KernelErrorReason::EnvironmentPrepareFailed),
+                        &details,
+                    );
+                    return NotebookResponse::Error { error: details };
                 }
             }
         } else {
-            warn!("[notebook-sync] conda:env_yml but no environment.yml found");
-            (pooled_env, None)
+            let details = "conda:env_yml requested but no environment.yml was found";
+            warn!("[notebook-sync] {}", details);
+            reset_starting_state(room, None).await;
+            publish_environment_launch_error(
+                room,
+                parsed_resolved.as_str(),
+                Some(KernelErrorReason::EnvironmentPrepareFailed),
+                details,
+            );
+            return NotebookResponse::Error {
+                error: details.to_string(),
+            };
         }
     } else if matches!(parsed_resolved, EnvSource::Inline(PackageManager::Pixi)) {
         // pixi exec handles its own caching — just extract deps for -w flags
@@ -1219,7 +1259,7 @@ pub(crate) async fn handle(
             .and_then(|s| s.runt.pixi.as_ref())
             .map(|p| p.dependencies.clone())
             .unwrap_or_default();
-        let deps = crate::inline_env::inline_deps_with_required_packages(&deps);
+        let deps = crate::inline_env::inline_deps_with_conda_required_packages(&deps);
         if !deps.is_empty() {
             info!(
                 "[notebook-sync] LaunchKernel: pixi:inline deps for pixi exec: {:?}",
@@ -1235,7 +1275,7 @@ pub(crate) async fn handle(
         match notebook_doc::pep723::find_pep723_in_cells(&cells) {
             Ok(Some(meta)) if !meta.dependencies.is_empty() => {
                 let deps =
-                    crate::inline_env::inline_deps_with_required_packages(&meta.dependencies);
+                    crate::inline_env::inline_deps_with_conda_required_packages(&meta.dependencies);
                 info!("[notebook-sync] LaunchKernel: pixi:pep723 deps: {:?}", deps);
                 (None, Some(deps))
             }
@@ -1262,23 +1302,12 @@ pub(crate) async fn handle(
                 let details = format!("Failed to prepare UV project environment: {e}");
                 error!("[notebook-sync] {}", details);
                 reset_starting_state(room, None).await;
-                let error_phase = kernel_env::EnvProgressPhase::Error {
-                    message: details.clone(),
-                };
-                if let Err(e) = room.state.with_doc(|sd| {
-                    sd.set_lifecycle_with_error_details(
-                        &RuntimeLifecycle::Error,
-                        None,
-                        Some(&details),
-                    )?;
-                    sd.set_kernel_info("python", "python", parsed_resolved.as_str())?;
-                    if let Ok(value) = serde_json::to_value(&error_phase) {
-                        sd.set_env_progress("uv", &value)?;
-                    }
-                    Ok(())
-                }) {
-                    warn!("[runtime-state] {}", e);
-                }
+                publish_environment_launch_error(
+                    room,
+                    parsed_resolved.as_str(),
+                    Some(KernelErrorReason::EnvironmentPrepareFailed),
+                    &details,
+                );
                 return NotebookResponse::Error { error: details };
             }
         }

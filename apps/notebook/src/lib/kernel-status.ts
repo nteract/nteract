@@ -27,6 +27,7 @@ import {
 } from "runtimed";
 
 const ERROR_REASON_LABELS: Record<string, string> = {
+  [KERNEL_ERROR_REASON.ENVIRONMENT_PREPARE_FAILED]: "environment setup failed",
   [KERNEL_ERROR_REASON.MISSING_IPYKERNEL]: "ipykernel missing",
   [KERNEL_ERROR_REASON.DEPENDENCY_CACHE_MISSING_IPYKERNEL]: "ipykernel missing",
   [KERNEL_ERROR_REASON.IPYKERNEL_SITE_PACKAGES_MISMATCH]: "Python environment mismatch",

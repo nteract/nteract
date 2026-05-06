@@ -207,6 +207,10 @@ impl KernelActivity {
 /// value via `KERNEL_ERROR_REASON` in `@runtimed`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KernelErrorReason {
+    /// A package-manager environment prepare/sync step failed before the
+    /// kernel process could launch. `error_details` carries the manager's
+    /// solve/install error.
+    EnvironmentPrepareFailed,
     /// Pixi-managed environment is missing the `ipykernel` package.
     /// `NotebookToolbar` gates its "install ipykernel" prompt on this.
     MissingIpykernel,
@@ -231,6 +235,7 @@ pub enum KernelErrorReason {
 impl KernelErrorReason {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::EnvironmentPrepareFailed => "environment_prepare_failed",
             Self::MissingIpykernel => "missing_ipykernel",
             Self::DependencyCacheMissingIpykernel => "dependency_cache_missing_ipykernel",
             Self::IpykernelSitePackagesMismatch => "ipykernel_site_packages_mismatch",
@@ -241,6 +246,7 @@ impl KernelErrorReason {
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
+            "environment_prepare_failed" => Some(Self::EnvironmentPrepareFailed),
             "missing_ipykernel" => Some(Self::MissingIpykernel),
             "dependency_cache_missing_ipykernel" => Some(Self::DependencyCacheMissingIpykernel),
             "ipykernel_site_packages_mismatch" => Some(Self::IpykernelSitePackagesMismatch),
@@ -456,6 +462,10 @@ mod tests {
     #[test]
     fn error_reason_as_str() {
         assert_eq!(
+            KernelErrorReason::EnvironmentPrepareFailed.as_str(),
+            "environment_prepare_failed"
+        );
+        assert_eq!(
             KernelErrorReason::MissingIpykernel.as_str(),
             "missing_ipykernel"
         );
@@ -475,6 +485,10 @@ mod tests {
 
     #[test]
     fn error_reason_parse() {
+        assert_eq!(
+            KernelErrorReason::parse("environment_prepare_failed"),
+            Some(KernelErrorReason::EnvironmentPrepareFailed)
+        );
         assert_eq!(
             KernelErrorReason::parse("missing_ipykernel"),
             Some(KernelErrorReason::MissingIpykernel)
@@ -501,6 +515,7 @@ mod tests {
     #[test]
     fn error_reason_as_str_round_trips_through_parse() {
         let reasons = [
+            KernelErrorReason::EnvironmentPrepareFailed,
             KernelErrorReason::MissingIpykernel,
             KernelErrorReason::DependencyCacheMissingIpykernel,
             KernelErrorReason::IpykernelSitePackagesMismatch,

@@ -13,13 +13,14 @@ import { Button } from "@/components/ui/button";
  * Rules:
  *
  * - Only show in `Error` state with non-empty `errorDetails`.
- * - Skip `MissingIpykernel`: toolbar renders a targeted "install
- *   ipykernel" prompt that already consumes the error message.
+ * - Skip typed remediation cases such as missing ipykernel,
+ *   dependency-cache mismatches, and missing environment.yml builds:
+ *   toolbar renders targeted prompts that already consume the error message.
  * - Skip `runtime === "deno"`: toolbar renders the Deno
  *   "auto-install failed" prompt that already consumes it.
  *
- * Everything else — stderr tails from generic subprocess crashes,
- * env-build rate limits — falls through to this banner.
+ * Everything else — solver/install errors, stderr tails from generic
+ * subprocess crashes, env-build rate limits — falls through to this banner.
  */
 export function shouldShowKernelLaunchErrorBanner(params: {
   lifecycle: RuntimeLifecycle;
@@ -50,14 +51,15 @@ interface KernelLaunchErrorBannerProps {
 
 /**
  * Banner surfaced when the daemon reports `RuntimeLifecycle::Error`
- * without a typed `KernelErrorReason`. Those typed cases
- * (`MissingIpykernel`, `CondaEnvYmlMissing`) have their own targeted
- * prompts; this one covers everything else — subprocess crashes,
- * import errors, rate-limited env builds, etc.
+ * with launch details that are not owned by a more targeted remediation
+ * prompt. Those targeted cases are skipped by
+ * `shouldShowKernelLaunchErrorBanner`; this one covers everything else —
+ * env solve failures, subprocess crashes, import errors, rate-limited env
+ * builds, etc.
  *
- * App.tsx gates visibility on lifecycle + a non-typed reason and
- * resets the dismiss state when `errorDetails` changes, so a new
- * failure after a retry re-shows the banner.
+ * App.tsx gates visibility on lifecycle + non-targeted remediation
+ * cases and resets the dismiss state when `errorDetails` changes, so
+ * a new failure after a retry re-shows the banner.
  */
 export function KernelLaunchErrorBanner({
   errorDetails,
