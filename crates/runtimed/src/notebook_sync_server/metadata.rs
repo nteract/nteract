@@ -50,6 +50,24 @@ pub(crate) fn write_trust_to_runtime_state(room: &NotebookRoom, trust: &TrustSta
     }
 }
 
+async fn clear_environment_prepare_error_when_trust_blocks_launch(room: &NotebookRoom) {
+    let should_clear = room
+        .state
+        .read(|sd| {
+            let state = sd.read_state();
+            matches!(state.kernel.lifecycle, RuntimeLifecycle::Error)
+                && state.kernel.error_reason.as_deref()
+                    == Some(KernelErrorReason::EnvironmentPrepareFailed.as_str())
+        })
+        .unwrap_or(false);
+    if should_clear {
+        info!(
+            "[notebook-sync] Clearing stale environment prepare error because notebook trust now blocks launch"
+        );
+        reset_starting_state(room, None).await;
+    }
+}
+
 /// Check if a notebook's metadata snapshot has inline dependencies or Deno config.
 /// Returns the appropriate env_source if found ("uv:inline", "conda:inline", or "deno").
 ///
@@ -884,7 +902,12 @@ pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
 
         // Update RuntimeStateDoc so the frontend banner reacts immediately
         let ts = room.trust_state.read().await;
+        let trust_blocks_launch = trust_needs_approval(&ts.status);
         write_trust_to_runtime_state(room, &ts);
+        drop(ts);
+        if trust_blocks_launch {
+            clear_environment_prepare_error_when_trust_blocks_launch(room).await;
+        }
     } else {
         let current_info = {
             let ts = room.trust_state.read().await;
@@ -902,7 +925,12 @@ pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
                 *ts = new_trust;
             }
             let ts = room.trust_state.read().await;
+            let trust_blocks_launch = trust_needs_approval(&ts.status);
             write_trust_to_runtime_state(room, &ts);
+            drop(ts);
+            if trust_blocks_launch {
+                clear_environment_prepare_error_when_trust_blocks_launch(room).await;
+            }
         }
     }
 }
@@ -2342,6 +2370,15 @@ pub(crate) fn publish_environment_launch_error(
     }
 }
 
+async fn trust_allows_auto_launch_error_publish(room: &NotebookRoom) -> bool {
+    check_and_update_trust_state(room).await;
+    let trust = room.trust_state.read().await;
+    matches!(
+        trust.status,
+        runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
+    )
+}
+
 async fn reset_and_publish_environment_launch_error(
     room: &NotebookRoom,
     env_source: &str,
@@ -2349,7 +2386,34 @@ async fn reset_and_publish_environment_launch_error(
     details: &str,
 ) {
     reset_starting_state(room, None).await;
+    if !trust_allows_auto_launch_error_publish(room).await {
+        info!(
+            "[notebook-sync] Suppressing auto-launch environment error because notebook trust now blocks launch"
+        );
+        return;
+    }
     publish_environment_launch_error(room, env_source, reason, details);
+}
+
+async fn reset_auto_launch_error_with_trust_check(
+    room: &NotebookRoom,
+    expected_runtime_agent_id: Option<&str>,
+    reason: Option<KernelErrorReason>,
+    details: &str,
+) {
+    if trust_allows_auto_launch_error_publish(room).await {
+        reset_starting_state_with_outcome(
+            room,
+            expected_runtime_agent_id,
+            ResetOutcome::Error { reason, details },
+        )
+        .await;
+    } else {
+        info!(
+            "[notebook-sync] Suppressing auto-launch failure because notebook trust now blocks launch"
+        );
+        reset_starting_state(room, expected_runtime_agent_id).await;
+    }
 }
 
 async fn reset_and_publish_prewarmed_acquire_error(room: &NotebookRoom, env_source: &str) {
@@ -3971,13 +4035,11 @@ pub(crate) async fn auto_launch_kernel(
                         // string usually carries the stderr tail from
                         // `jupyter_kernel.rs` — exactly what the user
                         // needs to see.
-                        reset_starting_state_with_outcome(
+                        reset_auto_launch_error_with_trust_check(
                             room,
                             Some(&runtime_agent_id),
-                            ResetOutcome::Error {
-                                reason: None,
-                                details: &error,
-                            },
+                            None,
+                            &error,
                         )
                         .await;
                     }
@@ -3985,26 +4047,22 @@ pub(crate) async fn auto_launch_kernel(
                         warn!(
                             "[notebook-sync] Unexpected runtime agent response during auto-launch"
                         );
-                        reset_starting_state_with_outcome(
+                        reset_auto_launch_error_with_trust_check(
                             room,
                             Some(&runtime_agent_id),
-                            ResetOutcome::Error {
-                                reason: None,
-                                details: "Unexpected runtime agent response during kernel launch",
-                            },
+                            None,
+                            "Unexpected runtime agent response during kernel launch",
                         )
                         .await;
                     }
                     Err(e) => {
                         warn!("[notebook-sync] Agent communication error: {}", e);
                         let details = format!("Agent communication error: {e}");
-                        reset_starting_state_with_outcome(
+                        reset_auto_launch_error_with_trust_check(
                             room,
                             Some(&runtime_agent_id),
-                            ResetOutcome::Error {
-                                reason: None,
-                                details: &details,
-                            },
+                            None,
+                            &details,
                         )
                         .await;
                     }
@@ -4013,15 +4071,7 @@ pub(crate) async fn auto_launch_kernel(
             Err(e) => {
                 warn!("[notebook-sync] Failed to spawn runtime agent: {}", e);
                 let details = format!("Failed to spawn runtime agent: {e}");
-                reset_starting_state_with_outcome(
-                    room,
-                    None,
-                    ResetOutcome::Error {
-                        reason: None,
-                        details: &details,
-                    },
-                )
-                .await;
+                reset_auto_launch_error_with_trust_check(room, None, None, &details).await;
             }
         }
     }
