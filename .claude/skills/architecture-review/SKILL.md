@@ -180,8 +180,7 @@ Start with these to understand the actual implementation:
 - `apps/notebook/src/AGENTS.md`
 - `crates/notebook-wire/AGENTS.md`
 - `crates/notebook-doc/AGENTS.md`
-- `contributing/architecture.md`
-- `contributing/runtimed.md`
+- `crates/runtimed/AGENTS.md`
 
 **Core daemon:**
 - `crates/runtimed/src/daemon.rs`
