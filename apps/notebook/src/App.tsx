@@ -790,8 +790,9 @@ function AppContent() {
 
         if (response.result === "sync_environment_failed" && !response.needs_restart) {
           // Error but doesn't need restart (e.g., package cannot resolve).
-          // Leave RuntimeStateDoc env progress visible so the toolbar can
-          // show the solver/install error instead of silently dismissing it.
+          // The runtime agent already wrote EnvProgressPhase::Error into
+          // RuntimeStateDoc before replying, so keep the local progress
+          // banner visible instead of dismissing it.
           logger.error("[App] Hot-sync failed:", {
             error: response.error,
             envSource,

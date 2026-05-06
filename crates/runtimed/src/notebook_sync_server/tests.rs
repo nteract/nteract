@@ -1,6 +1,6 @@
 use super::*;
 use automerge::{transaction::Transactable, ActorId, AutoCommit, ObjType};
-use runtime_doc::{KernelActivity, RuntimeLifecycle};
+use runtime_doc::{KernelActivity, KernelErrorReason, RuntimeLifecycle};
 use serial_test::serial;
 use uuid::Uuid;
 
@@ -7461,6 +7461,72 @@ async fn reset_starting_state_error_variant_writes_details() {
     // No typed reason (generic launch error); `error_reason` is empty
     // but present so readers can skip typed-reason branches cleanly.
     assert_eq!(state.kernel.error_reason.as_deref(), Some(""));
+}
+
+#[tokio::test]
+async fn publish_environment_launch_error_writes_kernel_and_env_progress() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "env-prepare-failure.ipynb");
+    let details = "Failed to prepare conda inline environment: no candidates for pywidget";
+
+    publish_environment_launch_error(
+        &room,
+        "conda:inline",
+        Some(KernelErrorReason::EnvironmentPrepareFailed),
+        details,
+    );
+
+    let state = room.state.read(|sd| sd.read_state()).unwrap();
+    assert!(
+        matches!(state.kernel.lifecycle, RuntimeLifecycle::Error),
+        "expected Error lifecycle, got {:?}",
+        state.kernel.lifecycle
+    );
+    assert_eq!(
+        state.kernel.error_reason.as_deref(),
+        Some("environment_prepare_failed")
+    );
+    assert_eq!(state.kernel.error_details.as_deref(), Some(details));
+    assert_eq!(state.kernel.language, "python");
+    assert_eq!(state.kernel.env_source, "conda:inline");
+    assert_eq!(
+        state.env.progress,
+        Some(serde_json::json!({
+            "env_type": "conda",
+            "phase": "error",
+            "message": details,
+        }))
+    );
+}
+
+#[test]
+fn sync_environment_failure_contract_distinguishes_agent_error_from_transport_error() {
+    match sync_environment_agent_error_response("No candidates found".to_string()) {
+        NotebookResponse::SyncEnvironmentFailed {
+            error,
+            needs_restart,
+        } => {
+            assert_eq!(error, "No candidates found");
+            assert!(
+                !needs_restart,
+                "runtime agent already published env progress"
+            );
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+
+    match sync_environment_agent_communication_error_response(
+        "Agent communication error: channel closed".to_string(),
+    ) {
+        NotebookResponse::SyncEnvironmentFailed {
+            error,
+            needs_restart,
+        } => {
+            assert_eq!(error, "Agent communication error: channel closed");
+            assert!(needs_restart, "transport failure requires a kernel restart");
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
 }
 
 // ── Regression tests for #2351: outputs not serialized to notebook ───
