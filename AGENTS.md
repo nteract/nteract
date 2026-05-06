@@ -2,7 +2,7 @@
 
 <!-- This file is canonical. CLAUDE.md is a symlink to AGENTS.md. -->
 
-This is a map. Subsystem details live in `contributing/`, auto-loaded rules live in `.claude/rules/`, and operational recipes live in `.claude/skills/` and `.codex/skills/`. Run `cargo xtask help` for build commands.
+This is a map. Subsystem details live in nested `AGENTS.md` files and the remaining `contributing/` docs, auto-loaded rules live in `.claude/rules/`, and operational recipes live in `.claude/skills/` and `.codex/skills/`. Run `cargo xtask help` for build commands.
 
 Claude-specific skills live in `.claude/skills/`. Use when the task matches:
 - `automerge-sync` for sync protocol internals, reconnection, peer state lifecycle, in-flight suppression, document-level recovery, and convergence debugging

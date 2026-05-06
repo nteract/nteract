@@ -1,6 +1,6 @@
 # Runtime daemon (runtimed)
 
-Scope: `crates/runtimed/**`, `crates/runtimed-client/**`, `crates/runtimed-outputs/**`, `crates/runtimed-service/**`, `crates/runtimed-settings-sync/**`, `crates/runtime-doc/**`, `crates/notebook-wire/**`, `crates/notebook-doc/**`, `crates/notebook-protocol/**`, `crates/notebook-sync/**`.
+Scope: `crates/runtimed/**`, `crates/runtimed-client/**`, `crates/runtimed-outputs/**`, `crates/runtimed-service/**`, `crates/runtimed-settings-sync/**`, `crates/runtimed-py/**`, `crates/runtime-doc/**`, `crates/notebook-wire/**`, `crates/notebook-doc/**`, `crates/notebook-protocol/**`, `crates/notebook-sync/**`, `packages/runtimed/**`.
 
 ## Core principles
 
@@ -12,11 +12,11 @@ Scope: `crates/runtimed/**`, `crates/runtimed-client/**`, `crates/runtimed-outpu
 
 4. **Local-first editing, synced execution.** Cell mutations happen instantly in the WASM Automerge peer. Execution runs against the synced document. Source edits debounce at 20ms; `flushSync()` fires before execute/save.
 
-5. **Binary separation via blob store.** Cell outputs use inline manifest Maps in the CRDT with `ContentRef` entries pointing to the blob store. MIME types and sizes are readable directly from the CRDT without blob fetch. Large binary content (>1KB) goes to content-addressed blob store; small content is inlined.
+5. **Binary separation via blob store.** Cell outputs use inline manifest Maps in the CRDT with `ContentRef` entries pointing to the blob store. MIME types and sizes are readable directly from the CRDT without blob fetch. Binary content always goes to the content-addressed blob store; text content is inlined only when it stays under the inline threshold.
 
 6. **Daemon manages runtime resources.** Clients request kernel launch; they never spawn kernels directly. Environment selection, tool availability, and lifecycle are the daemon's responsibility.
 
-7. **Process-isolated kernel execution.** Every kernel runs in a separate runtime agent subprocess (`runtimed runtime-agent`) connecting back as an Automerge peer. Execution is CRDT-driven — the coordinator writes execution entries (source + sequence number) to RuntimeStateDoc; the runtime agent discovers them via sync and executes in order. RPC is only for lifecycle: `LaunchKernel`, `InterruptExecution`, `ShutdownKernel`, `Complete`, `GetHistory`, `SendComm`.
+7. **Process-isolated kernel execution.** Every kernel runs in a separate runtime agent subprocess (`runtimed runtime-agent`) connecting back as an Automerge peer. Execution is CRDT-driven — the coordinator writes execution entries (source + sequence number) to RuntimeStateDoc; the runtime agent discovers them via sync and executes in order. RPC handles lifecycle (`LaunchKernel`, `RestartKernel`, `ShutdownKernel`), interrupts, environment hot-sync (`SyncEnvironment`), completion/history queries, and ephemeral comm traffic (`SendComm`).
 
 ## Crate boundaries
 
@@ -40,7 +40,7 @@ The Tauri app crate (`crates/notebook/`) is glue — it wires Tauri commands to 
 | Notebook metadata (deps, runtime) | Frontend WASM | User edits deps, runtime picker |
 | Cell outputs (inline manifests) | Daemon | Kernel IOPub → blob store → inline manifest Maps in RuntimeStateDoc |
 | Execution count | Daemon | Set on `execute_input` from kernel |
-| Widget state | Daemon (via `CommState`) | Kernel `comm_open`/`comm_msg` |
+| Widget state | Daemon + frontend comm deltas | Kernel-authored comms write RuntimeStateDoc; frontend widget state updates write `comms/*/state/*` deltas that the runtime agent forwards to the kernel |
 | RuntimeStateDoc (kernel status, queue, executions, env, trust) | Daemon | Separate per-notebook Automerge doc synced via frame `0x05` |
 
 ## RuntimeStateDoc
@@ -53,7 +53,7 @@ Each notebook room has a daemon-authoritative **RuntimeStateDoc** — a separate
 - **Environment drift**: in_sync flag, added/removed packages
 - **Trust state**: status and needs_approval flag
 
-The daemon is the sole writer. Frontend reads via `useRuntimeState()`. Python reads via `notebook.runtime`.
+The daemon is the authoritative writer for kernel lifecycle, env, trust, queue, execution, and output state. Frontend reads via `useRuntimeState()`, and Python reads via `notebook.runtime`. Widget state is the exception: frontend-authored `comms/*/state/*` deltas are valid RuntimeStateDoc writes, and the runtime agent filters out kernel-authored echoes before forwarding foreign deltas to the kernel.
 
 Key files: `crates/runtime-doc/src/doc.rs`, `crates/runtime-doc/src/handle.rs`, `apps/notebook/src/lib/runtime-state.ts`.
 
@@ -97,7 +97,7 @@ Rules:
 
 ## Blob store
 
-Content-addressed storage at `~/.cache/runt/blobs/`, sharded by first 2 hex chars. Each blob has a `.meta` sidecar with `{media_type, size, created_at}`. Blobs are ephemeral — regenerated from `.ipynb` on daemon restart.
+Content-addressed storage lives under `runt_workspace::daemon_base_dir()/blobs` (stable expands to `~/.cache/runt/blobs/`; source builds normally use the nightly namespace). Entries are sharded by first 2 hex chars. Each blob has a `.meta` sidecar with `{media_type, size, created_at}`. Blobs are ephemeral — regenerated from `.ipynb` on daemon restart.
 
 Manifests are inline Automerge Maps in RuntimeStateDoc. Each contains `ContentRef` entries per MIME type: `{"inline": "<data>"}` for ≤1KB text, `{"blob": "<hash>", "size": N}` for content >1KB or any binary. MIME types and sizes are readable directly from the CRDT — no blob fetch needed for metadata.
 
@@ -118,15 +118,15 @@ Settings sync via a separate Automerge document on the same Unix socket. `settin
 ## Widget state
 
 Widget state lives in **RuntimeStateDoc** (`doc.comms/` Automerge map):
-- **Daemon:** Writes comm state from kernel IOPub. State updates coalesce in a 16ms batch writer.
-- **Frontend:** `WidgetStore` in `widget-store.ts` — per-model subscriptions, populated by a CRDT watcher that diffs `runtimeState.comms`.
-- **Frontend → Kernel:** State updates write to RuntimeStateDoc. The runtime agent diffs comm state on each sync and forwards deltas to the kernel.
+- **Daemon/runtime agent:** Writes kernel-authored comm state from IOPub. State updates coalesce in a 16ms batch writer and use kernel actors so self-echoes can be filtered.
+- **Frontend inbound:** `WidgetStore` in `widget-store.ts` has per-model subscriptions. `SyncEngine.commChanges$` diffs `runtimeState.comms`, resolves blobs, and drives the store.
+- **Frontend → Kernel:** State updates go through `WidgetUpdateManager` into RuntimeStateDoc (`comms/*/state/*`). The runtime agent diffs foreign comm state on each sync and forwards deltas to the kernel. Custom messages and `comm_close` stay on the `SendComm` shell path because they are ephemeral events.
 
 New clients receive widget state via normal RuntimeStateDoc CRDT sync. Custom widget messages (buttons, etc.) still use `NotebookBroadcast::Comm` as ephemeral events.
 
 ### Reserved comm namespace: `nteract.dx.*`
 
-The `nteract.dx.*` prefix is reserved for nteract's own kernel-side protocols. Comms in this namespace are filtered out of `RuntimeStateDoc::comms` — they never sync to the frontend. Buffers go directly to the blob store.
+The `nteract.dx.*` prefix is reserved for nteract's own kernel-side protocols. `comm_open` / `comm_msg` / `comm_close` traffic for this namespace is filtered out of `RuntimeStateDoc::comms` and `NotebookBroadcast::Comm`, so it never reaches `WidgetStore`. v1 has no live `nteract.dx.blob` handler; reserved messages are dropped with a warning, and current blob refs ride IOPub `display_data` buffers through `preflight_ref_buffers`.
 
 ## Development workflow
 
