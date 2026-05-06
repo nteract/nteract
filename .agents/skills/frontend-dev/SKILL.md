@@ -9,40 +9,46 @@ description: Frontend development with hot reload, dev daemon setup, MCP server 
 
 | Task | Command |
 |------|---------|
-| Hot reload dev | `cargo xtask notebook` |
-| Standalone Vite | `cargo xtask vite` |
-| Attach to Vite | `cargo xtask notebook --attach` |
+| Hot reload assets | `cargo xtask vite` |
+| Dev daemon | `cargo xtask dev-daemon` |
+| Human app launch | `cargo xtask notebook` |
+| Human attach to Vite | `cargo xtask notebook --attach` |
 | Full debug build | `cargo xtask build` |
 | Rust-only rebuild | `cargo xtask build --rust-only` |
-| Run bundled binary | `cargo xtask run` |
+| Human bundled launch | `cargo xtask run` |
 | One-shot setup | `cargo xtask dev` |
 | Lint/format | `cargo xtask lint --fix` |
 | nteract-dev MCP server | `cargo xtask run-mcp` |
 | Regenerate TS bindings | `cargo test` |
 
-## Hot Reload (`cargo xtask notebook`)
+## Hot Reload
 
-Best for UI/React development. Vite dev server on port 5174; React changes hot-reload instantly.
+Best for UI/React development. Start the dev daemon and Vite from agent terminals; let the human launch the Tauri GUI from their own terminal.
 
-Requires a dev daemon running:
+Agent terminals:
 
 ```bash
-# Terminal 1: Start dev daemon
 cargo xtask dev-daemon
-
-# Terminal 2: Start the app
-cargo xtask notebook
+cargo xtask vite
 ```
+
+Human terminal:
+
+```bash
+cargo xtask notebook --attach
+```
+
+React changes hot-reload through the Vite dev server on port 5174.
 
 ### Multi-Window Testing
 
 Closing the first Tauri window kills Vite. Keep Vite alive independently:
 
 ```bash
-# Terminal 1: Standalone Vite (stays running)
+# Agent terminal: standalone Vite (stays running)
 cargo xtask vite
 
-# Terminal 2+: Attach Tauri to existing Vite
+# Human terminal(s): attach Tauri to existing Vite
 cargo xtask notebook --attach
 ```
 
@@ -62,11 +68,11 @@ cargo xtask run path/to/notebook.ipynb
 Each worktree gets an isolated daemon in dev mode.
 
 ```bash
-# Two-terminal workflow
-cargo xtask dev-daemon    # Terminal 1 (stays running)
-cargo xtask notebook      # Terminal 2
+# Agent terminals
+cargo xtask dev-daemon
+cargo xtask vite
 
-# One-shot (installs deps + builds + starts daemon + launches app)
+# Human terminal if they want the full setup flow
 cargo xtask dev
 cargo xtask dev --skip-install --skip-build  # Fast repeat
 ```
@@ -207,7 +213,7 @@ Pre-configured in `.zed/tasks.json` (cmd-shift-t):
 | Task | Command |
 |------|---------|
 | Dev Daemon | `cargo xtask dev-daemon` |
-| Dev App | `cargo xtask notebook` |
+| Human Dev App | `cargo xtask notebook` |
 | Daemon Status | `./target/debug/runt daemon status` |
 | Daemon Logs | `./target/debug/runt daemon logs -f` |
 | Format | `cargo xtask lint --fix` |

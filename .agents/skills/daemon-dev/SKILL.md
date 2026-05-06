@@ -146,7 +146,9 @@ RUNTIMED_SOCKET_PATH="$(./target/debug/runt daemon status --json | python3 -c 'i
 
 The MCP server ships as `runt mcp` (Rust). Run via `cargo xtask run-mcp` for development.
 
-**26 tools:** `list_active_notebooks`, `connect_notebook`, `create_notebook`, `save_notebook`, `show_notebook`, `interrupt_kernel`, `restart_kernel`, `add_dependency`, `remove_dependency`, `get_dependencies`, `sync_environment`, `create_cell`, `get_cell`, `get_all_cells`, `set_cell`, `delete_cell`, `move_cell`, `clear_outputs`, `set_cells_source_hidden`, `set_cells_outputs_hidden`, `add_cell_tags`, `remove_cell_tags`, `replace_match`, `replace_regex`, `execute_cell`, `run_all_cells`.
+**Advertised tools:** `list_active_notebooks`, `connect_notebook`, `create_notebook`, `save_notebook`, `show_notebook`, `disconnect_notebook`, `get_cell`, `get_all_cells`, `create_cell`, `set_cell`, `delete_cell`, `move_cell`, `execute_cell`, `run_all_cells`, `get_results`, `interrupt_kernel`, `restart_kernel`, `manage_dependencies`, `replace_match`, `replace_regex`.
+
+Legacy dependency and cell-metadata tool names still dispatch for compatibility, but new workflows should use `manage_dependencies` for dependency inspection/edits and `get_results` for execution output lookup by `execution_id`.
 
 ## RuntimeStateDoc
 
@@ -206,8 +208,9 @@ crates/runtimed/src/
 crates/runtimed-client/src/
   client.rs                — Client APIs (Python bindings, MCP)
   daemon_paths.rs          — Socket/blob path resolution
-  output_resolver.rs       — Manifest resolution
   settings_doc.rs          — Settings Automerge schema
+crates/runtimed-outputs/src/
+  output_resolver.rs       — Shared manifest resolution
 crates/runtimed-py/        — PyO3/maturin bindings
 python/runtimed/           — Python SDK package
 python/nteract/            — MCP wrapper (launches `runt mcp`)
