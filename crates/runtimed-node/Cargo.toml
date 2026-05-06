@@ -14,6 +14,7 @@ crate-type = ["cdylib"]
 napi = { version = "3", default-features = false, features = ["napi9", "async", "tokio_rt", "serde-json"] }
 napi-derive = "3"
 runtimed-client = { path = "../runtimed-client" }
+runtimed-outputs = { path = "../runtimed-outputs" }
 notebook-protocol = { path = "../notebook-protocol" }
 notebook-doc = { path = "../notebook-doc" }
 notebook-sync = { path = "../notebook-sync" }

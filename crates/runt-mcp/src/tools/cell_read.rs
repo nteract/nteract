@@ -5,7 +5,7 @@ use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use runtimed_client::output_resolver;
+use runtimed_outputs::output_resolver;
 
 use crate::formatting;
 use crate::NteractMcp;

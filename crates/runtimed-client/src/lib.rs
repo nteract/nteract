@@ -24,8 +24,6 @@ pub mod client;
 pub mod daemon_connection;
 pub mod daemon_paths;
 pub mod execution_store;
-pub mod output_resolver;
-pub mod resolved_output;
 pub use notebook_doc;
 pub use notebook_doc::metadata as notebook_metadata;
 pub use notebook_doc::pool_state::{PoolState, RuntimePoolState};
@@ -36,11 +34,8 @@ pub use notebook_doc::pool_state::{PoolState, RuntimePoolState};
 pub use notebook_protocol::connection;
 pub mod protocol;
 pub mod runtime;
-pub mod service;
 pub mod settings_doc;
 pub mod singleton;
-pub mod sync_client;
-pub mod telemetry;
 
 // ============================================================================
 // Development Mode and Worktree Isolation

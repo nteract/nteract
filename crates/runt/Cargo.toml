@@ -18,6 +18,8 @@ uuid = { workspace = true }
 jupyter-protocol = { workspace = true }
 jupyter-zmq-client = { workspace = true, features = ["tokio-runtime", "aws-lc-rs"] }
 runtimed-client = { path = "../runtimed-client" }
+runtimed-service = { path = "../runtimed-service" }
+nteract-telemetry = { path = "../nteract-telemetry" }
 notebook-doc = { path = "../notebook-doc", features = ["persistence"] }
 runt-workspace = { path = "../runt-workspace" }
 runt-mcp = { path = "../runt-mcp" }

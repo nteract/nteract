@@ -963,7 +963,7 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
     });
 
     tokio::spawn(async {
-        runtimed_client::telemetry::heartbeat_loop("mcp", "telemetry_last_mcp_ping_at").await;
+        nteract_telemetry::telemetry_loop("mcp", "telemetry_last_mcp_ping_at").await;
     });
 
     // Listen for SIGTERM so we can drop the session cleanly before exit.
@@ -2056,7 +2056,7 @@ fn cleanup_stale_daemon_info() -> Result<()> {
 
 /// Three-step hybrid stop: socket shutdown → service manager → signal escalation.
 async fn stop_daemon_smart(
-    manager: &mut runtimed::service::ServiceManager,
+    manager: &mut runtimed_service::ServiceManager,
     client: &runtimed::client::PoolClient,
     daemon_info: Option<&runtimed::singleton::DaemonInfo>,
 ) -> Result<()> {
@@ -2153,8 +2153,8 @@ async fn stop_daemon_smart(
 #[allow(clippy::unwrap_used, clippy::expect_used)] // CLI binary; panics with context are acceptable
 async fn daemon_command(command: DaemonCommands) -> Result<()> {
     use runtimed::client::PoolClient;
-    use runtimed::service::ServiceManager;
     use runtimed_client::singleton::query_daemon_info;
+    use runtimed_service::ServiceManager;
 
     let mut manager = ServiceManager::default();
 
@@ -2601,7 +2601,7 @@ async fn dev_command(command: DevCommands) -> Result<()> {
 
 /// Diagnose daemon installation issues and optionally fix them.
 async fn doctor_command(
-    manager: &mut runtimed::service::ServiceManager,
+    manager: &mut runtimed_service::ServiceManager,
     client: &runtimed::client::PoolClient,
     daemon_info: Option<&runtimed::singleton::DaemonInfo>,
     fix: bool,
@@ -2652,12 +2652,12 @@ async fn doctor_command(
         // diagnose the *actual* running binary, not the one we'd install next time.
         #[cfg(target_os = "macos")]
         let binary_path = runt_workspace::plist_binary_path()
-            .unwrap_or_else(runtimed::service::default_binary_path);
+            .unwrap_or_else(runtimed_service::default_binary_path);
         #[cfg(not(target_os = "macos"))]
-        let binary_path = runtimed::service::default_binary_path();
+        let binary_path = runtimed_service::default_binary_path();
         let socket_path = runt_workspace::default_socket_path();
         let daemon_json_path = runtimed::singleton::daemon_info_path();
-        let service_config_path = runtimed::service::service_config_path();
+        let service_config_path = runtimed_service::service_config_path();
 
         // Check 1: Installed binary
         let binary_exists = binary_path.exists();
@@ -3179,12 +3179,12 @@ async fn doctor_command(
     // points to so we diagnose/fix the real running binary, not the preferred one.
     #[cfg(target_os = "macos")]
     let binary_path =
-        runt_workspace::plist_binary_path().unwrap_or_else(runtimed::service::default_binary_path);
+        runt_workspace::plist_binary_path().unwrap_or_else(runtimed_service::default_binary_path);
     #[cfg(not(target_os = "macos"))]
-    let binary_path = runtimed::service::default_binary_path();
+    let binary_path = runtimed_service::default_binary_path();
     let socket_path = runt_workspace::default_socket_path();
     let daemon_json_path = runtimed::singleton::daemon_info_path();
-    let service_config_path = runtimed::service::service_config_path();
+    let service_config_path = runtimed_service::service_config_path();
 
     let binary_exists = binary_path.exists();
     let config_exists = service_config_path.exists();
@@ -3311,11 +3311,11 @@ async fn doctor_command(
         if runt_workspace::is_legacy_standalone_install() {
             if let Some(bundled_path) = find_bundled_runtimed() {
                 // Create a ServiceManager with the in-bundle binary path
-                let migrated_config = runtimed::service::ServiceConfig {
+                let migrated_config = runtimed_service::ServiceConfig {
                     binary_path: bundled_path.clone(),
-                    ..runtimed::service::ServiceConfig::default()
+                    ..runtimed_service::ServiceConfig::default()
                 };
-                let mut migrated_manager = runtimed::service::ServiceManager::new(migrated_config);
+                let mut migrated_manager = runtimed_service::ServiceManager::new(migrated_config);
                 let result = if no_start {
                     migrated_manager.upgrade_no_start(&bundled_path)
                 } else {
@@ -4703,7 +4703,7 @@ async fn telemetry_command(command: TelemetryCommands, settings_path: &Path) -> 
                 format_ping(settings.telemetry_last_mcp_ping_at, now)
             );
 
-            let gates = runtimed_client::telemetry::blocking_gates_full(
+            let gates = nteract_telemetry::blocking_gates_full(
                 settings.telemetry_enabled,
                 settings.onboarding_completed,
                 settings.telemetry_consent_recorded,

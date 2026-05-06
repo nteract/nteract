@@ -23,6 +23,8 @@
 //! install), we fall back to the legacy approach: writing a plist to
 //! `~/Library/LaunchAgents/` and using `launchctl` directly.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::process::Command;
@@ -100,8 +102,9 @@ pub fn default_binary_path() -> PathBuf {
 
 /// Get the default path for the daemon log file.
 ///
-/// Note: This is the system service log path (always ~/.cache/runt/runtimed.log).
-/// For dev mode, use `crate::default_log_path()` which handles per-worktree paths.
+/// This is the system service log path (always `~/.cache/runt/runtimed.log`).
+/// For dev mode, use `runtimed_client::default_log_path()`, which handles
+/// per-worktree paths.
 pub fn default_log_path() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))

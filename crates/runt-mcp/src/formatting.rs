@@ -6,7 +6,7 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
-use runtimed_client::resolved_output::{DataValue, Output};
+use runtimed_outputs::resolved_output::{DataValue, Output};
 
 /// ANSI escape code regex — matches color codes, cursor movement, OSC sequences.
 #[allow(clippy::expect_used)] // Static regex, always valid
@@ -251,7 +251,7 @@ pub fn format_cell_header(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtimed_client::resolved_output::{DataValue, Output};
+    use runtimed_outputs::resolved_output::{DataValue, Output};
     use std::collections::HashMap;
 
     fn data(pairs: &[(&str, DataValue)]) -> HashMap<String, DataValue> {

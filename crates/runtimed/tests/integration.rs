@@ -2436,7 +2436,7 @@ async fn test_pool_size_config_honored() {
 async fn stream_blob_spill_is_renderable_by_llm_resolver() {
     use runtimed::blob_store::BlobStore;
     use runtimed::output_store::{create_manifest, DEFAULT_INLINE_THRESHOLD};
-    use runtimed_client::output_resolver::resolve_cell_outputs_for_llm;
+    use runtimed_outputs::output_resolver::resolve_cell_outputs_for_llm;
 
     let dir = tempfile::tempdir().unwrap();
     let store = BlobStore::new(dir.path().to_path_buf());
@@ -2456,7 +2456,7 @@ async fn stream_blob_spill_is_renderable_by_llm_resolver() {
 
     let outputs = resolve_cell_outputs_for_llm(
         &[manifest_json],
-        runtimed_client::output_resolver::ResolveCtx {
+        runtimed_outputs::output_resolver::ResolveCtx {
             blob_base_url: Some("http://127.0.0.1:1234"),
             blob_store_path: Some(dir.path()),
             ..Default::default()
@@ -2475,7 +2475,7 @@ async fn stream_blob_spill_is_renderable_by_llm_resolver() {
 async fn error_blob_spill_is_renderable_by_llm_resolver() {
     use runtimed::blob_store::BlobStore;
     use runtimed::output_store::{create_manifest, DEFAULT_INLINE_THRESHOLD};
-    use runtimed_client::output_resolver::resolve_cell_outputs_for_llm;
+    use runtimed_outputs::output_resolver::resolve_cell_outputs_for_llm;
 
     let dir = tempfile::tempdir().unwrap();
     let store = BlobStore::new(dir.path().to_path_buf());
@@ -2498,7 +2498,7 @@ async fn error_blob_spill_is_renderable_by_llm_resolver() {
 
     let outputs = resolve_cell_outputs_for_llm(
         &[manifest_json],
-        runtimed_client::output_resolver::ResolveCtx {
+        runtimed_outputs::output_resolver::ResolveCtx {
             blob_base_url: Some("http://127.0.0.1:1234"),
             blob_store_path: Some(dir.path()),
             ..Default::default()

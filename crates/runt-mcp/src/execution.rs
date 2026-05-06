@@ -13,8 +13,8 @@ use notebook_sync::execution_wait::{
     await_execution_terminal, ExecutionTerminalError, ExecutionTerminalState,
 };
 use notebook_sync::handle::DocHandle;
-use runtimed_client::output_resolver;
-use runtimed_client::resolved_output::Output;
+use runtimed_outputs::output_resolver;
+use runtimed_outputs::resolved_output::Output;
 use tracing::warn;
 
 /// Result of executing a cell.

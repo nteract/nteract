@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use serde::Serialize;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -12,7 +14,7 @@ fn endpoint() -> String {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct HeartbeatPayload {
+pub struct TelemetryPayload {
     pub install_id: String,
     pub source: String,
     pub version: String,
@@ -46,7 +48,7 @@ pub fn detect_arch() -> Option<&'static str> {
 }
 
 pub fn is_telemetry_suppressed() -> bool {
-    if crate::is_dev_mode() {
+    if runt_workspace::is_dev_mode() {
         return true;
     }
     if std::env::var("CI").is_ok() {
@@ -133,7 +135,7 @@ pub fn blocking_gates(
     now_secs: u64,
 ) -> Vec<&'static str> {
     let mut gates = Vec::new();
-    if crate::is_dev_mode() {
+    if runt_workspace::is_dev_mode() {
         gates.push("dev mode (RUNTIMED_DEV=1 or RUNTIMED_WORKSPACE_PATH set)");
     }
     if std::env::var("CI").is_ok() {
@@ -162,9 +164,9 @@ pub fn blocking_gates(
     gates
 }
 
-pub async fn send_heartbeat(
+pub async fn send_telemetry(
     client: &reqwest::Client,
-    payload: &HeartbeatPayload,
+    payload: &TelemetryPayload,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let body = serde_json::to_vec(payload)?;
     let resp = client
@@ -188,14 +190,14 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-/// Shared heartbeat loop for long-running processes (daemon, MCP).
+/// Long-running telemetry loop for the daemon and MCP processes.
 ///
 /// Checks every hour, sends if >20h since last ping. Reads and writes
 /// settings through the daemon's Automerge sync path when available,
 /// falling back to disk JSON.
-pub async fn heartbeat_loop(source: &str, timestamp_key: &str) {
+pub async fn telemetry_loop(source: &str, timestamp_key: &str) {
     if is_telemetry_suppressed() {
-        log::debug!("[telemetry] suppressed for source={source}, skipping heartbeat loop");
+        log::debug!("[telemetry] suppressed for source={source}, skipping loop");
         return;
     }
 
@@ -213,10 +215,10 @@ pub async fn heartbeat_loop(source: &str, timestamp_key: &str) {
     }
 }
 
-/// Single-shot heartbeat for processes that don't need a loop (e.g. the app).
-pub async fn heartbeat_once(source: &str, timestamp_key: &str) {
+/// Single-shot telemetry ping for processes that don't run a loop (e.g. the app).
+pub async fn telemetry_once(source: &str, timestamp_key: &str) {
     if is_telemetry_suppressed() {
-        log::debug!("[telemetry] suppressed for source={source}, skipping heartbeat");
+        log::debug!("[telemetry] suppressed for source={source}, skipping ping");
         return;
     }
 
@@ -270,7 +272,7 @@ async fn try_send(client: &reqwest::Client, source: &str, timestamp_key: &str) {
         return;
     };
 
-    let payload = HeartbeatPayload {
+    let payload = TelemetryPayload {
         install_id,
         source: source.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -279,20 +281,20 @@ async fn try_send(client: &reqwest::Client, source: &str, timestamp_key: &str) {
         arch: arch.to_string(),
     };
 
-    match send_heartbeat(client, &payload).await {
-        Ok(()) => log::info!("[telemetry] sent heartbeat source={source}"),
-        Err(e) => log::warn!("[telemetry] heartbeat failed source={source}: {e}"),
+    match send_telemetry(client, &payload).await {
+        Ok(()) => log::info!("[telemetry] sent ping source={source}"),
+        Err(e) => log::warn!("[telemetry] ping failed source={source}: {e}"),
     }
 
     // Update timestamp on both success and failure to prevent retry storms
     write_setting(timestamp_key, &serde_json::Value::Number(now.into())).await;
 }
 
-async fn read_settings() -> Option<crate::settings_doc::SyncedSettings> {
-    match crate::sync_client::try_get_synced_settings().await {
+async fn read_settings() -> Option<runtimed_client::settings_doc::SyncedSettings> {
+    match runtimed_settings_sync::try_get_synced_settings().await {
         Ok(settings) => Some(settings),
         Err(_) => {
-            let path = crate::settings_json_path();
+            let path = runt_workspace::settings_json_path();
             let contents = std::fs::read_to_string(&path).ok()?;
             serde_json::from_str(&contents).ok()
         }
@@ -300,8 +302,8 @@ async fn read_settings() -> Option<crate::settings_doc::SyncedSettings> {
 }
 
 async fn write_setting(key: &str, value: &serde_json::Value) {
-    let socket_path = crate::default_socket_path();
-    match crate::sync_client::SyncClient::connect_with_timeout(
+    let socket_path = runt_workspace::default_socket_path();
+    match runtimed_settings_sync::SyncClient::connect_with_timeout(
         socket_path,
         Duration::from_millis(500),
     )
@@ -325,7 +327,9 @@ async fn write_setting(key: &str, value: &serde_json::Value) {
 /// Clearing the markers prevents the 20-hour throttle from silently
 /// suppressing the first ping under the new ID. The 60 req/min rate
 /// limit at the Cloudflare edge is the defense against rotation abuse.
-pub fn rotate_install_id_in(settings: &mut crate::settings_doc::SyncedSettings) -> String {
+pub fn rotate_install_id_in(
+    settings: &mut runtimed_client::settings_doc::SyncedSettings,
+) -> String {
     let new_id = uuid::Uuid::new_v4().to_string();
     settings.install_id = new_id.clone();
     settings.telemetry_last_daemon_ping_at = None;
@@ -340,7 +344,7 @@ mod tests {
 
     #[test]
     fn test_payload_shape() {
-        let payload = HeartbeatPayload {
+        let payload = TelemetryPayload {
             install_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             source: "daemon".to_string(),
             version: "1.2.3".to_string(),
@@ -450,7 +454,7 @@ mod tests {
 
     #[test]
     fn test_rotate_install_id_changes_id_and_clears_markers() {
-        use crate::settings_doc::SyncedSettings;
+        use runtimed_client::settings_doc::SyncedSettings;
         let mut s = SyncedSettings {
             install_id: "abc".to_string(),
             telemetry_last_daemon_ping_at: Some(111),

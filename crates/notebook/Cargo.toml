@@ -41,6 +41,8 @@ uuid = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 runtimed-client = { path = "../runtimed-client" }
+runtimed-settings-sync = { path = "../runtimed-settings-sync" }
+nteract-telemetry = { path = "../nteract-telemetry" }
 notebook-doc = { path = "../notebook-doc" }
 notebook-wire = { path = "../notebook-wire" }
 notebook-protocol = { path = "../notebook-protocol" }

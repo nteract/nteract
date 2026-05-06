@@ -4,6 +4,8 @@
 //! Automerge document replica. Changes made locally are sent to the daemon,
 //! and changes from other peers arrive as sync messages.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -13,8 +15,8 @@ use automerge::{AutoCommit, ObjType, ReadDoc};
 use log::info;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::connection::{self, Handshake};
-use crate::settings_doc::{
+use runtimed_client::connection::{self, Handshake};
+use runtimed_client::settings_doc::{
     default_pool_sizes_for_python_env, read_nested_list, split_comma_list, ColorTheme,
     CondaDefaults, PixiDefaults, SyncedSettings, ThemeMode, UvDefaults,
 };
@@ -474,7 +476,7 @@ pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
 pub async fn try_get_synced_settings() -> Result<SyncedSettings, SyncClientError> {
     #[cfg(unix)]
     {
-        let client = SyncClient::connect(crate::default_socket_path()).await?;
+        let client = SyncClient::connect(runt_workspace::default_socket_path()).await?;
         let settings = client.get_all();
         info!("[sync-client] Got settings from daemon: {:?}", settings);
         Ok(settings)
@@ -482,7 +484,7 @@ pub async fn try_get_synced_settings() -> Result<SyncedSettings, SyncClientError
 
     #[cfg(windows)]
     {
-        let client = SyncClient::connect(crate::default_socket_path()).await?;
+        let client = SyncClient::connect(runt_workspace::default_socket_path()).await?;
         let settings = client.get_all();
         info!("[sync-client] Got settings from daemon: {:?}", settings);
         Ok(settings)
@@ -492,9 +494,9 @@ pub async fn try_get_synced_settings() -> Result<SyncedSettings, SyncClientError
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::Runtime;
-    use crate::settings_doc::{PythonEnvType, ThemeMode};
     use automerge::transaction::Transactable;
+    use runtimed_client::runtime::Runtime;
+    use runtimed_client::settings_doc::{PythonEnvType, ThemeMode};
 
     #[test]
     fn test_get_all_from_empty_doc() {
