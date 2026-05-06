@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use serde::Serialize;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

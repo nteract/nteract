@@ -23,6 +23,8 @@
 //! install), we fall back to the legacy approach: writing a plist to
 //! `~/Library/LaunchAgents/` and using `launchctl` directly.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::process::Command;

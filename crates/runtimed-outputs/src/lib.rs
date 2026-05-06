@@ -4,5 +4,7 @@
 //! `text/llm+plain` summaries via `repr-llm`. Used by clients that need to
 //! present cell outputs to users or to LLM-based agents.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod output_resolver;
 pub mod resolved_output;

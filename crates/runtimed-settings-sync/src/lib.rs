@@ -4,6 +4,8 @@
 //! Automerge document replica. Changes made locally are sent to the daemon,
 //! and changes from other peers arrive as sync messages.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use std::path::PathBuf;
 use std::time::Duration;
 
