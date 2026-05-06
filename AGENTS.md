@@ -27,7 +27,8 @@ Codex-specific repo skills live in `.codex/skills/`. Prefer them when the task m
 | Daemon, Python bindings, MCP, telemetry, channels | `contributing/runtimed.md` |
 | Tests | `contributing/testing.md` |
 | E2E (WebdriverIO) | `contributing/e2e.md` |
-| Frontend / UI / nteract Elements | `contributing/frontend-architecture.md`, `contributing/ui.md`, `contributing/nteract-elements.md` |
+| Frontend architecture | `apps/notebook/src/AGENTS.md` |
+| UI components (Shadcn + nteract) | `src/components/ui/AGENTS.md` |
 | Wire protocol & sync | `contributing/protocol.md` |
 | Widgets | `contributing/widget-development.md` |
 | Environments / trust | `contributing/environments.md` |
@@ -116,9 +117,9 @@ Most invariants live in `.claude/rules/*.md` and auto-load when you edit matchin
 | Iframe sandbox (`allow-same-origin` is forbidden), renderer plugins | `.claude/rules/iframe-isolation.md` |
 | Wire protocol versions, upgrade compatibility | `.claude/rules/protocol.md` |
 | Two-stage env detection, trust | `.claude/rules/environments.md` |
-| Frontend layout / conventions | `.claude/rules/frontend-architecture.md` |
-| Widget architecture (parent/iframe split) | `.claude/rules/widget-development.md` |
-| UI component stack (Shadcn + nteract) | `.claude/rules/ui-components.md` |
+| Frontend layout / conventions | `apps/notebook/src/AGENTS.md` |
+| Widget architecture (parent/iframe split) | `src/components/widgets/AGENTS.md` |
+| UI component stack (Shadcn + nteract) | `src/components/ui/AGENTS.md` |
 | Logging | `.claude/rules/logging.md` |
 | Unified env hash, preserve-on-eviction, hot-sync coherence | `contributing/environments.md` |
 
