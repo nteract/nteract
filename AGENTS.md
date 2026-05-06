@@ -2,7 +2,7 @@
 
 <!-- This file is canonical. CLAUDE.md is a symlink to AGENTS.md. -->
 
-This is a map. Subsystem details live in nested `AGENTS.md` files and the remaining `contributing/` docs, auto-loaded rules live in `.claude/rules/`, and operational recipes live in `.claude/skills/` and `.codex/skills/`. Run `cargo xtask help` for build commands.
+This is a map. Subsystem details live in nested `AGENTS.md` files next to code, auto-loaded rules live in `.claude/rules/`, and operational recipes live in `.claude/skills/`. Run `cargo xtask help` for build commands.
 
 Claude-specific skills live in `.claude/skills/`. Use when the task matches:
 - `automerge-sync` for sync protocol internals, reconnection, peer state lifecycle, in-flight suppression, document-level recovery, and convergence debugging
@@ -11,31 +11,19 @@ Claude-specific skills live in `.claude/skills/`. Use when the task matches:
 - `automerge-document-model` for Automerge internals: OpSet, ChangeGraph, actor tables, save/load lifecycle, transaction/fork/merge semantics, actor-stream invariants, and document size reasoning
 - `execution-pipeline` for end-to-end cell execution: required_heads → ExecuteCell → CellQueued → RuntimeStateDoc polling → output-sync grace → output resolution. Use when debugging missing outputs, execution timeouts, or stale results
 
-Codex-specific repo skills live in `.codex/skills/`. Prefer them when the task matches:
-- `nteract-daemon-dev` for per-worktree daemon lifecycle, socket setup, and daemon-backed verification
-- `nteract-python-bindings` for `maturin develop`, venv selection, and MCP server work
-- `nteract-automerge-protocol` for Automerge semantics, sync state, typed frame protocol, storage boundaries, and samod/subduction-informed protocol design
-- `nteract-notebook-sync` for Automerge ownership, output manifests, and sync-path changes
-- `nteract-testing` for choosing and running the right verification path
-
 ## Subsystem guides
 
 | Topic | Doc |
 |------|-----|
 | Architecture + daemon | `crates/runtimed/AGENTS.md` |
-| Development setup (direnv, lld, sccache, build cache) | `contributing/development.md` |
-| Tests | `contributing/testing.md` |
-| E2E (WebdriverIO) | `contributing/e2e.md` |
 | Frontend architecture | `apps/notebook/src/AGENTS.md` |
 | UI components (Shadcn + nteract) | `src/components/ui/AGENTS.md` |
 | Wire protocol & sync | `crates/notebook-wire/AGENTS.md` |
-| Widgets | `contributing/widget-development.md` |
+| Widgets | `src/components/widgets/AGENTS.md` |
 | Environments / trust | `crates/kernel-env/AGENTS.md` |
-| Iframe sandbox & renderer plugins | `contributing/iframe-isolation.md` |
+| Iframe sandbox & renderer plugins | `src/components/isolated/AGENTS.md` |
 | CRDT mutation rules | `crates/notebook-doc/AGENTS.md` |
-| TypeScript bindings (ts-rs) | `contributing/typescript-bindings.md` |
-| Logging | `contributing/logging.md` |
-| Build deps / releasing / branch hygiene | `contributing/build-dependencies.md`, `contributing/releasing.md`, `contributing/branch-hygiene.md` |
+| Logging | `.claude/rules/logging.md` |
 
 ## MCP servers
 

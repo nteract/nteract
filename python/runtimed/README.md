@@ -140,4 +140,4 @@ await cell.delete()
 
 ## Documentation
 
-See [docs/python-bindings.md](https://github.com/nteract/desktop/blob/main/docs/python-bindings.md) for full documentation.
+See [crates/runtimed/AGENTS.md](https://github.com/nteract/desktop/blob/main/crates/runtimed/AGENTS.md) for architecture and Python binding usage.

@@ -2,8 +2,7 @@
 
 > **Status:** disabled. Linux desktop releases currently publish AppImage only.
 > DEB/RPM/APT publication is intentionally unsupported until there is a
-> first-class distro-native lifecycle for the user-local `runtimed` daemon. See
-> `contributing/releasing.md`.
+> first-class distro-native lifecycle for the user-local `runtimed` daemon.
 
 Publishes nteract `.deb` packages to the Cloudflare R2-backed APT repository at
 `https://apt.runtimed.com`. Supports `nightly` and `stable` channels in the
