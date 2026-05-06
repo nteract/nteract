@@ -125,8 +125,6 @@ nteract/desktop
 │   ├── runtimed/          # PyPI: runtimed (Python bindings for daemon)
 │   ├── nteract/           # PyPI: nteract (thin wrapper that launches `runt mcp`)
 │   └── gremlin/           # Stress-testing agent for nteract notebooks (not published)
-├── docs/                   # User-facing documentation
-└── contributing/           # Developer guides
 ```
 
 ## Development
@@ -200,13 +198,12 @@ The underlying Rust libraries are published to crates.io:
 
 ## Contributing
 
-See the `contributing/` directory for detailed guides:
+See `AGENTS.md` for the subsystem map and development guidance. Key entry points:
 
-- [Development workflow](contributing/development.md) — build commands, dev daemon, Zed tasks
-- [Architecture](contributing/architecture.md) — runtime principles, daemon, state, sync
-- [Protocol](contributing/protocol.md) — wire protocol, magic bytes preamble, version negotiation
-- [Releasing](contributing/releasing.md) — versioning scheme, release procedures, tag conventions
-- [Testing](contributing/testing.md) — Vitest, Rust, Python, E2E
+- `crates/runtimed/AGENTS.md` — architecture, daemon, state ownership
+- `apps/notebook/src/AGENTS.md` — frontend architecture
+- `crates/notebook-wire/AGENTS.md` — wire protocol
+- `cargo xtask help` — all build commands
 
 ## License
 

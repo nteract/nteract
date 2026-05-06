@@ -177,10 +177,10 @@ Organize recommendations into:
 Start with these to understand the actual implementation:
 
 **Architecture docs:**
+- `crates/runtimed/AGENTS.md`
 - `apps/notebook/src/AGENTS.md`
 - `crates/notebook-wire/AGENTS.md`
 - `crates/notebook-doc/AGENTS.md`
-- `crates/runtimed/AGENTS.md`
 
 **Core daemon:**
 - `crates/runtimed/src/daemon.rs`

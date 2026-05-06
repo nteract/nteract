@@ -98,7 +98,7 @@ Builds macOS + Linux wheels and publishes to PyPI.
 
 1. Bump `PROTOCOL_VERSION` in `crates/notebook-protocol/src/connection/handshake.rs`
 2. Update the `PROTOCOL_V*` string constant if the version string changes
-3. Update `contributing/protocol.md`
+3. Update `crates/notebook-wire/AGENTS.md`
 4. Decide version bump type based on user impact
 
 Magic bytes preamble rejects mismatched protocol versions at wire level, before JSON parsing.
