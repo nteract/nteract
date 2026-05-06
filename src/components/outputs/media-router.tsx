@@ -1,10 +1,15 @@
 import { lazy, type ReactNode, Suspense } from "react";
 import { getRenderer } from "@/lib/renderer-registry";
+import { AnsiOutput } from "./ansi-output";
+import { TracebackOutput } from "./traceback-output";
 import { isSafeForMainDom } from "./safe-mime-types";
 import { useMediaContext } from "./media-provider";
 
-// Lazy load built-in output components for better bundle splitting
-const AnsiOutput = lazy(() => import("./ansi-output").then((m) => ({ default: m.AnsiOutput })));
+// AnsiOutput and TracebackOutput stay statically imported: ansi-output is
+// also pulled in by OutputArea (every cell with output) and output-widget,
+// and traceback-output by OutputArea (every error). Both ride along in the
+// main bundle regardless, so a lazy wrapper just adds a Suspense boundary
+// without splitting anything.
 const MarkdownOutput = lazy(() =>
   import("./markdown-output").then((m) => ({ default: m.MarkdownOutput })),
 );
@@ -20,9 +25,6 @@ const JavaScriptOutput = lazy(() =>
   import("./javascript-output").then((m) => ({
     default: m.JavaScriptOutput,
   })),
-);
-const TracebackOutput = lazy(() =>
-  import("./traceback-output").then((m) => ({ default: m.TracebackOutput })),
 );
 
 /**
