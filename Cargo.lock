@@ -4543,6 +4543,7 @@ dependencies = [
  "notebook-protocol",
  "notebook-sync",
  "notebook-wire",
+ "nteract-telemetry",
  "rfd 0.17.2",
  "runt-workspace",
  "runtimed-client",
@@ -4686,6 +4687,20 @@ dependencies = [
  "chrono",
  "parquet",
  "serde",
+]
+
+[[package]]
+name = "nteract-telemetry"
+version = "2.4.5"
+dependencies = [
+ "log",
+ "reqwest 0.12.28",
+ "runt-workspace",
+ "runtimed-client",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -6984,6 +6999,7 @@ dependencies = [
  "libc",
  "notebook-doc",
  "notify",
+ "nteract-telemetry",
  "petname",
  "rmcp",
  "rpassword",
@@ -7117,6 +7133,7 @@ dependencies = [
  "notebook-wire",
  "notify",
  "notify-debouncer-mini",
+ "nteract-telemetry",
  "petname",
  "pulldown-cmark",
  "rattler",
@@ -7162,7 +7179,6 @@ dependencies = [
  "log",
  "notebook-doc",
  "notebook-protocol",
- "reqwest 0.12.28",
  "runt-workspace",
  "runtime-doc",
  "schemars 1.2.1",

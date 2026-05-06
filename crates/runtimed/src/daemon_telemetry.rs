@@ -10,7 +10,7 @@ pub fn spawn_daemon_heartbeat(daemon: Arc<Daemon>) {
 }
 
 async fn daemon_heartbeat_loop(daemon: Arc<Daemon>) {
-    if runtimed_client::telemetry::is_telemetry_suppressed() {
+    if nteract_telemetry::is_telemetry_suppressed() {
         tracing::debug!("[telemetry] suppressed, skipping daemon heartbeat loop");
         return;
     }
@@ -56,7 +56,7 @@ async fn try_send_daemon_heartbeat(daemon: &Arc<Daemon>, client: &reqwest::Clien
         .unwrap_or_default()
         .as_secs();
 
-    if !runtimed_client::telemetry::should_send(
+    if !nteract_telemetry::should_send(
         settings.telemetry_enabled,
         settings.onboarding_completed,
         settings.telemetry_last_daemon_ping_at,
@@ -65,23 +65,23 @@ async fn try_send_daemon_heartbeat(daemon: &Arc<Daemon>, client: &reqwest::Clien
         return;
     }
 
-    let Some(platform) = runtimed_client::telemetry::detect_platform() else {
+    let Some(platform) = nteract_telemetry::detect_platform() else {
         return;
     };
-    let Some(arch) = runtimed_client::telemetry::detect_arch() else {
+    let Some(arch) = nteract_telemetry::detect_arch() else {
         return;
     };
 
-    let payload = runtimed_client::telemetry::HeartbeatPayload {
+    let payload = nteract_telemetry::TelemetryPayload {
         install_id,
         source: "daemon".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        channel: runtimed_client::telemetry::detect_channel().to_string(),
+        channel: nteract_telemetry::detect_channel().to_string(),
         platform: platform.to_string(),
         arch: arch.to_string(),
     };
 
-    match runtimed_client::telemetry::send_heartbeat(client, &payload).await {
+    match nteract_telemetry::send_telemetry(client, &payload).await {
         Ok(()) => tracing::info!("[telemetry] sent daemon heartbeat"),
         Err(e) => tracing::warn!("[telemetry] daemon heartbeat failed: {e}"),
     }

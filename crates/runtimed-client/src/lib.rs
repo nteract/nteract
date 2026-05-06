@@ -37,7 +37,6 @@ pub mod runtime;
 pub mod settings_doc;
 pub mod singleton;
 pub mod sync_client;
-pub mod telemetry;
 
 // ============================================================================
 // Development Mode and Worktree Isolation

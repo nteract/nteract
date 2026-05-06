@@ -21,6 +21,7 @@ path = "src/main.rs"
 runtimed-client = { path = "../runtimed-client" }
 runtimed-outputs = { path = "../runtimed-outputs" }
 runtimed-service = { path = "../runtimed-service" }
+nteract-telemetry = { path = "../nteract-telemetry" }
 notebook-protocol = { path = "../notebook-protocol" }
 notebook-wire = { path = "../notebook-wire" }
 tokio = { workspace = true }

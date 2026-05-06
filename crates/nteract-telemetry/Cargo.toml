@@ -1,0 +1,20 @@
+[package]
+name = "nteract-telemetry"
+version = "2.4.5"
+edition.workspace = true
+description = "Anonymous phone-home telemetry for nteract Rust binaries"
+repository.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+runtimed-client = { path = "../runtimed-client" }
+runt-workspace = { path = "../runt-workspace" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
+tokio = { workspace = true }
+uuid = { workspace = true }

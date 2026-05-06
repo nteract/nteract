@@ -963,7 +963,7 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
     });
 
     tokio::spawn(async {
-        runtimed_client::telemetry::heartbeat_loop("mcp", "telemetry_last_mcp_ping_at").await;
+        nteract_telemetry::telemetry_loop("mcp", "telemetry_last_mcp_ping_at").await;
     });
 
     // Listen for SIGTERM so we can drop the session cleanly before exit.
@@ -4703,7 +4703,7 @@ async fn telemetry_command(command: TelemetryCommands, settings_path: &Path) -> 
                 format_ping(settings.telemetry_last_mcp_ping_at, now)
             );
 
-            let gates = runtimed_client::telemetry::blocking_gates_full(
+            let gates = nteract_telemetry::blocking_gates_full(
                 settings.telemetry_enabled,
                 settings.onboarding_completed,
                 settings.telemetry_consent_recorded,

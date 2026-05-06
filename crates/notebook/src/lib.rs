@@ -3903,7 +3903,7 @@ pub fn run(
 
                 if daemon_available {
                     tokio::spawn(async {
-                        runtimed::telemetry::heartbeat_once(
+                        nteract_telemetry::telemetry_once(
                             "app",
                             "telemetry_last_app_ping_at",
                         )
