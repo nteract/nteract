@@ -29,9 +29,9 @@ Codex-specific repo skills live in `.codex/skills/`. Prefer them when the task m
 | E2E (WebdriverIO) | `contributing/e2e.md` |
 | Frontend architecture | `apps/notebook/src/AGENTS.md` |
 | UI components (Shadcn + nteract) | `src/components/ui/AGENTS.md` |
-| Wire protocol & sync | `contributing/protocol.md` |
+| Wire protocol & sync | `crates/notebook-wire/AGENTS.md` |
 | Widgets | `contributing/widget-development.md` |
-| Environments / trust | `contributing/environments.md` |
+| Environments / trust | `crates/kernel-env/AGENTS.md` |
 | Iframe sandbox & renderer plugins | `contributing/iframe-isolation.md` |
 | CRDT mutation rules | `crates/notebook-doc/AGENTS.md` |
 | TypeScript bindings (ts-rs) | `contributing/typescript-bindings.md` |
@@ -116,12 +116,12 @@ Most invariants live in `.claude/rules/*.md` and auto-load when you edit matchin
 | Fork+merge for async CRDT mutations, no independent `put_object` on shared keys | `.claude/rules/crdt-mutations.md` |
 | Iframe sandbox (`allow-same-origin` is forbidden), renderer plugins | `.claude/rules/iframe-isolation.md` |
 | Wire protocol versions, upgrade compatibility | `.claude/rules/protocol.md` |
-| Two-stage env detection, trust | `.claude/rules/environments.md` |
+| Two-stage env detection, trust | `crates/kernel-env/AGENTS.md` |
 | Frontend layout / conventions | `apps/notebook/src/AGENTS.md` |
 | Widget architecture (parent/iframe split) | `src/components/widgets/AGENTS.md` |
 | UI component stack (Shadcn + nteract) | `src/components/ui/AGENTS.md` |
 | Logging | `.claude/rules/logging.md` |
-| Unified env hash, preserve-on-eviction, hot-sync coherence | `contributing/environments.md` |
+| Unified env hash, preserve-on-eviction, hot-sync coherence | `crates/kernel-env/AGENTS.md` |
 
 ### No tokio mutex guards held across `.await`
 
