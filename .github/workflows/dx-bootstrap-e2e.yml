@@ -1,0 +1,207 @@
+name: DX Bootstrap E2E
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/dx-bootstrap-e2e.yml"
+      - ".github/actions/build-runtime-artifacts/**"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/kernel-env/**"
+      - "crates/notebook/**"
+      - "crates/runt-workspace/**"
+      - "crates/runtimed/**"
+      - "crates/runtimed-client/**"
+      - "crates/xtask/**"
+      - "e2e/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "python/nteract-kernel-launcher/**"
+      - "rust-toolchain.toml"
+  pull_request:
+    paths:
+      - ".github/workflows/dx-bootstrap-e2e.yml"
+      - ".github/actions/build-runtime-artifacts/**"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/kernel-env/**"
+      - "crates/notebook/**"
+      - "crates/runt-workspace/**"
+      - "crates/runtimed/**"
+      - "crates/runtimed-client/**"
+      - "crates/xtask/**"
+      - "e2e/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "python/nteract-kernel-launcher/**"
+      - "rust-toolchain.toml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  repr-llm:
+    name: _repr_llm_ launcher formatter
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            xvfb \
+            webkit2gtk-driver
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: dx-bootstrap-e2e
+
+      - uses: ./.github/actions/build-runtime-artifacts
+
+      - name: Install cargo-binstall
+        run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+
+      - name: Install tauri-cli
+        run: cargo binstall tauri-cli --no-confirm --locked --force
+
+      - name: Build MCP output widget
+        run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
+
+      - name: Build E2E app
+        run: cargo xtask e2e build
+
+      - name: Run DX bootstrap E2E
+        timeout-minutes: 15
+        run: |
+          set -o pipefail
+          mkdir -p e2e-logs
+
+          # Seed both namespaces before runtimed starts; debug/Linux CI normally
+          # uses nteract-nightly, while nteract keeps this robust locally.
+          for app_id in nteract nteract-nightly; do
+            mkdir -p "$HOME/.config/$app_id"
+            echo '{"onboarding_completed": true, "bootstrap_dx": true}' \
+              > "$HOME/.config/$app_id/settings.json"
+          done
+
+          Xvfb :99 -screen 0 1920x1080x24 2>/dev/null &
+          export DISPLAY=:99
+          sleep 2
+
+          env -u UV_CACHE_DIR -u UV_PYTHON_INSTALL_DIR \
+            RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
+            ./target/debug/runtimed --dev run \
+            --uv-pool-size 3 --conda-pool-size 0 \
+            > e2e-logs/daemon.log 2>&1 &
+          DAEMON_PID=$!
+
+          wait_for_daemon() {
+            local timeout="$1"
+            local status=""
+
+            for i in $(seq 1 "$timeout"); do
+              kill -0 "$DAEMON_PID" 2>/dev/null || {
+                echo "Daemon died while waiting for readiness"
+                cat e2e-logs/daemon.log
+                exit 1
+              }
+
+              status=$(env -u UV_CACHE_DIR -u UV_PYTHON_INSTALL_DIR \
+                RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
+                ./target/debug/runt daemon status --json 2>/dev/null || true)
+
+              if [ -n "$status" ] && STATUS_JSON="$status" python3 -c 'import json, os, sys; status = json.loads(os.environ["STATUS_JSON"]); pool = status.get("pool_stats") or {}; uv = pool.get("uv") or {}; ready = status.get("running") and int(uv.get("available") or 0) > 0; sys.exit(0 if ready else 1)'
+              then
+                echo "Daemon ready after ${i}s"
+                echo "$status"
+                return 0
+              fi
+
+              sleep 1
+            done
+
+            echo "Daemon was not ready within ${timeout}s"
+            echo "Last daemon status:"
+            echo "${status:-<none>}"
+            echo "Daemon log:"
+            cat e2e-logs/daemon.log
+            exit 1
+          }
+
+          wait_for_daemon 120
+
+          env -u UV_CACHE_DIR -u UV_PYTHON_INSTALL_DIR \
+            RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
+            RUST_LOG=info,notebook=debug \
+            ./target/debug/notebook \
+            > e2e-logs/app.log 2>&1 &
+          APP_PID=$!
+
+          for _ in $(seq 1 60); do
+            curl -s http://localhost:4445/status >/dev/null 2>&1 && break
+            kill -0 "$APP_PID" 2>/dev/null || {
+              echo "App died"
+              cat e2e-logs/app.log
+              exit 1
+            }
+            sleep 1
+          done
+          echo "WebDriver ready"
+
+          WEBDRIVER_PORT=4445 \
+            E2E_SPEC=e2e/specs/dx-bootstrap-repr-llm.spec.js \
+            pnpm test:e2e 2>&1 | tee e2e-logs/test-output.log
+          EXIT=$?
+
+          kill "$APP_PID" "$DAEMON_PID" 2>/dev/null || true
+          exit "$EXIT"
+        env:
+          NO_AT_BRIDGE: 1
+          LIBGL_ALWAYS_SOFTWARE: 1
+          WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: 1
+          WEBKIT_DISABLE_COMPOSITING_MODE: 1
+
+      - name: Collect daemon logs
+        if: always()
+        run: |
+          mkdir -p e2e-logs
+          find ~/.cache/runt/worktrees -name "runtimed.log" -exec cp {} e2e-logs/ \; 2>/dev/null || true
+          find ~/.cache/runt/worktrees -name "daemon.json" -exec cp {} e2e-logs/ \; 2>/dev/null || true
+          echo "=== Daemon log ===" && cat e2e-logs/runtimed.log 2>/dev/null || echo "No daemon log found"
+
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dx-bootstrap-e2e-screenshots
+          path: e2e-screenshots/failures/
+          retention-days: 7
+
+      - name: Upload E2E logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dx-bootstrap-e2e-logs
+          path: e2e-logs/
+          retention-days: 7

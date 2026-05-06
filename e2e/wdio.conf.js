@@ -31,6 +31,7 @@ const FIXTURE_SPECS = [
   "cell-visibility.spec.js", // Requires fixture notebook with pre-existing outputs
   "conda-inline.spec.js",
   "deno.spec.js",
+  "dx-bootstrap-repr-llm.spec.js", // Requires bootstrap_dx before daemon startup
   "prewarmed-uv.spec.js",
   "trust-dialog-dismiss.spec.js",
   "untitled-pyproject.spec.js", // Requires working dir to be pyproject fixture directory
