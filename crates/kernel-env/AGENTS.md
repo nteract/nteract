@@ -1,6 +1,6 @@
 # Environment management
 
-Scope: `crates/kernel-env/**`, `crates/kernel-launch/**`, `crates/runt-trust/**`, and the daemon's env resolution in `crates/runtimed/src/inline_env*`, `crates/runtimed/src/project_file*`.
+Scope: `crates/kernel-env/**`, `crates/kernel-launch/**`, `crates/runt-trust/**`, and the daemon's env resolution in `crates/runtimed/src/inline_env*`, `crates/runtimed/src/project_file*`, `crates/runtimed/src/uv_project*`, `crates/runtimed/src/warm_env*`, `crates/runtimed/src/requests/launch_kernel.rs`, and `crates/runtimed/src/notebook_sync_server/metadata.rs`.
 
 ## Two-stage detection
 
@@ -27,17 +27,19 @@ The notebook's kernelspec takes priority over project files. A Deno notebook in 
 
 | Priority | Source | Backend | Environment type |
 |----------|--------|---------|-----------------|
-| 1 | Inline notebook metadata | UV or Conda from `metadata.runt.uv` / `metadata.runt.conda` | Cached by dep hash |
-| 2 | Closest project file | Walk-up via `project_file::find_nearest_project_file` | Depends on file type |
-| 3 | User preference | Prewarmed env from pool | Shared pool env |
+| 1 | Closest project file | Walk-up via `project_file::find_nearest_project_file` / `detect_project_file` | Project-owned env |
+| 2 | Captured prewarmed metadata with cache hit | `metadata.runt.{uv,conda}` + `env_id` routed back through `*:prewarmed` | Claimed env at unified hash |
+| 3 | Inline notebook metadata | UV, Conda, or Pixi from `metadata.runt.{uv,conda,pixi}` | Cached env or `pixi exec` |
+| 4 | PEP 723 script block | `notebook_doc::pep723` + default/scoped package manager | Cached env or `pixi exec` |
+| 5 | User preference | Prewarmed env from pool | Shared pool env |
 
-Walk-up checks `pyproject.toml`, `pixi.toml`, `environment.yml`/`.yaml` at each directory level. Closest wins. Same-directory tiebreaker: pyproject > pixi > environment.yml. Stops at `.git` boundaries and user's home directory.
+Project files win over inline deps because inline deps are promoted into the project file at sync/launch time; the project file is the source of truth once present. Walk-up checks `pyproject.toml`, `pixi.toml`, `environment.yml`/`.yaml` at each directory level. Closest wins. Same-directory tiebreaker: pyproject > pixi > environment.yml. A `pyproject.toml` with `[tool.pixi]` is treated as a Pixi project. Stops at `.git` boundaries and user's home directory.
 
 | Project file | Backend | Environment |
 |-------------|---------|-------------|
 | `pyproject.toml` | `uv run --with ipykernel` in project dir | Project `.venv/` |
-| `pixi.toml` | Convert deps to `CondaDependencies`, use rattler | Cached by dep hash |
-| `environment.yml` | Parse deps, use rattler | Cached by dep hash |
+| `pixi.toml` / `pyproject.toml` with `[tool.pixi]` | `pixi shell-hook` or `pixi run` in project dir | Project Pixi env |
+| `environment.yml` | Parse deps, find or build named Conda env after approval | Project Conda env |
 
 ### Deno kernels
 
@@ -46,9 +48,11 @@ No environment pools. Get deno via `kernel_launch::tools::get_deno_path()` (PATH
 ## Environment source labels
 
 The daemon returns `env_source` with `KernelLaunched`:
-- `"uv:inline"` / `"uv:pyproject"` / `"uv:prewarmed"` / `"uv:pep723"`
-- `"conda:inline"` / `"conda:env_yml"` / `"conda:prewarmed"`
-- `"pixi:toml"`
+- Prewarmed: `"uv:prewarmed"` / `"conda:prewarmed"` / `"pixi:prewarmed"`
+- Inline metadata: `"uv:inline"` / `"conda:inline"` / `"pixi:inline"`
+- Project files: `"uv:pyproject"` / `"conda:env_yml"` / `"pixi:toml"`
+- PEP 723: `"uv:pep723"` / `"conda:pep723"` / `"pixi:pep723"`
+- Deno: `"deno"`
 
 ## Kernel starting phases
 
@@ -94,10 +98,10 @@ Pool warmer and capture step strip a base set so captured metadata records only 
 ## Prewarming and daemon pool
 
 The daemon maintains pre-created environments (base set + user's `default_packages`):
-- Default pool size: 3 per type (UV and Conda)
+- Default pool size: from synced settings for UV, Conda, and Pixi, capped by `MAX_POOL_SIZE`
 - Max age: 2 days (172800 seconds)
 - Warming loops replenish as environments are consumed
-- Pool entries named `runtimed-{uv,conda}-{uuid}`, content-free, claimable by any notebook
+- Pool entries named `runtimed-{uv,conda,pixi}-{uuid}`, content-free, claimable by any notebook
 
 ### First-launch capture
 
