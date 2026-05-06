@@ -21,7 +21,8 @@ import "@/components/widgets/ipycanvas";
 // Preload output components used in main bundle (via MediaRouter).
 // Note: markdown-output, html-output, svg-output are isolated-only
 // and bundled separately in src/isolated-renderer/ - no need to preload here.
-import("@/components/outputs/ansi-output");
+// ansi-output is now a static import in media-router (also pulled in by
+// OutputArea), so it's already part of the main bundle.
 import("@/components/outputs/image-output");
 import("@/components/outputs/json-output");
 

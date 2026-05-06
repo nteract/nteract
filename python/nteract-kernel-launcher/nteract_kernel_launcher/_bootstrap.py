@@ -60,8 +60,8 @@ class LLMFormatter(BaseFormatter):
     inherited ``for_type`` / ``for_type_by_name`` registration APIs.
     """
 
-    format_type = Unicode("text/llm+plain")  # type: ignore[assignment]
-    print_method = ObjectName("_repr_llm_")  # type: ignore[assignment]
+    format_type = Unicode("text/llm+plain")
+    print_method = ObjectName("_repr_llm_")
 
 
 # ─── mimebundle formatters (lazy-bound via for_type_by_name) ──────────────
