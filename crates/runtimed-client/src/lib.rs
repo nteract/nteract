@@ -36,7 +36,6 @@ pub mod protocol;
 pub mod runtime;
 pub mod settings_doc;
 pub mod singleton;
-pub mod sync_client;
 
 // ============================================================================
 // Development Mode and Worktree Isolation

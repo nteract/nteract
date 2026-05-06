@@ -18,6 +18,7 @@
 pub use runtimed_client::*;
 pub use runtimed_outputs::{output_resolver, resolved_output};
 pub use runtimed_service as service;
+pub use runtimed_settings_sync as sync_client;
 
 // ============================================================================
 // Server-only modules (not in runtimed-client)

@@ -4547,6 +4547,7 @@ dependencies = [
  "rfd 0.17.2",
  "runt-workspace",
  "runtimed-client",
+ "runtimed-settings-sync",
  "serde",
  "serde_json",
  "strsim",
@@ -4697,6 +4698,7 @@ dependencies = [
  "reqwest 0.12.28",
  "runt-workspace",
  "runtimed-client",
+ "runtimed-settings-sync",
  "serde",
  "serde_json",
  "tokio",
@@ -7151,6 +7153,7 @@ dependencies = [
  "runtimed-client",
  "runtimed-outputs",
  "runtimed-service",
+ "runtimed-settings-sync",
  "rusqlite",
  "serde",
  "serde_json",
@@ -7247,6 +7250,7 @@ dependencies = [
  "runtime-doc",
  "runtimed-client",
  "runtimed-outputs",
+ "runtimed-settings-sync",
  "serde_json",
  "tokio",
  "uuid",
@@ -7261,6 +7265,21 @@ dependencies = [
  "runt-workspace",
  "smappservice-rs",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "runtimed-settings-sync"
+version = "2.4.5"
+dependencies = [
+ "automerge",
+ "log",
+ "notebook-protocol",
+ "runt-workspace",
+ "runtimed-client",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

@@ -20,6 +20,7 @@ members = [
     "crates/runtimed-client",
     "crates/runtimed-outputs",
     "crates/runtimed-service",
+    "crates/runtimed-settings-sync",
     "crates/runtimed-node",
     "crates/runtimed-py",
     "crates/runtimed-wasm",

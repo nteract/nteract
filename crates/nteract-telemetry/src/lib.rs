@@ -289,7 +289,7 @@ async fn try_send(client: &reqwest::Client, source: &str, timestamp_key: &str) {
 }
 
 async fn read_settings() -> Option<runtimed_client::settings_doc::SyncedSettings> {
-    match runtimed_client::sync_client::try_get_synced_settings().await {
+    match runtimed_settings_sync::try_get_synced_settings().await {
         Ok(settings) => Some(settings),
         Err(_) => {
             let path = runt_workspace::settings_json_path();
@@ -301,7 +301,7 @@ async fn read_settings() -> Option<runtimed_client::settings_doc::SyncedSettings
 
 async fn write_setting(key: &str, value: &serde_json::Value) {
     let socket_path = runt_workspace::default_socket_path();
-    match runtimed_client::sync_client::SyncClient::connect_with_timeout(
+    match runtimed_settings_sync::SyncClient::connect_with_timeout(
         socket_path,
         Duration::from_millis(500),
     )

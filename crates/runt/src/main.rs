@@ -2153,8 +2153,8 @@ async fn stop_daemon_smart(
 #[allow(clippy::unwrap_used, clippy::expect_used)] // CLI binary; panics with context are acceptable
 async fn daemon_command(command: DaemonCommands) -> Result<()> {
     use runtimed::client::PoolClient;
-    use runtimed_service::ServiceManager;
     use runtimed_client::singleton::query_daemon_info;
+    use runtimed_service::ServiceManager;
 
     let mut manager = ServiceManager::default();
 

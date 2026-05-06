@@ -2801,7 +2801,7 @@ async fn check_typosquats(packages: Vec<String>) -> Vec<typosquat::TyposquatWarn
 /// so the frontend always gets real settings instead of hardcoded defaults.
 #[tauri::command]
 async fn get_synced_settings() -> Result<runtimed::settings_doc::SyncedSettings, String> {
-    match runtimed::sync_client::try_get_synced_settings().await {
+    match runtimed_settings_sync::try_get_synced_settings().await {
         Ok(settings) => {
             log::info!(
                 "[settings] get_synced_settings from daemon: runtime={}, env={}",
@@ -2834,7 +2834,7 @@ async fn get_synced_settings() -> Result<runtimed::settings_doc::SyncedSettings,
 #[tauri::command]
 async fn set_synced_setting(key: String, value: serde_json::Value) -> Result<(), String> {
     let socket_path = runt_workspace::default_socket_path();
-    let mut client = runtimed::sync_client::SyncClient::connect_with_timeout(
+    let mut client = runtimed_settings_sync::SyncClient::connect_with_timeout(
         socket_path,
         std::time::Duration::from_millis(500),
     )
@@ -2860,7 +2860,7 @@ async fn set_synced_setting(key: String, value: serde_json::Value) -> Result<(),
 #[tauri::command]
 async fn rotate_install_id() -> Result<String, String> {
     let socket_path = runt_workspace::default_socket_path();
-    let mut client = runtimed::sync_client::SyncClient::connect_with_timeout(
+    let mut client = runtimed_settings_sync::SyncClient::connect_with_timeout(
         socket_path,
         std::time::Duration::from_millis(500),
     )
@@ -3133,7 +3133,7 @@ async fn run_settings_sync(app: tauri::AppHandle) {
     let socket_path = runt_workspace::default_socket_path();
 
     loop {
-        match runtimed::sync_client::SyncClient::connect(socket_path.clone()).await {
+        match runtimed_settings_sync::SyncClient::connect(socket_path.clone()).await {
             Ok(mut client) => {
                 // Emit initial settings
                 let settings = client.get_all();
