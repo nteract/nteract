@@ -177,9 +177,10 @@ Organize recommendations into:
 Start with these to understand the actual implementation:
 
 **Architecture docs:**
+- `apps/notebook/src/AGENTS.md`
+- `crates/notebook-wire/AGENTS.md`
+- `crates/notebook-doc/AGENTS.md`
 - `contributing/architecture.md`
-- `contributing/frontend-architecture.md`
-- `contributing/protocol.md`
 - `contributing/runtimed.md`
 
 **Core daemon:**
