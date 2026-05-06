@@ -154,7 +154,7 @@ Both sides use the workspace `automerge` dependency from the pinned `nteract/aut
 
 ```
 user types in cell
-  → React calls handle.update_source(cell_id, text)
+  → CodeMirror bridge calls handle.splice_source(cell_id, index, delete_count, text)
   → WASM applies mutation locally (instant)
   → engine.scheduleFlush() (20 ms debounce) → flush_local_changes() → sync bytes
   → sendFrame(AUTOMERGE_SYNC, msg) → raw binary via tauri::ipc::Request
