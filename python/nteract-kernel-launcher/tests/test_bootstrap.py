@@ -224,14 +224,66 @@ def test_install_registers_on_both_seats_once():
     assert len(ip.displayhook._hooks) == 1
 
 
+# ─── LLM formatter contract ──────────────────────────────────────────────
+
+
+def test_llm_formatter_uses_repr_llm_method():
+    from IPython.core.formatters import DisplayFormatter
+    from nteract_kernel_launcher import _bootstrap
+
+    display_formatter = DisplayFormatter()
+    ip = SimpleNamespace(display_formatter=display_formatter)
+
+    class Example:
+        def _repr_llm_(self):
+            return "what up"
+
+    formatter = _bootstrap._install_llm_formatter(ip)
+
+    assert formatter is display_formatter.formatters["text/llm+plain"]
+    data, metadata = display_formatter.format(Example())
+    assert data["text/llm+plain"] == "what up"
+    assert metadata == {}
+
+
+def test_llm_formatter_preserves_existing_registration():
+    from IPython.core.formatters import BaseFormatter
+    from nteract_kernel_launcher import _bootstrap
+
+    existing = BaseFormatter()
+    display_formatter = SimpleNamespace(formatters={"text/llm+plain": existing})
+    ip = SimpleNamespace(display_formatter=display_formatter)
+
+    assert _bootstrap._install_llm_formatter(ip) is existing
+    assert display_formatter.formatters["text/llm+plain"] is existing
+
+
+def test_llm_formatter_supports_for_type_registration():
+    from IPython.core.formatters import DisplayFormatter
+    from nteract_kernel_launcher import _bootstrap
+
+    display_formatter = DisplayFormatter()
+    ip = SimpleNamespace(display_formatter=display_formatter)
+    formatter = _bootstrap._install_llm_formatter(ip)
+
+    class Example:
+        pass
+
+    formatter.for_type(Example, lambda obj: "registered")
+
+    data, _metadata = display_formatter.format(Example())
+    assert data["text/llm+plain"] == "registered"
+
+
 # ─── load_ipython_extension contract ─────────────────────────────────────
 
 
-def test_load_extension_invokes_the_three_install_steps(monkeypatch):
+def test_load_extension_invokes_the_install_steps(monkeypatch):
     from nteract_kernel_launcher import _bootstrap
 
     calls = []
 
+    monkeypatch.setattr(_bootstrap, "_install_llm_formatter", lambda ip: calls.append("llm"))
     monkeypatch.setattr(
         _bootstrap, "_install_dataframe_formatters", lambda ip: calls.append("formatters")
     )
@@ -241,7 +293,7 @@ def test_load_extension_invokes_the_three_install_steps(monkeypatch):
     )
 
     _bootstrap.load_ipython_extension(SimpleNamespace())
-    assert calls == ["formatters", "hooks", "renderers"]
+    assert calls == ["llm", "formatters", "hooks", "renderers"]
 
 
 def test_load_extension_swallows_per_step_failures(monkeypatch):
@@ -253,6 +305,7 @@ def test_load_extension_swallows_per_step_failures(monkeypatch):
     def boom(*_args, **_kwargs):
         raise RuntimeError("nope")
 
+    monkeypatch.setattr(_bootstrap, "_install_llm_formatter", boom)
     monkeypatch.setattr(_bootstrap, "_install_dataframe_formatters", boom)
     monkeypatch.setattr(_bootstrap, "_install_buffer_hooks", lambda ip: called.append("hooks"))
     monkeypatch.setattr(_bootstrap, "_enable_third_party_renderers", lambda: called.append("r"))
