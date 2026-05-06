@@ -42,7 +42,7 @@ Scope: `src/components/widgets/**`. The JSON-RPC transport and iframe lifecycle 
 
 ## Reserved comm namespace: `nteract.dx.*`
 
-`nteract.dx.*` target-names are reserved for nteract kernel-side protocols (dx uses `nteract.dx.blob`; future subsystems may use `nteract.dx.query`, `nteract.dx.stream`). The runtime agent filters this namespace out of `RuntimeStateDoc::comms` — it's not widget state, doesn't sync to the frontend, and never reaches `WidgetStore`. Pick a different prefix for widget targets.
+`nteract.dx.*` target-names are reserved for nteract kernel-side protocols. The runtime agent filters this namespace out of `RuntimeStateDoc::comms` and `NotebookBroadcast::Comm`, so it is not widget state and never reaches `WidgetStore`. v1 has no live `nteract.dx.blob` handler; reserved messages are dropped with a warning while current blob refs ride IOPub `display_data` buffers. Pick a different prefix for widget targets.
 
 ## Key files
 
