@@ -6,21 +6,21 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use runtime_doc::CommDocEntry;
-use runtimed_client::output_resolver as shared;
+use runtimed_outputs::output_resolver as shared;
 
 use crate::output::{DataValue, Output};
 
 /// Convert a shared DataValue to a local (PyO3) DataValue.
-fn convert_dv(dv: runtimed_client::resolved_output::DataValue) -> DataValue {
+fn convert_dv(dv: runtimed_outputs::resolved_output::DataValue) -> DataValue {
     match dv {
-        runtimed_client::resolved_output::DataValue::Text(s) => DataValue::Text(s),
-        runtimed_client::resolved_output::DataValue::Binary(b) => DataValue::Binary(b),
-        runtimed_client::resolved_output::DataValue::Json(v) => DataValue::Json(v),
+        runtimed_outputs::resolved_output::DataValue::Text(s) => DataValue::Text(s),
+        runtimed_outputs::resolved_output::DataValue::Binary(b) => DataValue::Binary(b),
+        runtimed_outputs::resolved_output::DataValue::Json(v) => DataValue::Json(v),
     }
 }
 
 /// Convert a shared Output to a local (PyO3) Output.
-fn convert_output(o: runtimed_client::resolved_output::Output) -> Output {
+fn convert_output(o: runtimed_outputs::resolved_output::Output) -> Output {
     Output {
         output_type: o.output_type,
         name: o.name,
@@ -56,7 +56,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
-    use runtimed_client::resolved_output as shared_output;
+    use runtimed_outputs::resolved_output as shared_output;
     use serde_json::json;
 
     #[test]

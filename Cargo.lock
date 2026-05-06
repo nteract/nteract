@@ -7019,6 +7019,7 @@ dependencies = [
  "runt-workspace",
  "runtime-doc",
  "runtimed-client",
+ "runtimed-outputs",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -7131,6 +7132,7 @@ dependencies = [
  "runt-workspace",
  "runtime-doc",
  "runtimed-client",
+ "runtimed-outputs",
  "runtimed-service",
  "rusqlite",
  "serde",
@@ -7153,7 +7155,6 @@ version = "2.4.5"
 dependencies = [
  "automerge",
  "automerge-recovery",
- "base64 0.22.1",
  "build-metadata",
  "chrono",
  "dirs",
@@ -7161,7 +7162,6 @@ dependencies = [
  "log",
  "notebook-doc",
  "notebook-protocol",
- "repr-llm",
  "reqwest 0.12.28",
  "runt-workspace",
  "runtime-doc",
@@ -7193,11 +7193,27 @@ dependencies = [
  "runt-workspace",
  "runtime-doc",
  "runtimed-client",
+ "runtimed-outputs",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "runtimed-outputs"
+version = "2.4.5"
+dependencies = [
+ "base64 0.22.1",
+ "notebook-doc",
+ "repr-llm",
+ "reqwest 0.12.28",
+ "runtime-doc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -7214,6 +7230,7 @@ dependencies = [
  "runt-workspace",
  "runtime-doc",
  "runtimed-client",
+ "runtimed-outputs",
  "serde_json",
  "tokio",
  "uuid",

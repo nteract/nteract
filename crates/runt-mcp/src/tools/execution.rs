@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::ErrorData as McpError;
-use runtimed_client::output_resolver;
+use runtimed_outputs::output_resolver;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -225,9 +225,9 @@ pub async fn run_all_cells(
         let output_manifests = &exec.outputs;
         let outputs = if !output_manifests.is_empty() {
             // Batch execute path — always preview mode. No per-cell opt-out.
-            runtimed_client::output_resolver::resolve_cell_outputs_for_llm(
+            runtimed_outputs::output_resolver::resolve_cell_outputs_for_llm(
                 output_manifests,
-                runtimed_client::output_resolver::ResolveCtx {
+                runtimed_outputs::output_resolver::ResolveCtx {
                     blob_base_url: server.blob_base_url.as_deref(),
                     blob_store_path: server.blob_store_path.as_deref(),
                     comms,

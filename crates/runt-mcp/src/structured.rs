@@ -10,7 +10,7 @@
 //! fetches — structured content is always compact.
 
 use notebook_doc::mime::MimeKind;
-use runtimed_client::output_resolver;
+use runtimed_outputs::output_resolver;
 use serde_json::{json, Value};
 
 /// Check if a MIME type is a visualization spec (Plotly, Vega-Lite, Vega).

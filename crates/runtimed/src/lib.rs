@@ -16,6 +16,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub use runtimed_client::*;
+pub use runtimed_outputs::{output_resolver, resolved_output};
 pub use runtimed_service as service;
 
 // ============================================================================

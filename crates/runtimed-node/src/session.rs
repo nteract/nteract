@@ -17,8 +17,8 @@ use tokio::sync::Mutex;
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 use notebook_sync::{BroadcastReceiver, DocHandle};
 use runtimed_client::client::PoolClient;
-use runtimed_client::output_resolver as shared_resolver;
-use runtimed_client::resolved_output::DataValue as SharedDataValue;
+use runtimed_outputs::output_resolver as shared_resolver;
+use runtimed_outputs::resolved_output::DataValue as SharedDataValue;
 
 use crate::error::to_napi_err;
 use runtime_doc::{diff_executions, ProjectContext, ProjectFileKind};
@@ -2029,13 +2029,13 @@ enum DataValueJson {
     Json(serde_json::Value),
 }
 
-fn to_js_output(o: runtimed_client::resolved_output::Output) -> napi::Result<JsOutput> {
+fn to_js_output(o: runtimed_outputs::resolved_output::Output) -> napi::Result<JsOutput> {
     js_output_from_resolved_output(o)
         .map_err(|e| napi::Error::from_reason(format!("Failed to serialize output data: {e}")))
 }
 
 fn js_output_from_resolved_output(
-    o: runtimed_client::resolved_output::Output,
+    o: runtimed_outputs::resolved_output::Output,
 ) -> serde_json::Result<JsOutput> {
     let data_json = match o.data {
         Some(d) => {
@@ -2081,7 +2081,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use runtimed_client::resolved_output::{DataValue as SharedDataValue, Output as SharedOutput};
+    use runtimed_outputs::resolved_output::{DataValue as SharedDataValue, Output as SharedOutput};
     use serde_json::json;
     use std::collections::HashMap;
     use std::path::Path;

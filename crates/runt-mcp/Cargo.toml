@@ -14,6 +14,7 @@ workspace = true
 rmcp = { version = "1.4", features = ["server", "transport-io"] }
 repr-llm = { path = "../repr-llm" }
 runtimed-client = { path = "../runtimed-client" }
+runtimed-outputs = { path = "../runtimed-outputs" }
 notebook-protocol = { path = "../notebook-protocol" }
 notebook-sync = { path = "../notebook-sync" }
 notebook-doc = { path = "../notebook-doc" }

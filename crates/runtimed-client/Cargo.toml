@@ -20,7 +20,6 @@ notebook-protocol = { path = "../notebook-protocol" }
 notebook-doc = { path = "../notebook-doc" }
 runtime-doc = { path = "../runtime-doc" }
 runt-workspace = { path = "../runt-workspace" }
-repr-llm = { path = "../repr-llm" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -28,7 +27,6 @@ thiserror = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 log = "0.4"
 dirs = "6"
-base64 = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
 uuid = { workspace = true }
 automerge = { workspace = true }
