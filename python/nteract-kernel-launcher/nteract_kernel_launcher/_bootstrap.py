@@ -1,20 +1,24 @@
 """IPython extension — the launcher-hosted bootstrap.
 
 Loaded automatically via ``NteractKernelApp.default_extensions`` before any
-user code runs. Three things happen on ``load_ipython_extension``:
+user code runs. Four things happen on ``load_ipython_extension``:
 
-1. ``mimebundle_formatter`` entries for pandas / polars / narwhals /
+1. A ``text/llm+plain`` formatter is registered for objects that expose
+   ``_repr_llm_``. This mirrors the original ``repr_llm`` convention while
+   keeping the launcher self-contained.
+
+2. ``mimebundle_formatter`` entries for pandas / polars / narwhals /
    datasets are registered by **dotted type name** (no eager imports).
    IPython binds them lazily on first encounter — dx's historical
    ``import pandas as pd`` at install time becomes unnecessary.
 
-2. :func:`_buffer_hook.install` registers the single buffer-attachment
+3. :func:`_buffer_hook.install` registers the single buffer-attachment
    hook on *both* ``ip.display_pub`` and ``ip.displayhook``. With the
    hook chain in place on both seats, ``execute_result`` (bare ``df``
    on last line) and ``display_data`` / ``update_display_data`` all
    pick up parquet buffers from the same pending-bytes stash.
 
-3. Third-party visualization libraries (altair, plotly) are flipped to
+4. Third-party visualization libraries (altair, plotly) are flipped to
    their ``"nteract"`` renderer if they happen to be importable. Each
    is guarded so the bootstrap stays a no-op in minimal envs.
 
@@ -34,6 +38,9 @@ import logging
 import os
 from typing import Any
 
+from IPython.core.formatters import BaseFormatter
+from traitlets import ObjectName, Unicode
+
 from nteract_kernel_launcher import _buffer_hook, _traceback
 from nteract_kernel_launcher._buffer_hook import pending_buffers
 from nteract_kernel_launcher._format import serialize_dataframe
@@ -44,6 +51,17 @@ log = logging.getLogger("nteract_kernel_launcher")
 
 # Server-side blob ceiling is ~100 MiB; leave ~10 MiB for overhead.
 _MAX_PAYLOAD_BYTES = int(os.environ.get("DX_MAX_PAYLOAD_BYTES", str(90 * 1024 * 1024)))
+
+
+class LLMFormatter(BaseFormatter):
+    """Formatter for plaintext LLM representations.
+
+    Objects can opt in by defining ``_repr_llm_``. Callers may also use the
+    inherited ``for_type`` / ``for_type_by_name`` registration APIs.
+    """
+
+    format_type = Unicode("text/llm+plain")  # type: ignore[assignment]
+    print_method = ObjectName("_repr_llm_")  # type: ignore[assignment]
 
 
 # ─── mimebundle formatters (lazy-bound via for_type_by_name) ──────────────
@@ -163,6 +181,22 @@ def _emit_dataframe(df: Any, *, total_rows: int) -> dict | None:
 # ─── Install functions — called from load_ipython_extension ───────────────
 
 
+def _install_llm_formatter(ip: Any) -> BaseFormatter | None:
+    """Register ``text/llm+plain`` support for ``_repr_llm_`` objects."""
+    display_formatter = getattr(ip, "display_formatter", None)
+    formatters = getattr(display_formatter, "formatters", None)
+    if not isinstance(formatters, dict):
+        return None
+
+    existing = formatters.get("text/llm+plain")
+    if existing is not None:
+        return existing
+
+    llm_formatter = LLMFormatter(parent=display_formatter)
+    formatters["text/llm+plain"] = llm_formatter
+    return llm_formatter
+
+
 def _install_dataframe_formatters(ip: Any) -> None:
     """Register mimebundle formatters lazily via ``for_type_by_name``.
 
@@ -247,6 +281,11 @@ def load_ipython_extension(ip: Any) -> None:
     further guard each install step so a single failure doesn't abort
     the others.
     """
+    try:
+        _install_llm_formatter(ip)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("LLM formatter install failed: %s", exc)
+
     try:
         _install_dataframe_formatters(ip)
     except Exception as exc:  # noqa: BLE001
