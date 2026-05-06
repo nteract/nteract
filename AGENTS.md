@@ -2,11 +2,11 @@
 
 <!-- This file is canonical. CLAUDE.md is a symlink to AGENTS.md. -->
 
-This is a map. Subsystem details live in nested `AGENTS.md` files next to code, auto-loaded rules live in `.claude/rules/`, and operational recipes live in `.claude/skills/`. Run `cargo xtask help` for build commands.
+This is a map. Subsystem details live in nested `AGENTS.md` files next to code, auto-loaded rules live in `.claude/rules/`, and repository skills live in `.agents/skills/`. Claude reads the same skills through the `.claude/skills` symlink. Run `cargo xtask help` for build commands.
 
 ## Skills
 
-Use `.claude/skills/` when the task matches:
+Use `.agents/skills/` when the task matches:
 - `automerge-sync` — sync protocol internals, document model, reconnection, peer state, in-flight suppression, protocol design patterns, convergence debugging
 - `daemon-dev` — daemon development, Python bindings, build system, kernel debugging, xtask workflows
 - `execution-pipeline` — end-to-end cell execution: required_heads → ExecuteCell → CellQueued → RuntimeStateDoc polling → output-sync grace → output resolution

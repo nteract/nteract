@@ -224,6 +224,6 @@ concurrently on the same socket connection.
 | `crates/runtimed/src/notebook_sync_server/peer_writer.rs` | `wait_for_required_heads` — daemon-side causal gate |
 | `crates/runtimed/src/runtime_agent/` | Kernel management, output routing, `set_execution_done` |
 | `crates/runtime-doc/src/doc.rs` | RuntimeStateDoc schema — executions map, kernel status |
-| `crates/runtimed-client/src/output_resolver.rs` | `resolve_cell_outputs_for_llm` — manifest → Output |
+| `crates/runtimed-outputs/src/output_resolver.rs` | `resolve_cell_outputs_for_llm` — manifest → Output |
 | `crates/notebook-doc/src/mime.rs` | MIME classification (text vs binary) |
 | `packages/runtimed/src/notebook-client.ts` | Frontend `executeCell` with `getRequiredHeads` callback |
