@@ -22,9 +22,8 @@ Codex-specific repo skills live in `.codex/skills/`. Prefer them when the task m
 
 | Topic | Doc |
 |------|-----|
-| Architecture overview | `contributing/architecture.md` |
+| Architecture + daemon | `crates/runtimed/AGENTS.md` |
 | Development setup (direnv, lld, sccache, build cache) | `contributing/development.md` |
-| Daemon, Python bindings, MCP, telemetry, channels | `contributing/runtimed.md` |
 | Tests | `contributing/testing.md` |
 | E2E (WebdriverIO) | `contributing/e2e.md` |
 | Frontend architecture | `apps/notebook/src/AGENTS.md` |
@@ -112,7 +111,7 @@ Most invariants live in `.claude/rules/*.md` and auto-load when you edit matchin
 
 | Invariant | Where |
 |-----------|-------|
-| Daemon as source of truth, RuntimeStateDoc, `is_binary_mime` contract, crate boundaries, state ownership, blob store | `.claude/rules/architecture.md` |
+| Daemon as source of truth, RuntimeStateDoc, `is_binary_mime` contract, crate boundaries, state ownership, blob store | `crates/runtimed/AGENTS.md` |
 | Fork+merge for async CRDT mutations, no independent `put_object` on shared keys | `.claude/rules/crdt-mutations.md` |
 | Iframe sandbox (`allow-same-origin` is forbidden), renderer plugins | `.claude/rules/iframe-isolation.md` |
 | Wire protocol versions, upgrade compatibility | `.claude/rules/protocol.md` |
