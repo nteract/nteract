@@ -1,7 +1,6 @@
 use super::*;
 use automerge::{transaction::Transactable, ActorId, AutoCommit, ObjType};
 use runtime_doc::{KernelActivity, KernelErrorReason, RuntimeLifecycle};
-use serial_test::serial;
 use uuid::Uuid;
 
 const SCHEMA_SEED_ACTOR_LABEL: &str = "nteract:notebook-schema:v4";
@@ -591,7 +590,6 @@ async fn test_untitled_room_preserves_legacy_persisted_automerge_history() {
 /// Regression test for #1646: untitled notebooks must read trust from
 /// the persisted Automerge doc, not from a non-existent .ipynb file.
 #[tokio::test]
-#[serial]
 async fn test_new_fresh_untitled_trust_from_doc() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
@@ -4092,7 +4090,6 @@ fn test_verify_trust_from_snapshot_no_deps() {
 }
 
 #[test]
-#[serial]
 fn test_verify_trust_from_snapshot_unsigned_deps() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
@@ -4107,7 +4104,6 @@ fn test_verify_trust_from_snapshot_unsigned_deps() {
 }
 
 #[test]
-#[serial]
 fn test_verify_trust_from_snapshot_unsigned_pixi_deps() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
@@ -4124,7 +4120,6 @@ fn test_verify_trust_from_snapshot_unsigned_pixi_deps() {
 }
 
 #[test]
-#[serial]
 fn test_verify_trust_from_snapshot_signed_trusted() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
@@ -4148,7 +4143,6 @@ fn test_verify_trust_from_snapshot_signed_trusted() {
 }
 
 #[test]
-#[serial]
 fn test_verify_trust_from_snapshot_invalid_signature() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
@@ -4166,7 +4160,6 @@ fn test_verify_trust_from_snapshot_invalid_signature() {
 }
 
 #[test]
-#[serial]
 fn test_verify_trust_from_snapshot_conda_trusted() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
@@ -4244,7 +4237,6 @@ async fn test_check_and_update_trust_state_no_deps() {
 }
 
 #[tokio::test]
-#[serial]
 async fn test_approve_trust_adds_dependencies_to_allowlist() {
     let tmp = tempfile::TempDir::new().unwrap();
     let key_path = tmp.path().join("trust-key");
@@ -4282,7 +4274,6 @@ async fn test_approve_trust_adds_dependencies_to_allowlist() {
 }
 
 #[tokio::test]
-#[serial]
 async fn test_allowlisted_unsigned_dependencies_auto_sign_and_trust() {
     let tmp = tempfile::TempDir::new().unwrap();
     let key_path = tmp.path().join("trust-key");
@@ -4331,7 +4322,6 @@ async fn test_allowlisted_unsigned_dependencies_auto_sign_and_trust() {
 }
 
 #[tokio::test]
-#[serial]
 async fn test_allowlist_partial_coverage_stays_untrusted_with_markers() {
     let tmp = tempfile::TempDir::new().unwrap();
     let key_path = tmp.path().join("trust-key");
@@ -4377,7 +4367,6 @@ async fn test_allowlist_partial_coverage_stays_untrusted_with_markers() {
 }
 
 #[tokio::test]
-#[serial]
 async fn test_allowlist_does_not_override_invalid_signature() {
     let tmp = tempfile::TempDir::new().unwrap();
     let key_path = tmp.path().join("trust-key");
@@ -4417,7 +4406,6 @@ async fn test_allowlist_does_not_override_invalid_signature() {
 }
 
 #[tokio::test]
-#[serial]
 async fn test_check_and_update_trust_state_approval_updates_room() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
@@ -4522,7 +4510,6 @@ async fn test_check_and_update_trust_state_idempotent() {
 /// SignatureInvalid verification, re-sign in place with the daemon's trust
 /// key and keep the notebook Trusted.
 #[tokio::test]
-#[serial]
 async fn test_check_and_update_trust_state_auto_resigns_trusted_notebook() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
@@ -4613,7 +4600,6 @@ async fn test_check_and_update_trust_state_auto_resigns_trusted_notebook() {
 /// A brand-new notebook with unsigned deps must still land in Untrusted —
 /// the user has not approved anything yet.
 #[tokio::test]
-#[serial]
 async fn test_check_and_update_trust_state_no_autoresign_when_not_previously_trusted() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
@@ -4646,7 +4632,6 @@ async fn test_check_and_update_trust_state_no_autoresign_when_not_previously_tru
 // the user explicitly copies them into metadata.
 
 #[tokio::test]
-#[serial]
 async fn test_auto_sign_in_place_uv_yields_trusted() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
@@ -4668,7 +4653,6 @@ async fn test_auto_sign_in_place_uv_yields_trusted() {
 }
 
 #[tokio::test]
-#[serial]
 async fn test_auto_sign_in_place_conda_yields_trusted() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
@@ -4686,7 +4670,6 @@ async fn test_auto_sign_in_place_conda_yields_trusted() {
 }
 
 #[tokio::test]
-#[serial]
 async fn test_auto_sign_in_place_pixi_writes_signature() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
@@ -6556,7 +6539,6 @@ fn test_project_file_deps_match_trust_info_no_project_file() {
 /// build) must land on Trusted at room creation, so the auto-launch
 /// gate in peer_connection.rs doesn't block.
 #[tokio::test]
-#[serial]
 async fn test_new_fresh_promotes_untrusted_when_project_file_deps_match() {
     let key_tmp = tempfile::tempdir().unwrap();
     let key_path = key_tmp.path().join("trust-key");
@@ -6595,7 +6577,6 @@ async fn test_new_fresh_promotes_untrusted_when_project_file_deps_match() {
 
 /// Counterpart: if deps differ, room init must leave trust Untrusted.
 #[tokio::test]
-#[serial]
 async fn test_new_fresh_leaves_untrusted_when_deps_differ() {
     let key_tmp = tempfile::tempdir().unwrap();
     let key_path = key_tmp.path().join("trust-key");
@@ -7354,7 +7335,6 @@ async fn test_file_watcher_replacement_drops_stale_top_level_metadata() {
 /// another editor) should flow into `RuntimeStateDoc.project_context`
 /// without any client round-trip.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial]
 async fn project_file_watcher_refreshes_context_on_external_edit() {
     use runtime_doc::ProjectContext;
     use tokio::time::{sleep, Duration};
