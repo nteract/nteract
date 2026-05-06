@@ -29,9 +29,9 @@ pub mod runtime;
 pub mod settings_doc;
 pub mod singleton;
 
-use runt_workspace::{
-    cache_namespace, daemon_base_dir, get_workspace_path, is_dev_mode, worktree_hash,
-};
+use runt_workspace::daemon_base_dir;
+#[cfg(unix)]
+use runt_workspace::{cache_namespace, get_workspace_path, is_dev_mode, worktree_hash};
 
 /// Get the default log path for the daemon.
 pub fn default_log_path() -> PathBuf {
