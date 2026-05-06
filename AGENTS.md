@@ -32,7 +32,7 @@ Codex-specific repo skills live in `.codex/skills/`. Prefer them when the task m
 | Widgets | `contributing/widget-development.md` |
 | Environments / trust | `contributing/environments.md` |
 | Iframe sandbox & renderer plugins | `contributing/iframe-isolation.md` |
-| CRDT mutation rules | `contributing/crdt-mutation-guide.md` |
+| CRDT mutation rules | `crates/notebook-doc/AGENTS.md` |
 | TypeScript bindings (ts-rs) | `contributing/typescript-bindings.md` |
 | Logging | `contributing/logging.md` |
 | Build deps / releasing / branch hygiene | `contributing/build-dependencies.md`, `contributing/releasing.md`, `contributing/branch-hygiene.md` |

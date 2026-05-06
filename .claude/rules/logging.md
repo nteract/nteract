@@ -4,79 +4,31 @@ paths:
   - apps/notebook/src/**
 ---
 
-# Logging Guidelines
+# Logging
 
-## Rust Logging
+Logging conventions for the daemon (Rust, `tracing`), the Tauri notebook crate (Rust, `log`), and the frontend (TypeScript, `logger` util).
 
-### runtimed daemon
+## Rust — daemon (`crates/runtimed`)
 
-Use the `tracing` crate. Import log macros at the top of your file:
+Use `tracing`:
 
 ```rust
 use tracing::{debug, info, warn, error};
 ```
 
-The daemon uses `tracing-subscriber` with layered subscribers (stderr + file).
-Dependencies that use the `log` crate are automatically bridged into tracing
-via `tracing-log` (set up by `.init()`).
+`tracing-subscriber` runs layered subscribers (stderr + file). Dependencies that use the `log` crate (jupyter-zmq-client, automerge, …) bridge into `tracing` automatically via `tracing-log`.
 
-### Tauri app (notebook crate)
+## Rust — Tauri notebook crate
 
-The notebook app still uses `log` with `tauri-plugin-log`:
+Use `log` with `tauri-plugin-log`:
 
 ```rust
 use log::{debug, info, warn, error};
 ```
 
-### Log Level Guidelines
+## TypeScript
 
-| Level | Use For | Examples |
-|-------|---------|----------|
-| `error!` | Failures that affect functionality | Kernel crash, file write failure |
-| `warn!` | Recoverable issues that may indicate problems | Trust verification failed, retry exhausted |
-| `info!` | Significant user-visible events | Kernel launched, environment created, sync complete |
-| `debug!` | Internal details useful for debugging | Pool operations, request handling, state transitions |
-
-### What NOT to Log at Info Level
-
-- Per-operation details (every cell execution, every pool take/return)
-- Internal state transitions (metadata resolution, room creation)
-- Expected conditions (kernel already running, no peers remaining)
-- Large data structures (comm state, JSON payloads)
-
-### Prefixes
-
-Use consistent prefixes for filtering:
-- `[runtimed]` -- Daemon core operations
-- `[notebook-sync]` -- Automerge sync server
-- `[kernel-manager]` -- Kernel lifecycle and execution
-- `[doc-handle]` -- CRDT document mutations and requests
-- `[comm_*]` -- Widget communication
-
-### Default Log Levels by Channel
-
-| Channel | Daemon default | Notebook app default |
-|---------|---------------|---------------------|
-| **Nightly** | `info` (with `debug` for sync modules) | `Debug` |
-| **Stable** | `warn` | `Info` |
-
-### Log File Rotation
-
-Daemon logs rotate on startup — each daemon session gets a clean log file. Previous logs are preserved as `runtimed.log.1`. This makes `runt daemon logs -f` show only the current session.
-
-### Enabling Debug Logs
-
-```bash
-# All debug logs (overrides channel default)
-RUST_LOG=debug cargo xtask dev-daemon
-
-# Specific module
-RUST_LOG=runtimed::notebook_sync_server=debug cargo xtask dev-daemon
-```
-
-## TypeScript Logging
-
-Use the `logger` utility from `apps/notebook/src/lib/logger.ts` instead of raw `console.*`:
+Import the `logger` utility:
 
 ```typescript
 import { logger } from "../lib/logger";
@@ -87,38 +39,76 @@ logger.warn("[component] Recoverable issue");
 logger.error("[component] Failure:", error);
 ```
 
-### Log Level Behavior
+Route through `logger`, not raw `console.*`. The level filter is applied server-side by `tauri-plugin-log`. In dev (`import.meta.env.DEV`) `attachConsole()` mirrors everything into the browser devtools. In packaged builds the Rust-side app log level decides what's visible.
 
-- **Nightly**: All levels (`debug`, `info`, `warn`, `error`) enabled by default
-- **Stable**: `logger.debug()` still goes through the logger, but the Rust-side filter usually drops it; `info`, `warn`, `error` remain visible
-- Level filter applied server-side by `tauri-plugin-log`
+## Level guidelines
 
-### What NOT to Log at Info Level
+| Level | Use for | Examples |
+|-------|---------|----------|
+| `error` | Failures that affect functionality | Kernel crash, file write failure |
+| `warn` | Recoverable issues that may indicate problems | Trust verification failed, retry exhausted |
+| `info` | Significant user-visible events | Kernel launched, environment created, sync complete |
+| `debug` | Internal details useful for debugging | Pool operations, request handling, state transitions |
 
-- Per-cell execution, per-comm message details
-- Retry attempts (only log final result)
-- Internal state (blob port resolution, queue state)
-- Success cases for routine operations (hot-sync succeeded)
+Send these to `debug` rather than `info`:
 
-### Seeing Frontend Debug Logs
+- per-operation details (every cell execution, every pool take/return)
+- internal state transitions (metadata resolution, room creation)
+- expected conditions (kernel already running, no peers remaining)
+- large data structures (comm state, JSON payloads)
+- retry attempts (log only the final result)
 
-There is no `localStorage` debug toggle in the current app. Frontend logs go
-through `apps/notebook/src/lib/logger.ts`, and in development
-(`import.meta.env.DEV`) `attachConsole()` mirrors them into browser devtools.
-In packaged builds, visibility is controlled by the Rust-side app log level.
+## Prefixes
 
-## Adding New Logging
+Rust (daemon):
+- `[runtimed]` — daemon core operations
+- `[notebook-sync]` — Automerge sync server
+- `[kernel-manager]` — kernel lifecycle and execution
+- `[doc-handle]` — CRDT document mutations and requests
+- `[comm_*]` — widget communication
 
-Before adding a log statement, ask:
+TypeScript (frontend):
+- `[automerge-notebook]` — WASM handle, bootstrap, materialization
+- `[sync-engine]` — frame processing, sync state, coalescing
+- `[crdt-bridge]` — CodeMirror ↔ CRDT character-level sync
+- `[frame-pipeline]` — changeset materialization, cache behavior
+- `[daemon-kernel]` — kernel execution, broadcasts, comms
+- `[flushSync]` — outbound sync flush
 
-1. **Who needs this?** If only developers debugging, use `debug!`/`logger.debug()`
-2. **How often does it fire?** High-frequency operations should be `debug` level
-3. **Does it contain sensitive data?** Truncate or omit large JSON, file paths, etc.
-4. **Is it actionable?** Errors should indicate what went wrong and suggest next steps
+## Channel defaults
 
-## Review Checklist
+| Channel | Daemon | Notebook app |
+|---------|--------|--------------|
+| Nightly | `info` (with `debug` for `notebook_sync` and `notebook_sync_server`) | `Debug` |
+| Stable  | `warn` | `Info` |
 
-- Appropriate log level (not info for internal details)
-- Consistent prefix format `[component-name]`
-- No sensitive data (full file paths, large JSON)
-- Uses `logger` utility in TypeScript, not raw `console.*`
+Nightly is intentionally chatty for field diagnosis. No configuration needed — the defaults are channel-aware.
+
+## Overrides
+
+```bash
+# All debug logs
+RUST_LOG=debug cargo xtask dev-daemon
+
+# One module
+RUST_LOG=runtimed::notebook_sync_server=debug cargo xtask dev-daemon
+
+# Daemon CLI flag (overrides channel default)
+runtimed --log-level debug
+```
+
+Daemon logs rotate on startup — each session gets a clean file, with the previous preserved as `runtimed.log.1`. That keeps `runt daemon logs -f` focused on the current session.
+
+## Before adding a log statement
+
+1. Who needs this? If it's only useful when debugging, send it to `debug`.
+2. How often does it fire? High-frequency operations go to `debug`.
+3. Does it contain sensitive data? Truncate or omit large JSON and full file paths.
+4. Is it actionable? Errors should say what went wrong and what to try next.
+
+## Review checklist
+
+- Level matches the audience (internal details → `debug`, not `info`).
+- Prefix follows `[component-name]`.
+- No sensitive data (full file paths, large JSON).
+- TypeScript uses `logger`, not raw `console.*`.
