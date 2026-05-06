@@ -295,14 +295,14 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     // Log dev mode status
-    if runtimed::is_dev_mode() {
-        if let Some(worktree) = runtimed::get_workspace_path() {
+    if runt_workspace::is_dev_mode() {
+        if let Some(worktree) = runt_workspace::get_workspace_path() {
             info!(
                 "Development mode enabled for worktree: {}",
                 worktree.display()
             );
             info!("Logs: {}", log_path.display());
-            if let Some(name) = runtimed::get_workspace_name() {
+            if let Some(name) = runt_workspace::get_workspace_name() {
                 info!("Workspace description: {}", name);
             }
         } else {
@@ -351,7 +351,7 @@ async fn main() -> anyhow::Result<()> {
             };
 
             let config = DaemonConfig {
-                socket_path: socket.unwrap_or_else(runtimed::default_socket_path),
+                socket_path: socket.unwrap_or_else(runt_workspace::default_socket_path),
                 cache_dir: cache_dir.unwrap_or_else(runtimed::default_cache_dir),
                 blob_store_dir: blob_store_dir.unwrap_or_else(runtimed::default_blob_store_dir),
                 execution_store_dir: runtimed::default_execution_store_dir(),

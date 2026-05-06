@@ -1,7 +1,7 @@
 use automerge::sync;
 use tracing::warn;
 
-use crate::connection::NotebookFrameType;
+use notebook_protocol::connection::NotebookFrameType;
 
 use super::peer_writer::PeerWriter;
 use super::{

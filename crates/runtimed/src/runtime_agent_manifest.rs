@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
 
-use crate::daemon_base_dir;
+use runt_workspace::daemon_base_dir;
 
 pub const SCHEMA_VERSION: u32 = 1;
 

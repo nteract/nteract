@@ -154,10 +154,10 @@ impl DaemonLock {
     /// Write daemon info after successful startup.
     pub fn write_info(&self, endpoint: &str, blob_port: Option<u16>) -> std::io::Result<()> {
         // Populate worktree info when in dev mode
-        let (worktree_path, workspace_description) = if crate::is_dev_mode() {
+        let (worktree_path, workspace_description) = if runt_workspace::is_dev_mode() {
             (
-                crate::get_workspace_path().map(|p| p.to_string_lossy().to_string()),
-                crate::get_workspace_name(),
+                runt_workspace::get_workspace_path().map(|p| p.to_string_lossy().to_string()),
+                runt_workspace::get_workspace_name(),
             )
         } else {
             (None, None)

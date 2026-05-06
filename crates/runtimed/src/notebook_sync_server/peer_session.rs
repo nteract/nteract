@@ -5,7 +5,7 @@ use automerge::sync;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{info, warn};
 
-use crate::connection::{self, NotebookFrameType};
+use notebook_protocol::connection::{self, NotebookFrameType};
 
 use super::{streaming_load_cells, NotebookRoom, STATE_SYNC_COMPACT_THRESHOLD};
 

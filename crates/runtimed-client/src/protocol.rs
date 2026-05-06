@@ -11,7 +11,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::{EnvType, PoolState, PooledEnv};
+use notebook_doc::pool_state::PoolState;
+
+use crate::{EnvType, PooledEnv};
 
 // Re-export all notebook protocol types from the shared crate.
 pub use notebook_protocol::connection::{EnvSource, LaunchSpec};
@@ -159,7 +161,7 @@ pub enum Response {
         /// The notebook ID.
         notebook_id: String,
         /// Cell snapshots from the Automerge doc.
-        cells: Vec<crate::notebook_doc::CellSnapshot>,
+        cells: Vec<notebook_doc::CellSnapshot>,
         /// Outputs keyed by cell_id. Outputs live in `RuntimeStateDoc`
         /// keyed by `execution_id`, so they travel here as a parallel map
         /// rather than on `CellSnapshot`. Only cells with non-empty outputs
@@ -421,7 +423,7 @@ mod tests {
 
     #[test]
     fn test_response_stats() {
-        use crate::RuntimePoolState;
+        use notebook_doc::pool_state::RuntimePoolState;
 
         let state = PoolState {
             uv: RuntimePoolState {

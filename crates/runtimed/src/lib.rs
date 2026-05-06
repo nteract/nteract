@@ -60,7 +60,7 @@ pub(crate) mod uv_project;
 pub mod warm_env;
 
 pub fn trusted_packages_db_path() -> std::path::PathBuf {
-    runtimed_client::daemon_base_dir().join("trusted-packages.sqlite")
+    runt_workspace::daemon_base_dir().join("trusted-packages.sqlite")
 }
 
 /// Get the daemon version string (e.g., "0.1.0-dev.10+abc123").

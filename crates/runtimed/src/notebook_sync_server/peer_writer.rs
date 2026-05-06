@@ -5,7 +5,7 @@ use tokio::io::AsyncWrite;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use crate::connection::{self, NotebookFrameType};
+use notebook_protocol::connection::{self, NotebookFrameType};
 
 use super::NotebookRoom;
 use crate::requests::{handle_notebook_request, request_label};

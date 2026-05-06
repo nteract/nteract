@@ -26,7 +26,6 @@ use tokio::sync::RwLock;
 
 use crate::blob_server;
 use crate::blob_store::BlobStore;
-use crate::connection::{self, Handshake};
 use crate::notebook_sync_server::{NotebookRooms, PathIndex};
 use crate::paths::{default_cache_dir, default_socket_path, pool_env_root};
 use crate::protocol::{BlobRequest, BlobResponse, Request, Response};
@@ -35,6 +34,7 @@ use crate::singleton::DaemonLock;
 use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 use crate::trusted_packages::{log_store_unavailable, TrustedPackageStore};
 use crate::{default_blob_store_dir, is_pool_env_dir, is_within_cache_dir, EnvType, PooledEnv};
+use notebook_protocol::connection::{self, Handshake};
 use runtimed_client::singleton::DaemonInfo;
 
 /// Configuration for the pool daemon.
@@ -130,7 +130,7 @@ impl DaemonConfig {
 fn legacy_settings_doc_path(config: &DaemonConfig) -> PathBuf {
     match &config.settings_json_path {
         Some(json_path) => json_path.with_file_name("settings.automerge"),
-        None => runtimed_client::daemon_base_dir().join("settings.automerge"),
+        None => runt_workspace::daemon_base_dir().join("settings.automerge"),
     }
 }
 
@@ -1407,10 +1407,10 @@ impl Daemon {
     /// payload.
     async fn build_daemon_info(&self) -> Response {
         let blob_port = *self.blob_port.lock().await;
-        let (worktree_path, workspace_description) = if crate::is_dev_mode() {
+        let (worktree_path, workspace_description) = if runt_workspace::is_dev_mode() {
             (
-                crate::get_workspace_path().map(|p| p.to_string_lossy().to_string()),
-                crate::get_workspace_name(),
+                runt_workspace::get_workspace_path().map(|p| p.to_string_lossy().to_string()),
+                runt_workspace::get_workspace_name(),
             )
         } else {
             (None, None)
@@ -2486,7 +2486,7 @@ impl Daemon {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        use crate::connection::{
+        use notebook_protocol::connection::{
             send_json_frame, NotebookConnectionInfo, PROTOCOL_V4, PROTOCOL_VERSION,
         };
 
@@ -2828,7 +2828,7 @@ impl Daemon {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        use crate::connection::{
+        use notebook_protocol::connection::{
             send_json_frame, NotebookConnectionInfo, PROTOCOL_V4, PROTOCOL_VERSION,
         };
 
@@ -3442,7 +3442,7 @@ impl Daemon {
                     let persist_path = self.config.notebook_docs_dir.join(filename);
                     if persist_path.exists() {
                         match std::fs::read(&persist_path) {
-                            Ok(data) => match crate::notebook_doc::NotebookDoc::load(&data) {
+                            Ok(data) => match notebook_doc::NotebookDoc::load(&data) {
                                 Ok(doc) => {
                                     let cells = doc.get_cells();
                                     let outputs_by_cell: std::collections::HashMap<
@@ -3657,7 +3657,7 @@ impl Daemon {
             // Clean up stale worktree state directories
             let worktrees_dir = dirs::cache_dir()
                 .unwrap_or_else(|| PathBuf::from("/tmp"))
-                .join(crate::cache_namespace())
+                .join(runt_workspace::cache_namespace())
                 .join("worktrees");
 
             if let Ok(total_cleaned) = Self::cleanup_stale_worktrees(&worktrees_dir).await {

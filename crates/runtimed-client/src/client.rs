@@ -12,9 +12,12 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use serde::Serialize;
 
-use crate::connection::{self, Handshake};
+use notebook_doc::pool_state::PoolState;
+use notebook_protocol::connection::{self, Handshake};
+use runt_workspace::default_socket_path;
+
 use crate::protocol::{Request, Response};
-use crate::{default_socket_path, EnvType, PoolState, PooledEnv};
+use crate::{EnvType, PooledEnv};
 
 /// Progress updates during daemon startup.
 ///
@@ -53,7 +56,7 @@ use tokio::net::windows::named_pipe::ClientOptions;
 #[derive(Debug, Clone)]
 pub struct InspectResult {
     pub notebook_id: String,
-    pub cells: Vec<crate::notebook_doc::CellSnapshot>,
+    pub cells: Vec<notebook_doc::CellSnapshot>,
     /// Outputs keyed by cell_id. Outputs live in `RuntimeStateDoc` keyed
     /// by `execution_id` and travel alongside the cell snapshot rather
     /// than on it. Cells without outputs are absent from the map.

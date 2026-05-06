@@ -164,13 +164,12 @@ fn test_trusted_packages() -> crate::trusted_packages::TrustedPackageStore {
 }
 
 fn legacy_pre_seed_v4_doc_bytes(notebook_id: &str, actor: &str, cell_id: &str) -> Vec<u8> {
-    let mut doc =
-        AutoCommit::new_with_encoding(crate::notebook_doc::TextEncoding::UnicodeCodePoint);
+    let mut doc = AutoCommit::new_with_encoding(notebook_doc::TextEncoding::UnicodeCodePoint);
     doc.set_actor(ActorId::from(actor.as_bytes()));
     doc.put(
         automerge::ROOT,
         "schema_version",
-        crate::notebook_doc::SCHEMA_VERSION,
+        notebook_doc::SCHEMA_VERSION,
     )
     .unwrap();
     doc.put(automerge::ROOT, "notebook_id", notebook_id)
@@ -680,10 +679,10 @@ fn snapshot_with_uv(deps: Vec<String>) -> NotebookMetadataSnapshot {
     NotebookMetadataSnapshot {
         kernelspec: None,
         language_info: None,
-        runt: crate::notebook_metadata::RuntMetadata {
+        runt: notebook_doc::metadata::RuntMetadata {
             schema_version: "1".to_string(),
             env_id: None,
-            uv: Some(crate::notebook_metadata::UvInlineMetadata {
+            uv: Some(notebook_doc::metadata::UvInlineMetadata {
                 dependencies: deps,
                 requires_python: None,
                 prerelease: None,
@@ -704,11 +703,11 @@ fn snapshot_with_conda(deps: Vec<String>) -> NotebookMetadataSnapshot {
     NotebookMetadataSnapshot {
         kernelspec: None,
         language_info: None,
-        runt: crate::notebook_metadata::RuntMetadata {
+        runt: notebook_doc::metadata::RuntMetadata {
             schema_version: "1".to_string(),
             env_id: None,
             uv: None,
-            conda: Some(crate::notebook_metadata::CondaInlineMetadata {
+            conda: Some(notebook_doc::metadata::CondaInlineMetadata {
                 dependencies: deps,
                 channels: vec!["conda-forge".to_string()],
                 python: None,
@@ -728,12 +727,12 @@ fn snapshot_with_pixi(deps: Vec<String>, pypi_deps: Vec<String>) -> NotebookMeta
     NotebookMetadataSnapshot {
         kernelspec: None,
         language_info: None,
-        runt: crate::notebook_metadata::RuntMetadata {
+        runt: notebook_doc::metadata::RuntMetadata {
             schema_version: "1".to_string(),
             env_id: None,
             uv: None,
             conda: None,
-            pixi: Some(crate::notebook_metadata::PixiInlineMetadata {
+            pixi: Some(notebook_doc::metadata::PixiInlineMetadata {
                 dependencies: deps,
                 pypi_dependencies: pypi_deps,
                 channels: vec!["conda-forge".to_string()],
@@ -753,7 +752,7 @@ fn snapshot_empty() -> NotebookMetadataSnapshot {
     NotebookMetadataSnapshot {
         kernelspec: None,
         language_info: None,
-        runt: crate::notebook_metadata::RuntMetadata {
+        runt: notebook_doc::metadata::RuntMetadata {
             schema_version: "1".to_string(),
             env_id: None,
             uv: None,
@@ -807,15 +806,15 @@ fn test_check_inline_deps_uv_priority() {
     let snapshot = NotebookMetadataSnapshot {
         kernelspec: None,
         language_info: None,
-        runt: crate::notebook_metadata::RuntMetadata {
+        runt: notebook_doc::metadata::RuntMetadata {
             schema_version: "1".to_string(),
             env_id: None,
-            uv: Some(crate::notebook_metadata::UvInlineMetadata {
+            uv: Some(notebook_doc::metadata::UvInlineMetadata {
                 dependencies: vec!["numpy".to_string()],
                 requires_python: None,
                 prerelease: None,
             }),
-            conda: Some(crate::notebook_metadata::CondaInlineMetadata {
+            conda: Some(notebook_doc::metadata::CondaInlineMetadata {
                 dependencies: vec!["pandas".to_string()],
                 channels: vec!["conda-forge".to_string()],
                 python: None,
@@ -841,17 +840,17 @@ fn test_check_inline_deps_deno() {
     let snapshot = NotebookMetadataSnapshot {
         kernelspec: None,
         language_info: None,
-        runt: crate::notebook_metadata::RuntMetadata {
+        runt: notebook_doc::metadata::RuntMetadata {
             schema_version: "1".to_string(),
             env_id: None,
-            uv: Some(crate::notebook_metadata::UvInlineMetadata {
+            uv: Some(notebook_doc::metadata::UvInlineMetadata {
                 dependencies: vec!["numpy".to_string()],
                 requires_python: None,
                 prerelease: None,
             }),
             conda: None,
             pixi: None,
-            deno: Some(crate::notebook_metadata::DenoMetadata {
+            deno: Some(notebook_doc::metadata::DenoMetadata {
                 permissions: vec![],
                 import_map: None,
                 config: None,
@@ -889,7 +888,7 @@ fn test_room_with_path_and_store(
     let blob_store = test_blob_store(tmp);
     let notebook_id = notebook_path.to_string_lossy().to_string();
 
-    let doc = crate::notebook_doc::NotebookDoc::new(&notebook_id);
+    let doc = notebook_doc::NotebookDoc::new(&notebook_id);
     let persist_path = tmp.path().join("doc.automerge");
     let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
     let (flush_request_tx, flush_rx) = mpsc::unbounded_channel::<FlushRequest>();
@@ -2060,7 +2059,7 @@ async fn test_load_notebook_from_disk_routes_outputs_through_blob_store() {
     .unwrap();
 
     let notebook_id = ipynb_path.to_string_lossy().to_string();
-    let mut doc = crate::notebook_doc::NotebookDoc::new(&notebook_id);
+    let mut doc = notebook_doc::NotebookDoc::new(&notebook_id);
     let mut state_doc = RuntimeStateDoc::new();
 
     let count = load_notebook_from_disk_with_state_doc(
@@ -2188,7 +2187,7 @@ async fn test_load_notebook_reuses_matching_durable_execution_id() {
     .unwrap();
 
     let context_id = ipynb_path.to_string_lossy().to_string();
-    let mut first_doc = crate::notebook_doc::NotebookDoc::new(&context_id);
+    let mut first_doc = notebook_doc::NotebookDoc::new(&context_id);
     let mut first_state = RuntimeStateDoc::new();
     load_notebook_from_disk_with_state_doc(
         &mut first_doc,
@@ -2223,7 +2222,7 @@ async fn test_load_notebook_reuses_matching_durable_execution_id() {
         .await
         .unwrap();
 
-    let mut reload_doc = crate::notebook_doc::NotebookDoc::new(&context_id);
+    let mut reload_doc = notebook_doc::NotebookDoc::new(&context_id);
     let mut reload_state = RuntimeStateDoc::new();
     load_notebook_from_disk_with_state_doc_and_execution_store(
         &mut reload_doc,
@@ -2305,7 +2304,7 @@ async fn test_load_notebook_mints_execution_id_when_durable_record_no_longer_mat
         .await
         .unwrap();
 
-    let mut doc = crate::notebook_doc::NotebookDoc::new(&context_id);
+    let mut doc = notebook_doc::NotebookDoc::new(&context_id);
     let mut state_doc = RuntimeStateDoc::new();
     load_notebook_from_disk_with_state_doc_and_execution_store(
         &mut doc,
@@ -2354,7 +2353,7 @@ async fn test_load_notebook_from_disk_resolves_nbformat_attachments() {
     .unwrap();
 
     let notebook_id = ipynb_path.to_string_lossy().to_string();
-    let mut doc = crate::notebook_doc::NotebookDoc::new(&notebook_id);
+    let mut doc = notebook_doc::NotebookDoc::new(&notebook_id);
 
     let count = load_notebook_from_disk(&mut doc, &ipynb_path, &blob_store)
         .await
@@ -2417,7 +2416,7 @@ async fn test_load_notebook_from_disk_preserves_json_attachment_payloads() {
     .unwrap();
 
     let notebook_id = ipynb_path.to_string_lossy().to_string();
-    let mut doc = crate::notebook_doc::NotebookDoc::new(&notebook_id);
+    let mut doc = notebook_doc::NotebookDoc::new(&notebook_id);
     load_notebook_from_disk(&mut doc, &ipynb_path, &blob_store)
         .await
         .unwrap();
@@ -2462,7 +2461,7 @@ async fn test_load_notebook_from_disk_rejects_invalid_attachment_payloads() {
     .unwrap();
 
     let notebook_id = ipynb_path.to_string_lossy().to_string();
-    let mut doc = crate::notebook_doc::NotebookDoc::new(&notebook_id);
+    let mut doc = notebook_doc::NotebookDoc::new(&notebook_id);
     let error = load_notebook_from_disk(&mut doc, &ipynb_path, &blob_store)
         .await
         .expect_err("invalid attachment payload should fail load");
@@ -2502,7 +2501,7 @@ async fn test_load_notebook_from_disk_skips_code_cell_asset_resolution() {
     .unwrap();
 
     let notebook_id = ipynb_path.to_string_lossy().to_string();
-    let mut doc = crate::notebook_doc::NotebookDoc::new(&notebook_id);
+    let mut doc = notebook_doc::NotebookDoc::new(&notebook_id);
 
     let count = load_notebook_from_disk(&mut doc, &ipynb_path, &blob_store)
         .await
@@ -3026,7 +3025,7 @@ async fn bench_streaming_load_steps() {
     eprintln!("  jiter parse: {:?}", parse_elapsed);
 
     // Create doc + peer state
-    let mut doc = crate::notebook_doc::NotebookDoc::new("bench");
+    let mut doc = notebook_doc::NotebookDoc::new("bench");
     let mut peer_state = automerge::sync::State::new();
 
     let batch_size = STREAMING_BATCH_SIZE;
@@ -4220,7 +4219,7 @@ async fn test_check_and_update_trust_state_no_deps() {
     // returns Some (post-refactor: empty runt alone produces a None
     // snapshot because no keys get written to the doc).
     let mut snapshot = snapshot_empty();
-    snapshot.kernelspec = Some(crate::notebook_metadata::KernelspecSnapshot {
+    snapshot.kernelspec = Some(notebook_doc::metadata::KernelspecSnapshot {
         name: "python3".to_string(),
         display_name: "Python 3".to_string(),
         language: Some("python".to_string()),
@@ -4481,7 +4480,7 @@ async fn test_check_and_update_trust_state_idempotent() {
     // returns Some (post-refactor: empty runt alone produces a None
     // snapshot because no keys get written to the doc).
     let mut snapshot = snapshot_empty();
-    snapshot.kernelspec = Some(crate::notebook_metadata::KernelspecSnapshot {
+    snapshot.kernelspec = Some(notebook_doc::metadata::KernelspecSnapshot {
         name: "python3".to_string(),
         display_name: "Python 3".to_string(),
         language: Some("python".to_string()),
@@ -5204,7 +5203,7 @@ async fn test_pre_v4_ipynb_output_id_round_trip() {
 
     // --- Load 1: pre-v4 notebook, no output_id fields ---
     let notebook_id = ipynb_path.to_string_lossy().to_string();
-    let mut doc = crate::notebook_doc::NotebookDoc::new(&notebook_id);
+    let mut doc = notebook_doc::NotebookDoc::new(&notebook_id);
     let mut state_doc = RuntimeStateDoc::new();
     load_notebook_from_disk_with_state_doc(
         &mut doc,
@@ -5320,7 +5319,7 @@ async fn test_pre_v4_ipynb_output_id_round_trip() {
     .unwrap();
 
     // Load the saved notebook
-    let mut doc2 = crate::notebook_doc::NotebookDoc::new("reload-test");
+    let mut doc2 = notebook_doc::NotebookDoc::new("reload-test");
     let mut state_doc2 = RuntimeStateDoc::new();
     load_notebook_from_disk_with_state_doc(
         &mut doc2,
@@ -7211,7 +7210,7 @@ async fn test_clone_as_ephemeral_carries_unknown_metadata_extras() {
     {
         let mut doc = source_room.doc.write().await;
         let mut snap = snapshot_empty();
-        snap.kernelspec = Some(crate::notebook_metadata::KernelspecSnapshot {
+        snap.kernelspec = Some(notebook_doc::metadata::KernelspecSnapshot {
             name: "python3".to_string(),
             display_name: "Python 3".to_string(),
             language: Some("python".to_string()),

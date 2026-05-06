@@ -15,7 +15,7 @@ use automerge::{AutoCommit, ObjType, ReadDoc};
 use log::info;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use runtimed_client::connection::{self, Handshake};
+use notebook_protocol::connection::{self, Handshake};
 use runtimed_client::settings_doc::{
     default_pool_sizes_for_python_env, read_nested_list, split_comma_list, ColorTheme,
     CondaDefaults, PixiDefaults, SyncedSettings, ThemeMode, UvDefaults,

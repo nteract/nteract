@@ -4,7 +4,7 @@ use automerge::sync;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
-use crate::connection::NotebookFrameType;
+use notebook_protocol::connection::NotebookFrameType;
 
 use super::peer_writer::PeerWriter;
 use super::NotebookRoom;
