@@ -1649,7 +1649,7 @@ async fn get_daemon_info() -> Option<DaemonInfoForBanner> {
             }
         };
         let version = info.version;
-        let socket_path = runtimed_client::default_socket_path();
+        let socket_path = runt_workspace::default_socket_path();
         let socket_path_full = if info.endpoint.is_empty() {
             socket_path.to_string_lossy().to_string()
         } else {
@@ -2466,7 +2466,7 @@ fn get_daemon_status(
 /// Get pool statistics from the daemon.
 /// Returns pool state from the daemon's PoolDoc.
 #[tauri::command]
-async fn get_pool_status() -> Result<runtimed::PoolState, String> {
+async fn get_pool_status() -> Result<notebook_doc::pool_state::PoolState, String> {
     let client = runtimed::client::PoolClient::default();
     client
         .status()

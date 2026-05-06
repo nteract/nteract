@@ -36,15 +36,15 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
 use crate::blob_store::BlobStore;
-use crate::connection::{self, NotebookFrameType};
 use crate::markdown_assets::{extract_markdown_asset_refs, resolve_markdown_assets};
-use crate::notebook_doc::{AttachmentEncoding, AttachmentRef, CellSnapshot, NotebookDoc};
-use crate::notebook_metadata::NotebookMetadataSnapshot;
 use crate::output_prep::{DenoLaunchedConfig, LaunchedEnvConfig};
 use crate::paths::notebook_doc_filename;
 use crate::protocol::{EnvSyncDiff, NotebookBroadcast, NotebookResponse};
 use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
+use notebook_doc::metadata::NotebookMetadataSnapshot;
 use notebook_doc::presence::{self, PresenceState};
+use notebook_doc::{AttachmentEncoding, AttachmentRef, CellSnapshot, NotebookDoc};
+use notebook_protocol::connection::{self, NotebookFrameType};
 use runtime_doc::RuntimeStateDoc;
 
 mod attachments;

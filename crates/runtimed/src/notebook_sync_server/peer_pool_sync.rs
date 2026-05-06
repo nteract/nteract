@@ -5,7 +5,7 @@ use tokio::io::AsyncWrite;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
-use crate::connection::{self, NotebookFrameType};
+use notebook_protocol::connection::{self, NotebookFrameType};
 
 use super::peer_writer::PeerWriter;
 

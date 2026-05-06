@@ -1207,7 +1207,7 @@ async fn test_untitled_notebook_persists_through_eviction() {
     let persist_path = temp_dir
         .path()
         .join("notebook-docs")
-        .join(runtimed::notebook_doc::notebook_doc_filename(&notebook_id));
+        .join(notebook_doc::notebook_doc_filename(&notebook_id));
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         if let Ok(meta) = tokio::fs::metadata(&persist_path).await {

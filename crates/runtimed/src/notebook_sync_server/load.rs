@@ -930,7 +930,7 @@ pub(crate) fn build_new_notebook_metadata(
     package_manager: Option<notebook_protocol::connection::PackageManager>,
     dependencies: &[String],
 ) -> NotebookMetadataSnapshot {
-    use crate::notebook_metadata::{
+    use notebook_doc::metadata::{
         CondaInlineMetadata, KernelspecSnapshot, LanguageInfoSnapshot, RuntMetadata,
         UvInlineMetadata,
     };

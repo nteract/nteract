@@ -15,8 +15,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, RwLock};
 use tracing::{info, warn};
 
-use crate::connection;
 use crate::settings_doc::{SettingsDoc, SyncedSettings};
+use notebook_protocol::connection;
 
 /// Check if an error is just a normal connection close.
 pub(crate) fn is_connection_closed(e: &anyhow::Error) -> bool {

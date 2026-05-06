@@ -264,7 +264,7 @@ impl DaemonConnection {
 /// supervisor task when the process exits.
 pub fn shared() -> &'static DaemonConnection {
     static SHARED: std::sync::OnceLock<DaemonConnection> = std::sync::OnceLock::new();
-    SHARED.get_or_init(|| DaemonConnection::spawn(crate::default_socket_path()))
+    SHARED.get_or_init(|| DaemonConnection::spawn(runt_workspace::default_socket_path()))
 }
 
 impl Drop for DaemonConnection {
