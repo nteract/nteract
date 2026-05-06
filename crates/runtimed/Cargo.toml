@@ -19,6 +19,7 @@ path = "src/main.rs"
 
 [dependencies]
 runtimed-client = { path = "../runtimed-client" }
+runtimed-service = { path = "../runtimed-service" }
 notebook-protocol = { path = "../notebook-protocol" }
 notebook-wire = { path = "../notebook-wire" }
 tokio = { workspace = true }

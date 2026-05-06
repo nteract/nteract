@@ -36,7 +36,6 @@ pub use notebook_doc::pool_state::{PoolState, RuntimePoolState};
 pub use notebook_protocol::connection;
 pub mod protocol;
 pub mod runtime;
-pub mod service;
 pub mod settings_doc;
 pub mod singleton;
 pub mod sync_client;
