@@ -20,38 +20,13 @@ Two independent integers, separate from the artifact version:
 
 Artifact versions follow standard semver. Protocol or schema bumps don't automatically force a major version bump.
 
-### Release channels
-
-- **Stable.** `v*` tag publishes Python wheels to PyPI at the `pyproject.toml` version (no separate `python-v*` tag — the desktop release ships Python too).
-- **Nightly.** Daily builds publish PEP 440 alpha pre-releases (e.g. `2.0.1a202603100900`). Install with `pip install runtimed --pre`.
-- **Python-only.** The `python-v*` path (`python-package.yml`) is for Python-specific patches that don't need a full desktop release.
-
 ### Desktop-app compatibility
 
 The desktop app bundles its own daemon binary. Version-mismatch detection between the app and its bundled daemon compares git commit hashes (appended as `+{sha}` at build time), not semver — both always build from the same CI commit.
 
 ## Connection topology
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  Notebook Window (Tauri webview)                        │
-│                                                         │
-│  ┌──────────┐   Tauri invoke()   ┌──────────────────┐  │
-│  │ Frontend  │ ←───────────────→ │   Tauri Relay     │  │
-│  │ (WASM +   │   Tauri events    │ (NotebookSync-    │  │
-│  │  React)   │ ←──────────────── │  Client)          │  │
-│  └──────────┘                    └────────┬─────────┘  │
-│                                           │             │
-└───────────────────────────────────────────┼─────────────┘
-                                            │ Unix socket
-                                            ▼
-                                   ┌─────────────────┐
-                                   │    runtimed     │
-                                   │   (daemon)      │
-                                   └─────────────────┘
-```
-
-The **Tauri relay** is a transparent byte pipe for Automerge sync, request, runtime-state, pool-state, and presence frames — it holds no document replica of its own. Broadcasts, responses, presence, and session-control frames arrive through the unified `notebook:frame` event.
+The frontend talks to the Tauri relay through `invoke()` calls and Tauri events. The relay is a transparent byte pipe to the runtimed socket for Automerge sync, request, runtime-state, pool-state, and presence frames; it holds no document replica of its own. Broadcasts, responses, presence, and session-control frames arrive through the unified `notebook:frame` event.
 
 ## Connection lifecycle
 
@@ -292,7 +267,7 @@ Cell outputs use inline manifests with blob offload for large payloads. When the
 
 1. Output becomes nbformat JSON, then an inline **manifest** as an Automerge Map in `RuntimeStateDoc` (`output_store.rs`).
 2. Each MIME's content is a `ContentRef`: `Inline` for ≤ 1 KB, `Blob { hash, size }` for > 1 KB.
-3. Large binary content (images, plots) lives in a content-addressed **blob store** (`blob_store.rs`, SHA-256, `~/.cache/runt/blobs/`).
+3. Blob content lives in a content-addressed **blob store** (`blob_store.rs`, SHA-256, under `runt_workspace::daemon_base_dir()/blobs`).
 4. MIME types and small payloads are readable straight from the CRDT without a blob fetch.
 5. Clients resolve large blobs from the daemon's HTTP blob server (`GET /blob/{hash}` on a dynamic port).
 
