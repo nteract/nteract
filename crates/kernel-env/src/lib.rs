@@ -290,6 +290,7 @@ mod strip_base_tests {
             "ipykernel",
             "ipywidgets",
             "anywidget",
+            "pip",
             "nbformat",
             "pyarrow>=14",
             "scipy",

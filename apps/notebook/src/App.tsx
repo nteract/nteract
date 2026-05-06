@@ -789,13 +789,14 @@ function AppContent() {
         }
 
         if (response.result === "sync_environment_failed" && !response.needs_restart) {
-          // Error but doesn't need restart (e.g., install failed)
+          // Error but doesn't need restart (e.g., package cannot resolve).
+          // Leave RuntimeStateDoc env progress visible so the toolbar can
+          // show the solver/install error instead of silently dismissing it.
           logger.error("[App] Hot-sync failed:", {
             error: response.error,
             envSource,
             packages: envSyncState?.diff?.added,
           });
-          envProgress.reset();
           return false;
         }
 

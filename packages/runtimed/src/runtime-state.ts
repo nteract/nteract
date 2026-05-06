@@ -24,6 +24,7 @@ export type KernelActivity = "Unknown" | "Idle" | "Busy";
  * gating UI on a specific cause.
  */
 export type KernelErrorReasonKey =
+  | "environment_prepare_failed"
   | "missing_ipykernel"
   | "dependency_cache_missing_ipykernel"
   | "ipykernel_site_packages_mismatch"
@@ -36,6 +37,7 @@ export type KernelErrorReasonKey =
  * unambiguous.
  */
 export const KERNEL_ERROR_REASON = {
+  ENVIRONMENT_PREPARE_FAILED: "environment_prepare_failed",
   MISSING_IPYKERNEL: "missing_ipykernel",
   DEPENDENCY_CACHE_MISSING_IPYKERNEL: "dependency_cache_missing_ipykernel",
   IPYKERNEL_SITE_PACKAGES_MISMATCH: "ipykernel_site_packages_mismatch",

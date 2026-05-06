@@ -154,6 +154,17 @@ describe("shouldShowKernelLaunchErrorBanner", () => {
     ).toBe(false);
   });
 
+  it("shows for environment prepare failures", () => {
+    expect(
+      shouldShowKernelLaunchErrorBanner({
+        lifecycle: ERROR,
+        errorDetails: "Failed to prepare conda inline environment: No candidates found",
+        errorReason: KERNEL_ERROR_REASON.ENVIRONMENT_PREPARE_FAILED,
+        runtime: "python",
+      }),
+    ).toBe(true);
+  });
+
   it("hides for Deno runtime (toolbar renders its own install prompt)", () => {
     // Deno failures show `Deno not available. Auto-install failed…`
     // in NotebookToolbar. Rendering the red banner on top would be
