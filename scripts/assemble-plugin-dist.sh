@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Assemble one channel's slice of the nteract/claude-plugin distribution
-# repo. Run once per release; the other channel's slice is preserved.
+# Assemble one channel's slice of the nteract plugin distribution repo.
+# Run once per release; the other channel's slice is preserved.
 #
 # Inputs:
 #   --channel {stable|nightly}     which plugin this release is building
@@ -8,14 +8,15 @@
 #   --out-dir <path>               existing distribution checkout (merged into)
 #
 # Layout in the distribution repo (one repo, both channels):
-#   .claude-plugin/marketplace.json               — one marketplace entry per plugin
+#   .claude-plugin/marketplace.json               — Claude marketplace entries
+#   .agents/plugins/marketplace.json              — Codex marketplace entries
 #   plugins/nteract/                              — stable channel
 #     .mcp.json, .claude-plugin/, .codex-plugin/, skills/, bin/
 #   plugins/nightly/                              — nightly channel
 #     .mcp.json, .claude-plugin/, .codex-plugin/, skills/, bin/
 #   README.md
 #
-# User install commands (both valid against the same marketplace):
+# Claude user install commands (both valid against the same marketplace):
 #   /plugin install nteract@nteract      # stable
 #   /plugin install nightly@nteract      # nightly
 #
@@ -57,12 +58,12 @@ case "$channel" in
   stable)
     plugin_name="nteract"
     source_subdir="nteract"
-    plugin_description="nteract notebooks in Claude Code."
+    plugin_description="nteract notebooks."
     ;;
   nightly)
     plugin_name="nightly"
     source_subdir="nightly"
-    plugin_description="nteract notebooks (nightly channel) in Claude Code."
+    plugin_description="nteract notebooks (nightly channel)."
     ;;
   *)
     echo "unknown channel '$channel' (expected stable|nightly)" >&2
@@ -72,6 +73,7 @@ esac
 
 source_plugin="$REPO_ROOT/plugins/$source_subdir"
 [[ -d "$source_plugin" ]] || { echo "source plugin not found: $source_plugin" >&2; exit 1; }
+plugin_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$source_plugin/.codex-plugin/plugin.json")"
 
 # Per-release targets.
 declare -a TARGETS=(
@@ -137,7 +139,7 @@ chmod 0755 "$plugin_dir/bin/nteract-mcp"
 cp "$REPO_ROOT/scripts/plugin-dispatch-wrapper.cmd" \
    "$plugin_dir/bin/nteract-mcp.cmd"
 
-# Generate / update marketplace.json. Read existing, update or insert
+# Generate / update marketplace files. Read existing, update or insert
 # this channel's entry, rewrite. Both stable and nightly publishers run
 # this logic; the invariant is that stable owns the "nteract" plugin
 # entry and nightly owns the "nightly" plugin entry — neither touches
@@ -145,12 +147,12 @@ cp "$REPO_ROOT/scripts/plugin-dispatch-wrapper.cmd" \
 marketplace_json="$out_dir/.claude-plugin/marketplace.json"
 mkdir -p "$out_dir/.claude-plugin"
 
-python3 - "$marketplace_json" "$plugin_name" "./plugins/$plugin_name" "$plugin_description" <<'PY'
+python3 - "$marketplace_json" "$plugin_name" "./plugins/$plugin_name" "$plugin_description" "$plugin_version" <<'PY'
 import json
 import os
 import sys
 
-path, plugin_name, source, description = sys.argv[1:5]
+path, plugin_name, source, description, plugin_version = sys.argv[1:6]
 
 try:
     with open(path) as f:
@@ -166,7 +168,7 @@ entry = {
     "name": plugin_name,
     "source": source,
     "description": description,
-    "version": "0.1.0",
+    "version": plugin_version,
 }
 
 # Upsert by name; preserve order (stable before nightly by convention).
@@ -186,17 +188,75 @@ with open(path, "w") as f:
     f.write("\n")
 PY
 
+codex_marketplace_json="$out_dir/.agents/plugins/marketplace.json"
+mkdir -p "$out_dir/.agents/plugins"
+
+python3 - "$codex_marketplace_json" "$plugin_name" "./plugins/$plugin_name" <<'PY'
+import json
+import os
+import sys
+
+path, plugin_name, source_path = sys.argv[1:4]
+
+try:
+    with open(path) as f:
+        data = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {}
+
+data["name"] = "nteract-plugins"
+interface = data.setdefault("interface", {})
+interface.setdefault("displayName", "nteract")
+plugins = data.setdefault("plugins", [])
+
+entry = {
+    "name": plugin_name,
+    "source": {
+        "source": "local",
+        "path": source_path,
+    },
+    "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL",
+    },
+    "category": "Coding",
+}
+
+# Upsert by name; preserve order (stable before nightly by convention).
+for i, p in enumerate(plugins):
+    if p.get("name") == plugin_name:
+        plugins[i] = entry
+        break
+else:
+    plugins.append(entry)
+    order = {"nteract": 0, "nightly": 1}
+    plugins.sort(key=lambda p: (order.get(p.get("name"), 99), p.get("name", "")))
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PY
+
 # Generate README only if it doesn't exist or is the initial seed. The
 # distribution repo's README is stable content; we don't churn it on
 # every release.
 readme="$out_dir/README.md"
 if [[ ! -f "$readme" ]] || grep -q "auto-generated by the \[nteract/desktop\]" "$readme" 2>/dev/null; then
   cat > "$readme" <<'MARKDOWN'
-# nteract Claude Code plugins
+# nteract plugins
 
 This repository is auto-generated by the [nteract/desktop](https://github.com/nteract/desktop) release pipeline. **Do not open pull requests here** — edits are overwritten on release.
 
-## Install
+## Install in Codex
+
+```
+codex plugin marketplace add nteract/claude-plugin
+```
+
+Restart Codex, then open the plugin directory, choose the nteract marketplace, and install `nteract` or `nightly`.
+
+## Install in Claude Code
 
 ```
 /plugin marketplace add nteract/claude-plugin

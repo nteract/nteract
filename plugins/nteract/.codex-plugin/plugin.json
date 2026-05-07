@@ -17,6 +17,7 @@
     "data-science",
     "visualization"
   ],
+  "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "nteract",
