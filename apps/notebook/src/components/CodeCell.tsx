@@ -288,6 +288,10 @@ export const CodeCell = memo(function CodeCell({
   );
 
   const handleLinkClick = useCallback((url: string) => openUrl(url), []);
+  const handleOutputMouseDown = useCallback(() => {
+    editorRef.current?.getEditor()?.contentDOM.blur();
+    onFocus();
+  }, [onFocus]);
 
   const gutterContent = bothHidden ? null : (
     <CompactExecutionButton
@@ -403,7 +407,7 @@ export const CodeCell = memo(function CodeCell({
               searchQuery={searchQuery}
               onSearchMatchCount={onSearchMatchCount}
               onLinkClick={handleLinkClick}
-              onIframeMouseDown={onFocus}
+              onIframeMouseDown={handleOutputMouseDown}
               expandIframeOutputs={isIframeOutputExpanded}
             />
           )
