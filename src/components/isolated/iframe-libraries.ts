@@ -65,7 +65,12 @@ function loadPluginForMime(mime: string): Promise<PluginModule> | undefined {
   const loader = PLUGIN_MIME_TYPES[mime] ?? (isVegaMimeType(mime) ? loadVega : undefined);
   if (!loader) return undefined;
 
-  const promise = loader();
+  const promise = loader().catch((error) => {
+    if (pluginCache.get(mime) === promise) {
+      pluginCache.delete(mime);
+    }
+    throw error;
+  });
   pluginCache.set(mime, promise);
   return promise;
 }
@@ -76,7 +81,9 @@ function loadPluginForMime(mime: string): Promise<PluginModule> | undefined {
  */
 export function preWarmForMimes(mimes: Iterable<string>): void {
   for (const mime of mimes) {
-    loadPluginForMime(mime);
+    loadPluginForMime(mime)?.catch((error) => {
+      console.warn(`[iframe-libraries] failed to prewarm renderer plugin for "${mime}":`, error);
+    });
   }
 }
 
