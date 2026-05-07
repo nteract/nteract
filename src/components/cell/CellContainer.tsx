@@ -151,8 +151,11 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                       !isPreviousCellFromFocused &&
                       !isNextCellFromFocused &&
                       "opacity-70",
-                    outputFocused &&
-                      "rounded-md ring-1 ring-primary/30 outline outline-1 outline-primary/40",
+                    // Elevate via top + bottom edges only. The cell's
+                    // existing left ribbon (line 145 above) plus this slab
+                    // forms a three-sided frame that reads as "this row is
+                    // the active one" without the card-like ring aesthetic.
+                    outputFocused && "border-y border-primary/40 bg-primary/5",
                   )}
                 >
                   {outputContent}

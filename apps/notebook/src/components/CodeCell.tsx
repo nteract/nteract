@@ -436,9 +436,9 @@ export const CodeCell = memo(function CodeCell({
                   }
                 >
                   {outputFocused || isIframeOutputExpanded ? (
-                    <SquareMousePointer className="h-3.5 w-3.5" />
+                    <Minimize2 className="h-3.5 w-3.5" />
                   ) : (
-                    <SquareDashedMousePointer className="h-3.5 w-3.5" />
+                    <Maximize2 className="h-3.5 w-3.5" />
                   )}
                 </button>
               )}
@@ -459,9 +459,9 @@ export const CodeCell = memo(function CodeCell({
                   title={outputFocused ? "Exit focus (Esc)" : "Focus output"}
                 >
                   {outputFocused ? (
-                    <Minimize2 className="h-3.5 w-3.5" />
+                    <SquareMousePointer className="h-3.5 w-3.5" />
                   ) : (
-                    <Maximize2 className="h-3.5 w-3.5" />
+                    <SquareDashedMousePointer className="h-3.5 w-3.5" />
                   )}
                 </button>
               )}

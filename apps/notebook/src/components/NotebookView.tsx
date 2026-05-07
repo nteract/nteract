@@ -374,8 +374,20 @@ function NotebookViewContent({
   // different cell (arrow keys, click, programmatic focus), the previously
   // output-focused cell exits focus. This keeps the "wheel ownership" cell
   // and the "keyboard target" cell aligned without separate handlers.
+  //
+  // The `focusedCellId !== null` guard is load-bearing: cell-ui-state uses a
+  // deferred-flush subscriber pattern, so when a click on the focus button
+  // calls onFocusCell + setOutputFocusedCellId in the same tick, the local
+  // useState update lands first and `focusedCellId` is briefly stale (null
+  // or the previous cell) until the cell-ui-state flush propagates. Without
+  // this guard the effect races and clears output focus before it sticks.
+  // Treat null as "no current selection," not "user moved selection away."
   useEffect(() => {
-    if (outputFocusedCellId !== null && focusedCellId !== outputFocusedCellId) {
+    if (
+      outputFocusedCellId !== null &&
+      focusedCellId !== null &&
+      focusedCellId !== outputFocusedCellId
+    ) {
       setOutputFocusedCellId(null);
     }
   }, [focusedCellId, outputFocusedCellId]);
@@ -398,6 +410,28 @@ function NotebookViewContent({
     };
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);
+  }, [outputFocusedCellId]);
+
+  // Click-outside-container exit. Clicking another cell's editor already
+  // clears focus via the selection-change effect above, but clicking another
+  // cell's iframe (Sift, HTML) never fires onFocusCell because the iframe
+  // absorbs the event. Same goes for clicks on page chrome between cells.
+  // Scope the dismiss to the focused cell's container so clicks on its own
+  // gutter buttons (focus, expand, eye) still hit their handlers.
+  useEffect(() => {
+    if (outputFocusedCellId === null) return;
+    const handleMouseDown = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      const focusedCellEl = document.querySelector(
+        `[data-slot="cell-container"][data-cell-id="${outputFocusedCellId}"]`,
+      );
+      if (focusedCellEl && !focusedCellEl.contains(target)) {
+        setOutputFocusedCellId(null);
+      }
+    };
+    document.addEventListener("mousedown", handleMouseDown, true);
+    return () => document.removeEventListener("mousedown", handleMouseDown, true);
   }, [outputFocusedCellId]);
 
   const handleOutputFocusChange = useCallback(
