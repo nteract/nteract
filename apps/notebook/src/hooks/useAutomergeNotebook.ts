@@ -53,8 +53,8 @@ import init, {
 
 /**
  * Matches `notebook_doc::presence::DEFAULT_HEARTBEAT_MS`.
- * The heartbeat is owned by SyncEngine after WASM init so React presence stays
- * user-driven and Tauri remains a byte transport.
+ * The heartbeat is owned by SyncEngine; the encoder is called lazily so React
+ * presence stays user-driven and Tauri remains a byte transport.
  */
 const PRESENCE_HEARTBEAT_INTERVAL_MS = 15_000;
 

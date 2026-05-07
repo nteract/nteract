@@ -199,18 +199,21 @@ describe("SyncEngine", () => {
       expect(engine.running).toBe(false);
     });
 
-    it("sends required presence heartbeat from the engine interval", () => {
+    it("sends required presence heartbeat immediately and on the engine interval", () => {
       const engine = createEngine();
       engine.start();
+      expect(transport.sentFrames.filter((f) => f.frameType === FrameType.PRESENCE)).toHaveLength(
+        1,
+      );
 
       advanceBy(scheduler, 14_999);
       expect(transport.sentFrames.filter((f) => f.frameType === FrameType.PRESENCE)).toHaveLength(
-        0,
+        1,
       );
 
       advanceBy(scheduler, 1);
       expect(transport.sentFrames.filter((f) => f.frameType === FrameType.PRESENCE)).toHaveLength(
-        1,
+        2,
       );
       engine.stop();
     });
@@ -1014,6 +1017,7 @@ describe("SyncEngine", () => {
 
       const engine = createEngine();
       engine.start();
+      transport.sentFrames.length = 0;
       engine.scheduleFlush();
       engine.scheduleFlush();
       engine.scheduleFlush();
@@ -1038,6 +1042,7 @@ describe("SyncEngine", () => {
 
       const engine = createEngine();
       engine.start();
+      transport.sentFrames.length = 0;
 
       // First call at t=0
       engine.scheduleFlush();
@@ -1527,6 +1532,7 @@ describe("SyncEngine", () => {
       const sendSpy = vi.spyOn(transport, "sendFrame");
       const engine = createEngine();
       engine.start();
+      sendSpy.mockClear();
 
       transport.deliver([0x00, 0x99]);
       advanceBy(scheduler, 1);
@@ -1627,9 +1633,9 @@ describe("SyncEngine", () => {
           { type: "sync_error", changed: false, reply: replyBytes } as FrameEvent,
         ]),
       });
-      vi.spyOn(transport, "sendFrame").mockRejectedValueOnce(new Error("send failed"));
       const engine = createEngine();
       engine.start();
+      vi.spyOn(transport, "sendFrame").mockRejectedValueOnce(new Error("send failed"));
 
       transport.deliver([0x00, 0x99]);
       advanceBy(scheduler, 1);
@@ -1647,9 +1653,9 @@ describe("SyncEngine", () => {
           { type: "runtime_state_sync_error", changed: false, reply: replyBytes } as FrameEvent,
         ]),
       });
-      vi.spyOn(transport, "sendFrame").mockRejectedValueOnce(new Error("send failed"));
       const engine = createEngine();
       engine.start();
+      vi.spyOn(transport, "sendFrame").mockRejectedValueOnce(new Error("send failed"));
 
       transport.deliver([0x05, 0x99]);
       advanceBy(scheduler, 1);
@@ -1664,9 +1670,9 @@ describe("SyncEngine", () => {
       handle = createMockHandle({
         receive_frame: vi.fn(() => [{ type: "sync_error", changed: false } as FrameEvent]),
       });
-      const sendSpy = vi.spyOn(transport, "sendFrame");
       const engine = createEngine();
       engine.start();
+      const sendSpy = vi.spyOn(transport, "sendFrame");
 
       transport.deliver([0x00, 0x99]);
       advanceBy(scheduler, 1);

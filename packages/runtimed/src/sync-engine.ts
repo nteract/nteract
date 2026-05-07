@@ -408,19 +408,24 @@ export class SyncEngine {
     });
     sub.add(() => unlisten());
 
+    const sendHeartbeat = () => {
+      let payload: Uint8Array;
+      try {
+        payload = this.opts.presenceHeartbeat.encode();
+      } catch (e) {
+        log.warn("[sync-engine] encode presence heartbeat failed:", e);
+        return;
+      }
+      this.opts.transport
+        .sendFrame(FrameType.PRESENCE, payload)
+        .catch((e: unknown) => log.warn("[sync-engine] send presence heartbeat failed:", e));
+    };
+
+    sendHeartbeat();
     sub.add(
-      interval(this.opts.presenceHeartbeat.intervalMs, this.opts.scheduler).subscribe(() => {
-        let payload: Uint8Array;
-        try {
-          payload = this.opts.presenceHeartbeat.encode();
-        } catch (e) {
-          log.warn("[sync-engine] encode presence heartbeat failed:", e);
-          return;
-        }
-        this.opts.transport
-          .sendFrame(FrameType.PRESENCE, payload)
-          .catch((e: unknown) => log.warn("[sync-engine] send presence heartbeat failed:", e));
-      }),
+      interval(this.opts.presenceHeartbeat.intervalMs, this.opts.scheduler).subscribe(
+        sendHeartbeat,
+      ),
     );
 
     // Subject bridging sync_applied events into the coalescing buffer
