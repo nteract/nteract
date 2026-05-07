@@ -187,14 +187,19 @@ export const CodeCell = memo(function CodeCell({
   // (outputs explicitly hidden, or no outputs at all).
   const bothHidden = isSourceHidden && (isOutputsHidden || outputs.length === 0);
 
+  // Auto-clear expand/focus when the cell has no visible outputs to
+  // operate on. Previously also gated on `!hasIsolatedOutput`, which made
+  // sense when the mode strip was iframe-only; now that stream outputs
+  // share the strip, that gate stomped on focus the moment it engaged
+  // for any non-iframe output.
   useEffect(() => {
-    if (!hasIsolatedOutput || isOutputsHidden || outputs.length === 0) {
+    if (isOutputsHidden || outputs.length === 0) {
       setIsIframeOutputExpanded(false);
       if (outputFocused) {
         onOutputFocusChange?.(false);
       }
     }
-  }, [hasIsolatedOutput, isOutputsHidden, onOutputFocusChange, outputFocused, outputs.length]);
+  }, [isOutputsHidden, onOutputFocusChange, outputFocused, outputs.length]);
 
   // Register EditorView with the cursor registry for remote cursor rendering.
   // We use a ref + polling approach because the EditorView is created async
