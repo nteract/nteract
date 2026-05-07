@@ -9,10 +9,15 @@ import { WebSocketServer, type RawData, type WebSocket } from "ws";
 import type { Plugin, ViteDevServer } from "vite-plus";
 
 const CONFIG_PATH = "/__nteract_dev_relay/config";
+const HEALTH_PATH = "/__nteract_dev_relay/health";
 const WS_PATH = "/__nteract_dev_relay/ws";
 const MAGIC = [0xc0, 0xde, 0x01, 0xac] as const;
 const PROTOCOL_VERSION = 4;
 const MAX_FRAME_SIZE = 100 * 1024 * 1024;
+const RELAY_AUTH_POLICY = {
+  token_required: true,
+  same_origin_required: true,
+} as const;
 
 interface DaemonInfoJson {
   version?: string;
@@ -106,6 +111,14 @@ function readDaemonInfo(socketPath: string): DaemonInfoJson | null {
   }
 }
 
+function socketExists(socketPath: string): boolean {
+  try {
+    return fs.statSync(socketPath).isSocket();
+  } catch {
+    return false;
+  }
+}
+
 function writeFrame(socket: net.Socket, frame: Buffer | string): void {
   const payload = Buffer.isBuffer(frame) ? frame : Buffer.from(frame);
   const header = Buffer.alloc(4);
@@ -147,6 +160,21 @@ function sameOrigin(req: IncomingMessage): boolean {
   } catch {
     return false;
   }
+}
+
+function relayAuthPolicy(token: string) {
+  return {
+    ...RELAY_AUTH_POLICY,
+    token_configured: token.length > 0,
+  };
+}
+
+function isAuthorizedRelayUpgrade(req: IncomingMessage, url: URL, token: string): boolean {
+  const policy = relayAuthPolicy(token);
+  return (
+    (!policy.same_origin_required || sameOrigin(req)) &&
+    (!policy.token_required || url.searchParams.get("token") === token)
+  );
 }
 
 function relayHandshake(url: URL, repoRoot: string): Record<string, unknown> {
@@ -307,6 +335,29 @@ export function browserDevRelayPlugin(options: RelayOptions): Plugin {
 
       server.middlewares.use((req, res, next) => {
         const url = requestUrl(req);
+        if (url.pathname === HEALTH_PATH) {
+          const socketPath = resolveSocketPath(options.repoRoot);
+          const daemonInfo = readDaemonInfo(socketPath);
+          sendJson(res, 200, {
+            relay: "ok",
+            paths: {
+              config: CONFIG_PATH,
+              websocket: WS_PATH,
+            },
+            auth: relayAuthPolicy(token),
+            daemon: {
+              socket_path: daemonInfo?.socket_path ?? socketPath,
+              socket_exists: socketExists(socketPath),
+              version: daemonInfo?.version ?? null,
+              is_dev_mode: daemonInfo?.is_dev_mode ?? null,
+            },
+            blobs: {
+              port: daemonInfo?.blob_port ?? null,
+            },
+          });
+          return;
+        }
+
         if (url.pathname !== CONFIG_PATH) {
           next();
           return;
@@ -333,7 +384,7 @@ export function browserDevRelayPlugin(options: RelayOptions): Plugin {
         const url = requestUrl(req);
         if (url.pathname !== WS_PATH) return;
 
-        if (!sameOrigin(req) || url.searchParams.get("token") !== token) {
+        if (!isAuthorizedRelayUpgrade(req, url, token)) {
           socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
           socket.destroy();
           return;
