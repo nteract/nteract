@@ -116,9 +116,13 @@ vi.mock("@tauri-apps/plugin-shell", () => ({
 }));
 
 let updateCheckResult: { version: string } | null = null;
+let updateCheckCount = 0;
 
 vi.mock("@tauri-apps/plugin-updater", () => ({
-  check: vi.fn(async () => updateCheckResult),
+  check: vi.fn(async () => {
+    updateCheckCount++;
+    return updateCheckResult;
+  }),
 }));
 
 import type { NotebookTransport } from "runtimed";
@@ -142,6 +146,7 @@ beforeEach(() => {
   openDialogResult = null;
   saveDialogResult = null;
   updateCheckResult = null;
+  updateCheckCount = 0;
   mockUnlisten.mockReset();
   mockWindowUnlisten.mockReset();
   vi.mocked(stubTransport.sendRequest).mockReset();
@@ -469,16 +474,86 @@ describe("createTauriHost()", () => {
     expect(capturedShellOpens).toEqual(["https://example.com"]);
   });
 
-  it("updater.check returns { version } when plugin-updater reports an update", async () => {
+  it("updater.check publishes available state when plugin-updater reports an update", async () => {
     updateCheckResult = { version: "2.3.0" };
     const host = createTauriHost({ transport: stubTransport });
-    await expect(host.updater.check()).resolves.toEqual({ version: "2.3.0" });
+    await expect(host.updater.check()).resolves.toEqual({
+      status: "available",
+      version: "2.3.0",
+      error: null,
+    });
+    expect(host.updater.getSnapshot()).toEqual({
+      status: "available",
+      version: "2.3.0",
+      error: null,
+    });
   });
 
-  it("updater.check returns null when the app is up to date", async () => {
+  it("updater.check publishes idle state when the app is up to date", async () => {
     updateCheckResult = null;
     const host = createTauriHost({ transport: stubTransport });
-    await expect(host.updater.check()).resolves.toBe(null);
+    await expect(host.updater.check()).resolves.toEqual({
+      status: "idle",
+      version: null,
+      error: null,
+    });
+    expect(host.updater.getSnapshot()).toEqual({
+      status: "idle",
+      version: null,
+      error: null,
+    });
+  });
+
+  it("updater.subscribe notifies state changes from manual checks", async () => {
+    updateCheckResult = { version: "2.3.0" };
+    const host = createTauriHost({ transport: stubTransport });
+    const subscriber = vi.fn();
+    const unsubscribe = host.updater.subscribe(subscriber);
+
+    await host.updater.check();
+
+    expect(subscriber).toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  it("updater polling starts on first subscribe and stops on last unsubscribe", async () => {
+    vi.useFakeTimers();
+    try {
+      updateCheckResult = { version: "2.3.0" };
+      const host = createTauriHost({ transport: stubTransport });
+      const subscriber = vi.fn();
+      const unsubscribe = host.updater.subscribe(subscriber);
+
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(updateCheckCount).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(updateCheckCount).toBe(1);
+      expect(host.updater.getSnapshot()).toEqual({
+        status: "available",
+        version: "2.3.0",
+        error: null,
+      });
+
+      updateCheckResult = { version: "2.4.0" };
+      await vi.advanceTimersByTimeAsync(30 * 60 * 1000 - 5000 - 1);
+      expect(updateCheckCount).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(updateCheckCount).toBe(2);
+      expect(host.updater.getSnapshot()).toEqual({
+        status: "available",
+        version: "2.4.0",
+        error: null,
+      });
+
+      unsubscribe();
+      updateCheckResult = { version: "2.5.0" };
+      await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+      expect(updateCheckCount).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("updater.beginUpgrade and settings.openWindow invoke host-owned windows", async () => {

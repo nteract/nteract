@@ -261,21 +261,32 @@ export interface HostExternalLinks {
 /**
  * Auto-update information for the host app itself.
  *
- * The notebook frontend polls `check()` to decide whether to show an
- * "Update available" banner. Actually installing the update (downloading
- * the payload, relaunching) is a coordinated operation that stays on
- * the host side — the frontend signals "start the upgrade flow" via a
- * separate command rather than driving download/install directly.
+ * Update policy is host-specific: Tauri polls the native updater, Electron can
+ * use its own updater semantics, and a web host can expose "reload available"
+ * state. The notebook frontend subscribes to host-owned state and asks for
+ * explicit checks; it does not own background polling.
  */
 export interface HostUpdater {
-  /** Returns available update info or null when the app is up to date. */
-  check(): Promise<HostUpdateInfo | null>;
+  /** Current update state, suitable for `useSyncExternalStore`. */
+  getSnapshot(): HostUpdaterState;
+  /** Subscribe to update state changes. */
+  subscribe(cb: () => void): Unlisten;
+  /** Trigger an immediate host-owned update check. */
+  check(): Promise<HostUpdaterState>;
   /** Begin the host-owned upgrade flow. */
   beginUpgrade(): Promise<void>;
 }
 
 export interface HostUpdateInfo {
   version: string;
+}
+
+export type HostUpdateStatus = "idle" | "checking" | "available" | "error";
+
+export interface HostUpdaterState {
+  status: HostUpdateStatus;
+  version: string | null;
+  error: string | null;
 }
 
 /**

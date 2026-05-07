@@ -48,6 +48,7 @@ import type {
   HostSystem,
   HostTrust,
   HostUpdater,
+  HostUpdaterState,
   HostWindow,
   NotebookHost,
   TyposquatWarning,
@@ -264,14 +265,85 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     },
   };
 
-  const updater: HostUpdater = {
-    async check() {
+  const CHECK_INTERVAL_MS = 30 * 60 * 1000;
+  const INITIAL_CHECK_DELAY_MS = 5000;
+
+  let updaterState: HostUpdaterState = {
+    status: "idle",
+    version: null,
+    error: null,
+  };
+  const updaterSubscribers = new Set<() => void>();
+  let updaterInitialTimer: ReturnType<typeof setTimeout> | null = null;
+  let updaterInterval: ReturnType<typeof setInterval> | null = null;
+
+  const emitUpdaterState = () => {
+    for (const cb of updaterSubscribers) cb();
+  };
+
+  const setUpdaterState = (next: HostUpdaterState) => {
+    updaterState = next;
+    emitUpdaterState();
+  };
+
+  const checkForUpdate = async (): Promise<HostUpdaterState> => {
+    setUpdaterState({ ...updaterState, status: "checking", error: null });
+    try {
+      // plugin-updater returns an `Update` with install methods, or null when
+      // current. Install/relaunch stays behind `begin_upgrade`.
       const update = await pluginCheckUpdate();
-      // plugin-updater returns an `Update` (with `.version` + install methods)
-      // or null when the app is current. We surface only `{ version }` — the
-      // install/relaunch flow stays Tauri-side behind the existing
-      // `begin_upgrade` command.
-      return update ? { version: update.version } : null;
+      const next: HostUpdaterState = update
+        ? { status: "available", version: update.version, error: null }
+        : { status: "idle", version: null, error: null };
+      setUpdaterState(next);
+      return next;
+    } catch (e) {
+      const next: HostUpdaterState = {
+        ...updaterState,
+        status: "error",
+        error: String(e),
+      };
+      setUpdaterState(next);
+      throw e;
+    }
+  };
+
+  const stopUpdaterPolling = () => {
+    if (updaterInitialTimer !== null) {
+      clearTimeout(updaterInitialTimer);
+      updaterInitialTimer = null;
+    }
+    if (updaterInterval !== null) {
+      clearInterval(updaterInterval);
+      updaterInterval = null;
+    }
+  };
+
+  const startUpdaterPolling = () => {
+    if (updaterInitialTimer !== null || updaterInterval !== null) return;
+    updaterInitialTimer = setTimeout(() => {
+      updaterInitialTimer = null;
+      checkForUpdate().catch(() => {});
+    }, INITIAL_CHECK_DELAY_MS);
+    updaterInterval = setInterval(() => {
+      checkForUpdate().catch(() => {});
+    }, CHECK_INTERVAL_MS);
+  };
+
+  const updater: HostUpdater = {
+    getSnapshot() {
+      return updaterState;
+    },
+    subscribe(cb) {
+      updaterSubscribers.add(cb);
+      startUpdaterPolling();
+      return () => {
+        updaterSubscribers.delete(cb);
+        if (updaterSubscribers.size === 0) stopUpdaterPolling();
+      };
+    },
+    async check() {
+      return checkForUpdate();
     },
     async beginUpgrade() {
       await invoke("begin_upgrade");
