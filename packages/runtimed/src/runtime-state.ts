@@ -171,8 +171,10 @@ export interface TrustState {
   needs_approval: boolean;
   approved_uv_dependencies: string[];
   approved_conda_dependencies: string[];
+  approved_conda_channels: string[];
   approved_pixi_dependencies: string[];
   approved_pixi_pypi_dependencies: string[];
+  approved_pixi_channels: string[];
 }
 
 export interface ExecutionState {
@@ -319,8 +321,10 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
     needs_approval: false,
     approved_uv_dependencies: [],
     approved_conda_dependencies: [],
+    approved_conda_channels: [],
     approved_pixi_dependencies: [],
     approved_pixi_pypi_dependencies: [],
+    approved_pixi_channels: [],
   },
   last_saved: null,
   path: null,

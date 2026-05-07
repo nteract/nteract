@@ -1,5 +1,5 @@
 use super::*;
-use runtime_doc::{KernelActivity, KernelErrorReason, RuntimeLifecycle};
+use runtime_doc::{KernelActivity, KernelErrorReason, RuntimeLifecycle, TrustRuntimeState};
 
 pub struct TrustState {
     pub status: runt_trust::TrustStatus,
@@ -35,17 +35,22 @@ fn trust_needs_approval(status: &runt_trust::TrustStatus) -> bool {
 }
 
 pub(crate) fn write_trust_to_runtime_state(room: &NotebookRoom, trust: &TrustState) {
-    if let Err(e) = room.state.with_doc(|sd| {
-        sd.set_trust_with_approved(
-            trust_status_str(&trust.status),
-            trust_needs_approval(&trust.status),
-            &trust.info.approved_uv_dependencies,
-            &trust.info.approved_conda_dependencies,
-            &trust.info.approved_pixi_dependencies,
-            &trust.info.approved_pixi_pypi_dependencies,
-        )
-    }) {
+    let runtime_trust = runtime_trust_state(trust);
+    if let Err(e) = room.state.with_doc(|sd| sd.set_trust_state(&runtime_trust)) {
         warn!("[runtime-state] {}", e);
+    }
+}
+
+fn runtime_trust_state(trust: &TrustState) -> TrustRuntimeState {
+    TrustRuntimeState {
+        status: trust_status_str(&trust.status).to_string(),
+        needs_approval: trust_needs_approval(&trust.status),
+        approved_uv_dependencies: trust.info.approved_uv_dependencies.clone(),
+        approved_conda_dependencies: trust.info.approved_conda_dependencies.clone(),
+        approved_conda_channels: trust.info.approved_conda_channels.clone(),
+        approved_pixi_dependencies: trust.info.approved_pixi_dependencies.clone(),
+        approved_pixi_pypi_dependencies: trust.info.approved_pixi_pypi_dependencies.clone(),
+        approved_pixi_channels: trust.info.approved_pixi_channels.clone(),
     }
 }
 
@@ -849,22 +854,21 @@ pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
     let mut new_trust = verify_trust_from_snapshot(&current_metadata, &room.trusted_packages);
     enrich_trust_info(room, &mut new_trust);
 
-    let (current_status, current_approved) = {
+    let current_runtime_trust = {
         let ts = room.trust_state.read().await;
-        (ts.status.clone(), approved_signature(&ts.info))
+        runtime_trust_state(&ts)
     };
 
-    let status_changed = current_status != new_trust.status;
-    let approvals_changed = current_approved != approved_signature(&new_trust.info);
+    let new_runtime_trust = runtime_trust_state(&new_trust);
 
-    if !status_changed && !approvals_changed {
+    if current_runtime_trust == new_runtime_trust {
         return;
     }
 
-    if status_changed {
+    if current_runtime_trust.status != new_runtime_trust.status {
         info!(
             "[notebook-sync] Trust state changed via doc sync: {:?} -> {:?}",
-            current_status, new_trust.status
+            current_runtime_trust.status, new_runtime_trust.status
         );
     }
 
@@ -880,20 +884,6 @@ pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
     if trust_blocks_launch {
         clear_environment_prepare_error_when_trust_blocks_launch(room).await;
     }
-}
-
-/// Tuple summarizing the allowlist-derived `approved_*` fields so we can
-/// detect when the same trust status arrives with new approvals (e.g. the
-/// user just approved one of the deps via the dialog).
-fn approved_signature(
-    info: &runt_trust::TrustInfo,
-) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
-    (
-        info.approved_uv_dependencies.clone(),
-        info.approved_conda_dependencies.clone(),
-        info.approved_pixi_dependencies.clone(),
-        info.approved_pixi_pypi_dependencies.clone(),
-    )
 }
 
 /// Resolve the metadata snapshot for a notebook, trying the Automerge doc first
@@ -1030,11 +1020,13 @@ pub(crate) fn environment_yml_trust_info(
         conda_dependencies: config.dependencies.clone(),
         approved_conda_dependencies: vec![],
         conda_channels: config.channels.clone(),
+        approved_conda_channels: vec![],
         pixi_dependencies: vec![],
         approved_pixi_dependencies: vec![],
         pixi_pypi_dependencies: vec![],
         approved_pixi_pypi_dependencies: vec![],
         pixi_channels: vec![],
+        approved_pixi_channels: vec![],
     }
 }
 
@@ -1166,8 +1158,8 @@ fn trust_state_from_metadata(
 ///
 /// Returns:
 /// - `NoDependencies` when there are no deps to install.
-/// - `Trusted` when every dep name (across UV / conda / pixi conda / pixi PyPI)
-///   is present in `store`.
+/// - `Trusted` when every dep name and package source (across UV / conda /
+///   pixi conda / pixi PyPI) is present in `store`.
 /// - `Untrusted` otherwise, including when the allowlist store is unavailable
 ///   or a query fails (fail-closed: if we can't verify approval, don't grant
 ///   trust).

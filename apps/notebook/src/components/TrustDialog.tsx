@@ -1,4 +1,10 @@
-import { AlertTriangleIcon, CheckIcon, PackageIcon, ShieldAlertIcon } from "lucide-react";
+import {
+  AlertTriangleIcon,
+  CheckIcon,
+  GlobeIcon,
+  PackageIcon,
+  ShieldAlertIcon,
+} from "lucide-react";
 import { useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import type { TrustInfo, TyposquatWarning } from "../hooks/useTrust";
@@ -26,17 +32,20 @@ function PackageItem({
   pkg,
   warning,
   approved,
+  kind = "package",
 }: {
   pkg: string;
   warning?: TyposquatWarning;
   approved?: boolean;
+  kind?: "package" | "channel";
 }) {
+  const Icon = kind === "channel" ? GlobeIcon : PackageIcon;
   return (
     <div className="flex items-center gap-2 py-1.5 px-2">
       {approved ? (
         <CheckIcon className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
       ) : (
-        <PackageIcon className="size-4 shrink-0 text-muted-foreground" />
+        <Icon className="size-4 shrink-0 text-muted-foreground" />
       )}
       <span className="font-mono text-sm truncate">{pkg}</span>
       {approved && (
@@ -105,8 +114,10 @@ export function TrustDialog({
   const hasTyposquats = typosquatWarnings.length > 0;
   const approvedUv = new Set(trustInfo?.approved_uv_dependencies ?? []);
   const approvedConda = new Set(trustInfo?.approved_conda_dependencies ?? []);
+  const approvedCondaChannels = new Set(trustInfo?.approved_conda_channels ?? []);
   const approvedPixi = new Set(trustInfo?.approved_pixi_dependencies ?? []);
   const approvedPixiPypi = new Set(trustInfo?.approved_pixi_pypi_dependencies ?? []);
+  const approvedPixiChannels = new Set(trustInfo?.approved_pixi_channels ?? []);
 
   return (
     <RuntimeDecisionDialog
@@ -180,14 +191,7 @@ export function TrustDialog({
         {/* Conda Dependencies */}
         {trustInfo && trustInfo.conda_dependencies.length > 0 && (
           <div>
-            <h4 className="text-sm font-medium text-muted-foreground mb-2">
-              Conda Packages
-              {trustInfo.conda_channels.length > 0 && (
-                <span className="font-normal text-xs ml-2">
-                  ({trustInfo.conda_channels.join(", ")})
-                </span>
-              )}
-            </h4>
+            <h4 className="text-sm font-medium text-muted-foreground mb-2">Conda Packages</h4>
             <div className="border rounded-md divide-y">
               {trustInfo.conda_dependencies.map((pkg) => (
                 <PackageItem
@@ -201,17 +205,27 @@ export function TrustDialog({
           </div>
         )}
 
+        {/* Conda Channels */}
+        {trustInfo && trustInfo.conda_channels.length > 0 && (
+          <div>
+            <h4 className="text-sm font-medium text-muted-foreground mb-2">Conda Channels</h4>
+            <div className="border rounded-md divide-y">
+              {trustInfo.conda_channels.map((channel) => (
+                <PackageItem
+                  key={channel}
+                  pkg={channel}
+                  approved={approvedCondaChannels.has(channel)}
+                  kind="channel"
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Pixi Dependencies */}
         {trustInfo && trustInfo.pixi_dependencies.length > 0 && (
           <div>
-            <h4 className="text-sm font-medium text-muted-foreground mb-2">
-              Pixi Packages
-              {trustInfo.pixi_channels.length > 0 && (
-                <span className="font-normal text-xs ml-2">
-                  ({trustInfo.pixi_channels.join(", ")})
-                </span>
-              )}
-            </h4>
+            <h4 className="text-sm font-medium text-muted-foreground mb-2">Pixi Packages</h4>
             <div className="border rounded-md divide-y">
               {trustInfo.pixi_dependencies.map((pkg) => (
                 <PackageItem
@@ -219,6 +233,23 @@ export function TrustDialog({
                   pkg={pkg}
                   warning={getWarning(pkg)}
                   approved={approvedPixi.has(pkg)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Pixi Channels */}
+        {trustInfo && trustInfo.pixi_channels.length > 0 && (
+          <div>
+            <h4 className="text-sm font-medium text-muted-foreground mb-2">Pixi Channels</h4>
+            <div className="border rounded-md divide-y">
+              {trustInfo.pixi_channels.map((channel) => (
+                <PackageItem
+                  key={channel}
+                  pkg={channel}
+                  approved={approvedPixiChannels.has(channel)}
+                  kind="channel"
                 />
               ))}
             </div>

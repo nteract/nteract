@@ -903,11 +903,13 @@ fn test_room_with_path_and_store(
                 conda_dependencies: vec![],
                 approved_conda_dependencies: vec![],
                 conda_channels: vec![],
+                approved_conda_channels: vec![],
                 pixi_dependencies: vec![],
                 approved_pixi_dependencies: vec![],
                 pixi_pypi_dependencies: vec![],
                 approved_pixi_pypi_dependencies: vec![],
                 pixi_channels: vec![],
+                approved_pixi_channels: vec![],
             },
             pending_launch: false,
         })),
@@ -4135,6 +4137,30 @@ fn test_verify_trust_from_snapshot_conda_allowlisted_is_trusted() {
     assert_eq!(result.status, runt_trust::TrustStatus::Trusted);
 }
 
+#[test]
+fn test_verify_trust_from_snapshot_conda_channel_requires_allowlist() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = open_test_store(&tmp);
+    let snapshot = snapshot_with_conda(vec!["pandas".to_string()]);
+
+    let mut package_only = runt_trust::extract_trust_info(&snapshot_metadata_hashmap(&snapshot));
+    package_only.conda_channels.clear();
+    store.add_from_info(&package_only, "test").unwrap();
+
+    let result = verify_trust_from_snapshot(&snapshot, &store);
+    assert_eq!(result.status, runt_trust::TrustStatus::Untrusted);
+
+    store
+        .add_from_info(
+            &runt_trust::extract_trust_info(&snapshot_metadata_hashmap(&snapshot)),
+            "test",
+        )
+        .unwrap();
+
+    let result = verify_trust_from_snapshot(&snapshot, &store);
+    assert_eq!(result.status, runt_trust::TrustStatus::Trusted);
+}
+
 fn snapshot_metadata_hashmap(
     snapshot: &NotebookMetadataSnapshot,
 ) -> std::collections::HashMap<String, serde_json::Value> {
@@ -4222,11 +4248,13 @@ async fn test_approve_trust_adds_dependencies_to_allowlist() {
         conda_dependencies: vec![],
         approved_conda_dependencies: vec![],
         conda_channels: vec![],
+        approved_conda_channels: vec![],
         pixi_dependencies: vec![],
         approved_pixi_dependencies: vec![],
         pixi_pypi_dependencies: vec![],
         approved_pixi_pypi_dependencies: vec![],
         pixi_channels: vec![],
+        approved_pixi_channels: vec![],
     };
     assert!(store.all_dependencies_approved(&info).unwrap());
 }
@@ -4267,11 +4295,13 @@ async fn test_allowlisted_dependencies_resolve_to_trusted() {
         conda_dependencies: vec![],
         approved_conda_dependencies: vec![],
         conda_channels: vec![],
+        approved_conda_channels: vec![],
         pixi_dependencies: vec![],
         approved_pixi_dependencies: vec![],
         pixi_pypi_dependencies: vec![],
         approved_pixi_pypi_dependencies: vec![],
         pixi_channels: vec![],
+        approved_pixi_channels: vec![],
     };
     store.add_from_info(&seed, "test").unwrap();
     let (room, _path) = test_room_with_path_and_store(&tmp, "auto.ipynb", store);
@@ -4307,11 +4337,13 @@ async fn test_allowlist_partial_coverage_stays_untrusted_with_markers() {
         conda_dependencies: vec![],
         approved_conda_dependencies: vec![],
         conda_channels: vec![],
+        approved_conda_channels: vec![],
         pixi_dependencies: vec![],
         approved_pixi_dependencies: vec![],
         pixi_pypi_dependencies: vec![],
         approved_pixi_pypi_dependencies: vec![],
         pixi_channels: vec![],
+        approved_pixi_channels: vec![],
     };
     store.add_from_info(&seed, "test").unwrap();
     let (room, _path) = test_room_with_path_and_store(&tmp, "partial.ipynb", store);
@@ -6368,11 +6400,13 @@ async fn test_new_fresh_promotes_untrusted_when_project_file_deps_match() {
         conda_dependencies: vec![],
         approved_conda_dependencies: vec![],
         conda_channels: vec![],
+        approved_conda_channels: vec![],
         pixi_dependencies: vec![],
         approved_pixi_dependencies: vec![],
         pixi_pypi_dependencies: vec![],
         approved_pixi_pypi_dependencies: vec![],
         pixi_channels: vec![],
+        approved_pixi_channels: vec![],
     };
     assert!(
         store.all_dependencies_approved(&info_check).unwrap(),
@@ -7849,11 +7883,13 @@ fn finalize_trust_status_missing_dep_returns_untrusted() {
         conda_dependencies: vec![],
         approved_conda_dependencies: vec![],
         conda_channels: vec![],
+        approved_conda_channels: vec![],
         pixi_dependencies: vec![],
         approved_pixi_dependencies: vec![],
         pixi_pypi_dependencies: vec![],
         approved_pixi_pypi_dependencies: vec![],
         pixi_channels: vec![],
+        approved_pixi_channels: vec![],
     };
     store.add_from_info(&approved_only, "test").unwrap();
 
