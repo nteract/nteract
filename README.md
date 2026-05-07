@@ -29,10 +29,20 @@ The `runt` CLI and `runtimed` Python bindings ship with the app and stay up to d
 
 The nteract MCP server connects AI assistants to Jupyter notebooks through the daemon. Agents can run code, read and write cells, manage dependencies, and collaborate with humans in real-time — watching the notebook update live in the desktop app while the agent works.
 
+### Install the Codex plugin
+
+```
+codex plugin marketplace add nteract/agent-plugins
+```
+
+Restart Codex, then open the plugin directory, choose the nteract marketplace, and install `nteract`.
+
+The distribution repository also includes a `nightly` plugin entry for pre-release builds.
+
 ### Install the Claude Code plugin
 
 ```
-/plugin marketplace add nteract/claude-plugin
+/plugin marketplace add nteract/agent-plugins
 /plugin install nteract@nteract
 ```
 
@@ -42,7 +52,7 @@ Pin a specific version:
 /plugin install nteract@nteract --ref v2.3.0
 ```
 
-The plugin ships the right `nteract-mcp` binary for your platform (macOS arm64/x64, Linux x64, Windows x64) — no separate install needed. `main` of `nteract/claude-plugin` always points at the latest stable release.
+The plugin ships the right `nteract-mcp` binary for your platform (macOS arm64/x64, Linux x64, Windows x64) — no separate install needed. `main` of `nteract/agent-plugins` always points at the latest stable release.
 
 For pre-release builds (updated daily):
 

@@ -17,9 +17,9 @@ If only MCP tools are available, use `create_notebook`, `create_cell`, `execute_
 
 ## If the notebook tools aren't appearing
 
-If you loaded this skill but neither the direct pi tools (`python`, `python_add_dependencies`) nor the MCP notebook tools are available, don't fall back to `python3 -c`. Ask the user to run `/reload-plugins` and try again. The most common cause is that the plugin was installed this session and the agent needs a reload.
+If you loaded this skill but neither the direct pi tools (`python`, `python_add_dependencies`) nor the MCP notebook tools are available, don't fall back to `python3 -c`. Ask the user to verify that the nteract plugin is installed and enabled in Codex, then restart Codex after any plugin or marketplace changes. The most common cause is that the plugin was installed or updated after the current Codex session started.
 
-If tools still don't appear after reload:
+If tools still don't appear after restarting Codex:
 
 - Confirm the nteract desktop app/daemon is running.
 - Run `runt doctor` to check the installation. (`runt-nightly` if this is the nightly release)

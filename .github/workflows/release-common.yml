@@ -1141,8 +1141,8 @@ jobs:
           path: python/runtimed/dist
 
   publish-plugin:
-    # Assemble this release's channel-slice of the Claude Code plugin
-    # distribution repo (nteract/claude-plugin). One repo, two plugins:
+    # Assemble this release's channel-slice of the agent plugin
+    # distribution repo (nteract/agent-plugins). One repo, two plugins:
     # "nteract" (stable) and "nightly" (dev). Each channel's publish
     # only touches its own plugins/<name>/ subtree and its entry in
     # marketplace.json, so serial stable+nightly releases compose
@@ -1150,7 +1150,7 @@ jobs:
     #
     # Skipped when publish_plugin_channel is empty (workflow_dispatch
     # testing can opt out).
-    name: Publish Claude Code plugin
+    name: Publish agent plugins
     if: inputs.publish_plugin_channel != ''
     runs-on: blacksmith-4vcpu-ubuntu-2404
     needs:
@@ -1193,7 +1193,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           lfs: true
-          repository: nteract/claude-plugin
+          repository: nteract/agent-plugins
           token: ${{ secrets.CLAUDE_PLUGIN_DEPLOY_TOKEN }}
           path: plugin-dist-repo
           fetch-depth: 1
