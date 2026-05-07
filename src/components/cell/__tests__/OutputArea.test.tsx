@@ -77,10 +77,28 @@ function makeMarkdownOutput(content = "```python\nprint('hello')\n```"): Jupyter
   ];
 }
 
+function makeParquetOutput(): JupyterOutput[] {
+  return [
+    {
+      output_type: "display_data",
+      data: { "application/vnd.apache.parquet": { hash: "fake-parquet" } },
+      metadata: {},
+    },
+  ];
+}
+
 function pointerOutWithButtons(element: HTMLElement, buttons: number) {
   const event = createEvent.pointerOut(element);
   Object.defineProperty(event, "buttons", { value: buttons });
   fireEvent(element, event);
+}
+
+function getOutputContent(container: HTMLElement): HTMLElement {
+  const outputContent = container.querySelector('[data-slot="output-area"] > div');
+  if (!(outputContent instanceof HTMLElement)) {
+    throw new Error("Expected output content wrapper to render");
+  }
+  return outputContent;
 }
 
 describe("OutputArea iframe theme sync", () => {
@@ -213,16 +231,35 @@ describe("OutputArea iframe theme sync", () => {
     );
   });
 
+  it("keeps parquet iframe outputs on the wheel-boundary path while idle", () => {
+    const { getByTestId } = render(<OutputArea outputs={makeParquetOutput()} isolated />);
+
+    expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("false");
+    expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
+      "true",
+    );
+  });
+
+  it("forces focused iframe outputs off scroll passthrough and wheel-boundary forwarding", () => {
+    const { getByTestId } = render(<OutputArea outputs={makeMarkdownOutput()} isolated focused />);
+
+    expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("false");
+    expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
+      "false",
+    );
+  });
+
   it("constrains isolated iframe outputs to a viewport-sized output well by default", () => {
     const { container, getByTestId } = render(
       <OutputArea outputs={makeMarkdownOutput()} isolated />,
     );
 
-    const outputContent = container.querySelector('[data-slot="output-area"] > div');
+    const outputContent = getOutputContent(container);
 
     expect(getByTestId("isolated-frame").getAttribute("data-auto-height")).toBe("true");
-    expect(outputContent?.getAttribute("class") ?? "").toContain("overflow-y-auto");
-    expect((outputContent as HTMLElement | null)?.style.maxHeight).toBe("600px");
+    expect(outputContent.getAttribute("class") ?? "").toContain("overflow-y-auto");
+    expect(outputContent.style.maxHeight).toBe("600px");
+    expect(outputContent.style.minHeight).toBe("");
   });
 
   it("can expand isolated iframe outputs past the default output well cap", () => {
@@ -231,7 +268,53 @@ describe("OutputArea iframe theme sync", () => {
     );
 
     expect(getByTestId("isolated-frame").getAttribute("data-auto-height")).toBe("true");
-    const outputContent = container.querySelector('[data-slot="output-area"] > div') as HTMLElement;
+    const outputContent = getOutputContent(container);
     expect(outputContent.style.maxHeight).toBe("");
+  });
+
+  it("uses a focused output well floor for short iframe content", () => {
+    const { container, getByTestId } = render(
+      <OutputArea outputs={makeMarkdownOutput()} isolated focused />,
+    );
+
+    const outputContent = getOutputContent(container);
+
+    expect(getByTestId("isolated-frame").getAttribute("data-auto-height")).toBe("true");
+    expect(outputContent.getAttribute("class") ?? "").toContain("overflow-y-auto");
+    expect(outputContent.style.minHeight).toBe("360px");
+  });
+
+  it("uses an 80vh focused output well ceiling for tall iframe content", () => {
+    const { container } = render(<OutputArea outputs={makeMarkdownOutput()} isolated focused />);
+
+    expect(getOutputContent(container).style.maxHeight).toBe("640px");
+  });
+
+  it("leaves focused iframe content without a fixed wrapper height between the floor and ceiling", () => {
+    const { container } = render(<OutputArea outputs={makeMarkdownOutput()} isolated focused />);
+
+    expect(getOutputContent(container).style.height).toBe("");
+  });
+
+  it("keeps the focused output well clamp when expand is also enabled", () => {
+    const { container } = render(
+      <OutputArea outputs={makeMarkdownOutput()} isolated expandIframeOutputs focused />,
+    );
+
+    const outputContent = getOutputContent(container);
+    expect(outputContent.style.maxHeight).toBe("640px");
+    expect(outputContent.style.minHeight).toBe("360px");
+  });
+
+  it("updates the focused output well ceiling on resize", () => {
+    const { container } = render(<OutputArea outputs={makeMarkdownOutput()} isolated focused />);
+
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 500,
+    });
+    fireEvent(window, new Event("resize"));
+
+    expect(getOutputContent(container).style.maxHeight).toBe("400px");
   });
 });
