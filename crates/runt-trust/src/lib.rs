@@ -316,124 +316,43 @@ pub fn has_dependencies(metadata: &HashMap<String, serde_json::Value>) -> bool {
     false
 }
 
-/// Verify the trust status of a notebook.
+/// Extract notebook trust information from metadata without touching the
+/// HMAC key file.
 ///
-/// Returns the trust status and information about what dependencies would be installed.
-pub fn verify_notebook_trust(
-    metadata: &HashMap<String, serde_json::Value>,
-) -> Result<TrustInfo, String> {
-    // Extract dependencies for the response (check new paths first, then legacy)
-    let uv_dependencies: Vec<String> = get_uv_metadata(metadata)
-        .and_then(|v| v.get("dependencies").cloned())
-        .and_then(|v| v.as_array().cloned())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+/// Returns a `TrustInfo` populated with the dependency lists and channels
+/// from the snapshot. The returned `status` is `NoDependencies` when there
+/// is nothing to install, otherwise `Untrusted`. `approved_*_dependencies`
+/// are always empty - callers that have an allowlist should enrich the
+/// result themselves and lift the status to `Trusted` if every dependency
+/// is approved.
+///
+/// This is the key-free entry point that the daemon uses going forward.
+/// `verify_notebook_trust` (signature-aware) delegates to this helper for
+/// extraction and then layers in HMAC verification on top.
+pub fn extract_trust_info(metadata: &HashMap<String, serde_json::Value>) -> TrustInfo {
+    let uv_dependencies = string_array(get_uv_metadata(metadata).as_ref(), "dependencies");
 
     let conda_meta = get_conda_metadata(metadata);
-
-    let conda_dependencies: Vec<String> = conda_meta
-        .as_ref()
-        .and_then(|v| v.get("dependencies"))
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let conda_channels: Vec<String> = conda_meta
-        .as_ref()
-        .and_then(|v| v.get("channels"))
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    let conda_dependencies = string_array(conda_meta.as_ref(), "dependencies");
+    let conda_channels = string_array(conda_meta.as_ref(), "channels");
 
     let pixi_meta = get_pixi_metadata(metadata);
+    let pixi_dependencies = string_array(pixi_meta.as_ref(), "dependencies");
+    let pixi_pypi_dependencies = string_array(pixi_meta.as_ref(), "pypi_dependencies");
+    let pixi_channels = string_array(pixi_meta.as_ref(), "channels");
 
-    let pixi_dependencies: Vec<String> = pixi_meta
-        .as_ref()
-        .and_then(|v| v.get("dependencies"))
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let pixi_pypi_dependencies: Vec<String> = pixi_meta
-        .as_ref()
-        .and_then(|v| v.get("pypi_dependencies"))
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let pixi_channels: Vec<String> = pixi_meta
-        .as_ref()
-        .and_then(|v| v.get("channels"))
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    // If no dependencies, no trust check needed
-    if uv_dependencies.is_empty()
+    let no_deps = uv_dependencies.is_empty()
         && conda_dependencies.is_empty()
         && pixi_dependencies.is_empty()
-        && pixi_pypi_dependencies.is_empty()
-    {
-        return Ok(TrustInfo {
-            status: TrustStatus::NoDependencies,
-            uv_dependencies,
-            approved_uv_dependencies: vec![],
-            conda_dependencies,
-            approved_conda_dependencies: vec![],
-            conda_channels,
-            pixi_dependencies,
-            approved_pixi_dependencies: vec![],
-            pixi_pypi_dependencies,
-            approved_pixi_pypi_dependencies: vec![],
-            pixi_channels,
-        });
-    }
+        && pixi_pypi_dependencies.is_empty();
 
-    // Get the trust key
-    let key = get_or_create_trust_key()?;
-
-    // Check for existing signature
-    let signature = metadata
-        .get("runt")
-        .and_then(|v| v.get("trust_signature"))
-        .and_then(|v| v.as_str());
-
-    let status = match signature {
-        None => TrustStatus::Untrusted,
-        Some(sig) => {
-            if verify_signature(&key, metadata, sig) {
-                TrustStatus::Trusted
-            } else {
-                TrustStatus::SignatureInvalid
-            }
-        }
+    let status = if no_deps {
+        TrustStatus::NoDependencies
+    } else {
+        TrustStatus::Untrusted
     };
 
-    Ok(TrustInfo {
+    TrustInfo {
         status,
         uv_dependencies,
         approved_uv_dependencies: vec![],
@@ -445,7 +364,56 @@ pub fn verify_notebook_trust(
         pixi_pypi_dependencies,
         approved_pixi_pypi_dependencies: vec![],
         pixi_channels,
-    })
+    }
+}
+
+fn string_array(parent: Option<&serde_json::Value>, key: &str) -> Vec<String> {
+    parent
+        .and_then(|v| v.get(key))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Verify the trust status of a notebook (HMAC-aware).
+///
+/// Returns the trust status and information about what dependencies would
+/// be installed. The HMAC layer is on its way out; new daemon code calls
+/// [`extract_trust_info`] and decides Trusted vs Untrusted from the
+/// allowlist instead. This function stays callable until the daemon
+/// migration is complete.
+pub fn verify_notebook_trust(
+    metadata: &HashMap<String, serde_json::Value>,
+) -> Result<TrustInfo, String> {
+    let mut info = extract_trust_info(metadata);
+
+    if info.status == TrustStatus::NoDependencies {
+        return Ok(info);
+    }
+
+    let key = get_or_create_trust_key()?;
+
+    let signature = metadata
+        .get("runt")
+        .and_then(|v| v.get("trust_signature"))
+        .and_then(|v| v.as_str());
+
+    info.status = match signature {
+        None => TrustStatus::Untrusted,
+        Some(sig) => {
+            if verify_signature(&key, metadata, sig) {
+                TrustStatus::Trusted
+            } else {
+                TrustStatus::SignatureInvalid
+            }
+        }
+    };
+
+    Ok(info)
 }
 
 /// Sign the notebook's dependencies and return the signature.
@@ -528,6 +496,59 @@ mod tests {
         let metadata = HashMap::new();
         let info = verify_notebook_trust(&metadata).unwrap();
         assert_eq!(info.status, TrustStatus::NoDependencies);
+    }
+
+    #[test]
+    fn extract_trust_info_no_deps_is_no_dependencies() {
+        let info = extract_trust_info(&HashMap::new());
+        assert_eq!(info.status, TrustStatus::NoDependencies);
+        assert!(info.uv_dependencies.is_empty());
+        assert!(info.conda_dependencies.is_empty());
+        assert!(info.pixi_dependencies.is_empty());
+        assert!(info.pixi_pypi_dependencies.is_empty());
+    }
+
+    #[test]
+    fn extract_trust_info_uv_deps_is_untrusted() {
+        let metadata = make_test_metadata(vec!["pandas", "numpy"], vec![]);
+        let info = extract_trust_info(&metadata);
+        assert_eq!(info.status, TrustStatus::Untrusted);
+        assert_eq!(info.uv_dependencies, vec!["pandas", "numpy"]);
+        assert!(info.approved_uv_dependencies.is_empty());
+    }
+
+    #[test]
+    fn extract_trust_info_conda_includes_channels() {
+        let metadata = make_test_metadata(vec![], vec!["pytorch"]);
+        let info = extract_trust_info(&metadata);
+        assert_eq!(info.status, TrustStatus::Untrusted);
+        assert_eq!(info.conda_dependencies, vec!["pytorch"]);
+        assert_eq!(info.conda_channels, vec!["conda-forge"]);
+    }
+
+    #[test]
+    fn extract_trust_info_pixi_separates_pypi_and_conda() {
+        let metadata = make_pixi_test_metadata(vec!["pandas"], vec!["requests"]);
+        let info = extract_trust_info(&metadata);
+        assert_eq!(info.status, TrustStatus::Untrusted);
+        assert_eq!(info.pixi_dependencies, vec!["pandas"]);
+        assert_eq!(info.pixi_pypi_dependencies, vec!["requests"]);
+        assert_eq!(info.pixi_channels, vec!["conda-forge"]);
+    }
+
+    #[test]
+    fn extract_trust_info_does_not_touch_signature_field() {
+        // A signature in the metadata must not influence extraction. Only
+        // dep names matter; the daemon decides Trusted via the allowlist.
+        let mut metadata = make_test_metadata(vec!["pandas"], vec![]);
+        metadata.insert(
+            "runt".to_string(),
+            serde_json::json!({
+                "trust_signature": "hmac-sha256:deadbeef",
+            }),
+        );
+        let info = extract_trust_info(&metadata);
+        assert_eq!(info.status, TrustStatus::Untrusted);
     }
 
     #[test]

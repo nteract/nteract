@@ -1339,6 +1339,45 @@ pub(crate) fn verify_trust_from_snapshot(snapshot: &NotebookMetadataSnapshot) ->
     }
 }
 
+/// Decide a notebook's trust status from extracted `TrustInfo` + the
+/// per-machine package allowlist.
+///
+/// Returns:
+/// - `NoDependencies` when there are no deps to install.
+/// - `Trusted` when every dep name (across UV / conda / pixi conda / pixi PyPI)
+///   is present in `store`.
+/// - `Untrusted` otherwise, including when the allowlist store is unavailable
+///   or a query fails (fail-closed: if we can't verify approval, don't grant
+///   trust).
+///
+/// Allowlist enrichment - populating `info.approved_*_dependencies` - is the
+/// caller's responsibility; this helper only consults membership.
+///
+/// New daemon entry point that replaces signature-based verification. Keep
+/// this in sync with the wider plan: once every site has migrated, the
+/// HMAC verification path in `runt_trust::verify_notebook_trust` and the
+/// `TrustStatus::SignatureInvalid` variant come out together.
+#[allow(dead_code)] // call sites migrate in the next commit; tests exercise it now
+pub(crate) fn finalize_trust_status(
+    info: &runt_trust::TrustInfo,
+    store: &crate::trusted_packages::TrustedPackageStore,
+) -> runt_trust::TrustStatus {
+    if matches!(info.status, runt_trust::TrustStatus::NoDependencies) {
+        return runt_trust::TrustStatus::NoDependencies;
+    }
+    match store.all_dependencies_approved(info) {
+        Ok(true) => runt_trust::TrustStatus::Trusted,
+        Ok(false) => runt_trust::TrustStatus::Untrusted,
+        Err(error) => {
+            warn!(
+                "[trust] allowlist query failed, treating notebook as untrusted: {}",
+                error
+            );
+            runt_trust::TrustStatus::Untrusted
+        }
+    }
+}
+
 /// Which runtime this capture applies to — UV pool envs or Conda pool envs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CapturedEnvRuntime {

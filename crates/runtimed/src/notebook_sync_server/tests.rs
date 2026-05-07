@@ -7980,3 +7980,90 @@ async fn test_autosave_shutdown_during_loading_returns_false_without_write() {
         "shutdown while loading should not write pending edits to disk"
     );
 }
+
+// ── finalize_trust_status: allowlist-driven trust resolution ──
+
+#[test]
+fn finalize_trust_status_no_deps_returns_no_dependencies() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store =
+        crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
+            .unwrap();
+    let mut info = runt_trust::extract_trust_info(&std::collections::HashMap::new());
+    assert_eq!(info.status, runt_trust::TrustStatus::NoDependencies);
+    info.status = runt_trust::TrustStatus::NoDependencies; // ensure reset
+
+    let status = super::metadata::finalize_trust_status(&info, &store);
+    assert_eq!(status, runt_trust::TrustStatus::NoDependencies);
+}
+
+#[test]
+fn finalize_trust_status_all_deps_approved_returns_trusted() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store =
+        crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
+            .unwrap();
+
+    let metadata = serde_json::json!({
+        "runt": { "uv": { "dependencies": ["pandas", "numpy"] } }
+    });
+    let mut hashmap = std::collections::HashMap::new();
+    hashmap.insert("runt".to_string(), metadata["runt"].clone());
+    let info = runt_trust::extract_trust_info(&hashmap);
+    assert_eq!(info.status, runt_trust::TrustStatus::Untrusted);
+
+    store.add_from_info(&info, "test").unwrap();
+
+    let status = super::metadata::finalize_trust_status(&info, &store);
+    assert_eq!(status, runt_trust::TrustStatus::Trusted);
+}
+
+#[test]
+fn finalize_trust_status_missing_dep_returns_untrusted() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store =
+        crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
+            .unwrap();
+
+    // Approve only pandas, then ask about pandas + numpy.
+    let approved_only = runt_trust::TrustInfo {
+        status: runt_trust::TrustStatus::Untrusted,
+        uv_dependencies: vec!["pandas".to_string()],
+        approved_uv_dependencies: vec![],
+        conda_dependencies: vec![],
+        approved_conda_dependencies: vec![],
+        conda_channels: vec![],
+        pixi_dependencies: vec![],
+        approved_pixi_dependencies: vec![],
+        pixi_pypi_dependencies: vec![],
+        approved_pixi_pypi_dependencies: vec![],
+        pixi_channels: vec![],
+    };
+    store.add_from_info(&approved_only, "test").unwrap();
+
+    let mut hashmap = std::collections::HashMap::new();
+    hashmap.insert(
+        "runt".to_string(),
+        serde_json::json!({ "uv": { "dependencies": ["pandas", "numpy"] } }),
+    );
+    let info = runt_trust::extract_trust_info(&hashmap);
+
+    let status = super::metadata::finalize_trust_status(&info, &store);
+    assert_eq!(status, runt_trust::TrustStatus::Untrusted);
+}
+
+#[test]
+fn finalize_trust_status_unavailable_store_is_untrusted() {
+    // Fail-closed: if the allowlist can't tell us, don't grant trust.
+    let store = crate::trusted_packages::TrustedPackageStore::unavailable("test");
+
+    let mut hashmap = std::collections::HashMap::new();
+    hashmap.insert(
+        "runt".to_string(),
+        serde_json::json!({ "uv": { "dependencies": ["pandas"] } }),
+    );
+    let info = runt_trust::extract_trust_info(&hashmap);
+
+    let status = super::metadata::finalize_trust_status(&info, &store);
+    assert_eq!(status, runt_trust::TrustStatus::Untrusted);
+}
