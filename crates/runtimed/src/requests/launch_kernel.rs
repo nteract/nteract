@@ -236,15 +236,22 @@ pub(crate) async fn handle(
             detected.to_env_source()
         });
 
-        // `environment_mode=project` is the one project-first mode. Otherwise
-        // project files are the default only when the notebook has not declared
-        // its own env via captured, inline, or PEP 723 metadata.
-        if matches!(
+        // Auto keeps the legacy project-first policy. `notebook` is the
+        // explicit opt-out and suppresses project_source above.
+        if let Some(source) = if matches!(
             environment_mode,
-            notebook_protocol::connection::CreateNotebookEnvironmentMode::Project
-        ) && project_source.is_some()
-        {
-            project_source.unwrap()
+            notebook_protocol::connection::CreateNotebookEnvironmentMode::Auto
+                | notebook_protocol::connection::CreateNotebookEnvironmentMode::Project
+        ) {
+            project_source.clone()
+        } else {
+            None
+        } {
+            info!(
+                "[notebook-sync] LaunchKernel: using project file -> {}",
+                source.as_str()
+            );
+            source
         }
         // Captured prewarmed env wins over inline deps. Captured deps look
         // structurally identical to user-authored inline deps, so without this
@@ -336,15 +343,6 @@ pub(crate) async fn handle(
                     pep723_source.as_str()
                 );
                 pep723_source
-            }
-            // Project files are the default only when the notebook has not
-            // declared its own env via captured, inline, or PEP 723 metadata.
-            else if let Some(source) = project_source {
-                info!(
-                    "[notebook-sync] LaunchKernel: using project file -> {}",
-                    source.as_str()
-                );
-                source
             }
             // Fall back to prewarmed (scoped to family)
             else {

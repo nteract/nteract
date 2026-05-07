@@ -124,7 +124,7 @@ pub async fn restart_kernel(
             // Derive the scoped auto-detect from the previous env_source,
             // preserving the package manager family. The daemon's auto:*
             // variants re-resolve through the normal launch priority
-            // (project files → inline deps → captured envs → prewarmed).
+            // (project files unless opted out, then notebook metadata and prewarmed).
             match EnvSource::parse(prev) {
                 EnvSource::Prewarmed(PackageManager::Conda) => "auto:conda".to_string(),
                 EnvSource::Prewarmed(PackageManager::Pixi) => "auto:pixi".to_string(),

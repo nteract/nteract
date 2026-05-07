@@ -69,7 +69,7 @@
       "name": "connect_notebook"
     },
     {
-      "description": "Create a new notebook. Ephemeral by default; use save_notebook(path) to persist.",
+      "description": "Create a new notebook. Ephemeral by default; use environment_mode=\"notebook\" to ignore project files for env selection, and save_notebook(path) to persist.",
       "name": "create_notebook"
     },
     {

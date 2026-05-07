@@ -101,7 +101,7 @@ pub(crate) fn select_auto_python_env_source(
             project_source.or(notebook_source).unwrap_or(fallback)
         }
         notebook_protocol::connection::CreateNotebookEnvironmentMode::Auto => {
-            notebook_source.or(project_source).unwrap_or(fallback)
+            project_source.or(notebook_source).unwrap_or(fallback)
         }
         notebook_protocol::connection::CreateNotebookEnvironmentMode::Notebook => {
             notebook_source.unwrap_or(fallback)
@@ -2944,10 +2944,9 @@ pub(crate) async fn auto_launch_kernel(
                 ("deno", EnvSource::Deno, None)
             }
             Some("python") => {
-                // Notebook is a Python notebook - resolve environment
-                // Auto/default priority: notebook-owned env signals > project file > prewarmed.
-                // Explicit project mode keeps project files first; explicit notebook mode
-                // suppresses project_source above.
+                // Notebook is a Python notebook - resolve environment.
+                // Auto keeps the legacy project-first policy. `notebook` is
+                // the explicit opt-out and suppresses project_source above.
                 let inline_source = inline_source.as_ref().filter(|source| {
                     // Skip Deno inline source for Python notebooks (kernelspec takes priority).
                     !matches!(source, EnvSource::Deno)
@@ -3021,9 +3020,8 @@ pub(crate) async fn auto_launch_kernel(
                     info!("[notebook-sync] Auto-launch: Deno kernel (default runtime)");
                     ("deno", EnvSource::Deno, None)
                 } else {
-                    // Default to Python
-                    // Auto/default priority: notebook-owned env signals > project file > prewarmed.
-                    // Explicit project mode keeps project files first; explicit notebook mode
+                    // Default to Python. Auto keeps the legacy project-first
+                    // policy. `notebook` is the explicit opt-out and
                     // suppresses project_source above.
                     let fallback =
                         EnvSource::Prewarmed(default_prewarmed_manager(default_python_env.clone()));

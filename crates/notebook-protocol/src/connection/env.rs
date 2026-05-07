@@ -10,12 +10,13 @@ use serde::{Deserialize, Serialize};
 /// project file inheritance vs notebook-owned inline/prewarmed environments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum CreateNotebookEnvironmentMode {
-    /// Default behavior: use notebook-owned metadata when present, otherwise
-    /// inherit the nearest project file from `working_dir` when one exists.
+    /// Default behavior: preserve the existing project-first launch policy.
+    /// Inherit the nearest project file from `working_dir` when one exists,
+    /// otherwise use notebook-owned metadata/prewarmed environments.
     #[default]
     Auto,
-    /// Prefer the nearest project file from `working_dir`; fall back to
-    /// notebook-owned metadata/prewarmed envs when no project file exists.
+    /// Explicit project-file inheritance. Equivalent to `auto` today, but
+    /// lets callers state that inheriting the surrounding project is intended.
     Project,
     /// Ignore project files for environment selection. `working_dir` still
     /// controls kernel cwd and project context reporting.

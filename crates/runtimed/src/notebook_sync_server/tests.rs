@@ -6205,7 +6205,7 @@ fn select_auto_python_env_source_respects_environment_mode() {
             project.clone(),
             fallback.clone(),
         ),
-        EnvSource::Inline(PackageManager::Uv)
+        EnvSource::Pyproject
     );
     assert_eq!(
         select_auto_python_env_source(
