@@ -1,83 +1,32 @@
-//! Notebook trust verification using HMAC signatures over dependency metadata.
+//! Notebook trust extraction.
 //!
-//! # Security Model
+//! Notebooks can embed arbitrary package dependencies that get installed with
+//! full OS permissions when a kernel starts, which makes dependency lists a
+//! supply-chain attack surface. The daemon gates kernel launch on whether
+//! every dependency name is present in a per-machine SQLite allowlist.
 //!
-//! Notebooks can embed arbitrary package dependencies that get installed with full
-//! OS permissions when a kernel starts. This creates an attack vector: a malicious
-//! notebook could trigger installation of malware via `setup.py`.
-//!
-//! To mitigate this, we sign the dependency-related metadata fields with a per-machine
-//! HMAC key. Only notebooks created or approved on this machine will have valid signatures.
-//!
-//! Key insight: we sign ONLY the dependency metadata, not cell contents. This means:
-//! - Editing code in cells: notebook stays trusted
-//! - External modification of dependencies: requires re-approval
+//! This crate provides the structural types and the dependency-extraction
+//! helpers. It does not own the gating decision: callers pull a
+//! `TrustInfo` out of metadata and pair it with the allowlist store to
+//! finalize a `TrustStatus`.
 
-// Allow `expect()` and `unwrap()` in tests
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
-use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
 
-type HmacSha256 = Hmac<Sha256>;
-
-thread_local! {
-    /// Per-thread override for the trust key path.
-    ///
-    /// Tests use [`set_test_key_path`] instead of `std::env::set_var("RUNT_TRUST_KEY_PATH", ...)`
-    /// to avoid process-wide env mutation, which is undefined behavior under concurrent
-    /// threads (glibc `setenv`/`getenv` are not thread-safe).
-    ///
-    /// The override is thread-local so concurrent `cargo test` runs are naturally
-    /// isolated: setting the path on test A's thread cannot flip the path that
-    /// test B reads on a different thread mid-sign-then-verify. A previous
-    /// implementation used a process-wide `Mutex<Option<PathBuf>>`, which made
-    /// individual reads/writes atomic but did not isolate test logic - non-serial
-    /// trust tests would intermittently see another test's override flip between
-    /// their sign and verify calls and fail with a signature mismatch.
-    static TEST_KEY_PATH_OVERRIDE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
-}
-
-/// Set (or clear) the trust key path override for tests.
-///
-/// Pass `Some(path)` to redirect all trust operations on this thread to a
-/// test-specific key file. Pass `None` to clear the override and fall back
-/// to the default path.
-///
-/// The override is thread-local: concurrent tests do not interfere. Production
-/// code never calls this, so production path resolution always falls through
-/// to the system key.
-///
-/// Caveat: a tokio multi-threaded runtime can move a task between OS threads
-/// across `.await` points; if a future polls on a thread that didn't set the
-/// override, it reads `None`. No multi-threaded tokio path in this workspace
-/// currently calls `set_test_key_path`, so this isn't a problem in practice -
-/// but if you reach for this from a multi-thread tokio context, set the
-/// override on every worker (e.g. via `Builder::on_thread_start`) or pass the
-/// path explicitly through your call chain.
-pub fn set_test_key_path(path: Option<PathBuf>) {
-    TEST_KEY_PATH_OVERRIDE.with(|cell| *cell.borrow_mut() = path);
-}
-
-/// Result of verifying a notebook's trust status.
+/// Result of resolving a notebook's trust state.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TrustStatus {
-    /// Notebook has a valid signature matching current dependencies.
+    /// Every dependency name is approved in the local allowlist.
     Trusted,
 
-    /// Notebook has no signature (new or external notebook).
+    /// At least one dependency name is not approved (or the allowlist
+    /// cannot be queried).
     Untrusted,
 
-    /// Notebook has a signature but it doesn't match current dependencies.
-    /// This indicates external modification of the dependency fields.
-    SignatureInvalid,
-
-    /// No dependencies configured, no trust check needed.
+    /// Notebook declares no dependencies, so there is nothing to gate.
     NoDependencies,
 }
 
@@ -114,99 +63,13 @@ pub struct TrustInfo {
     pub pixi_channels: Vec<String>,
 }
 
-/// Path to the trust key file.
-///
-/// Checks (in order):
-/// 1. Thread-local override via [`set_test_key_path`] - preferred for tests.
-/// 2. Platform config dir (`~/.config/runt/trust-key` on Linux).
-fn trust_key_path() -> Option<PathBuf> {
-    if let Some(path) = TEST_KEY_PATH_OVERRIDE.with(|cell| cell.borrow().clone()) {
-        return Some(path);
-    }
-    dirs::config_dir().map(|d| d.join("runt").join("trust-key"))
-}
-
-/// Get or create the per-machine trust key.
-///
-/// The key is stored in `~/.config/runt/trust-key` (or platform equivalent).
-/// It's generated randomly on first use and never leaves the machine.
-pub fn get_or_create_trust_key() -> Result<[u8; 32], String> {
-    let key_path =
-        trust_key_path().ok_or_else(|| "Could not determine config directory".to_string())?;
-
-    if key_path.exists() {
-        // Read existing key
-        let key_bytes =
-            std::fs::read(&key_path).map_err(|e| format!("Failed to read trust key: {}", e))?;
-        if key_bytes.len() != 32 {
-            return Err("Trust key file is corrupted (wrong size)".to_string());
-        }
-        let mut key = [0u8; 32];
-        key.copy_from_slice(&key_bytes);
-        Ok(key)
-    } else {
-        // Generate new key
-        let key: [u8; 32] = rand::random();
-
-        // Create directory if needed
-        if let Some(parent) = key_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create config directory: {}", e))?;
-        }
-
-        std::fs::write(&key_path, key).map_err(|e| format!("Failed to write trust key: {}", e))?;
-
-        // Restrict key file permissions to owner-only (0600) so other users cannot
-        // read the HMAC key and forge trust signatures.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
-                .map_err(|e| format!("Failed to set trust key permissions: {}", e))?;
-        }
-
-        Ok(key)
-    }
-}
-
-/// Extract the dependency-related fields from notebook metadata for signing.
-///
-/// We sign a canonical JSON representation of:
-/// - `metadata.runt.uv` (UV dependencies) or `metadata.uv` (legacy)
-/// - `metadata.runt.conda` (conda dependencies) or `metadata.conda` (legacy)
-///
-/// This does NOT include cell contents, outputs, or other metadata.
-fn extract_signable_content(metadata: &HashMap<String, serde_json::Value>) -> String {
-    let mut signable = serde_json::Map::new();
-
-    // Extract UV deps (check new path first, then legacy)
-    if let Some(uv) = get_uv_metadata(metadata) {
-        signable.insert("uv".to_string(), uv);
-    }
-
-    // Extract conda deps (check new path first, then legacy)
-    if let Some(conda) = get_conda_metadata(metadata) {
-        signable.insert("conda".to_string(), conda);
-    }
-
-    // Extract pixi deps
-    if let Some(pixi) = get_pixi_metadata(metadata) {
-        signable.insert("pixi".to_string(), pixi);
-    }
-
-    // Create canonical JSON (sorted keys)
-    serde_json::to_string(&serde_json::Value::Object(signable)).unwrap_or_default()
-}
-
 /// Get UV metadata from new path (runt.uv) or legacy path (uv)
 pub fn get_uv_metadata(metadata: &HashMap<String, serde_json::Value>) -> Option<serde_json::Value> {
-    // New path: metadata.runt.uv
     if let Some(runt) = metadata.get("runt") {
         if let Some(uv) = runt.get("uv") {
             return Some(uv.clone());
         }
     }
-    // Legacy path: metadata.uv
     metadata.get("uv").cloned()
 }
 
@@ -214,13 +77,11 @@ pub fn get_uv_metadata(metadata: &HashMap<String, serde_json::Value>) -> Option<
 pub fn get_conda_metadata(
     metadata: &HashMap<String, serde_json::Value>,
 ) -> Option<serde_json::Value> {
-    // New path: metadata.runt.conda
     if let Some(runt) = metadata.get("runt") {
         if let Some(conda) = runt.get("conda") {
             return Some(conda.clone());
         }
     }
-    // Legacy path: metadata.conda
     metadata.get("conda").cloned()
 }
 
@@ -234,54 +95,8 @@ pub fn get_pixi_metadata(
         .cloned()
 }
 
-/// Compute HMAC signature over dependency metadata.
-pub fn compute_signature(key: &[u8; 32], metadata: &HashMap<String, serde_json::Value>) -> String {
-    let content = extract_signable_content(metadata);
-
-    // Safety: HMAC-SHA256 accepts keys of any length via `new_from_slice`; the
-    // underlying `KeyInit::new_from_slice` is infallible for `SimpleHmac`/`Hmac`.
-    #[allow(clippy::expect_used)]
-    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
-    mac.update(content.as_bytes());
-    let result = mac.finalize();
-
-    // Encode as hex
-    format!("hmac-sha256:{}", hex::encode(result.into_bytes()))
-}
-
-/// Verify a signature against the current dependency metadata.
-pub fn verify_signature(
-    key: &[u8; 32],
-    metadata: &HashMap<String, serde_json::Value>,
-    signature: &str,
-) -> bool {
-    // Parse the signature format
-    let expected_prefix = "hmac-sha256:";
-    if !signature.starts_with(expected_prefix) {
-        return false;
-    }
-
-    let expected_hex = &signature[expected_prefix.len()..];
-    let expected_bytes = match hex::decode(expected_hex) {
-        Ok(b) => b,
-        Err(_) => return false,
-    };
-
-    // Compute current signature
-    let content = extract_signable_content(metadata);
-
-    // Safety: see `compute_signature` - HMAC-SHA256 accepts any key length.
-    #[allow(clippy::expect_used)]
-    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
-    mac.update(content.as_bytes());
-
-    // Constant-time comparison
-    mac.verify_slice(&expected_bytes).is_ok()
-}
-
 /// Check if a notebook has any dependencies configured.
 pub fn has_dependencies(metadata: &HashMap<String, serde_json::Value>) -> bool {
-    // Check UV dependencies (new path first, then legacy)
     if let Some(uv) = get_uv_metadata(metadata) {
         if let Some(deps) = uv.get("dependencies").and_then(|v| v.as_array()) {
             if !deps.is_empty() {
@@ -290,7 +105,6 @@ pub fn has_dependencies(metadata: &HashMap<String, serde_json::Value>) -> bool {
         }
     }
 
-    // Check conda dependencies (new path first, then legacy)
     if let Some(conda) = get_conda_metadata(metadata) {
         if let Some(deps) = conda.get("dependencies").and_then(|v| v.as_array()) {
             if !deps.is_empty() {
@@ -299,7 +113,6 @@ pub fn has_dependencies(metadata: &HashMap<String, serde_json::Value>) -> bool {
         }
     }
 
-    // Check pixi dependencies
     if let Some(pixi) = get_pixi_metadata(metadata) {
         if let Some(deps) = pixi.get("dependencies").and_then(|v| v.as_array()) {
             if !deps.is_empty() {
@@ -316,19 +129,13 @@ pub fn has_dependencies(metadata: &HashMap<String, serde_json::Value>) -> bool {
     false
 }
 
-/// Extract notebook trust information from metadata without touching the
-/// HMAC key file.
+/// Extract notebook trust information from metadata.
 ///
 /// Returns a `TrustInfo` populated with the dependency lists and channels
 /// from the snapshot. The returned `status` is `NoDependencies` when there
 /// is nothing to install, otherwise `Untrusted`. `approved_*_dependencies`
-/// are always empty - callers that have an allowlist should enrich the
-/// result themselves and lift the status to `Trusted` if every dependency
-/// is approved.
-///
-/// This is the key-free entry point that the daemon uses going forward.
-/// `verify_notebook_trust` (signature-aware) delegates to this helper for
-/// extraction and then layers in HMAC verification on top.
+/// are always empty: the daemon's allowlist store enriches these and lifts
+/// `status` to `Trusted` when every name is approved.
 pub fn extract_trust_info(metadata: &HashMap<String, serde_json::Value>) -> TrustInfo {
     let uv_dependencies = string_array(get_uv_metadata(metadata).as_ref(), "dependencies");
 
@@ -379,71 +186,9 @@ fn string_array(parent: Option<&serde_json::Value>, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Verify the trust status of a notebook (HMAC-aware).
-///
-/// Returns the trust status and information about what dependencies would
-/// be installed. The HMAC layer is on its way out; new daemon code calls
-/// [`extract_trust_info`] and decides Trusted vs Untrusted from the
-/// allowlist instead. This function stays callable until the daemon
-/// migration is complete.
-pub fn verify_notebook_trust(
-    metadata: &HashMap<String, serde_json::Value>,
-) -> Result<TrustInfo, String> {
-    let mut info = extract_trust_info(metadata);
-
-    if info.status == TrustStatus::NoDependencies {
-        return Ok(info);
-    }
-
-    let key = get_or_create_trust_key()?;
-
-    let signature = metadata
-        .get("runt")
-        .and_then(|v| v.get("trust_signature"))
-        .and_then(|v| v.as_str());
-
-    info.status = match signature {
-        None => TrustStatus::Untrusted,
-        Some(sig) => {
-            if verify_signature(&key, metadata, sig) {
-                TrustStatus::Trusted
-            } else {
-                TrustStatus::SignatureInvalid
-            }
-        }
-    };
-
-    Ok(info)
-}
-
-/// Sign the notebook's dependencies and return the signature.
-///
-/// The caller is responsible for storing this in `metadata.additional["runt"]["trust_signature"]`.
-pub fn sign_notebook_dependencies(
-    metadata: &HashMap<String, serde_json::Value>,
-) -> Result<String, String> {
-    let key = get_or_create_trust_key()?;
-    Ok(compute_signature(&key, metadata))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
-
-    /// Set up a temporary trust key path for tests.
-    /// Returns a guard that cleans up the temp directory when dropped.
-    fn setup_test_trust_key() -> tempfile::TempDir {
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let key_path = temp_dir.path().join("trust-key");
-        set_test_key_path(Some(key_path));
-        temp_dir
-    }
-
-    /// Clean up test trust key path.
-    fn teardown_test_trust_key() {
-        set_test_key_path(None);
-    }
 
     fn make_test_metadata(
         uv_deps: Vec<&str>,
@@ -492,13 +237,6 @@ mod tests {
     }
 
     #[test]
-    fn test_no_dependencies_is_trusted() {
-        let metadata = HashMap::new();
-        let info = verify_notebook_trust(&metadata).unwrap();
-        assert_eq!(info.status, TrustStatus::NoDependencies);
-    }
-
-    #[test]
     fn extract_trust_info_no_deps_is_no_dependencies() {
         let info = extract_trust_info(&HashMap::new());
         assert_eq!(info.status, TrustStatus::NoDependencies);
@@ -537,136 +275,6 @@ mod tests {
     }
 
     #[test]
-    fn extract_trust_info_does_not_touch_signature_field() {
-        // A signature in the metadata must not influence extraction. Only
-        // dep names matter; the daemon decides Trusted via the allowlist.
-        let mut metadata = make_test_metadata(vec!["pandas"], vec![]);
-        metadata.insert(
-            "runt".to_string(),
-            serde_json::json!({
-                "trust_signature": "hmac-sha256:deadbeef",
-            }),
-        );
-        let info = extract_trust_info(&metadata);
-        assert_eq!(info.status, TrustStatus::Untrusted);
-    }
-
-    #[test]
-    #[serial]
-    fn test_unsigned_notebook_is_untrusted() {
-        let _temp = setup_test_trust_key();
-        let metadata = make_test_metadata(vec!["pandas"], vec![]);
-        let info = verify_notebook_trust(&metadata).unwrap();
-        teardown_test_trust_key();
-        assert_eq!(info.status, TrustStatus::Untrusted);
-    }
-
-    #[test]
-    #[serial]
-    fn test_unsigned_pixi_notebook_is_untrusted() {
-        let _temp = setup_test_trust_key();
-        let metadata = make_pixi_test_metadata(vec!["pandas"], vec!["requests"]);
-        let info = verify_notebook_trust(&metadata).unwrap();
-        teardown_test_trust_key();
-
-        assert_eq!(info.status, TrustStatus::Untrusted);
-        assert_eq!(info.pixi_dependencies, vec!["pandas"]);
-        assert_eq!(info.pixi_pypi_dependencies, vec!["requests"]);
-        assert_eq!(info.pixi_channels, vec!["conda-forge"]);
-    }
-
-    #[test]
-    #[serial]
-    fn test_signed_pixi_notebook_is_trusted() {
-        let _temp = setup_test_trust_key();
-        let metadata = make_pixi_test_metadata(vec!["pandas"], vec!["requests"]);
-        let signature = sign_notebook_dependencies(&metadata).unwrap();
-
-        let mut signed_metadata = metadata.clone();
-        signed_metadata.insert(
-            "runt".to_string(),
-            serde_json::json!({
-                "pixi": {
-                    "dependencies": ["pandas"],
-                    "pypi_dependencies": ["requests"],
-                    "channels": ["conda-forge"],
-                },
-                "trust_signature": signature,
-            }),
-        );
-
-        let info = verify_notebook_trust(&signed_metadata).unwrap();
-        teardown_test_trust_key();
-        assert_eq!(info.status, TrustStatus::Trusted);
-    }
-
-    #[test]
-    #[serial]
-    fn test_sign_and_verify() {
-        let _temp = setup_test_trust_key();
-        let metadata = make_test_metadata(vec!["pandas", "numpy"], vec![]);
-
-        // Sign the notebook
-        let signature = sign_notebook_dependencies(&metadata).unwrap();
-
-        // Add signature to metadata
-        let mut signed_metadata = metadata.clone();
-        signed_metadata.insert(
-            "runt".to_string(),
-            serde_json::json!({
-                "trust_signature": signature,
-            }),
-        );
-
-        // Verify it's now trusted
-        let info = verify_notebook_trust(&signed_metadata).unwrap();
-        teardown_test_trust_key();
-        assert_eq!(info.status, TrustStatus::Trusted);
-    }
-
-    #[test]
-    #[serial]
-    fn test_modified_deps_invalidates_signature() {
-        let _temp = setup_test_trust_key();
-        let metadata = make_test_metadata(vec!["pandas"], vec![]);
-
-        // Sign the notebook
-        let signature = sign_notebook_dependencies(&metadata).unwrap();
-
-        // Add signature to metadata
-        let mut signed_metadata = metadata;
-        signed_metadata.insert(
-            "runt".to_string(),
-            serde_json::json!({
-                "trust_signature": signature,
-            }),
-        );
-
-        // Modify dependencies (simulate external edit)
-        signed_metadata.insert(
-            "uv".to_string(),
-            serde_json::json!({
-                "dependencies": ["pandas", "malicious-pkg"],
-            }),
-        );
-
-        // Verify signature is now invalid
-        let info = verify_notebook_trust(&signed_metadata).unwrap();
-        teardown_test_trust_key();
-        assert_eq!(info.status, TrustStatus::SignatureInvalid);
-    }
-
-    #[test]
-    #[serial]
-    fn test_signature_format() {
-        let _temp = setup_test_trust_key();
-        let metadata = make_test_metadata(vec!["pandas"], vec![]);
-        let signature = sign_notebook_dependencies(&metadata).unwrap();
-        teardown_test_trust_key();
-        assert!(signature.starts_with("hmac-sha256:"));
-    }
-
-    #[test]
     fn test_trust_info_serialization() {
         // Verify TrustInfo serializes with status as a simple string, not nested object
         let info = TrustInfo {
@@ -685,7 +293,6 @@ mod tests {
 
         let json = serde_json::to_value(&info).unwrap();
 
-        // status should be a string "no_dependencies", not {"status": "no_dependencies"}
         assert_eq!(json["status"], "no_dependencies");
         assert!(json["status"].is_string());
     }

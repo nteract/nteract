@@ -181,13 +181,9 @@ async fn seed_clone_from_source(
             }
         }
 
-        // Apply metadata with a fresh env_id. Trust signature + timestamp
-        // copy through: the signature covers runt.uv/conda/pixi only (see
-        // runt_trust::extract_signable_content), which we copy byte-for-byte,
-        // and the trust key is per-machine. So a same-machine clone of a
-        // signed source verifies against the same key over the same bytes.
-        // Untrusted sources carry their None through unchanged — we never
-        // synthesize trust.
+        // Apply metadata with a fresh env_id. Trust state on the clone is
+        // determined by the per-machine package allowlist: dependencies copy
+        // through, and the new room re-derives trust from the store.
         if let Some(mut snapshot) = metadata_snapshot {
             snapshot.runt.env_id = Some(Uuid::new_v4().to_string());
             clone_doc

@@ -4214,9 +4214,6 @@ async fn test_check_and_update_trust_state_no_deps() {
 #[tokio::test]
 async fn test_approve_trust_adds_dependencies_to_allowlist() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let key_path = tmp.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
-
     let store =
         crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
             .unwrap();
@@ -4244,16 +4241,11 @@ async fn test_approve_trust_adds_dependencies_to_allowlist() {
         pixi_channels: vec![],
     };
     assert!(store.all_dependencies_approved(&info).unwrap());
-
-    runt_trust::set_test_key_path(None);
 }
 
 #[tokio::test]
 async fn test_approve_trust_returns_error_when_store_unavailable() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let key_path = tmp.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
-
     // Store unavailable: approval must surface a real error rather than
     // silently succeeding while the allowlist stays empty.
     let store = crate::trusted_packages::TrustedPackageStore::unavailable("test disk full");
@@ -4272,8 +4264,6 @@ async fn test_approve_trust_returns_error_when_store_unavailable() {
         error.contains("Could not record trusted packages"),
         "error message should explain the persistence failure; got: {error}"
     );
-
-    runt_trust::set_test_key_path(None);
 }
 
 #[tokio::test]
@@ -6284,10 +6274,6 @@ fn test_project_file_deps_match_trust_info_no_project_file() {
 /// gate in peer_connection.rs doesn't block.
 #[tokio::test]
 async fn test_new_fresh_promotes_untrusted_when_project_file_deps_match() {
-    let key_tmp = tempfile::tempdir().unwrap();
-    let key_path = key_tmp.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
-
     let tmp = tempfile::tempdir().unwrap();
     write_pyproject_with_deps(tmp.path(), &["pandas", "numpy"]);
     let nb_path = tmp.path().join("notebook.ipynb");
@@ -6315,17 +6301,11 @@ async fn test_new_fresh_promotes_untrusted_when_project_file_deps_match() {
         runt_trust::TrustStatus::Trusted,
         "room init should promote Untrusted -> Trusted when project-file deps match",
     );
-
-    runt_trust::set_test_key_path(None);
 }
 
 /// Counterpart: if deps differ, room init must leave trust Untrusted.
 #[tokio::test]
 async fn test_new_fresh_leaves_untrusted_when_deps_differ() {
-    let key_tmp = tempfile::tempdir().unwrap();
-    let key_path = key_tmp.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
-
     let tmp = tempfile::tempdir().unwrap();
     write_pyproject_with_deps(tmp.path(), &["pandas"]);
     let nb_path = tmp.path().join("notebook.ipynb");
@@ -6346,8 +6326,6 @@ async fn test_new_fresh_leaves_untrusted_when_deps_differ() {
         runt_trust::TrustStatus::Untrusted,
         "mismatched deps must not auto-promote",
     );
-
-    runt_trust::set_test_key_path(None);
 }
 
 // ── #2157: environment.yml declares unbuilt conda env ─────────────────

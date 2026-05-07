@@ -177,12 +177,7 @@ where
                     });
                 },
             );
-        } else if !has_kernel
-            && matches!(
-                trust_status,
-                runt_trust::TrustStatus::Untrusted | runt_trust::TrustStatus::SignatureInvalid
-            )
-        {
+        } else if !has_kernel && matches!(trust_status, runt_trust::TrustStatus::Untrusted) {
             // Kernel blocked on trust approval — write this to RuntimeStateDoc
             // so the frontend shows "Awaiting Trust Approval" instead of "Initializing"
             info!(

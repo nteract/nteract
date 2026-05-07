@@ -23,7 +23,6 @@ fn trust_status_str(status: &runt_trust::TrustStatus) -> &'static str {
     match status {
         runt_trust::TrustStatus::Trusted => "trusted",
         runt_trust::TrustStatus::Untrusted => "untrusted",
-        runt_trust::TrustStatus::SignatureInvalid => "signature_invalid",
         runt_trust::TrustStatus::NoDependencies => "no_dependencies",
     }
 }
@@ -878,24 +877,6 @@ fn approved_signature(
     )
 }
 
-/// Stamp the snapshot's runt metadata with HMAC trust fields.
-///
-/// **Deprecated:** kept around for the duration of the HMAC-removal commit
-/// chain. No production caller invokes this any more; tests in
-/// `notebook_sync_server::tests` still exercise it. The function and its
-/// tests come out together in the next commit.
-#[allow(dead_code)]
-pub(crate) fn auto_sign_in_place(snapshot: &mut NotebookMetadataSnapshot) -> Result<(), String> {
-    let runt_value = serde_json::to_value(&snapshot.runt)
-        .map_err(|e| format!("serialize runt metadata: {}", e))?;
-    let mut additional = std::collections::HashMap::new();
-    additional.insert("runt".to_string(), runt_value);
-    let signature = runt_trust::sign_notebook_dependencies(&additional)?;
-    snapshot.runt.trust_signature = Some(signature);
-    snapshot.runt.trust_timestamp = Some(chrono::Utc::now().to_rfc3339());
-    Ok(())
-}
-
 /// Resolve the metadata snapshot for a notebook, trying the Automerge doc first
 /// and falling back to disk if the doc doesn't have metadata yet (e.g., before
 /// the first client has synced).
@@ -1147,8 +1128,7 @@ pub(crate) fn verify_trust_from_snapshot(
 }
 
 /// Shared finalization: extract dep info from raw metadata, then ask the
-/// allowlist whether every name is approved. Replaces the HMAC-based path
-/// in `runt_trust::verify_notebook_trust`.
+/// allowlist whether every name is approved.
 fn trust_state_from_metadata(
     metadata: &std::collections::HashMap<String, serde_json::Value>,
     store: &crate::trusted_packages::TrustedPackageStore,
@@ -1175,12 +1155,6 @@ fn trust_state_from_metadata(
 ///
 /// Allowlist enrichment - populating `info.approved_*_dependencies` - is the
 /// caller's responsibility; this helper only consults membership.
-///
-/// New daemon entry point that replaces signature-based verification. Keep
-/// this in sync with the wider plan: once every site has migrated, the
-/// HMAC verification path in `runt_trust::verify_notebook_trust` and the
-/// `TrustStatus::SignatureInvalid` variant come out together.
-#[allow(dead_code)] // call sites migrate in the next commit; tests exercise it now
 pub(crate) fn finalize_trust_status(
     info: &runt_trust::TrustInfo,
     store: &crate::trusted_packages::TrustedPackageStore,

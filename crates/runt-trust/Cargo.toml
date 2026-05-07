@@ -2,22 +2,13 @@
 name = "runt-trust"
 version = "0.3.5"
 edition.workspace = true
-description = "Notebook trust verification using HMAC signatures over dependency metadata"
+description = "Notebook trust extraction for the per-machine package allowlist"
 repository.workspace = true
 license.workspace = true
 
 [dependencies]
-dirs = "6"
-hex = "0.4"
-hmac = "0.13"
-rand = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.11"
-
-[dev-dependencies]
-serial_test = "3"
-tempfile = "3"
 
 [lints]
 workspace = true
