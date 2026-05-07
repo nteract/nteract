@@ -568,6 +568,7 @@ async fn initialize_notebook_sync_create(
         false,
         None,
         vec![],
+        None,
     )
     .await
     .map_err(|e| format!("sync connect (create): {}", e))?;

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::env::PackageManager;
+use super::env::{CreateNotebookEnvironmentMode, PackageManager};
 
 /// Channel handshake — the first frame on every connection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +83,10 @@ pub enum Handshake {
         /// When None, the daemon uses its default_python_env setting.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         package_manager: Option<PackageManager>,
+        /// Environment inheritance mode: auto, project, or notebook.
+        /// Defaults to auto.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        environment_mode: Option<CreateNotebookEnvironmentMode>,
         /// Dependencies to seed into notebook metadata before auto-launch.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         dependencies: Vec<String>,

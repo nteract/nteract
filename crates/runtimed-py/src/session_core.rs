@@ -448,6 +448,7 @@ pub(crate) async fn connect_create(
     actor_label: Option<&str>,
     package_manager: Option<notebook_protocol::connection::PackageManager>,
     dependencies: Vec<String>,
+    environment_mode: Option<notebook_protocol::connection::CreateNotebookEnvironmentMode>,
 ) -> PyResult<(String, SessionState, NotebookConnectionInfo)> {
     let default_label;
     let label = match actor_label {
@@ -457,7 +458,7 @@ pub(crate) async fn connect_create(
             &default_label
         }
     };
-    let result = notebook_sync::connect::connect_create(
+    let result = notebook_sync::connect::connect_create_with_environment_mode(
         socket_path.clone(),
         runtime,
         working_dir.clone(),
@@ -465,6 +466,7 @@ pub(crate) async fn connect_create(
         false,
         package_manager,
         dependencies,
+        environment_mode,
     )
     .await
     .map_err(to_py_err)?;

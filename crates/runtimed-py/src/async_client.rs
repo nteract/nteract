@@ -239,7 +239,8 @@ impl AsyncClient {
     ///     peer_label: Optional label override (defaults to client's peer_label).
     ///     package_manager: Package manager ("uv", "conda", "pixi"). When None, daemon uses default_python_env.
     ///     dependencies: Dependencies to seed before kernel auto-launch.
-    #[pyo3(signature = (runtime="python", working_dir=None, peer_label=None, package_manager=None, dependencies=None))]
+    ///     environment_mode: Environment source mode ("auto", "project", "notebook"). Defaults to "auto".
+    #[pyo3(signature = (runtime="python", working_dir=None, peer_label=None, package_manager=None, dependencies=None, environment_mode=None))]
     fn create_notebook<'py>(
         &self,
         py: Python<'py>,
@@ -248,6 +249,7 @@ impl AsyncClient {
         peer_label: Option<String>,
         package_manager: Option<String>,
         dependencies: Option<Vec<String>>,
+        environment_mode: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         if let Some(wd) = working_dir {
             let path = std::path::Path::new(wd);
@@ -275,6 +277,15 @@ impl AsyncClient {
                 ),
                 None => None,
             };
+        let parsed_environment_mode: Option<
+            notebook_protocol::connection::CreateNotebookEnvironmentMode,
+        > = match &environment_mode {
+            Some(mode) => Some(
+                notebook_protocol::connection::CreateNotebookEnvironmentMode::parse(mode)
+                    .map_err(pyo3::exceptions::PyValueError::new_err)?,
+            ),
+            None => None,
+        };
 
         let label = peer_label.or_else(|| self.peer_label.clone());
         let socket_path = self.socket_path.clone();
@@ -289,6 +300,7 @@ impl AsyncClient {
                 label,
                 parsed_pm,
                 deps,
+                parsed_environment_mode,
             )
             .await
         })

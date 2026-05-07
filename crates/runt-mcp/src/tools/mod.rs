@@ -105,7 +105,7 @@ pub fn all_tools() -> Vec<Tool> {
         .with_meta(always_load_meta()),
         Tool::new(
             "create_notebook",
-            "Create a new notebook. Ephemeral by default; use save_notebook(path) to persist.",
+            "Create a new notebook. Ephemeral by default; use environment_mode=\"notebook\" to ignore project files for env selection, and save_notebook(path) to persist.",
             schema_for::<session::CreateNotebookParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
@@ -624,6 +624,23 @@ mod tests {
         assert_eq!(annotations.destructive_hint, Some(false));
         assert_eq!(annotations.idempotent_hint, Some(true));
         assert_eq!(annotations.open_world_hint, Some(false));
+    }
+
+    #[test]
+    fn create_notebook_tool_exposes_environment_mode() {
+        let tool = registered_tool("create_notebook");
+        let properties = tool
+            .input_schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .expect("create_notebook schema should expose properties");
+
+        assert!(properties.contains_key("environment_mode"));
+        assert!(tool
+            .description
+            .as_deref()
+            .unwrap_or_default()
+            .contains("environment_mode=\"notebook\""));
     }
 
     #[test]

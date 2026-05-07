@@ -367,6 +367,10 @@ pub struct CreateNotebookParams {
     /// Defaults to the user's default_python_env setting.
     #[serde(default)]
     pub package_manager: Option<String>,
+    /// Environment source mode: "auto", "project", or "notebook".
+    /// Defaults to "auto".
+    #[serde(default)]
+    pub environment_mode: Option<String>,
     /// When true (default for MCP), notebook exists only in memory.
     /// Use save_notebook(path=...) to persist to disk.
     #[serde(default)]
@@ -769,6 +773,14 @@ pub async fn create_notebook(
         }
         None => None,
     };
+    let environment_mode = match arg_str(request, "environment_mode") {
+        Some(mode) => {
+            let parsed = notebook_protocol::connection::CreateNotebookEnvironmentMode::parse(mode)
+                .map_err(|msg| McpError::invalid_params(msg, None))?;
+            Some(parsed)
+        }
+        None => None,
+    };
 
     let prev = previous_notebook_id(server).await;
 
@@ -776,7 +788,7 @@ pub async fn create_notebook(
     // (keeps peer connection alive, preventing eviction).
     park_previous_session(server, None).await;
 
-    match notebook_sync::connect::connect_create(
+    match notebook_sync::connect::connect_create_with_environment_mode(
         server.socket_path.clone(),
         runtime,
         working_dir,
@@ -784,6 +796,7 @@ pub async fn create_notebook(
         ephemeral,
         explicit_pkg_manager.clone(),
         deps.clone(),
+        environment_mode,
     )
     .await
     {
@@ -861,6 +874,7 @@ pub async fn create_notebook(
                     None => "deno",
                 },
                 "ephemeral": ephemeral,
+                "environment_mode": environment_mode.unwrap_or_default().as_str(),
                 "project_context": project_context,
             });
 

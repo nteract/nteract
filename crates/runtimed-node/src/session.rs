@@ -55,6 +55,27 @@ impl From<PackageManager> for notebook_protocol::connection::PackageManager {
     }
 }
 
+/// Environment source mode for `createNotebook()`.
+#[napi(string_enum = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CreateNotebookEnvironmentMode {
+    Auto,
+    Project,
+    Notebook,
+}
+
+impl From<CreateNotebookEnvironmentMode>
+    for notebook_protocol::connection::CreateNotebookEnvironmentMode
+{
+    fn from(value: CreateNotebookEnvironmentMode) -> Self {
+        match value {
+            CreateNotebookEnvironmentMode::Auto => Self::Auto,
+            CreateNotebookEnvironmentMode::Project => Self::Project,
+            CreateNotebookEnvironmentMode::Notebook => Self::Notebook,
+        }
+    }
+}
+
 /// Options for `createNotebook()`.
 #[napi(object)]
 #[derive(Default)]
@@ -75,6 +96,8 @@ pub struct CreateNotebookOptions {
     pub dependencies: Option<Vec<String>>,
     /// Package manager for Python dependencies. Defaults to the daemon/user setting.
     pub package_manager: Option<PackageManager>,
+    /// Environment source mode. Defaults to auto.
+    pub environment_mode: Option<CreateNotebookEnvironmentMode>,
 }
 
 /// Options for `openNotebook()` and `openNotebookPath()`.
@@ -1156,8 +1179,9 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
     let actor_label = peer_label_or_description(opts.peer_label, opts.description);
     let dependencies = opts.dependencies.unwrap_or_default();
     let package_manager = opts.package_manager.map(Into::into);
+    let environment_mode = opts.environment_mode.map(Into::into);
 
-    let result = notebook_sync::connect::connect_create(
+    let result = notebook_sync::connect::connect_create_with_environment_mode(
         socket_path.clone(),
         &runtime,
         working_dir.clone(),
@@ -1165,6 +1189,7 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
         /* ephemeral */ false,
         package_manager,
         dependencies,
+        environment_mode,
     )
     .await
     .map_err(to_napi_err)?;
