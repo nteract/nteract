@@ -1,13 +1,11 @@
 //! `NotebookRequest::ApproveTrust` handler.
 //!
-//! Trust approval is a semantic daemon operation: the daemon signs the current
-//! dependency metadata and writes the resulting trust fields back into the
-//! notebook CRDT. Callers never receive raw signature material to apply
-//! themselves.
+//! Trust approval records the notebook's current dependency names in the
+//! per-machine package allowlist. The notebook doc itself is not mutated -
+//! the allowlist is the source of truth for "I have approved these packages
+//! before."
 
-use crate::notebook_sync_server::{
-    auto_sign_in_place, check_and_update_trust_state, verify_trust_from_snapshot, NotebookRoom,
-};
+use crate::notebook_sync_server::{check_and_update_trust_state, NotebookRoom};
 use crate::protocol::NotebookResponse;
 use crate::requests::guarded;
 use tracing::error;
@@ -19,21 +17,17 @@ pub(crate) async fn handle(
     room: &NotebookRoom,
     observed_heads: Option<Vec<String>>,
 ) -> NotebookResponse {
-    let (persist_bytes, trust_info) = {
-        let mut doc = room.doc.write().await;
-
-        let trust_info = match apply_trust_approval(&mut doc, observed_heads.as_deref()) {
+    let trust_info = {
+        let doc = room.doc.read().await;
+        match apply_trust_approval(&doc, observed_heads.as_deref()) {
             Ok(trust_info) => trust_info,
             Err(error) => return error.into_response(),
-        };
-
-        (doc.save(), trust_info)
+        }
     };
 
-    // Approval is now allowlist-driven, so persistence has to succeed -
-    // otherwise we'd report success while trust stays blocked. Surface the
-    // error to the caller and skip the post-approval broadcast/persist
-    // dance: the user retries, and on the next attempt approval re-runs.
+    // Approval is now allowlist-driven: the SQLite store is the only place
+    // approval is recorded. If persistence fails we have to surface a real
+    // error rather than silently report Ok while trust stays blocked.
     if let Err(persist_error) = room
         .trusted_packages
         .add_from_info(&trust_info, "trust_dialog")
@@ -49,10 +43,6 @@ pub(crate) async fn handle(
     }
 
     let _ = room.broadcasts.changed_tx.send(());
-    if let Some(ref debouncer) = room.persistence.debouncer {
-        let _ = debouncer.persist_tx.send(Some(persist_bytes));
-    }
-
     check_and_update_trust_state(room).await;
 
     NotebookResponse::Ok {}
@@ -62,8 +52,6 @@ pub(crate) async fn handle(
 enum TrustApprovalError {
     NoMetadata,
     StaleDependencies,
-    Sign(String),
-    Write(String),
     Persist(String),
 }
 
@@ -76,15 +64,16 @@ impl TrustApprovalError {
             TrustApprovalError::StaleDependencies => NotebookResponse::GuardRejected {
                 reason: TRUST_APPROVAL_STALE_REASON.to_string(),
             },
-            TrustApprovalError::Sign(error)
-            | TrustApprovalError::Write(error)
-            | TrustApprovalError::Persist(error) => NotebookResponse::Error { error },
+            TrustApprovalError::Persist(error) => NotebookResponse::Error { error },
         }
     }
 }
 
+/// Validate the approval guard and pull the dependency lists out of the
+/// current doc snapshot. The returned `TrustInfo` is what feeds the
+/// allowlist write in the handler. The doc is not mutated.
 fn apply_trust_approval(
-    doc: &mut notebook_doc::NotebookDoc,
+    doc: &notebook_doc::NotebookDoc,
     observed_heads: Option<&[String]>,
 ) -> Result<runt_trust::TrustInfo, TrustApprovalError> {
     if let Some(observed_heads) = observed_heads {
@@ -92,15 +81,15 @@ fn apply_trust_approval(
             .map_err(|_| TrustApprovalError::StaleDependencies)?;
     }
 
-    let Some(mut snapshot) = doc.get_metadata_snapshot() else {
+    let Some(snapshot) = doc.get_metadata_snapshot() else {
         return Err(TrustApprovalError::NoMetadata);
     };
 
-    auto_sign_in_place(&mut snapshot).map_err(TrustApprovalError::Sign)?;
-    let trust_info = verify_trust_from_snapshot(&snapshot).info;
-
-    doc.set_metadata_snapshot(&snapshot)
-        .map_err(|e| TrustApprovalError::Write(format!("Failed to write trust approval: {}", e)))?;
+    let mut metadata = std::collections::HashMap::new();
+    if let Ok(runt_value) = serde_json::to_value(&snapshot.runt) {
+        metadata.insert("runt".to_string(), runt_value);
+    }
+    let trust_info = runt_trust::extract_trust_info(&metadata);
 
     Ok(trust_info)
 }
@@ -127,17 +116,18 @@ mod tests {
     }
 
     #[test]
-    fn approval_writes_trust_fields_to_the_doc() {
+    fn approval_extracts_dep_info_without_mutating_doc() {
         let mut doc = doc_with_uv_deps(&["numpy"]);
         let observed_heads = doc.get_heads_hex();
 
-        apply_trust_approval(&mut doc, Some(&observed_heads)).unwrap();
+        let info = apply_trust_approval(&doc, Some(&observed_heads)).unwrap();
+        assert_eq!(info.uv_dependencies, vec!["numpy"]);
 
-        let approved = doc.get_metadata_snapshot().unwrap();
-        assert!(approved.runt.trust_signature.is_some());
-        assert!(approved.runt.trust_timestamp.is_some());
-        let verified = crate::notebook_sync_server::verify_trust_from_snapshot(&approved);
-        assert_eq!(verified.status, runt_trust::TrustStatus::Trusted);
+        // Approval no longer signs the doc; downstream allowlist write is the
+        // record of approval. The doc itself stays untouched.
+        let snapshot = doc.get_metadata_snapshot().unwrap();
+        assert!(snapshot.runt.trust_signature.is_none());
+        assert!(snapshot.runt.trust_timestamp.is_none());
     }
 
     #[test]
@@ -146,11 +136,8 @@ mod tests {
         let observed_heads = doc.get_heads_hex();
         doc.add_uv_dependency("pandas").unwrap();
 
-        let result = apply_trust_approval(&mut doc, Some(&observed_heads));
+        let result = apply_trust_approval(&doc, Some(&observed_heads));
 
         assert!(matches!(result, Err(TrustApprovalError::StaleDependencies)));
-        let snapshot = doc.get_metadata_snapshot().unwrap();
-        assert!(snapshot.runt.trust_signature.is_none());
-        assert!(snapshot.runt.trust_timestamp.is_none());
     }
 }

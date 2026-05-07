@@ -828,167 +828,63 @@ pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
         return;
     };
 
-    let mut new_trust = verify_trust_from_snapshot(&current_metadata);
+    let mut new_trust = verify_trust_from_snapshot(&current_metadata, &room.trusted_packages);
     enrich_trust_info(room, &mut new_trust);
 
-    let current_status = {
+    let (current_status, current_approved) = {
         let ts = room.trust_state.read().await;
-        ts.status.clone()
+        (ts.status.clone(), approved_signature(&ts.info))
     };
 
-    if matches!(new_trust.status, runt_trust::TrustStatus::Untrusted) {
-        match room
-            .trusted_packages
-            .all_dependencies_approved(&new_trust.info)
-        {
-            Ok(true) => match auto_approve_allowlisted_snapshot(room).await {
-                Ok(true) => return,
-                Ok(false) => {}
-                Err(e) => {
-                    warn!(
-                        "[trusted-packages] Failed to auto-approve allowlisted dependencies: {}",
-                        e
-                    );
-                }
-            },
-            Ok(false) => {}
-            Err(e) => {
-                warn!(
-                    "[trusted-packages] Failed to read package allowlist; trust remains untrusted: {}",
-                    e
-                );
-            }
-        }
+    let status_changed = current_status != new_trust.status;
+    let approvals_changed = current_approved != approved_signature(&new_trust.info);
+
+    if !status_changed && !approvals_changed {
+        return;
     }
 
-    // Auto re-sign: if the user has already approved this notebook, deps
-    // changes shouldn't flip it back to SignatureInvalid (which would kill
-    // the kernel). Re-compute the signature in place and keep the notebook
-    // Trusted. This covers both the UI-driven dep add path (primary case)
-    // and external file edits on an already-approved notebook.
-    if matches!(current_status, runt_trust::TrustStatus::Trusted)
-        && matches!(new_trust.status, runt_trust::TrustStatus::SignatureInvalid)
-    {
-        match resign_trusted_snapshot(room).await {
-            Ok(true) => {
-                // Fresh snapshot/state now reflect Trusted — nothing else to do.
-                return;
-            }
-            Ok(false) => {
-                // Nothing to re-sign (snapshot vanished). Fall through.
-            }
-            Err(e) => {
-                warn!(
-                    "[notebook-sync] Failed to auto re-sign trusted notebook, \
-                     falling back to SignatureInvalid: {}",
-                    e
-                );
-                // Fall through to the normal transition path.
-            }
-        }
-    }
-
-    if current_status != new_trust.status {
+    if status_changed {
         info!(
             "[notebook-sync] Trust state changed via doc sync: {:?} -> {:?}",
             current_status, new_trust.status
         );
-
-        // Update room.trust_state so auto-launch and reconnection use fresh state
-        {
-            let mut ts = room.trust_state.write().await;
-            *ts = new_trust;
-        }
-
-        // Update RuntimeStateDoc so the frontend banner reacts immediately
-        let ts = room.trust_state.read().await;
-        let trust_blocks_launch = trust_needs_approval(&ts.status);
-        write_trust_to_runtime_state(room, &ts);
-        drop(ts);
-        if trust_blocks_launch {
-            clear_environment_prepare_error_when_trust_blocks_launch(room).await;
-        }
-    } else {
-        let current_info = {
-            let ts = room.trust_state.read().await;
-            ts.info.clone()
-        };
-        if current_info.approved_uv_dependencies != new_trust.info.approved_uv_dependencies
-            || current_info.approved_conda_dependencies
-                != new_trust.info.approved_conda_dependencies
-            || current_info.approved_pixi_dependencies != new_trust.info.approved_pixi_dependencies
-            || current_info.approved_pixi_pypi_dependencies
-                != new_trust.info.approved_pixi_pypi_dependencies
-        {
-            {
-                let mut ts = room.trust_state.write().await;
-                *ts = new_trust;
-            }
-            let ts = room.trust_state.read().await;
-            let trust_blocks_launch = trust_needs_approval(&ts.status);
-            write_trust_to_runtime_state(room, &ts);
-            drop(ts);
-            if trust_blocks_launch {
-                clear_environment_prepare_error_when_trust_blocks_launch(room).await;
-            }
-        }
-    }
-}
-
-async fn auto_approve_allowlisted_snapshot(room: &NotebookRoom) -> Result<bool, String> {
-    let persist_bytes = {
-        let mut doc = room.doc.write().await;
-        let Some(mut snapshot) = doc.get_metadata_snapshot() else {
-            return Ok(false);
-        };
-
-        let mut trust = verify_trust_from_snapshot(&snapshot);
-        enrich_trust_info(room, &mut trust);
-        if !matches!(trust.status, runt_trust::TrustStatus::Untrusted) {
-            return Ok(false);
-        }
-        match room.trusted_packages.all_dependencies_approved(&trust.info) {
-            Ok(true) => {}
-            Ok(false) => return Ok(false),
-            Err(e) => return Err(e.to_string()),
-        }
-
-        auto_sign_in_place(&mut snapshot)?;
-        doc.set_metadata_snapshot(&snapshot)
-            .map_err(|e| format!("Failed to write allowlist trust approval: {}", e))?;
-        doc.save()
-    };
-
-    let _ = room.broadcasts.changed_tx.send(());
-    if let Some(ref debouncer) = room.persistence.debouncer {
-        let _ = debouncer.persist_tx.send(Some(persist_bytes));
     }
 
-    let mut updated = {
-        let doc = room.doc.read().await;
-        let Some(snapshot) = doc.get_metadata_snapshot() else {
-            return Ok(false);
-        };
-        verify_trust_from_snapshot(&snapshot)
-    };
-    enrich_trust_info(room, &mut updated);
     {
         let mut ts = room.trust_state.write().await;
-        *ts = updated;
+        *ts = new_trust;
     }
+
     let ts = room.trust_state.read().await;
+    let trust_blocks_launch = trust_needs_approval(&ts.status);
     write_trust_to_runtime_state(room, &ts);
-    Ok(true)
+    drop(ts);
+    if trust_blocks_launch {
+        clear_environment_prepare_error_when_trust_blocks_launch(room).await;
+    }
 }
 
-/// Sign the snapshot's runt dependency metadata with the daemon's trust key
-/// and write the signature + timestamp back into the snapshot in place.
+/// Tuple summarizing the allowlist-derived `approved_*` fields so we can
+/// detect when the same trust status arrives with new approvals (e.g. the
+/// user just approved one of the deps via the dialog).
+fn approved_signature(
+    info: &runt_trust::TrustInfo,
+) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
+    (
+        info.approved_uv_dependencies.clone(),
+        info.approved_conda_dependencies.clone(),
+        info.approved_pixi_dependencies.clone(),
+        info.approved_pixi_pypi_dependencies.clone(),
+    )
+}
+
+/// Stamp the snapshot's runt metadata with HMAC trust fields.
 ///
-/// Does not persist the snapshot — the caller writes it back to the doc.
-/// Used by `resign_trusted_snapshot` (re-sign a previously-Trusted notebook
-/// whose deps changed) and by explicit trust approval paths. Project-file deps
-/// are runtime context and should not be signed unless they have been copied
-/// into notebook metadata.
+/// **Deprecated:** kept around for the duration of the HMAC-removal commit
+/// chain. No production caller invokes this any more; tests in
+/// `notebook_sync_server::tests` still exercise it. The function and its
+/// tests come out together in the next commit.
+#[allow(dead_code)]
 pub(crate) fn auto_sign_in_place(snapshot: &mut NotebookMetadataSnapshot) -> Result<(), String> {
     let runt_value = serde_json::to_value(&snapshot.runt)
         .map_err(|e| format!("serialize runt metadata: {}", e))?;
@@ -998,44 +894,6 @@ pub(crate) fn auto_sign_in_place(snapshot: &mut NotebookMetadataSnapshot) -> Res
     snapshot.runt.trust_signature = Some(signature);
     snapshot.runt.trust_timestamp = Some(chrono::Utc::now().to_rfc3339());
     Ok(())
-}
-
-/// Re-sign the notebook's current metadata with the daemon's trust key and
-/// write the new signature back into the Automerge doc. Used when deps have
-/// changed on a previously-Trusted notebook, so the user doesn't have to
-/// re-approve through the UI for every dependency edit.
-///
-/// Returns `Ok(true)` if a re-sign was applied, `Ok(false)` if there was
-/// nothing to sign (no metadata snapshot). Errors propagate so the caller
-/// can fall back to the normal SignatureInvalid transition.
-async fn resign_trusted_snapshot(room: &NotebookRoom) -> Result<bool, String> {
-    let mut doc = room.doc.write().await;
-
-    let Some(mut snapshot) = doc.get_metadata_snapshot() else {
-        return Ok(false);
-    };
-
-    auto_sign_in_place(&mut snapshot)?;
-
-    let heads = doc.get_heads();
-    doc.transact_at_heads_recovering(
-        &heads,
-        Some("runtimed:metadata"),
-        "metadata-resign-transaction",
-        |doc| {
-            doc.set_metadata_snapshot(&snapshot)?;
-            Ok(())
-        },
-    )
-    .map_err(|e| format!("write trust signature: {}", e))?;
-    drop(doc);
-
-    // Persist the new signature to disk so reopening after a restart keeps
-    // the notebook Trusted without another sync round-trip.
-    let _ = room.broadcasts.changed_tx.send(());
-
-    info!("[notebook-sync] Auto re-signed trusted notebook after deps change");
-    Ok(true)
 }
 
 /// Resolve the metadata snapshot for a notebook, trying the Automerge doc first
@@ -1252,9 +1110,11 @@ pub(crate) fn project_file_deps_match_trust_info(
 ///
 /// Used during room creation when the Automerge doc is still empty.
 /// Once the doc is populated, `verify_trust_from_snapshot` is preferred
-/// as it picks up in-memory changes (e.g., newly-written trust signatures).
-pub(crate) fn verify_trust_from_file(notebook_path: &Path) -> TrustState {
-    // Read and parse the notebook file
+/// as it picks up in-memory changes.
+pub(crate) fn verify_trust_from_file(
+    notebook_path: &Path,
+    store: &crate::trusted_packages::TrustedPackageStore,
+) -> TrustState {
     let metadata = match std::fs::read_to_string(notebook_path) {
         Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
             Ok(nb) => nb
@@ -1267,75 +1127,38 @@ pub(crate) fn verify_trust_from_file(notebook_path: &Path) -> TrustState {
         Err(_) => std::collections::HashMap::new(),
     };
 
-    // Verify trust using the shared runt-trust crate
-    match runt_trust::verify_notebook_trust(&metadata) {
-        Ok(info) => TrustState {
-            status: info.status.clone(),
-            info,
-            pending_launch: false,
-        },
-        Err(_) => TrustState {
-            status: runt_trust::TrustStatus::Untrusted,
-            info: runt_trust::TrustInfo {
-                status: runt_trust::TrustStatus::Untrusted,
-                uv_dependencies: vec![],
-                approved_uv_dependencies: vec![],
-                conda_dependencies: vec![],
-                approved_conda_dependencies: vec![],
-                conda_channels: vec![],
-                pixi_dependencies: vec![],
-                approved_pixi_dependencies: vec![],
-                pixi_pypi_dependencies: vec![],
-                approved_pixi_pypi_dependencies: vec![],
-                pixi_channels: vec![],
-            },
-            pending_launch: false,
-        },
-    }
+    trust_state_from_metadata(&metadata, store)
 }
 
 /// Verify trust status from a `NotebookMetadataSnapshot` (from the Automerge doc).
 ///
-/// This provides the same trust verification as `verify_trust_from_file` but
-/// works with the in-memory doc state instead of reading from disk. Used by
-/// `check_and_update_trust_state` to detect trust changes reactively (e.g.,
-/// after the frontend writes a trust signature via approval).
-pub(crate) fn verify_trust_from_snapshot(snapshot: &NotebookMetadataSnapshot) -> TrustState {
-    // Build a metadata HashMap from the snapshot's runt field, matching the
-    // structure that runt_trust::verify_notebook_trust expects.
-    //
-    // We only insert the "runt" key — legacy top-level "uv"/"conda" keys are
-    // already normalized into runt.uv/runt.conda by
-    // NotebookMetadataSnapshot::from_metadata_value before they reach the
-    // Automerge doc, so the legacy fallback in get_uv_metadata is not needed.
+/// Same model as `verify_trust_from_file` but starts from the in-memory doc
+/// snapshot. Used by `check_and_update_trust_state` and the various sync
+/// paths that already have a snapshot in hand.
+pub(crate) fn verify_trust_from_snapshot(
+    snapshot: &NotebookMetadataSnapshot,
+    store: &crate::trusted_packages::TrustedPackageStore,
+) -> TrustState {
     let mut metadata = std::collections::HashMap::new();
     if let Ok(runt_value) = serde_json::to_value(&snapshot.runt) {
         metadata.insert("runt".to_string(), runt_value);
     }
+    trust_state_from_metadata(&metadata, store)
+}
 
-    match runt_trust::verify_notebook_trust(&metadata) {
-        Ok(info) => TrustState {
-            status: info.status.clone(),
-            info,
-            pending_launch: false,
-        },
-        Err(_) => TrustState {
-            status: runt_trust::TrustStatus::Untrusted,
-            info: runt_trust::TrustInfo {
-                status: runt_trust::TrustStatus::Untrusted,
-                uv_dependencies: vec![],
-                approved_uv_dependencies: vec![],
-                conda_dependencies: vec![],
-                approved_conda_dependencies: vec![],
-                conda_channels: vec![],
-                pixi_dependencies: vec![],
-                approved_pixi_dependencies: vec![],
-                pixi_pypi_dependencies: vec![],
-                approved_pixi_pypi_dependencies: vec![],
-                pixi_channels: vec![],
-            },
-            pending_launch: false,
-        },
+/// Shared finalization: extract dep info from raw metadata, then ask the
+/// allowlist whether every name is approved. Replaces the HMAC-based path
+/// in `runt_trust::verify_notebook_trust`.
+fn trust_state_from_metadata(
+    metadata: &std::collections::HashMap<String, serde_json::Value>,
+    store: &crate::trusted_packages::TrustedPackageStore,
+) -> TrustState {
+    let mut info = runt_trust::extract_trust_info(metadata);
+    info.status = finalize_trust_status(&info, store);
+    TrustState {
+        status: info.status.clone(),
+        info,
+        pending_launch: false,
     }
 }
 

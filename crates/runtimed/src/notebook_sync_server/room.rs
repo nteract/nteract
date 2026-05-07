@@ -589,7 +589,7 @@ impl NotebookRoom {
             // Untitled notebooks have no .ipynb on disk — trust signature lives
             // in the persisted Automerge doc we just loaded.
             None => match doc.get_metadata_snapshot() {
-                Some(snapshot) => verify_trust_from_snapshot(&snapshot),
+                Some(snapshot) => verify_trust_from_snapshot(&snapshot, &trusted_packages),
                 None => TrustState {
                     status: runt_trust::TrustStatus::NoDependencies,
                     info: runt_trust::TrustInfo {
@@ -609,7 +609,7 @@ impl NotebookRoom {
                 },
             },
             Some(p) => {
-                let mut initial = verify_trust_from_file(p);
+                let mut initial = verify_trust_from_file(p, &trusted_packages);
                 // #2150 reconciliation: if the .ipynb on disk has deps that
                 // exactly match a project file's deps (pyproject/env.yml),
                 // treat it as Trusted in memory so the auto-launch gate in
@@ -696,9 +696,14 @@ impl NotebookRoom {
         } else {
             Some(PathBuf::from(notebook_id))
         };
+        // Test-only constructor: trust verification reads from an unavailable
+        // store, so every notebook lands as Untrusted unless a test wires in
+        // its own room. This matches the production fallback behavior.
+        let trusted_packages =
+            crate::trusted_packages::TrustedPackageStore::unavailable("not configured");
         let trust_state = match &path {
             None => match doc.get_metadata_snapshot() {
-                Some(snapshot) => verify_trust_from_snapshot(&snapshot),
+                Some(snapshot) => verify_trust_from_snapshot(&snapshot, &trusted_packages),
                 None => TrustState {
                     status: runt_trust::TrustStatus::NoDependencies,
                     info: runt_trust::TrustInfo {
@@ -718,7 +723,7 @@ impl NotebookRoom {
                 },
             },
             Some(p) => {
-                let mut initial = verify_trust_from_file(p);
+                let mut initial = verify_trust_from_file(p, &trusted_packages);
                 if matches!(initial.status, runt_trust::TrustStatus::Untrusted)
                     && project_file_deps_match_trust_info(p, &initial.info)
                 {
@@ -744,9 +749,7 @@ impl NotebookRoom {
             connections: RoomConnections::default(),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
-            trusted_packages: crate::trusted_packages::TrustedPackageStore::unavailable(
-                "not configured",
-            ),
+            trusted_packages,
             state,
             runtime_agent_handle: Arc::new(Mutex::new(None)),
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
