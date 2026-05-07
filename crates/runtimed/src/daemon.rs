@@ -2248,10 +2248,13 @@ impl Daemon {
         // connections don't hold resources. All clients must send the 5-byte
         // magic preamble (0xC0DE01AC + version byte) before the JSON handshake.
         //
-        // The preamble version is validated in two tiers:
+        // The preamble version is validated in tiers:
         //   - Pool channel: any version with valid magic is accepted. Older
         //     stable apps ping the daemon during upgrade; rejecting them would
         //     break the version-check → upgrade_daemon_via_sidecar flow.
+        //   - SettingsSync: any historical nonzero version through the current
+        //     version is accepted. The channel is raw Automerge document sync,
+        //     so keep older app windows from spinning during daemon upgrades.
         //   - All other channels: MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION.
         let (handshake_bytes, client_protocol_version) =
             tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -2285,16 +2288,29 @@ impl Daemon {
             .map_err(|_| anyhow::anyhow!("handshake timeout (10s)"))??;
         let handshake: Handshake = serde_json::from_slice(&handshake_bytes)?;
 
-        // Pool connections accept any preamble version (upgrade compat).
-        // Everything else must be within the supported range.
-        if !matches!(handshake, Handshake::Pool)
-            && (client_protocol_version < connection::MIN_PROTOCOL_VERSION as u8
-                || client_protocol_version > connection::PROTOCOL_VERSION as u8)
-        {
+        const SETTINGS_SYNC_MIN_PROTOCOL_VERSION: u8 = 1;
+        let protocol_supported = match handshake {
+            Handshake::Pool => true,
+            Handshake::SettingsSync => {
+                client_protocol_version >= SETTINGS_SYNC_MIN_PROTOCOL_VERSION
+                    && client_protocol_version <= connection::PROTOCOL_VERSION as u8
+            }
+            _ => {
+                client_protocol_version >= connection::MIN_PROTOCOL_VERSION as u8
+                    && client_protocol_version <= connection::PROTOCOL_VERSION as u8
+            }
+        };
+
+        if !protocol_supported {
             anyhow::bail!(
-                "unsupported protocol version: got {}, supported range [{}, {}]",
+                "unsupported protocol version for {:?}: got {}, supported range [{}, {}]",
+                handshake,
                 client_protocol_version,
-                connection::MIN_PROTOCOL_VERSION,
+                if matches!(handshake, Handshake::SettingsSync) {
+                    SETTINGS_SYNC_MIN_PROTOCOL_VERSION as u32
+                } else {
+                    connection::MIN_PROTOCOL_VERSION
+                },
                 connection::PROTOCOL_VERSION
             );
         }

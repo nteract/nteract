@@ -46,16 +46,32 @@ impl DetectedProjectFile {
 /// A `pyproject.toml` with `[tool.pixi]` is treated as a pixi project.
 /// Stops at `.git` boundaries or the user's home directory.
 pub fn detect_project_file(start_path: &Path) -> Option<DetectedProjectFile> {
+    detect_project_file_with_home(start_path, dirs::home_dir())
+}
+
+fn detect_project_file_with_home(
+    start_path: &Path,
+    home_dir: Option<PathBuf>,
+) -> Option<DetectedProjectFile> {
     let start_dir = if start_path.is_file() {
         start_path.parent()?
     } else {
         start_path
     };
 
-    let home_dir = dirs::home_dir();
     let mut current = start_dir.to_path_buf();
 
     loop {
+        // Treat the user's home directory as a boundary before checking files
+        // there. A top-level ~/pyproject.toml or ~/pixi.toml is valid for
+        // other tooling, but MCP notebooks under ~/ should not inherit it
+        // implicitly.
+        if let Some(ref home) = home_dir {
+            if current == *home {
+                return None;
+            }
+        }
+
         // Check pyproject.toml first (higher priority in tiebreaker)
         let pyproject = current.join("pyproject.toml");
         if pyproject.exists() {
@@ -81,12 +97,7 @@ pub fn detect_project_file(start_path: &Path) -> Option<DetectedProjectFile> {
             });
         }
 
-        // Stop at home directory or git repo root
-        if let Some(ref home) = home_dir {
-            if current == *home {
-                return None;
-            }
-        }
+        // Stop at git repo root
         if current.join(".git").exists() {
             return None;
         }
@@ -105,4 +116,51 @@ fn has_pixi_section(path: &Path) -> bool {
     std::fs::read_to_string(path)
         .ok()
         .is_some_and(|content| content.contains("[tool.pixi]") || content.contains("[tool.pixi."))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_file(dir: &Path, name: &str, content: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(name), content).unwrap();
+    }
+
+    #[test]
+    fn home_directory_project_file_is_boundary_not_match() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let home = temp.path().join("home");
+        let notebooks = home.join("notebooks");
+        std::fs::create_dir_all(&notebooks).unwrap();
+        write_file(&home, "pyproject.toml", "[project]\nname = \"home\"\n");
+
+        let found =
+            detect_project_file_with_home(&notebooks.join("analysis.ipynb"), Some(home.clone()));
+
+        assert!(
+            found.is_none(),
+            "project detection must not bind notebooks to ~/pyproject.toml"
+        );
+    }
+
+    #[test]
+    fn subdirectory_project_file_still_matches_before_home_boundary() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let home = temp.path().join("home");
+        let project = home.join("project");
+        let notebooks = project.join("notebooks");
+        std::fs::create_dir_all(&notebooks).unwrap();
+        write_file(
+            &project,
+            "pyproject.toml",
+            "[project]\nname = \"project\"\n",
+        );
+
+        let found =
+            detect_project_file_with_home(&notebooks.join("analysis.ipynb"), Some(home)).unwrap();
+
+        assert_eq!(found.kind, ProjectFileKind::PyprojectToml);
+        assert_eq!(found.path, project.join("pyproject.toml"));
+    }
 }

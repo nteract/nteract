@@ -58,16 +58,32 @@ pub fn find_nearest_project_file(
     start_path: &Path,
     kinds: &[ProjectFileKind],
 ) -> Option<DetectedProjectFile> {
+    find_nearest_project_file_with_home(start_path, kinds, dirs::home_dir())
+}
+
+fn find_nearest_project_file_with_home(
+    start_path: &Path,
+    kinds: &[ProjectFileKind],
+    home_dir: Option<PathBuf>,
+) -> Option<DetectedProjectFile> {
     let start_dir = if start_path.is_file() {
         start_path.parent()?
     } else {
         start_path
     };
 
-    let home_dir = dirs::home_dir();
-
     let mut current = start_dir.to_path_buf();
     loop {
+        // Treat the home directory as a boundary, not a project root. A
+        // top-level ~/environment.yml is usually a shell/conda default, and
+        // letting notebooks under ~/notebooks inherit it makes unrelated
+        // notebooks project-backed.
+        if let Some(ref home) = home_dir {
+            if current == *home {
+                return None;
+            }
+        }
+
         // Check all requested project file types at this level, in tiebreaker order
         for (filename, kind) in ALL_CANDIDATES {
             if !kinds.contains(kind) {
@@ -92,12 +108,7 @@ pub fn find_nearest_project_file(
             }
         }
 
-        // Stop at home directory or git repo root
-        if let Some(ref home) = home_dir {
-            if current == *home {
-                return None;
-            }
-        }
+        // Stop at git repo root
         if current.join(".git").exists() {
             return None;
         }
@@ -393,6 +404,30 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let found = detect_project_file(temp.path());
         assert!(found.is_none());
+    }
+
+    #[test]
+    fn test_home_directory_project_file_is_boundary_not_match() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path().join("home");
+        let notebooks = home.join("notebooks");
+        std::fs::create_dir_all(&notebooks).unwrap();
+        write_file(&home, "environment.yml", "dependencies:\n  - pandas\n");
+
+        let found = find_nearest_project_file_with_home(
+            &notebooks.join("analysis.ipynb"),
+            &[
+                ProjectFileKind::PyprojectToml,
+                ProjectFileKind::PixiToml,
+                ProjectFileKind::EnvironmentYml,
+            ],
+            Some(home),
+        );
+
+        assert!(
+            found.is_none(),
+            "project detection must not bind notebooks to ~/environment.yml"
+        );
     }
 
     #[test]

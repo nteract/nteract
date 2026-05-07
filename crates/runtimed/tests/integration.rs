@@ -423,6 +423,48 @@ async fn test_settings_sync_via_unified_socket() {
 }
 
 #[tokio::test]
+async fn test_settings_sync_accepts_legacy_v3_preamble() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    for version in [1, 3] {
+        let mut stream = connect_raw_stream(&socket_path)
+            .await
+            .expect("should connect");
+
+        let mut preamble = [0u8; 5];
+        preamble[..4].copy_from_slice(&[0xC0, 0xDE, 0x01, 0xAC]);
+        preamble[4] = version;
+        stream.write_all(&preamble).await.unwrap();
+
+        let handshake = br#"{"channel":"settings_sync"}"#;
+        let len = (handshake.len() as u32).to_be_bytes();
+        stream.write_all(&len).await.unwrap();
+        stream.write_all(handshake).await.unwrap();
+        stream.flush().await.unwrap();
+
+        let mut frame_len = [0u8; 4];
+        tokio::time::timeout(Duration::from_secs(2), stream.read_exact(&mut frame_len))
+            .await
+            .expect("settings sync server should send initial sync frame")
+            .unwrap_or_else(|_| panic!("legacy v{version} settings sync should stay connected"));
+        assert!(u32::from_be_bytes(frame_len) > 0);
+    }
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+#[tokio::test]
 async fn test_external_settings_json_edit_survives_settings_sync_ack() {
     use runtimed::settings_doc::{PythonEnvType, SyncedSettings};
     use runtimed::sync_client::SyncClient;
