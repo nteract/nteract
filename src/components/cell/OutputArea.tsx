@@ -336,16 +336,30 @@ export function OutputArea({
   const colorTheme = useColorTheme();
   const defaultOutputWellMaxHeight = useOutputWellMaxHeight(DEFAULT_OUTPUT_WELL_VIEWPORT_RATIO);
   const focusedOutputWellMaxHeight = useOutputWellMaxHeight(FOCUSED_OUTPUT_WELL_VIEWPORT_RATIO);
-  // Non-isolated outputs (stream/text/error) render in-DOM and otherwise
-  // grow as tall as their content, which pushes the page down dramatically
-  // for chatty stdout. Cap them at the same default well height the iframe
-  // path uses, with overflow-y-auto so the user gets an inner scroll region.
-  // Explicit `maxHeight` prop still overrides; pass 0 to opt out.
-  const effectiveInDomMaxHeight = maxHeight ?? defaultOutputWellMaxHeight;
-  const maxHeightStyle = useMemo(
-    () => (effectiveInDomMaxHeight ? { maxHeight: `${effectiveInDomMaxHeight}px` } : undefined),
-    [effectiveInDomMaxHeight],
-  );
+  // Non-isolated outputs (stream/text/error) render in-DOM. Apply the same
+  // three-mode contract that the iframe path uses, just on the wrapper:
+  //   compact  -> default well cap with overflow-y-auto
+  //   expanded -> no cap (output grows as tall as its content)
+  //   focused  -> focused max with floor, overflow-y-auto, overscroll-contain
+  // Explicit `maxHeight` prop still overrides; pass 0 to opt out of compact.
+  const inDomMode: "compact" | "expanded" | "focused" = focused
+    ? "focused"
+    : expandIframeOutputs
+      ? "expanded"
+      : "compact";
+  const inDomMaxHeight =
+    inDomMode === "focused"
+      ? focusedOutputWellMaxHeight
+      : inDomMode === "expanded"
+        ? null
+        : (maxHeight ?? defaultOutputWellMaxHeight);
+  const maxHeightStyle = useMemo<React.CSSProperties | undefined>(() => {
+    if (!inDomMaxHeight) return undefined;
+    if (inDomMode === "focused") {
+      return { maxHeight: `${inDomMaxHeight}px`, minHeight: `${MIN_OUTPUT_WELL_HEIGHT}px` };
+    }
+    return { maxHeight: `${inDomMaxHeight}px` };
+  }, [inDomMaxHeight, inDomMode]);
   // Ref for reading current darkMode in callbacks without adding to deps
   const darkModeRef = useRef(darkMode);
   darkModeRef.current = darkMode;
@@ -685,7 +699,8 @@ export function OutputArea({
           id={id}
           className={cn(
             "space-y-2",
-            !shouldIsolate && effectiveInDomMaxHeight && "overflow-y-auto",
+            !shouldIsolate && inDomMaxHeight !== null && "overflow-y-auto",
+            !shouldIsolate && inDomMode === "focused" && "overscroll-contain",
             shouldConstrainIsolatedOutput && "overflow-y-auto",
           )}
           style={shouldIsolate ? isolatedOutputWellStyle : maxHeightStyle}

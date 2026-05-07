@@ -460,25 +460,23 @@ export const CodeCell = memo(function CodeCell({
           )
         }
         outputRightGutterContent={
-          outputs.length > 0 && !isOutputsHidden && (hasIsolatedOutput || onToggleOutputsHidden) ? (
+          outputs.length > 0 && !isOutputsHidden ? (
             <>
-              {hasIsolatedOutput && (
-                <OutputModeStrip
-                  mode={
-                    outputFocused ? "focused" : isIframeOutputExpanded ? "expanded" : "compact"
+              <OutputModeStrip
+                mode={
+                  outputFocused ? "focused" : isIframeOutputExpanded ? "expanded" : "compact"
+                }
+                onChange={(next) => {
+                  if (next === "focused") {
+                    setIsIframeOutputExpanded(false);
+                    onOutputFocusChange?.(true);
+                  } else {
+                    setIsIframeOutputExpanded(next === "expanded");
+                    if (outputFocused) onOutputFocusChange?.(false);
                   }
-                  onChange={(next) => {
-                    if (next === "focused") {
-                      setIsIframeOutputExpanded(false);
-                      onOutputFocusChange?.(true);
-                    } else {
-                      setIsIframeOutputExpanded(next === "expanded");
-                      if (outputFocused) onOutputFocusChange?.(false);
-                    }
-                    onFocus();
-                  }}
-                />
-              )}
+                  onFocus();
+                }}
+              />
               {onToggleOutputsHidden && (
                 <button
                   type="button"
