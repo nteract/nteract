@@ -610,21 +610,31 @@ impl NotebookRoom {
             },
             Some(p) => {
                 let mut initial = verify_trust_from_file(p, &trusted_packages);
-                // #2150 reconciliation: if the .ipynb on disk has deps that
-                // exactly match a project file's deps (pyproject/env.yml),
-                // treat it as Trusted in memory so the auto-launch gate in
-                // peer_connection.rs does not block. The signature lands in the doc
-                // via streaming_load's reconciliation pass, which fires
-                // before the first sync flush.
+                // #2150 reconciliation: a notebook whose inline deps exactly
+                // match the project file's deps (pyproject/env.yml) has
+                // already been opted into at the project level. Seed those
+                // names into the allowlist with source="project_file" so the
+                // allowlist - the single trust gate - reflects that. If the
+                // store write fails, leave the room Untrusted (fail-closed:
+                // approval can't bypass the allowlist).
                 if matches!(initial.status, runt_trust::TrustStatus::Untrusted)
                     && project_file_deps_match_trust_info(p, &initial.info)
                 {
-                    info!(
-                        "[notebook-sync] Reconciled project-file trust for {:?} (deps match; promoting Untrusted -> Trusted)",
-                        p
-                    );
-                    initial.status = runt_trust::TrustStatus::Trusted;
-                    initial.info.status = runt_trust::TrustStatus::Trusted;
+                    match trusted_packages.add_from_info(&initial.info, "project_file") {
+                        Ok(()) => {
+                            initial = verify_trust_from_file(p, &trusted_packages);
+                            info!(
+                                "[notebook-sync] Reconciled project-file trust for {:?}: {:?}",
+                                p, initial.status
+                            );
+                        }
+                        Err(error) => {
+                            warn!(
+                                "[notebook-sync] Could not seed project-file deps into allowlist for {:?}: {} (notebook stays Untrusted)",
+                                p, error
+                            );
+                        }
+                    }
                 }
                 initial
             }
@@ -726,9 +736,11 @@ impl NotebookRoom {
                 let mut initial = verify_trust_from_file(p, &trusted_packages);
                 if matches!(initial.status, runt_trust::TrustStatus::Untrusted)
                     && project_file_deps_match_trust_info(p, &initial.info)
+                    && trusted_packages
+                        .add_from_info(&initial.info, "project_file")
+                        .is_ok()
                 {
-                    initial.status = runt_trust::TrustStatus::Trusted;
-                    initial.info.status = runt_trust::TrustStatus::Trusted;
+                    initial = verify_trust_from_file(p, &trusted_packages);
                 }
                 initial
             }

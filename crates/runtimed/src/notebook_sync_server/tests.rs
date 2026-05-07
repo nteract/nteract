@@ -6273,21 +6273,47 @@ async fn test_new_fresh_promotes_untrusted_when_project_file_deps_match() {
         runt_trust::TrustStatus::Untrusted,
     );
 
-    // Room creation runs reconciliation and should land on Trusted.
+    // Room creation runs reconciliation: project-file deps get seeded into
+    // the allowlist with source="project_file", and trust recomputes to
+    // Trusted via the standard allowlist gate.
     let blob_store = test_blob_store(&tmp);
-    let room = NotebookRoom::new_fresh(
+    let store = open_test_store(&tmp);
+    let room = NotebookRoom::new_fresh_with_trusted_packages(
         uuid::Uuid::new_v4(),
         Some(nb_path.clone()),
         tmp.path(),
         blob_store,
         false,
-    );
+        store.clone(),
+    )
+    .expect("create test notebook room");
 
     let ts = room.trust_state.read().await;
     assert_eq!(
         ts.status,
         runt_trust::TrustStatus::Trusted,
-        "room init should promote Untrusted -> Trusted when project-file deps match",
+        "room init should seed project-file deps into the allowlist and resolve Trusted",
+    );
+    drop(ts);
+
+    // The deps are now in the allowlist - subsequent rooms see Trusted
+    // without needing to re-run reconciliation.
+    let info_check = runt_trust::TrustInfo {
+        status: runt_trust::TrustStatus::Untrusted,
+        uv_dependencies: vec!["pandas".to_string(), "numpy".to_string()],
+        approved_uv_dependencies: vec![],
+        conda_dependencies: vec![],
+        approved_conda_dependencies: vec![],
+        conda_channels: vec![],
+        pixi_dependencies: vec![],
+        approved_pixi_dependencies: vec![],
+        pixi_pypi_dependencies: vec![],
+        approved_pixi_pypi_dependencies: vec![],
+        pixi_channels: vec![],
+    };
+    assert!(
+        store.all_dependencies_approved(&info_check).unwrap(),
+        "project-file reconciliation should write approvals to the allowlist"
     );
 }
 
@@ -6313,6 +6339,37 @@ async fn test_new_fresh_leaves_untrusted_when_deps_differ() {
         ts.status,
         runt_trust::TrustStatus::Untrusted,
         "mismatched deps must not auto-promote",
+    );
+}
+
+/// Project-file reconciliation must not bypass the allowlist when the
+/// store can't accept writes. With the allowlist as the single trust
+/// gate, an unavailable store has to leave the room Untrusted - otherwise
+/// matching deps would auto-launch with no record of approval.
+#[tokio::test]
+async fn test_new_fresh_stays_untrusted_when_allowlist_unavailable() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_pyproject_with_deps(tmp.path(), &["pandas", "numpy"]);
+    let nb_path = tmp.path().join("notebook.ipynb");
+    write_unsigned_ipynb_with_uv_deps(&nb_path, &["pandas", "numpy"]);
+
+    let blob_store = test_blob_store(&tmp);
+    let store = unavailable_test_store();
+    let room = NotebookRoom::new_fresh_with_trusted_packages(
+        uuid::Uuid::new_v4(),
+        Some(nb_path.clone()),
+        tmp.path(),
+        blob_store,
+        false,
+        store,
+    )
+    .expect("create test notebook room");
+
+    let ts = room.trust_state.read().await;
+    assert_eq!(
+        ts.status,
+        runt_trust::TrustStatus::Untrusted,
+        "fail-closed: project-file reconciliation cannot bypass the allowlist",
     );
 }
 
