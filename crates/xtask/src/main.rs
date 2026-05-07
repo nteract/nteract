@@ -426,7 +426,6 @@ fn cmd_dev(notebook: Option<&str>, skip_install: bool, skip_build: bool) {
         println!("Skipping sidecar build (--skip-build)");
     } else {
         build_mcp_widget();
-        ensure_dev_daemon_binaries();
     }
 
     println!();
@@ -1255,7 +1254,8 @@ fn cmd_wasm(target: Option<&str>, skip_renderer_plugins: bool) {
 
     if build_runtimed {
         println!("Building runtimed-wasm...");
-        run_cmd(
+        run_wasm_pack(
+            false,
             "wasm-pack",
             &[
                 "build",
@@ -1280,7 +1280,8 @@ fn cmd_wasm(target: Option<&str>, skip_renderer_plugins: bool) {
         //     looks for real glue (falls back to __mocks__ stub otherwise)
         // expect it. If this path is empty, the renderer plugin bundles
         // the mock stub and sift renders "sift-wasm not built" at runtime.
-        run_cmd(
+        run_wasm_pack(
+            true,
             "wasm-pack",
             &[
                 "build",
@@ -2588,6 +2589,25 @@ fn run_cmd(cmd: &str, args: &[&str]) {
     }
     if cmd == "wasm-pack" {
         strip_rustc_wrapper_for_wasm(&mut command);
+        ensure_wasm_c_toolchain(&mut command);
+    }
+
+    let status = command.status().unwrap_or_else(|e| {
+        eprintln!("Failed to run {cmd}: {e}");
+        exit(1);
+    });
+
+    if !status.success() {
+        eprintln!("Command failed: {cmd} {}", args.join(" "));
+        exit(status.code().unwrap_or(1));
+    }
+}
+
+fn run_wasm_pack(needs_c_toolchain: bool, cmd: &str, args: &[&str]) {
+    let mut command = Command::new(cmd);
+    command.args(args);
+    strip_rustc_wrapper_for_wasm(&mut command);
+    if needs_c_toolchain {
         ensure_wasm_c_toolchain(&mut command);
     }
 
