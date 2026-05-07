@@ -4,7 +4,7 @@
 //! - Fresh UUID, fresh env_id
 //! - All cells, metadata, and markdown attachments from the source
 //! - No outputs, execution_count = null on every code cell
-//! - trust_signature / trust_timestamp cleared (new notebook, new machine)
+//! - Trust state re-derived on the clone via the per-machine package allowlist
 //!
 //! The room is registered in `daemon.notebook_rooms` before this function
 //! returns. A peer can then attach via `Handshake::NotebookSync`.

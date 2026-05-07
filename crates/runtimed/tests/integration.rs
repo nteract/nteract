@@ -2621,12 +2621,6 @@ async fn test_create_notebook_with_deps() {
         "uv section should not be present when conda is the explicit manager"
     );
 
-    // Trust signature should be present because deps are non-empty
-    assert!(
-        meta.runt.trust_signature.is_some(),
-        "trust signature should be present when deps are non-empty"
-    );
-
     // Shutdown
     pool_client.shutdown().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;

@@ -691,8 +691,6 @@ fn snapshot_with_uv(deps: Vec<String>) -> NotebookMetadataSnapshot {
             conda: None,
             pixi: None,
             deno: None,
-            trust_signature: None,
-            trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
         extras: std::collections::BTreeMap::new(),
@@ -715,8 +713,6 @@ fn snapshot_with_conda(deps: Vec<String>) -> NotebookMetadataSnapshot {
             }),
             pixi: None,
             deno: None,
-            trust_signature: None,
-            trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
         extras: std::collections::BTreeMap::new(),
@@ -740,8 +736,6 @@ fn snapshot_with_pixi(deps: Vec<String>, pypi_deps: Vec<String>) -> NotebookMeta
                 python: None,
             }),
             deno: None,
-            trust_signature: None,
-            trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
         extras: std::collections::BTreeMap::new(),
@@ -760,8 +754,6 @@ fn snapshot_empty() -> NotebookMetadataSnapshot {
             conda: None,
             pixi: None,
             deno: None,
-            trust_signature: None,
-            trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
         extras: std::collections::BTreeMap::new(),
@@ -822,8 +814,6 @@ fn test_check_inline_deps_uv_priority() {
             }),
             pixi: None,
             deno: None,
-            trust_signature: None,
-            trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
         extras: std::collections::BTreeMap::new(),
@@ -857,8 +847,6 @@ fn test_check_inline_deps_deno() {
                 config: None,
                 flexible_npm_imports: None,
             }),
-            trust_signature: None,
-            trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
         extras: std::collections::BTreeMap::new(),
@@ -985,7 +973,7 @@ async fn test_save_notebook_to_disk_preserves_unknown_metadata() {
                 "metadata": {{
                     "custom_extension": {{"key": "value"}},
                     "jupyter": {{"source_hidden": true}},
-                    "runt": {{"trust_signature": "abc123", "schema_version": "1"}}
+                    "runt": {{"future_field": "preserve-me", "schema_version": "1"}}
                 }},
                 "cells": []
             }}"#
@@ -1033,13 +1021,13 @@ async fn test_save_notebook_to_disk_preserves_unknown_metadata() {
         "jupyter metadata should be preserved"
     );
 
-    // trust_signature in runt should be preserved (the typed runt
-    // field round-trips trust_signature explicitly).
+    // Unknown forward-compatible runt keys should round-trip via the
+    // RuntMetadata `extra` flatten map.
     let runt = metadata.get("runt").unwrap();
     assert_eq!(
-        runt.get("trust_signature"),
-        Some(&serde_json::json!("abc123")),
-        "trust_signature should be preserved"
+        runt.get("future_field"),
+        Some(&serde_json::json!("preserve-me")),
+        "unknown runt keys should be preserved"
     );
 }
 
@@ -6610,11 +6598,9 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
             )]),
         )]);
         doc.set_cell_attachments("raw-1", &raw_attachments).unwrap();
-        // Stamp source metadata: env_id + trust signature + timestamp.
+        // Stamp source metadata: env_id only (clone gets a fresh one).
         let mut snap = snapshot_empty();
         snap.runt.env_id = Some("source-env-id".to_string());
-        snap.runt.trust_signature = Some("hmac-sha256:deadbeef".to_string());
-        snap.runt.trust_timestamp = Some("2026-04-25T00:00:00Z".to_string());
         doc.set_metadata_snapshot(&snap).unwrap();
     }
     // Dispatch clone handler.
@@ -6673,7 +6659,7 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
     let code_cell = clone_cells.iter().find(|c| c.id == "code-1").unwrap();
     assert_eq!(code_cell.execution_count, "null");
 
-    // Metadata: fresh env_id, trust cleared.
+    // Metadata: fresh env_id.
     let clone_snap = clone_room
         .doc
         .read()
@@ -6682,18 +6668,6 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
         .expect("clone should have metadata");
     assert!(clone_snap.runt.env_id.is_some());
     assert_ne!(clone_snap.runt.env_id.as_deref(), Some("source-env-id"));
-    // Trust signature + timestamp copy through: the signature covers
-    // runt.uv/conda/pixi only, which we copy byte-for-byte, and the trust
-    // key is machine-local — so a same-machine clone of a trusted source
-    // stays trusted without re-prompting the user.
-    assert_eq!(
-        clone_snap.runt.trust_signature.as_deref(),
-        Some("hmac-sha256:deadbeef")
-    );
-    assert_eq!(
-        clone_snap.runt.trust_timestamp.as_deref(),
-        Some("2026-04-25T00:00:00Z")
-    );
 
     // Attachments copied at the CRDT level for save/export.
     let clone_attachments = clone_room

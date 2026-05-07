@@ -123,11 +123,13 @@ mod tests {
         let info = apply_trust_approval(&doc, Some(&observed_heads)).unwrap();
         assert_eq!(info.uv_dependencies, vec!["numpy"]);
 
-        // Approval no longer signs the doc; downstream allowlist write is the
-        // record of approval. The doc itself stays untouched.
-        let snapshot = doc.get_metadata_snapshot().unwrap();
-        assert!(snapshot.runt.trust_signature.is_none());
-        assert!(snapshot.runt.trust_timestamp.is_none());
+        // Approval feeds the allowlist; the doc itself stays untouched.
+        // Heads stay identical because nothing was written.
+        assert_eq!(
+            doc.get_heads_hex(),
+            observed_heads,
+            "approval must not mutate the doc"
+        );
     }
 
     #[test]

@@ -874,8 +874,6 @@ pub(crate) fn build_new_notebook_metadata(
                 conda: None,
                 pixi: None,
                 deno: None,
-                trust_signature: None,
-                trust_timestamp: None,
                 extra: std::collections::BTreeMap::new(),
             },
         ),
@@ -965,8 +963,6 @@ pub(crate) fn build_new_notebook_metadata(
                     conda,
                     pixi,
                     deno: None,
-                    trust_signature: None,
-                    trust_timestamp: None,
                     extra: std::collections::BTreeMap::new(),
                 },
             )

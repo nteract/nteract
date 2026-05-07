@@ -49,20 +49,28 @@ pub struct RuntMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deno: Option<DenoMetadata>,
 
-    /// HMAC-SHA256 signature of the dependency metadata for trust verification.
-    /// Format: "hmac-sha256:<hex-digest>"
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trust_signature: Option<String>,
-
-    /// Timestamp when the notebook was last trusted (RFC 3339 format).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trust_timestamp: Option<String>,
-
     /// Catch-all for unknown/third-party runt keys.
     /// Preserves fields we don't model (e.g. from newer schema versions or extensions)
     /// through deserialization → serialization round-trips.
-    #[serde(flatten)]
+    ///
+    /// Legacy `trust_signature` / `trust_timestamp` keys (from the now-removed
+    /// HMAC trust system) are stripped here so they don't get re-serialized
+    /// back onto disk. See `RuntMetadata::strip_legacy_trust_fields`.
+    #[serde(flatten, deserialize_with = "deserialize_runt_extra")]
     pub extra: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+fn deserialize_runt_extra<'de, D>(
+    deserializer: D,
+) -> Result<std::collections::BTreeMap<String, serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let mut map: std::collections::BTreeMap<String, serde_json::Value> =
+        std::collections::BTreeMap::deserialize(deserializer)?;
+    map.remove("trust_signature");
+    map.remove("trust_timestamp");
+    Ok(map)
 }
 
 /// UV inline dependency metadata (`metadata.runt.uv`).
@@ -337,15 +345,19 @@ impl NotebookMetadataSnapshot {
             }
         }
 
-        // Deep-merge runt namespace to preserve unknown fields (e.g. trust_signature)
+        // Deep-merge runt namespace to preserve unknown forward-compatible fields.
+        // Legacy `trust_signature` / `trust_timestamp` keys (from the now-removed
+        // HMAC trust system) are dropped here so they get cleared from disk on
+        // the next save - read paths already strip them via `deserialize_runt_extra`.
         let mut new_runt = serde_json::to_value(&self.runt)?;
         if let Some(existing_runt) = obj.get("runt") {
-            // Merge: start with new snapshot, preserve existing keys not in snapshot
             if let (Some(existing_obj), Some(new_obj)) =
                 (existing_runt.as_object(), new_runt.as_object_mut())
             {
                 for (k, v) in existing_obj {
-                    // Only keep existing keys that aren't in the new snapshot
+                    if k == "trust_signature" || k == "trust_timestamp" {
+                        continue;
+                    }
                     if !new_obj.contains_key(k) {
                         new_obj.insert(k.clone(), v.clone());
                     }
@@ -616,8 +628,6 @@ impl RuntMetadata {
             conda: None,
             pixi: None,
             deno: None,
-            trust_signature: None,
-            trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         }
     }
@@ -635,8 +645,6 @@ impl RuntMetadata {
             }),
             pixi: None,
             deno: None,
-            trust_signature: None,
-            trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         }
     }
@@ -655,8 +663,6 @@ impl RuntMetadata {
                 python: None,
             }),
             deno: None,
-            trust_signature: None,
-            trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         }
     }
@@ -675,8 +681,6 @@ impl RuntMetadata {
                 config: None,
                 flexible_npm_imports: None,
             }),
-            trust_signature: None,
-            trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         }
     }
@@ -693,8 +697,6 @@ impl Default for RuntMetadata {
             conda: None,
             pixi: None,
             deno: None,
-            trust_signature: None,
-            trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         }
     }
@@ -711,8 +713,6 @@ impl RuntMetadata {
             && self.conda.is_none()
             && self.pixi.is_none()
             && self.deno.is_none()
-            && self.trust_signature.is_none()
-            && self.trust_timestamp.is_none()
             && self.extra.is_empty()
             && self.schema_version == "1"
     }
@@ -1014,8 +1014,6 @@ mod tests {
                 conda: None,
                 pixi: None,
                 deno: None,
-                trust_signature: None,
-                trust_timestamp: None,
                 extra: std::collections::BTreeMap::new(),
             },
             extras: std::collections::BTreeMap::new(),
@@ -1125,8 +1123,6 @@ mod tests {
             conda: None,
             pixi: None,
             deno: None,
-            trust_signature: None,
-            trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         };
         let json = serde_json::to_value(&meta).unwrap();
@@ -1135,8 +1131,6 @@ mod tests {
         assert!(!json.as_object().unwrap().contains_key("uv"));
         assert!(!json.as_object().unwrap().contains_key("conda"));
         assert!(!json.as_object().unwrap().contains_key("deno"));
-        assert!(!json.as_object().unwrap().contains_key("trust_signature"));
-        assert!(!json.as_object().unwrap().contains_key("trust_timestamp"));
         // schema_version should always be present
         assert!(json.as_object().unwrap().contains_key("schema_version"));
     }
@@ -1837,12 +1831,59 @@ mod is_empty_tests {
     }
 
     #[test]
-    fn runt_with_trust_signature_is_not_empty() {
-        let runt = RuntMetadata {
-            trust_signature: Some("hmac-sha256:deadbeef".to_string()),
-            ..RuntMetadata::default()
+    fn legacy_trust_fields_are_stripped_on_deserialize() {
+        // Notebooks saved by the old HMAC trust system carry these keys.
+        // Read paths must drop them so they don't get written back to disk.
+        let json = serde_json::json!({
+            "schema_version": "1",
+            "trust_signature": "hmac-sha256:deadbeef",
+            "trust_timestamp": "2025-01-01T00:00:00Z",
+        });
+        let runt: RuntMetadata = serde_json::from_value(json).unwrap();
+        assert!(!runt.extra.contains_key("trust_signature"));
+        assert!(!runt.extra.contains_key("trust_timestamp"));
+        assert!(runt.is_empty());
+
+        let reserialized = serde_json::to_value(&runt).unwrap();
+        let obj = reserialized.as_object().unwrap();
+        assert!(!obj.contains_key("trust_signature"));
+        assert!(!obj.contains_key("trust_timestamp"));
+    }
+
+    #[test]
+    fn legacy_trust_fields_are_dropped_on_merge() {
+        // Existing on-disk metadata.runt carries the old fields. Merging the
+        // current snapshot back over it must clear them, not preserve them.
+        let mut metadata = serde_json::json!({
+            "runt": {
+                "schema_version": "1",
+                "trust_signature": "hmac-sha256:deadbeef",
+                "trust_timestamp": "2025-01-01T00:00:00Z",
+                "uv": { "dependencies": ["pandas"] },
+            }
+        });
+
+        let snapshot = NotebookMetadataSnapshot {
+            kernelspec: None,
+            language_info: None,
+            runt: RuntMetadata {
+                schema_version: "1".to_string(),
+                uv: Some(UvInlineMetadata {
+                    dependencies: vec!["pandas".to_string()],
+                    requires_python: None,
+                    prerelease: None,
+                }),
+                ..RuntMetadata::default()
+            },
+            extras: std::collections::BTreeMap::new(),
         };
-        assert!(!runt.is_empty());
+
+        snapshot.merge_into_metadata_value(&mut metadata).unwrap();
+
+        let runt = metadata["runt"].as_object().unwrap();
+        assert!(!runt.contains_key("trust_signature"));
+        assert!(!runt.contains_key("trust_timestamp"));
+        assert_eq!(runt["uv"]["dependencies"][0], "pandas");
     }
 
     #[test]

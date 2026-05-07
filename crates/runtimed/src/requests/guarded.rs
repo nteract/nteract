@@ -237,26 +237,8 @@ mod tests {
         doc.set_metadata_snapshot(&snapshot).unwrap();
     }
 
-    fn set_trust_metadata(doc: &mut NotebookDoc) {
-        let mut snapshot = doc.get_metadata_snapshot().unwrap_or_default();
-        snapshot.runt.trust_signature = Some("hmac-sha256:abc123".to_string());
-        snapshot.runt.trust_timestamp = Some("2026-04-26T12:00:00Z".to_string());
-        doc.set_metadata_snapshot(&snapshot).unwrap();
-    }
-
     fn assert_rejected(result: GuardResult) {
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn execute_cell_allows_only_trust_metadata_after_observed_heads() {
-        let mut doc = code_doc();
-        set_uv_dependencies(&mut doc, &["numpy"]);
-        let observed_heads = doc.get_heads_hex();
-
-        set_trust_metadata(&mut doc);
-
-        validate_execute_cell(&mut doc, "cell-1", &observed_heads).unwrap();
     }
 
     #[test]
@@ -349,12 +331,11 @@ mod tests {
     }
 
     #[test]
-    fn sync_environment_checks_dependency_fingerprint_not_trust_metadata() {
+    fn sync_environment_rejects_when_dependencies_change() {
         let mut doc = code_doc();
         set_uv_dependencies(&mut doc, &["numpy"]);
         let observed_heads = doc.get_heads_hex();
 
-        set_trust_metadata(&mut doc);
         validate_sync_environment(&doc, &observed_heads).unwrap();
 
         doc.add_uv_dependency("pandas").unwrap();
