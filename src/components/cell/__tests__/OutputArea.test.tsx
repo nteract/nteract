@@ -1,4 +1,4 @@
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { createEvent, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { OutputArea, type JupyterOutput } from "../OutputArea";
 
@@ -76,6 +76,12 @@ function makeMarkdownOutput(content = "```python\nprint('hello')\n```"): Jupyter
   ];
 }
 
+function pointerOutWithButtons(element: HTMLElement, buttons: number) {
+  const event = createEvent.pointerOut(element);
+  Object.defineProperty(event, "buttons", { value: buttons });
+  fireEvent(element, event);
+}
+
 describe("OutputArea iframe theme sync", () => {
   beforeEach(() => {
     Object.defineProperty(window, "innerHeight", {
@@ -146,7 +152,7 @@ describe("OutputArea iframe theme sync", () => {
     const frame = getByTestId("isolated-frame");
     const activationWell = frame.parentElement as HTMLElement;
 
-    fireEvent.mouseDown(activationWell);
+    fireEvent.pointerDown(activationWell);
 
     expect(onIframeMouseDown).toHaveBeenCalled();
     expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("false");
@@ -154,7 +160,14 @@ describe("OutputArea iframe theme sync", () => {
       "true",
     );
 
-    fireEvent.mouseLeave(activationWell);
+    pointerOutWithButtons(activationWell, 1);
+
+    expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("false");
+    expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
+      "true",
+    );
+
+    pointerOutWithButtons(activationWell, 0);
 
     expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("true");
     expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(

@@ -256,7 +256,6 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
         }
       };
       view.dom.addEventListener("pointerdown", focusWithoutScroll, { capture: true });
-      view.dom.addEventListener("mousedown", focusWithoutScroll, { capture: true });
 
       // Toggling the placeholder forces a decoration change that triggers
       // updateInner(), rebuilding the line tiles. Without this, the initial
@@ -278,7 +277,6 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
 
       return () => {
         view.dom.removeEventListener("pointerdown", focusWithoutScroll, { capture: true });
-        view.dom.removeEventListener("mousedown", focusWithoutScroll, { capture: true });
         viewRef.current = null;
         view.destroy();
       };

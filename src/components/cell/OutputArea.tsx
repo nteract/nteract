@@ -1,5 +1,14 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  type PointerEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   CommBridgeManager,
   type IframeToParentMessage,
@@ -367,14 +376,27 @@ export function OutputArea({
   const activateStaticFrameInteraction = useCallback(() => {
     if (shouldUseScrollPassthroughFrame) {
       setStaticFrameInteractionActive(true);
+      // Move DOM focus off CodeMirror without scrolling; this wrapper owns
+      // focus until iframe pointer interaction is active.
       staticFrameInteractionRef.current?.focus({ preventScroll: true });
     }
     onIframeMouseDown?.();
   }, [shouldUseScrollPassthroughFrame, onIframeMouseDown]);
 
-  const deactivateStaticFrameInteraction = useCallback(() => {
-    setStaticFrameInteractionActive(false);
-  }, []);
+  const deactivateStaticFrameInteractionWhenIdle = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      if (
+        event.relatedTarget instanceof Node &&
+        event.currentTarget.contains(event.relatedTarget)
+      ) {
+        return;
+      }
+      if (!(event.buttons > 0)) {
+        setStaticFrameInteractionActive(false);
+      }
+    },
+    [],
+  );
 
   // Handle messages from iframe, routing widget messages to comm bridge
   const handleIframeMessage = useCallback(
@@ -639,11 +661,13 @@ export function OutputArea({
               ref={staticFrameInteractionRef}
               className={cn(shouldIsolate ? "outline-none" : "hidden")}
               tabIndex={shouldUseScrollPassthroughFrame ? -1 : undefined}
-              onMouseDown={
+              onPointerDown={
                 shouldUseScrollPassthroughFrame ? activateStaticFrameInteraction : undefined
               }
-              onMouseLeave={
-                shouldUseScrollPassthroughFrame ? deactivateStaticFrameInteraction : undefined
+              onPointerOut={
+                shouldUseScrollPassthroughFrame
+                  ? deactivateStaticFrameInteractionWhenIdle
+                  : undefined
               }
             >
               <IsolatedFrame

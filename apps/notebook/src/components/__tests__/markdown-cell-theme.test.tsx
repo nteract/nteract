@@ -1,4 +1,4 @@
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { createEvent, fireEvent, render, waitFor } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { MarkdownCell as MarkdownCellType } from "../../types";
@@ -154,6 +154,12 @@ function makeCell(): MarkdownCellType {
   };
 }
 
+function pointerOutWithButtons(element: HTMLElement, buttons: number) {
+  const event = createEvent.pointerOut(element);
+  Object.defineProperty(event, "buttons", { value: buttons });
+  fireEvent(element, event);
+}
+
 describe("MarkdownCell theme sync", () => {
   beforeEach(() => {
     mockDarkMode = false;
@@ -223,13 +229,20 @@ describe("MarkdownCell theme sync", () => {
     expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(true);
     expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(false);
 
-    fireEvent.mouseDown(getByTestId("markdown-frame").parentElement as HTMLElement);
+    const previewWrapper = getByTestId("markdown-frame").parentElement as HTMLElement;
+
+    fireEvent.pointerDown(previewWrapper);
 
     expect(onFocus).toHaveBeenCalled();
     expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(false);
     expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(true);
 
-    fireEvent.mouseLeave(getByTestId("markdown-frame").parentElement as HTMLElement);
+    pointerOutWithButtons(previewWrapper, 1);
+
+    expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(false);
+    expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(true);
+
+    pointerOutWithButtons(previewWrapper, 0);
 
     expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(true);
     expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(false);

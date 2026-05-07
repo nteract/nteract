@@ -1,6 +1,15 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
 import { Pencil } from "lucide-react";
-import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  type PointerEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
@@ -209,9 +218,20 @@ export const MarkdownCell = memo(function MarkdownCell({
     onFocus();
   }, [onFocus]);
 
-  const deactivatePreviewFrameInteraction = useCallback(() => {
-    setPreviewFrameInteractionActive(false);
-  }, []);
+  const deactivatePreviewFrameInteractionWhenIdle = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      if (
+        event.relatedTarget instanceof Node &&
+        event.currentTarget.contains(event.relatedTarget)
+      ) {
+        return;
+      }
+      if (!(event.buttons > 0)) {
+        setPreviewFrameInteractionActive(false);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!isFocused || editing) {
@@ -496,9 +516,9 @@ export const MarkdownCell = memo(function MarkdownCell({
           >
             {/* Always render IsolatedFrame to preload it (hidden when no content) */}
             <div
-              className={cn(cell.source ? "outline-none" : "hidden")}
-              onMouseDown={activatePreviewFrameInteraction}
-              onMouseLeave={deactivatePreviewFrameInteraction}
+              className={cell.source ? undefined : "hidden"}
+              onPointerDown={activatePreviewFrameInteraction}
+              onPointerOut={deactivatePreviewFrameInteractionWhenIdle}
             >
               <IsolatedFrame
                 ref={frameRef}
