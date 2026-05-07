@@ -4274,6 +4274,34 @@ async fn test_approve_trust_adds_dependencies_to_allowlist() {
 }
 
 #[tokio::test]
+async fn test_approve_trust_returns_error_when_store_unavailable() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let key_path = tmp.path().join("trust-key");
+    runt_trust::set_test_key_path(Some(key_path.clone()));
+
+    // Store unavailable: approval must surface a real error rather than
+    // silently succeeding while the allowlist stays empty.
+    let store = crate::trusted_packages::TrustedPackageStore::unavailable("test disk full");
+    let (room, _path) = test_room_with_path_and_store(&tmp, "approve.ipynb", store);
+    {
+        let mut doc = room.doc.write().await;
+        doc.set_metadata_snapshot(&snapshot_with_uv(vec!["pandas>=2".to_string()]))
+            .unwrap();
+    }
+
+    let response = crate::requests::approve_trust::handle(&room, None).await;
+    let NotebookResponse::Error { error } = response else {
+        panic!("expected NotebookResponse::Error, got {response:?}");
+    };
+    assert!(
+        error.contains("Could not record trusted packages"),
+        "error message should explain the persistence failure; got: {error}"
+    );
+
+    runt_trust::set_test_key_path(None);
+}
+
+#[tokio::test]
 async fn test_allowlisted_unsigned_dependencies_auto_sign_and_trust() {
     let tmp = tempfile::TempDir::new().unwrap();
     let key_path = tmp.path().join("trust-key");

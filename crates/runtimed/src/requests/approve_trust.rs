@@ -10,7 +10,7 @@ use crate::notebook_sync_server::{
 };
 use crate::protocol::NotebookResponse;
 use crate::requests::guarded;
-use tracing::warn;
+use tracing::error;
 
 const TRUST_APPROVAL_STALE_REASON: &str =
     "Dependencies changed while the trust dialog was open. Review before approving.";
@@ -30,14 +30,22 @@ pub(crate) async fn handle(
         (doc.save(), trust_info)
     };
 
-    if let Err(error) = room
+    // Approval is now allowlist-driven, so persistence has to succeed -
+    // otherwise we'd report success while trust stays blocked. Surface the
+    // error to the caller and skip the post-approval broadcast/persist
+    // dance: the user retries, and on the next attempt approval re-runs.
+    if let Err(persist_error) = room
         .trusted_packages
         .add_from_info(&trust_info, "trust_dialog")
     {
-        warn!(
-            "[trusted-packages] Failed to remember approved dependencies: {}",
-            error
+        error!(
+            "[trusted-packages] approval failed to persist allowlist entries: {}",
+            persist_error
         );
+        return TrustApprovalError::Persist(format!(
+            "Could not record trusted packages: {persist_error}"
+        ))
+        .into_response();
     }
 
     let _ = room.broadcasts.changed_tx.send(());
@@ -56,6 +64,7 @@ enum TrustApprovalError {
     StaleDependencies,
     Sign(String),
     Write(String),
+    Persist(String),
 }
 
 impl TrustApprovalError {
@@ -67,9 +76,9 @@ impl TrustApprovalError {
             TrustApprovalError::StaleDependencies => NotebookResponse::GuardRejected {
                 reason: TRUST_APPROVAL_STALE_REASON.to_string(),
             },
-            TrustApprovalError::Sign(error) | TrustApprovalError::Write(error) => {
-                NotebookResponse::Error { error }
-            }
+            TrustApprovalError::Sign(error)
+            | TrustApprovalError::Write(error)
+            | TrustApprovalError::Persist(error) => NotebookResponse::Error { error },
         }
     }
 }
