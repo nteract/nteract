@@ -129,7 +129,7 @@ vi.mock("../../lib/editor-registry", () => ({
 }));
 
 vi.mock("../../lib/logger", () => ({
-  logger: { error: vi.fn() },
+  logger: { error: vi.fn(), warn: vi.fn() },
 }));
 
 vi.mock("../../lib/markdown-assets", () => ({
@@ -145,6 +145,7 @@ vi.mock("../../lib/presence-sender", () => ({
 }));
 
 import { MarkdownCell } from "../MarkdownCell";
+import { injectPluginsForMimes } from "@/components/isolated/iframe-libraries";
 
 function makeCell(): MarkdownCellType {
   return {
@@ -176,6 +177,7 @@ describe("MarkdownCell theme sync", () => {
     mockFrameHandle.clear.mockClear();
     mockFrameHandle.search.mockClear();
     mockFrameHandle.searchNavigate.mockClear();
+    vi.mocked(injectPluginsForMimes).mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -197,6 +199,21 @@ describe("MarkdownCell theme sync", () => {
       expect(mockFrameHandle.render).toHaveBeenCalledWith({
         mimeType: "text/markdown",
         data: "```python\nprint('hello')\n```",
+        cellId: "md-1",
+        replace: true,
+      });
+    });
+  });
+
+  it("renders a contained fallback when the markdown renderer plugin fails to load", async () => {
+    vi.mocked(injectPluginsForMimes).mockRejectedValue(new Error("chunk failed"));
+
+    render(<MarkdownCell cell={makeCell()} onFocus={() => {}} onDelete={() => {}} />);
+
+    await waitFor(() => {
+      expect(mockFrameHandle.render).toHaveBeenCalledWith({
+        mimeType: "text/plain",
+        data: "Failed to load markdown renderer: chunk failed",
         cellId: "md-1",
         replace: true,
       });

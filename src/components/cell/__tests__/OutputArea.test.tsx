@@ -1,5 +1,6 @@
 import { createEvent, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe-libraries";
 import { OutputArea, type JupyterOutput } from "../OutputArea";
 
 let mockDarkMode = false;
@@ -99,6 +100,8 @@ describe("OutputArea iframe theme sync", () => {
     mockFrameHandle.clear.mockClear();
     mockFrameHandle.search.mockClear();
     mockFrameHandle.searchNavigate.mockClear();
+    vi.mocked(injectPluginsForMimes).mockResolvedValue(undefined);
+    vi.mocked(needsPlugin).mockReturnValue(false);
   });
 
   afterEach(() => {
@@ -119,6 +122,24 @@ describe("OutputArea iframe theme sync", () => {
         expect.objectContaining({
           mimeType: "text/markdown",
           data: "```python\nprint('hello')\n```",
+        }),
+      ]);
+    });
+  });
+
+  it("renders a contained fallback when an isolated renderer plugin fails to load", async () => {
+    vi.mocked(needsPlugin).mockReturnValue(true);
+    vi.mocked(injectPluginsForMimes).mockRejectedValue(new Error("chunk failed"));
+
+    render(<OutputArea outputs={makeMarkdownOutput()} isolated />);
+
+    await waitFor(() => {
+      expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
+        expect.objectContaining({
+          mimeType: "text/plain",
+          data: "Failed to load renderer plugin: chunk failed",
+          metadata: { isError: true },
+          outputIndex: 0,
         }),
       ]);
     });

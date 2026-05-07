@@ -41,6 +41,10 @@ import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
 const handleIframeError = (err: { message: string; stack?: string }) =>
   logger.error("[MarkdownCell] iframe error:", err);
 
+function formatPluginLoadError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 interface MarkdownCellProps {
   cell: MarkdownCellType;
   onFocus: () => void;
@@ -253,7 +257,18 @@ export const MarkdownCell = memo(function MarkdownCell({
     // Clear injected set — a reloaded iframe has a fresh renderer registry
     injectedLibsRef.current.clear();
     // Inject markdown renderer plugin before rendering (idempotent, cached after first load)
-    await injectPluginsForMimes(frameRef.current, ["text/markdown"], injectedLibsRef.current);
+    try {
+      await injectPluginsForMimes(frameRef.current, ["text/markdown"], injectedLibsRef.current);
+    } catch (error) {
+      logger.warn("[MarkdownCell] Failed to load markdown renderer plugin:", error);
+      frameRef.current.render({
+        mimeType: "text/plain",
+        data: `Failed to load markdown renderer: ${formatPluginLoadError(error)}`,
+        cellId: cell.id,
+        replace: true,
+      });
+      return;
+    }
     const processedSource = rewriteMarkdownAssetRefs(
       cell.source,
       cell.resolvedAssets,
@@ -272,19 +287,29 @@ export const MarkdownCell = memo(function MarkdownCell({
     if (frameRef.current?.isReady && cell.source) {
       const frame = frameRef.current;
       // Inject markdown renderer plugin (idempotent) then render
-      injectPluginsForMimes(frame, ["text/markdown"], injectedLibsRef.current).then(() => {
-        const processedSource = rewriteMarkdownAssetRefs(
-          cell.source,
-          cell.resolvedAssets,
-          blobResolver,
-        );
-        frame.render({
-          mimeType: "text/markdown",
-          data: processedSource,
-          cellId: cell.id,
-          replace: true,
+      injectPluginsForMimes(frame, ["text/markdown"], injectedLibsRef.current)
+        .then(() => {
+          const processedSource = rewriteMarkdownAssetRefs(
+            cell.source,
+            cell.resolvedAssets,
+            blobResolver,
+          );
+          frame.render({
+            mimeType: "text/markdown",
+            data: processedSource,
+            cellId: cell.id,
+            replace: true,
+          });
+        })
+        .catch((error) => {
+          logger.warn("[MarkdownCell] Failed to load markdown renderer plugin:", error);
+          frame.render({
+            mimeType: "text/plain",
+            data: `Failed to load markdown renderer: ${formatPluginLoadError(error)}`,
+            cellId: cell.id,
+            replace: true,
+          });
         });
-      });
     }
   }, [cell.source, cell.id, cell.resolvedAssets, blobResolver]);
 

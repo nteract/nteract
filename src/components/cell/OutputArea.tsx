@@ -30,6 +30,10 @@ import { cn } from "@/lib/utils";
 const handleIframeError = (err: { message: string; stack?: string }) =>
   console.error("[OutputArea] iframe error:", err);
 
+function formatPluginLoadError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 const DEFAULT_OUTPUT_WELL_VIEWPORT_RATIO = 0.75;
 const MIN_OUTPUT_WELL_HEIGHT = 360;
 
@@ -488,7 +492,22 @@ export function OutputArea({
     }
 
     if (pluginMimes.size > 0) {
-      await injectPluginsForMimes(frameRef.current, pluginMimes, injectedLibsRef.current);
+      try {
+        await injectPluginsForMimes(frameRef.current, pluginMimes, injectedLibsRef.current);
+      } catch (error) {
+        if (gen !== renderGenRef.current) return;
+        console.error("[OutputArea] Failed to load renderer plugin:", error);
+        frameRef.current.renderBatch([
+          {
+            mimeType: "text/plain",
+            data: `Failed to load renderer plugin: ${formatPluginLoadError(error)}`,
+            metadata: { isError: true },
+            cellId,
+            outputIndex: 0,
+          },
+        ]);
+        return;
+      }
       // Stale check: if outputs changed while we were loading the plugin,
       // bail — a newer handleFrameReady call is already in flight.
       if (gen !== renderGenRef.current) return;
