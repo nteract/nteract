@@ -2432,6 +2432,7 @@ impl Daemon {
                 notebook_id,
                 ephemeral,
                 package_manager,
+                environment_mode,
                 dependencies,
             } => {
                 self.handle_create_notebook(
@@ -2441,6 +2442,7 @@ impl Daemon {
                     notebook_id,
                     ephemeral,
                     package_manager,
+                    environment_mode,
                     dependencies,
                     client_protocol_version,
                 )
@@ -2599,6 +2601,7 @@ impl Daemon {
                         stream,
                         settings.default_runtime.to_string(),
                         Some(dir_path),
+                        None,
                         None,
                         None,
                         None,
@@ -2838,6 +2841,7 @@ impl Daemon {
         notebook_id_hint: Option<String>,
         ephemeral: Option<bool>,
         package_manager: Option<notebook_protocol::connection::PackageManager>,
+        environment_mode: Option<notebook_protocol::connection::CreateNotebookEnvironmentMode>,
         dependencies: Vec<String>,
         client_protocol_version: u8,
     ) -> anyhow::Result<()>
@@ -2849,8 +2853,11 @@ impl Daemon {
         };
 
         info!(
-            "[runtimed] CreateNotebook requested (runtime={}, working_dir={:?}, notebook_id_hint={:?})",
-            runtime, working_dir, notebook_id_hint
+            "[runtimed] CreateNotebook requested (runtime={}, working_dir={:?}, notebook_id_hint={:?}, environment_mode={})",
+            runtime,
+            working_dir,
+            notebook_id_hint,
+            environment_mode.unwrap_or_default().as_str()
         );
 
         // Get settings for default Python env preference
@@ -2861,6 +2868,7 @@ impl Daemon {
         // Use provided notebook_id (session restore) or generate a new UUID
         let notebook_id = notebook_id_hint.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let ephemeral = ephemeral.unwrap_or(false);
+        let environment_mode = environment_mode.unwrap_or_default();
 
         // Create room for this notebook. For CreateNotebook, the notebook_id is
         // always a UUID (new room) or an existing UUID (session restore).
@@ -2939,6 +2947,11 @@ impl Daemon {
             send_json_frame(&mut writer, &response).await?;
             let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
             return Ok(());
+        }
+
+        {
+            let mut mode = room.identity.environment_mode.write().await;
+            *mode = environment_mode;
         }
 
         // Send NotebookConnectionInfo response.

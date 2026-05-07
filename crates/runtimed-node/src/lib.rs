@@ -6,7 +6,7 @@
 //!
 //! Phase 1 surface (intentionally small):
 //!   - `defaultSocketPath()` / `socketPathForChannel(channel)`
-//!   - `createNotebook({ runtime, workingDir?, socketPath?, dependencies?, packageManager? }) -> Session`
+//!   - `createNotebook({ runtime, workingDir?, socketPath?, dependencies?, packageManager?, environmentMode? }) -> Session`
 //!   - `openNotebook(notebookId, { socketPath? }) -> Session`
 //!   - `getExecutionResult(executionId, { socketPath? }) -> CellResult`
 //!   - `Session.notebookId`
@@ -31,12 +31,13 @@ pub use parquet::{read_parquet_file, summarize_parquet_file};
 pub use session::{
     create_notebook, get_execution_result, list_active_notebooks, open_notebook,
     open_notebook_path, show_notebook, shutdown_notebook, ActiveNotebook, CellResult,
-    CondaDependencyStatus, CreateCellOptions, CreateNotebookOptions, DependencyEditOptions,
-    DependencyStatus, DependencyTrustStatus, EventSubscription, ExecuteCellOptions,
-    GetExecutionResultOptions, JsCellSnapshot, JsOutput, ListActiveNotebooksOptions,
-    MoveCellOptions, OpenNotebookOptions, PackageManager, PixiDependencyStatus, QueueCellOptions,
-    QueuedExecution, RunCellOptions, RuntimeStatus, Session, SetCellOptions, ShowNotebookOptions,
-    ShowNotebookResult, ShutdownNotebookOptions, UvDependencyStatus, WaitExecutionOptions,
+    CondaDependencyStatus, CreateCellOptions, CreateNotebookEnvironmentMode, CreateNotebookOptions,
+    DependencyEditOptions, DependencyStatus, DependencyTrustStatus, EventSubscription,
+    ExecuteCellOptions, GetExecutionResultOptions, JsCellSnapshot, JsOutput,
+    ListActiveNotebooksOptions, MoveCellOptions, OpenNotebookOptions, PackageManager,
+    PixiDependencyStatus, QueueCellOptions, QueuedExecution, RunCellOptions, RuntimeStatus,
+    Session, SetCellOptions, ShowNotebookOptions, ShowNotebookResult, ShutdownNotebookOptions,
+    UvDependencyStatus, WaitExecutionOptions,
 };
 
 /// Return the default daemon socket path.

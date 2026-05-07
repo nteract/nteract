@@ -7,7 +7,7 @@ mod env;
 mod framing;
 mod handshake;
 
-pub use env::{EnvSource, LaunchSpec, PackageManager};
+pub use env::{CreateNotebookEnvironmentMode, EnvSource, LaunchSpec, PackageManager};
 
 pub use framing::{
     recv_control_frame, recv_frame, recv_json_frame, recv_preamble, recv_typed_frame, send_frame,
@@ -210,6 +210,7 @@ mod tests {
             notebook_id: None,
             ephemeral: None,
             package_manager: None,
+            environment_mode: None,
             dependencies: vec![],
         })
         .unwrap();
@@ -222,6 +223,7 @@ mod tests {
             notebook_id: None,
             ephemeral: None,
             package_manager: None,
+            environment_mode: None,
             dependencies: vec![],
         })
         .unwrap();
@@ -237,12 +239,28 @@ mod tests {
             notebook_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
             ephemeral: None,
             package_manager: None,
+            environment_mode: None,
             dependencies: vec![],
         })
         .unwrap();
         assert_eq!(
             json,
             r#"{"channel":"create_notebook","runtime":"python","notebook_id":"550e8400-e29b-41d4-a716-446655440000"}"#
+        );
+
+        let json = serde_json::to_string(&Handshake::CreateNotebook {
+            runtime: "python".into(),
+            working_dir: Some("/home/user/project".into()),
+            notebook_id: None,
+            ephemeral: None,
+            package_manager: None,
+            environment_mode: Some(CreateNotebookEnvironmentMode::Notebook),
+            dependencies: vec![],
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            r#"{"channel":"create_notebook","runtime":"python","working_dir":"/home/user/project","environment_mode":"notebook"}"#
         );
     }
 

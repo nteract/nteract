@@ -4,6 +4,70 @@ use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
+/// Environment inheritance mode for `CreateNotebook`.
+///
+/// `package_manager` chooses uv/conda/pixi. This chooses the source family:
+/// project file inheritance vs notebook-owned inline/prewarmed environments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum CreateNotebookEnvironmentMode {
+    /// Default behavior: preserve the existing project-first launch policy.
+    /// Inherit the nearest project file from `working_dir` when one exists,
+    /// otherwise use notebook-owned metadata/prewarmed environments.
+    #[default]
+    Auto,
+    /// Explicit project-file inheritance. Equivalent to `auto` today, but
+    /// lets callers state that inheriting the surrounding project is intended.
+    Project,
+    /// Ignore project files for environment selection. `working_dir` still
+    /// controls kernel cwd and project context reporting.
+    Notebook,
+}
+
+impl CreateNotebookEnvironmentMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Project => "project",
+            Self::Notebook => "notebook",
+        }
+    }
+
+    pub fn parse(input: &str) -> Result<Self, String> {
+        match input {
+            "auto" => Ok(Self::Auto),
+            "project" => Ok(Self::Project),
+            "notebook" => Ok(Self::Notebook),
+            _ => Err(format!(
+                "Unsupported environment_mode '{}'. Supported: auto, project, notebook.",
+                input
+            )),
+        }
+    }
+
+    pub fn allows_project_files(self) -> bool {
+        !matches!(self, Self::Notebook)
+    }
+}
+
+impl fmt::Display for CreateNotebookEnvironmentMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Serialize for CreateNotebookEnvironmentMode {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for CreateNotebookEnvironmentMode {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        Self::parse(&raw).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Supported package managers for Python notebooks.
 ///
 /// The canonical wire format is the lowercase variant name (`"uv"`, `"conda"`,

@@ -25,13 +25,21 @@ export interface ExecutionTransition {
 export type RuntimeState = Record<string, unknown>;
 
 export type RuntimeKind = "python" | "deno" | (string & {});
-export type PackageManager = "uv" | "conda" | "pixi";
 
 export const PackageManager: {
   readonly Uv: "uv";
   readonly Conda: "conda";
   readonly Pixi: "pixi";
 };
+export type PackageManager = (typeof PackageManager)[keyof typeof PackageManager];
+
+export const CreateNotebookEnvironmentMode: {
+  readonly Auto: "auto";
+  readonly Project: "project";
+  readonly Notebook: "notebook";
+};
+export type CreateNotebookEnvironmentMode =
+  (typeof CreateNotebookEnvironmentMode)[keyof typeof CreateNotebookEnvironmentMode];
 
 export interface CreateNotebookOptions {
   runtime?: RuntimeKind;
@@ -41,6 +49,7 @@ export interface CreateNotebookOptions {
   description?: string;
   dependencies?: string[];
   packageManager?: PackageManager;
+  environmentMode?: CreateNotebookEnvironmentMode;
 }
 
 export interface OpenNotebookOptions {

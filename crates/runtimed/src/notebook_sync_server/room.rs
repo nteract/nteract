@@ -11,6 +11,8 @@ pub struct RoomIdentity {
     /// When the notebook_id is a UUID (untitled), this provides the directory
     /// context for finding pyproject.toml, pixi.toml, or environment.yaml.
     pub working_dir: RwLock<Option<PathBuf>>,
+    /// Environment inheritance mode for daemon-created untitled notebooks.
+    pub environment_mode: RwLock<notebook_protocol::connection::CreateNotebookEnvironmentMode>,
 }
 
 impl RoomIdentity {
@@ -18,6 +20,7 @@ impl RoomIdentity {
         Self {
             persist_path,
             working_dir: RwLock::new(None),
+            environment_mode: RwLock::new(Default::default()),
         }
     }
 }

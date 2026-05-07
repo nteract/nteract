@@ -72,7 +72,7 @@ pub fn install_mcpb(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         "tools": [
             { "name": "list_active_notebooks", "description": "List running notebook sessions." },
             { "name": "connect_notebook", "description": "Attach to a notebook. Pass path (.ipynb) or notebook_id (UUID) — not both." },
-            { "name": "create_notebook", "description": "Create a new notebook. Ephemeral by default; use save_notebook(path) to persist." },
+            { "name": "create_notebook", "description": "Create a new notebook. Ephemeral by default; use environment_mode=\"notebook\" to ignore project files for env selection, and save_notebook(path) to persist." },
             { "name": "save_notebook", "description": "Save notebook to disk. For notebooks created with create_notebook(), you must provide a path." },
             { "name": "show_notebook", "description": "Open the notebook in the nteract app for the user. Headless: returns a structured no-display reason." },
             { "name": "disconnect_notebook", "description": "Release a notebook session's peer connection. Omit notebook_id to disconnect the active session." },

@@ -56,7 +56,7 @@
       "destructiveHint": false,
       "openWorldHint": false
     },
-    "description": "Create a new notebook. Ephemeral by default; use save_notebook(path) to persist.",
+    "description": "Create a new notebook. Ephemeral by default; use environment_mode=\"notebook\" to ignore project files for env selection, and save_notebook(path) to persist.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -68,6 +68,14 @@
           },
           "type": [
             "array",
+            "null"
+          ]
+        },
+        "environment_mode": {
+          "default": null,
+          "description": "Environment source mode: \"auto\", \"project\", or \"notebook\".\nDefaults to \"auto\".",
+          "type": [
+            "string",
             "null"
           ]
         },

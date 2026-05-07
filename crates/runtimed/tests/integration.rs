@@ -945,6 +945,100 @@ async fn test_untrusted_launch_and_sync_environment_are_daemon_rejected() {
 }
 
 #[tokio::test]
+async fn test_launch_kernel_environment_mode_controls_project_priority() {
+    use notebook_protocol::connection::CreateNotebookEnvironmentMode;
+
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let project_dir = temp_dir.path().join("project");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    std::fs::write(
+        project_dir.join("environment.yml"),
+        "name: runtimed-env-mode-missing\nchannels:\n  - defaults\ndependencies:\n  - python=3.11\n",
+    )
+    .unwrap();
+    let notebook_path = project_dir.join("notebook.ipynb");
+    write_test_ipynb(&notebook_path, &[]);
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let launch_with_mode = |mode: CreateNotebookEnvironmentMode, label: &'static str| {
+        let socket_path = socket_path.clone();
+        let project_dir = project_dir.clone();
+        let notebook_path = notebook_path.clone();
+        async move {
+            let result = connect::connect_create_with_environment_mode(
+                socket_path,
+                "python",
+                Some(project_dir),
+                label,
+                false,
+                None,
+                vec![],
+                Some(mode),
+            )
+            .await
+            .unwrap();
+            let handle = result.handle;
+            assert!(
+                wait_for_session_ready(&handle, SESSION_READY_TIMEOUT).await,
+                "{label} client should reach session-ready state"
+            );
+
+            handle
+                .send_request(NotebookRequest::LaunchKernel {
+                    kernel_type: "python".to_string(),
+                    env_source: LaunchSpec::Auto,
+                    notebook_path: Some(notebook_path.display().to_string()),
+                })
+                .await
+                .unwrap()
+        }
+    };
+
+    let auto = launch_with_mode(CreateNotebookEnvironmentMode::Auto, "auto").await;
+    assert!(
+        matches!(
+            auto,
+            NotebookResponse::Error { ref error }
+                if error.contains("environment.yml declares conda env")
+        ),
+        "auto should preserve project-first priority and stop at the project environment.yml, got {auto:?}"
+    );
+
+    let project = launch_with_mode(CreateNotebookEnvironmentMode::Project, "project").await;
+    assert!(
+        matches!(
+            project,
+            NotebookResponse::Error { ref error }
+                if error.contains("environment.yml declares conda env")
+        ),
+        "project should explicitly use project-first priority and stop at the project environment.yml, got {project:?}"
+    );
+
+    let notebook = launch_with_mode(CreateNotebookEnvironmentMode::Notebook, "notebook").await;
+    assert!(
+        matches!(
+            notebook,
+            NotebookResponse::Error { ref error }
+                if error.contains("UV pool empty") && !error.contains("environment.yml")
+        ),
+        "notebook mode should ignore project files and fall through to notebook/prewarmed selection, got {notebook:?}"
+    );
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+#[tokio::test]
 async fn test_sync_environment_guard_rejects_stale_observed_dependencies() {
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);

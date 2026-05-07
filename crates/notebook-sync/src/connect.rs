@@ -278,6 +278,30 @@ pub async fn connect_create(
     package_manager: Option<notebook_protocol::connection::PackageManager>,
     dependencies: Vec<String>,
 ) -> Result<CreateResult, SyncError> {
+    connect_create_with_environment_mode(
+        socket_path,
+        runtime,
+        working_dir,
+        actor_label,
+        ephemeral,
+        package_manager,
+        dependencies,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn connect_create_with_environment_mode(
+    socket_path: PathBuf,
+    runtime: &str,
+    working_dir: Option<PathBuf>,
+    actor_label: &str,
+    ephemeral: bool,
+    package_manager: Option<notebook_protocol::connection::PackageManager>,
+    dependencies: Vec<String>,
+    environment_mode: Option<notebook_protocol::connection::CreateNotebookEnvironmentMode>,
+) -> Result<CreateResult, SyncError> {
     connect_create_inner(
         socket_path,
         runtime,
@@ -287,6 +311,7 @@ pub async fn connect_create(
         ephemeral,
         package_manager,
         dependencies,
+        environment_mode,
     )
     .await
 }
@@ -301,6 +326,7 @@ async fn connect_create_inner(
     ephemeral: bool,
     package_manager: Option<notebook_protocol::connection::PackageManager>,
     dependencies: Vec<String>,
+    environment_mode: Option<notebook_protocol::connection::CreateNotebookEnvironmentMode>,
 ) -> Result<CreateResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
@@ -319,6 +345,7 @@ async fn connect_create_inner(
         notebook_id,
         ephemeral: if ephemeral { Some(true) } else { None },
         package_manager,
+        environment_mode,
         dependencies,
     };
     connection::send_json_frame(&mut writer, &handshake)
@@ -501,6 +528,7 @@ pub async fn connect_create_relay(
     ephemeral: bool,
     package_manager: Option<notebook_protocol::connection::PackageManager>,
     dependencies: Vec<String>,
+    environment_mode: Option<notebook_protocol::connection::CreateNotebookEnvironmentMode>,
 ) -> Result<RelayCreateResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
@@ -519,6 +547,7 @@ pub async fn connect_create_relay(
         notebook_id,
         ephemeral: if ephemeral { Some(true) } else { None },
         package_manager,
+        environment_mode,
         dependencies,
     };
     connection::send_json_frame(&mut writer, &handshake)

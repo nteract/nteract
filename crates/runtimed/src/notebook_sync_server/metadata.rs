@@ -89,6 +89,25 @@ pub(crate) fn default_prewarmed_manager(
     }
 }
 
+pub(crate) fn select_auto_python_env_source(
+    environment_mode: notebook_protocol::connection::CreateNotebookEnvironmentMode,
+    notebook_source: Option<notebook_protocol::connection::EnvSource>,
+    project_source: Option<notebook_protocol::connection::EnvSource>,
+    fallback: notebook_protocol::connection::EnvSource,
+) -> notebook_protocol::connection::EnvSource {
+    match environment_mode {
+        notebook_protocol::connection::CreateNotebookEnvironmentMode::Project => {
+            project_source.or(notebook_source).unwrap_or(fallback)
+        }
+        notebook_protocol::connection::CreateNotebookEnvironmentMode::Auto => {
+            project_source.or(notebook_source).unwrap_or(fallback)
+        }
+        notebook_protocol::connection::CreateNotebookEnvironmentMode::Notebook => {
+            notebook_source.unwrap_or(fallback)
+        }
+    }
+}
+
 pub(crate) fn check_inline_deps(
     snapshot: &NotebookMetadataSnapshot,
 ) -> Option<notebook_protocol::connection::EnvSource> {
@@ -2627,7 +2646,7 @@ pub(crate) async fn auto_launch_kernel(
 
     // Detection priority:
     // 1. Notebook's kernelspec (for existing notebooks) - determines python vs deno
-    // 2. For Python: resolve environment (inline deps → project files → prewarmed)
+    // 2. For Python: resolve environment (notebook-owned deps → project files → prewarmed)
     // 3. For Deno: just launch Deno (no env resolution needed)
     // 4. For new notebooks (no kernelspec): use default_runtime setting
 
@@ -2697,13 +2716,18 @@ pub(crate) async fn auto_launch_kernel(
         }
     };
 
+    let environment_mode = *room.identity.environment_mode.read().await;
+
     // Step 3: Check project files (for Python environment resolution)
     // Use notebook path for saved notebooks, or working_dir for untitled notebooks
     let detection_path = notebook_path_opt
         .as_ref()
         .or(working_dir_for_detection.as_ref());
-    let detected_project_file =
-        detection_path.and_then(|path| crate::project_file::detect_project_file(path));
+    let detected_project_file = if environment_mode.allows_project_files() {
+        detection_path.and_then(|path| crate::project_file::detect_project_file(path))
+    } else {
+        None
+    };
     if let Some(ref detected) = detected_project_file {
         info!(
             "[notebook-sync] Auto-launch: detected project file {:?} -> {}",
@@ -2756,46 +2780,35 @@ pub(crate) async fn auto_launch_kernel(
                 ("deno", EnvSource::Deno, None)
             }
             Some("python") => {
-                // Notebook is a Python notebook - resolve environment
-                // Priority: project file > inline deps > prewarmed
-                // Project file wins because inline deps get promoted to the
-                // project file at sync/launch time (project is source of truth).
-                let env_source: EnvSource = if let Some(ref proj) = project_source {
-                    info!(
-                        "[notebook-sync] Auto-launch: using project file -> {}",
-                        proj.as_str()
-                    );
-                    proj.clone()
-                } else if let Some(ref source) = inline_source {
-                    // Skip Deno inline source for Python notebooks (kernelspec takes priority)
-                    if !matches!(source, EnvSource::Deno) {
-                        info!(
-                            "[notebook-sync] Auto-launch: found inline deps -> {}",
-                            source.as_str()
-                        );
-                        source.clone()
-                    } else {
-                        EnvSource::Prewarmed(default_prewarmed_manager(default_python_env.clone()))
-                    }
-                } else {
-                    // Check if the metadata has an explicit manager section
-                    // (e.g. create_notebook(package_manager="conda") with empty deps).
-                    // Use that to pick the pool type instead of default_python_env.
-                    let manager = metadata_snapshot
-                        .as_ref()
-                        .and_then(detect_manager_from_metadata)
-                        .and_then(|pm| match pm {
-                            PackageManager::Unknown(_) => None,
-                            canonical => Some(canonical),
-                        })
-                        .unwrap_or_else(|| default_prewarmed_manager(default_python_env.clone()));
-                    let prewarmed = EnvSource::Prewarmed(manager);
-                    info!(
-                        "[notebook-sync] Auto-launch: using prewarmed ({})",
-                        prewarmed.as_str()
-                    );
-                    prewarmed
-                };
+                // Notebook is a Python notebook - resolve environment.
+                // Auto keeps the legacy project-first policy. `notebook` is
+                // the explicit opt-out and suppresses project_source above.
+                let inline_source = inline_source.as_ref().filter(|source| {
+                    // Skip Deno inline source for Python notebooks (kernelspec takes priority).
+                    !matches!(source, EnvSource::Deno)
+                });
+                // Check if the metadata has an explicit manager section
+                // (e.g. create_notebook(package_manager="conda") with empty deps).
+                // Use that to pick the pool type instead of default_python_env.
+                let manager = metadata_snapshot
+                    .as_ref()
+                    .and_then(detect_manager_from_metadata)
+                    .and_then(|pm| match pm {
+                        PackageManager::Unknown(_) => None,
+                        canonical => Some(canonical),
+                    })
+                    .unwrap_or_else(|| default_prewarmed_manager(default_python_env.clone()));
+                let fallback = EnvSource::Prewarmed(manager);
+                let env_source = select_auto_python_env_source(
+                    environment_mode,
+                    inline_source.cloned(),
+                    project_source.clone(),
+                    fallback,
+                );
+                info!(
+                    "[notebook-sync] Auto-launch: resolved env_source -> {}",
+                    env_source.as_str()
+                );
                 let pooled_env = if env_source.prepares_own_env() {
                     info!(
                         "[notebook-sync] Auto-launch: {} prepares its own env, no pool env needed",
@@ -2843,30 +2856,21 @@ pub(crate) async fn auto_launch_kernel(
                     info!("[notebook-sync] Auto-launch: Deno kernel (default runtime)");
                     ("deno", EnvSource::Deno, None)
                 } else {
-                    // Default to Python
-                    // Priority: project file > inline deps > prewarmed
-                    let env_source: EnvSource = if let Some(ref source) = project_source {
-                        info!(
-                            "[notebook-sync] Auto-launch: using project file -> {}",
-                            source.as_str()
-                        );
-                        source.clone()
-                    } else if let Some(ref source) = inline_source {
-                        info!(
-                            "[notebook-sync] Auto-launch: found inline deps -> {}",
-                            source.as_str()
-                        );
-                        source.clone()
-                    } else {
-                        let prewarmed = EnvSource::Prewarmed(default_prewarmed_manager(
-                            default_python_env.clone(),
-                        ));
-                        info!(
-                            "[notebook-sync] Auto-launch: using prewarmed ({})",
-                            prewarmed.as_str()
-                        );
-                        prewarmed
-                    };
+                    // Default to Python. Auto keeps the legacy project-first
+                    // policy. `notebook` is the explicit opt-out and
+                    // suppresses project_source above.
+                    let fallback =
+                        EnvSource::Prewarmed(default_prewarmed_manager(default_python_env.clone()));
+                    let env_source = select_auto_python_env_source(
+                        environment_mode,
+                        inline_source.clone(),
+                        project_source.clone(),
+                        fallback,
+                    );
+                    info!(
+                        "[notebook-sync] Auto-launch: resolved env_source -> {}",
+                        env_source.as_str()
+                    );
                     let pooled_env = if env_source.prepares_own_env() {
                         info!(
                             "[notebook-sync] Auto-launch: {} prepares its own env, no pool env needed",

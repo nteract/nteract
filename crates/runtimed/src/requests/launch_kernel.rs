@@ -207,44 +207,56 @@ pub(crate) async fn handle(
             Some(PackageManager::Unknown(_)) | None => None,
         };
 
-        // Priority 1: Detect project files near notebook path.
-        // Project file wins because inline deps get promoted to the
-        // project file at sync/launch time (project is source of truth).
-        // A project file added after capture means the user wants the
-        // project env, not the stale captured one.
-        if let Some(detected) = notebook_path.as_ref().and_then(|path| match auto_scope {
-            Some("uv") => crate::project_file::find_nearest_project_file(
-                path,
-                &[crate::project_file::ProjectFileKind::PyprojectToml],
-            ),
-            Some("conda") => crate::project_file::find_nearest_project_file(
-                path,
-                &[crate::project_file::ProjectFileKind::EnvironmentYml],
-            ),
-            Some("pixi") => crate::project_file::find_nearest_project_file(
-                path,
-                &[crate::project_file::ProjectFileKind::PixiToml],
-            ),
-            _ => crate::project_file::detect_project_file(path),
-        }) {
+        let environment_mode = *room.identity.environment_mode.read().await;
+        let detected_project = if environment_mode.allows_project_files() {
+            notebook_path.as_ref().and_then(|path| match auto_scope {
+                Some("uv") => crate::project_file::find_nearest_project_file(
+                    path,
+                    &[crate::project_file::ProjectFileKind::PyprojectToml],
+                ),
+                Some("conda") => crate::project_file::find_nearest_project_file(
+                    path,
+                    &[crate::project_file::ProjectFileKind::EnvironmentYml],
+                ),
+                Some("pixi") => crate::project_file::find_nearest_project_file(
+                    path,
+                    &[crate::project_file::ProjectFileKind::PixiToml],
+                ),
+                _ => crate::project_file::detect_project_file(path),
+            })
+        } else {
+            None
+        };
+        let project_source = detected_project.as_ref().map(|detected| {
             info!(
                 "[notebook-sync] Auto-detected project file: {:?} -> {}",
                 detected.path,
                 detected.to_env_source().as_str()
             );
             detected.to_env_source()
+        });
+
+        // Auto keeps the legacy project-first policy. `notebook` is the
+        // explicit opt-out and suppresses project_source above.
+        if let Some(source) = if matches!(
+            environment_mode,
+            notebook_protocol::connection::CreateNotebookEnvironmentMode::Auto
+                | notebook_protocol::connection::CreateNotebookEnvironmentMode::Project
+        ) {
+            project_source.clone()
+        } else {
+            None
+        } {
+            info!(
+                "[notebook-sync] LaunchKernel: using project file -> {}",
+                source.as_str()
+            );
+            source
         }
-        // Priority 2: Captured prewarmed env wins over inline deps.
-        // Captured deps look structurally identical to user-authored
-        // inline deps, so without this override, reopening a captured
-        // notebook would route through the inline-deps path and miss
-        // the already-claimed env. Ordering is project file > captured
-        // > inline > default so a pyproject.toml added post-capture
-        // still wins.
-        //
-        // Respects `auto_scope`: `auto:uv` with a conda-captured
-        // notebook (or vice versa) falls through. `auto:pixi` always
-        // falls through — no pixi capture path yet.
+        // Captured prewarmed env wins over inline deps. Captured deps look
+        // structurally identical to user-authored inline deps, so without this
+        // override, reopening a captured notebook would route through the
+        // inline-deps path and miss the already-claimed env.
         else if let Some(captured_src) = captured_env_source_override(metadata_snapshot.as_ref())
             .filter(|src| match auto_scope {
                 Some("uv") => matches!(src, EnvSource::Prewarmed(PackageManager::Uv)),
@@ -293,7 +305,7 @@ pub(crate) async fn handle(
             );
             inline_source
         } else {
-            // Priority 3: Check PEP 723 script blocks in cell source
+            // Check PEP 723 script blocks in cell source.
             let has_pep723_deps = if auto_scope == Some("conda") {
                 false
             } else {
@@ -332,7 +344,7 @@ pub(crate) async fn handle(
                 );
                 pep723_source
             }
-            // Priority 4: Fall back to prewarmed (scoped to family)
+            // Fall back to prewarmed (scoped to family)
             else {
                 let fallback = match auto_scope {
                     Some("conda") => EnvSource::Prewarmed(PackageManager::Conda),

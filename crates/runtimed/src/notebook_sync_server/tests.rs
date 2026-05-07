@@ -5912,6 +5912,69 @@ fn launch_kernel_captured_override_respects_auto_scope() {
     assert_eq!(apply_scope(captured_conda, Some("pixi")), None);
 }
 
+#[test]
+fn select_auto_python_env_source_respects_environment_mode() {
+    use notebook_protocol::connection::{CreateNotebookEnvironmentMode, EnvSource, PackageManager};
+
+    let notebook = Some(EnvSource::Inline(PackageManager::Uv));
+    let project = Some(EnvSource::Pyproject);
+    let fallback = EnvSource::Prewarmed(PackageManager::Conda);
+
+    assert_eq!(
+        select_auto_python_env_source(
+            CreateNotebookEnvironmentMode::Auto,
+            notebook.clone(),
+            project.clone(),
+            fallback.clone(),
+        ),
+        EnvSource::Pyproject
+    );
+    assert_eq!(
+        select_auto_python_env_source(
+            CreateNotebookEnvironmentMode::Project,
+            notebook.clone(),
+            project.clone(),
+            fallback.clone(),
+        ),
+        EnvSource::Pyproject
+    );
+    assert_eq!(
+        select_auto_python_env_source(
+            CreateNotebookEnvironmentMode::Notebook,
+            notebook,
+            project,
+            fallback,
+        ),
+        EnvSource::Inline(PackageManager::Uv)
+    );
+}
+
+#[test]
+fn select_auto_python_env_source_falls_back_without_project_or_notebook_env() {
+    use notebook_protocol::connection::{CreateNotebookEnvironmentMode, EnvSource, PackageManager};
+
+    let fallback = EnvSource::Prewarmed(PackageManager::Uv);
+
+    assert_eq!(
+        select_auto_python_env_source(
+            CreateNotebookEnvironmentMode::Auto,
+            None,
+            None,
+            fallback.clone(),
+        ),
+        fallback
+    );
+    assert_eq!(
+        select_auto_python_env_source(
+            CreateNotebookEnvironmentMode::Notebook,
+            None,
+            Some(EnvSource::Pyproject),
+            EnvSource::Prewarmed(PackageManager::Conda),
+        ),
+        EnvSource::Prewarmed(PackageManager::Conda)
+    );
+}
+
 /// Pre-upgrade notebooks: env_id is set but deps are empty. The capture
 /// step must still record the env_id (no-op) and populate user_defaults
 /// if they were derived from the pool. This is the migration path from
