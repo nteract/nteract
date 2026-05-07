@@ -35,27 +35,25 @@ function formatPluginLoadError(error: unknown): string {
 }
 
 const DEFAULT_OUTPUT_WELL_VIEWPORT_RATIO = 0.75;
+const FOCUSED_OUTPUT_WELL_VIEWPORT_RATIO = 0.8;
 const MIN_OUTPUT_WELL_HEIGHT = 360;
 
-function getDefaultOutputWellMaxHeight(): number {
+function getOutputWellMaxHeight(viewportRatio: number): number {
   if (typeof window === "undefined") return 720;
-  return Math.max(
-    MIN_OUTPUT_WELL_HEIGHT,
-    Math.floor(window.innerHeight * DEFAULT_OUTPUT_WELL_VIEWPORT_RATIO),
-  );
+  return Math.max(MIN_OUTPUT_WELL_HEIGHT, Math.floor(window.innerHeight * viewportRatio));
 }
 
-function useDefaultOutputWellMaxHeight(): number {
-  const [height, setHeight] = useState(getDefaultOutputWellMaxHeight);
+function useOutputWellMaxHeight(viewportRatio: number): number {
+  const [height, setHeight] = useState(() => getOutputWellMaxHeight(viewportRatio));
 
   useEffect(() => {
     const handleResize = () => {
-      setHeight(getDefaultOutputWellMaxHeight());
+      setHeight(getOutputWellMaxHeight(viewportRatio));
     };
 
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, []);
+  }, [viewportRatio]);
 
   return height;
 }
@@ -90,6 +88,10 @@ interface OutputAreaProps {
    * instead of using the output max-height cap.
    */
   expandIframeOutputs?: boolean;
+  /**
+   * When true, iframe outputs receive focused sizing and own wheel gestures.
+   */
+  focused?: boolean;
   /**
    * Additional CSS classes for the container.
    */
@@ -307,6 +309,7 @@ export function OutputArea({
   onToggleCollapse,
   maxHeight,
   expandIframeOutputs = false,
+  focused = false,
   className,
   renderers,
   priority = DEFAULT_PRIORITY,
@@ -331,11 +334,32 @@ export function OutputArea({
 
   const darkMode = useDarkMode();
   const colorTheme = useColorTheme();
-  const defaultOutputWellMaxHeight = useDefaultOutputWellMaxHeight();
-  const maxHeightStyle = useMemo(
-    () => (maxHeight ? { maxHeight: `${maxHeight}px` } : undefined),
-    [maxHeight],
-  );
+  const defaultOutputWellMaxHeight = useOutputWellMaxHeight(DEFAULT_OUTPUT_WELL_VIEWPORT_RATIO);
+  const focusedOutputWellMaxHeight = useOutputWellMaxHeight(FOCUSED_OUTPUT_WELL_VIEWPORT_RATIO);
+  // Non-isolated outputs (stream/text/error) render in-DOM. Apply the same
+  // three-mode contract that the iframe path uses, just on the wrapper:
+  //   compact  -> default well cap with overflow-y-auto
+  //   expanded -> no cap (output grows as tall as its content)
+  //   focused  -> focused max with floor, overflow-y-auto, overscroll-contain
+  // Explicit `maxHeight` prop still overrides; pass 0 to opt out of compact.
+  const inDomMode: "compact" | "expanded" | "focused" = focused
+    ? "focused"
+    : expandIframeOutputs
+      ? "expanded"
+      : "compact";
+  const inDomMaxHeight =
+    inDomMode === "focused"
+      ? focusedOutputWellMaxHeight
+      : inDomMode === "expanded"
+        ? null
+        : (maxHeight ?? defaultOutputWellMaxHeight);
+  const maxHeightStyle = useMemo<React.CSSProperties | undefined>(() => {
+    if (!inDomMaxHeight) return undefined;
+    if (inDomMode === "focused") {
+      return { maxHeight: `${inDomMaxHeight}px`, minHeight: `${MIN_OUTPUT_WELL_HEIGHT}px` };
+    }
+    return { maxHeight: `${inDomMaxHeight}px` };
+  }, [inDomMaxHeight, inDomMode]);
   // Ref for reading current darkMode in callbacks without adding to deps
   const darkModeRef = useRef(darkMode);
   darkModeRef.current = darkMode;
@@ -349,10 +373,15 @@ export function OutputArea({
   const shouldIsolate =
     outputs.length > 0 &&
     (isolated === true || (isolated === "auto" && anyOutputNeedsIsolation(outputs, priority)));
-  const shouldConstrainIsolatedOutput = shouldIsolate && !expandIframeOutputs;
-  const isolatedOutputWellMaxHeight = maxHeight ?? defaultOutputWellMaxHeight;
+  const shouldConstrainIsolatedOutput = shouldIsolate && (focused || !expandIframeOutputs);
+  const isolatedOutputWellMaxHeight = focused
+    ? focusedOutputWellMaxHeight
+    : (maxHeight ?? defaultOutputWellMaxHeight);
   const isolatedOutputWellStyle = shouldConstrainIsolatedOutput
-    ? { maxHeight: `${isolatedOutputWellMaxHeight}px` }
+    ? {
+        maxHeight: `${isolatedOutputWellMaxHeight}px`,
+        ...(focused ? { minHeight: `${MIN_OUTPUT_WELL_HEIGHT}px` } : {}),
+      }
     : undefined;
 
   // When preloading, we render the iframe even with no outputs (hidden)
@@ -364,6 +393,7 @@ export function OutputArea({
   const shouldUseBridge = shouldIsolate && hasWidgets && widgetContext !== null;
   const shouldUseScrollPassthroughFrame =
     shouldIsolate &&
+    !focused &&
     !hasWidgets &&
     outputs.every((output) => outputAllowsScrollPassthrough(output, priority));
   const shouldScrollPassthroughFrame =
@@ -669,7 +699,8 @@ export function OutputArea({
           id={id}
           className={cn(
             "space-y-2",
-            !shouldIsolate && maxHeight && "overflow-y-auto",
+            !shouldIsolate && inDomMaxHeight !== null && "overflow-y-auto",
+            !shouldIsolate && inDomMode === "focused" && "overscroll-contain",
             shouldConstrainIsolatedOutput && "overflow-y-auto",
           )}
           style={shouldIsolate ? isolatedOutputWellStyle : maxHeightStyle}
@@ -695,8 +726,8 @@ export function OutputArea({
                 colorTheme={colorTheme}
                 minHeight={24}
                 maxHeight={isolatedOutputWellMaxHeight}
-                autoHeight={shouldIsolate}
-                allowWheelBoundaryScroll={!shouldScrollPassthroughFrame}
+                autoHeight={shouldIsolate && !focused}
+                allowWheelBoundaryScroll={!focused && !shouldScrollPassthroughFrame}
                 scrollPassthrough={shouldScrollPassthroughFrame}
                 onReady={handleFrameReady}
                 onLinkClick={onLinkClick}

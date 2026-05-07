@@ -1,15 +1,9 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
-import {
-  ChevronRight,
-  Code2,
-  EyeOff,
-  SquareDashedMousePointer,
-  SquareMousePointer,
-} from "lucide-react";
+import { ChevronRight, Code2, EyeOff, Maximize2, Square, SquareMousePointer } from "lucide-react";
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
-import { anyOutputNeedsIsolation, OutputArea } from "@/components/cell/OutputArea";
+import { OutputArea } from "@/components/cell/OutputArea";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import type { SupportedLanguage } from "@/components/editor/languages";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
@@ -46,6 +40,9 @@ interface CodeCellProps {
   language?: SupportedLanguage;
   onSearchMatchCount?: (count: number) => void;
   onFocus: () => void;
+  outputFocused?: boolean;
+  outputDimmed?: boolean;
+  onOutputFocusChange?: (focused: boolean) => void;
   onExecute: () => void;
   onInterrupt: () => void;
   onDelete: () => void;
@@ -73,11 +70,64 @@ interface CodeCellProps {
   rightGutterContent?: ReactNode;
 }
 
+type OutputMode = "compact" | "expanded" | "focused";
+
+interface OutputModeStripProps {
+  mode: OutputMode;
+  onChange: (mode: OutputMode) => void;
+}
+
+/**
+ * Three-segment mode selector for an iframe output: compact, expanded,
+ * focused. Mutually exclusive states grouped on a shared rail so the
+ * "this is one piece of state" intent reads visually. Single click jumps
+ * to any mode regardless of current.
+ */
+function OutputModeStrip({ mode, onChange }: OutputModeStripProps) {
+  const segments: Array<{ value: OutputMode; title: string; Icon: typeof Square }> = [
+    { value: "compact", title: "Compact (default)", Icon: Square },
+    { value: "expanded", title: "Expand inline", Icon: Maximize2 },
+    { value: "focused", title: "Focus output", Icon: SquareMousePointer },
+  ];
+  return (
+    <div
+      role="group"
+      aria-label="Output mode"
+      className="flex flex-col items-center gap-0.5 rounded-md bg-muted/40 p-0.5"
+    >
+      {segments.map(({ value, title, Icon }) => {
+        const active = mode === value;
+        return (
+          <button
+            key={value}
+            type="button"
+            tabIndex={-1}
+            aria-pressed={active}
+            onClick={() => onChange(value)}
+            className={cn(
+              "flex items-center justify-center rounded p-1 transition-colors",
+              active
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground/50 hover:text-foreground",
+            )}
+            title={title}
+          >
+            <Icon className="h-3.5 w-3.5" />
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export const CodeCell = memo(function CodeCell({
   cell,
   language = "python",
   onSearchMatchCount,
   onFocus,
+  outputFocused = false,
+  outputDimmed = false,
+  onOutputFocusChange,
   onExecute,
   onInterrupt,
   onDelete,
@@ -116,9 +166,6 @@ export const CodeCell = memo(function CodeCell({
   const executionId = useCellExecutionId(cell.id);
   const execution = useExecution(executionId);
   const executionCount = execution?.execution_count ?? null;
-  // CodeCell leaves OutputArea in its default `isolated="auto"` mode, so this
-  // matches whether the output row will render in the isolated iframe.
-  const hasIsolatedOutput = anyOutputNeedsIsolation(outputs);
 
   // Check cell metadata for visibility (JupyterLab convention)
   const isSourceHidden =
@@ -130,11 +177,19 @@ export const CodeCell = memo(function CodeCell({
   // (outputs explicitly hidden, or no outputs at all).
   const bothHidden = isSourceHidden && (isOutputsHidden || outputs.length === 0);
 
+  // Auto-clear expand/focus when the cell has no visible outputs to
+  // operate on. Previously also gated on `!hasIsolatedOutput`, which made
+  // sense when the mode strip was iframe-only; now that stream outputs
+  // share the strip, that gate stomped on focus the moment it engaged
+  // for any non-iframe output.
   useEffect(() => {
-    if (!hasIsolatedOutput || isOutputsHidden || outputs.length === 0) {
+    if (isOutputsHidden || outputs.length === 0) {
       setIsIframeOutputExpanded(false);
+      if (outputFocused) {
+        onOutputFocusChange?.(false);
+      }
     }
-  }, [hasIsolatedOutput, isOutputsHidden, outputs.length]);
+  }, [isOutputsHidden, onOutputFocusChange, outputFocused, outputs.length]);
 
   // Register EditorView with the cursor registry for remote cursor rendering.
   // We use a ref + polling approach because the EditorView is created async
@@ -295,6 +350,8 @@ export const CodeCell = memo(function CodeCell({
         isFocused={isFocused}
         isPreviousCellFromFocused={isPreviousCellFromFocused}
         isNextCellFromFocused={isNextCellFromFocused}
+        outputFocused={outputFocused}
+        outputDimmed={outputDimmed}
         onFocus={onFocus}
         gutterContent={gutterContent}
         rightGutterContent={rightGutterContent}
@@ -393,36 +450,26 @@ export const CodeCell = memo(function CodeCell({
               onLinkClick={handleLinkClick}
               onIframeMouseDown={handleOutputMouseDown}
               expandIframeOutputs={isIframeOutputExpanded}
+              focused={outputFocused}
             />
           )
         }
         outputRightGutterContent={
-          outputs.length > 0 && !isOutputsHidden && (hasIsolatedOutput || onToggleOutputsHidden) ? (
+          outputs.length > 0 && !isOutputsHidden ? (
             <>
-              {hasIsolatedOutput && (
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  aria-pressed={isIframeOutputExpanded}
-                  onClick={() => {
-                    setIsIframeOutputExpanded((expanded) => !expanded);
-                    onFocus();
-                  }}
-                  className={cn(
-                    "flex items-center justify-center rounded p-1 transition-colors",
-                    isIframeOutputExpanded
-                      ? "bg-accent text-foreground"
-                      : "text-muted-foreground/40 hover:text-foreground",
-                  )}
-                  title={isIframeOutputExpanded ? "Constrain output height" : "Expand output"}
-                >
-                  {isIframeOutputExpanded ? (
-                    <SquareMousePointer className="h-3.5 w-3.5" />
-                  ) : (
-                    <SquareDashedMousePointer className="h-3.5 w-3.5" />
-                  )}
-                </button>
-              )}
+              <OutputModeStrip
+                mode={outputFocused ? "focused" : isIframeOutputExpanded ? "expanded" : "compact"}
+                onChange={(next) => {
+                  if (next === "focused") {
+                    setIsIframeOutputExpanded(false);
+                    onOutputFocusChange?.(true);
+                  } else {
+                    setIsIframeOutputExpanded(next === "expanded");
+                    if (outputFocused) onOutputFocusChange?.(false);
+                  }
+                  onFocus();
+                }}
+              />
               {onToggleOutputsHidden && (
                 <button
                   type="button"

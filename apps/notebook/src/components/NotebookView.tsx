@@ -368,6 +368,85 @@ function NotebookViewContent({
   // Read transient UI state from the store instead of props
   const focusedCellId = useFocusedCellId();
   const searchCurrentMatch = useSearchCurrentMatch();
+  const [outputFocusedCellId, setOutputFocusedCellId] = useState<string | null>(null);
+
+  // Output-focus follows cell selection: when the user moves the caret to a
+  // different cell (arrow keys, click, programmatic focus), the previously
+  // output-focused cell exits focus. This keeps the "wheel ownership" cell
+  // and the "keyboard target" cell aligned without separate handlers.
+  //
+  // The `focusedCellId !== null` guard is load-bearing: cell-ui-state uses a
+  // deferred-flush subscriber pattern, so when a click on the focus button
+  // calls onFocusCell + setOutputFocusedCellId in the same tick, the local
+  // useState update lands first and `focusedCellId` is briefly stale (null
+  // or the previous cell) until the cell-ui-state flush propagates. Without
+  // this guard the effect races and clears output focus before it sticks.
+  // Treat null as "no current selection," not "user moved selection away."
+  useEffect(() => {
+    if (
+      outputFocusedCellId !== null &&
+      focusedCellId !== null &&
+      focusedCellId !== outputFocusedCellId
+    ) {
+      setOutputFocusedCellId(null);
+    }
+  }, [focusedCellId, outputFocusedCellId]);
+
+  useEffect(() => {
+    if (outputFocusedCellId !== null && !cellIds.includes(outputFocusedCellId)) {
+      setOutputFocusedCellId(null);
+    }
+  }, [cellIds, outputFocusedCellId]);
+
+  // Document-level Esc listener while a cell is output-focused. Esc events
+  // that originate inside the iframe don't reach the document unless the
+  // iframe lets them through, so this only fires for top-level Esc.
+  useEffect(() => {
+    if (outputFocusedCellId === null) return;
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOutputFocusedCellId(null);
+      }
+    };
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [outputFocusedCellId]);
+
+  // Click-outside-container exit. Clicking another cell's editor already
+  // clears focus via the selection-change effect above, but clicking another
+  // cell's iframe (Sift, HTML) never fires onFocusCell because the iframe
+  // absorbs the event. Same goes for clicks on page chrome between cells.
+  // Scope the dismiss to the focused cell's container so clicks on its own
+  // gutter buttons (focus, expand, eye) still hit their handlers.
+  useEffect(() => {
+    if (outputFocusedCellId === null) return;
+    const handleMouseDown = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      const focusedCellEl = document.querySelector(
+        `[data-slot="cell-container"][data-cell-id="${outputFocusedCellId}"]`,
+      );
+      if (focusedCellEl && !focusedCellEl.contains(target)) {
+        setOutputFocusedCellId(null);
+      }
+    };
+    document.addEventListener("mousedown", handleMouseDown, true);
+    return () => document.removeEventListener("mousedown", handleMouseDown, true);
+  }, [outputFocusedCellId]);
+
+  const handleOutputFocusChange = useCallback(
+    (cellId: string, outputFocused: boolean) => {
+      if (outputFocused) {
+        onFocusCell(cellId);
+        presence?.setFocus(cellId);
+        setOutputFocusedCellId(cellId);
+        return;
+      }
+      setOutputFocusedCellId((current) => (current === cellId ? null : current));
+    },
+    [onFocusCell, presence],
+  );
+
   // Ref for cellIds so renderCell can read the latest list without
   // depending on the array identity. This prevents recreating
   // renderCell (and remounting widget iframes) on structural changes.
@@ -662,6 +741,9 @@ function NotebookViewContent({
               onFocusCell(cell.id);
               presence?.setFocus(cell.id);
             }}
+            outputFocused={outputFocusedCellId === cell.id}
+            outputDimmed={outputFocusedCellId !== null && outputFocusedCellId !== cell.id}
+            onOutputFocusChange={(focused) => handleOutputFocusChange(cell.id, focused)}
             onExecute={() => onExecuteCell(cell.id)}
             onInterrupt={onInterruptKernel}
             onDelete={() => onDeleteCell(cell.id)}
@@ -755,7 +837,9 @@ function NotebookViewContent({
       onReportOutputMatchCount,
       onSetCellSourceHidden,
       onSetCellOutputsHidden,
+      outputFocusedCellId,
       focusCell,
+      handleOutputFocusChange,
       presence,
     ],
   );

@@ -29,6 +29,17 @@ interface CellContainerProps {
   isPreviousCellFromFocused?: boolean;
   /** Whether this cell is immediately after the focused cell (keeps output bright) */
   isNextCellFromFocused?: boolean;
+  /**
+   * True when this cell's output is in "output focus" mode - the immersive
+   * view where the iframe owns the wheel and the cell dominates. Distinct
+   * from `isFocused` (cell selection / editor caret).
+   */
+  outputFocused?: boolean;
+  /**
+   * True when some OTHER cell is output-focused, so this one should dim out.
+   * Mutually exclusive with `outputFocused`.
+   */
+  outputDimmed?: boolean;
   /** Props for dnd-kit drag handle (applied to ribbon) */
   dragHandleProps?: Record<string, unknown>;
   /** Whether this cell is currently being dragged */
@@ -54,12 +65,15 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
       customGutterColors,
       isPreviousCellFromFocused = false,
       isNextCellFromFocused = false,
+      outputFocused = false,
+      outputDimmed = false,
       dragHandleProps,
       isDragging = false,
       className,
     },
     ref,
   ) => {
+    const focusState = outputFocused ? "focused" : outputDimmed ? "dimmed" : undefined;
     const colors = getGutterColors(cellType, customGutterColors);
     const ribbonColor = isFocused ? colors.ribbon.focused : colors.ribbon.default;
     const outputRibbonColor = isFocused ? colors.outputRibbon.focused : colors.outputRibbon.default;
@@ -75,11 +89,16 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
         data-slot="cell-container"
         data-cell-id={id}
         data-cell-type={cellType}
+        data-focus-state={focusState}
         className={cn(
           "cell-container group flex transition-colors duration-150",
           bgColor,
           isFocused && "-mx-16 px-16",
           isDragging && "opacity-50",
+          // Output focus dim wins over the existing opacity-70 dim on the
+          // output row. Applied to the whole cell container so the editor
+          // dims too while another cell owns the wheel.
+          outputDimmed && "opacity-[0.35]",
           className,
         )}
       >
@@ -127,10 +146,16 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 <div
                   className={cn(
                     "min-w-0 flex-1 py-2 transition-opacity duration-150",
-                    !isFocused &&
+                    !outputFocused &&
+                      !isFocused &&
                       !isPreviousCellFromFocused &&
                       !isNextCellFromFocused &&
                       "opacity-70",
+                    // Elevate via top + bottom edges only. The cell's
+                    // existing left ribbon (line 145 above) plus this slab
+                    // forms a three-sided frame that reads as "this row is
+                    // the active one" without the card-like ring aesthetic.
+                    outputFocused && "border-y border-primary/40 bg-primary/5",
                   )}
                 >
                   {outputContent}
