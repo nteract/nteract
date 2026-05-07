@@ -4,8 +4,7 @@ import {
   Code2,
   EyeOff,
   Maximize2,
-  Minimize2,
-  SquareDashedMousePointer,
+  Square,
   SquareMousePointer,
 } from "lucide-react";
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -76,6 +75,56 @@ interface CodeCellProps {
   hiddenGroupErrorCount?: number;
   /** Content for the right gutter (e.g., delete button, source toggle) */
   rightGutterContent?: ReactNode;
+}
+
+type OutputMode = "compact" | "expanded" | "focused";
+
+interface OutputModeStripProps {
+  mode: OutputMode;
+  onChange: (mode: OutputMode) => void;
+}
+
+/**
+ * Three-segment mode selector for an iframe output: compact, expanded,
+ * focused. Mutually exclusive states grouped on a shared rail so the
+ * "this is one piece of state" intent reads visually. Single click jumps
+ * to any mode regardless of current.
+ */
+function OutputModeStrip({ mode, onChange }: OutputModeStripProps) {
+  const segments: Array<{ value: OutputMode; title: string; Icon: typeof Square }> = [
+    { value: "compact", title: "Compact (default)", Icon: Square },
+    { value: "expanded", title: "Expand inline", Icon: Maximize2 },
+    { value: "focused", title: "Focus output", Icon: SquareMousePointer },
+  ];
+  return (
+    <div
+      role="group"
+      aria-label="Output mode"
+      className="flex flex-col items-center gap-0.5 rounded-md bg-muted/40 p-0.5"
+    >
+      {segments.map(({ value, title, Icon }) => {
+        const active = mode === value;
+        return (
+          <button
+            key={value}
+            type="button"
+            tabIndex={-1}
+            aria-pressed={active}
+            onClick={() => onChange(value)}
+            className={cn(
+              "flex items-center justify-center rounded p-1 transition-colors",
+              active
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground/50 hover:text-foreground",
+            )}
+            title={title}
+          >
+            <Icon className="h-3.5 w-3.5" />
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 export const CodeCell = memo(function CodeCell({
@@ -414,56 +463,21 @@ export const CodeCell = memo(function CodeCell({
           outputs.length > 0 && !isOutputsHidden && (hasIsolatedOutput || onToggleOutputsHidden) ? (
             <>
               {hasIsolatedOutput && (
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  aria-pressed={outputFocused || isIframeOutputExpanded}
-                  onClick={() => {
-                    if (outputFocused) return;
-                    setIsIframeOutputExpanded((expanded) => !expanded);
+                <OutputModeStrip
+                  mode={
+                    outputFocused ? "focused" : isIframeOutputExpanded ? "expanded" : "compact"
+                  }
+                  onChange={(next) => {
+                    if (next === "focused") {
+                      setIsIframeOutputExpanded(false);
+                      onOutputFocusChange?.(true);
+                    } else {
+                      setIsIframeOutputExpanded(next === "expanded");
+                      if (outputFocused) onOutputFocusChange?.(false);
+                    }
                     onFocus();
                   }}
-                  className={cn(
-                    "flex items-center justify-center rounded p-1 transition-colors",
-                    outputFocused || isIframeOutputExpanded
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground/40 hover:text-foreground",
-                  )}
-                  title={
-                    outputFocused || isIframeOutputExpanded
-                      ? "Constrain output height"
-                      : "Expand output"
-                  }
-                >
-                  {outputFocused || isIframeOutputExpanded ? (
-                    <Minimize2 className="h-3.5 w-3.5" />
-                  ) : (
-                    <Maximize2 className="h-3.5 w-3.5" />
-                  )}
-                </button>
-              )}
-              {hasIsolatedOutput && (
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  aria-pressed={outputFocused}
-                  onClick={() => {
-                    onOutputFocusChange?.(!outputFocused);
-                  }}
-                  className={cn(
-                    "flex items-center justify-center rounded p-1 transition-colors",
-                    outputFocused
-                      ? "bg-primary text-primary-foreground ring-2 ring-primary/40"
-                      : "text-muted-foreground/40 hover:text-foreground",
-                  )}
-                  title={outputFocused ? "Exit focus (Esc)" : "Focus output"}
-                >
-                  {outputFocused ? (
-                    <SquareMousePointer className="h-3.5 w-3.5" />
-                  ) : (
-                    <SquareDashedMousePointer className="h-3.5 w-3.5" />
-                  )}
-                </button>
+                />
               )}
               {onToggleOutputsHidden && (
                 <button

@@ -227,21 +227,23 @@ describe("CodeCell output focus", () => {
     expect(onOutputFocusChange).toHaveBeenCalledWith(true);
   });
 
-  it("keeps the expand button active but inert while output-focused", () => {
-    const onFocus = vi.fn();
-    const { getByTitle } = render(
+  it("hides the expand button while output-focused", () => {
+    // While focus is on, the expand button is hidden so users don't see an
+    // inert active-styled control. Underlying expand state survives the
+    // focus toggle (local useState in CodeCell), so the button reappears
+    // in its prior state once focus exits.
+    const { queryByTitle } = render(
       <CodeCell
         cell={makeCell()}
         outputFocused
-        onFocus={onFocus}
+        onFocus={() => {}}
         onExecute={() => {}}
         onInterrupt={() => {}}
         onDelete={() => {}}
       />,
     );
 
-    fireEvent.click(getByTitle("Constrain output height"));
-
-    expect(onFocus).not.toHaveBeenCalled();
+    expect(queryByTitle("Constrain output height")).toBeNull();
+    expect(queryByTitle("Expand output")).toBeNull();
   });
 });
