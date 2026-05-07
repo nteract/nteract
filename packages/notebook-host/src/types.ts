@@ -47,7 +47,7 @@ export interface DaemonInfo {
 }
 
 export interface TrustInfo {
-  status: "trusted" | "untrusted" | "signature_invalid" | "no_dependencies";
+  status: "trusted" | "untrusted" | "no_dependencies";
   uv_dependencies: string[];
   approved_uv_dependencies: string[];
   conda_dependencies: string[];

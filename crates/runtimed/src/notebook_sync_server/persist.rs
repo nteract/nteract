@@ -1069,17 +1069,14 @@ pub(crate) fn spawn_notebook_file_watcher(
                             }
 
                             // Re-verify trust after external metadata edits.
-                            // room.trust_state was loaded once at room creation
-                            // and never refreshed on this path. External edits
-                            // via uv/editor (e.g. `uv add numpy` + save) rewrite
-                            // metadata.runt.*.dependencies, which changes the
-                            // HMAC input; without this, the cached trust state
-                            // stays stale until the daemon restarts and
-                            // auto-launch enforces the old signature. Trust
-                            // lives in metadata, so gate on metadata_changed —
-                            // cell-only edits can't affect the signature.
-                            // check_and_update_trust_state only writes when the
-                            // status actually flipped and emits
+                            // External edits via uv/editor (e.g. `uv add numpy`
+                            // + save) rewrite metadata.runt.*.dependencies,
+                            // and the cached trust state was computed against
+                            // the old dep list. Trust lives in metadata, so
+                            // gate on metadata_changed — cell-only edits
+                            // can't affect dependency names.
+                            // check_and_update_trust_state only writes when
+                            // the status actually flipped and emits
                             // state_changed_tx so the frontend banner reacts.
                             if metadata_changed {
                                 check_and_update_trust_state(&room).await;

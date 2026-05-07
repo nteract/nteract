@@ -593,82 +593,7 @@ where
     }
 
     // 3. Set metadata (if present) and sync it
-    if let Some(mut meta) = metadata {
-        // #2150 reconciliation: if the parsed metadata has inline deps but
-        // no valid signature AND those deps exactly match a detected
-        // project file's deps, sign the snapshot in place before it lands
-        // in the doc. This keeps the doc's trust state consistent with
-        // room.trust_state (which room creation already promoted to
-        // Trusted via the same match condition) and stops
-        // check_and_update_trust_state from flipping it back to Untrusted
-        // after the first sync flush.
-        let needs_reconcile = matches!(
-            super::metadata::verify_trust_from_snapshot(&meta).status,
-            runt_trust::TrustStatus::Untrusted | runt_trust::TrustStatus::SignatureInvalid
-        );
-        if needs_reconcile {
-            // Build a TrustInfo-shaped view of the parsed meta so we can
-            // reuse the existing match helper.
-            let derived = runt_trust::TrustInfo {
-                status: runt_trust::TrustStatus::Untrusted,
-                uv_dependencies: meta
-                    .runt
-                    .uv
-                    .as_ref()
-                    .map(|u| u.dependencies.clone())
-                    .unwrap_or_default(),
-                approved_uv_dependencies: vec![],
-                conda_dependencies: meta
-                    .runt
-                    .conda
-                    .as_ref()
-                    .map(|c| c.dependencies.clone())
-                    .unwrap_or_default(),
-                approved_conda_dependencies: vec![],
-                conda_channels: meta
-                    .runt
-                    .conda
-                    .as_ref()
-                    .map(|c| c.channels.clone())
-                    .unwrap_or_default(),
-                pixi_dependencies: meta
-                    .runt
-                    .pixi
-                    .as_ref()
-                    .map(|p| p.dependencies.clone())
-                    .unwrap_or_default(),
-                approved_pixi_dependencies: vec![],
-                pixi_pypi_dependencies: meta
-                    .runt
-                    .pixi
-                    .as_ref()
-                    .map(|p| p.pypi_dependencies.clone())
-                    .unwrap_or_default(),
-                approved_pixi_pypi_dependencies: vec![],
-                pixi_channels: meta
-                    .runt
-                    .pixi
-                    .as_ref()
-                    .map(|p| p.channels.clone())
-                    .unwrap_or_default(),
-            };
-            if super::metadata::project_file_deps_match_trust_info(path, &derived) {
-                match super::metadata::auto_sign_in_place(&mut meta) {
-                    Ok(()) => {
-                        info!(
-                            "[streaming-load] Signed project-file-matching metadata for {}",
-                            path.display()
-                        );
-                    }
-                    Err(e) => {
-                        warn!(
-                            "[streaming-load] Failed to auto-sign project-file-matching metadata: {}",
-                            e
-                        );
-                    }
-                }
-            }
-        }
+    if let Some(meta) = metadata {
         let encoded = {
             let mut doc = room.doc.write().await;
             if let Err(e) = doc.set_metadata_snapshot(&meta) {
@@ -889,7 +814,7 @@ pub fn create_empty_notebook(
     let env_id = env_id
         .map(|s| s.to_string())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let mut metadata_snapshot = build_new_notebook_metadata(
+    let metadata_snapshot = build_new_notebook_metadata(
         runtime,
         &env_id,
         default_python_env,
@@ -897,19 +822,9 @@ pub fn create_empty_notebook(
         dependencies,
     );
 
-    // Sign deps so trust verification passes and auto-launch proceeds.
-    // Without this, seeded deps would be Untrusted and block kernel launch.
-    if !dependencies.is_empty() {
-        let mut trust_metadata = std::collections::HashMap::new();
-        if let Ok(runt_value) = serde_json::to_value(&metadata_snapshot.runt) {
-            trust_metadata.insert("runt".to_string(), runt_value);
-        }
-        if let Ok(sig) = runt_trust::sign_notebook_dependencies(&trust_metadata) {
-            metadata_snapshot.runt.trust_signature = Some(sig);
-            metadata_snapshot.runt.trust_timestamp =
-                Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
-        }
-    }
+    // Seeded deps land as plain dep metadata. The notebook arrives Untrusted
+    // until the user approves them through the regular trust dialog; the
+    // allowlist write at approval time is what makes future opens silent.
 
     doc.set_metadata_snapshot(&metadata_snapshot)
         .map_err(|e| format!("Failed to set metadata: {}", e))?;
@@ -955,8 +870,6 @@ pub(crate) fn build_new_notebook_metadata(
                 conda: None,
                 pixi: None,
                 deno: None,
-                trust_signature: None,
-                trust_timestamp: None,
                 extra: std::collections::BTreeMap::new(),
             },
         ),
@@ -1046,8 +959,6 @@ pub(crate) fn build_new_notebook_metadata(
                     conda,
                     pixi,
                     deno: None,
-                    trust_signature: None,
-                    trust_timestamp: None,
                     extra: std::collections::BTreeMap::new(),
                 },
             )

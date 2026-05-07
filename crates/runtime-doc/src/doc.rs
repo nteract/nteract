@@ -38,7 +38,7 @@
 //!     deno_changed: bool
 //!     progress: Map|null    (latest flattened EnvProgress event, daemon-authored)
 //!   trust/
-//!     status: Str          ("trusted" | "untrusted" | "signature_invalid" | "no_dependencies")
+//!     status: Str          ("trusted" | "untrusted" | "no_dependencies")
 //!     needs_approval: bool
 //!     approved_uv_dependencies: List[Str]
 //!     approved_conda_dependencies: List[Str]
@@ -231,7 +231,7 @@ impl Default for EnvState {
 /// Trust state snapshot for the runtime state doc.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustRuntimeState {
-    /// "trusted", "untrusted", "signature_invalid", "no_dependencies"
+    /// "trusted", "untrusted", "no_dependencies"
     pub status: String,
     /// Whether the frontend should show the trust approval dialog
     pub needs_approval: bool,

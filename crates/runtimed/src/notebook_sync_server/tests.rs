@@ -591,25 +591,17 @@ async fn test_untitled_room_preserves_legacy_persisted_automerge_history() {
 /// the persisted Automerge doc, not from a non-existent .ipynb file.
 #[tokio::test]
 async fn test_new_fresh_untitled_trust_from_doc() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let key_path = temp_dir.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
-
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
+    let store =
+        crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
+            .unwrap();
 
     let notebook_id = "550e8400-e29b-41d4-a716-446655440000";
 
-    // Build a snapshot with UV deps and a valid trust signature.
-    let mut snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
-    let mut metadata = std::collections::HashMap::new();
-    if let Ok(runt_value) = serde_json::to_value(&snapshot.runt) {
-        metadata.insert("runt".to_string(), runt_value);
-    }
-    let signature = runt_trust::sign_notebook_dependencies(&metadata).unwrap();
-    snapshot.runt.trust_signature = Some(signature);
+    let snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
 
-    // Create a room, write the signed metadata, and persist to disk.
+    // Create a room, write the metadata, and persist to disk.
     {
         let room = NotebookRoom::load_or_create(notebook_id, tmp.path(), blob_store.clone());
         {
@@ -620,19 +612,30 @@ async fn test_new_fresh_untitled_trust_from_doc() {
         }
     }
 
-    // Simulate daemon restart: create a fresh room with the same UUID.
-    // new_fresh should load the persisted doc and read trust from it.
+    // Approve the dep in the allowlist; trust now lives there, not in
+    // a per-machine signature embedded in the doc. The next room
+    // creation should read the persisted doc and resolve to Trusted via
+    // allowlist lookup.
+    let info = runt_trust::extract_trust_info(&snapshot_metadata_hashmap(&snapshot));
+    store.add_from_info(&info, "test").unwrap();
+
     let notebook_uuid = Uuid::parse_str(notebook_id).unwrap();
-    let room = NotebookRoom::new_fresh(notebook_uuid, None, tmp.path(), blob_store, false);
+    let room = NotebookRoom::new_fresh_with_trusted_packages(
+        notebook_uuid,
+        None,
+        tmp.path(),
+        blob_store,
+        false,
+        store,
+    )
+    .unwrap();
 
     let ts = room.trust_state.try_read().unwrap();
     assert_eq!(
         ts.status,
         runt_trust::TrustStatus::Trusted,
-        "Untitled notebook trust should survive daemon restart"
+        "Allowlist-approved deps should resolve to Trusted across daemon restart"
     );
-
-    runt_trust::set_test_key_path(None);
 }
 
 #[tokio::test(start_paused = true)]
@@ -688,8 +691,6 @@ fn snapshot_with_uv(deps: Vec<String>) -> NotebookMetadataSnapshot {
             conda: None,
             pixi: None,
             deno: None,
-            trust_signature: None,
-            trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
         extras: std::collections::BTreeMap::new(),
@@ -712,8 +713,6 @@ fn snapshot_with_conda(deps: Vec<String>) -> NotebookMetadataSnapshot {
             }),
             pixi: None,
             deno: None,
-            trust_signature: None,
-            trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
         extras: std::collections::BTreeMap::new(),
@@ -737,8 +736,6 @@ fn snapshot_with_pixi(deps: Vec<String>, pypi_deps: Vec<String>) -> NotebookMeta
                 python: None,
             }),
             deno: None,
-            trust_signature: None,
-            trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
         extras: std::collections::BTreeMap::new(),
@@ -757,8 +754,6 @@ fn snapshot_empty() -> NotebookMetadataSnapshot {
             conda: None,
             pixi: None,
             deno: None,
-            trust_signature: None,
-            trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
         extras: std::collections::BTreeMap::new(),
@@ -819,8 +814,6 @@ fn test_check_inline_deps_uv_priority() {
             }),
             pixi: None,
             deno: None,
-            trust_signature: None,
-            trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
         extras: std::collections::BTreeMap::new(),
@@ -854,8 +847,6 @@ fn test_check_inline_deps_deno() {
                 config: None,
                 flexible_npm_imports: None,
             }),
-            trust_signature: None,
-            trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
         extras: std::collections::BTreeMap::new(),
@@ -982,7 +973,7 @@ async fn test_save_notebook_to_disk_preserves_unknown_metadata() {
                 "metadata": {{
                     "custom_extension": {{"key": "value"}},
                     "jupyter": {{"source_hidden": true}},
-                    "runt": {{"trust_signature": "abc123", "schema_version": "1"}}
+                    "runt": {{"future_field": "preserve-me", "schema_version": "1"}}
                 }},
                 "cells": []
             }}"#
@@ -1030,13 +1021,13 @@ async fn test_save_notebook_to_disk_preserves_unknown_metadata() {
         "jupyter metadata should be preserved"
     );
 
-    // trust_signature in runt should be preserved (the typed runt
-    // field round-trips trust_signature explicitly).
+    // Unknown forward-compatible runt keys should round-trip via the
+    // RuntMetadata `extra` flatten map.
     let runt = metadata.get("runt").unwrap();
     assert_eq!(
-        runt.get("trust_signature"),
-        Some(&serde_json::json!("abc123")),
-        "trust_signature should be preserved"
+        runt.get("future_field"),
+        Some(&serde_json::json!("preserve-me")),
+        "unknown runt keys should be preserved"
     );
 }
 
@@ -4081,105 +4072,77 @@ async fn test_check_and_broadcast_sync_state_no_metadata() {
 
 // ── verify_trust_from_snapshot tests ───────────────────────────────────
 
+fn open_test_store(tmp: &tempfile::TempDir) -> crate::trusted_packages::TrustedPackageStore {
+    crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
+        .expect("open trusted package store")
+}
+
+fn unavailable_test_store() -> crate::trusted_packages::TrustedPackageStore {
+    crate::trusted_packages::TrustedPackageStore::unavailable("test")
+}
+
 #[test]
 fn test_verify_trust_from_snapshot_no_deps() {
     let snapshot = snapshot_empty();
-    let result = verify_trust_from_snapshot(&snapshot);
+    let result = verify_trust_from_snapshot(&snapshot, &unavailable_test_store());
     assert_eq!(result.status, runt_trust::TrustStatus::NoDependencies);
     assert!(!result.pending_launch);
 }
 
 #[test]
-fn test_verify_trust_from_snapshot_unsigned_deps() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let key_path = temp_dir.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
-
+fn test_verify_trust_from_snapshot_uv_unapproved() {
     let snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
-    let result = verify_trust_from_snapshot(&snapshot);
+    let result = verify_trust_from_snapshot(&snapshot, &unavailable_test_store());
     assert_eq!(result.status, runt_trust::TrustStatus::Untrusted);
     assert!(!result.pending_launch);
-
-    runt_trust::set_test_key_path(None);
 }
 
 #[test]
-fn test_verify_trust_from_snapshot_unsigned_pixi_deps() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let key_path = temp_dir.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
-
+fn test_verify_trust_from_snapshot_pixi_unapproved() {
     let snapshot = snapshot_with_pixi(vec!["pandas".to_string()], vec!["requests".to_string()]);
-    let result = verify_trust_from_snapshot(&snapshot);
+    let result = verify_trust_from_snapshot(&snapshot, &unavailable_test_store());
     assert_eq!(result.status, runt_trust::TrustStatus::Untrusted);
     assert_eq!(result.info.pixi_dependencies, vec!["pandas"]);
     assert_eq!(result.info.pixi_pypi_dependencies, vec!["requests"]);
     assert!(!result.pending_launch);
-
-    runt_trust::set_test_key_path(None);
 }
 
 #[test]
-fn test_verify_trust_from_snapshot_signed_trusted() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let key_path = temp_dir.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
+fn test_verify_trust_from_snapshot_uv_allowlisted_is_trusted() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = open_test_store(&tmp);
+    let snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
 
-    let mut snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
+    // Pre-approve the dep in the allowlist; trust now resolves Trusted.
+    let info = runt_trust::extract_trust_info(&snapshot_metadata_hashmap(&snapshot));
+    store.add_from_info(&info, "test").unwrap();
 
-    // Build the same HashMap that verify_trust_from_snapshot builds, then sign.
+    let result = verify_trust_from_snapshot(&snapshot, &store);
+    assert_eq!(result.status, runt_trust::TrustStatus::Trusted);
+    assert!(!result.pending_launch);
+}
+
+#[test]
+fn test_verify_trust_from_snapshot_conda_allowlisted_is_trusted() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = open_test_store(&tmp);
+    let snapshot = snapshot_with_conda(vec!["pandas".to_string()]);
+
+    let info = runt_trust::extract_trust_info(&snapshot_metadata_hashmap(&snapshot));
+    store.add_from_info(&info, "test").unwrap();
+
+    let result = verify_trust_from_snapshot(&snapshot, &store);
+    assert_eq!(result.status, runt_trust::TrustStatus::Trusted);
+}
+
+fn snapshot_metadata_hashmap(
+    snapshot: &NotebookMetadataSnapshot,
+) -> std::collections::HashMap<String, serde_json::Value> {
     let mut metadata = std::collections::HashMap::new();
     if let Ok(runt_value) = serde_json::to_value(&snapshot.runt) {
         metadata.insert("runt".to_string(), runt_value);
     }
-    let signature = runt_trust::sign_notebook_dependencies(&metadata).unwrap();
-    snapshot.runt.trust_signature = Some(signature);
-
-    let result = verify_trust_from_snapshot(&snapshot);
-    assert_eq!(result.status, runt_trust::TrustStatus::Trusted);
-    assert!(!result.pending_launch);
-
-    runt_trust::set_test_key_path(None);
-}
-
-#[test]
-fn test_verify_trust_from_snapshot_invalid_signature() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let key_path = temp_dir.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
-
-    let mut snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
-    // Set a bogus signature that won't match.
-    snapshot.runt.trust_signature = Some("bad-signature-value".to_string());
-
-    let result = verify_trust_from_snapshot(&snapshot);
-    assert_eq!(result.status, runt_trust::TrustStatus::SignatureInvalid);
-    assert!(!result.pending_launch);
-
-    runt_trust::set_test_key_path(None);
-}
-
-#[test]
-fn test_verify_trust_from_snapshot_conda_trusted() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let key_path = temp_dir.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
-
-    let mut snapshot = snapshot_with_conda(vec!["pandas".to_string()]);
-
-    // Build the same HashMap that verify_trust_from_snapshot builds, then sign.
-    let mut metadata = std::collections::HashMap::new();
-    if let Ok(runt_value) = serde_json::to_value(&snapshot.runt) {
-        metadata.insert("runt".to_string(), runt_value);
-    }
-    let signature = runt_trust::sign_notebook_dependencies(&metadata).unwrap();
-    snapshot.runt.trust_signature = Some(signature);
-
-    let result = verify_trust_from_snapshot(&snapshot);
-    assert_eq!(result.status, runt_trust::TrustStatus::Trusted);
-    assert!(!result.pending_launch);
-
-    runt_trust::set_test_key_path(None);
+    metadata
 }
 
 #[tokio::test]
@@ -4239,9 +4202,6 @@ async fn test_check_and_update_trust_state_no_deps() {
 #[tokio::test]
 async fn test_approve_trust_adds_dependencies_to_allowlist() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let key_path = tmp.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
-
     let store =
         crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
             .unwrap();
@@ -4269,16 +4229,34 @@ async fn test_approve_trust_adds_dependencies_to_allowlist() {
         pixi_channels: vec![],
     };
     assert!(store.all_dependencies_approved(&info).unwrap());
-
-    runt_trust::set_test_key_path(None);
 }
 
 #[tokio::test]
-async fn test_allowlisted_unsigned_dependencies_auto_sign_and_trust() {
+async fn test_approve_trust_returns_error_when_store_unavailable() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let key_path = tmp.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
+    // Store unavailable: approval must surface a real error rather than
+    // silently succeeding while the allowlist stays empty.
+    let store = crate::trusted_packages::TrustedPackageStore::unavailable("test disk full");
+    let (room, _path) = test_room_with_path_and_store(&tmp, "approve.ipynb", store);
+    {
+        let mut doc = room.doc.write().await;
+        doc.set_metadata_snapshot(&snapshot_with_uv(vec!["pandas>=2".to_string()]))
+            .unwrap();
+    }
 
+    let response = crate::requests::approve_trust::handle(&room, None).await;
+    let NotebookResponse::Error { error } = response else {
+        panic!("expected NotebookResponse::Error, got {response:?}");
+    };
+    assert!(
+        error.contains("Could not record trusted packages"),
+        "error message should explain the persistence failure; got: {error}"
+    );
+}
+
+#[tokio::test]
+async fn test_allowlisted_dependencies_resolve_to_trusted() {
+    let tmp = tempfile::TempDir::new().unwrap();
     let store =
         crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
             .unwrap();
@@ -4314,19 +4292,11 @@ async fn test_allowlisted_unsigned_dependencies_auto_sign_and_trust() {
         ts.info.approved_uv_dependencies,
         vec!["pandas>=2".to_string(), "numpy".to_string()]
     );
-    drop(ts);
-    let snapshot = room.doc.read().await.get_metadata_snapshot().unwrap();
-    assert!(snapshot.runt.trust_signature.is_some());
-
-    runt_trust::set_test_key_path(None);
 }
 
 #[tokio::test]
 async fn test_allowlist_partial_coverage_stays_untrusted_with_markers() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let key_path = tmp.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
-
     let store =
         crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
             .unwrap();
@@ -4362,92 +4332,39 @@ async fn test_allowlist_partial_coverage_stays_untrusted_with_markers() {
     drop(ts);
     let state = room.state.read(|sd| sd.read_state()).unwrap();
     assert_eq!(state.trust.approved_uv_dependencies, vec!["pandas>=2"]);
-
-    runt_trust::set_test_key_path(None);
-}
-
-#[tokio::test]
-async fn test_allowlist_does_not_override_invalid_signature() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let key_path = tmp.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
-
-    let store =
-        crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
-            .unwrap();
-    let seed = runt_trust::TrustInfo {
-        status: runt_trust::TrustStatus::Untrusted,
-        uv_dependencies: vec!["numpy".to_string()],
-        approved_uv_dependencies: vec![],
-        conda_dependencies: vec![],
-        approved_conda_dependencies: vec![],
-        conda_channels: vec![],
-        pixi_dependencies: vec![],
-        approved_pixi_dependencies: vec![],
-        pixi_pypi_dependencies: vec![],
-        approved_pixi_pypi_dependencies: vec![],
-        pixi_channels: vec![],
-    };
-    store.add_from_info(&seed, "test").unwrap();
-    let (room, _path) = test_room_with_path_and_store(&tmp, "invalid.ipynb", store);
-    let mut snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
-    snapshot.runt.trust_signature = Some("bad-signature-value".to_string());
-    {
-        let mut doc = room.doc.write().await;
-        doc.set_metadata_snapshot(&snapshot).unwrap();
-    }
-
-    check_and_update_trust_state(&room).await;
-
-    let ts = room.trust_state.read().await;
-    assert_eq!(ts.status, runt_trust::TrustStatus::SignatureInvalid);
-
-    runt_trust::set_test_key_path(None);
 }
 
 #[tokio::test]
 async fn test_check_and_update_trust_state_approval_updates_room() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let key_path = temp_dir.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
-
     let tmp = tempfile::TempDir::new().unwrap();
-    let (room, _path) = test_room_with_path(&tmp, "signed.ipynb");
+    let store = open_test_store(&tmp);
+    let (room, _path) = test_room_with_path_and_store(&tmp, "approved.ipynb", store.clone());
 
     // Align RuntimeStateDoc with the room's initial Untrusted state.
-    {
-        room.state
-            .with_doc(|sd| sd.set_trust("untrusted", true))
-            .unwrap();
-    }
+    room.state
+        .with_doc(|sd| sd.set_trust("untrusted", true))
+        .unwrap();
 
-    // Build a snapshot with UV deps and a valid trust signature.
-    let mut snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
-    let mut metadata = std::collections::HashMap::new();
-    if let Ok(runt_value) = serde_json::to_value(&snapshot.runt) {
-        metadata.insert("runt".to_string(), runt_value);
-    }
-    let signature = runt_trust::sign_notebook_dependencies(&metadata).unwrap();
-    snapshot.runt.trust_signature = Some(signature);
-
+    let snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
     {
         let mut doc = room.doc.write().await;
         doc.set_metadata_snapshot(&snapshot).unwrap();
     }
 
+    // Approve `numpy` in the allowlist; the doc-side trust check now flips
+    // from Untrusted to Trusted on the next `check_and_update_trust_state`.
+    let info = runt_trust::extract_trust_info(&snapshot_metadata_hashmap(&snapshot));
+    store.add_from_info(&info, "test").unwrap();
+
     check_and_update_trust_state(&room).await;
 
-    // Room trust_state should be Trusted.
     let ts = room.trust_state.read().await;
     assert_eq!(ts.status, runt_trust::TrustStatus::Trusted);
     drop(ts);
 
-    // RuntimeStateDoc should have "trusted" with needs_approval=false.
     let state = room.state.read(|sd| sd.read_state()).unwrap();
     assert_eq!(state.trust.status, "trusted");
     assert!(!state.trust.needs_approval);
-
-    runt_trust::set_test_key_path(None);
 }
 
 #[tokio::test]
@@ -4498,201 +4415,6 @@ async fn test_check_and_update_trust_state_idempotent() {
     // Final trust_state should be NoDependencies.
     let ts = room.trust_state.read().await;
     assert_eq!(ts.status, runt_trust::TrustStatus::NoDependencies);
-}
-
-/// Issue #2118: a previously-approved notebook must stay Trusted when the
-/// user adds a dependency. Before the fix, any dep write — whether from
-/// the UI (WASM → daemon) or an external file edit — would arrive with the
-/// stale signature, flip trust to SignatureInvalid, and kill the running
-/// kernel before the user could approve the updated dependencies.
-///
-/// The fix: when the room is already Trusted and new deps would produce a
-/// SignatureInvalid verification, re-sign in place with the daemon's trust
-/// key and keep the notebook Trusted.
-#[tokio::test]
-async fn test_check_and_update_trust_state_auto_resigns_trusted_notebook() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let key_path = temp_dir.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
-
-    let tmp = tempfile::TempDir::new().unwrap();
-    let (room, _path) = test_room_with_path(&tmp, "signed_then_edited.ipynb");
-
-    // Build a signed snapshot (numpy only) and seed the room with Trusted
-    // state, matching what happens at room creation time on disk.
-    let mut signed = snapshot_with_uv(vec!["numpy".to_string()]);
-    let mut metadata = std::collections::HashMap::new();
-    if let Ok(runt_value) = serde_json::to_value(&signed.runt) {
-        metadata.insert("runt".to_string(), runt_value);
-    }
-    let signature = runt_trust::sign_notebook_dependencies(&metadata).unwrap();
-    signed.runt.trust_signature = Some(signature.clone());
-
-    {
-        let mut doc = room.doc.write().await;
-        doc.set_metadata_snapshot(&signed).unwrap();
-    }
-    {
-        let mut ts = room.trust_state.write().await;
-        *ts = verify_trust_from_snapshot(&signed);
-    }
-    {
-        room.state
-            .with_doc(|sd| sd.set_trust("trusted", false))
-            .unwrap();
-    }
-
-    {
-        let ts = room.trust_state.read().await;
-        assert_eq!(ts.status, runt_trust::TrustStatus::Trusted);
-    }
-
-    // User (or external editor) adds `pandas`. Carries over the stale
-    // signature, which is now over a different dep set.
-    let mut edited = snapshot_with_uv(vec!["numpy".to_string(), "pandas".to_string()]);
-    edited.runt.trust_signature = Some(signature.clone());
-    {
-        let mut doc = room.doc.write().await;
-        doc.set_metadata_snapshot(&edited).unwrap();
-    }
-
-    check_and_update_trust_state(&room).await;
-
-    // Trust must stay Trusted — the daemon auto re-signed the new dep set.
-    {
-        let ts = room.trust_state.read().await;
-        assert_eq!(
-            ts.status,
-            runt_trust::TrustStatus::Trusted,
-            "dep add on a trusted notebook must auto re-sign, not flip to SignatureInvalid"
-        );
-    }
-
-    // The new signature in the doc must cover the new deps.
-    let resigned = {
-        let doc = room.doc.read().await;
-        doc.get_metadata_snapshot().unwrap()
-    };
-    let new_sig = resigned
-        .runt
-        .trust_signature
-        .as_deref()
-        .expect("signature present after auto re-sign");
-    assert_ne!(
-        new_sig, signature,
-        "signature must be refreshed to cover the new dep list"
-    );
-    let verified = verify_trust_from_snapshot(&resigned);
-    assert_eq!(verified.status, runt_trust::TrustStatus::Trusted);
-
-    // RuntimeStateDoc should not flip to signature_invalid — the user is
-    // still trusted so no banner should appear.
-    {
-        let state = room.state.read(|sd| sd.read_state()).unwrap();
-        assert_eq!(state.trust.status, "trusted");
-        assert!(!state.trust.needs_approval);
-    }
-
-    runt_trust::set_test_key_path(None);
-}
-
-/// Auto re-sign must only apply when the notebook was already Trusted.
-/// A brand-new notebook with unsigned deps must still land in Untrusted —
-/// the user has not approved anything yet.
-#[tokio::test]
-async fn test_check_and_update_trust_state_no_autoresign_when_not_previously_trusted() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let key_path = temp_dir.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
-
-    let tmp = tempfile::TempDir::new().unwrap();
-    let (room, _path) = test_room_with_path(&tmp, "fresh_notebook.ipynb");
-
-    // Room starts Untrusted (default). Write deps with no signature —
-    // simulates the frontend WASM adding a dep to a brand-new notebook.
-    let snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
-    {
-        let mut doc = room.doc.write().await;
-        doc.set_metadata_snapshot(&snapshot).unwrap();
-    }
-
-    check_and_update_trust_state(&room).await;
-
-    // Should land in Untrusted (no prior approval, no auto sign).
-    let ts = room.trust_state.read().await;
-    assert_eq!(ts.status, runt_trust::TrustStatus::Untrusted);
-
-    runt_trust::set_test_key_path(None);
-}
-
-// ── auto_sign_in_place: notebook dependency trust coverage ──
-//
-// Notebook dependency trust signs only deps copied into notebook metadata.
-// Project-file deps are runtime context and are intentionally not signed unless
-// the user explicitly copies them into metadata.
-
-#[tokio::test]
-async fn test_auto_sign_in_place_uv_yields_trusted() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let key_path = temp_dir.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
-
-    let mut snap = snapshot_with_uv(vec!["pandas".to_string(), "numpy".to_string()]);
-    assert!(snap.runt.trust_signature.is_none());
-
-    auto_sign_in_place(&mut snap).expect("auto_sign_in_place");
-
-    assert!(snap.runt.trust_signature.is_some());
-    assert!(snap.runt.trust_timestamp.is_some());
-    assert_eq!(
-        verify_trust_from_snapshot(&snap).status,
-        runt_trust::TrustStatus::Trusted,
-    );
-
-    runt_trust::set_test_key_path(None);
-}
-
-#[tokio::test]
-async fn test_auto_sign_in_place_conda_yields_trusted() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let key_path = temp_dir.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
-
-    let mut snap = snapshot_with_conda(vec!["scipy".to_string()]);
-    auto_sign_in_place(&mut snap).expect("auto_sign_in_place");
-
-    assert_eq!(
-        verify_trust_from_snapshot(&snap).status,
-        runt_trust::TrustStatus::Trusted,
-    );
-
-    runt_trust::set_test_key_path(None);
-}
-
-#[tokio::test]
-async fn test_auto_sign_in_place_pixi_writes_signature() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let key_path = temp_dir.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
-
-    let mut snap = snapshot_empty();
-    snap.runt.pixi = Some(notebook_doc::metadata::PixiInlineMetadata {
-        dependencies: vec!["pandas".to_string()],
-        pypi_dependencies: vec![],
-        channels: vec!["conda-forge".to_string()],
-        python: None,
-    });
-
-    auto_sign_in_place(&mut snap).expect("auto_sign_in_place");
-
-    assert!(snap.runt.trust_signature.is_some());
-    assert!(snap.runt.trust_timestamp.is_some());
-    assert_eq!(
-        verify_trust_from_snapshot(&snap).status,
-        runt_trust::TrustStatus::Trusted,
-    );
-
-    runt_trust::set_test_key_path(None);
 }
 
 // ── Per-agent oneshot channel tests ──────────────────────────────
@@ -6415,7 +6137,7 @@ fn test_project_file_deps_match_trust_info_pyproject_match() {
     let nb_path = tmp.path().join("notebook.ipynb");
     write_unsigned_ipynb_with_uv_deps(&nb_path, &["pandas", "numpy"]);
 
-    let info = verify_trust_from_file(&nb_path).info;
+    let info = verify_trust_from_file(&nb_path, &unavailable_test_store()).info;
     assert_eq!(info.uv_dependencies, vec!["pandas", "numpy"]);
     assert!(project_file_deps_match_trust_info(&nb_path, &info));
 }
@@ -6427,7 +6149,7 @@ fn test_project_file_deps_match_trust_info_pyproject_mismatch() {
     let nb_path = tmp.path().join("notebook.ipynb");
     write_unsigned_ipynb_with_uv_deps(&nb_path, &["pandas", "numpy"]);
 
-    let info = verify_trust_from_file(&nb_path).info;
+    let info = verify_trust_from_file(&nb_path, &unavailable_test_store()).info;
     assert!(!project_file_deps_match_trust_info(&nb_path, &info));
 }
 
@@ -6489,7 +6211,7 @@ fn test_project_file_deps_match_trust_info_envyml_channel_mismatch() {
     // Same deps, different channels — must not match.
     write_unsigned_ipynb_with_conda(&nb_path, &["pandas", "numpy"], &["http://evil.example"]);
 
-    let info = verify_trust_from_file(&nb_path).info;
+    let info = verify_trust_from_file(&nb_path, &unavailable_test_store()).info;
     assert_eq!(info.conda_dependencies, vec!["pandas", "numpy"]);
     assert_eq!(info.conda_channels, vec!["http://evil.example"]);
     assert!(
@@ -6505,7 +6227,7 @@ fn test_project_file_deps_match_trust_info_envyml_match() {
     let nb_path = tmp.path().join("notebook.ipynb");
     write_unsigned_ipynb_with_conda(&nb_path, &["pandas"], &["conda-forge", "bioconda"]);
 
-    let info = verify_trust_from_file(&nb_path).info;
+    let info = verify_trust_from_file(&nb_path, &unavailable_test_store()).info;
     assert!(project_file_deps_match_trust_info(&nb_path, &info));
 }
 
@@ -6517,7 +6239,7 @@ fn test_project_file_deps_match_trust_info_envyml_channel_order() {
     // Same channels but reversed — channel priority matters, so reject.
     write_unsigned_ipynb_with_conda(&nb_path, &["pandas"], &["bioconda", "conda-forge"]);
 
-    let info = verify_trust_from_file(&nb_path).info;
+    let info = verify_trust_from_file(&nb_path, &unavailable_test_store()).info;
     assert!(
         !project_file_deps_match_trust_info(&nb_path, &info),
         "channel order affects conda resolution priority; reorderings must not auto-heal",
@@ -6530,7 +6252,7 @@ fn test_project_file_deps_match_trust_info_no_project_file() {
     let nb_path = tmp.path().join("notebook.ipynb");
     write_unsigned_ipynb_with_uv_deps(&nb_path, &["pandas"]);
 
-    let info = verify_trust_from_file(&nb_path).info;
+    let info = verify_trust_from_file(&nb_path, &unavailable_test_store()).info;
     assert!(!project_file_deps_match_trust_info(&nb_path, &info));
 }
 
@@ -6540,10 +6262,6 @@ fn test_project_file_deps_match_trust_info_no_project_file() {
 /// gate in peer_connection.rs doesn't block.
 #[tokio::test]
 async fn test_new_fresh_promotes_untrusted_when_project_file_deps_match() {
-    let key_tmp = tempfile::tempdir().unwrap();
-    let key_path = key_tmp.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
-
     let tmp = tempfile::tempdir().unwrap();
     write_pyproject_with_deps(tmp.path(), &["pandas", "numpy"]);
     let nb_path = tmp.path().join("notebook.ipynb");
@@ -6551,37 +6269,57 @@ async fn test_new_fresh_promotes_untrusted_when_project_file_deps_match() {
 
     // Bare verify sees Untrusted — precondition.
     assert_eq!(
-        verify_trust_from_file(&nb_path).status,
+        verify_trust_from_file(&nb_path, &unavailable_test_store()).status,
         runt_trust::TrustStatus::Untrusted,
     );
 
-    // Room creation runs reconciliation and should land on Trusted.
+    // Room creation runs reconciliation: project-file deps get seeded into
+    // the allowlist with source="project_file", and trust recomputes to
+    // Trusted via the standard allowlist gate.
     let blob_store = test_blob_store(&tmp);
-    let room = NotebookRoom::new_fresh(
+    let store = open_test_store(&tmp);
+    let room = NotebookRoom::new_fresh_with_trusted_packages(
         uuid::Uuid::new_v4(),
         Some(nb_path.clone()),
         tmp.path(),
         blob_store,
         false,
-    );
+        store.clone(),
+    )
+    .expect("create test notebook room");
 
     let ts = room.trust_state.read().await;
     assert_eq!(
         ts.status,
         runt_trust::TrustStatus::Trusted,
-        "room init should promote Untrusted -> Trusted when project-file deps match",
+        "room init should seed project-file deps into the allowlist and resolve Trusted",
     );
+    drop(ts);
 
-    runt_trust::set_test_key_path(None);
+    // The deps are now in the allowlist - subsequent rooms see Trusted
+    // without needing to re-run reconciliation.
+    let info_check = runt_trust::TrustInfo {
+        status: runt_trust::TrustStatus::Untrusted,
+        uv_dependencies: vec!["pandas".to_string(), "numpy".to_string()],
+        approved_uv_dependencies: vec![],
+        conda_dependencies: vec![],
+        approved_conda_dependencies: vec![],
+        conda_channels: vec![],
+        pixi_dependencies: vec![],
+        approved_pixi_dependencies: vec![],
+        pixi_pypi_dependencies: vec![],
+        approved_pixi_pypi_dependencies: vec![],
+        pixi_channels: vec![],
+    };
+    assert!(
+        store.all_dependencies_approved(&info_check).unwrap(),
+        "project-file reconciliation should write approvals to the allowlist"
+    );
 }
 
 /// Counterpart: if deps differ, room init must leave trust Untrusted.
 #[tokio::test]
 async fn test_new_fresh_leaves_untrusted_when_deps_differ() {
-    let key_tmp = tempfile::tempdir().unwrap();
-    let key_path = key_tmp.path().join("trust-key");
-    runt_trust::set_test_key_path(Some(key_path.clone()));
-
     let tmp = tempfile::tempdir().unwrap();
     write_pyproject_with_deps(tmp.path(), &["pandas"]);
     let nb_path = tmp.path().join("notebook.ipynb");
@@ -6602,8 +6340,37 @@ async fn test_new_fresh_leaves_untrusted_when_deps_differ() {
         runt_trust::TrustStatus::Untrusted,
         "mismatched deps must not auto-promote",
     );
+}
 
-    runt_trust::set_test_key_path(None);
+/// Project-file reconciliation must not bypass the allowlist when the
+/// store can't accept writes. With the allowlist as the single trust
+/// gate, an unavailable store has to leave the room Untrusted - otherwise
+/// matching deps would auto-launch with no record of approval.
+#[tokio::test]
+async fn test_new_fresh_stays_untrusted_when_allowlist_unavailable() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_pyproject_with_deps(tmp.path(), &["pandas", "numpy"]);
+    let nb_path = tmp.path().join("notebook.ipynb");
+    write_unsigned_ipynb_with_uv_deps(&nb_path, &["pandas", "numpy"]);
+
+    let blob_store = test_blob_store(&tmp);
+    let store = unavailable_test_store();
+    let room = NotebookRoom::new_fresh_with_trusted_packages(
+        uuid::Uuid::new_v4(),
+        Some(nb_path.clone()),
+        tmp.path(),
+        blob_store,
+        false,
+        store,
+    )
+    .expect("create test notebook room");
+
+    let ts = room.trust_state.read().await;
+    assert_eq!(
+        ts.status,
+        runt_trust::TrustStatus::Untrusted,
+        "fail-closed: project-file reconciliation cannot bypass the allowlist",
+    );
 }
 
 // ── #2157: environment.yml declares unbuilt conda env ─────────────────
@@ -6888,11 +6655,9 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
             )]),
         )]);
         doc.set_cell_attachments("raw-1", &raw_attachments).unwrap();
-        // Stamp source metadata: env_id + trust signature + timestamp.
+        // Stamp source metadata: env_id only (clone gets a fresh one).
         let mut snap = snapshot_empty();
         snap.runt.env_id = Some("source-env-id".to_string());
-        snap.runt.trust_signature = Some("hmac-sha256:deadbeef".to_string());
-        snap.runt.trust_timestamp = Some("2026-04-25T00:00:00Z".to_string());
         doc.set_metadata_snapshot(&snap).unwrap();
     }
     // Dispatch clone handler.
@@ -6951,7 +6716,7 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
     let code_cell = clone_cells.iter().find(|c| c.id == "code-1").unwrap();
     assert_eq!(code_cell.execution_count, "null");
 
-    // Metadata: fresh env_id, trust cleared.
+    // Metadata: fresh env_id.
     let clone_snap = clone_room
         .doc
         .read()
@@ -6960,18 +6725,6 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
         .expect("clone should have metadata");
     assert!(clone_snap.runt.env_id.is_some());
     assert_ne!(clone_snap.runt.env_id.as_deref(), Some("source-env-id"));
-    // Trust signature + timestamp copy through: the signature covers
-    // runt.uv/conda/pixi only, which we copy byte-for-byte, and the trust
-    // key is machine-local — so a same-machine clone of a trusted source
-    // stays trusted without re-prompting the user.
-    assert_eq!(
-        clone_snap.runt.trust_signature.as_deref(),
-        Some("hmac-sha256:deadbeef")
-    );
-    assert_eq!(
-        clone_snap.runt.trust_timestamp.as_deref(),
-        Some("2026-04-25T00:00:00Z")
-    );
 
     // Attachments copied at the CRDT level for save/export.
     let clone_attachments = clone_room
@@ -7979,4 +7732,91 @@ async fn test_autosave_shutdown_during_loading_returns_false_without_write() {
         1,
         "shutdown while loading should not write pending edits to disk"
     );
+}
+
+// ── finalize_trust_status: allowlist-driven trust resolution ──
+
+#[test]
+fn finalize_trust_status_no_deps_returns_no_dependencies() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store =
+        crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
+            .unwrap();
+    let mut info = runt_trust::extract_trust_info(&std::collections::HashMap::new());
+    assert_eq!(info.status, runt_trust::TrustStatus::NoDependencies);
+    info.status = runt_trust::TrustStatus::NoDependencies; // ensure reset
+
+    let status = super::metadata::finalize_trust_status(&info, &store);
+    assert_eq!(status, runt_trust::TrustStatus::NoDependencies);
+}
+
+#[test]
+fn finalize_trust_status_all_deps_approved_returns_trusted() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store =
+        crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
+            .unwrap();
+
+    let metadata = serde_json::json!({
+        "runt": { "uv": { "dependencies": ["pandas", "numpy"] } }
+    });
+    let mut hashmap = std::collections::HashMap::new();
+    hashmap.insert("runt".to_string(), metadata["runt"].clone());
+    let info = runt_trust::extract_trust_info(&hashmap);
+    assert_eq!(info.status, runt_trust::TrustStatus::Untrusted);
+
+    store.add_from_info(&info, "test").unwrap();
+
+    let status = super::metadata::finalize_trust_status(&info, &store);
+    assert_eq!(status, runt_trust::TrustStatus::Trusted);
+}
+
+#[test]
+fn finalize_trust_status_missing_dep_returns_untrusted() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store =
+        crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
+            .unwrap();
+
+    // Approve only pandas, then ask about pandas + numpy.
+    let approved_only = runt_trust::TrustInfo {
+        status: runt_trust::TrustStatus::Untrusted,
+        uv_dependencies: vec!["pandas".to_string()],
+        approved_uv_dependencies: vec![],
+        conda_dependencies: vec![],
+        approved_conda_dependencies: vec![],
+        conda_channels: vec![],
+        pixi_dependencies: vec![],
+        approved_pixi_dependencies: vec![],
+        pixi_pypi_dependencies: vec![],
+        approved_pixi_pypi_dependencies: vec![],
+        pixi_channels: vec![],
+    };
+    store.add_from_info(&approved_only, "test").unwrap();
+
+    let mut hashmap = std::collections::HashMap::new();
+    hashmap.insert(
+        "runt".to_string(),
+        serde_json::json!({ "uv": { "dependencies": ["pandas", "numpy"] } }),
+    );
+    let info = runt_trust::extract_trust_info(&hashmap);
+
+    let status = super::metadata::finalize_trust_status(&info, &store);
+    assert_eq!(status, runt_trust::TrustStatus::Untrusted);
+}
+
+#[test]
+fn finalize_trust_status_unavailable_store_is_untrusted() {
+    // Fail-closed: if the allowlist can't tell us, don't grant trust.
+    let store = crate::trusted_packages::TrustedPackageStore::unavailable("test");
+
+    let mut hashmap = std::collections::HashMap::new();
+    hashmap.insert(
+        "runt".to_string(),
+        serde_json::json!({ "uv": { "dependencies": ["pandas"] } }),
+    );
+    let info = runt_trust::extract_trust_info(&hashmap);
+
+    let status = super::metadata::finalize_trust_status(&info, &store);
+    assert_eq!(status, runt_trust::TrustStatus::Untrusted);
 }

@@ -103,7 +103,6 @@ export function TrustDialog({
   };
 
   const hasTyposquats = typosquatWarnings.length > 0;
-  const isSignatureInvalid = trustInfo?.status === "signature_invalid";
   const approvedUv = new Set(trustInfo?.approved_uv_dependencies ?? []);
   const approvedConda = new Set(trustInfo?.approved_conda_dependencies ?? []);
   const approvedPixi = new Set(trustInfo?.approved_pixi_dependencies ?? []);
@@ -115,14 +114,12 @@ export function TrustDialog({
       onOpenChange={onOpenChange}
       testId="trust-dialog"
       icon={<ShieldAlertIcon className="size-5 text-amber-500" />}
-      title={isSignatureInvalid ? "Dependencies Modified" : "Review Dependencies"}
+      title="Review Dependencies"
       description={
         description ??
-        (isSignatureInvalid
-          ? "This notebook's dependencies have been modified since you last approved them. Review and approve to continue."
-          : daemonMode
-            ? "This notebook wants to install packages. Once approved, the kernel will start automatically."
-            : "This notebook wants to install packages. Review them before running code.")
+        (daemonMode
+          ? "This notebook wants to install packages. Once approved, the kernel will start automatically."
+          : "This notebook wants to install packages. Review them before running code.")
       }
       footer={
         <>

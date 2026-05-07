@@ -115,7 +115,7 @@ nteract/desktop
 │   ├── kernel-launch/     # Shared kernel launching API
 │   ├── kernel-env/        # Environment progress reporting
 │   ├── runt-mcp/          # Rust-native MCP server for notebook interaction
-│   ├── runt-trust/        # HMAC trust verification
+│   ├── runt-trust/        # Notebook trust extraction
 │   ├── runt-workspace/    # Workspace detection utilities
 │   ├── runtimed-client/   # Shared client library for daemon communication
 │   ├── repr-llm/          # LLM-friendly text summaries of visualization specs

@@ -70,8 +70,17 @@ impl TrustedPackageStore {
             return Ok(());
         }
 
-        let StoreInner::Sqlite { conn } = self.inner.as_ref() else {
-            return Ok(());
+        // Fail-closed when the SQLite store is unavailable: the allowlist
+        // is the only trust gate, so a silent success here would leave the
+        // notebook blocked from launching while the UI reports approval
+        // worked.
+        let conn = match self.inner.as_ref() {
+            StoreInner::Sqlite { conn } => conn,
+            StoreInner::Unavailable { reason } => {
+                return Err(anyhow::anyhow!(
+                    "trusted package store unavailable: {reason}"
+                ));
+            }
         };
 
         let approved_at = chrono::Utc::now().to_rfc3339();
@@ -547,5 +556,53 @@ mod tests {
         TrustedPackageStore::open(path.clone()).unwrap();
         let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn add_from_info_returns_error_when_store_unavailable() {
+        let store = TrustedPackageStore::unavailable("disk full");
+        let info = runt_trust::TrustInfo {
+            status: runt_trust::TrustStatus::Untrusted,
+            uv_dependencies: vec!["pandas".into()],
+            approved_uv_dependencies: vec![],
+            conda_dependencies: vec![],
+            approved_conda_dependencies: vec![],
+            conda_channels: vec![],
+            pixi_dependencies: vec![],
+            approved_pixi_dependencies: vec![],
+            pixi_pypi_dependencies: vec![],
+            approved_pixi_pypi_dependencies: vec![],
+            pixi_channels: vec![],
+        };
+
+        let err = store
+            .add_from_info(&info, "test")
+            .expect_err("unavailable store must surface an error");
+        let message = format!("{err}");
+        assert!(
+            message.contains("unavailable") && message.contains("disk full"),
+            "error message should mention the unavailable reason; got: {message}"
+        );
+    }
+
+    #[test]
+    fn add_from_info_succeeds_with_no_identities_even_when_unavailable() {
+        // Empty TrustInfo carries no identities; nothing to persist, so the
+        // store's availability is irrelevant.
+        let store = TrustedPackageStore::unavailable("disk full");
+        let info = runt_trust::TrustInfo {
+            status: runt_trust::TrustStatus::NoDependencies,
+            uv_dependencies: vec![],
+            approved_uv_dependencies: vec![],
+            conda_dependencies: vec![],
+            approved_conda_dependencies: vec![],
+            conda_channels: vec![],
+            pixi_dependencies: vec![],
+            approved_pixi_dependencies: vec![],
+            pixi_pypi_dependencies: vec![],
+            approved_pixi_pypi_dependencies: vec![],
+            pixi_channels: vec![],
+        };
+        store.add_from_info(&info, "test").unwrap();
     }
 }
