@@ -1,45 +1,23 @@
 import { useNotebookHost } from "@nteract/notebook-host";
-import { useCallback, useEffect, useState } from "react";
+import type { HostUpdateStatus } from "@nteract/notebook-host";
+import { useCallback, useSyncExternalStore } from "react";
 import { logger } from "../lib/logger";
 
-export type UpdateStatus = "idle" | "checking" | "available" | "error";
-
-interface UpdaterState {
-  status: UpdateStatus;
-  version: string | null;
-  error: string | null;
-}
-
-const CHECK_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+export type UpdateStatus = HostUpdateStatus;
 
 export function useUpdater() {
   const host = useNotebookHost();
-  const [state, setState] = useState<UpdaterState>({
-    status: "idle",
-    version: null,
-    error: null,
-  });
+  const state = useSyncExternalStore(
+    host.updater.subscribe,
+    host.updater.getSnapshot,
+    host.updater.getSnapshot,
+  );
 
   const checkForUpdate = useCallback(async () => {
     try {
-      setState((prev) => ({ ...prev, status: "checking", error: null }));
-      const update = await host.updater.check();
-      if (update) {
-        setState({
-          status: "available",
-          version: update.version,
-          error: null,
-        });
-      } else {
-        setState({ status: "idle", version: null, error: null });
-      }
+      await host.updater.check();
     } catch (e) {
       logger.warn("[updater] check failed:", e);
-      setState((prev) => ({
-        ...prev,
-        status: "error",
-        error: String(e),
-      }));
     }
   }, [host]);
 
@@ -49,18 +27,8 @@ export function useUpdater() {
       await host.updater.beginUpgrade();
     } catch (e) {
       logger.error("[updater] failed to open upgrade screen:", e);
-      setState((prev) => ({ ...prev, status: "available" }));
     }
   }, [host]);
-
-  useEffect(() => {
-    const timer = setTimeout(() => checkForUpdate(), 5000);
-    const interval = setInterval(checkForUpdate, CHECK_INTERVAL_MS);
-    return () => {
-      clearTimeout(timer);
-      clearInterval(interval);
-    };
-  }, [checkForUpdate]);
 
   return {
     ...state,
