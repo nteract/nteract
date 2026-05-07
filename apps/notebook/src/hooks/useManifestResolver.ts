@@ -1,3 +1,4 @@
+import type { HostBlobResolver } from "@nteract/notebook-host";
 import { logger } from "../lib/logger";
 import { isOutputManifest, type OutputManifest, resolveManifest } from "../lib/manifest-resolution";
 import type { JupyterOutput } from "../types";
@@ -17,12 +18,12 @@ import type { JupyterOutput } from "../types";
  */
 export async function resolveOutputValue(
   output: unknown,
-  blobPort: number,
+  blobResolver: HostBlobResolver,
 ): Promise<JupyterOutput | null> {
   // Structured manifest from WASM — resolve ContentRefs (inline + blob)
   if (isOutputManifest(output)) {
     try {
-      return await resolveManifest(output as OutputManifest, blobPort);
+      return await resolveManifest(output as OutputManifest, blobResolver);
     } catch (e) {
       logger.warn("[manifest-resolver] Failed to resolve manifest:", e);
       return null;
@@ -40,7 +41,7 @@ export async function resolveOutputValue(
       const parsed = JSON.parse(output);
       if (isOutputManifest(parsed)) {
         try {
-          return await resolveManifest(parsed as OutputManifest, blobPort);
+          return await resolveManifest(parsed as OutputManifest, blobResolver);
         } catch (e) {
           logger.warn("[manifest-resolver] Failed to resolve parsed manifest:", e);
           return null;

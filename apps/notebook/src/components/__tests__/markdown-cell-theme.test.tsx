@@ -107,6 +107,7 @@ vi.mock("../../hooks/useCrdtBridge", () => ({
 }));
 
 vi.mock("../../lib/blob-port", () => ({
+  useBlobResolver: () => null,
   useBlobPort: () => null,
 }));
 

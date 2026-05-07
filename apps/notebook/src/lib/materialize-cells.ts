@@ -2,6 +2,7 @@ import type { JupyterOutput, NotebookCell } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { logger } from "./logger";
 import {
+  type BlobResolverInput,
   isOutputManifest,
   resolveManifest,
   resolveManifestSync,
@@ -82,14 +83,14 @@ export interface CellSnapshot {
  *
  * - If cached, returns the cached value.
  * - If a structured OutputManifest (has ContentRef data), resolves via
- *   resolveManifest (may fetch blobs).
+ *   resolveManifest (may fetch blob content).
  * - If an object with output_type but no ContentRefs, treats as raw
  *   JupyterOutput.
  * - If a string, parses as JSON (legacy fallback).
  */
 export async function resolveOutput(
   output: unknown,
-  blobPort: number | null,
+  blobResolver: BlobResolverInput | null,
   cache: Map<string, JupyterOutput>,
 ): Promise<JupyterOutput | null> {
   const key = outputCacheKey(output);
@@ -98,12 +99,12 @@ export async function resolveOutput(
 
   // Structured manifest from WASM — resolve ContentRefs
   if (isOutputManifest(output)) {
-    if (blobPort === null) {
-      logger.warn("[materialize-cells] Manifest object but no blob port");
+    if (blobResolver === null) {
+      logger.warn("[materialize-cells] Manifest object but no blob resolver");
       return null;
     }
     try {
-      const resolved = await resolveManifest(output, blobPort);
+      const resolved = await resolveManifest(output, blobResolver);
       cache.set(key, resolved);
       return resolved;
     } catch (e) {
@@ -119,7 +120,7 @@ export async function resolveOutput(
             ...output,
             data: { "text/plain": output.data["text/plain"] },
           } as typeof output;
-          const resolved = await resolveManifest(fallback, blobPort);
+          const resolved = await resolveManifest(fallback, blobResolver);
           // Don't cache the fallback — leave the original key as a cache miss
           // so the next materialization retries the rich MIME type.
           return resolved;
@@ -166,7 +167,7 @@ export async function resolveOutput(
  */
 function resolveOutputSync(
   output: unknown,
-  blobPort: number | null,
+  blobResolver: BlobResolverInput | null,
   cache: Map<string, JupyterOutput>,
 ): JupyterOutput | null {
   const key = outputCacheKey(output);
@@ -175,8 +176,8 @@ function resolveOutputSync(
 
   // Structured manifest — try sync resolution (inline + binary URL only)
   if (isOutputManifest(output)) {
-    if (blobPort === null) return null;
-    const resolved = resolveManifestSync(output, blobPort);
+    if (blobResolver === null) return null;
+    const resolved = resolveManifestSync(output, blobResolver);
     if (resolved) {
       cache.set(key, resolved);
       return resolved;
@@ -247,7 +248,7 @@ export function reuseOutputsIfUnchanged(
 export function cellSnapshotsToNotebookCellsSync(
   snapshots: CellSnapshot[],
   cache: Map<string, JupyterOutput>,
-  blobPort?: number | null,
+  blobResolver?: BlobResolverInput | null,
 ): NotebookCell[] {
   return snapshots.map((snap) => {
     const metadata = snap.metadata ?? {};
@@ -255,7 +256,7 @@ export function cellSnapshotsToNotebookCellsSync(
     if (snap.cell_type === "code") {
       // Resolve outputs from cache or sync-resolvable manifests
       const resolvedOutputs = snap.outputs
-        .map((output) => resolveOutputSync(output, blobPort ?? null, cache))
+        .map((output) => resolveOutputSync(output, blobResolver ?? null, cache))
         .filter((o): o is JupyterOutput => o !== null);
 
       const ec = resolveExecutionCount(
@@ -302,7 +303,7 @@ export function cellSnapshotsToNotebookCellsSync(
  */
 export async function cellSnapshotsToNotebookCells(
   snapshots: CellSnapshot[],
-  blobPort: number | null,
+  blobResolver: BlobResolverInput | null,
   cache: Map<string, JupyterOutput>,
 ): Promise<NotebookCell[]> {
   return Promise.all(
@@ -314,7 +315,7 @@ export async function cellSnapshotsToNotebookCells(
         // Resolve all outputs (structured manifests or legacy JSON strings)
         const resolvedOutputs = (
           await Promise.all(
-            snap.outputs.map((o) => resolveOutput(o, blobPort, cache)),
+            snap.outputs.map((o) => resolveOutput(o, blobResolver, cache)),
           )
         ).filter((o): o is JupyterOutput => o !== null);
 
@@ -367,7 +368,7 @@ export function materializeCellFromWasm(
   cellId: string,
   cache: Map<string, JupyterOutput>,
   previousCell?: NotebookCell,
-  blobPort?: number | null,
+  blobResolver?: BlobResolverInput | null,
 ): NotebookCell | null {
   const cellType = handle.get_cell_type(cellId);
   if (!cellType) return null;
@@ -378,7 +379,7 @@ export function materializeCellFromWasm(
   if (cellType === "code") {
     const rawOutputs: unknown[] = handle.get_cell_outputs(cellId) ?? [];
     const resolvedOutputs = rawOutputs
-      .map((output) => resolveOutputSync(output, blobPort ?? null, cache))
+      .map((output) => resolveOutputSync(output, blobResolver ?? null, cache))
       .filter((o): o is JupyterOutput => o !== null);
 
     const prevOutputs =

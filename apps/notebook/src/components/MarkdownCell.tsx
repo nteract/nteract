@@ -22,7 +22,7 @@ import { cn } from "@/lib/utils";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
 import { useCrdtBridge } from "../hooks/useCrdtBridge";
-import { useBlobPort } from "../lib/blob-port";
+import { useBlobResolver } from "../lib/blob-port";
 import {
   useIsCellFocused,
   useIsNextCellFromFocused,
@@ -207,7 +207,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   const colorThemeRef = useRef(colorTheme);
   colorThemeRef.current = colorTheme;
 
-  const blobPort = useBlobPort();
+  const blobResolver = useBlobResolver();
 
   const handleDoubleClick = useCallback(() => {
     setEditing(true);
@@ -254,14 +254,18 @@ export const MarkdownCell = memo(function MarkdownCell({
     injectedLibsRef.current.clear();
     // Inject markdown renderer plugin before rendering (idempotent, cached after first load)
     await injectPluginsForMimes(frameRef.current, ["text/markdown"], injectedLibsRef.current);
-    const processedSource = rewriteMarkdownAssetRefs(cell.source, cell.resolvedAssets, blobPort);
+    const processedSource = rewriteMarkdownAssetRefs(
+      cell.source,
+      cell.resolvedAssets,
+      blobResolver,
+    );
     frameRef.current.render({
       mimeType: "text/markdown",
       data: processedSource,
       cellId: cell.id,
       replace: true,
     });
-  }, [cell.source, cell.id, cell.resolvedAssets, blobPort]);
+  }, [cell.source, cell.id, cell.resolvedAssets, blobResolver]);
 
   // Sync markdown to iframe whenever source or resolved assets change (supports RTC updates)
   useEffect(() => {
@@ -272,7 +276,7 @@ export const MarkdownCell = memo(function MarkdownCell({
         const processedSource = rewriteMarkdownAssetRefs(
           cell.source,
           cell.resolvedAssets,
-          blobPort,
+          blobResolver,
         );
         frame.render({
           mimeType: "text/markdown",
@@ -282,7 +286,7 @@ export const MarkdownCell = memo(function MarkdownCell({
         });
       });
     }
-  }, [cell.source, cell.id, cell.resolvedAssets, blobPort]);
+  }, [cell.source, cell.id, cell.resolvedAssets, blobResolver]);
 
   // Handle link clicks from iframe - open in system browser
   const handleLinkClick = useCallback((url: string) => {

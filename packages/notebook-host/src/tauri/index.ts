@@ -35,6 +35,8 @@ import type {
   DaemonReadyPayload,
   DaemonUnavailablePayload,
   GitInfo,
+  HostBlobRef,
+  HostBlobResolver,
   HostBlobs,
   HostDaemon,
   HostDaemonEvents,
@@ -87,6 +89,17 @@ function listenWebview<T>(eventName: string, cb: (payload: T) => void): Unlisten
   };
 }
 
+function createHttpBlobResolver(port: number, fetchImpl: typeof fetch = fetch): HostBlobResolver {
+  const url = (ref: HostBlobRef) => `http://127.0.0.1:${port}/blob/${ref.blob}`;
+  return {
+    port,
+    url,
+    fetch(ref) {
+      return fetchImpl(url(ref));
+    },
+  };
+}
+
 export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost {
   const transport = opts.transport ?? new TauriTransport();
   let reconnectPromise: Promise<void> | null = null;
@@ -117,9 +130,17 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     },
   };
 
-  const blobs: HostBlobs = {
+  let blobResolver: HostBlobResolver | null = null;
+
+  const blobHost: HostBlobs = {
     async port() {
-      return invoke<number>("get_blob_port");
+      return (await blobHost.resolver()).port ?? invoke<number>("get_blob_port");
+    },
+    async resolver() {
+      const port = await invoke<number>("get_blob_port");
+      if (blobResolver?.port === port) return blobResolver;
+      blobResolver = createHttpBlobResolver(port);
+      return blobResolver;
     },
   };
 
@@ -404,7 +425,7 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     daemon,
     daemonEvents,
     relay,
-    blobs,
+    blobs: blobHost,
     trust,
     deps,
     notebook,

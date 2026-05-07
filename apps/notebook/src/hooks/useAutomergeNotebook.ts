@@ -11,7 +11,12 @@ import {
 } from "runtimed";
 import { concatMap, from, Observable, switchMap } from "rxjs";
 import { needsPlugin, preWarmForMimes } from "@/components/isolated/iframe-libraries";
-import { getBlobPort, refreshBlobPort } from "../lib/blob-port";
+import {
+  getBlobPort,
+  getBlobResolver,
+  refreshBlobPort,
+  refreshBlobResolver,
+} from "../lib/blob-port";
 import { materializeChangeset } from "../lib/frame-pipeline";
 import { logger } from "../lib/logger";
 import {
@@ -131,10 +136,11 @@ export function useAutomergeNotebook() {
     const start = performance.now();
     // Resolve blob port BEFORE reading cells — WASM needs it to
     // convert binary ContentRefs to Url variants in get_cells_json().
-    let blobPort = getBlobPort();
-    if (blobPort === null) {
-      blobPort = await refreshBlobPort();
+    let blobResolver = getBlobResolver();
+    if (blobResolver === null) {
+      blobResolver = await refreshBlobResolver();
     }
+    const blobPort = blobResolver?.port ?? null;
     if (blobPort !== null) {
       handle.set_blob_port(blobPort);
     }
@@ -142,7 +148,7 @@ export function useAutomergeNotebook() {
     const snapshots: CellSnapshot[] = JSON.parse(json);
     const newCells = await cellSnapshotsToNotebookCells(
       snapshots,
-      blobPort,
+      blobResolver,
       outputCacheRef.current,
     );
     // Pre-warm plugin cache from output MIME types so iframe rendering
@@ -173,7 +179,7 @@ export function useAutomergeNotebook() {
     const newCells = cellSnapshotsToNotebookCellsSync(
       snapshots,
       outputCacheRef.current,
-      getBlobPort(),
+      getBlobResolver(),
     );
     replaceNotebookCells(newCells);
   }, []);

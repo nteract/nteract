@@ -13,7 +13,7 @@ import {
 import { isDisplayCapableJupyterOutputType, planCellChangesetProjection } from "runtimed";
 import type { JupyterOutput } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
-import { getBlobPort } from "./blob-port";
+import { getBlobResolver } from "./blob-port";
 import type { CellChangeset } from "./cell-changeset";
 import { logger } from "./logger";
 import { materializeCellFromWasm } from "./materialize-cells";
@@ -119,7 +119,7 @@ export async function materializeChangeset(
   // ── Per-cell incremental materialization ───────────────────────────
 
   const cache = deps.outputCache;
-  const blobPort = getBlobPort();
+  const blobResolver = getBlobResolver();
   let cellStoreTouched = 0;
   let outputOnlySkipped = 0;
 
@@ -155,7 +155,7 @@ export async function materializeChangeset(
       cellId,
       cache,
       getCellById(cellId),
-      blobPort,
+      blobResolver,
     );
     if (!cell) continue;
 

@@ -51,7 +51,7 @@ import { usePoolState } from "./hooks/usePoolState";
 import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
 import { startAttributionDispatch } from "./lib/attribution-registry";
-import { getBlobPort, useBlobPort } from "./lib/blob-port";
+import { getBlobResolver, useBlobPort } from "./lib/blob-port";
 import { useRuntimeState } from "./lib/runtime-state";
 import {
   flushCellUIState,
@@ -129,14 +129,14 @@ function resolveCommOutputs(
   outputs: unknown[],
   store: import("@/components/widgets/widget-store").WidgetStore,
 ): void {
-  const port = getBlobPort();
-  if (port === null) return;
+  const blobResolver = getBlobResolver();
+  if (blobResolver === null) return;
 
   const gen = (_outputResolveGen.get(commId) ?? 0) + 1;
   _outputResolveGen.set(commId, gen);
 
   void (async () => {
-    const resolved = await Promise.all(outputs.map((o) => resolveOutputValue(o, port)));
+    const resolved = await Promise.all(outputs.map((o) => resolveOutputValue(o, blobResolver)));
     if (_outputResolveGen.get(commId) !== gen) return;
 
     const resolvedOutputs = resolved.filter((o): o is JupyterOutput => o !== null);

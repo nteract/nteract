@@ -21,6 +21,9 @@ import type {
   DaemonReadyPayload,
   DaemonUnavailablePayload,
   GitInfo,
+  HostBlobRef,
+  HostBlobResolver,
+  HostBlobs,
   HostUpdaterState,
   NotebookHost,
   TyposquatWarning,
@@ -74,6 +77,17 @@ function requestTimeoutMs(request: NotebookRequest): number {
     default:
       return 30_000;
   }
+}
+
+function createHttpBlobResolver(port: number, fetchImpl: typeof fetch): HostBlobResolver {
+  const url = (ref: HostBlobRef) => `http://127.0.0.1:${port}/blob/${ref.blob}`;
+  return {
+    port,
+    url,
+    fetch(ref) {
+      return fetchImpl(url(ref));
+    },
+  };
 }
 
 function addToken(url: string, token: string): string {
@@ -317,6 +331,8 @@ export async function createBrowserHost(
   let config = await loadConfig(opts.configUrl ?? DEFAULT_CONFIG_URL, fetchImpl);
   let lastReady: DaemonReadyPayload | null = null;
   let blobPort = config.blob_port;
+  let blobResolver: HostBlobResolver | null =
+    blobPort === null ? null : createHttpBlobResolver(blobPort, fetchImpl);
   let daemonInfo = config.daemon;
 
   const readySubscribers = new Set<(payload: DaemonReadyPayload) => void>();
@@ -333,6 +349,7 @@ export async function createBrowserHost(
       case "ready":
         lastReady = control.payload;
         blobPort = control.blob_port ?? blobPort;
+        blobResolver = blobPort === null ? null : createHttpBlobResolver(blobPort, fetchImpl);
         daemonInfo = control.daemon ?? daemonInfo;
         emit(readySubscribers, control.payload);
         break;
@@ -362,6 +379,23 @@ export async function createBrowserHost(
 
   const idleUpdaterState: HostUpdaterState = { status: "idle", version: null, error: null };
   const commands = createCommandRegistry();
+
+  const browserBlobHost: HostBlobs = {
+    async port() {
+      const resolver = await browserBlobHost.resolver();
+      if (resolver.port === undefined) throw new Error("Blob server not available");
+      return resolver.port;
+    },
+    async resolver() {
+      if (blobResolver) return blobResolver;
+      config = await loadConfig(opts.configUrl ?? DEFAULT_CONFIG_URL, fetchImpl);
+      blobPort = config.blob_port;
+      daemonInfo = config.daemon;
+      if (blobPort === null) throw new Error("Blob server not available");
+      blobResolver = createHttpBlobResolver(blobPort, fetchImpl);
+      return blobResolver;
+    },
+  };
 
   return {
     name: "browser",
@@ -406,16 +440,7 @@ export async function createBrowserHost(
         transport.releaseFrames();
       },
     },
-    blobs: {
-      async port() {
-        if (blobPort !== null) return blobPort;
-        config = await loadConfig(opts.configUrl ?? DEFAULT_CONFIG_URL, fetchImpl);
-        blobPort = config.blob_port;
-        daemonInfo = config.daemon;
-        if (blobPort === null) throw new Error("Blob server not available");
-        return blobPort;
-      },
-    },
+    blobs: browserBlobHost,
     trust: {
       async approve(options) {
         const response = (await transport.sendRequest({

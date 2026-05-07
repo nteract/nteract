@@ -17,8 +17,10 @@ import {
   RuntimeExecutionProjector,
   type RuntimeState,
 } from "runtimed";
+import type { HostBlobResolver } from "@nteract/notebook-host";
+import type { JupyterOutput } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
-import { getBlobPort, refreshBlobPort } from "./blob-port";
+import { getBlobResolver, refreshBlobResolver } from "./blob-port";
 import { logger } from "./logger";
 import {
   type OutputManifest,
@@ -38,7 +40,6 @@ import {
   resetNotebookOutputs,
   setOutput,
 } from "./notebook-outputs";
-import type { JupyterOutput } from "../types";
 
 // ── Executions store projection ──────────────────────────────────────
 
@@ -116,7 +117,7 @@ export function seedOutputStoresFromHandle(
       if (!oid) continue;
       const existing = getOutputById(oid);
       if (existing === output) continue;
-      const sync = tryResolveSync(output, getBlobPort());
+      const sync = tryResolveSync(output, getBlobResolver());
       if (sync) setOutput(oid, sync);
     }
   }
@@ -161,29 +162,29 @@ export async function applyOutputChangeset(
   }
   if (changed.length === 0) return;
 
-  // Stream/display-update manifests with text blob refs need the blob
-  // port to resolve. Fetch it on demand so a race between the first
-  // manifest and blob-port discovery doesn't drop outputs on the floor.
-  let port = getBlobPort();
-  if (port === null && changed.some(([, raw]) => isOutputManifest(raw))) {
-    port = await refreshBlobPort();
+  // Stream/display-update manifests with text blob refs need host blob access.
+  // Fetch it on demand so a race between the first manifest and resolver
+  // discovery doesn't drop outputs on the floor.
+  let blobResolver = getBlobResolver();
+  if (blobResolver === null && changed.some(([, raw]) => isOutputManifest(raw))) {
+    blobResolver = await refreshBlobResolver();
   }
 
   for (const [output_id, raw] of changed) {
-    const sync = tryResolveSync(raw, port);
+    const sync = tryResolveSync(raw, blobResolver);
     if (sync) {
       setOutput(output_id, sync);
       continue;
     }
-    if (port === null) {
+    if (blobResolver === null) {
       logger.warn(
-        `[outputs-store] blob port unavailable; deferring output ${output_id}`,
+        `[outputs-store] blob resolver unavailable; deferring output ${output_id}`,
       );
       continue;
     }
     if (!isOutputManifest(raw)) continue;
     try {
-      const resolved = await resolveManifest(raw, port);
+      const resolved = await resolveManifest(raw, blobResolver);
       setOutput(output_id, resolved);
     } catch (err) {
       logger.warn(
@@ -196,11 +197,11 @@ export async function applyOutputChangeset(
 
 function tryResolveSync(
   raw: unknown,
-  blobPort: number | null,
+  blobResolver: HostBlobResolver | null,
 ): JupyterOutput | null {
   if (isOutputManifest(raw)) {
-    if (blobPort === null) return null;
-    return resolveManifestSync(raw as OutputManifest, blobPort);
+    if (blobResolver === null) return null;
+    return resolveManifestSync(raw as OutputManifest, blobResolver);
   }
   // Plain JupyterOutput object — no refs, no resolution needed.
   if (typeof raw === "object" && raw !== null && "output_type" in raw) {
