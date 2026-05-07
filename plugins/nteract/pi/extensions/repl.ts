@@ -16,11 +16,13 @@
  * After editing, run `/reload` in pi.
  */
 
-import type { ExtensionAPI, ImageContent, TextContent } from "@mariozechner/pi-coding-agent";
-import { highlightCode } from "@mariozechner/pi-coding-agent";
-import { Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { highlightCode } from "@earendil-works/pi-coding-agent";
+import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
@@ -208,13 +210,26 @@ function formatStat(stats: ColumnStats | null): string {
   }
 }
 
+function resolvePath(userPath: string, workingDir = process.cwd()): string {
+  const expanded = expandHome(userPath);
+  return path.isAbsolute(expanded) ? expanded : path.resolve(workingDir, expanded);
+}
+
+function expandHome(userPath: string): string {
+  if (userPath === "~") return homedir();
+  if (userPath.startsWith("~/") || userPath.startsWith("~\\")) {
+    return path.join(homedir(), userPath.slice(2));
+  }
+  return userPath;
+}
+
 const SPARK_CHARS = "▁▂▃▄▅▆▇█";
 
 function sparkline(values: number[], width: number): string {
   if (values.length === 0 || width <= 0) return "";
   const min = Math.min(...values);
   const max = Math.max(...values);
-  const bins = new Array(Math.min(width, 8)).fill(0);
+  const bins = Array.from({ length: Math.min(width, 8) }, () => 0);
   if (min === max) {
     return SPARK_CHARS[3].repeat(bins.length);
   }
@@ -576,6 +591,31 @@ const PYTHON_PARAMS = Type.Object({
   ),
 });
 
+const ADD_DEPENDENCIES_PARAMS = Type.Object({
+  packages: Type.Array(Type.String(), {
+    description: "Package specs (e.g. ['matplotlib', 'pandas>=2']).",
+  }),
+});
+
+type AddDependenciesDetails = {
+  notebook_id?: string;
+  packages?: string[];
+};
+
+const SAVE_NOTEBOOK_PARAMS = Type.Object({
+  path: Type.Optional(
+    Type.String({
+      description:
+        "File path to save to (e.g. './analysis.ipynb'). If omitted, saves to the original location.",
+    }),
+  ),
+});
+
+type SaveNotebookDetails = {
+  notebook_id: string;
+  path?: string;
+};
+
 export default function nteractReplExtension(pi: ExtensionAPI) {
   const bootstrap = detectBootstrap();
   if (bootstrap.kind === "missing") {
@@ -644,6 +684,7 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
       // channel auto-detect.
       session = await rn.createNotebook({
         runtime: "python",
+        workingDir: process.cwd(),
         peerLabel: "pi",
         description: "pi Python REPL",
         dependencies,
@@ -856,18 +897,14 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
+  pi.registerTool<typeof ADD_DEPENDENCIES_PARAMS, AddDependenciesDetails>({
     name: "python_add_dependencies",
     label: "Add Dependencies",
     description:
       "Install packages into the running Python environment without restarting. Accepts pip-style specs like 'matplotlib', 'numpy>=2', 'requests'. The kernel stays hot.",
     promptSnippet:
       "python_add_dependencies: install packages into the running Python session (no restart needed).",
-    parameters: Type.Object({
-      packages: Type.Array(Type.String(), {
-        description: "Package specs (e.g. ['matplotlib', 'pandas>=2']).",
-      }),
-    }),
+    parameters: ADD_DEPENDENCIES_PARAMS,
     async execute(_toolCallId, params, signal) {
       if (signal?.aborted) throw new Error("aborted");
       if (!params.packages.length) {
@@ -887,28 +924,22 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
+  pi.registerTool<typeof SAVE_NOTEBOOK_PARAMS, SaveNotebookDetails>({
     name: "python_save_notebook",
     label: "Save Notebook",
     description:
       "Save the current Python session as an .ipynb file. If no path is given, saves to the original location (if it was opened from a file). Provide a path to save elsewhere.",
     promptSnippet: "python_save_notebook: save the current session as an .ipynb file.",
-    parameters: Type.Object({
-      path: Type.Optional(
-        Type.String({
-          description:
-            "File path to save to (e.g. './analysis.ipynb'). If omitted, saves to the original location.",
-        }),
-      ),
-    }),
+    parameters: SAVE_NOTEBOOK_PARAMS,
     async execute(_toolCallId, params, signal) {
       if (signal?.aborted) throw new Error("aborted");
       const sess = await ensureSession();
-      await sess.saveNotebook(params.path);
-      const where = params.path ?? "original location";
+      const savePath = params.path ? resolvePath(params.path) : undefined;
+      await sess.saveNotebook(savePath);
+      const where = savePath ?? "original location";
       return {
         content: [{ type: "text", text: `Notebook saved to ${where}` }],
-        details: { notebook_id: sess.notebookId, path: params.path },
+        details: { notebook_id: sess.notebookId, path: savePath },
       };
     },
   });

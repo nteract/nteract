@@ -1,6 +1,6 @@
 {
   "name": "@nteract/pi",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Persistent notebook-backed Python REPL for Pi coding agents. Stateful execution, hot dependency sync, zero cold starts.",
   "author": "nteract contributors",
   "icon": "icon.png",
@@ -42,15 +42,17 @@
     "@runtimed/node": "workspace:*"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-tui": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
   "publishConfig": {
     "access": "public"
   },
   "devDependencies": {
-    "@mariozechner/pi-coding-agent": "^0.73.0",
-    "@mariozechner/pi-tui": "^0.73.0"
+    "@earendil-works/pi-ai": "^0.74.0",
+    "@earendil-works/pi-coding-agent": "^0.74.0",
+    "@earendil-works/pi-tui": "^0.74.0"
   }
 }
