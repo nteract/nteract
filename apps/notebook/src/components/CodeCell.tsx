@@ -3,6 +3,8 @@ import {
   ChevronRight,
   Code2,
   EyeOff,
+  Maximize2,
+  Minimize2,
   SquareDashedMousePointer,
   SquareMousePointer,
 } from "lucide-react";
@@ -46,6 +48,9 @@ interface CodeCellProps {
   language?: SupportedLanguage;
   onSearchMatchCount?: (count: number) => void;
   onFocus: () => void;
+  outputFocused?: boolean;
+  outputDimmed?: boolean;
+  onOutputFocusChange?: (focused: boolean) => void;
   onExecute: () => void;
   onInterrupt: () => void;
   onDelete: () => void;
@@ -78,6 +83,9 @@ export const CodeCell = memo(function CodeCell({
   language = "python",
   onSearchMatchCount,
   onFocus,
+  outputFocused = false,
+  outputDimmed = false,
+  onOutputFocusChange,
   onExecute,
   onInterrupt,
   onDelete,
@@ -133,8 +141,11 @@ export const CodeCell = memo(function CodeCell({
   useEffect(() => {
     if (!hasIsolatedOutput || isOutputsHidden || outputs.length === 0) {
       setIsIframeOutputExpanded(false);
+      if (outputFocused) {
+        onOutputFocusChange?.(false);
+      }
     }
-  }, [hasIsolatedOutput, isOutputsHidden, outputs.length]);
+  }, [hasIsolatedOutput, isOutputsHidden, onOutputFocusChange, outputFocused, outputs.length]);
 
   // Register EditorView with the cursor registry for remote cursor rendering.
   // We use a ref + polling approach because the EditorView is created async
@@ -295,6 +306,8 @@ export const CodeCell = memo(function CodeCell({
         isFocused={isFocused}
         isPreviousCellFromFocused={isPreviousCellFromFocused}
         isNextCellFromFocused={isNextCellFromFocused}
+        outputFocused={outputFocused}
+        outputDimmed={outputDimmed}
         onFocus={onFocus}
         gutterContent={gutterContent}
         rightGutterContent={rightGutterContent}
@@ -393,6 +406,7 @@ export const CodeCell = memo(function CodeCell({
               onLinkClick={handleLinkClick}
               onIframeMouseDown={handleOutputMouseDown}
               expandIframeOutputs={isIframeOutputExpanded}
+              focused={outputFocused}
             />
           )
         }
@@ -403,23 +417,51 @@ export const CodeCell = memo(function CodeCell({
                 <button
                   type="button"
                   tabIndex={-1}
-                  aria-pressed={isIframeOutputExpanded}
+                  aria-pressed={outputFocused || isIframeOutputExpanded}
                   onClick={() => {
+                    if (outputFocused) return;
                     setIsIframeOutputExpanded((expanded) => !expanded);
                     onFocus();
                   }}
                   className={cn(
                     "flex items-center justify-center rounded p-1 transition-colors",
-                    isIframeOutputExpanded
-                      ? "bg-accent text-foreground"
+                    outputFocused || isIframeOutputExpanded
+                      ? "bg-primary text-primary-foreground"
                       : "text-muted-foreground/40 hover:text-foreground",
                   )}
-                  title={isIframeOutputExpanded ? "Constrain output height" : "Expand output"}
+                  title={
+                    outputFocused || isIframeOutputExpanded
+                      ? "Constrain output height"
+                      : "Expand output"
+                  }
                 >
-                  {isIframeOutputExpanded ? (
+                  {outputFocused || isIframeOutputExpanded ? (
                     <SquareMousePointer className="h-3.5 w-3.5" />
                   ) : (
                     <SquareDashedMousePointer className="h-3.5 w-3.5" />
+                  )}
+                </button>
+              )}
+              {hasIsolatedOutput && (
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  aria-pressed={outputFocused}
+                  onClick={() => {
+                    onOutputFocusChange?.(!outputFocused);
+                  }}
+                  className={cn(
+                    "flex items-center justify-center rounded p-1 transition-colors",
+                    outputFocused
+                      ? "bg-primary text-primary-foreground ring-2 ring-primary/40"
+                      : "text-muted-foreground/40 hover:text-foreground",
+                  )}
+                  title={outputFocused ? "Exit focus (Esc)" : "Focus output"}
+                >
+                  {outputFocused ? (
+                    <Minimize2 className="h-3.5 w-3.5" />
+                  ) : (
+                    <Maximize2 className="h-3.5 w-3.5" />
                   )}
                 </button>
               )}

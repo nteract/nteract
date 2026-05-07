@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { fireEvent, render } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -10,13 +11,20 @@ vi.mock("@/components/cell/CellContainer", () => ({
   CellContainer: ({
     codeContent,
     outputContent,
+    outputRightGutterContent,
+    outputFocused,
+    outputDimmed,
   }: {
     codeContent?: React.ReactNode;
     outputContent?: React.ReactNode;
+    outputRightGutterContent?: React.ReactNode;
+    outputFocused?: boolean;
+    outputDimmed?: boolean;
   }) => (
-    <div>
+    <div data-output-dimmed={String(outputDimmed)} data-output-focused={String(outputFocused)}>
       {codeContent}
       {outputContent}
+      {outputRightGutterContent}
     </div>
   ),
 }));
@@ -26,9 +34,20 @@ vi.mock("@/components/cell/CompactExecutionButton", () => ({
 }));
 
 vi.mock("@/components/cell/OutputArea", () => ({
-  anyOutputNeedsIsolation: () => false,
-  OutputArea: ({ onIframeMouseDown }: { onIframeMouseDown?: () => void }) => (
-    <button data-testid="output" type="button" onMouseDown={onIframeMouseDown}>
+  anyOutputNeedsIsolation: () => true,
+  OutputArea: ({
+    focused,
+    onIframeMouseDown,
+  }: {
+    focused?: boolean;
+    onIframeMouseDown?: () => void;
+  }) => (
+    <button
+      data-focused={String(focused)}
+      data-testid="output"
+      type="button"
+      onMouseDown={onIframeMouseDown}
+    >
       output
     </button>
   ),
@@ -173,5 +192,56 @@ describe("CodeCell output focus", () => {
     expect(mockEditorBlur.mock.invocationCallOrder[0]).toBeLessThan(
       onFocus.mock.invocationCallOrder[0],
     );
+  });
+
+  it("passes output focus through to the output area", () => {
+    const { getByTestId } = render(
+      <CodeCell
+        cell={makeCell()}
+        outputFocused
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+
+    expect(getByTestId("output").getAttribute("data-focused")).toBe("true");
+  });
+
+  it("requests output focus from the gutter focus button", () => {
+    const onOutputFocusChange = vi.fn();
+    const { getByTitle } = render(
+      <CodeCell
+        cell={makeCell()}
+        onFocus={() => {}}
+        onOutputFocusChange={onOutputFocusChange}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+
+    fireEvent.click(getByTitle("Focus output"));
+
+    expect(onOutputFocusChange).toHaveBeenCalledWith(true);
+  });
+
+  it("keeps the expand button active but inert while output-focused", () => {
+    const onFocus = vi.fn();
+    const { getByTitle } = render(
+      <CodeCell
+        cell={makeCell()}
+        outputFocused
+        onFocus={onFocus}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+
+    fireEvent.click(getByTitle("Constrain output height"));
+
+    expect(onFocus).not.toHaveBeenCalled();
   });
 });
