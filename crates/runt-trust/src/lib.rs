@@ -3,7 +3,8 @@
 //! Notebooks can embed arbitrary package dependencies that get installed with
 //! full OS permissions when a kernel starts, which makes dependency lists a
 //! supply-chain attack surface. The daemon gates kernel launch on whether
-//! every dependency name is present in a per-machine SQLite allowlist.
+//! every dependency name and package source is present in a per-machine SQLite
+//! allowlist.
 //!
 //! This crate provides the structural types and the dependency-extraction
 //! helpers. It does not own the gating decision: callers pull a
@@ -19,11 +20,11 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TrustStatus {
-    /// Every dependency name is approved in the local allowlist.
+    /// Every dependency name and package source is approved in the local allowlist.
     Trusted,
 
-    /// At least one dependency name is not approved (or the allowlist
-    /// cannot be queried).
+    /// At least one dependency name or package source is not approved (or the
+    /// allowlist cannot be queried).
     Untrusted,
 
     /// Notebook declares no dependencies, so there is nothing to gate.
@@ -46,6 +47,9 @@ pub struct TrustInfo {
     pub approved_conda_dependencies: Vec<String>,
     /// Conda channels configured.
     pub conda_channels: Vec<String>,
+    /// Conda channels already present in the local trusted package allowlist.
+    #[serde(default)]
+    pub approved_conda_channels: Vec<String>,
     /// The Pixi conda-style dependencies that will be installed (if any).
     #[serde(default)]
     pub pixi_dependencies: Vec<String>,
@@ -61,6 +65,9 @@ pub struct TrustInfo {
     /// Pixi channels configured.
     #[serde(default)]
     pub pixi_channels: Vec<String>,
+    /// Pixi channels already present in the local trusted package allowlist.
+    #[serde(default)]
+    pub approved_pixi_channels: Vec<String>,
 }
 
 /// Get UV metadata from new path (runt.uv) or legacy path (uv)
@@ -133,9 +140,9 @@ pub fn has_dependencies(metadata: &HashMap<String, serde_json::Value>) -> bool {
 ///
 /// Returns a `TrustInfo` populated with the dependency lists and channels
 /// from the snapshot. The returned `status` is `NoDependencies` when there
-/// is nothing to install, otherwise `Untrusted`. `approved_*_dependencies`
-/// are always empty: the daemon's allowlist store enriches these and lifts
-/// `status` to `Trusted` when every name is approved.
+/// is nothing to install, otherwise `Untrusted`. `approved_*` fields are
+/// always empty: the daemon's allowlist store enriches these and lifts
+/// `status` to `Trusted` when every package and source identity is approved.
 pub fn extract_trust_info(metadata: &HashMap<String, serde_json::Value>) -> TrustInfo {
     let uv_dependencies = string_array(get_uv_metadata(metadata).as_ref(), "dependencies");
 
@@ -166,11 +173,13 @@ pub fn extract_trust_info(metadata: &HashMap<String, serde_json::Value>) -> Trus
         conda_dependencies,
         approved_conda_dependencies: vec![],
         conda_channels,
+        approved_conda_channels: vec![],
         pixi_dependencies,
         approved_pixi_dependencies: vec![],
         pixi_pypi_dependencies,
         approved_pixi_pypi_dependencies: vec![],
         pixi_channels,
+        approved_pixi_channels: vec![],
     }
 }
 
@@ -284,11 +293,13 @@ mod tests {
             conda_dependencies: vec![],
             approved_conda_dependencies: vec![],
             conda_channels: vec![],
+            approved_conda_channels: vec![],
             pixi_dependencies: vec![],
             approved_pixi_dependencies: vec![],
             pixi_pypi_dependencies: vec![],
             approved_pixi_pypi_dependencies: vec![],
             pixi_channels: vec![],
+            approved_pixi_channels: vec![],
         };
 
         let json = serde_json::to_value(&info).unwrap();

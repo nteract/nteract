@@ -42,8 +42,10 @@
 //!     needs_approval: bool
 //!     approved_uv_dependencies: List[Str]
 //!     approved_conda_dependencies: List[Str]
+//!     approved_conda_channels: List[Str]
 //!     approved_pixi_dependencies: List[Str]
 //!     approved_pixi_pypi_dependencies: List[Str]
+//!     approved_pixi_channels: List[Str]
 //!   project_context/         Map (daemon-observed project-file context)
 //!     state: Str              ("pending" | "not_found" | "detected" | "unreadable")
 //!     observed_at: Str        (ISO timestamp, "" when state == "pending")
@@ -239,10 +241,14 @@ pub struct TrustRuntimeState {
     pub approved_uv_dependencies: Vec<String>,
     /// Conda dependency specs already present in the local trusted package allowlist.
     pub approved_conda_dependencies: Vec<String>,
+    /// Conda channels already present in the local trusted package allowlist.
+    pub approved_conda_channels: Vec<String>,
     /// Pixi conda-style dependency specs already present in the local trusted package allowlist.
     pub approved_pixi_dependencies: Vec<String>,
     /// Pixi PyPI dependency specs already present in the local trusted package allowlist.
     pub approved_pixi_pypi_dependencies: Vec<String>,
+    /// Pixi channels already present in the local trusted package allowlist.
+    pub approved_pixi_channels: Vec<String>,
 }
 
 /// Snapshot of a single comm entry in the RuntimeStateDoc.
@@ -828,7 +834,7 @@ impl RuntimeStateDoc {
         status: &str,
         needs_approval: bool,
     ) -> Result<(), RuntimeStateError> {
-        self.set_trust_with_approved(status, needs_approval, &[], &[], &[], &[])
+        self.set_trust_with_approved(status, needs_approval, &[], &[], &[], &[], &[], &[])
     }
 
     pub fn set_trust_with_approved(
@@ -837,23 +843,29 @@ impl RuntimeStateDoc {
         needs_approval: bool,
         approved_uv_dependencies: &[String],
         approved_conda_dependencies: &[String],
+        approved_conda_channels: &[String],
         approved_pixi_dependencies: &[String],
         approved_pixi_pypi_dependencies: &[String],
+        approved_pixi_channels: &[String],
     ) -> Result<(), RuntimeStateError> {
         let trust = self.scaffold_map("trust")?;
         let cur_status = self.read_str(&trust, "status");
         let cur_needs = self.read_bool(&trust, "needs_approval");
         let cur_uv = self.read_str_list(&trust, "approved_uv_dependencies");
         let cur_conda = self.read_str_list(&trust, "approved_conda_dependencies");
+        let cur_conda_channels = self.read_str_list(&trust, "approved_conda_channels");
         let cur_pixi = self.read_str_list(&trust, "approved_pixi_dependencies");
         let cur_pixi_pypi = self.read_str_list(&trust, "approved_pixi_pypi_dependencies");
+        let cur_pixi_channels = self.read_str_list(&trust, "approved_pixi_channels");
 
         if cur_status == status
             && cur_needs == needs_approval
             && cur_uv == approved_uv_dependencies
             && cur_conda == approved_conda_dependencies
+            && cur_conda_channels == approved_conda_channels
             && cur_pixi == approved_pixi_dependencies
             && cur_pixi_pypi == approved_pixi_pypi_dependencies
+            && cur_pixi_channels == approved_pixi_channels
         {
             return Ok(());
         }
@@ -866,6 +878,7 @@ impl RuntimeStateDoc {
             "approved_conda_dependencies",
             approved_conda_dependencies,
         )?;
+        self.replace_str_list(&trust, "approved_conda_channels", approved_conda_channels)?;
         self.replace_str_list(
             &trust,
             "approved_pixi_dependencies",
@@ -876,6 +889,7 @@ impl RuntimeStateDoc {
             "approved_pixi_pypi_dependencies",
             approved_pixi_pypi_dependencies,
         )?;
+        self.replace_str_list(&trust, "approved_pixi_channels", approved_pixi_channels)?;
         Ok(())
     }
 
@@ -2551,9 +2565,11 @@ impl RuntimeStateDoc {
                 needs_approval: self.read_bool(t, "needs_approval"),
                 approved_uv_dependencies: self.read_str_list(t, "approved_uv_dependencies"),
                 approved_conda_dependencies: self.read_str_list(t, "approved_conda_dependencies"),
+                approved_conda_channels: self.read_str_list(t, "approved_conda_channels"),
                 approved_pixi_dependencies: self.read_str_list(t, "approved_pixi_dependencies"),
                 approved_pixi_pypi_dependencies: self
                     .read_str_list(t, "approved_pixi_pypi_dependencies"),
+                approved_pixi_channels: self.read_str_list(t, "approved_pixi_channels"),
             })
             .unwrap_or_default();
 
@@ -2961,8 +2977,10 @@ fn scaffold_runtime_state_schema(doc: &mut AutoCommit) -> Result<(), RuntimeStat
     doc.put(&trust, "needs_approval", false)?;
     doc.put_object(&trust, "approved_uv_dependencies", ObjType::List)?;
     doc.put_object(&trust, "approved_conda_dependencies", ObjType::List)?;
+    doc.put_object(&trust, "approved_conda_channels", ObjType::List)?;
     doc.put_object(&trust, "approved_pixi_dependencies", ObjType::List)?;
     doc.put_object(&trust, "approved_pixi_pypi_dependencies", ObjType::List)?;
+    doc.put_object(&trust, "approved_pixi_channels", ObjType::List)?;
 
     scaffold_project_context(doc)?;
 

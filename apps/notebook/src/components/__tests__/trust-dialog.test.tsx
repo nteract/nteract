@@ -20,11 +20,13 @@ function makeTrustInfo(overrides: Partial<TrustInfo> = {}): TrustInfo {
     conda_dependencies: [],
     approved_conda_dependencies: [],
     conda_channels: [],
+    approved_conda_channels: [],
     pixi_dependencies: [],
     approved_pixi_dependencies: [],
     pixi_pypi_dependencies: [],
     approved_pixi_pypi_dependencies: [],
     pixi_channels: [],
+    approved_pixi_channels: [],
     ...overrides,
   };
 }
@@ -325,7 +327,7 @@ describe("TrustDialog", () => {
       expect(screen.getByText("pandas")).toBeInTheDocument();
     });
 
-    it("shows Conda dependencies with channels", () => {
+    it("shows Conda dependencies and channels as separate review sections", () => {
       render(
         <TrustDialog
           {...defaultProps}
@@ -336,11 +338,13 @@ describe("TrustDialog", () => {
         />,
       );
       expect(screen.getByText("Conda Packages")).toBeInTheDocument();
+      expect(screen.getByText("Conda Channels")).toBeInTheDocument();
       expect(screen.getByText("scipy")).toBeInTheDocument();
-      expect(screen.getByText("(conda-forge, defaults)")).toBeInTheDocument();
+      expect(screen.getByText("conda-forge")).toBeInTheDocument();
+      expect(screen.getByText("defaults")).toBeInTheDocument();
     });
 
-    it("shows Pixi dependencies with channels", () => {
+    it("shows Pixi dependencies and channels as separate review sections", () => {
       render(
         <TrustDialog
           {...defaultProps}
@@ -351,8 +355,26 @@ describe("TrustDialog", () => {
         />,
       );
       expect(screen.getByText("Pixi Packages")).toBeInTheDocument();
+      expect(screen.getByText("Pixi Channels")).toBeInTheDocument();
       expect(screen.getByText("polars")).toBeInTheDocument();
-      expect(screen.getByText("(conda-forge)")).toBeInTheDocument();
+      expect(screen.getByText("conda-forge")).toBeInTheDocument();
+    });
+
+    it("marks allowlisted channels as approved", () => {
+      render(
+        <TrustDialog
+          {...defaultProps}
+          trustInfo={makeTrustInfo({
+            conda_channels: ["conda-forge", "defaults"],
+            approved_conda_channels: ["conda-forge"],
+          })}
+        />,
+      );
+
+      expect(screen.getByText("Conda Channels")).toBeInTheDocument();
+      expect(screen.getByText("conda-forge")).toBeInTheDocument();
+      expect(screen.getByText("defaults")).toBeInTheDocument();
+      expect(screen.getByText("approved")).toBeInTheDocument();
     });
 
     it("shows Pixi PyPI dependencies separately", () => {

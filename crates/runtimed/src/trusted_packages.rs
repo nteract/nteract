@@ -12,6 +12,9 @@ pub(crate) struct PackageIdentity {
     pub normalized_name: String,
 }
 
+const ECOSYSTEM_CONDA_CHANNEL: &str = "conda-channel";
+const ECOSYSTEM_PIXI_CHANNEL: &str = "pixi-channel";
+
 #[derive(Debug)]
 enum StoreInner {
     Sqlite { conn: Mutex<Connection> },
@@ -115,10 +118,14 @@ impl TrustedPackageStore {
         info.approved_uv_dependencies = self.approved_raw_specs("pypi", &info.uv_dependencies)?;
         info.approved_conda_dependencies =
             self.approved_raw_specs("conda", &info.conda_dependencies)?;
+        info.approved_conda_channels =
+            self.approved_raw_channels(ECOSYSTEM_CONDA_CHANNEL, &info.conda_channels)?;
         info.approved_pixi_dependencies =
             self.approved_raw_specs("conda", &info.pixi_dependencies)?;
         info.approved_pixi_pypi_dependencies =
             self.approved_raw_specs("pypi", &info.pixi_pypi_dependencies)?;
+        info.approved_pixi_channels =
+            self.approved_raw_channels(ECOSYSTEM_PIXI_CHANNEL, &info.pixi_channels)?;
         Ok(())
     }
 
@@ -196,14 +203,49 @@ impl TrustedPackageStore {
         }
         Ok(approved)
     }
+
+    fn approved_raw_channels(
+        &self,
+        ecosystem: &'static str,
+        channels: &[String],
+    ) -> Result<Vec<String>> {
+        let StoreInner::Sqlite { conn } = self.inner.as_ref() else {
+            return Ok(vec![]);
+        };
+        let conn = conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("trusted package store mutex poisoned"))?;
+        let mut stmt = conn.prepare(
+            "SELECT 1 FROM trusted_packages WHERE ecosystem = ?1 AND normalized_name = ?2",
+        )?;
+        let mut approved = Vec::new();
+        for channel in channels {
+            let Some(normalized) = normalize_channel_source(channel) else {
+                continue;
+            };
+            let mut rows = stmt.query(params![ecosystem, normalized])?;
+            if rows.next()?.is_some() {
+                approved.push(channel.clone());
+            }
+        }
+        Ok(approved)
+    }
 }
 
 pub(crate) fn identities_from_trust_info(info: &runt_trust::TrustInfo) -> Vec<PackageIdentity> {
     let mut out = Vec::new();
     out.extend(identities_for_specs("pypi", &info.uv_dependencies));
     out.extend(identities_for_specs("conda", &info.conda_dependencies));
+    out.extend(identities_for_channels(
+        ECOSYSTEM_CONDA_CHANNEL,
+        &info.conda_channels,
+    ));
     out.extend(identities_for_specs("conda", &info.pixi_dependencies));
     out.extend(identities_for_specs("pypi", &info.pixi_pypi_dependencies));
+    out.extend(identities_for_channels(
+        ECOSYSTEM_PIXI_CHANNEL,
+        &info.pixi_channels,
+    ));
     out
 }
 
@@ -218,6 +260,28 @@ fn identities_for_specs(ecosystem: &'static str, specs: &[String]) -> Vec<Packag
             })
         })
         .collect()
+}
+
+fn identities_for_channels(ecosystem: &'static str, channels: &[String]) -> Vec<PackageIdentity> {
+    channels
+        .iter()
+        .filter_map(|channel| {
+            normalize_channel_source(channel).map(|normalized_name| PackageIdentity {
+                ecosystem,
+                raw_spec: channel.clone(),
+                normalized_name,
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn normalize_channel_source(source: &str) -> Option<String> {
+    let source = source.trim();
+    if source.is_empty() {
+        None
+    } else {
+        Some(source.to_string())
+    }
 }
 
 pub(crate) fn normalize_package_name(spec: &str) -> Option<String> {
@@ -399,11 +463,13 @@ mod tests {
             conda_dependencies: vec!["numpy=1.26".into()],
             approved_conda_dependencies: vec![],
             conda_channels: vec![],
+            approved_conda_channels: vec![],
             pixi_dependencies: vec![],
             approved_pixi_dependencies: vec![],
             pixi_pypi_dependencies: vec![],
             approved_pixi_pypi_dependencies: vec![],
             pixi_channels: vec![],
+            approved_pixi_channels: vec![],
         };
 
         store.add_from_info(&info, "test").unwrap();
@@ -422,11 +488,13 @@ mod tests {
             conda_dependencies: vec![],
             approved_conda_dependencies: vec![],
             conda_channels: vec![],
+            approved_conda_channels: vec![],
             pixi_dependencies: vec![],
             approved_pixi_dependencies: vec![],
             pixi_pypi_dependencies: vec![],
             approved_pixi_pypi_dependencies: vec![],
             pixi_channels: vec![],
+            approved_pixi_channels: vec![],
         };
         assert!(!store.all_dependencies_approved(&conda_not_pypi).unwrap());
     }
@@ -442,11 +510,13 @@ mod tests {
             conda_dependencies: vec![],
             approved_conda_dependencies: vec![],
             conda_channels: vec![],
+            approved_conda_channels: vec![],
             pixi_dependencies: vec![],
             approved_pixi_dependencies: vec![],
             pixi_pypi_dependencies: vec![],
             approved_pixi_pypi_dependencies: vec![],
             pixi_channels: vec![],
+            approved_pixi_channels: vec![],
         };
         store.add_from_info(&approved, "test").unwrap();
 
@@ -454,6 +524,53 @@ mod tests {
         mixed.uv_dependencies = vec!["pandas>=2".into(), "polars".into()];
         store.enrich_info(&mut mixed).unwrap();
         assert_eq!(mixed.approved_uv_dependencies, vec!["pandas>=2"]);
+    }
+
+    #[test]
+    fn conda_channels_are_part_of_trust_identity() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = TrustedPackageStore::open(tmp.path().join("trusted.sqlite")).unwrap();
+        let package_only = runt_trust::TrustInfo {
+            status: runt_trust::TrustStatus::Untrusted,
+            uv_dependencies: vec![],
+            approved_uv_dependencies: vec![],
+            conda_dependencies: vec!["pandas".into()],
+            approved_conda_dependencies: vec![],
+            conda_channels: vec![],
+            approved_conda_channels: vec![],
+            pixi_dependencies: vec![],
+            approved_pixi_dependencies: vec![],
+            pixi_pypi_dependencies: vec![],
+            approved_pixi_pypi_dependencies: vec![],
+            pixi_channels: vec![],
+            approved_pixi_channels: vec![],
+        };
+        store.add_from_info(&package_only, "test").unwrap();
+
+        let with_channel = runt_trust::TrustInfo {
+            conda_channels: vec!["conda-forge".into()],
+            ..package_only.clone()
+        };
+        assert!(
+            !store.all_dependencies_approved(&with_channel).unwrap(),
+            "approving a conda package must not approve every channel that can provide it"
+        );
+
+        store.add_from_info(&with_channel, "test").unwrap();
+        assert!(store.all_dependencies_approved(&with_channel).unwrap());
+
+        let mut different_channel = with_channel.clone();
+        different_channel.conda_channels = vec!["http://evil.example".into()];
+        assert!(
+            !store.all_dependencies_approved(&different_channel).unwrap(),
+            "channel approval must be source-specific"
+        );
+
+        let mut enriched = different_channel;
+        enriched.conda_channels = vec!["conda-forge".into(), "defaults".into()];
+        store.enrich_info(&mut enriched).unwrap();
+        assert_eq!(enriched.approved_conda_dependencies, vec!["pandas"]);
+        assert_eq!(enriched.approved_conda_channels, vec!["conda-forge"]);
     }
 
     #[test]
@@ -472,11 +589,13 @@ mod tests {
             conda_dependencies: vec![],
             approved_conda_dependencies: vec![],
             conda_channels: vec![],
+            approved_conda_channels: vec![],
             pixi_dependencies: vec![],
             approved_pixi_dependencies: vec![],
             pixi_pypi_dependencies: vec![],
             approved_pixi_pypi_dependencies: vec![],
             pixi_channels: vec![],
+            approved_pixi_channels: vec![],
         };
         assert!(store.all_dependencies_approved(&info).unwrap());
     }
@@ -497,11 +616,13 @@ mod tests {
             conda_dependencies: vec!["pandas".into(), "matplotlib".into()],
             approved_conda_dependencies: vec![],
             conda_channels: vec![],
+            approved_conda_channels: vec![],
             pixi_dependencies: vec![],
             approved_pixi_dependencies: vec![],
             pixi_pypi_dependencies: vec![],
             approved_pixi_pypi_dependencies: vec![],
             pixi_channels: vec![],
+            approved_pixi_channels: vec![],
         };
         assert!(store.all_dependencies_approved(&info).unwrap());
 
@@ -513,11 +634,13 @@ mod tests {
             conda_dependencies: vec![],
             approved_conda_dependencies: vec![],
             conda_channels: vec![],
+            approved_conda_channels: vec![],
             pixi_dependencies: vec![],
             approved_pixi_dependencies: vec![],
             pixi_pypi_dependencies: vec![],
             approved_pixi_pypi_dependencies: vec![],
             pixi_channels: vec![],
+            approved_pixi_channels: vec![],
         };
         assert!(!store.all_dependencies_approved(&pypi_only).unwrap());
     }
@@ -534,11 +657,13 @@ mod tests {
             conda_dependencies: vec![],
             approved_conda_dependencies: vec![],
             conda_channels: vec![],
+            approved_conda_channels: vec![],
             pixi_dependencies: vec![],
             approved_pixi_dependencies: vec![],
             pixi_pypi_dependencies: vec![],
             approved_pixi_pypi_dependencies: vec![],
             pixi_channels: vec![],
+            approved_pixi_channels: vec![],
         };
         store.add_from_info(&info, "user-approval").unwrap();
         store.seed_defaults("pypi", &["pandas"]).unwrap();
@@ -568,11 +693,13 @@ mod tests {
             conda_dependencies: vec![],
             approved_conda_dependencies: vec![],
             conda_channels: vec![],
+            approved_conda_channels: vec![],
             pixi_dependencies: vec![],
             approved_pixi_dependencies: vec![],
             pixi_pypi_dependencies: vec![],
             approved_pixi_pypi_dependencies: vec![],
             pixi_channels: vec![],
+            approved_pixi_channels: vec![],
         };
 
         let err = store
@@ -597,11 +724,13 @@ mod tests {
             conda_dependencies: vec![],
             approved_conda_dependencies: vec![],
             conda_channels: vec![],
+            approved_conda_channels: vec![],
             pixi_dependencies: vec![],
             approved_pixi_dependencies: vec![],
             pixi_pypi_dependencies: vec![],
             approved_pixi_pypi_dependencies: vec![],
             pixi_channels: vec![],
+            approved_pixi_channels: vec![],
         };
         store.add_from_info(&info, "test").unwrap();
     }

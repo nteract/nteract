@@ -41,8 +41,10 @@ pub(crate) fn write_trust_to_runtime_state(room: &NotebookRoom, trust: &TrustSta
             trust_needs_approval(&trust.status),
             &trust.info.approved_uv_dependencies,
             &trust.info.approved_conda_dependencies,
+            &trust.info.approved_conda_channels,
             &trust.info.approved_pixi_dependencies,
             &trust.info.approved_pixi_pypi_dependencies,
+            &trust.info.approved_pixi_channels,
         )
     }) {
         warn!("[runtime-state] {}", e);
@@ -887,12 +889,21 @@ pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
 /// user just approved one of the deps via the dialog).
 fn approved_signature(
     info: &runt_trust::TrustInfo,
-) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
+) -> (
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+) {
     (
         info.approved_uv_dependencies.clone(),
         info.approved_conda_dependencies.clone(),
+        info.approved_conda_channels.clone(),
         info.approved_pixi_dependencies.clone(),
         info.approved_pixi_pypi_dependencies.clone(),
+        info.approved_pixi_channels.clone(),
     )
 }
 
@@ -1030,11 +1041,13 @@ pub(crate) fn environment_yml_trust_info(
         conda_dependencies: config.dependencies.clone(),
         approved_conda_dependencies: vec![],
         conda_channels: config.channels.clone(),
+        approved_conda_channels: vec![],
         pixi_dependencies: vec![],
         approved_pixi_dependencies: vec![],
         pixi_pypi_dependencies: vec![],
         approved_pixi_pypi_dependencies: vec![],
         pixi_channels: vec![],
+        approved_pixi_channels: vec![],
     }
 }
 
@@ -1166,8 +1179,8 @@ fn trust_state_from_metadata(
 ///
 /// Returns:
 /// - `NoDependencies` when there are no deps to install.
-/// - `Trusted` when every dep name (across UV / conda / pixi conda / pixi PyPI)
-///   is present in `store`.
+/// - `Trusted` when every dep name and package source (across UV / conda /
+///   pixi conda / pixi PyPI) is present in `store`.
 /// - `Untrusted` otherwise, including when the allowlist store is unavailable
 ///   or a query fails (fail-closed: if we can't verify approval, don't grant
 ///   trust).
