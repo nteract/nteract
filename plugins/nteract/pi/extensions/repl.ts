@@ -22,6 +22,7 @@ import { highlightCode } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
@@ -207,6 +208,19 @@ function formatStat(stats: ColumnStats | null): string {
     default:
       return "";
   }
+}
+
+function resolvePath(userPath: string, workingDir = process.cwd()): string {
+  const expanded = expandHome(userPath);
+  return path.isAbsolute(expanded) ? expanded : path.resolve(workingDir, expanded);
+}
+
+function expandHome(userPath: string): string {
+  if (userPath === "~") return homedir();
+  if (userPath.startsWith("~/") || userPath.startsWith("~\\")) {
+    return path.join(homedir(), userPath.slice(2));
+  }
+  return userPath;
 }
 
 const SPARK_CHARS = "▁▂▃▄▅▆▇█";
@@ -670,6 +684,7 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
       // channel auto-detect.
       session = await rn.createNotebook({
         runtime: "python",
+        workingDir: process.cwd(),
         peerLabel: "pi",
         description: "pi Python REPL",
         dependencies,
@@ -919,11 +934,12 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params, signal) {
       if (signal?.aborted) throw new Error("aborted");
       const sess = await ensureSession();
-      await sess.saveNotebook(params.path);
-      const where = params.path ?? "original location";
+      const savePath = params.path ? resolvePath(params.path) : undefined;
+      await sess.saveNotebook(savePath);
+      const where = savePath ?? "original location";
       return {
         content: [{ type: "text", text: `Notebook saved to ${where}` }],
-        details: { notebook_id: sess.notebookId, path: params.path },
+        details: { notebook_id: sess.notebookId, path: savePath },
       };
     },
   });
