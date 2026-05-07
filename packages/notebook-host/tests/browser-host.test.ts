@@ -93,6 +93,10 @@ describe("createBrowserHost()", () => {
 
     expect(ready).toHaveBeenCalledWith({ notebook_id: "nb-1", cell_count: 0, ephemeral: true });
     await expect(host.blobs.port()).resolves.toBe(48124);
+    await expect(host.blobs.resolver()).resolves.toMatchObject({ port: 48124 });
+    expect((await host.blobs.resolver()).url({ blob: "abc123" })).toBe(
+      "http://127.0.0.1:48124/blob/abc123",
+    );
     await expect(host.daemon.getReadyInfo()).resolves.toMatchObject({ notebook_id: "nb-1" });
   });
 

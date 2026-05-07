@@ -201,6 +201,10 @@ describe("createTauriHost()", () => {
     const host = createTauriHost({ transport: stubTransport });
     await expect(host.blobs.port()).resolves.toBe(12345);
     expect(capturedInvokes.at(-1)?.cmd).toBe("get_blob_port");
+
+    const resolver = await host.blobs.resolver();
+    expect(resolver.port).toBe(12345);
+    expect(resolver.url({ blob: "abc123" })).toBe("http://127.0.0.1:12345/blob/abc123");
   });
 
   it("routes trust.approve through the notebook transport", async () => {

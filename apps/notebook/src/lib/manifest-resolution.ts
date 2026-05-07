@@ -1,4 +1,20 @@
+import type { HostBlobResolver } from "@nteract/notebook-host";
 import type { JupyterOutput } from "../types";
+
+export type BlobResolverInput = HostBlobResolver | number;
+
+function normalizeBlobResolver(input: BlobResolverInput): HostBlobResolver {
+  if (typeof input !== "number") return input;
+  const port = input;
+  const url = (ref: { blob: string }) => `http://127.0.0.1:${port}/blob/${ref.blob}`;
+  return {
+    port,
+    url,
+    fetch(ref) {
+      return fetch(url(ref));
+    },
+  };
+}
 
 /**
  * Quick check for binary MIME types — safety net for blob refs that WASM
@@ -128,9 +144,10 @@ function isContentRef(value: unknown): value is ContentRef {
  */
 export async function resolveContentRef(
   ref: ContentRef,
-  blobPort: number,
+  blobResolverInput: BlobResolverInput,
   mimeType?: string,
 ): Promise<string> {
+  const blobResolver = normalizeBlobResolver(blobResolverInput);
   if ("inline" in ref) {
     return ref.inline;
   }
@@ -140,10 +157,10 @@ export async function resolveContentRef(
   // Safety net: binary blob refs that WASM couldn't resolve to Url
   // (blob port wasn't set yet). Construct the URL directly.
   if (mimeType && looksLikeBinaryMime(mimeType)) {
-    return `http://127.0.0.1:${blobPort}/blob/${ref.blob}`;
+    return blobResolver.url(ref);
   }
   // Text blob ref — fetch content from blob server
-  const response = await fetch(`http://127.0.0.1:${blobPort}/blob/${ref.blob}`);
+  const response = await blobResolver.fetch(ref);
   if (!response.ok) {
     throw new Error(`Failed to fetch blob ${ref.blob}: ${response.status}`);
   }
@@ -163,9 +180,10 @@ export async function resolveContentRef(
  */
 function resolveContentRefSync(
   ref: ContentRef,
-  blobPort: number,
+  blobResolverInput: BlobResolverInput,
   mimeType?: string,
 ): string | null {
+  const blobResolver = normalizeBlobResolver(blobResolverInput);
   if ("inline" in ref) {
     return ref.inline;
   }
@@ -174,7 +192,7 @@ function resolveContentRefSync(
   }
   // Safety net: binary blob refs that WASM couldn't resolve to Url
   if (mimeType && looksLikeBinaryMime(mimeType)) {
-    return `http://127.0.0.1:${blobPort}/blob/${ref.blob}`;
+    return blobResolver.url(ref);
   }
   // Text blob ref — needs async fetch
   return null;
@@ -189,12 +207,12 @@ function resolveContentRefSync(
  */
 export async function resolveDataBundle(
   data: Record<string, ContentRef>,
-  blobPort: number,
+  blobResolver: BlobResolverInput,
 ): Promise<Record<string, unknown>> {
   const entries = Object.entries(data);
   const contents = await Promise.all(
     entries.map(([mimeType, ref]) =>
-      resolveContentRef(ref, blobPort, mimeType),
+      resolveContentRef(ref, blobResolver, mimeType),
     ),
   );
   const resolved: Record<string, unknown> = {};
@@ -220,11 +238,11 @@ export async function resolveDataBundle(
  */
 function resolveDataBundleSync(
   data: Record<string, ContentRef>,
-  blobPort: number,
+  blobResolver: BlobResolverInput,
 ): Record<string, unknown> | null {
   const resolved: Record<string, unknown> = {};
   for (const [mimeType, ref] of Object.entries(data)) {
-    const content = resolveContentRefSync(ref, blobPort, mimeType);
+    const content = resolveContentRefSync(ref, blobResolver, mimeType);
     if (content === null) return null;
     if (mimeType.includes("json")) {
       try {
@@ -244,12 +262,12 @@ function resolveDataBundleSync(
  */
 export async function resolveManifest(
   manifest: OutputManifest,
-  blobPort: number,
+  blobResolver: BlobResolverInput,
 ): Promise<JupyterOutput> {
   const output_id = manifest.output_id;
   switch (manifest.output_type) {
     case "display_data": {
-      const data = await resolveDataBundle(manifest.data, blobPort);
+      const data = await resolveDataBundle(manifest.data, blobResolver);
       return {
         output_id,
         output_type: "display_data",
@@ -259,7 +277,7 @@ export async function resolveManifest(
       };
     }
     case "execute_result": {
-      const data = await resolveDataBundle(manifest.data, blobPort);
+      const data = await resolveDataBundle(manifest.data, blobResolver);
       return {
         output_id,
         output_type: "execute_result",
@@ -270,7 +288,7 @@ export async function resolveManifest(
       };
     }
     case "stream": {
-      const text = await resolveContentRef(manifest.text, blobPort);
+      const text = await resolveContentRef(manifest.text, blobResolver);
       return {
         output_id,
         output_type: "stream",
@@ -279,9 +297,9 @@ export async function resolveManifest(
       };
     }
     case "error": {
-      const tracebackJson = await resolveContentRef(manifest.traceback, blobPort);
+      const tracebackJson = await resolveContentRef(manifest.traceback, blobResolver);
       const traceback = JSON.parse(tracebackJson) as string[];
-      const rich = await resolveRich(manifest.rich, blobPort);
+      const rich = await resolveRich(manifest.rich, blobResolver);
       return {
         output_id,
         output_type: "error",
@@ -304,11 +322,11 @@ export async function resolveManifest(
  */
 async function resolveRich(
   ref: ContentRef | undefined,
-  blobPort: number,
+  blobResolver: BlobResolverInput,
 ): Promise<Record<string, unknown> | undefined> {
   if (!ref) return undefined;
   try {
-    const json = await resolveContentRef(ref, blobPort);
+    const json = await resolveContentRef(ref, blobResolver);
     return JSON.parse(json) as Record<string, unknown>;
   } catch {
     return undefined;
@@ -329,10 +347,10 @@ type RichSyncResult = "absent" | "async" | Record<string, unknown>;
 
 function resolveRichSync(
   ref: ContentRef | undefined,
-  blobPort: number,
+  blobResolver: BlobResolverInput,
 ): RichSyncResult {
   if (!ref) return "absent";
-  const json = resolveContentRefSync(ref, blobPort);
+  const json = resolveContentRefSync(ref, blobResolver);
   if (json === null) return "async";
   try {
     return JSON.parse(json) as Record<string, unknown>;
@@ -355,12 +373,12 @@ function resolveRichSync(
  */
 export function resolveManifestSync(
   manifest: OutputManifest,
-  blobPort: number,
+  blobResolver: BlobResolverInput,
 ): JupyterOutput | null {
   const output_id = manifest.output_id;
   switch (manifest.output_type) {
     case "display_data": {
-      const data = resolveDataBundleSync(manifest.data, blobPort);
+      const data = resolveDataBundleSync(manifest.data, blobResolver);
       if (data === null) return null;
       return {
         output_id,
@@ -371,7 +389,7 @@ export function resolveManifestSync(
       };
     }
     case "execute_result": {
-      const data = resolveDataBundleSync(manifest.data, blobPort);
+      const data = resolveDataBundleSync(manifest.data, blobResolver);
       if (data === null) return null;
       return {
         output_id,
@@ -383,7 +401,7 @@ export function resolveManifestSync(
       };
     }
     case "stream": {
-      const text = resolveContentRefSync(manifest.text, blobPort);
+      const text = resolveContentRefSync(manifest.text, blobResolver);
       if (text === null) return null;
       return {
         output_id,
@@ -393,10 +411,10 @@ export function resolveManifestSync(
       };
     }
     case "error": {
-      const tracebackJson = resolveContentRefSync(manifest.traceback, blobPort);
+      const tracebackJson = resolveContentRefSync(manifest.traceback, blobResolver);
       if (tracebackJson === null) return null;
       const traceback = JSON.parse(tracebackJson) as string[];
-      const richResult = resolveRichSync(manifest.rich, blobPort);
+      const richResult = resolveRichSync(manifest.rich, blobResolver);
       // If the rich sibling exists but needs a blob fetch, defer the
       // whole output to the async path. Otherwise callers treat this
       // as fully resolved and never upgrade to rich rendering.

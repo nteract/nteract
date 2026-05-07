@@ -4,6 +4,8 @@ export type {
   DaemonReadyPayload,
   DaemonUnavailablePayload,
   GitInfo,
+  HostBlobRef,
+  HostBlobResolver,
   HostBlobs,
   HostDaemon,
   HostDaemonEvents,

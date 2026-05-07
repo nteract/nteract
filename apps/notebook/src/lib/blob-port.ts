@@ -1,13 +1,13 @@
-import type { NotebookHost } from "@nteract/notebook-host";
+import type { HostBlobResolver, NotebookHost } from "@nteract/notebook-host";
 import { useSyncExternalStore } from "react";
 import { logger } from "./logger";
 
 // ---------------------------------------------------------------------------
-// Blob port store — single source of truth for the daemon's blob server port.
+// Blob resolver store — single source of truth for host-owned blob access.
 //
-// The blob port is set once on daemon connect and only changes on reconnect.
-// All consumers read synchronously from this store instead of re-awaiting
-// a promise on every access.
+// The resolver is set once on daemon connect and only changes on reconnect.
+// All consumers read synchronously from this store instead of reconstructing
+// daemon-local URLs at each call site.
 //
 // Usage:
 //   - React components: `const port = useBlobPort()`
@@ -16,7 +16,8 @@ import { logger } from "./logger";
 // ---------------------------------------------------------------------------
 
 let _blobPort: number | null = null;
-let _refreshPromise: Promise<number | null> | null = null;
+let _blobResolver: HostBlobResolver | null = null;
+let _refreshPromise: Promise<HostBlobResolver | null> | null = null;
 
 // Generation counter — incremented on every reset. Refresh results from
 // a previous generation are discarded to prevent a stale port from a
@@ -25,10 +26,10 @@ let _generation = 0;
 
 const _subscribers = new Set<() => void>();
 
-// Module-level host reference for fetching the blob port. Wired at boot
+// Module-level host reference for fetching the blob resolver. Wired at boot
 // by main.tsx via `setBlobPortHost(host)`. Kept as a reference so the
-// module doesn't reach for Tauri directly; any host implementation
-// (Tauri, Electron, future browser) provides `host.blobs.port()`.
+// module doesn't reach for Tauri directly; any host implementation provides
+// `host.blobs.resolver()`.
 let _host: NotebookHost | null = null;
 
 /** Install the `NotebookHost` this module fetches the blob port from. */
@@ -61,15 +62,23 @@ export function getBlobPort(): number | null {
 }
 
 /**
- * Fetch the blob port from the daemon and update the store.
+ * Get the current host-owned blob resolver synchronously. Returns `null` if
+ * not yet resolved.
+ */
+export function getBlobResolver(): HostBlobResolver | null {
+  return _blobResolver;
+}
+
+/**
+ * Fetch the blob resolver from the host and update the store.
  *
  * Call on initial connect and on `daemon:ready` / reconnect events.
  * Deduplicates concurrent calls — only one IPC request in flight at a time.
  * If `resetBlobPort()` is called while a refresh is in flight, the stale
  * result is discarded (generation counter check).
- * Returns the resolved port (or null on failure).
+ * Returns the resolved host blob accessor (or null on failure).
  */
-export async function refreshBlobPort(): Promise<number | null> {
+export async function refreshBlobResolver(): Promise<HostBlobResolver | null> {
   if (_refreshPromise) return _refreshPromise;
 
   const gen = _generation;
@@ -79,20 +88,21 @@ export async function refreshBlobPort(): Promise<number | null> {
     // after daemon startup.
     for (let attempt = 1; attempt <= 5; attempt++) {
       // Bail early if a reset occurred while we were retrying.
-      if (_generation !== gen) return _blobPort;
+      if (_generation !== gen) return _blobResolver;
 
       try {
         if (!_host) {
           throw new Error("blob-port: no NotebookHost configured — call setBlobPortHost at boot");
         }
-        const port = await _host.blobs.port();
+        const resolver = await _host.blobs.resolver();
 
         // Discard result if a reset happened since we started.
-        if (_generation !== gen) return _blobPort;
+        if (_generation !== gen) return _blobResolver;
 
-        _blobPort = port;
+        _blobResolver = resolver;
+        _blobPort = resolver.port ?? null;
         emit();
-        return port;
+        return resolver;
       } catch (e) {
         if (attempt < 5) {
           await new Promise((r) => setTimeout(r, 500));
@@ -119,6 +129,14 @@ export async function refreshBlobPort(): Promise<number | null> {
 }
 
 /**
+ * Fetch the blob resolver and return its compatibility port for the WASM
+ * bridge. New frontend call sites should prefer `refreshBlobResolver()`.
+ */
+export async function refreshBlobPort(): Promise<number | null> {
+  return (await refreshBlobResolver())?.port ?? null;
+}
+
+/**
  * Reset the blob port (e.g., on daemon disconnect). Forces the next
  * `refreshBlobPort()` call to fetch fresh. Any in-flight refresh from
  * a prior generation will be discarded when it resolves.
@@ -126,6 +144,7 @@ export async function refreshBlobPort(): Promise<number | null> {
 export function resetBlobPort(): void {
   _generation++;
   _blobPort = null;
+  _blobResolver = null;
   _refreshPromise = null;
   emit();
 }
@@ -138,6 +157,10 @@ export function useBlobPort(): number | null {
   return useSyncExternalStore(subscribe, getSnapshot);
 }
 
+export function useBlobResolver(): HostBlobResolver | null {
+  return useSyncExternalStore(subscribe, getBlobResolver);
+}
+
 // ---------------------------------------------------------------------------
 // Test helpers — only exported for unit tests
 // ---------------------------------------------------------------------------
@@ -145,6 +168,7 @@ export function useBlobPort(): number | null {
 /** @internal Reset all state for test isolation. */
 export function _testReset(): void {
   _blobPort = null;
+  _blobResolver = null;
   _refreshPromise = null;
   _generation = 0;
   _subscribers.clear();

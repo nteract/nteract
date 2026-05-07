@@ -33,6 +33,7 @@ vi.mock("../notebook-metadata", () => ({
 }));
 
 vi.mock("../blob-port", () => ({
+  getBlobResolver: () => null,
   getBlobPort: () => 12345,
   refreshBlobPort: () => Promise.resolve(12345),
 }));
