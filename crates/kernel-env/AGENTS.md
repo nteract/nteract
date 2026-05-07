@@ -167,13 +167,21 @@ Runtime type is determined by `kernelspec.name`, not by a field in `runt`.
 
 ## Trust system
 
-Dependencies are signed with HMAC-SHA256 to prevent untrusted code execution on notebook open.
+Dependency installation is gated on a per-machine SQLite allowlist. The
+daemon only launches a kernel when every dependency name in the notebook
+is present in the local trusted-package store.
 
-- **Key:** 32 random bytes at `~/Library/Application Support/runt/trust-key` (macOS) or `~/.config/runt/trust-key` (Linux)
-- **Signed content:** Canonical JSON of `metadata.runt.uv` + `metadata.runt.conda` (with fallback to legacy `metadata.uv` + `metadata.conda`)
-- **Format:** `"hmac-sha256:{hex_digest}"` in notebook metadata
-- **Machine-specific:** Every shared notebook is untrusted on the recipient's machine
-- **Verification:** `verify_signature()` → `bool`; `verify_notebook_trust()` → `TrustInfo` with `TrustStatus`: Trusted, Untrusted, SignatureInvalid, or NoDependencies
+- **Store:** `TrustedPackageStore` in `crates/runtimed/src/trusted_packages.rs`,
+  keyed by `(ecosystem, normalized_name)` and populated by user approval
+  via the trust dialog or by daemon-initiated approval flows.
+- **Extraction:** `runt_trust::extract_trust_info()` pulls dep names out
+  of `metadata.runt.uv` / `metadata.runt.conda` / `metadata.runt.pixi`
+  (with fallback to legacy `metadata.uv` / `metadata.conda`).
+- **Finalization:** `metadata::finalize_trust_status()` in `runtimed`
+  asks the store whether every name is approved and returns `Trusted`,
+  `Untrusted`, or `NoDependencies`. Store unavailability is fail-closed.
+- **Machine-specific:** every shared notebook is untrusted on the
+  recipient's machine until they approve the deps locally.
 
 Changes to dependency metadata require updating `crates/notebook-doc/src/metadata.rs` and `crates/runt-trust/src/lib.rs`.
 
@@ -213,5 +221,5 @@ Ensures the app works standalone without requiring users to install tooling.
 | `crates/runtimed/src/jupyter_kernel.rs` | Kernel process spawning |
 | `crates/runtimed/src/inline_env.rs` | Cached inline dep environments |
 | `crates/runtimed/src/project_file.rs` | Unified project file detection |
-| `crates/runt-trust/src/lib.rs` | HMAC trust verification |
+| `crates/runt-trust/src/lib.rs` | Notebook trust extraction |
 | `crates/notebook-doc/src/metadata.rs` | Metadata schema and accessors |

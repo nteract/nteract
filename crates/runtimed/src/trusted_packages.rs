@@ -70,10 +70,10 @@ impl TrustedPackageStore {
             return Ok(());
         }
 
-        // Fail-closed when the SQLite store is unavailable. The HMAC trust
-        // path used to make approval effective even if persistence silently
-        // failed; once the allowlist is the only gate, a silent-success here
-        // would leave trust blocked while the UI reports approval succeeded.
+        // Fail-closed when the SQLite store is unavailable: the allowlist
+        // is the only trust gate, so a silent success here would leave the
+        // notebook blocked from launching while the UI reports approval
+        // worked.
         let conn = match self.inner.as_ref() {
             StoreInner::Sqlite { conn } => conn,
             StoreInner::Unavailable { reason } => {

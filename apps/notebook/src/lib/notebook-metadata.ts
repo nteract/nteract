@@ -254,8 +254,6 @@ export interface RuntMetadata {
   conda?: CondaInlineMetadata;
   pixi?: PixiInlineMetadata;
   deno?: DenoMetadata;
-  trust_signature?: string;
-  trust_timestamp?: string;
 }
 
 export interface NotebookMetadataSnapshot {

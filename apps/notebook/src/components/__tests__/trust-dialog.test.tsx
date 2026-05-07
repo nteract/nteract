@@ -171,19 +171,6 @@ describe("TrustDialog", () => {
   });
 
   describe("dialog title and description variants", () => {
-    it("shows 'Dependencies Modified' title for signature_invalid status", () => {
-      render(
-        <TrustDialog
-          {...defaultProps}
-          trustInfo={makeTrustInfo({
-            status: "signature_invalid",
-            uv_dependencies: ["numpy"],
-          })}
-        />,
-      );
-      expect(screen.getByText("Dependencies Modified")).toBeInTheDocument();
-    });
-
     it("shows 'Review Dependencies' title for untrusted status", () => {
       render(<TrustDialog {...defaultProps} />);
       expect(screen.getByText("Review Dependencies")).toBeInTheDocument();
@@ -197,19 +184,6 @@ describe("TrustDialog", () => {
     it("shows default description for non-daemon mode", () => {
       render(<TrustDialog {...defaultProps} daemonMode={false} />);
       expect(screen.getByText(/Review them before running code/)).toBeInTheDocument();
-    });
-
-    it("shows signature_invalid description when status is signature_invalid", () => {
-      render(
-        <TrustDialog
-          {...defaultProps}
-          trustInfo={makeTrustInfo({
-            status: "signature_invalid",
-            uv_dependencies: ["numpy"],
-          })}
-        />,
-      );
-      expect(screen.getByText(/dependencies have been modified/)).toBeInTheDocument();
     });
 
     it("shows approval errors inline while keeping the dependency review visible", () => {

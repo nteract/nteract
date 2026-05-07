@@ -146,9 +146,7 @@ export function useTrust() {
   // once real state lands.
   const isTrusted = trustInfo?.status === "trusted" || trustInfo?.status === "no_dependencies";
   const needsApproval = trustInfo
-    ? trustInfo.status === "untrusted" ||
-      trustInfo.status === "signature_invalid" ||
-      runtimeState.trust.needs_approval
+    ? trustInfo.status === "untrusted" || runtimeState.trust.needs_approval
     : false;
   const hasDependencies = trustInfo ? trustInfo.status !== "no_dependencies" : false;
   const totalDependencies = trustInfo

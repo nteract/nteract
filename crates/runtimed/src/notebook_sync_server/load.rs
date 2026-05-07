@@ -594,10 +594,6 @@ where
 
     // 3. Set metadata (if present) and sync it
     if let Some(meta) = metadata {
-        // Trust no longer hinges on a doc-side HMAC signature; project-file
-        // matching plays out through the per-package allowlist instead. The
-        // streaming-load reconciliation step that used to auto-sign deps
-        // matching the project file is gone with the rest of the HMAC code.
         let encoded = {
             let mut doc = room.doc.write().await;
             if let Err(e) = doc.set_metadata_snapshot(&meta) {
