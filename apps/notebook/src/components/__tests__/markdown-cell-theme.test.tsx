@@ -1,4 +1,4 @@
-import { render, waitFor } from "@testing-library/react";
+import { fireEvent, render, waitFor } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { MarkdownCell as MarkdownCellType } from "../../types";
@@ -58,8 +58,23 @@ vi.mock("@/components/cell/CellContainer", () => ({
 }));
 
 vi.mock("@/components/editor/codemirror-editor", () => ({
-  CodeMirrorEditor: React.forwardRef(function CodeMirrorEditor(_props, _ref) {
-    return <div data-testid="markdown-editor" />;
+  CodeMirrorEditor: React.forwardRef(function CodeMirrorEditor(
+    props: { keyMap?: Array<{ key: string; run: () => boolean }> },
+    _ref,
+  ) {
+    return (
+      <div
+        data-testid="markdown-editor"
+        tabIndex={0}
+        onKeyDown={(event) => {
+          const key = event.ctrlKey && event.key === "Enter" ? "Ctrl-Enter" : event.key;
+          const binding = props.keyMap?.find((entry) => entry.key === key);
+          if (binding?.run()) {
+            event.preventDefault();
+          }
+        }}
+      />
+    );
   }),
 }));
 
@@ -196,5 +211,38 @@ describe("MarkdownCell theme sync", () => {
     await waitFor(() => {
       expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true });
     });
+  });
+
+  it("Ctrl+Enter exits edit mode for markdown cells", async () => {
+    const cell = { ...makeCell(), source: "" };
+
+    const { getByLabelText, getByTestId } = render(
+      <MarkdownCell cell={cell} onFocus={() => {}} onDelete={() => {}} />,
+    );
+
+    const preview = getByLabelText("Markdown cell content");
+    expect(preview.className).toContain("hidden");
+
+    fireEvent.keyDown(getByTestId("markdown-editor"), {
+      key: "Enter",
+      ctrlKey: true,
+    });
+
+    await waitFor(() => {
+      expect(preview.className).not.toContain("hidden");
+    });
+  });
+
+  it("Ctrl+Enter keeps markdown preview in view mode", () => {
+    const { getByLabelText } = render(
+      <MarkdownCell cell={makeCell()} onFocus={() => {}} onDelete={() => {}} />,
+    );
+
+    const preview = getByLabelText("Markdown cell content");
+    expect(preview.className).not.toContain("hidden");
+
+    fireEvent.keyDown(preview, { key: "Enter", ctrlKey: true });
+
+    expect(preview.className).not.toContain("hidden");
   });
 });

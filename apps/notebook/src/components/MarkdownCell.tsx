@@ -262,11 +262,14 @@ export const MarkdownCell = memo(function MarkdownCell({
       } else if (e.key === "ArrowUp") {
         onFocusPrevious?.("end");
         e.preventDefault();
-      } else if (e.key === "Enter" && e.shiftKey) {
+      } else if (e.key === "Enter" && e.ctrlKey && !e.metaKey && !e.altKey) {
+        setEditing(false);
+        e.preventDefault();
+      } else if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
         // Shift+Enter: move to next cell (like execute for code cells)
         onFocusNext?.("start");
         e.preventDefault();
-      } else if (e.key === "Enter" && !e.shiftKey) {
+      } else if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
         // Enter: enter edit mode
         setEditing(true);
         e.preventDefault();
@@ -331,6 +334,13 @@ export const MarkdownCell = memo(function MarkdownCell({
   // Combine navigation with markdown-specific keys
   const keyMap: KeyBinding[] = useMemo(
     () => [
+      {
+        key: "Ctrl-Enter",
+        run: () => {
+          setEditing(false);
+          return true;
+        },
+      },
       ...navigationKeyMap,
       {
         key: "Escape",
