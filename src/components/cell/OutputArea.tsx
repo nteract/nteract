@@ -705,7 +705,7 @@ export function OutputArea({
                 colorTheme={colorTheme}
                 minHeight={24}
                 maxHeight={isolatedOutputWellMaxHeight}
-                autoHeight={shouldIsolate}
+                autoHeight={shouldIsolate && !focused}
                 allowWheelBoundaryScroll={!focused && !shouldScrollPassthroughFrame}
                 scrollPassthrough={shouldScrollPassthroughFrame}
                 onReady={handleFrameReady}

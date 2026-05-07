@@ -279,7 +279,11 @@ describe("OutputArea iframe theme sync", () => {
 
     const outputContent = getOutputContent(container);
 
-    expect(getByTestId("isolated-frame").getAttribute("data-auto-height")).toBe("true");
+    // Focused mode disables iframe autoHeight so the iframe document handles
+    // its own wheel via internal overflow, instead of growing to its full
+    // content height (which left the wrapper as the only scroll container,
+    // and wheel-over-iframe events never reached it).
+    expect(getByTestId("isolated-frame").getAttribute("data-auto-height")).toBe("false");
     expect(outputContent.getAttribute("class") ?? "").toContain("overflow-y-auto");
     expect(outputContent.style.minHeight).toBe("360px");
   });

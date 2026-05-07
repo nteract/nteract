@@ -65,7 +65,15 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
       line-height: 1.5;
       background: transparent;
       color: var(--text-primary);
-      overflow: hidden;
+      /*
+       * overflow-x hidden prevents stray horizontal scrollbars during render.
+       * overflow-y must be auto so focused-mode iframes (clamped below content
+       * height) get the user agent's native vertical scroll. In autoHeight
+       * mode the iframe matches content height so the scrollbar never
+       * appears in practice.
+       */
+      overflow-x: hidden;
+      overflow-y: auto;
     }
 
     /* Output container */
@@ -624,10 +632,18 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
 
       function nearestVerticalScroller(target) {
         var element = wheelTargetElement(target);
-        while (element && element !== document.documentElement) {
+        while (element && element !== document.documentElement && element !== document.body) {
           if (canScrollVertically(element)) return element;
           element = element.parentElement;
         }
+        // No explicitly-scrollable inner element. Fall back to the iframe
+        // document root when its content overflows the iframe viewport. The
+        // root has overflow:visible by default but the user agent treats it
+        // as the scroll container for the iframe — without this the custom
+        // wheel handler eats every event in a passthrough-mime output that
+        // is constrained to less than its content height (focused mode).
+        var root = document.scrollingElement || document.documentElement;
+        if (root && root.scrollHeight > root.clientHeight + 1) return root;
         return null;
       }
 
