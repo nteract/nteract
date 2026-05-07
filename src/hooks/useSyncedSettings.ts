@@ -1,12 +1,38 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import type { Theme } from "@tauri-apps/api/window";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useState } from "react";
 import type { ColorTheme, PythonEnvType, Runtime, SyncedSettings, ThemeMode } from "@/bindings";
 
 // Re-export generated types so consumers can import from this module.
 export type { ColorTheme, ThemeMode, Runtime, PythonEnvType };
+
+type NativeTheme = "light" | "dark" | null;
+type Unlisten = () => void;
+
+function isTauriRuntime(): boolean {
+  const globalWindow = window as Window & {
+    __TAURI__?: unknown;
+    __TAURI_INTERNALS__?: unknown;
+  };
+  return "__TAURI_INTERNALS__" in globalWindow || "__TAURI__" in globalWindow;
+}
+
+async function invokeTauri<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (!isTauriRuntime()) {
+    throw new Error("Tauri runtime unavailable");
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<T>(command, args);
+}
+
+async function listenTauri<T>(
+  eventName: string,
+  handler: (event: { payload: T }) => void,
+): Promise<Unlisten> {
+  if (!isTauriRuntime()) {
+    return () => {};
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<T>(eventName, handler);
+}
 
 function isValidColorTheme(value: string): value is ColorTheme {
   return value === "classic" || value === "cream";
@@ -50,11 +76,21 @@ function applyThemeToDOM(resolved: "light" | "dark") {
 
 async function syncNativeWindowTheme(theme: ThemeMode): Promise<void> {
   try {
-    const tauriTheme: Theme | null = theme === "system" ? null : theme;
+    if (!isTauriRuntime()) return;
+    const tauriTheme: NativeTheme = theme === "system" ? null : theme;
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
     await getCurrentWindow().setTheme(tauriTheme);
   } catch {
     // Silently fail if not in Tauri context
   }
+}
+
+function persistSyncedSetting(key: string, value: unknown, warning: string): void {
+  invokeTauri("set_synced_setting", { key, value }).catch((e) => {
+    if (isTauriRuntime()) {
+      console.warn(warning, e);
+    }
+  });
 }
 
 function isValidTheme(value: string): value is ThemeMode {
@@ -169,7 +205,7 @@ export function useSyncedSettings() {
 
   // Load initial settings from daemon
   useEffect(() => {
-    invoke<SyncedSettings>("get_synced_settings")
+    invokeTauri<SyncedSettings>("get_synced_settings")
       .then((settings) => {
         if (isValidTheme(settings.theme)) {
           setThemeState(settings.theme);
@@ -230,7 +266,7 @@ export function useSyncedSettings() {
 
   // Listen for cross-window settings changes via Tauri events
   useEffect(() => {
-    const unlisten = listen<SyncedSettings>("settings:changed", (event) => {
+    const unlisten = listenTauri<SyncedSettings>("settings:changed", (event) => {
       const {
         theme: newTheme,
         color_theme: newColorTheme,
@@ -290,102 +326,92 @@ export function useSyncedSettings() {
   const setTheme = useCallback((newTheme: ThemeMode) => {
     setThemeState(newTheme);
     setStoredTheme(newTheme);
-    invoke("set_synced_setting", { key: "theme", value: newTheme }).catch((e) =>
-      console.warn("[settings] Failed to persist theme:", e),
-    );
+    persistSyncedSetting("theme", newTheme, "[settings] Failed to persist theme:");
   }, []);
 
   const setColorTheme = useCallback((newColorTheme: ColorTheme) => {
     setColorThemeState(newColorTheme);
     setStoredColorTheme(newColorTheme);
-    invoke("set_synced_setting", { key: "color_theme", value: newColorTheme }).catch((e) =>
-      console.warn("[settings] Failed to persist color theme:", e),
-    );
+    persistSyncedSetting("color_theme", newColorTheme, "[settings] Failed to persist color theme:");
   }, []);
 
   const setDefaultRuntime = useCallback((newRuntime: string) => {
     setDefaultRuntimeState(newRuntime);
-    invoke("set_synced_setting", {
-      key: "default_runtime",
-      value: newRuntime,
-    }).catch((e) => console.warn("[settings] Failed to persist runtime:", e));
+    persistSyncedSetting("default_runtime", newRuntime, "[settings] Failed to persist runtime:");
   }, []);
 
   const setDefaultPythonEnv = useCallback((newEnv: string) => {
     setDefaultPythonEnvState(newEnv);
-    invoke("set_synced_setting", {
-      key: "default_python_env",
-      value: newEnv,
-    }).catch((e) => console.warn("[settings] Failed to persist python env:", e));
+    persistSyncedSetting("default_python_env", newEnv, "[settings] Failed to persist python env:");
   }, []);
 
   const setDefaultUvPackages = useCallback((packages: string[]) => {
     setDefaultUvPackagesState(packages);
-    invoke("set_synced_setting", {
-      key: "uv.default_packages",
-      value: packages,
-    }).catch((e) => console.warn("[settings] Failed to persist uv packages:", e));
+    persistSyncedSetting(
+      "uv.default_packages",
+      packages,
+      "[settings] Failed to persist uv packages:",
+    );
   }, []);
 
   const setDefaultCondaPackages = useCallback((packages: string[]) => {
     setDefaultCondaPackagesState(packages);
-    invoke("set_synced_setting", {
-      key: "conda.default_packages",
-      value: packages,
-    }).catch((e) => console.warn("[settings] Failed to persist conda packages:", e));
+    persistSyncedSetting(
+      "conda.default_packages",
+      packages,
+      "[settings] Failed to persist conda packages:",
+    );
   }, []);
 
   const setDefaultPixiPackages = useCallback((packages: string[]) => {
     setDefaultPixiPackagesState(packages);
-    invoke("set_synced_setting", {
-      key: "pixi.default_packages",
-      value: packages,
-    }).catch((e) => console.warn("[settings] Failed to persist pixi packages:", e));
+    persistSyncedSetting(
+      "pixi.default_packages",
+      packages,
+      "[settings] Failed to persist pixi packages:",
+    );
   }, []);
 
   const setInstallDefaultDataPackages = useCallback((enabled: boolean) => {
     setInstallDefaultDataPackagesState(enabled);
-    invoke("set_synced_setting", {
-      key: "install_default_data_packages",
-      value: enabled,
-    }).catch((e) => console.warn("[settings] Failed to persist install_default_data_packages:", e));
+    persistSyncedSetting(
+      "install_default_data_packages",
+      enabled,
+      "[settings] Failed to persist install_default_data_packages:",
+    );
   }, []);
 
   const setKeepAliveSecs = useCallback((secs: number) => {
     setKeepAliveSecsState(secs);
-    invoke("set_synced_setting", {
-      key: "keep_alive_secs",
-      value: secs,
-    }).catch((e) => console.warn("[settings] Failed to persist keep_alive_secs:", e));
+    persistSyncedSetting("keep_alive_secs", secs, "[settings] Failed to persist keep_alive_secs:");
   }, []);
 
   const setFeatureFlag = useCallback((id: FeatureFlagId, enabled: boolean) => {
     setFeatureFlagsState((prev) => ({ ...prev, [id]: enabled }));
-    invoke("set_synced_setting", {
-      key: id,
-      value: enabled,
-    }).catch((e) => console.warn(`[settings] Failed to persist ${id}:`, e));
+    persistSyncedSetting(id, enabled, `[settings] Failed to persist ${id}:`);
   }, []);
 
   const setTelemetryEnabled = useCallback((value: boolean) => {
     setTelemetryEnabledState(value);
-    invoke("set_synced_setting", {
-      key: "telemetry_enabled",
+    persistSyncedSetting(
+      "telemetry_enabled",
       value,
-    }).catch((e) => console.warn("[settings] Failed to persist telemetry_enabled:", e));
+      "[settings] Failed to persist telemetry_enabled:",
+    );
   }, []);
 
   const setTelemetryConsentRecorded = useCallback((value: boolean) => {
     setTelemetryConsentRecordedState(value);
-    invoke("set_synced_setting", {
-      key: "telemetry_consent_recorded",
+    persistSyncedSetting(
+      "telemetry_consent_recorded",
       value,
-    }).catch((e) => console.warn("[settings] Failed to persist telemetry_consent_recorded:", e));
+      "[settings] Failed to persist telemetry_consent_recorded:",
+    );
   }, []);
 
   const rotateInstallId = useCallback(async (): Promise<string | null> => {
     try {
-      const newId = await invoke<string>("rotate_install_id");
+      const newId = await invokeTauri<string>("rotate_install_id");
       setInstallIdState(newId);
       setLastDaemonPingAtState(null);
       setLastAppPingAtState(null);

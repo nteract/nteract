@@ -6,17 +6,7 @@ import {
   SquareDashedMousePointer,
   SquareMousePointer,
 } from "lucide-react";
-import {
-  lazy,
-  memo,
-  type ReactNode,
-  Suspense,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
 import { anyOutputNeedsIsolation, OutputArea } from "@/components/cell/OutputArea";
@@ -49,13 +39,7 @@ import { presenceSenderExtension } from "../lib/presence-sender";
 import { tabCompletionKeymap } from "../lib/tab-completion";
 import type { CodeCell as CodeCellType } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
-
-// Lazy load HistorySearchDialog — only loaded when user opens history search (Ctrl+R)
-const HistorySearchDialog = lazy(() =>
-  import("./HistorySearchDialog").then((m) => ({
-    default: m.HistorySearchDialog,
-  })),
-);
+import { HistorySearchDialog } from "./HistorySearchDialog";
 
 interface CodeCellProps {
   cell: CodeCellType;
@@ -456,15 +440,13 @@ export const CodeCell = memo(function CodeCell({
         hideOutput={outputs.length === 0 || bothHidden}
       />
 
-      {/* History Search Dialog (Ctrl+R) - lazy loaded */}
+      {/* History Search Dialog (Ctrl+R) */}
       {historyDialogOpen && (
-        <Suspense fallback={null}>
-          <HistorySearchDialog
-            open={historyDialogOpen}
-            onOpenChange={setHistoryDialogOpen}
-            onSelect={handleHistorySelect}
-          />
-        </Suspense>
+        <HistorySearchDialog
+          open={historyDialogOpen}
+          onOpenChange={setHistoryDialogOpen}
+          onSelect={handleHistorySelect}
+        />
       )}
     </>
   );

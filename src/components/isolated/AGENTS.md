@@ -1,6 +1,6 @@
 # Isolated output frame — security model and renderers
 
-Untrusted cell outputs render inside a sandboxed iframe loaded from a `blob:` URL. The iframe's opaque origin prevents Tauri IPC injection, and the sandbox attribute list is the primary defense against malicious JavaScript in outputs.
+Untrusted cell outputs render inside a sandboxed iframe. Tauri loads the iframe from a `blob:` URL so the opaque origin prevents Tauri IPC injection. The plain browser dev host uses `srcDoc` because Chrome rejects this sandboxed `blob:` navigation from localhost; the sandbox attribute list remains the primary defense against malicious JavaScript in outputs.
 
 Scope: `src/components/isolated/**`, `src/isolated-renderer/**`.
 
@@ -18,7 +18,7 @@ Fullscreen (sift maximize, maps, 3D) comes from the separate `allowFullScreen` i
 
 ### Blob URL origin
 
-Generate HTML with `generateFrameHtml({ darkMode })`, wrap it in a `Blob`, and mount with `URL.createObjectURL`. Blob URLs produce a unique opaque origin (shown as `"null"`), so Tauri's IPC bridge doesn't inject into the iframe.
+In Tauri, generate HTML with `generateFrameHtml({ darkMode })`, wrap it in a `Blob`, and mount with `URL.createObjectURL`. Blob URLs produce a unique opaque origin (shown as `"null"`), so Tauri's IPC bridge doesn't inject into the iframe. In the browser dev host, mount the same generated HTML with `srcDoc`; do not add `allow-same-origin`.
 
 ### Content Security Policy
 
@@ -66,7 +66,7 @@ The iframe's message handler rejects anything whose `event.source !== window.par
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| `IsolatedFrame` | `src/components/isolated/isolated-frame.tsx` | Manages blob URL lifecycle, exposes `installRenderer()` |
+| `IsolatedFrame` | `src/components/isolated/isolated-frame.tsx` | Manages iframe document lifecycle, exposes `installRenderer()` |
 | `CommBridgeManager` | `src/components/isolated/comm-bridge-manager.ts` | Parent-side widget state sync |
 | `jsonrpc-transport.ts` | `src/components/isolated/jsonrpc-transport.ts` | JSON-RPC 2.0 transport over `postMessage` |
 | `rpc-methods.ts` | `src/components/isolated/rpc-methods.ts` | Shared widget-bridge method constants |
