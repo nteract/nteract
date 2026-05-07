@@ -336,9 +336,15 @@ export function OutputArea({
   const colorTheme = useColorTheme();
   const defaultOutputWellMaxHeight = useOutputWellMaxHeight(DEFAULT_OUTPUT_WELL_VIEWPORT_RATIO);
   const focusedOutputWellMaxHeight = useOutputWellMaxHeight(FOCUSED_OUTPUT_WELL_VIEWPORT_RATIO);
+  // Non-isolated outputs (stream/text/error) render in-DOM and otherwise
+  // grow as tall as their content, which pushes the page down dramatically
+  // for chatty stdout. Cap them at the same default well height the iframe
+  // path uses, with overflow-y-auto so the user gets an inner scroll region.
+  // Explicit `maxHeight` prop still overrides; pass 0 to opt out.
+  const effectiveInDomMaxHeight = maxHeight ?? defaultOutputWellMaxHeight;
   const maxHeightStyle = useMemo(
-    () => (maxHeight ? { maxHeight: `${maxHeight}px` } : undefined),
-    [maxHeight],
+    () => (effectiveInDomMaxHeight ? { maxHeight: `${effectiveInDomMaxHeight}px` } : undefined),
+    [effectiveInDomMaxHeight],
   );
   // Ref for reading current darkMode in callbacks without adding to deps
   const darkModeRef = useRef(darkMode);
@@ -679,7 +685,7 @@ export function OutputArea({
           id={id}
           className={cn(
             "space-y-2",
-            !shouldIsolate && maxHeight && "overflow-y-auto",
+            !shouldIsolate && effectiveInDomMaxHeight && "overflow-y-auto",
             shouldConstrainIsolatedOutput && "overflow-y-auto",
           )}
           style={shouldIsolate ? isolatedOutputWellStyle : maxHeightStyle}
