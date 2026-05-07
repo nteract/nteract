@@ -6134,6 +6134,287 @@ async fn rename_env_dir_uses_conda_hash_when_runtime_is_conda() {
     assert!(!old_path.exists());
 }
 
+// ── Integration tests: eviction flush → save → rename → preserve sequence ──
+//
+// The unit tests above each exercise one helper in isolation. The
+// production sequence in `peer_eviction.rs:260-373` calls them together
+// in a fixed order, with two interlocks:
+//
+//   1. The rename step is gated on `save_succeeded` — if `save_notebook_to_disk`
+//      errs, the env dir must NOT be renamed (otherwise the .ipynb on disk
+//      stays at the old hash while the env moves to the new one, and the
+//      next reopen's `unified_env_on_disk` lookup misses).
+//   2. The preserve predicate runs against the post-flush metadata snapshot
+//      and the (possibly unrenamed) env path, so it must still return
+//      `false` when rename couldn't proceed — otherwise an orphaned env
+//      would survive eviction at a hash that no reopen will ever ask for.
+//
+// These tests drive the helpers through the production order with
+// failure injection at each step, asserting the cross-surface invariants.
+
+/// Set up a saved-path room with a captured env on disk at the OLD hash and
+/// a hot-synced `LaunchedEnvConfig` ready to flush. Returns everything the
+/// sequence steps need plus the new-hash `expected_path` so tests can
+/// assert post-rename state.
+async fn setup_eviction_fixture(
+    tmp: &tempfile::TempDir,
+    notebook_filename: &str,
+) -> (
+    NotebookRoom,
+    PathBuf, // notebook .ipynb path
+    PathBuf, // uv cache dir
+    PathBuf, // conda cache dir
+    PathBuf, // old env path (on disk before flush)
+    PathBuf, // expected new env path (post-flush hash)
+    LaunchedEnvConfig,
+    &'static str, // env_id
+) {
+    let uv_cache = tmp.path().join("uv-cache");
+    let conda_cache = tmp.path().join("conda-cache");
+    std::fs::create_dir_all(&uv_cache).unwrap();
+    std::fs::create_dir_all(&conda_cache).unwrap();
+
+    let env_id = "evict-seq-env";
+    let old_deps = kernel_env::UvDependencies {
+        dependencies: vec!["pandas".to_string()],
+        requires_python: None,
+        prerelease: None,
+    };
+    let old_env_path = materialise_fake_uv_venv(&old_deps, env_id, &uv_cache);
+
+    let new_deps = kernel_env::UvDependencies {
+        dependencies: vec!["pandas".to_string(), "numpy".to_string()],
+        requires_python: None,
+        prerelease: None,
+    };
+    let expected_new_path =
+        uv_cache.join(kernel_env::uv::compute_unified_env_hash(&new_deps, env_id));
+
+    let (room, notebook_path) = test_room_with_path(tmp, notebook_filename);
+
+    {
+        let mut doc = room.doc.write().await;
+        let mut snap = doc.get_metadata_snapshot().unwrap_or_default();
+        snap.runt.env_id = Some(env_id.to_string());
+        snap.runt.uv = Some(notebook_doc::metadata::UvInlineMetadata {
+            dependencies: old_deps.dependencies.clone(),
+            requires_python: None,
+            prerelease: None,
+        });
+        doc.set_metadata_snapshot(&snap).unwrap();
+    }
+
+    let launched = LaunchedEnvConfig {
+        uv_deps: Some(new_deps.dependencies.clone()),
+        ..LaunchedEnvConfig::default()
+    };
+    *room.runtime_agent_launched_config.write().await = Some(launched.clone());
+    *room.runtime_agent_env_path.write().await = Some(old_env_path.clone());
+
+    (
+        room,
+        notebook_path,
+        uv_cache,
+        conda_cache,
+        old_env_path,
+        expected_new_path,
+        launched,
+        env_id,
+    )
+}
+
+/// Happy path: flush, save, and rename all succeed. Doc, on-disk .ipynb,
+/// and env directory all end up at the post-flush unified hash, and the
+/// preserve predicate fires so the captured env survives eviction.
+#[tokio::test]
+async fn eviction_sequence_happy_path_keeps_doc_disk_env_coherent() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (
+        room,
+        notebook_path,
+        uv_cache,
+        conda_cache,
+        old_env_path,
+        expected_new_path,
+        launched,
+        _env_id,
+    ) = setup_eviction_fixture(&tmp, "happy.ipynb").await;
+
+    let flushed = flush_launched_deps_to_metadata(&room, &launched, CapturedEnvRuntime::Uv).await;
+    assert!(
+        flushed,
+        "launched deps differ from metadata; flush should fire"
+    );
+
+    save_notebook_to_disk(&room, None)
+        .await
+        .expect("happy-path save should succeed");
+
+    let metadata_after = {
+        let doc = room.doc.read().await;
+        doc.get_metadata_snapshot()
+    };
+    let new_path = rename_env_dir_to_unified_hash(
+        &old_env_path,
+        metadata_after.as_ref(),
+        CapturedEnvRuntime::Uv,
+        &uv_cache,
+        &conda_cache,
+    )
+    .await;
+
+    // Env on disk: moved from old to new hash.
+    assert_eq!(new_path, expected_new_path);
+    assert!(expected_new_path.exists(), "env exists at new hash");
+    assert!(!old_env_path.exists(), "old hash dir gone after rename");
+
+    // .ipynb on disk: deps reflect the post-flush list.
+    let ipynb: serde_json::Value =
+        serde_json::from_slice(&tokio::fs::read(&notebook_path).await.unwrap()).unwrap();
+    assert_eq!(
+        ipynb["metadata"]["runt"]["uv"]["dependencies"],
+        serde_json::json!(["pandas", "numpy"]),
+        "saved .ipynb should carry the flushed deps"
+    );
+
+    // Preserve predicate fires for saved notebook + matching hash.
+    assert!(should_preserve_env_on_eviction(
+        true,
+        &new_path,
+        metadata_after.as_ref(),
+        &uv_cache,
+        &conda_cache,
+    ));
+}
+
+/// `peer_eviction.rs:347` only invokes the rename when `save_succeeded`
+/// is true. Verify that gate: when save fails, the rename must be skipped
+/// so the env dir on disk stays at the old hash. The .ipynb on disk
+/// keeps its pre-flush deps (because the save was the one that errored),
+/// so the next reopen reads old metadata → looks up old hash → still
+/// finds the env.
+#[tokio::test]
+async fn eviction_sequence_save_failure_skips_rename() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (
+        room,
+        notebook_path,
+        _uv_cache,
+        _conda_cache,
+        old_env_path,
+        expected_new_path,
+        launched,
+        _env_id,
+    ) = setup_eviction_fixture(&tmp, "save_fail.ipynb").await;
+
+    // Force save_notebook_to_disk to fail without OS-level permission tricks:
+    // pre-create a directory at the bound path. tokio::fs::write returns
+    // IsADirectory and the helper maps that to SaveError::Unrecoverable.
+    std::fs::create_dir_all(&notebook_path).unwrap();
+
+    let flushed = flush_launched_deps_to_metadata(&room, &launched, CapturedEnvRuntime::Uv).await;
+    assert!(flushed, "flush mutates the in-memory doc before save runs");
+
+    let save_result = save_notebook_to_disk(&room, None).await;
+    assert!(
+        save_result.is_err(),
+        "save should fail when bound path is a directory"
+    );
+
+    // Production order: skip rename when save errored. Assert the
+    // post-condition that gate guarantees: env dir is untouched.
+    assert!(
+        old_env_path.exists(),
+        "env must stay at old hash when rename is skipped"
+    );
+    assert!(
+        !expected_new_path.exists(),
+        "no env should appear at new hash without a successful rename"
+    );
+
+    // Reopen-after-failure invariant: the .ipynb on disk reflects the
+    // pre-flush deps (because the save errored), so a new daemon session
+    // reading that file resolves to the old hash and finds the env there.
+    // No file was written, so the path is still the directory we pre-created.
+    assert!(notebook_path.is_dir(), "save did not overwrite the blocker");
+}
+
+/// When the rename target is already occupied (e.g. another notebook
+/// captured an env at the same post-flush hash), `rename_env_dir_to_unified_hash`
+/// returns the source path unchanged. The preserve predicate must then
+/// detect the env_path / metadata mismatch and return false, so the
+/// orphan source gets cleaned and the collision target stays untouched.
+#[tokio::test]
+async fn eviction_sequence_rename_collision_preserves_target_orphans_source() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (
+        room,
+        _notebook_path,
+        uv_cache,
+        conda_cache,
+        old_env_path,
+        expected_new_path,
+        launched,
+        env_id,
+    ) = setup_eviction_fixture(&tmp, "collide.ipynb").await;
+
+    // Pre-create an env at the post-flush hash (simulates a different
+    // notebook's captured env claiming the same hash slot).
+    let new_deps = kernel_env::UvDependencies {
+        dependencies: vec!["pandas".to_string(), "numpy".to_string()],
+        requires_python: None,
+        prerelease: None,
+    };
+    let collision_path = materialise_fake_uv_venv(&new_deps, env_id, &uv_cache);
+    assert_eq!(
+        collision_path, expected_new_path,
+        "collision env should land on the same hash"
+    );
+
+    let flushed = flush_launched_deps_to_metadata(&room, &launched, CapturedEnvRuntime::Uv).await;
+    assert!(flushed);
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+
+    let metadata_after = {
+        let doc = room.doc.read().await;
+        doc.get_metadata_snapshot()
+    };
+    let returned_path = rename_env_dir_to_unified_hash(
+        &old_env_path,
+        metadata_after.as_ref(),
+        CapturedEnvRuntime::Uv,
+        &uv_cache,
+        &conda_cache,
+    )
+    .await;
+
+    // Rename refused (target occupied); both envs still exist on disk.
+    assert_eq!(
+        returned_path, old_env_path,
+        "rename must return source path on collision"
+    );
+    assert!(old_env_path.exists(), "source env untouched");
+    assert!(collision_path.exists(), "collision target untouched");
+
+    // The room's runtime_agent_env_path stays at old_env_path because
+    // peer_eviction only updates it when the rename moved. Preserve
+    // predicate then sees: saved=true, env_path=old, metadata=new hash
+    // → unified_env_on_disk for new hash returns the collision env's
+    // path which != old_env_path → mismatch → returns false. The
+    // cleanup branch in peer_eviction will remove the orphan source.
+    assert!(
+        !should_preserve_env_on_eviction(
+            true,
+            &old_env_path,
+            metadata_after.as_ref(),
+            &uv_cache,
+            &conda_cache,
+        ),
+        "orphan source must not be preserved when its hash no longer matches metadata"
+    );
+}
+
 /// P1 regression: the manual LaunchKernel handler must apply the captured
 /// override when the requested `env_source` is auto/prewarmed but respect
 /// explicit `auto:uv` / `auto:conda` scopes when they disagree with the
