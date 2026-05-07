@@ -138,6 +138,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   const frameRef = useRef<IsolatedFrameHandle>(null);
   const injectedLibsRef = useRef(new Set<string>());
   const viewRef = useRef<HTMLDivElement>(null);
+  const [previewFrameInteractionActive, setPreviewFrameInteractionActive] = useState(false);
 
   // Register EditorView with the cursor registry when in edit mode.
   const registeredViewRef = useRef<EditorView | null>(null);
@@ -202,6 +203,21 @@ export const MarkdownCell = memo(function MarkdownCell({
   const handleDoubleClick = useCallback(() => {
     setEditing(true);
   }, []);
+
+  const activatePreviewFrameInteraction = useCallback(() => {
+    setPreviewFrameInteractionActive(true);
+    onFocus();
+  }, [onFocus]);
+
+  const deactivatePreviewFrameInteraction = useCallback(() => {
+    setPreviewFrameInteractionActive(false);
+  }, []);
+
+  useEffect(() => {
+    if (!isFocused || editing) {
+      setPreviewFrameInteractionActive(false);
+    }
+  }, [isFocused, editing]);
 
   const handleBlur = useCallback(() => {
     if (cell.source.trim()) {
@@ -479,17 +495,23 @@ export const MarkdownCell = memo(function MarkdownCell({
             onKeyDown={handleViewKeyDown}
           >
             {/* Always render IsolatedFrame to preload it (hidden when no content) */}
-            <div className={cell.source ? undefined : "hidden"}>
+            <div
+              className={cn(cell.source ? "outline-none" : "hidden")}
+              onMouseDown={activatePreviewFrameInteraction}
+              onMouseLeave={deactivatePreviewFrameInteraction}
+            >
               <IsolatedFrame
                 ref={frameRef}
                 darkMode={darkMode}
                 colorTheme={colorTheme}
                 minHeight={24}
                 autoHeight
+                scrollPassthrough={!previewFrameInteractionActive}
+                allowWheelBoundaryScroll={previewFrameInteractionActive}
                 revealOnRender
                 onReady={handleFrameReady}
                 onLinkClick={handleLinkClick}
-                onMouseDown={onFocus}
+                onMouseDown={activatePreviewFrameInteraction}
                 onDoubleClick={handleDoubleClick}
                 onError={handleIframeError}
                 className="w-full"

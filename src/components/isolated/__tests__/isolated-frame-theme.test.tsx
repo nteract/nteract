@@ -116,4 +116,11 @@ describe("IsolatedFrame theme updates", () => {
       expect(iframe.style.height).toBe("2600px");
     });
   });
+
+  it("can make static frames transparent to parent scroll hit-testing", () => {
+    const { container } = render(<IsolatedFrame darkMode={false} scrollPassthrough />);
+    const iframe = container.querySelector("iframe") as HTMLIFrameElement;
+
+    expect(iframe.style.pointerEvents).toBe("none");
+  });
 });

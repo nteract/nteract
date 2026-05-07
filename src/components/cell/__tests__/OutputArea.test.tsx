@@ -1,4 +1,4 @@
-import { render, waitFor } from "@testing-library/react";
+import { fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { OutputArea, type JupyterOutput } from "../OutputArea";
 
@@ -34,8 +34,16 @@ vi.mock("@/components/isolated", async () => {
 
   const MockIsolatedFrame = React.forwardRef<
     typeof mockFrameHandle,
-    { allowWheelBoundaryScroll?: boolean; autoHeight?: boolean; onReady?: () => void }
-  >(function MockIsolatedFrame({ allowWheelBoundaryScroll, autoHeight, onReady }, ref) {
+    {
+      allowWheelBoundaryScroll?: boolean;
+      autoHeight?: boolean;
+      scrollPassthrough?: boolean;
+      onReady?: () => void;
+    }
+  >(function MockIsolatedFrame(
+    { allowWheelBoundaryScroll, autoHeight, scrollPassthrough, onReady },
+    ref,
+  ) {
     React.useImperativeHandle(ref, () => mockFrameHandle);
 
     React.useEffect(() => {
@@ -46,6 +54,7 @@ vi.mock("@/components/isolated", async () => {
       <div
         data-allow-wheel-boundary-scroll={String(allowWheelBoundaryScroll)}
         data-auto-height={String(autoHeight)}
+        data-scroll-passthrough={String(scrollPassthrough)}
         data-testid="isolated-frame"
       />
     );
@@ -119,9 +128,52 @@ describe("OutputArea iframe theme sync", () => {
     });
   });
 
-  it("forwards iframe wheel boundary scroll from notebook outputs", () => {
+  it("makes static markdown iframe outputs scroll-transparent", () => {
     const { getByTestId } = render(<OutputArea outputs={makeMarkdownOutput()} isolated />);
 
+    expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("true");
+    expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
+      "false",
+    );
+  });
+
+  it("activates static iframe outputs for pointer interaction until the pointer leaves", () => {
+    const onIframeMouseDown = vi.fn();
+    const { getByTestId } = render(
+      <OutputArea outputs={makeMarkdownOutput()} isolated onIframeMouseDown={onIframeMouseDown} />,
+    );
+
+    const frame = getByTestId("isolated-frame");
+    const activationWell = frame.parentElement as HTMLElement;
+
+    fireEvent.mouseDown(activationWell);
+
+    expect(onIframeMouseDown).toHaveBeenCalled();
+    expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("false");
+    expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
+      "true",
+    );
+
+    fireEvent.mouseLeave(activationWell);
+
+    expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("true");
+    expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
+      "false",
+    );
+  });
+
+  it("keeps interactive plugin iframe outputs on the wheel-boundary path", () => {
+    const plotlyOutput: JupyterOutput[] = [
+      {
+        output_type: "display_data",
+        data: { "application/vnd.plotly.v1+json": { data: [] } },
+        metadata: {},
+      },
+    ];
+
+    const { getByTestId } = render(<OutputArea outputs={plotlyOutput} isolated />);
+
+    expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("false");
     expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
       "true",
     );

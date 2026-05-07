@@ -36,7 +36,7 @@ vi.mock("@/components/isolated", async () => {
 
   const MockIsolatedFrame = React.forwardRef<
     typeof mockFrameHandle,
-    Record<string, unknown> & { onReady?: () => void }
+    Record<string, unknown> & { onMouseDown?: () => void; onReady?: () => void }
   >(function MockIsolatedFrame(props, ref) {
     isolatedFrameProps.push(props);
     React.useImperativeHandle(ref, () => mockFrameHandle);
@@ -45,7 +45,7 @@ vi.mock("@/components/isolated", async () => {
       props.onReady?.();
     }, [props.onReady]);
 
-    return <div data-testid="markdown-frame" />;
+    return <div data-testid="markdown-frame" onMouseDown={props.onMouseDown} />;
   });
 
   return {
@@ -211,6 +211,28 @@ describe("MarkdownCell theme sync", () => {
     await waitFor(() => {
       expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true });
     });
+  });
+
+  it("activates markdown iframe pointer interaction after clicking the preview", () => {
+    const onFocus = vi.fn();
+
+    const { getByTestId } = render(
+      <MarkdownCell cell={makeCell()} onFocus={onFocus} onDelete={() => {}} />,
+    );
+
+    expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(true);
+    expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(false);
+
+    fireEvent.mouseDown(getByTestId("markdown-frame").parentElement as HTMLElement);
+
+    expect(onFocus).toHaveBeenCalled();
+    expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(false);
+    expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(true);
+
+    fireEvent.mouseLeave(getByTestId("markdown-frame").parentElement as HTMLElement);
+
+    expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(true);
+    expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(false);
   });
 
   it("Ctrl+Enter exits edit mode for markdown cells", async () => {

@@ -93,6 +93,14 @@ export interface IsolatedFrameProps {
   allowWheelBoundaryScroll?: boolean;
 
   /**
+   * When true, the iframe is transparent to pointer hit-testing so wheel
+   * gestures stay on the parent document's native scroll path. Use for
+   * full-height static/document-like frames that should not trap scrolling.
+   * @default false
+   */
+  scrollPassthrough?: boolean;
+
+  /**
    * Callback when the iframe is ready to receive messages.
    */
   onReady?: () => void;
@@ -284,6 +292,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       autoHeight = false,
       className = "",
       allowWheelBoundaryScroll = true,
+      scrollPassthrough = false,
       onReady,
       onResize,
       onLinkClick,
@@ -799,6 +808,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
           opacity: displayOpacity,
           border: "none",
           display: "block",
+          pointerEvents: scrollPassthrough ? "none" : undefined,
           background: "transparent",
           colorScheme: darkMode ? "dark" : "light",
           // Hide iframe during reload to prevent white flash from blank document.

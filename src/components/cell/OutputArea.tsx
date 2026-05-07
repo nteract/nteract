@@ -160,6 +160,22 @@ function selectMimeType(
   return firstAvailable || null;
 }
 
+function isScrollPassthroughMimeType(mimeType: string): boolean {
+  return mimeType === "text/markdown" || mimeType === "text/html" || mimeType === "image/svg+xml";
+}
+
+function outputAllowsScrollPassthrough(
+  output: JupyterOutput,
+  priority: readonly string[] = DEFAULT_PRIORITY,
+): boolean {
+  if (output.output_type === "execute_result" || output.output_type === "display_data") {
+    const mimeType = selectMimeType(output.data, priority);
+    return mimeType != null && isScrollPassthroughMimeType(mimeType);
+  }
+
+  return true;
+}
+
 /**
  * Check if a single output needs iframe isolation.
  * Uses the safe-list: anything not explicitly safe defaults to isolation.
@@ -293,10 +309,12 @@ export function OutputArea({
   const frameRef = useRef<IsolatedFrameHandle>(null);
   const bridgeRef = useRef<CommBridgeManager | null>(null);
   const inDomOutputRef = useRef<HTMLDivElement>(null);
+  const staticFrameInteractionRef = useRef<HTMLDivElement>(null);
   const injectedLibsRef = useRef(new Set<string>());
   const renderGenRef = useRef(0);
   const searchQueryRef = useRef(searchQuery);
   searchQueryRef.current = searchQuery;
+  const [staticFrameInteractionActive, setStaticFrameInteractionActive] = useState(false);
 
   const darkMode = useDarkMode();
   const colorTheme = useColorTheme();
@@ -331,8 +349,32 @@ export function OutputArea({
   // Check if we have widgets and should set up comm bridge
   const hasWidgets = hasWidgetOutputs(outputs, priority);
   const shouldUseBridge = shouldIsolate && hasWidgets && widgetContext !== null;
+  const shouldUseScrollPassthroughFrame =
+    shouldIsolate &&
+    !hasWidgets &&
+    outputs.every((output) => outputAllowsScrollPassthrough(output, priority));
+  const shouldScrollPassthroughFrame =
+    shouldUseScrollPassthroughFrame && !staticFrameInteractionActive;
 
   const hasCollapseControl = onToggleCollapse !== undefined;
+
+  useEffect(() => {
+    if (!shouldUseScrollPassthroughFrame && staticFrameInteractionActive) {
+      setStaticFrameInteractionActive(false);
+    }
+  }, [shouldUseScrollPassthroughFrame, staticFrameInteractionActive]);
+
+  const activateStaticFrameInteraction = useCallback(() => {
+    if (shouldUseScrollPassthroughFrame) {
+      setStaticFrameInteractionActive(true);
+      staticFrameInteractionRef.current?.focus({ preventScroll: true });
+    }
+    onIframeMouseDown?.();
+  }, [shouldUseScrollPassthroughFrame, onIframeMouseDown]);
+
+  const deactivateStaticFrameInteraction = useCallback(() => {
+    setStaticFrameInteractionActive(false);
+  }, []);
 
   // Handle messages from iframe, routing widget messages to comm bridge
   const handleIframeMessage = useCallback(
@@ -593,7 +635,17 @@ export function OutputArea({
         >
           {/* Preloaded or active isolated frame */}
           {(shouldIsolate || showPreloadedIframe) && (
-            <div className={shouldIsolate ? undefined : "hidden"}>
+            <div
+              ref={staticFrameInteractionRef}
+              className={cn(shouldIsolate ? "outline-none" : "hidden")}
+              tabIndex={shouldUseScrollPassthroughFrame ? -1 : undefined}
+              onMouseDown={
+                shouldUseScrollPassthroughFrame ? activateStaticFrameInteraction : undefined
+              }
+              onMouseLeave={
+                shouldUseScrollPassthroughFrame ? deactivateStaticFrameInteraction : undefined
+              }
+            >
               <IsolatedFrame
                 ref={frameRef}
                 darkMode={darkMode}
@@ -601,10 +653,11 @@ export function OutputArea({
                 minHeight={24}
                 maxHeight={isolatedOutputWellMaxHeight}
                 autoHeight={shouldIsolate}
-                allowWheelBoundaryScroll
+                allowWheelBoundaryScroll={!shouldScrollPassthroughFrame}
+                scrollPassthrough={shouldScrollPassthroughFrame}
                 onReady={handleFrameReady}
                 onLinkClick={onLinkClick}
-                onMouseDown={onIframeMouseDown}
+                onMouseDown={activateStaticFrameInteraction}
                 onWidgetUpdate={onWidgetUpdate}
                 onMessage={handleIframeMessage}
                 onError={handleIframeError}
