@@ -250,6 +250,14 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
 
       viewRef.current = view;
 
+      const focusWithoutScroll = () => {
+        if (!view.hasFocus) {
+          view.contentDOM.focus({ preventScroll: true });
+        }
+      };
+      view.dom.addEventListener("pointerdown", focusWithoutScroll, { capture: true });
+      view.dom.addEventListener("mousedown", focusWithoutScroll, { capture: true });
+
       // Toggling the placeholder forces a decoration change that triggers
       // updateInner(), rebuilding the line tiles. Without this, the initial
       // tile DOM renders a few pixels too tall — CM's measure cycle alone
@@ -269,6 +277,8 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
       });
 
       return () => {
+        view.dom.removeEventListener("pointerdown", focusWithoutScroll, { capture: true });
+        view.dom.removeEventListener("mousedown", focusWithoutScroll, { capture: true });
         viewRef.current = null;
         view.destroy();
       };
