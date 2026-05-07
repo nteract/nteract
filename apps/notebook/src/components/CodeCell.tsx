@@ -1,16 +1,9 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
-import {
-  ChevronRight,
-  Code2,
-  EyeOff,
-  Maximize2,
-  Square,
-  SquareMousePointer,
-} from "lucide-react";
+import { ChevronRight, Code2, EyeOff, Maximize2, Square, SquareMousePointer } from "lucide-react";
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
-import { anyOutputNeedsIsolation, OutputArea } from "@/components/cell/OutputArea";
+import { OutputArea } from "@/components/cell/OutputArea";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import type { SupportedLanguage } from "@/components/editor/languages";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
@@ -173,9 +166,6 @@ export const CodeCell = memo(function CodeCell({
   const executionId = useCellExecutionId(cell.id);
   const execution = useExecution(executionId);
   const executionCount = execution?.execution_count ?? null;
-  // CodeCell leaves OutputArea in its default `isolated="auto"` mode, so this
-  // matches whether the output row will render in the isolated iframe.
-  const hasIsolatedOutput = anyOutputNeedsIsolation(outputs);
 
   // Check cell metadata for visibility (JupyterLab convention)
   const isSourceHidden =
@@ -468,9 +458,7 @@ export const CodeCell = memo(function CodeCell({
           outputs.length > 0 && !isOutputsHidden ? (
             <>
               <OutputModeStrip
-                mode={
-                  outputFocused ? "focused" : isIframeOutputExpanded ? "expanded" : "compact"
-                }
+                mode={outputFocused ? "focused" : isIframeOutputExpanded ? "expanded" : "compact"}
                 onChange={(next) => {
                   if (next === "focused") {
                     setIsIframeOutputExpanded(false);
