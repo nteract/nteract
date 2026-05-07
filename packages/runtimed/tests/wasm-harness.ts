@@ -159,6 +159,10 @@ export async function createWasmHarness(notebookId = "test-notebook"): Promise<W
   const engine = new SyncEngine({
     getHandle: () => clientHandle as unknown as SyncableHandle,
     transport,
+    presenceHeartbeat: {
+      intervalMs: 15_000,
+      encode: () => new Uint8Array([0]),
+    },
     scheduler,
   });
 

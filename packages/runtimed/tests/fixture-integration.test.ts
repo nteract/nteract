@@ -130,6 +130,10 @@ async function setupFixtureSync(scenario: string) {
   const engine = new SyncEngine({
     getHandle: () => client as unknown as SyncableHandle,
     transport,
+    presenceHeartbeat: {
+      intervalMs: 15_000,
+      encode: () => new Uint8Array([0]),
+    },
     scheduler,
   });
 
@@ -361,6 +365,10 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
       const engine = new SyncEngine({
         getHandle: () => client as unknown as SyncableHandle,
         transport,
+        presenceHeartbeat: {
+          intervalMs: 15_000,
+          encode: () => new Uint8Array([0]),
+        },
         scheduler,
       });
 

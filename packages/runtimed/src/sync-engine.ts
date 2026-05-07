@@ -23,6 +23,7 @@ import {
   EMPTY,
   filter,
   from,
+  interval,
   mergeMap,
   Observable,
   ReplaySubject,
@@ -78,6 +79,14 @@ const nullLogger: SyncEngineLogger = {
   warn() {},
   error() {},
 };
+
+export interface PresenceHeartbeatOptions {
+  /** Interval in milliseconds between idle presence heartbeats. */
+  intervalMs: number;
+
+  /** Encode a Presence heartbeat payload using the caller's WASM module. */
+  encode: () => Uint8Array;
+}
 
 function initialLoadPhaseName(phase: InitialLoadPhase): InitialLoadPhase["phase"] {
   return phase.phase;
@@ -213,6 +222,9 @@ export interface SyncEngineOptions {
   /** Pluggable transport to the daemon. */
   transport: NotebookTransport;
 
+  /** Required client-side idle heartbeat for keeping the daemon peer alive. */
+  presenceHeartbeat: PresenceHeartbeatOptions;
+
   /** Optional logger (defaults to silent). */
   logger?: SyncEngineLogger;
 
@@ -232,7 +244,9 @@ export interface SyncEngineOptions {
 // ── SyncEngine ───────────────────────────────────────────────────────
 
 export class SyncEngine {
-  private readonly opts: Required<Pick<SyncEngineOptions, "getHandle" | "transport" | "logger">> &
+  private readonly opts: Required<
+    Pick<SyncEngineOptions, "getHandle" | "transport" | "logger" | "presenceHeartbeat">
+  > &
     Pick<SyncEngineOptions, "scheduler">;
   private readonly flushDeliveryTimeoutMs: number;
   private subscription: Subscription | null = null;
@@ -393,6 +407,21 @@ export class SyncEngine {
       this.frameIn$.next(payload);
     });
     sub.add(() => unlisten());
+
+    sub.add(
+      interval(this.opts.presenceHeartbeat.intervalMs, this.opts.scheduler).subscribe(() => {
+        let payload: Uint8Array;
+        try {
+          payload = this.opts.presenceHeartbeat.encode();
+        } catch (e) {
+          log.warn("[sync-engine] encode presence heartbeat failed:", e);
+          return;
+        }
+        this.opts.transport
+          .sendFrame(FrameType.PRESENCE, payload)
+          .catch((e: unknown) => log.warn("[sync-engine] send presence heartbeat failed:", e));
+      }),
+    );
 
     // Subject bridging sync_applied events into the coalescing buffer
     const materialize$ = new Subject<CellChangeset | null>();

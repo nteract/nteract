@@ -178,6 +178,10 @@ describe("SyncEngine", () => {
     return new SyncEngine({
       getHandle: opts?.getHandle ?? (() => handle),
       transport,
+      presenceHeartbeat: {
+        intervalMs: 15_000,
+        encode: () => new Uint8Array([0]),
+      },
       scheduler,
       flushDeliveryTimeoutMs: opts?.flushDeliveryTimeoutMs,
     });
@@ -193,6 +197,22 @@ describe("SyncEngine", () => {
       expect(engine.running).toBe(true);
       engine.stop();
       expect(engine.running).toBe(false);
+    });
+
+    it("sends required presence heartbeat from the engine interval", () => {
+      const engine = createEngine();
+      engine.start();
+
+      advanceBy(scheduler, 14_999);
+      expect(transport.sentFrames.filter((f) => f.frameType === FrameType.PRESENCE)).toHaveLength(
+        0,
+      );
+
+      advanceBy(scheduler, 1);
+      expect(transport.sentFrames.filter((f) => f.frameType === FrameType.PRESENCE)).toHaveLength(
+        1,
+      );
+      engine.stop();
     });
 
     it("start is idempotent", () => {
@@ -1138,6 +1158,10 @@ describe("SyncEngine", () => {
       const nullEngine = new SyncEngine({
         getHandle: () => null,
         transport,
+        presenceHeartbeat: {
+          intervalMs: 15_000,
+          encode: () => new Uint8Array([0]),
+        },
         scheduler,
       });
 
@@ -1159,6 +1183,10 @@ describe("SyncEngine", () => {
       const engine = new SyncEngine({
         getHandle: () => returnHandle,
         transport,
+        presenceHeartbeat: {
+          intervalMs: 15_000,
+          encode: () => new Uint8Array([0]),
+        },
         scheduler,
       });
       engine.start();

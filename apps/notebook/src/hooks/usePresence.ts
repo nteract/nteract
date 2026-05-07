@@ -1,21 +1,12 @@
 import { useNotebookHost } from "@nteract/notebook-host";
-import { useCallback, useEffect } from "react";
+import { useCallback } from "react";
 import { sendPresenceFrame } from "runtimed";
 import { logger } from "../lib/logger";
 import {
   encode_cursor_presence,
   encode_focus_presence,
-  encode_heartbeat_presence,
   encode_selection_presence,
 } from "../wasm/runtimed-wasm/runtimed_wasm.js";
-
-/**
- * Heartbeat interval in milliseconds. Matches the Rust-side
- * `notebook_doc::presence::DEFAULT_HEARTBEAT_MS` so room presence TTL
- * pruning (3× heartbeat) and the daemon's 300s idle-peer timeout both
- * stay comfortably ahead of an idle but live notebook window.
- */
-const HEARTBEAT_INTERVAL_MS = 15_000;
 
 // ── Hook ─────────────────────────────────────────────────────────────
 
@@ -98,28 +89,6 @@ export function usePresence(
     },
     [peerId, peerLabel, actorLabel, transport],
   );
-
-  // Periodic heartbeats keep the daemon's idle-peer timeout from disconnecting
-  // a quiet but live window. Cursor/selection/focus frames already reset the
-  // timer on user activity; this covers the no-activity case.
-  useEffect(() => {
-    if (!peerId) return;
-    const send = () => {
-      let payload: Uint8Array;
-      try {
-        payload = encode_heartbeat_presence(peerId);
-      } catch (e) {
-        logger.warn("[presence] encode heartbeat failed:", e);
-        return;
-      }
-      sendPresenceFrame(transport, payload).catch((e: unknown) =>
-        logger.warn("[presence] send heartbeat failed:", e),
-      );
-    };
-    send();
-    const id = setInterval(send, HEARTBEAT_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [peerId, transport]);
 
   return {
     /** Set the local cursor position (fire-and-forget). */

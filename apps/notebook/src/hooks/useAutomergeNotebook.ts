@@ -46,7 +46,17 @@ import {
   useRuntimeState,
 } from "../lib/runtime-state";
 import type { JupyterOutput, NotebookCell } from "../types";
-import init, { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
+import init, {
+  encode_heartbeat_presence,
+  NotebookHandle,
+} from "../wasm/runtimed-wasm/runtimed_wasm.js";
+
+/**
+ * Matches `notebook_doc::presence::DEFAULT_HEARTBEAT_MS`.
+ * The heartbeat is owned by SyncEngine after WASM init so React presence stays
+ * user-driven and Tauri remains a byte transport.
+ */
+const PRESENCE_HEARTBEAT_INTERVAL_MS = 15_000;
 
 const wasmReady: Promise<void> = init().then(() => {
   logger.info("[automerge-notebook] WASM initialized");
@@ -248,6 +258,10 @@ export function useAutomergeNotebook() {
     const engine = new SyncEngine({
       getHandle: () => handleHost.current as SyncableHandle | null,
       transport,
+      presenceHeartbeat: {
+        intervalMs: PRESENCE_HEARTBEAT_INTERVAL_MS,
+        encode: () => encode_heartbeat_presence("local"),
+      },
       logger,
     });
 
