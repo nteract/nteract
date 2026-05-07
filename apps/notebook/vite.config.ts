@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import path from "path";
 import { visualizer } from "rollup-plugin-visualizer";
 import { type Plugin, defineConfig } from "vite-plus";
+import { browserDevRelayPlugin } from "./vite-plugin-browser-relay";
 import { isolatedRendererPlugin } from "./vite-plugin-isolated-renderer";
 import { rawLibPlugin } from "./vite-plugin-raw-lib";
 
@@ -47,6 +48,7 @@ export default defineConfig(() => {
       tailwindcss(),
       rawLibPlugin(path.resolve(__dirname, "../../node_modules")),
       isolatedRendererPlugin(),
+      browserDevRelayPlugin({ repoRoot: path.resolve(__dirname, "../..") }),
       subAppTrailingSlashRedirect(["onboarding", "settings", "feedback", "upgrade", "gallery"]),
       visualizer({
         filename: "dist/stats.html",

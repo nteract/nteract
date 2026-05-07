@@ -1,7 +1,4 @@
-import { NotebookHostProvider } from "@nteract/notebook-host";
-import { createTauriHost } from "@nteract/notebook-host/tauri";
-import { isTauri } from "@tauri-apps/api/core";
-import { attachLogger, LogLevel } from "@tauri-apps/plugin-log";
+import { NotebookHostProvider, type NotebookHost } from "@nteract/notebook-host";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
@@ -32,26 +29,10 @@ const loadRendererBundle = async () => {
   return { rendererCode, rendererCss };
 };
 
-// Tauri host is constructed once at boot. Every host-platform side
-// effect flows through it (see @nteract/notebook-host types). The
-// transport is part of the host and shared by the SyncEngine,
-// NotebookClient, and anything else that needs to talk to the daemon.
-const host = createTauriHost();
-// Module-scope helpers that can't reach for useNotebookHost() — hand them
-// the references they need right after the host is constructed.
-setMetadataTransport(host.transport);
-setBlobPortHost(host);
-setLoggerHost(host);
-setOpenUrlHost(host);
-setKernelCompletionHost(host);
-setErrorBoundarySink((error, componentStack) => {
-  logger.error(
-    "[ErrorBoundary] render error:",
-    error,
-    "component stack:",
-    componentStack ?? "(unavailable)",
-  );
-});
+function isTauriRuntime(): boolean {
+  const w = window as Window & { __TAURI__?: unknown; __TAURI_INTERNALS__?: unknown };
+  return "__TAURI_INTERNALS__" in w || "__TAURI__" in w;
+}
 
 // Capture original console methods BEFORE wrapping. The Rust-log mirror
 // below uses these originals to avoid re-entering the `console.error`
@@ -63,26 +44,25 @@ const originalConsoleInfo = console.info.bind(console);
 const originalConsoleDebug = console.debug.bind(console);
 const originalConsoleLog = console.log.bind(console);
 
-// Forward `console.error` into the host logger so it lands in notebook.log in
-// packaged / CI builds, not just dev devtools. Specifically: WASM panics
-// routed via `console_error_panic_hook` become visible in `e2e-logs/app.log`
-// with file:line:message — without this, they disappear in production.
-// Preserves the original console behavior so devtools stays unchanged.
-console.error = (...args: unknown[]) => {
-  originalConsoleError(...args);
-  try {
-    logger.error(...args);
-  } catch {
-    // Never let the forwarding path break the original error.
+async function createNotebookHost(): Promise<NotebookHost> {
+  if (isTauriRuntime()) {
+    const { createTauriHost } = await import("@nteract/notebook-host/tauri");
+    return createTauriHost();
   }
-};
 
-// Mirror Rust log entries into devtools during dev so plugin-log output is
-// visible alongside frontend logs. Uses `attachLogger` (not `attachConsole`,
-// which would route through the wrapped `console.error` above and loop) and
-// dispatches to the ORIGINAL console methods. The wrapped forwarder never
-// sees these writes, so no feedback cycle.
-if (isTauri() && import.meta.env.DEV) {
+  const { createBrowserHost } = await import("@nteract/notebook-host/browser");
+  return createBrowserHost();
+}
+
+async function attachTauriDevLogMirror(): Promise<void> {
+  if (!isTauriRuntime() || !import.meta.env.DEV) return;
+
+  const { attachLogger, LogLevel } = await import("@tauri-apps/plugin-log");
+  // Mirror Rust log entries into devtools during dev so plugin-log output is
+  // visible alongside frontend logs. Uses `attachLogger` (not `attachConsole`,
+  // which would route through the wrapped `console.error` below and loop) and
+  // dispatches to the ORIGINAL console methods. The wrapped forwarder never
+  // sees these writes, so no feedback cycle.
   attachLogger(({ level, message }) => {
     switch (level) {
       case LogLevel.Trace:
@@ -106,12 +86,59 @@ if (isTauri() && import.meta.env.DEV) {
   });
 }
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <NotebookHostProvider host={host}>
-      <IsolatedRendererProvider loader={loadRendererBundle}>
-        <App />
-      </IsolatedRendererProvider>
-    </NotebookHostProvider>
-  </StrictMode>,
-);
+async function boot() {
+  // Host is constructed once at boot. Every host-platform side effect flows
+  // through it (see @nteract/notebook-host types). Tauri and browser/dev hosts
+  // provide the same transport surface to SyncEngine and NotebookClient.
+  const host = await createNotebookHost();
+
+  // Module-scope helpers that can't reach for useNotebookHost() — hand them
+  // the references they need right after the host is constructed.
+  setMetadataTransport(host.transport);
+  setBlobPortHost(host);
+  setLoggerHost(host);
+  setOpenUrlHost(host);
+  setKernelCompletionHost(host);
+  setErrorBoundarySink((error, componentStack) => {
+    logger.error(
+      "[ErrorBoundary] render error:",
+      error,
+      "component stack:",
+      componentStack ?? "(unavailable)",
+    );
+  });
+
+  // Forward `console.error` into the host logger so it lands in notebook.log in
+  // packaged / CI builds, not just dev devtools. Specifically: WASM panics
+  // routed via `console_error_panic_hook` become visible in `e2e-logs/app.log`
+  // with file:line:message — without this, they disappear in production.
+  // Preserves the original console behavior so devtools stays unchanged.
+  console.error = (...args: unknown[]) => {
+    originalConsoleError(...args);
+    try {
+      logger.error(...args);
+    } catch {
+      // Never let the forwarding path break the original error.
+    }
+  };
+
+  void attachTauriDevLogMirror();
+
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <NotebookHostProvider host={host}>
+        <IsolatedRendererProvider loader={loadRendererBundle}>
+          <App />
+        </IsolatedRendererProvider>
+      </NotebookHostProvider>
+    </StrictMode>,
+  );
+}
+
+void boot().catch((err) => {
+  originalConsoleError("[main] failed to boot notebook app", err);
+  const root = document.getElementById("root");
+  if (root) {
+    root.textContent = err instanceof Error ? err.message : String(err);
+  }
+});
