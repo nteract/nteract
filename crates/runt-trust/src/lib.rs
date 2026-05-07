@@ -19,31 +19,48 @@
 use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// Thread-safe override for the trust key path.
-///
-/// Tests use [`set_test_key_path`] instead of `std::env::set_var("RUNT_TRUST_KEY_PATH", ...)`
-/// to avoid process-wide env mutation, which is undefined behavior under concurrent
-/// threads (glibc `setenv`/`getenv` are not thread-safe).
-static TEST_KEY_PATH_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
+thread_local! {
+    /// Per-thread override for the trust key path.
+    ///
+    /// Tests use [`set_test_key_path`] instead of `std::env::set_var("RUNT_TRUST_KEY_PATH", ...)`
+    /// to avoid process-wide env mutation, which is undefined behavior under concurrent
+    /// threads (glibc `setenv`/`getenv` are not thread-safe).
+    ///
+    /// The override is thread-local so concurrent `cargo test` runs are naturally
+    /// isolated: setting the path on test A's thread cannot flip the path that
+    /// test B reads on a different thread mid-sign-then-verify. A previous
+    /// implementation used a process-wide `Mutex<Option<PathBuf>>`, which made
+    /// individual reads/writes atomic but did not isolate test logic - non-serial
+    /// trust tests would intermittently see another test's override flip between
+    /// their sign and verify calls and fail with a signature mismatch.
+    static TEST_KEY_PATH_OVERRIDE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
 
 /// Set (or clear) the trust key path override for tests.
 ///
-/// Pass `Some(path)` to redirect all trust operations to a test-specific key file.
-/// Pass `None` to clear the override and fall back to the default path.
+/// Pass `Some(path)` to redirect all trust operations on this thread to a
+/// test-specific key file. Pass `None` to clear the override and fall back
+/// to the default path.
 ///
-/// This is safe to call from concurrent tests because it uses a `Mutex` instead
-/// of mutating the process environment.
+/// The override is thread-local: concurrent tests do not interfere. Production
+/// code never calls this, so production path resolution always falls through
+/// to the system key.
+///
+/// Caveat: a tokio multi-threaded runtime can move a task between OS threads
+/// across `.await` points; if a future polls on a thread that didn't set the
+/// override, it reads `None`. No multi-threaded tokio path in this workspace
+/// currently calls `set_test_key_path`, so this isn't a problem in practice -
+/// but if you reach for this from a multi-thread tokio context, set the
+/// override on every worker (e.g. via `Builder::on_thread_start`) or pass the
+/// path explicitly through your call chain.
 pub fn set_test_key_path(path: Option<PathBuf>) {
-    let mut guard = TEST_KEY_PATH_OVERRIDE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    *guard = path;
+    TEST_KEY_PATH_OVERRIDE.with(|cell| *cell.borrow_mut() = path);
 }
 
 /// Result of verifying a notebook's trust status.
@@ -100,20 +117,12 @@ pub struct TrustInfo {
 /// Path to the trust key file.
 ///
 /// Checks (in order):
-/// 1. Thread-safe override via [`set_test_key_path`] — preferred for tests.
+/// 1. Thread-local override via [`set_test_key_path`] - preferred for tests.
 /// 2. Platform config dir (`~/.config/runt/trust-key` on Linux).
 fn trust_key_path() -> Option<PathBuf> {
-    // 1. Thread-safe test override (no env mutation needed)
-    //    Recover from poison so a panicked test doesn't silently fall
-    //    through to the system key path.
-    let guard = TEST_KEY_PATH_OVERRIDE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    if let Some(ref path) = *guard {
-        return Some(path.clone());
+    if let Some(path) = TEST_KEY_PATH_OVERRIDE.with(|cell| cell.borrow().clone()) {
+        return Some(path);
     }
-    drop(guard);
-    // 2. Platform default
     dirs::config_dir().map(|d| d.join("runt").join("trust-key"))
 }
 
