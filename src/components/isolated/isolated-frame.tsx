@@ -1,7 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { IframeToParentMessage, ParentToIframeMessage, RenderPayload } from "./frame-bridge";
 import { isIframeMessage } from "./frame-bridge";
-import { createFrameBlobUrl } from "./frame-html";
+import { createFrameBlobUrl, generateFrameHtml } from "./frame-html";
 import { useIsolatedRenderer } from "./isolated-renderer-context";
 import { JsonRpcTransport } from "./jsonrpc-transport";
 import {
@@ -248,6 +248,16 @@ const SANDBOX_ATTRS = [
   // separate `allowFullScreen` iframe attribute (not a sandbox flag).
 ].join(" ");
 
+type FrameDocument = { kind: "blob"; url: string } | { kind: "srcdoc"; html: string };
+
+function isTauriRuntime(): boolean {
+  const globalWindow = window as Window & {
+    __TAURI__?: unknown;
+    __TAURI_INTERNALS__?: unknown;
+  };
+  return "__TAURI_INTERNALS__" in globalWindow || "__TAURI__" in globalWindow;
+}
+
 /**
  * IsolatedFrame component - Renders untrusted content in a secure iframe.
  *
@@ -314,7 +324,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     } = useIsolatedRenderer();
     const iframeRef = useRef<HTMLIFrameElement>(null);
     const rpcRef = useRef<JsonRpcTransport | null>(null);
-    const [blobUrl, setBlobUrl] = useState<string | null>(null);
+    const [frameDocument, setFrameDocument] = useState<FrameDocument | null>(null);
     // Track iframe ready (bootstrap HTML loaded)
     const [isIframeReady, setIsIframeReady] = useState(false);
     // Track renderer ready (React bundle initialized)
@@ -380,13 +390,23 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       applyMeasuredHeight(measuredHeightRef.current);
     }, [applyMeasuredHeight]);
 
-    // Create blob URL on mount (only once, with initial darkMode)
+    // Create frame document on mount (only once, with initial darkMode).
+    // Tauri keeps the blob URL path so the iframe has an opaque origin and
+    // the Tauri IPC bridge does not inject. The plain browser host uses
+    // srcDoc because Chrome rejects sandboxed blob: navigations from localhost.
     useEffect(() => {
-      const url = createFrameBlobUrl({
+      const frameOptions = {
         darkMode: initialDarkModeRef.current,
         colorTheme: initialColorThemeRef.current,
-      });
-      setBlobUrl(url);
+      };
+
+      if (!isTauriRuntime()) {
+        setFrameDocument({ kind: "srcdoc", html: generateFrameHtml(frameOptions) });
+        return;
+      }
+
+      const url = createFrameBlobUrl(frameOptions);
+      setFrameDocument({ kind: "blob", url });
 
       return () => {
         URL.revokeObjectURL(url);
@@ -784,7 +804,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       [send, isReady, isIframeReady],
     );
 
-    if (!blobUrl) {
+    if (!frameDocument) {
       return null;
     }
 
@@ -796,7 +816,8 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       <iframe
         ref={iframeRef}
         id={id}
-        src={blobUrl}
+        src={frameDocument.kind === "blob" ? frameDocument.url : undefined}
+        srcDoc={frameDocument.kind === "srcdoc" ? frameDocument.html : undefined}
         sandbox={SANDBOX_ATTRS}
         allowFullScreen
         allow="fullscreen *"

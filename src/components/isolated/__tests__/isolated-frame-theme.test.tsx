@@ -33,6 +33,7 @@ vi.mock("../jsonrpc-transport", () => ({
 
 vi.mock("../frame-html", () => ({
   createFrameBlobUrl: vi.fn(() => "blob:isolated-frame-test"),
+  generateFrameHtml: vi.fn(() => "<!DOCTYPE html><html><body></body></html>"),
 }));
 
 vi.mock("../isolated-renderer-context", () => ({
@@ -122,5 +123,13 @@ describe("IsolatedFrame theme updates", () => {
     const iframe = container.querySelector("iframe") as HTMLIFrameElement;
 
     expect(iframe.style.pointerEvents).toBe("none");
+  });
+
+  it("uses srcdoc in a non-Tauri browser runtime", () => {
+    const { container } = render(<IsolatedFrame darkMode={false} />);
+    const iframe = container.querySelector("iframe") as HTMLIFrameElement;
+
+    expect(iframe.getAttribute("srcdoc")).toContain("<!DOCTYPE html>");
+    expect(iframe.getAttribute("src")).toBeNull();
   });
 });
