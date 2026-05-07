@@ -225,15 +225,10 @@ export function useDaemonKernel({
       logger.warn("[daemon-kernel] Daemon disconnected, resetting state");
       resetRuntimeState();
       resetBlobPort();
-      try {
-        await host.daemon.reconnect();
-        logger.debug("[daemon-kernel] Reconnected to daemon");
-        refreshBlobPort();
-      } catch (e) {
-        logger.error("[daemon-kernel] Failed to reconnect:", e);
-      }
     });
 
+    // Reconnect is owned by the host layer. When it succeeds, the host emits
+    // daemon:ready and this hook refreshes the blob port for the new daemon.
     const unlistenReady = host.daemonEvents.onReadyLive(() => {
       if (cancelled) return;
       logger.debug("[daemon-kernel] Daemon ready");

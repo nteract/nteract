@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 const capturedInvokes: Array<{ cmd: string; args: unknown }> = [];
 const capturedListens: Array<{ event: string; cb: (ev: { payload: unknown }) => void }> = [];
 const mockUnlisten = vi.fn();
+let reconnectPromiseOverride: Promise<unknown> | null = null;
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn((cmd: string, args?: unknown) => {
@@ -12,6 +13,8 @@ vi.mock("@tauri-apps/api/core", () => ({
     switch (cmd) {
       case "is_daemon_connected":
         return Promise.resolve(true);
+      case "reconnect_to_daemon":
+        return reconnectPromiseOverride ?? Promise.resolve(undefined);
       case "get_git_info":
         return Promise.resolve({ branch: "main", commit: "abc", description: null });
       case "get_daemon_info":
@@ -147,6 +150,7 @@ beforeEach(() => {
   saveDialogResult = null;
   updateCheckResult = null;
   updateCheckCount = 0;
+  reconnectPromiseOverride = null;
   mockUnlisten.mockReset();
   mockWindowUnlisten.mockReset();
   vi.mocked(stubTransport.sendRequest).mockReset();
@@ -363,6 +367,32 @@ describe("createTauriHost()", () => {
     const host = createTauriHost({ transport: stubTransport });
     await expect(host.daemon.isConnected()).resolves.toBe(false);
     rejectOnce.mockRestore();
+  });
+
+  it("daemonEvents.onDisconnected starts one host-owned reconnect", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    let resolveReconnect: (() => void) | null = null;
+    reconnectPromiseOverride = new Promise((resolve) => {
+      resolveReconnect = () => resolve(undefined);
+    });
+    const first = vi.fn();
+    const second = vi.fn();
+
+    host.daemonEvents.onDisconnected(first);
+    host.daemonEvents.onDisconnected(second);
+    await Promise.resolve();
+
+    const entries = capturedListens.filter((x) => x.event === "daemon:disconnected");
+    expect(entries).toHaveLength(2);
+    entries[0]?.cb({ payload: undefined });
+    entries[1]?.cb({ payload: undefined });
+
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(capturedInvokes.filter((x) => x.cmd === "reconnect_to_daemon")).toHaveLength(1);
+
+    resolveReconnect?.();
+    await reconnectPromiseOverride;
   });
 
   it("exposes a command registry", () => {

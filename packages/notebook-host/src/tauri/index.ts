@@ -89,6 +89,15 @@ function listenWebview<T>(eventName: string, cb: (payload: T) => void): Unlisten
 
 export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost {
   const transport = opts.transport ?? new TauriTransport();
+  let reconnectPromise: Promise<void> | null = null;
+  const reconnectDaemon = (): Promise<void> => {
+    if (reconnectPromise) return reconnectPromise;
+    reconnectPromise = invoke<void>("reconnect_to_daemon").finally(() => {
+      reconnectPromise = null;
+    });
+    return reconnectPromise;
+  };
+
   const daemon: HostDaemon = {
     async isConnected() {
       try {
@@ -98,7 +107,7 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
       }
     },
     async reconnect() {
-      await invoke("reconnect_to_daemon");
+      await reconnectDaemon();
     },
     async getInfo() {
       return invoke<DaemonInfo | null>("get_daemon_info");
@@ -174,7 +183,11 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
       };
     },
     onProgress: (cb) => listenWebview<DaemonProgressPayload>("daemon:progress", cb),
-    onDisconnected: (cb) => listenWebview<void>("daemon:disconnected", () => cb()),
+    onDisconnected: (cb) =>
+      listenWebview<void>("daemon:disconnected", () => {
+        cb();
+        reconnectDaemon().catch(() => {});
+      }),
     onUnavailable: (cb) => listenWebview<DaemonUnavailablePayload>("daemon:unavailable", cb),
   };
 
