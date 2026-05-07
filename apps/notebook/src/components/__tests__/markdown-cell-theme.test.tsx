@@ -1,4 +1,4 @@
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { createEvent, fireEvent, render, waitFor } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { MarkdownCell as MarkdownCellType } from "../../types";
@@ -36,7 +36,7 @@ vi.mock("@/components/isolated", async () => {
 
   const MockIsolatedFrame = React.forwardRef<
     typeof mockFrameHandle,
-    Record<string, unknown> & { onReady?: () => void }
+    Record<string, unknown> & { onMouseDown?: () => void; onReady?: () => void }
   >(function MockIsolatedFrame(props, ref) {
     isolatedFrameProps.push(props);
     React.useImperativeHandle(ref, () => mockFrameHandle);
@@ -45,7 +45,7 @@ vi.mock("@/components/isolated", async () => {
       props.onReady?.();
     }, [props.onReady]);
 
-    return <div data-testid="markdown-frame" />;
+    return <div data-testid="markdown-frame" onMouseDown={props.onMouseDown} />;
   });
 
   return {
@@ -154,6 +154,12 @@ function makeCell(): MarkdownCellType {
   };
 }
 
+function pointerOutWithButtons(element: HTMLElement, buttons: number) {
+  const event = createEvent.pointerOut(element);
+  Object.defineProperty(event, "buttons", { value: buttons });
+  fireEvent(element, event);
+}
+
 describe("MarkdownCell theme sync", () => {
   beforeEach(() => {
     mockDarkMode = false;
@@ -211,6 +217,35 @@ describe("MarkdownCell theme sync", () => {
     await waitFor(() => {
       expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true });
     });
+  });
+
+  it("activates markdown iframe pointer interaction after clicking the preview", () => {
+    const onFocus = vi.fn();
+
+    const { getByTestId } = render(
+      <MarkdownCell cell={makeCell()} onFocus={onFocus} onDelete={() => {}} />,
+    );
+
+    expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(true);
+    expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(false);
+
+    const previewWrapper = getByTestId("markdown-frame").parentElement as HTMLElement;
+
+    fireEvent.pointerDown(previewWrapper);
+
+    expect(onFocus).toHaveBeenCalled();
+    expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(false);
+    expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(true);
+
+    pointerOutWithButtons(previewWrapper, 1);
+
+    expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(false);
+    expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(true);
+
+    pointerOutWithButtons(previewWrapper, 0);
+
+    expect(isolatedFrameProps.at(-1)?.scrollPassthrough).toBe(true);
+    expect(isolatedFrameProps.at(-1)?.allowWheelBoundaryScroll).toBe(false);
   });
 
   it("Ctrl+Enter exits edit mode for markdown cells", async () => {

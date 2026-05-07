@@ -1,6 +1,15 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
 import { Pencil } from "lucide-react";
-import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  type PointerEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
@@ -138,6 +147,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   const frameRef = useRef<IsolatedFrameHandle>(null);
   const injectedLibsRef = useRef(new Set<string>());
   const viewRef = useRef<HTMLDivElement>(null);
+  const [previewFrameInteractionActive, setPreviewFrameInteractionActive] = useState(false);
 
   // Register EditorView with the cursor registry when in edit mode.
   const registeredViewRef = useRef<EditorView | null>(null);
@@ -202,6 +212,32 @@ export const MarkdownCell = memo(function MarkdownCell({
   const handleDoubleClick = useCallback(() => {
     setEditing(true);
   }, []);
+
+  const activatePreviewFrameInteraction = useCallback(() => {
+    setPreviewFrameInteractionActive(true);
+    onFocus();
+  }, [onFocus]);
+
+  const deactivatePreviewFrameInteractionWhenIdle = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      if (
+        event.relatedTarget instanceof Node &&
+        event.currentTarget.contains(event.relatedTarget)
+      ) {
+        return;
+      }
+      if (!(event.buttons > 0)) {
+        setPreviewFrameInteractionActive(false);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!isFocused || editing) {
+      setPreviewFrameInteractionActive(false);
+    }
+  }, [isFocused, editing]);
 
   const handleBlur = useCallback(() => {
     if (cell.source.trim()) {
@@ -479,17 +515,23 @@ export const MarkdownCell = memo(function MarkdownCell({
             onKeyDown={handleViewKeyDown}
           >
             {/* Always render IsolatedFrame to preload it (hidden when no content) */}
-            <div className={cell.source ? undefined : "hidden"}>
+            <div
+              className={cell.source ? undefined : "hidden"}
+              onPointerDown={activatePreviewFrameInteraction}
+              onPointerOut={deactivatePreviewFrameInteractionWhenIdle}
+            >
               <IsolatedFrame
                 ref={frameRef}
                 darkMode={darkMode}
                 colorTheme={colorTheme}
                 minHeight={24}
                 autoHeight
+                scrollPassthrough={!previewFrameInteractionActive}
+                allowWheelBoundaryScroll={previewFrameInteractionActive}
                 revealOnRender
                 onReady={handleFrameReady}
                 onLinkClick={handleLinkClick}
-                onMouseDown={onFocus}
+                onMouseDown={activatePreviewFrameInteraction}
                 onDoubleClick={handleDoubleClick}
                 onError={handleIframeError}
                 className="w-full"
