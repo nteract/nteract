@@ -54,7 +54,7 @@ jobs:
 
       - uses: dsherret/rust-toolchain-file@v1
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
       - uses: actions/setup-node@v6
         with:
@@ -91,7 +91,7 @@ jobs:
 
       - uses: dsherret/rust-toolchain-file@v1
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
       - uses: actions/setup-node@v6
         with:
@@ -148,7 +148,7 @@ jobs:
         with:
           lfs: true
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
       - uses: actions/setup-node@v6
         with:

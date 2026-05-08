@@ -26,7 +26,7 @@ jobs:
 
       - name: Check changed paths
         id: filter
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             source:
@@ -73,7 +73,7 @@ jobs:
       - uses: voidzero-dev/setup-vp@v1
         with:
           run-install: false
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
@@ -175,7 +175,7 @@ jobs:
         run: cargo xtask verify-plugins
 
       - name: Install Deno
-        uses: denoland/setup-deno@v2
+        uses: denoland/setup-deno@v2.0.4
         with:
           deno-version: "2.4"
 
@@ -209,7 +209,7 @@ jobs:
           pnpm --dir apps/notebook build
 
       - name: Upload UI build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ui-build-dist
           path: |
@@ -217,7 +217,7 @@ jobs:
           retention-days: 1
 
       - name: Upload WASM artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wasm-artifacts
           retention-days: 1
@@ -268,13 +268,13 @@ jobs:
           lfs: true
 
       - name: Download UI build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ui-build-dist
           path: apps/notebook/dist
 
       - name: Download WASM artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-artifacts
 
@@ -284,7 +284,7 @@ jobs:
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v8.1.0
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -329,7 +329,7 @@ jobs:
         run: cargo binstall tauri-cli --no-confirm --locked --force
 
       - name: Upload Linux Rust binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-rust-binaries
           path: |
@@ -352,7 +352,7 @@ jobs:
           cp crates/notebook/binaries/nteract-mcp-* target/release/binaries/
 
       - name: Upload E2E app
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-app-linux
           path: |
@@ -379,7 +379,7 @@ jobs:
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v8.1.0
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -459,7 +459,7 @@ jobs:
 
       - name: Download UI build artifacts
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ui-build-dist
           path: apps/notebook/dist
@@ -470,7 +470,7 @@ jobs:
 
       - name: Install uv
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v8.1.0
 
       - name: Install rust
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
@@ -483,7 +483,7 @@ jobs:
 
       - name: Download WASM artifacts
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-artifacts
 
@@ -617,7 +617,7 @@ jobs:
         run: pnpm install
 
       - name: Download E2E artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: e2e-app-linux
           path: ./target/release
@@ -628,7 +628,7 @@ jobs:
           chmod +x target/release/binaries/*
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v8.1.0
 
       - name: Run E2E test
         timeout-minutes: ${{ matrix.timeout }}
@@ -788,7 +788,7 @@ jobs:
 
       - name: Upload failure screenshots
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-screenshots-${{ matrix.name }}
           path: e2e-screenshots/failures/
@@ -796,7 +796,7 @@ jobs:
 
       - name: Upload daemon logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-logs-${{ matrix.name }}
           path: e2e-logs/
@@ -821,10 +821,10 @@ jobs:
           shared-key: ubuntu-py-integration
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v8.1.0
 
       - name: Install pixi
-        uses: prefix-dev/setup-pixi@v0.9.4
+        uses: prefix-dev/setup-pixi@v0.9.5
         with:
           run-install: false
 
@@ -897,7 +897,7 @@ jobs:
 
       - name: Upload test logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: runtimed-py-integration-logs
           path: python/runtimed/integration-logs/
@@ -927,7 +927,7 @@ jobs:
           shared-key: python-x86_64-unknown-linux-gnu
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v8.1.0
 
       - name: Set up Python
         run: uv python install 3.12

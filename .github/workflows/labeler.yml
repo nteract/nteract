@@ -18,7 +18,7 @@ jobs:
           sync-labels: false
 
       # Apply quill label for Quill Agent PRs
-      - uses: actions/github-script@v8
+      - uses: actions/github-script@v9
         with:
           script: |
             const body = context.payload.pull_request.body || '';

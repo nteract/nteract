@@ -96,7 +96,7 @@ jobs:
       - uses: ./.github/actions/build-runtime-artifacts
 
       - name: Upload WASM artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wasm-artifacts
           retention-days: 1
@@ -141,7 +141,7 @@ jobs:
         uses: ./.github/actions/sccache-warmup
 
       - name: Download WASM artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-artifacts
 
@@ -173,7 +173,7 @@ jobs:
           chmod +x nteract-mcp-linux-x64
 
       - name: Upload Linux executables
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: runt-linux-executables
           path: |
@@ -212,7 +212,7 @@ jobs:
         uses: ./.github/actions/sccache-warmup
 
       - name: Download WASM artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-artifacts
 
@@ -245,7 +245,7 @@ jobs:
           chmod +x runt-darwin-x64
 
       - name: Upload macOS executables
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: runt-macos-executables
           path: |
@@ -280,7 +280,7 @@ jobs:
         uses: ./.github/actions/sccache-warmup
 
       - name: Download WASM artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-artifacts
 
@@ -418,13 +418,13 @@ jobs:
           cp "${TAR_GZ_SIG_BINARIES[0]}" "artifacts/nteract-${CHANNEL}-darwin-arm64.app.tar.gz.sig"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nteract-macos-arm64
           path: artifacts/
 
       - name: Upload raw nteract-mcp binary for plugin distribution
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: plugin-nteract-mcp-aarch64-apple-darwin
           path: crates/notebook/binaries/nteract-mcp-aarch64-apple-darwin
@@ -461,7 +461,7 @@ jobs:
         uses: ./.github/actions/sccache-warmup
 
       - name: Download WASM artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-artifacts
 
@@ -599,13 +599,13 @@ jobs:
           cp "${TAR_GZ_SIG_BINARIES[0]}" "artifacts/nteract-${CHANNEL}-darwin-x64.app.tar.gz.sig"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nteract-macos-x64
           path: artifacts/
 
       - name: Upload raw nteract-mcp binary for plugin distribution
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: plugin-nteract-mcp-x86_64-apple-darwin
           path: crates/notebook/binaries/nteract-mcp-x86_64-apple-darwin
@@ -639,7 +639,7 @@ jobs:
         uses: ./.github/actions/sccache-warmup
 
       - name: Download WASM artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-artifacts
 
@@ -771,13 +771,13 @@ jobs:
           fi
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nteract-windows-x64
           path: artifacts/
 
       - name: Upload raw nteract-mcp binary for plugin distribution
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: plugin-nteract-mcp-x86_64-pc-windows-msvc
           path: crates/notebook/binaries/nteract-mcp-x86_64-pc-windows-msvc.exe
@@ -817,7 +817,7 @@ jobs:
         uses: ./.github/actions/sccache-warmup
 
       - name: Download WASM artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-artifacts
 
@@ -895,13 +895,13 @@ jobs:
           done
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nteract-linux-x64
           path: artifacts/
 
       - name: Upload raw nteract-mcp binary for plugin distribution
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: plugin-nteract-mcp-x86_64-unknown-linux-gnu
           path: crates/notebook/binaries/nteract-mcp-x86_64-unknown-linux-gnu
@@ -918,7 +918,7 @@ jobs:
           lfs: true
 
       - name: Download Linux AppImage
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: nteract-linux-x64
           path: artifacts
@@ -947,7 +947,7 @@ jobs:
           lfs: true
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v8.1.0
 
       - name: Set up Python
         run: uv python install 3.12
@@ -972,7 +972,7 @@ jobs:
         working-directory: python/nteract
 
       - name: Upload dist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nteract-dist
           path: dist
@@ -988,7 +988,7 @@ jobs:
           lfs: true
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v8.1.0
 
       - name: Set up Python
         run: uv python install 3.12
@@ -1011,7 +1011,7 @@ jobs:
         working-directory: python/dx
 
       - name: Upload dist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dx-dist
           # uv build in a workspace writes to repo-root dist/, not
@@ -1059,7 +1059,7 @@ jobs:
         uses: ./.github/actions/sccache-warmup
 
       - name: Download WASM artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-artifacts
 
@@ -1135,7 +1135,7 @@ jobs:
           fi
 
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.platform.target }}
           path: python/runtimed/dist
@@ -1169,7 +1169,7 @@ jobs:
           fetch-depth: 1
 
       - name: Download nteract-mcp binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: plugin-nteract-mcp-*
           path: plugin-binaries-staged
@@ -1307,37 +1307,37 @@ jobs:
           echo "$CHANGELOG" > changelog-section.md
 
       - name: Download Linux executables
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: runt-linux-executables
           path: ./executables
 
       - name: Download macOS executables
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: runt-macos-executables
           path: ./executables
 
       - name: Download macOS ARM64 notebook
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: nteract-macos-arm64
           path: ./notebook-macos-arm64
 
       - name: Download macOS x64 notebook
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: nteract-macos-x64
           path: ./notebook-macos-x64
 
       - name: Download Windows x64 notebook
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: nteract-windows-x64
           path: ./notebook-windows-x64
 
       - name: Download Linux x64 notebook
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: nteract-linux-x64
           path: ./notebook-linux-x64
@@ -1468,20 +1468,20 @@ jobs:
           cat release-assets/latest.json
 
       - name: Download Python wheels
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: wheels-*
           path: ./wheels
           merge-multiple: true
 
       - name: Download nteract dist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: nteract-dist
           path: ./nteract-dist
 
       - name: Download dx dist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dx-dist
           path: ./dx-dist
@@ -1495,7 +1495,7 @@ jobs:
           find release-assets wheels nteract-dist dx-dist -type f -printf "%12s  %p\n" | sort -nr
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v8.1.0
 
       # PyPI publishes are gated to pre-releases (nightly) only. Stable
       # publishes are paused while the `runtimed` / `nteract` / `dx`
@@ -1590,7 +1590,7 @@ jobs:
           } > release-body.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

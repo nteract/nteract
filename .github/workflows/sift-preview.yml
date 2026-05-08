@@ -50,7 +50,7 @@ jobs:
       - uses: voidzero-dev/setup-vp@v1
         with:
           run-install: false
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
@@ -79,7 +79,7 @@ jobs:
 
       - name: Comment preview URL on PR
         if: github.event_name == 'pull_request'
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@v3.0.4
         with:
           header: sift-preview
           message: |
