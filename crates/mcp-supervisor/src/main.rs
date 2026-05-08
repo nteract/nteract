@@ -2129,7 +2129,18 @@ impl ServerHandler for Supervisor {
                     info!("Skipping maturin develop (SKIP_MATURIN=1)");
                 }
 
-                // 3. Stop whatever daemon is running (managed or not) and start fresh
+                // 3. Rebuild runtimed-wasm so the frontend bundle stays in
+                // lockstep with the daemon's runtime-state schema. See
+                // `run_xtask_wasm_runtimed` for why a stale wasm here ends
+                // in stuck "Initializing" via duplicate-seq-1.
+                if !run_xtask_wasm_runtimed(&project_root) {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        "cargo xtask wasm runtimed failed — check the supervisor logs for details\n\
+                         (daemon binary was rebuilt successfully; the frontend wasm bundle may be stale)",
+                    )]));
+                }
+
+                // 4. Stop whatever daemon is running (managed or not) and start fresh
                 {
                     let mut state = self.state.write().await;
                     if let Some(ref mut child) = state.daemon_child {
