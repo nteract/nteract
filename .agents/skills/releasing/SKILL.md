@@ -8,14 +8,17 @@ disable-model-invocation: true
 
 ## Version Scheme
 
-All published artifacts share the same version (semver). Five sources must stay in sync:
+Published desktop, CLI, daemon, and `runtimed` Python artifacts share the same
+base version. Python release jobs stamp the wheel version from the Rust release
+source during the workflow, after `cargo xtask bump` has updated the checked-in
+version files.
 
 | Artifact | Version source |
 |---|---|
 | nteract desktop app | `crates/notebook/tauri.conf.json` |
 | `runt` CLI | `crates/runt/Cargo.toml` |
 | `runtimed` daemon | `crates/runtimed/Cargo.toml` |
-| `runtimed` Python package | `python/runtimed/pyproject.toml` |
+| `runtimed` Python package | `python/runtimed/pyproject.toml`, then stamped from `crates/runt/Cargo.toml` during release |
 | `nteract` Python package | `python/nteract/pyproject.toml` |
 
 ### Internal Compatibility Markers
@@ -30,7 +33,7 @@ These evolve independently from each other and from the artifact version.
 ## Bumping Versions
 
 ```bash
-# Update ALL of these to the same version:
+# Update the checked-in release sources to the same version:
 #   crates/runtimed/Cargo.toml
 #   crates/runt/Cargo.toml
 #   crates/notebook/Cargo.toml
@@ -56,8 +59,8 @@ git push origin v2.1.0
 Triggers `release-stable.yml` which:
 1. Builds desktop app (macOS, Windows, Linux)
 2. Builds `runt` CLI binaries
-3. Builds Python wheels at version from `pyproject.toml`
-4. Publishes wheels to PyPI (stable)
+3. Builds Python wheels stamped to the base version from `crates/runt/Cargo.toml`
+4. Publishes `runtimed` wheels to PyPI (stable)
 5. Creates GitHub Release with all artifacts
 6. Updates `stable-latest` Tauri updater channel
 7. Posts to Discord
@@ -74,25 +77,20 @@ Runs automatically at 9am UTC daily via `release-nightly.yml`, or manually via w
 
 Install nightly Python: `pip install runtimed --pre`
 
-### Python-Only Release
+### Python Release Policy
 
-For Python fixes without a full desktop release:
-
-```bash
-# Bump python/runtimed/pyproject.toml (and Cargo.tomls if Rust changed)
-git tag python-v2.1.1
-git push origin python-v2.1.1
-```
-
-Builds macOS + Linux wheels and publishes to PyPI.
+`runtimed` Python wheels ship from the stable and nightly release workflows.
+Nightly builds stamp the next patch alpha version (PEP 440), and stable builds
+stamp the base version from `crates/runt/Cargo.toml`. `cargo xtask bump` still
+updates `python/runtimed/pyproject.toml`; workflow stamping is a guardrail so a
+stale pyproject cannot publish the wrong wheel version.
 
 ## Tag Reference
 
 | Tag pattern | Workflow | What it publishes |
 |---|---|---|
-| `v*` | `release-stable.yml` | Desktop app + CLI + Python (stable) |
-| `python-v*` | `python-package.yml` | Python wheels only |
-| _(cron)_ | `release-nightly.yml` | Desktop app + CLI + Python (pre-release) |
+| `v*` | `release-stable.yml` | Desktop app + CLI + `runtimed` Python (stable) |
+| _(cron)_ | `release-nightly.yml` | Desktop app + CLI + `runtimed` Python (pre-release) |
 
 ## Protocol Version Change Procedure
 
@@ -115,9 +113,9 @@ Schema changes don't require a protocol bump — wire format for sync frames sta
 
 `release-common.yml` accepts inputs:
 - `github_release_prerelease: true` — applies PEP 440 alpha stamp to Python version
-- `github_release_prerelease: false` — uses `pyproject.toml` version as-is
+- `github_release_prerelease: false` — stamps Python version from `crates/runt/Cargo.toml`
 
-Python wheels always built (macOS arm64, Linux x64, Windows x64) and published. `continue-on-error: true` on PyPI step handles duplicate version conflicts.
+Python wheels are always built (macOS arm64, macOS x64, Linux x64, Windows x64) and published.
 
 Desktop version: `{runt version}-{suffix}.{timestamp}` stamped into `tauri.conf.json` and `Cargo.toml` at build time (not committed).
 

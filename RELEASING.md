@@ -6,7 +6,8 @@
 |--------|-----|---------|-------------|
 | **Stable** | `v{version}-stable.{timestamp}` | Tag push (`v*`) or manual | GitHub Releases |
 | **Nightly** | `v{version}-nightly.{timestamp}` | Cron (daily, 24h cadence) or manual | GitHub Pre-releases |
-| **Python package** | `python-v{semver}` | Manual tag push | PyPI + GitHub Releases |
+| **runtimed Python package** | same as stable/nightly | Stable/nightly release workflow | PyPI + GitHub Releases |
+| **npm packages** | same commit as stable | Successful stable release or manual | npm |
 
 Timestamps are UTC in `YYYYMMDDHHMM` format, e.g. `v2.0.0-stable.202507010900`.
 
@@ -16,7 +17,7 @@ The desktop app, `runt` CLI, and `runtimed` daemon are all built and released to
 
 Stable releases run when a `v*` tag is pushed (or manually), and nightly pre-releases run every 24 hours. Both can also be triggered manually.
 
-> **Note:** Desktop releases also build Python wheels and attempt to publish the `runtimed` and `nteract` packages to PyPI via trusted publishing (`continue-on-error: true`, so publishing is best-effort and will silently skip if the version already exists). This means every stable and nightly release builds and attempts to push new Python wheels — the separate `python-v*` tag workflow is only needed for Python-specific patches that don't warrant a full desktop release.
+> **Note:** Desktop releases also build `runtimed` Python wheels and publish them to PyPI via trusted publishing. Nightly releases publish a unique pre-release version; stable releases publish the base version from `crates/runt/Cargo.toml`. `cargo xtask bump` still bumps `python/runtimed/pyproject.toml`; the release workflow stamps it again inside the ephemeral Actions checkout so PyPI publishing follows the Rust release version even if that file drifts.
 
 ### Artifacts
 
@@ -43,29 +44,13 @@ curl -fsSL https://sh.nteract.io | bash
 
 `runt`, `runtimed-py`, `mcp-supervisor`, `runt-mcp`, and `xtask` are **not published to crates.io** (`publish = false`).
 
-## Python Packages (runtimed, nteract)
+## Published Bindings
 
-The `runtimed` and `nteract` Python packages are released separately.
+The `runtimed` Python package is released by the stable and nightly release workflows.
 
-### 1. Bump the version
+Nightly builds publish the next patch alpha version, for example `2.4.7a202605082121`, and stable builds publish the checked-in Rust release version, for example `2.4.6`.
 
-Edit `python/runtimed/pyproject.toml` and `python/nteract/pyproject.toml` and update the `version` field in each.
-
-### 2. Create a PR
-
-Open a PR with the version bump, get it reviewed and merged.
-
-### 3. Tag and push
-
-```
-git tag python-v<version>
-git push origin python-v<version>
-```
-
-The `python-package.yml` workflow triggers on `python-v*` tags and will:
-- Build wheels for macOS arm64, macOS x86_64, and Linux x64
-- Publish to PyPI via trusted publishing (OIDC)
-- Create a GitHub release with wheels and nteract-dist packages
+The `publish-npm.yml` workflow publishes `@runtimed/node`, its native platform packages, and `@nteract/pi` to npm after a successful stable release. It can also be run manually to fill in missing packages.
 
 ## Development
 
