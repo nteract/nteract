@@ -4667,7 +4667,7 @@ dependencies = [
 
 [[package]]
 name = "nteract-telemetry"
-version = "2.4.5"
+version = "2.4.6"
 dependencies = [
  "log",
  "reqwest 0.12.28",
@@ -7190,7 +7190,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed-outputs"
-version = "2.4.5"
+version = "2.4.6"
 dependencies = [
  "base64 0.22.1",
  "notebook-doc",
@@ -7226,7 +7226,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed-service"
-version = "2.4.5"
+version = "2.4.6"
 dependencies = [
  "dirs",
  "log",
@@ -7237,7 +7237,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed-settings-sync"
-version = "2.4.5"
+version = "2.4.6"
 dependencies = [
  "automerge",
  "log",
