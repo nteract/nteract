@@ -354,6 +354,11 @@ mod tests {
         );
     }
 
+    /// `child_env_for_channel` returns the additive env map only. It does not
+    /// (and cannot) prevent the spawned child from inheriting a parent shell's
+    /// `RUNTIMED_DEV` / workspace path. The actual strip lives in
+    /// `runt-mcp-proxy`'s `apply_child_env`; this test guards the additive
+    /// contract that strip relies on.
     #[test]
     fn child_env_is_limited_to_the_channel_contract() {
         let env = child_env_for_channel("stable");
