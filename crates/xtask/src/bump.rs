@@ -252,11 +252,6 @@ const TARGETS: &[Target] = &[
     },
     // Agent plugin manifests (shipped through the Claude/Codex marketplace)
     Target {
-        path: ".claude/plugins/nteract/.claude-plugin/plugin.json",
-        format: Format::Json,
-        matches: 1,
-    },
-    Target {
         path: "plugins/nightly/.claude-plugin/plugin.json",
         format: Format::Json,
         matches: 1,

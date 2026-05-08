@@ -8,21 +8,9 @@
   },
   "plugins": [
     {
-      "name": "biome-lsp",
-      "source": "./biome-lsp",
-      "description": "Biome language server for JavaScript/TypeScript code intelligence",
-      "version": "1.0.0"
-    },
-    {
       "name": "async-rust-lsp",
       "source": "./async-rust-lsp",
       "description": "Detects tokio::sync::Mutex guards held across .await points",
-      "version": "0.1.0"
-    },
-    {
-      "name": "nteract",
-      "source": "./nteract",
-      "description": "Open, run, and edit nteract notebooks from Claude Code",
       "version": "0.1.0"
     }
   ]
