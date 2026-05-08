@@ -299,7 +299,8 @@ pub struct SyncedSettings {
     #[serde(default)]
     pub bootstrap_dx: bool,
 
-    /// Redact eligible environment variable values from newly produced text outputs.
+    /// Redact eligible environment variable values from text outputs for newly
+    /// launched or restarted kernels.
     ///
     /// The runtime agent applies this before output manifests or blobs are
     /// written, so the setting is global-only and intentionally not stored in

@@ -531,6 +531,10 @@ impl OutputManifest {
 /// - Text data larger than the threshold is stored in the blob store
 /// - Binary data is always stored in the blob store
 ///
+/// This path does not redact environment values. Live kernel outputs must use
+/// [`create_manifest_with_redactor`] so text is scrubbed before anything is
+/// written into the runtime state document or blob store.
+///
 /// Returns the manifest struct directly. Use `OutputManifest::to_json()` to
 /// serialize it for writing into the CRDT.
 pub async fn create_manifest(
@@ -2800,15 +2804,21 @@ mod tests {
         let secret = "secret-token-123";
         let redactor = OutputRedactor::disabled();
         let output = serde_json::json!({
+            "output_id": "stream-1",
             "output_type": "stream",
             "name": "stdout",
             "text": format!("before {secret} after")
         });
 
+        let direct = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
         let manifest =
             create_manifest_with_redactor(&output, &store, DEFAULT_INLINE_THRESHOLD, &redactor)
                 .await
                 .unwrap();
+        assert_eq!(manifest.to_json(), direct.to_json());
+
         let resolved = resolve_manifest(&manifest, &store).await.unwrap();
         assert_eq!(resolved["text"], format!("before {secret} after"));
     }

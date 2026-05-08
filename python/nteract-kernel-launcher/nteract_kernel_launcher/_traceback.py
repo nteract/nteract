@@ -63,6 +63,44 @@ _COMMON_ENV_VALUES = {
     "enabled",
 }
 
+_KNOWN_NON_SECRET_ENV_KEYS = {
+    "_",
+    "__CF_USER_TEXT_ENCODING",
+    "CARGO_HOME",
+    "COLORFGBG",
+    "COLORTERM",
+    "CONDA_DEFAULT_ENV",
+    "CONDA_EXE",
+    "CONDA_PREFIX",
+    "CONDA_PYTHON_EXE",
+    "DISPLAY",
+    "GOPATH",
+    "GOROOT",
+    "HOME",
+    "LANG",
+    "LANGUAGE",
+    "LOGNAME",
+    "OLDPWD",
+    "PATH",
+    "PWD",
+    "PYENV_ROOT",
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "RUSTUP_HOME",
+    "SHELL",
+    "SHLVL",
+    "SSH_AUTH_SOCK",
+    "TEMP",
+    "TERM",
+    "TMP",
+    "TMPDIR",
+    "USER",
+    "USERNAME",
+    "VIRTUAL_ENV",
+    "XPC_FLAGS",
+    "XPC_SERVICE_NAME",
+}
+
 
 # ─── Environment value redaction ───────────────────────────────────────────
 
@@ -74,12 +112,24 @@ def _redaction_enabled() -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _is_known_non_secret_env_key(key: str) -> bool:
+    key = key.upper()
+    return (
+        key in _KNOWN_NON_SECRET_ENV_KEYS
+        or key.startswith("LC_")
+        or key.startswith("TERM_PROGRAM")
+        or key.startswith("XDG_")
+    )
+
+
 def _eligible_env_values() -> list[str]:
     if not _redaction_enabled():
         return []
 
     values = set()
-    for raw in os.environ.values():
+    for key, raw in os.environ.items():
+        if _is_known_non_secret_env_key(key):
+            continue
         value = raw.strip()
         if len(value) < _MIN_REDACTION_VALUE_LEN:
             continue

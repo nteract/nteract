@@ -16,12 +16,16 @@ const MIN_VALUE_LEN: usize = 8;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct OutputRedactor {
+    enabled: bool,
     values: Vec<String>,
 }
 
 impl OutputRedactor {
     pub(crate) fn disabled() -> Self {
-        Self { values: Vec::new() }
+        Self {
+            enabled: false,
+            values: Vec::new(),
+        }
     }
 
     pub(crate) fn from_current_process_and_command(enabled: bool, cmd: &Command) -> Self {
@@ -30,18 +34,21 @@ impl OutputRedactor {
         }
 
         let mut values = HashSet::new();
-        for (_key, value) in std::env::vars_os() {
-            add_candidate(value.as_os_str(), &mut values);
+        for (key, value) in std::env::vars_os() {
+            add_env_candidate(key.as_os_str(), value.as_os_str(), &mut values);
         }
-        for (_key, value) in cmd.get_envs() {
+        for (key, value) in cmd.get_envs() {
             if let Some(value) = value {
-                add_candidate(value, &mut values);
+                add_env_candidate(key, value, &mut values);
             }
         }
 
         let mut values: Vec<String> = values.into_iter().collect();
         values.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
-        Self { values }
+        Self {
+            enabled: true,
+            values,
+        }
     }
 
     #[cfg(test)]
@@ -53,11 +60,30 @@ impl OutputRedactor {
             .into_iter()
             .collect();
         values.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
-        Self { values }
+        Self {
+            enabled: true,
+            values,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_env_pairs_for_test(
+        values: impl IntoIterator<Item = (String, String)>,
+    ) -> Self {
+        let mut candidates = HashSet::new();
+        for (key, value) in values {
+            add_env_candidate(OsStr::new(&key), OsStr::new(&value), &mut candidates);
+        }
+        let mut values: Vec<String> = candidates.into_iter().collect();
+        values.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
+        Self {
+            enabled: true,
+            values,
+        }
     }
 
     pub(crate) fn is_enabled(&self) -> bool {
-        !self.values.is_empty()
+        self.enabled
     }
 
     pub(crate) fn redact_text(&self, text: &str) -> String {
@@ -127,13 +153,70 @@ impl OutputRedactor {
     }
 }
 
-fn add_candidate(value: &OsStr, values: &mut HashSet<String>) {
+fn add_env_candidate(key: &OsStr, value: &OsStr, values: &mut HashSet<String>) {
+    let Some(key) = key.to_str() else {
+        // Environment keys are normally UTF-8 on supported platforms. If not,
+        // skip the candidate rather than guessing at a key-based allowlist.
+        return;
+    };
+    if is_known_non_secret_env_key(key) {
+        return;
+    }
+    add_value_candidate(value, values);
+}
+
+fn add_value_candidate(value: &OsStr, values: &mut HashSet<String>) {
     let Some(value) = value.to_str() else {
+        // We only redact textual output, so non-UTF-8 env values cannot match
+        // the strings this redactor sees.
         return;
     };
     if is_eligible(value) {
         values.insert(value.to_string());
     }
+}
+
+fn is_known_non_secret_env_key(key: &str) -> bool {
+    let key = key.to_ascii_uppercase();
+    matches!(
+        key.as_str(),
+        "_" | "__CF_USER_TEXT_ENCODING"
+            | "CARGO_HOME"
+            | "COLORFGBG"
+            | "COLORTERM"
+            | "CONDA_DEFAULT_ENV"
+            | "CONDA_EXE"
+            | "CONDA_PREFIX"
+            | "CONDA_PYTHON_EXE"
+            | "DISPLAY"
+            | "GOPATH"
+            | "GOROOT"
+            | "HOME"
+            | "LANG"
+            | "LANGUAGE"
+            | "LOGNAME"
+            | "OLDPWD"
+            | "PATH"
+            | "PWD"
+            | "PYENV_ROOT"
+            | "PYTHONHOME"
+            | "PYTHONPATH"
+            | "RUSTUP_HOME"
+            | "SHELL"
+            | "SHLVL"
+            | "SSH_AUTH_SOCK"
+            | "TEMP"
+            | "TERM"
+            | "TMP"
+            | "TMPDIR"
+            | "USER"
+            | "USERNAME"
+            | "VIRTUAL_ENV"
+            | "XPC_FLAGS"
+            | "XPC_SERVICE_NAME"
+    ) || key.starts_with("LC_")
+        || key.starts_with("TERM_PROGRAM")
+        || key.starts_with("XDG_")
 }
 
 fn is_eligible(value: &str) -> bool {
@@ -142,6 +225,8 @@ fn is_eligible(value: &str) -> bool {
     }
     let trimmed = value.trim();
     if trimmed.len() != value.len() || trimmed.is_empty() {
+        // Do not redact values with boundary whitespace; those create noisy
+        // incidental matches and are unlikely to be emitted exactly in output.
         return false;
     }
     !matches!(
@@ -219,6 +304,28 @@ mod tests {
             redactor.redact_text("localhost short real-secret"),
             "localhost short [redacted env]"
         );
+    }
+
+    #[test]
+    fn skips_known_non_secret_env_keys() {
+        let redactor = OutputRedactor::from_env_pairs_for_test(vec![
+            ("PATH".to_string(), "secret-looking-path-value".to_string()),
+            ("HOME".to_string(), "/Users/secret-looking-user".to_string()),
+            ("API_TOKEN".to_string(), "secret-token-123".to_string()),
+        ]);
+        assert_eq!(
+            redactor.redact_text(
+                "secret-looking-path-value /Users/secret-looking-user secret-token-123"
+            ),
+            "secret-looking-path-value /Users/secret-looking-user [redacted env]"
+        );
+    }
+
+    #[test]
+    fn tracks_explicit_enabled_state_without_eligible_values() {
+        let redactor = OutputRedactor::from_values_for_test(vec!["short".to_string()]);
+        assert!(redactor.is_enabled());
+        assert_eq!(redactor.redact_text("short"), "short");
     }
 
     #[test]

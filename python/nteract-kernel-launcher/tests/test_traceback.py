@@ -96,6 +96,18 @@ def test_build_payload_does_not_redact_common_environment_values(monkeypatch):
     assert "localhost" in serialized
 
 
+def test_build_payload_does_not_redact_known_non_secret_env_keys(monkeypatch):
+    value = "launcher-secret-token-12345"
+    monkeypatch.setenv("PATH", value)
+    monkeypatch.delenv("NTERACT_REDACT_ENV_VALUES_IN_OUTPUTS", raising=False)
+
+    exc = _capture_secret_exc()
+    payload = build_rich_payload(type(exc), exc, exc.__traceback__)
+    serialized = json.dumps(payload)
+
+    assert value in serialized
+
+
 # ─── leading-library-frame strip ───────────────────────────────────────────
 
 

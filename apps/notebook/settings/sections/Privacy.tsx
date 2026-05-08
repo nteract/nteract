@@ -87,7 +87,7 @@ export function PrivacySection({
               Redact environment values in outputs
             </span>
             <p className="text-[10px] text-muted-foreground/70">
-              Masks matching environment variable values before outputs are stored
+              Masks eligible environment variable values for newly launched or restarted kernels
             </p>
           </div>
           <Switch

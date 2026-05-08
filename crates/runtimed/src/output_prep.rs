@@ -401,36 +401,6 @@ pub(crate) fn apply_display_manifest_updates(
     Ok(found)
 }
 
-/// Update an output by display_id when outputs are inline manifests.
-///
-/// Updates all outputs matching a display_id with new data and metadata.
-///
-/// Uses the `display_index` for O(1) lookup of matching outputs. Falls back
-/// to a full scan if the index has no entries (legacy outputs before indexing).
-///
-/// Returns true if at least one output was updated, false otherwise.
-#[cfg(test)]
-pub(crate) async fn update_output_by_display_id_with_manifests(
-    state_doc: &mut RuntimeStateDoc,
-    display_id: &str,
-    new_data: &serde_json::Value,
-    new_metadata: &serde_json::Map<String, serde_json::Value>,
-    blob_store: &BlobStore,
-) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    let targets = collect_display_update_targets(state_doc, display_id);
-    let redactor = OutputRedactor::disabled();
-    let updates = build_display_manifest_updates(
-        targets,
-        display_id,
-        new_data,
-        new_metadata,
-        blob_store,
-        &redactor,
-    )
-    .await?;
-    apply_display_manifest_updates(state_doc, &updates).map_err(Into::into)
-}
-
 /// A cell queued for execution.
 #[derive(Debug, Clone)]
 pub struct QueuedCell {
@@ -665,6 +635,27 @@ mod tests {
         BlobStore::new(dir.path().join("blobs"))
     }
 
+    async fn update_output_by_display_id_with_manifests_for_test(
+        state_doc: &mut RuntimeStateDoc,
+        display_id: &str,
+        new_data: &serde_json::Value,
+        new_metadata: &serde_json::Map<String, serde_json::Value>,
+        blob_store: &BlobStore,
+        redactor: &OutputRedactor,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let targets = collect_display_update_targets(state_doc, display_id);
+        let updates = build_display_manifest_updates(
+            targets,
+            display_id,
+            new_data,
+            new_metadata,
+            blob_store,
+            redactor,
+        )
+        .await?;
+        apply_display_manifest_updates(state_doc, &updates).map_err(Into::into)
+    }
+
     /// Helper: create a display_data manifest with a display_id and append
     /// the inline manifest to the given execution in the state doc.
     async fn insert_display_output(
@@ -713,12 +704,14 @@ mod tests {
 
         let new_data = serde_json::json!({ "text/plain": "updated" });
         let new_metadata = serde_json::Map::new();
-        let result = update_output_by_display_id_with_manifests(
+        let redactor = OutputRedactor::disabled();
+        let result = update_output_by_display_id_with_manifests_for_test(
             &mut state_doc,
             "progress",
             &new_data,
             &new_metadata,
             &store,
+            &redactor,
         )
         .await
         .unwrap();
@@ -745,12 +738,14 @@ mod tests {
 
         let new_data = serde_json::json!({ "text/plain": "updated" });
         let new_metadata = serde_json::Map::new();
-        let result = update_output_by_display_id_with_manifests(
+        let redactor = OutputRedactor::disabled();
+        let result = update_output_by_display_id_with_manifests_for_test(
             &mut state_doc,
             "nonexistent-id",
             &new_data,
             &new_metadata,
             &store,
+            &redactor,
         )
         .await
         .unwrap();
@@ -775,12 +770,14 @@ mod tests {
 
         let new_data = serde_json::json!({ "text/plain": "updated" });
         let new_metadata = serde_json::Map::new();
-        let result = update_output_by_display_id_with_manifests(
+        let redactor = OutputRedactor::disabled();
+        let result = update_output_by_display_id_with_manifests_for_test(
             &mut state_doc,
             "progress",
             &new_data,
             &new_metadata,
             &store,
+            &redactor,
         )
         .await
         .unwrap();
