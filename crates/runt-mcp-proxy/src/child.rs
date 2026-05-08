@@ -109,6 +109,31 @@ struct SpawnedTransport {
     lifecycle_handle: tokio::task::JoinHandle<()>,
 }
 
+/// Daemon-resolution env vars `runt`/`runtimed` consult to pick a socket.
+/// The proxy strips these from the inherited environment so the parent
+/// shell can't silently redirect a child to the wrong daemon. Callers that
+/// genuinely need them (the dev supervisor) pass them in `env`; the
+/// `Command` API applies modifications in call order, so a later `envs()`
+/// re-asserts the caller's values.
+const DAEMON_RESOLUTION_VARS: [&str; 3] = [
+    "RUNTIMED_DEV",
+    "RUNTIMED_WORKSPACE_PATH",
+    "RUNTIMED_SOCKET_PATH",
+];
+
+/// Configure a child process command's environment.
+///
+/// `envs(...)` alone leaves the parent's environment intact, so direnv-set
+/// vars like `RUNTIMED_DEV` flow through to the child and silently redirect
+/// daemon resolution. The proxy is a gateway — the caller decides which
+/// daemon the child binds to, not the parent shell.
+fn apply_child_env(cmd: &mut Command, env: &HashMap<String, String>) {
+    for var in DAEMON_RESOLUTION_VARS {
+        cmd.env_remove(var);
+    }
+    cmd.envs(env);
+}
+
 fn spawn_managed_transport_inner(
     command: &Path,
     args: &[String],
@@ -116,10 +141,10 @@ fn spawn_managed_transport_inner(
 ) -> std::io::Result<SpawnedTransport> {
     let mut cmd = Command::new(command);
     cmd.args(args)
-        .envs(env)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
+    apply_child_env(&mut cmd, env);
 
     let mut child = cmd.spawn()?;
     let stdin = child
@@ -425,6 +450,94 @@ mod tests {
         assert!(
             closed,
             "is_transport_closed() must flip to true when the child's stdio closes"
+        );
+    }
+
+    /// Helper: snapshot the explicit env modifications attached to a Command
+    /// (added via `.envs()` / `.env_remove()`), keyed by name. `None` means
+    /// the var is explicitly removed; `Some(value)` means explicitly set.
+    /// Inherited parent-process vars do not appear here.
+    fn explicit_envs(cmd: &Command) -> HashMap<String, Option<String>> {
+        cmd.as_std()
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect()
+    }
+
+    /// The proxy is a thin gateway: when the caller's explicit env map does
+    /// not name a daemon-resolution var, the child must not inherit one from
+    /// the parent process. Otherwise the system nightly plugin gets pulled to
+    /// a per-worktree dev daemon whenever Claude Code is launched from a
+    /// direnv-active repo.
+    #[test]
+    fn apply_child_env_strips_dev_redirect_vars_when_caller_does_not_set_them() {
+        let mut cmd = Command::new("/usr/bin/true");
+        let env = HashMap::from([("NTERACT_CHANNEL".to_string(), "nightly".to_string())]);
+        apply_child_env(&mut cmd, &env);
+
+        let envs = explicit_envs(&cmd);
+
+        assert_eq!(
+            envs.get("NTERACT_CHANNEL"),
+            Some(&Some("nightly".to_string())),
+            "NTERACT_CHANNEL must be added to the child env"
+        );
+        assert_eq!(
+            envs.get("RUNTIMED_DEV"),
+            Some(&None),
+            "RUNTIMED_DEV must be stripped from the inherited env"
+        );
+        assert_eq!(
+            envs.get("RUNTIMED_WORKSPACE_PATH"),
+            Some(&None),
+            "RUNTIMED_WORKSPACE_PATH must be stripped from the inherited env"
+        );
+        assert_eq!(
+            envs.get("RUNTIMED_SOCKET_PATH"),
+            Some(&None),
+            "RUNTIMED_SOCKET_PATH must be stripped from the inherited env"
+        );
+    }
+
+    /// The dev supervisor (nteract-dev) intentionally injects daemon-resolution
+    /// vars into `child_env` so its `runt mcp` child binds to the worktree's
+    /// dev daemon. The strip must not clobber values the caller explicitly
+    /// supplies — explicit env wins.
+    #[test]
+    fn apply_child_env_preserves_caller_supplied_dev_redirect_vars() {
+        let mut cmd = Command::new("/usr/bin/true");
+        let env = HashMap::from([
+            ("RUNTIMED_DEV".to_string(), "1".to_string()),
+            (
+                "RUNTIMED_SOCKET_PATH".to_string(),
+                "/tmp/dev-runtimed.sock".to_string(),
+            ),
+            (
+                "RUNTIMED_WORKSPACE_PATH".to_string(),
+                "/tmp/worktree".to_string(),
+            ),
+        ]);
+        apply_child_env(&mut cmd, &env);
+
+        let envs = explicit_envs(&cmd);
+
+        assert_eq!(
+            envs.get("RUNTIMED_DEV"),
+            Some(&Some("1".to_string())),
+            "explicit RUNTIMED_DEV must reach the child (supervisor case)"
+        );
+        assert_eq!(
+            envs.get("RUNTIMED_SOCKET_PATH"),
+            Some(&Some("/tmp/dev-runtimed.sock".to_string()))
+        );
+        assert_eq!(
+            envs.get("RUNTIMED_WORKSPACE_PATH"),
+            Some(&Some("/tmp/worktree".to_string()))
         );
     }
 
