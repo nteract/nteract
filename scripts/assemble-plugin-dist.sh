@@ -11,9 +11,9 @@
 #   .claude-plugin/marketplace.json               — Claude marketplace entries
 #   .agents/plugins/marketplace.json              — Codex marketplace entries
 #   plugins/nteract/                              — stable channel
-#     .mcp.json, .claude-plugin/, .codex-plugin/, skills/, bin/
+#     .mcp.json, .codex-mcp.json, .claude-plugin/, .codex-plugin/, skills/, bin/
 #   plugins/nightly/                              — nightly channel
-#     .mcp.json, .claude-plugin/, .codex-plugin/, skills/, bin/
+#     .mcp.json, .codex-mcp.json, .claude-plugin/, .codex-plugin/, skills/, bin/
 #   README.md
 #
 # Claude user install commands (both valid against the same marketplace):
@@ -106,7 +106,7 @@ rm -rf "$plugin_dir"
 mkdir -p "$plugin_dir/bin"
 
 # Copy plugin manifests + skills verbatim.
-for item in .mcp.json .claude-plugin .codex-plugin skills assets; do
+for item in .mcp.json .codex-mcp.json .claude-plugin .codex-plugin skills assets; do
   if [[ -e "$source_plugin/$item" ]]; then
     cp -R "$source_plugin/$item" "$plugin_dir/"
   fi

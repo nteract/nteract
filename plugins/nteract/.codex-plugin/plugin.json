@@ -18,7 +18,7 @@
     "visualization"
   ],
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
+  "mcpServers": "./.codex-mcp.json",
   "interface": {
     "displayName": "nteract",
     "shortDescription": "Open, run, and edit notebooks from Codex",
