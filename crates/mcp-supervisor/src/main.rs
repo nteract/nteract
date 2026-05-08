@@ -507,6 +507,48 @@ fn run_cargo_build_daemon(project_root: &Path) -> bool {
     }
 }
 
+/// Rebuild `runtimed-wasm` so the frontend bundle matches the daemon's
+/// runtime-state schema. Skipping this on rebuild produces a fresh daemon
+/// against a stale `.wasm`; the two then disagree on the schema seed and
+/// every notebook's runtime-state doc gets stuck behind a duplicate-seq-1
+/// rejection from automerge. Always run on rebuild=true.
+///
+/// We invoke `cargo xtask wasm runtimed --skip-renderer-plugins` so the
+/// build path matches what `cargo xtask build` and `cargo xtask dev-daemon`
+/// already do, and so the renderer-plugin glue (sift) isn't pulled in.
+fn run_xtask_wasm_runtimed(project_root: &Path) -> bool {
+    info!("Rebuilding runtimed-wasm (cargo xtask wasm runtimed --skip-renderer-plugins)...");
+    let status = std::process::Command::new("cargo")
+        .args([
+            "run",
+            "--package",
+            "xtask",
+            "--",
+            "wasm",
+            "runtimed",
+            "--skip-renderer-plugins",
+        ])
+        .current_dir(project_root)
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            info!("cargo xtask wasm runtimed succeeded");
+            true
+        }
+        Ok(s) => {
+            error!("cargo xtask wasm runtimed failed with {s}");
+            false
+        }
+        Err(e) => {
+            error!("Failed to run cargo xtask wasm runtimed: {e}");
+            false
+        }
+    }
+}
+
 /// Build the runt CLI binary (which includes runt-mcp).
 /// Respects release mode so the built binary matches what cargo_binary() resolves.
 fn build_runt_cli(project_root: &Path) -> bool {
@@ -1364,6 +1406,20 @@ impl Supervisor {
             } else {
                 report.push("rebuild: maturin skipped (SKIP_MATURIN=1)".into());
             }
+
+            // runtimed-wasm has to track the daemon's runtime-state schema
+            // exactly: both sides bootstrap their RuntimeStateDoc with the
+            // same well-known schema actor, and any divergence in the
+            // scaffolded ops produces a `(actor, seq)` collision that
+            // automerge rejects on receive. Stale wasm leaves the frontend
+            // stuck on "Initializing" with no surfaced error. Always rebuild.
+            if !run_xtask_wasm_runtimed(&project_root) {
+                return Ok(CallToolResult::success(vec![Content::text(
+                    "up: cargo xtask wasm runtimed failed. Daemon was rebuilt; \
+                     the frontend wasm bundle may be stale. See the supervisor logs.",
+                )]));
+            }
+            report.push("rebuild: runtimed-wasm rebuilt".into());
         }
 
         // Step 3: sweep zombie vites
