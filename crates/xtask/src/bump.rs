@@ -67,6 +67,27 @@ const TARGETS: &[Target] = &[
         format: Format::Toml,
         matches: 1,
     },
+    // Sibling crates split out of runtimed-client in #2567 / #2570.
+    Target {
+        path: "crates/runtimed-outputs/Cargo.toml",
+        format: Format::Toml,
+        matches: 1,
+    },
+    Target {
+        path: "crates/runtimed-service/Cargo.toml",
+        format: Format::Toml,
+        matches: 1,
+    },
+    Target {
+        path: "crates/runtimed-settings-sync/Cargo.toml",
+        format: Format::Toml,
+        matches: 1,
+    },
+    Target {
+        path: "crates/nteract-telemetry/Cargo.toml",
+        format: Format::Toml,
+        matches: 1,
+    },
     Target {
         path: "crates/notebook-doc/Cargo.toml",
         format: Format::Toml,
