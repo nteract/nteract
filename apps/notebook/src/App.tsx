@@ -152,7 +152,7 @@ function AppContent() {
   const daemonInfo = useDaemonInfo();
 
   // Apply theme to this window
-  useSyncedTheme();
+  const { defaultPythonEnv } = useSyncedTheme();
 
   // Stable peer ID for presence (generated once per window lifetime)
   const peerIdRef = useRef(crypto.randomUUID());
@@ -236,16 +236,6 @@ function AppContent() {
   const [daemonStatus, setDaemonStatus] = useState<DaemonStatus>(null);
   // Track ready timeout so we can cancel it if status changes
   const readyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Pool state - prewarm pool errors from daemon (typo'd default packages, etc.)
-  const {
-    uvError: poolUvError,
-    condaError: poolCondaError,
-    pixiError: poolPixiError,
-    dismissUvError: dismissPoolUvError,
-    dismissCondaError: dismissPoolCondaError,
-    dismissPixiError: dismissPoolPixiError,
-  } = usePoolState();
 
   // Trust verification for notebook dependencies
   const {
@@ -593,6 +583,17 @@ function AppContent() {
   // daemon hasn't yet reported env_source (kernel still launching).
   // Once envSource is set, toolbar renders the real label off it.
   const envTypeHint = envSource ? null : envType;
+
+  // Pool state - prewarm pool errors from daemon (typo'd default packages, etc.).
+  const activePoolManager = envType ?? defaultPythonEnv;
+  const {
+    uvError: poolUvError,
+    condaError: poolCondaError,
+    pixiError: poolPixiError,
+    dismissUvError: dismissPoolUvError,
+    dismissCondaError: dismissPoolCondaError,
+    dismissPixiError: dismissPoolPixiError,
+  } = usePoolState(activePoolManager);
 
   // Auto-updater
   const {
