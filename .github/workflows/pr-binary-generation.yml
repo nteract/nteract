@@ -182,7 +182,7 @@ jobs:
       # build-runtime-artifacts already ran the cargo xtask wasm chain
       # earlier in this job; this only adds the small _output.html file.
       - name: Build MCP output widget
-        run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
+        run: pnpm --filter nteract-mcp-app install && pnpm exec vp run nteract-mcp-app#build
 
       - name: Build external binaries (Unix)
         if: runner.os != 'Windows'
