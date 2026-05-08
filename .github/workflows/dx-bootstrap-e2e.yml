@@ -68,7 +68,7 @@ jobs:
             webkit2gtk-driver
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v8.1.0
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -192,7 +192,7 @@ jobs:
 
       - name: Upload failure screenshots
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dx-bootstrap-e2e-screenshots
           path: e2e-screenshots/failures/
@@ -200,7 +200,7 @@ jobs:
 
       - name: Upload E2E logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dx-bootstrap-e2e-logs
           path: e2e-logs/
