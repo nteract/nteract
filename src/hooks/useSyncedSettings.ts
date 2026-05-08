@@ -481,7 +481,7 @@ function readFeatureFlags(
  * Falls back to localStorage if the daemon is unavailable.
  */
 export function useSyncedTheme() {
-  const { theme, setTheme, colorTheme, setColorTheme } = useSyncedSettings();
+  const { theme, setTheme, colorTheme, setColorTheme, defaultPythonEnv } = useSyncedSettings();
 
   const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() => resolveTheme(theme));
 
@@ -514,5 +514,5 @@ export function useSyncedTheme() {
     }
   }, [colorTheme]);
 
-  return { theme, setTheme, colorTheme, setColorTheme, resolvedTheme };
+  return { theme, setTheme, colorTheme, setColorTheme, resolvedTheme, defaultPythonEnv };
 }

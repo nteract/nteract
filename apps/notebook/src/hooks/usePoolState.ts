@@ -7,6 +7,8 @@ import {
 
 export type { PoolErrorWithTimestamp } from "../lib/pool-state";
 
+type PoolManager = "uv" | "conda" | "pixi";
+
 /** Compare two pool errors for equality (all fields except receivedAt) */
 function errorsEqual(
   a: PoolErrorWithTimestamp | null | undefined,
@@ -36,13 +38,31 @@ function extractError(pool: PoolState[keyof PoolState]): PoolErrorWithTimestamp 
   };
 }
 
+function isTransientPoolError(error: PoolErrorWithTimestamp): boolean {
+  return error.error_kind === "timeout" || error.error_kind === "setup_failed";
+}
+
+function shouldShowErrorForManager(
+  manager: PoolManager,
+  activeManager: string | null | undefined,
+  error: PoolErrorWithTimestamp | null,
+): boolean {
+  if (!error) return false;
+  if (!activeManager || activeManager === manager) return true;
+
+  // Pool warmups run globally. Avoid alerting users about transient retry
+  // noise from managers they are not currently using, while still surfacing
+  // actionable settings issues like invalid packages.
+  return !isTransientPoolError(error);
+}
+
 /**
  * Hook that reads pool state from the daemon's PoolDoc (Automerge sync).
  *
  * Reports prewarm pool errors (e.g., typo'd package in default_packages)
  * so the UI can display warnings with retry countdowns.
  */
-export function usePoolState() {
+export function usePoolState(activeManager?: string | null) {
   const poolState = usePoolStateStore();
 
   // Track dismissed errors so they don't reappear until state changes
@@ -73,6 +93,17 @@ export function usePoolState() {
     if (dismissedPixi) setDismissedPixi(false);
   }
 
+  const visibleUvError =
+    !dismissedUv && shouldShowErrorForManager("uv", activeManager, uvError) ? uvError : null;
+  const visibleCondaError =
+    !dismissedConda && shouldShowErrorForManager("conda", activeManager, condaError)
+      ? condaError
+      : null;
+  const visiblePixiError =
+    !dismissedPixi && shouldShowErrorForManager("pixi", activeManager, pixiError)
+      ? pixiError
+      : null;
+
   const dismissUvError = useCallback(() => {
     setDismissedUv(true);
   }, []);
@@ -92,13 +123,10 @@ export function usePoolState() {
   }, []);
 
   return {
-    uvError: dismissedUv ? null : uvError,
-    condaError: dismissedConda ? null : condaError,
-    pixiError: dismissedPixi ? null : pixiError,
-    hasErrors:
-      (!dismissedUv && uvError !== null) ||
-      (!dismissedConda && condaError !== null) ||
-      (!dismissedPixi && pixiError !== null),
+    uvError: visibleUvError,
+    condaError: visibleCondaError,
+    pixiError: visiblePixiError,
+    hasErrors: visibleUvError !== null || visibleCondaError !== null || visiblePixiError !== null,
     dismissUvError,
     dismissCondaError,
     dismissPixiError,
