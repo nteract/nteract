@@ -335,7 +335,8 @@ fn parse_detected(
 }
 
 /// pyproject.toml: extract `[project].dependencies`,
-/// `[project].requires-python`, and `[tool.uv].dev-dependencies`.
+/// `[project].requires-python`, `[tool.uv].dev-dependencies`, and
+/// `[dependency-groups].dev`.
 ///
 /// Uses real TOML parsing via `serde`. PEP 508 specs such as
 /// `requests[security,socks]>=2` include commas inside bracket groups,
@@ -353,6 +354,8 @@ fn parse_pyproject_toml(content: &str) -> Result<ProjectFileParsed, String> {
         project: ProjectTable,
         #[serde(default)]
         tool: ToolTable,
+        #[serde(rename = "dependency-groups", default)]
+        dependency_groups: DependencyGroups,
     }
 
     #[derive(serde::Deserialize, Default)]
@@ -375,11 +378,47 @@ fn parse_pyproject_toml(content: &str) -> Result<ProjectFileParsed, String> {
         dev_dependencies: Vec<String>,
     }
 
+    #[derive(serde::Deserialize, Default)]
+    struct DependencyGroups {
+        #[serde(default)]
+        dev: Vec<DependencyGroupEntry>,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum DependencyGroupEntry {
+        Spec(String),
+        Other(toml::Value),
+    }
+
+    impl DependencyGroupEntry {
+        fn into_spec(self) -> Option<String> {
+            match self {
+                Self::Spec(spec) => Some(spec),
+                Self::Other(value) => {
+                    let _ = value;
+                    None
+                }
+            }
+        }
+    }
+
     let root: Root =
         toml::from_str(content).map_err(|e| format!("pyproject.toml parse failed: {e}"))?;
+    let mut dev_dependencies = root.tool.uv.dev_dependencies;
+    for spec in root
+        .dependency_groups
+        .dev
+        .into_iter()
+        .filter_map(DependencyGroupEntry::into_spec)
+    {
+        if !dev_dependencies.contains(&spec) {
+            dev_dependencies.push(spec);
+        }
+    }
     Ok(ProjectFileParsed {
         dependencies: root.project.dependencies,
-        dev_dependencies: root.tool.uv.dev_dependencies,
+        dev_dependencies,
         requires_python: root.project.requires_python,
         prerelease: None,
         extras: ProjectFileExtras::None,
@@ -681,6 +720,42 @@ mod tests {
         };
         assert_eq!(parsed.dependencies, vec!["pandas"]);
         assert_eq!(parsed.dev_dependencies, vec!["pytest", "ruff>=0.6"]);
+    }
+
+    #[test]
+    fn build_context_pyproject_captures_dependency_groups_dev() {
+        let temp = TempDir::new().unwrap();
+        write(
+            temp.path(),
+            "pyproject.toml",
+            "[project]\nname = \"demo\"\ndependencies = [\"pandas\"]\n\n[dependency-groups]\ndev = [\"matplotlib>=3\", \"plotly\"]\n",
+        );
+        let notebook = write(temp.path(), "demo.ipynb", "{}");
+
+        let (ctx, _) = build_context(&notebook);
+        let ProjectContext::Detected { parsed, .. } = ctx else {
+            panic!("expected Detected");
+        };
+        assert_eq!(parsed.dependencies, vec!["pandas"]);
+        assert_eq!(parsed.dev_dependencies, vec!["matplotlib>=3", "plotly"]);
+    }
+
+    #[test]
+    fn build_context_pyproject_merges_legacy_and_current_dev_deps() {
+        let temp = TempDir::new().unwrap();
+        write(
+            temp.path(),
+            "pyproject.toml",
+            "[project]\nname = \"demo\"\ndependencies = [\"pandas\"]\n\n[tool.uv]\ndev-dependencies = [\"pytest\", \"plotly\"]\n\n[dependency-groups]\ndev = [\"plotly\", \"altair\"]\n",
+        );
+        let notebook = write(temp.path(), "demo.ipynb", "{}");
+
+        let (ctx, _) = build_context(&notebook);
+        let ProjectContext::Detected { parsed, .. } = ctx else {
+            panic!("expected Detected");
+        };
+        assert_eq!(parsed.dependencies, vec!["pandas"]);
+        assert_eq!(parsed.dev_dependencies, vec!["pytest", "plotly", "altair"]);
     }
 
     #[test]
