@@ -61,6 +61,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.VERSION }}
       timestamp: ${{ steps.version.outputs.TIMESTAMP }}
+      base_version: ${{ steps.version.outputs.BASE_VERSION }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -74,8 +75,11 @@ jobs:
           TIMESTAMP=$(date -u +%Y%m%d%H%M)
           VERSION="${CURRENT_VERSION}-${{ inputs.version_suffix }}.${TIMESTAMP}"
           echo "Setting version to: ${VERSION}"
-          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "TIMESTAMP=${TIMESTAMP}" >> "$GITHUB_OUTPUT"
+          {
+            echo "VERSION=${VERSION}"
+            echo "TIMESTAMP=${TIMESTAMP}"
+            echo "BASE_VERSION=${CURRENT_VERSION}"
+          } >> "$GITHUB_OUTPUT"
 
   build-wasm:
     name: Build WASM artifacts
@@ -937,88 +941,6 @@ jobs:
               bash scripts/ci/fedora-appimage-smoke.sh "$1"
             ' bash "$APPIMAGE"
 
-  build-nteract-package:
-    name: Build nteract Package
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    needs: compute-version
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          lfs: true
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Set dev version
-        if: inputs.github_release_prerelease
-        run: |
-          CURRENT_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          MAJOR_MINOR="${CURRENT_VERSION%.*}"
-          PATCH="${CURRENT_VERSION##*.}"
-          NEXT_PATCH=$((PATCH + 1))
-          TIMESTAMP="${{ needs.compute-version.outputs.timestamp }}"
-          DEV_VERSION="${MAJOR_MINOR}.${NEXT_PATCH}a${TIMESTAMP}"
-          echo "Setting nteract version to: ${DEV_VERSION}"
-          sed -i "s/^version = .*/version = \"${DEV_VERSION}\"/" pyproject.toml
-          # Pin runtimed dep to the same prerelease timestamp
-          sed -i "s/runtimed>=[^,]*/runtimed>=${DEV_VERSION}/" pyproject.toml
-        working-directory: python/nteract
-
-      - name: Build sdist + wheel
-        run: uv build --no-sources
-        working-directory: python/nteract
-
-      - name: Upload dist
-        uses: actions/upload-artifact@v7
-        with:
-          name: nteract-dist
-          path: dist
-          if-no-files-found: error
-
-  build-dx-package:
-    name: Build dx Package
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    needs: compute-version
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          lfs: true
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Set dev version
-        if: inputs.github_release_prerelease
-        run: |
-          CURRENT_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          MAJOR_MINOR="${CURRENT_VERSION%.*}"
-          PATCH="${CURRENT_VERSION##*.}"
-          NEXT_PATCH=$((PATCH + 1))
-          TIMESTAMP="${{ needs.compute-version.outputs.timestamp }}"
-          DEV_VERSION="${MAJOR_MINOR}.${NEXT_PATCH}a${TIMESTAMP}"
-          echo "Setting dx version to: ${DEV_VERSION}"
-          sed -i "s/^version = .*/version = \"${DEV_VERSION}\"/" pyproject.toml
-        working-directory: python/dx
-
-      - name: Build sdist + wheel
-        run: uv build --no-sources
-        working-directory: python/dx
-
-      - name: Upload dist
-        uses: actions/upload-artifact@v7
-        with:
-          name: dx-dist
-          # uv build in a workspace writes to repo-root dist/, not
-          # python/dx/dist — same as the nteract job above.
-          path: dist/dx-*
-          if-no-files-found: error
-
   build-python-wheels:
     name: Build Python Wheels (${{ matrix.platform.target }})
     runs-on: ${{ matrix.platform.runner }}
@@ -1081,35 +1003,41 @@ jobs:
           cargo build --release --target ${{ matrix.platform.target }} -p runtimed
           cp target/${{ matrix.platform.target }}/release/runtimed.exe python/runtimed/src/runtimed/_bin/
 
-      - name: Set dev version (Unix)
-        if: runner.os != 'Windows' && inputs.github_release_prerelease
+      - name: Set package version (Unix)
+        if: runner.os != 'Windows'
         run: |
-          CURRENT_VERSION=$(grep '^version' python/runtimed/pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          # Bump patch and use alpha tag so it sorts after current stable (PEP 440)
-          MAJOR_MINOR="${CURRENT_VERSION%.*}"
-          PATCH="${CURRENT_VERSION##*.}"
-          NEXT_PATCH=$((PATCH + 1))
-          TIMESTAMP="${{ needs.compute-version.outputs.timestamp }}"
-          DEV_VERSION="${MAJOR_MINOR}.${NEXT_PATCH}a${TIMESTAMP}"
-          echo "Setting Python version to: ${DEV_VERSION}"
-          sed -i.bak "s/^version = .*/version = \"${DEV_VERSION}\"/" python/runtimed/pyproject.toml
+          BASE_VERSION="${{ needs.compute-version.outputs.base_version }}"
+          if [ "${{ inputs.github_release_prerelease }}" = "true" ]; then
+            # Bump patch and use alpha tag so it sorts after current stable (PEP 440).
+            MAJOR_MINOR="${BASE_VERSION%.*}"
+            PATCH="${BASE_VERSION##*.}"
+            NEXT_PATCH=$((PATCH + 1))
+            TIMESTAMP="${{ needs.compute-version.outputs.timestamp }}"
+            PACKAGE_VERSION="${MAJOR_MINOR}.${NEXT_PATCH}a${TIMESTAMP}"
+          else
+            PACKAGE_VERSION="${BASE_VERSION}"
+          fi
+          echo "Setting Python version to: ${PACKAGE_VERSION}"
+          sed -i.bak "s/^version = .*/version = \"${PACKAGE_VERSION}\"/" python/runtimed/pyproject.toml
 
-      - name: Set dev version (Windows)
-        if: runner.os == 'Windows' && inputs.github_release_prerelease
+      - name: Set package version (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $content = Get-Content python/runtimed/pyproject.toml -Raw
-          if ($content -match 'version = "([^"]+)"') {
-            $currentVersion = $matches[1]
+          $baseVersion = "${{ needs.compute-version.outputs.base_version }}"
+          if ("${{ inputs.github_release_prerelease }}" -eq "true") {
+            # Bump patch and use alpha tag so it sorts after current stable (PEP 440).
+            $parts = $baseVersion.Split('.')
+            $parts[2] = [string]([int]$parts[2] + 1)
+            $nextVersion = $parts -join '.'
+            $timestamp = "${{ needs.compute-version.outputs.timestamp }}"
+            $packageVersion = "${nextVersion}a${timestamp}"
+          } else {
+            $packageVersion = $baseVersion
           }
-          # Bump patch and use alpha tag so it sorts after current stable (PEP 440)
-          $parts = $currentVersion.Split('.')
-          $parts[2] = [string]([int]$parts[2] + 1)
-          $nextVersion = $parts -join '.'
-          $timestamp = "${{ needs.compute-version.outputs.timestamp }}"
-          $devVersion = "${nextVersion}a${timestamp}"
-          Write-Host "Setting Python version to: $devVersion"
-          $content = $content -replace 'version = "[^"]+"', "version = `"$devVersion`""
+          Write-Host "Setting Python version to: $packageVersion"
+          $content = $content -replace 'version = "[^"]+"', "version = `"$packageVersion`""
           Set-Content python/runtimed/pyproject.toml $content -NoNewline
 
       - name: Build wheels
@@ -1268,8 +1196,6 @@ jobs:
         build-notebook-linux-x64,
         smoke-fedora-appimage,
         build-python-wheels,
-        build-nteract-package,
-        build-dx-package,
       ]
     steps:
       - name: Checkout
@@ -1474,51 +1400,29 @@ jobs:
           path: ./wheels
           merge-multiple: true
 
-      - name: Download nteract dist
-        uses: actions/download-artifact@v8
-        with:
-          name: nteract-dist
-          path: ./nteract-dist
-
-      - name: Download dx dist
-        uses: actions/download-artifact@v8
-        with:
-          name: dx-dist
-          path: ./dx-dist
-
       - name: Report final release asset sizes
         run: |
           echo "Release asset directories:"
-          du -sh release-assets wheels nteract-dist dx-dist
+          du -sh release-assets wheels
           echo ""
           echo "Release asset files:"
-          find release-assets wheels nteract-dist dx-dist -type f -printf "%12s  %p\n" | sort -nr
+          find release-assets wheels -type f -printf "%12s  %p\n" | sort -nr
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
 
-      # PyPI publishes are gated to pre-releases (nightly) only. Stable
-      # publishes are paused while the `runtimed` / `nteract` / `dx`
-      # library surface is still in flux — see #2217. Pre-releases carry
-      # unique per-minute versions (e.g. 2.2.1a202604150406) so there's
-      # no collision risk.
+      # Nightly publishes carry unique per-minute alpha versions
+      # (e.g. 2.2.1a202604150406). Stable publishes use the base version
+      # from crates/runt/Cargo.toml so the stable release promotes the same
+      # API users install without --pre, even if pyproject.toml was stale.
       #
       # Trusted-publisher config on PyPI must include an entry for this
-      # workflow (`release-common.yml`) per published project. Missing
+      # workflow (`release-common.yml`) for runtimed. Missing
       # entries surface here as "403 Invalid API Token … not valid for
       # project 'X'". Fix at https://pypi.org/manage/project/{name}/settings/publishing/.
 
       - name: Publish runtimed to PyPI
-        if: inputs.github_release_prerelease
-        run: uv publish --trusted-publishing always ./wheels/*.whl
-
-      - name: Publish nteract to PyPI
-        if: inputs.github_release_prerelease
-        run: uv publish --trusted-publishing always ./nteract-dist/*
-
-      - name: Publish dx to PyPI
-        if: inputs.github_release_prerelease
-        run: uv publish --trusted-publishing always ./dx-dist/*
+        run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/runtimed/ ./wheels/*.whl
 
       - name: Generate release body
         env:
@@ -1579,13 +1483,11 @@ jobs:
             echo '## runtimed (Python — macOS, Linux, Windows)'
             echo ''
             echo '```bash'
-            echo 'pip install runtimed --pre'
-            echo '```'
-            echo ''
-            echo '## dx (Python kernel-side helpers)'
-            echo ''
-            echo '```bash'
-            echo 'pip install dx --pre'
+            if [ "$VERSION_SUFFIX" = "nightly" ]; then
+              echo 'pip install --pre runtimed'
+            else
+              echo 'pip install runtimed'
+            fi
             echo '```'
           } > release-body.md
 
@@ -1617,8 +1519,6 @@ jobs:
             ./release-assets/nteract-${{ inputs.version_suffix }}-windows-x64.exe.sig
             ./release-assets/latest.json
             ./wheels/*.whl
-            ./nteract-dist/*
-            ./dx-dist/*
 
       - name: Update ${{ inputs.updater_channel_tag }} updater channel
         env:

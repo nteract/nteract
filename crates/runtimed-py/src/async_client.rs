@@ -240,6 +240,10 @@ impl AsyncClient {
     ///     package_manager: Package manager ("uv", "conda", "pixi"). When None, daemon uses default_python_env.
     ///     dependencies: Dependencies to seed before kernel auto-launch.
     ///     environment_mode: Environment source mode ("auto", "project", "notebook"). Defaults to "auto".
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "PyO3 exposes these as Python keyword arguments; grouping them would break the public API"
+    )]
     #[pyo3(signature = (runtime="python", working_dir=None, peer_label=None, package_manager=None, dependencies=None, environment_mode=None))]
     fn create_notebook<'py>(
         &self,
