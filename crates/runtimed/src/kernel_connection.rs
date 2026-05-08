@@ -42,6 +42,8 @@ pub struct KernelLaunchConfig {
     pub kernel_ports: KernelPorts,
     /// Extra environment variables to set in the kernel process.
     pub env_vars: Vec<(String, String)>,
+    /// Whether textual output should redact matching environment values.
+    pub redact_env_values_in_outputs: bool,
     /// Prewarmed pool environment, if one was claimed.
     pub pooled_env: Option<PooledEnv>,
 }

@@ -32,6 +32,7 @@ use crate::async_outcome::{
     await_result_with_timeout, recv_oneshot_with_timeout, TimedOneShot, TimedResult,
 };
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
+use crate::output_redaction::OutputRedactor;
 use crate::output_prep::{
     blob_store_large_state_values, escape_glob_pattern, extract_buffer_paths,
     media_to_display_data, message_content_to_nbformat, queue_command_channels,
@@ -45,6 +46,8 @@ use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 use crate::terminal_size::{TERMINAL_COLUMNS_STR, TERMINAL_LINES_STR};
 use crate::EnvType;
 use notebook_protocol::protocol::{KernelPorts, LaunchedEnvConfig};
+
+const REDACT_ENV_VALUES_IN_OUTPUTS_ENV: &str = "NTERACT_REDACT_ENV_VALUES_IN_OUTPUTS";
 
 #[cfg(unix)]
 fn ipc_path_prefix(kernel_id: &str) -> PathBuf {
@@ -777,6 +780,19 @@ impl KernelConnection for JupyterKernel {
         for (key, value) in &config.env_vars {
             cmd.env(key, value);
         }
+        cmd.env(
+            REDACT_ENV_VALUES_IN_OUTPUTS_ENV,
+            if config.redact_env_values_in_outputs {
+                "1"
+            } else {
+                "0"
+            },
+        );
+
+        let output_redactor = Arc::new(OutputRedactor::from_current_process_and_command(
+            config.redact_env_values_in_outputs,
+            cmd.as_std(),
+        ));
 
         cmd.kill_on_drop(true);
 
@@ -1225,6 +1241,7 @@ impl KernelConnection for JupyterKernel {
         let iopub_comm_seq = comm_seq.clone();
         let iopub_stream_terminals = stream_terminals.clone();
         let state_for_iopub = shared.state.clone();
+        let iopub_output_redactor = output_redactor.clone();
         // IOPub writes use transactions with the base kernel actor. Async
         // blob/manifest work is completed before the document transaction.
         let iopub_kernel_actor_id = kernel_actor_id.clone();
@@ -1234,6 +1251,7 @@ impl KernelConnection for JupyterKernel {
             iopub_stream_terminals.clone(),
             iopub_kernel_actor_id.clone(),
             iopub_lifecycle_tx.clone(),
+            iopub_output_redactor.clone(),
         );
         let display_update_committer =
             crate::display_update_committer::start_display_update_committer(
@@ -1241,6 +1259,7 @@ impl KernelConnection for JupyterKernel {
                 blob_store.clone(),
                 iopub_kernel_actor_id.clone(),
                 iopub_lifecycle_tx.clone(),
+                iopub_output_redactor.clone(),
             );
 
         // Create coalescing channel early so the IOPub task can capture the sender.
@@ -1430,12 +1449,14 @@ impl KernelConnection for JupyterKernel {
                                             "text": stream.text
                                         });
 
-                                        if let Ok(manifest) = crate::output_store::create_manifest(
-                                            &output,
-                                            &blob_store,
-                                            crate::output_store::DEFAULT_INLINE_THRESHOLD,
-                                        )
-                                        .await
+                                        if let Ok(manifest) =
+                                            crate::output_store::create_manifest_with_redactor(
+                                                &output,
+                                                &blob_store,
+                                                crate::output_store::DEFAULT_INLINE_THRESHOLD,
+                                                &iopub_output_redactor,
+                                            )
+                                            .await
                                         {
                                             let manifest_json = manifest.to_json();
                                             let need_clear =
@@ -1564,10 +1585,11 @@ impl KernelConnection for JupyterKernel {
                                             )
                                             .await;
                                             if let Ok(manifest) =
-                                                crate::output_store::create_manifest(
+                                                crate::output_store::create_manifest_with_redactor(
                                                     &nbformat_value,
                                                     &blob_store,
                                                     crate::output_store::DEFAULT_INLINE_THRESHOLD,
+                                                    &iopub_output_redactor,
                                                 )
                                                 .await
                                             {
@@ -1677,10 +1699,11 @@ impl KernelConnection for JupyterKernel {
                                                 &blob_store,
                                             )
                                             .await;
-                                            let manifest_json = match output_store::create_manifest(
+                                            let manifest_json = match output_store::create_manifest_with_redactor(
                                                 &nbformat_value,
                                                 &blob_store,
                                                 DEFAULT_INLINE_THRESHOLD,
+                                                &iopub_output_redactor,
                                             )
                                             .await
                                             {
@@ -1690,7 +1713,9 @@ impl KernelConnection for JupyterKernel {
                                                         "[jupyter-kernel] Failed to create manifest: {}",
                                                         e
                                                     );
-                                                    crate::notebook_sync_server::fallback_output_with_id(&nbformat_value)
+                                                    let redacted = iopub_output_redactor
+                                                        .redact_output_value(&nbformat_value);
+                                                    crate::notebook_sync_server::fallback_output_with_id(&redacted)
                                                 }
                                             };
 
@@ -1777,10 +1802,11 @@ impl KernelConnection for JupyterKernel {
                                             message_content_to_nbformat(&message.content)
                                         {
                                             if let Ok(manifest) =
-                                                crate::output_store::create_manifest(
+                                                crate::output_store::create_manifest_with_redactor(
                                                     &nbformat_value,
                                                     &blob_store,
                                                     crate::output_store::DEFAULT_INLINE_THRESHOLD,
+                                                    &iopub_output_redactor,
                                                 )
                                                 .await
                                             {
@@ -1877,10 +1903,11 @@ impl KernelConnection for JupyterKernel {
                                         if let Some(nbformat_value) =
                                             message_content_to_nbformat(&message.content)
                                         {
-                                            let manifest_json = match output_store::create_manifest(
+                                            let manifest_json = match output_store::create_manifest_with_redactor(
                                                 &nbformat_value,
                                                 &blob_store,
                                                 DEFAULT_INLINE_THRESHOLD,
+                                                &iopub_output_redactor,
                                             )
                                             .await
                                             {
@@ -1890,7 +1917,9 @@ impl KernelConnection for JupyterKernel {
                                                         "[jupyter-kernel] Failed to create error manifest: {}",
                                                         e
                                                     );
-                                                    crate::notebook_sync_server::fallback_output_with_id(&nbformat_value)
+                                                    let redacted = iopub_output_redactor
+                                                        .redact_output_value(&nbformat_value);
+                                                    crate::notebook_sync_server::fallback_output_with_id(&redacted)
                                                 }
                                             };
 
@@ -2366,6 +2395,7 @@ impl KernelConnection for JupyterKernel {
         let shell_state = shared.state.clone();
         let shell_blob_store = shared.blob_store.clone();
         let shell_kernel_actor_id = kernel_actor_id.clone();
+        let shell_output_redactor = output_redactor.clone();
 
         let shell_panic_cmd_tx = lifecycle_cmd_tx.clone();
         let shell_reader_task = spawn_supervised(
@@ -2395,10 +2425,11 @@ impl KernelConnection for JupyterKernel {
                                                 let nbformat_value = media_to_display_data(data);
 
                                                 let manifest_json =
-                                                    match output_store::create_manifest(
+                                                    match output_store::create_manifest_with_redactor(
                                                         &nbformat_value,
                                                         &shell_blob_store,
                                                         DEFAULT_INLINE_THRESHOLD,
+                                                        &shell_output_redactor,
                                                     )
                                                     .await
                                                     {
@@ -2408,7 +2439,9 @@ impl KernelConnection for JupyterKernel {
                                                             "[jupyter-kernel] Failed to create page manifest: {}",
                                                             e
                                                         );
-                                                            crate::notebook_sync_server::fallback_output_with_id(&nbformat_value)
+                                                            let redacted = shell_output_redactor
+                                                                .redact_output_value(&nbformat_value);
+                                                            crate::notebook_sync_server::fallback_output_with_id(&redacted)
                                                         }
                                                     };
 

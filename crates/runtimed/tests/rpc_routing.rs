@@ -372,6 +372,7 @@ async fn shutdown_then_launch_serialized() {
                 iopub: 9004,
             },
             env_vars: Default::default(),
+            redact_env_values_in_outputs: true,
         },
     )
     .await;

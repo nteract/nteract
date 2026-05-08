@@ -57,6 +57,7 @@ use notebook_doc::mime::{
 };
 
 use crate::blob_store::BlobStore;
+use crate::output_redaction::OutputRedactor;
 
 /// MIME types whose `ContentRef::Blob` outputs are externalized as
 /// [`BLOB_REF_MIME`] entries in saved `.ipynb` files instead of being
@@ -537,6 +538,29 @@ pub async fn create_manifest(
     blob_store: &BlobStore,
     threshold: usize,
 ) -> io::Result<OutputManifest> {
+    create_manifest_inner(output, blob_store, threshold).await
+}
+
+/// Create an output manifest after redacting textual environment values.
+pub(crate) async fn create_manifest_with_redactor(
+    output: &Value,
+    blob_store: &BlobStore,
+    threshold: usize,
+    redactor: &OutputRedactor,
+) -> io::Result<OutputManifest> {
+    if redactor.is_enabled() {
+        let redacted = redactor.redact_output_value(output);
+        create_manifest_inner(&redacted, blob_store, threshold).await
+    } else {
+        create_manifest_inner(output, blob_store, threshold).await
+    }
+}
+
+async fn create_manifest_inner(
+    output: &Value,
+    blob_store: &BlobStore,
+    threshold: usize,
+) -> io::Result<OutputManifest> {
     let output_type = output
         .get("output_type")
         .and_then(|v| v.as_str())
@@ -840,6 +864,65 @@ pub fn get_display_id(manifest: &OutputManifest) -> Option<String> {
 /// Returns the updated OutputManifest if the manifest is a display_data or execute_result
 /// with matching display_id, otherwise returns None.
 pub async fn update_manifest_display_data(
+    manifest: &OutputManifest,
+    display_id: &str,
+    new_data: &serde_json::Value,
+    new_metadata: &serde_json::Map<String, serde_json::Value>,
+    blob_store: &BlobStore,
+    threshold: usize,
+) -> io::Result<Option<OutputManifest>> {
+    update_manifest_display_data_inner(
+        manifest,
+        display_id,
+        new_data,
+        new_metadata,
+        blob_store,
+        threshold,
+    )
+    .await
+}
+
+/// Update display data after redacting textual environment values.
+pub(crate) async fn update_manifest_display_data_with_redactor(
+    manifest: &OutputManifest,
+    display_id: &str,
+    new_data: &serde_json::Value,
+    new_metadata: &serde_json::Map<String, serde_json::Value>,
+    blob_store: &BlobStore,
+    threshold: usize,
+    redactor: &OutputRedactor,
+) -> io::Result<Option<OutputManifest>> {
+    if redactor.is_enabled() {
+        let redacted_data = redactor.redact_data_bundle_value(new_data);
+        let redacted_metadata_value =
+            redactor.redact_json_value(&Value::Object(new_metadata.clone()));
+        let redacted_metadata = redacted_metadata_value
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        update_manifest_display_data_inner(
+            manifest,
+            display_id,
+            &redacted_data,
+            &redacted_metadata,
+            blob_store,
+            threshold,
+        )
+        .await
+    } else {
+        update_manifest_display_data_inner(
+            manifest,
+            display_id,
+            new_data,
+            new_metadata,
+            blob_store,
+            threshold,
+        )
+        .await
+    }
+}
+
+async fn update_manifest_display_data_inner(
     manifest: &OutputManifest,
     display_id: &str,
     new_data: &serde_json::Value,
@@ -2678,6 +2761,184 @@ mod tests {
         assert_eq!(resolved["data"]["text/plain"], "test");
     }
 
+    #[tokio::test]
+    async fn create_manifest_with_redactor_redacts_stream_blob_and_preview() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+        let secret = "secret-token-123";
+        let redactor = OutputRedactor::from_values_for_test(vec![secret.to_string()]);
+        let output = serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": format!("before {secret} after")
+        });
+
+        let manifest = create_manifest_with_redactor(&output, &store, 0, &redactor)
+            .await
+            .unwrap();
+
+        let OutputManifest::Stream {
+            text, llm_preview, ..
+        } = &manifest
+        else {
+            panic!("expected stream manifest");
+        };
+        let resolved_text = text.resolve(&store).await.unwrap();
+        assert_eq!(resolved_text, "before [redacted env] after");
+        assert!(!resolved_text.contains(secret));
+        let preview = llm_preview.as_ref().expect("blob stream has preview");
+        assert!(preview
+            .head
+            .contains(crate::output_redaction::REDACTION_MARKER));
+        assert!(!preview.head.contains(secret));
+    }
+
+    #[tokio::test]
+    async fn create_manifest_with_disabled_redactor_preserves_output_text() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+        let secret = "secret-token-123";
+        let redactor = OutputRedactor::disabled();
+        let output = serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": format!("before {secret} after")
+        });
+
+        let manifest =
+            create_manifest_with_redactor(&output, &store, DEFAULT_INLINE_THRESHOLD, &redactor)
+                .await
+                .unwrap();
+        let resolved = resolve_manifest(&manifest, &store).await.unwrap();
+        assert_eq!(resolved["text"], format!("before {secret} after"));
+    }
+
+    #[tokio::test]
+    async fn create_manifest_with_redactor_redacts_textual_outputs_and_metadata() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+        let secret = "secret-token-123";
+        let redactor = OutputRedactor::from_values_for_test(vec![secret.to_string()]);
+        let binary = base64::engine::general_purpose::STANDARD.encode(secret);
+
+        let display = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                "text/plain": format!("plain {secret}"),
+                "application/json": { "token": secret },
+                "text/html": format!("<b>{secret}</b>"),
+                "image/svg+xml": format!("<svg><text>{secret}</text></svg>"),
+                "image/png": binary,
+            },
+            "metadata": {
+                "text/plain": { "label": secret },
+                "application/json": { "hint": secret }
+            }
+        });
+
+        let manifest =
+            create_manifest_with_redactor(&display, &store, DEFAULT_INLINE_THRESHOLD, &redactor)
+                .await
+                .unwrap();
+        let resolved = resolve_manifest(&manifest, &store).await.unwrap();
+        assert_eq!(resolved["data"]["text/plain"], "plain [redacted env]");
+        assert_eq!(
+            resolved["data"]["application/json"]["token"],
+            "[redacted env]"
+        );
+        assert_eq!(resolved["data"]["text/html"], "<b>[redacted env]</b>");
+        assert_eq!(
+            resolved["data"]["image/svg+xml"],
+            "<svg><text>[redacted env]</text></svg>"
+        );
+        assert_eq!(resolved["data"]["image/png"], display["data"]["image/png"]);
+        assert_eq!(
+            resolved["metadata"]["text/plain"]["label"],
+            "[redacted env]"
+        );
+        assert_eq!(
+            resolved["metadata"]["application/json"]["hint"],
+            "[redacted env]"
+        );
+
+        let execute = serde_json::json!({
+            "output_type": "execute_result",
+            "execution_count": 1,
+            "data": { "text/plain": format!("result {secret}") },
+            "metadata": { "text/plain": { "title": secret } }
+        });
+        let manifest =
+            create_manifest_with_redactor(&execute, &store, DEFAULT_INLINE_THRESHOLD, &redactor)
+                .await
+                .unwrap();
+        let resolved = resolve_manifest(&manifest, &store).await.unwrap();
+        assert_eq!(resolved["data"]["text/plain"], "result [redacted env]");
+        assert_eq!(
+            resolved["metadata"]["text/plain"]["title"],
+            "[redacted env]"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_manifest_with_redactor_redacts_errors_and_rich_tracebacks() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+        let secret = "secret-token-123";
+        let redactor = OutputRedactor::from_values_for_test(vec![secret.to_string()]);
+
+        let error = serde_json::json!({
+            "output_type": "error",
+            "ename": format!("SecretError {secret}"),
+            "evalue": format!("bad {secret}"),
+            "traceback": [format!("Traceback {secret}")]
+        });
+        let manifest =
+            create_manifest_with_redactor(&error, &store, DEFAULT_INLINE_THRESHOLD, &redactor)
+                .await
+                .unwrap();
+        let resolved = resolve_manifest(&manifest, &store).await.unwrap();
+        assert_eq!(resolved["ename"], "SecretError [redacted env]");
+        assert_eq!(resolved["evalue"], "bad [redacted env]");
+        assert_eq!(resolved["traceback"][0], "Traceback [redacted env]");
+
+        let rich = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                crate::user_error::TRACEBACK_MIME: {
+                    "ename": format!("SecretError {secret}"),
+                    "evalue": format!("bad {secret}"),
+                    "frames": [{
+                        "filename": "cell.py",
+                        "lineno": 1,
+                        "name": "<module>",
+                        "lines": [{ "lineno": 1, "source": format!("raise {secret}"), "highlight": true }]
+                    }],
+                    "language": "python",
+                    "text": format!("Traceback\\n{secret}\\n")
+                }
+            },
+            "metadata": {}
+        });
+        let manifest =
+            create_manifest_with_redactor(&rich, &store, DEFAULT_INLINE_THRESHOLD, &redactor)
+                .await
+                .unwrap();
+        let OutputManifest::Error { rich, .. } = &manifest else {
+            panic!("expected rich traceback to promote to error");
+        };
+        let rich_json = rich
+            .as_ref()
+            .expect("rich payload should be stored")
+            .resolve(&store)
+            .await
+            .unwrap();
+        assert!(rich_json.contains(crate::output_redaction::REDACTION_MARKER));
+        assert!(!rich_json.contains(secret));
+        let resolved = resolve_manifest(&manifest, &store).await.unwrap();
+        assert_eq!(resolved["evalue"], "bad [redacted env]");
+        assert!(!serde_json::to_string(&resolved).unwrap().contains(secret));
+    }
+
     // ── get_display_id / update tests ───────────────────────────────
 
     #[tokio::test]
@@ -2756,6 +3017,59 @@ mod tests {
         .await
         .unwrap();
         assert!(not_updated.is_none());
+    }
+
+    #[tokio::test]
+    async fn update_manifest_display_data_with_redactor_redacts_text_and_metadata() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+        let secret = "secret-token-123";
+        let redactor = OutputRedactor::from_values_for_test(vec![secret.to_string()]);
+
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "data": {"text/plain": "old"},
+            "metadata": {},
+            "transient": {"display_id": "my-display"}
+        });
+        let manifest = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+
+        let new_data = serde_json::json!({
+            "text/plain": format!("new {secret}"),
+            "application/json": { "token": secret },
+            "image/png": base64::engine::general_purpose::STANDARD.encode(secret),
+        });
+        let mut new_metadata = serde_json::Map::new();
+        new_metadata.insert(
+            "text/plain".to_string(),
+            serde_json::json!({ "label": secret }),
+        );
+
+        let updated = update_manifest_display_data_with_redactor(
+            &manifest,
+            "my-display",
+            &new_data,
+            &new_metadata,
+            &store,
+            DEFAULT_INLINE_THRESHOLD,
+            &redactor,
+        )
+        .await
+        .unwrap()
+        .expect("matching display id should update");
+        let resolved = resolve_manifest(&updated, &store).await.unwrap();
+        assert_eq!(resolved["data"]["text/plain"], "new [redacted env]");
+        assert_eq!(
+            resolved["data"]["application/json"]["token"],
+            "[redacted env]"
+        );
+        assert_eq!(resolved["data"]["image/png"], new_data["image/png"]);
+        assert_eq!(
+            resolved["metadata"]["text/plain"]["label"],
+            "[redacted env]"
+        );
     }
 
     #[tokio::test]

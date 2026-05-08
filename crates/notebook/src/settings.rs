@@ -113,6 +113,10 @@ pub fn load_settings() -> SyncedSettings {
             .get("bootstrap_dx")
             .and_then(|v| v.as_bool())
             .unwrap_or(defaults.bootstrap_dx),
+        redact_env_values_in_outputs: json
+            .get("redact_env_values_in_outputs")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(defaults.redact_env_values_in_outputs),
         install_id: json
             .get("install_id")
             .and_then(|v| v.as_str())
@@ -170,6 +174,7 @@ mod tests {
         assert!(settings.uv.default_packages.is_empty());
         assert!(settings.conda.default_packages.is_empty());
         assert!(settings.install_default_data_packages);
+        assert!(settings.redact_env_values_in_outputs);
     }
 
     #[test]

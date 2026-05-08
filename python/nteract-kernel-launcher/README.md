@@ -18,3 +18,9 @@ requiring the legacy `dx` PyPI package.
 If bootstrap raises, the error is logged to stderr but the launcher still
 starts the kernel — a broken bootstrap should not prevent the user from
 running code.
+
+## Output redaction
+
+The launcher performs a first-pass redaction of eligible environment variable
+values from rich traceback payloads before they leave the kernel process.
+Set `NTERACT_REDACT_ENV_VALUES_IN_OUTPUTS=0` to disable this per kernel.

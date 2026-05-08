@@ -82,6 +82,14 @@ export type SyncedSettings = {
    */
   bootstrap_dx: boolean;
   /**
+   * Redact eligible environment variable values from newly produced text outputs.
+   *
+   * The runtime agent applies this before output manifests or blobs are
+   * written, so the setting is global-only and intentionally not stored in
+   * notebook metadata.
+   */
+  redact_env_values_in_outputs: boolean;
+  /**
    * Opaque per-install UUIDv4. Generated on first heartbeat, persisted in
    * settings. Not derived from any identifying data.
    */

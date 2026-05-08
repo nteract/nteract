@@ -3939,6 +3939,7 @@ pub(crate) async fn auto_launch_kernel(
     {
         warn!("[runtime-state] {}", e);
     }
+    let redact_env_values_in_outputs = daemon.redact_env_values_in_outputs().await;
 
     // (prewarmed_packages no longer needed — runtime agent handles its own launch config)
 
@@ -4036,6 +4037,7 @@ pub(crate) async fn auto_launch_kernel(
                         launched_config: launched_config.clone(),
                         kernel_ports,
                         env_vars: launch_env_vars.clone(),
+                        redact_env_values_in_outputs,
                     }
                 })
                 .await

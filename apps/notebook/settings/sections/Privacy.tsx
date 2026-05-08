@@ -8,6 +8,8 @@ import { Switch } from "@/components/ui/switch";
 interface PrivacySectionProps {
   telemetryEnabled: boolean;
   onTelemetryChange: (value: boolean) => void;
+  redactEnvValuesInOutputs: boolean;
+  onRedactEnvValuesInOutputsChange: (value: boolean) => void;
   installId: string;
   onRotate: () => Promise<string | null>;
   lastDaemonPingAt: number | null;
@@ -35,6 +37,8 @@ function openOrFallThrough(url: string) {
 export function PrivacySection({
   telemetryEnabled,
   onTelemetryChange,
+  redactEnvValuesInOutputs,
+  onRedactEnvValuesInOutputsChange,
   installId,
   onRotate,
   lastDaemonPingAt,
@@ -76,6 +80,21 @@ export function PrivacySection({
             </div>
           }
         />
+
+        <div className="flex items-center justify-between gap-3">
+          <div className="space-y-0.5">
+            <span className="text-xs text-muted-foreground">
+              Redact environment values in outputs
+            </span>
+            <p className="text-[10px] text-muted-foreground/70">
+              Masks matching environment variable values before outputs are stored
+            </p>
+          </div>
+          <Switch
+            checked={redactEnvValuesInOutputs}
+            onCheckedChange={onRedactEnvValuesInOutputsChange}
+          />
+        </div>
 
         <div className="space-y-1.5">
           <div className="flex items-center justify-between gap-3">

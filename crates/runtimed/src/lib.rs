@@ -42,6 +42,7 @@ pub mod launcher_cache;
 pub mod markdown_assets;
 pub mod notebook_sync_server;
 pub mod output_prep;
+pub(crate) mod output_redaction;
 pub mod output_store;
 pub mod paths;
 pub(crate) mod pixi_project;

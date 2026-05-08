@@ -7,6 +7,7 @@ code blows up in creative ways.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +20,13 @@ from nteract_kernel_launcher._traceback import TRACEBACK_MIME, build_rich_payloa
 def _capture_exc() -> BaseException:
     try:
         raise KeyError("missing_key")
+    except BaseException as exc:
+        return exc
+
+
+def _capture_secret_exc() -> BaseException:
+    try:
+        raise RuntimeError("launcher-secret-token-12345")
     except BaseException as exc:
         return exc
 
@@ -48,6 +56,44 @@ def test_build_payload_marks_highlight_on_fail_line():
     # Each frame that has any lines should have exactly one highlighted entry
     # at its failing lineno.
     assert len(highlights) >= 1
+
+
+def test_build_payload_redacts_environment_values_by_default(monkeypatch):
+    secret = "launcher-secret-token-12345"
+    monkeypatch.setenv("TRACEBACK_TEST_SECRET", secret)
+    monkeypatch.delenv("NTERACT_REDACT_ENV_VALUES_IN_OUTPUTS", raising=False)
+
+    exc = _capture_secret_exc()
+    payload = build_rich_payload(type(exc), exc, exc.__traceback__)
+    serialized = json.dumps(payload)
+
+    assert "[redacted env]" in serialized
+    assert secret not in serialized
+
+
+def test_build_payload_preserves_environment_values_when_redaction_disabled(monkeypatch):
+    secret = "launcher-secret-token-12345"
+    monkeypatch.setenv("TRACEBACK_TEST_SECRET", secret)
+    monkeypatch.setenv("NTERACT_REDACT_ENV_VALUES_IN_OUTPUTS", "0")
+
+    exc = _capture_secret_exc()
+    payload = build_rich_payload(type(exc), exc, exc.__traceback__)
+    serialized = json.dumps(payload)
+
+    assert secret in serialized
+
+
+def test_build_payload_does_not_redact_common_environment_values(monkeypatch):
+    monkeypatch.setenv("TRACEBACK_TEST_COMMON", "localhost")
+    monkeypatch.delenv("NTERACT_REDACT_ENV_VALUES_IN_OUTPUTS", raising=False)
+
+    try:
+        raise RuntimeError("localhost")
+    except BaseException as exc:
+        payload = build_rich_payload(type(exc), exc, exc.__traceback__)
+
+    serialized = json.dumps(payload)
+    assert "localhost" in serialized
 
 
 # ─── leading-library-frame strip ───────────────────────────────────────────

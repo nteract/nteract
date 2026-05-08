@@ -15,6 +15,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{debug, warn};
 
 use crate::blob_store::BlobStore;
+use crate::output_redaction::OutputRedactor;
 use crate::output_prep::QueueCommand;
 use crate::output_store::{self, ContentRef, OutputManifest, DEFAULT_INLINE_THRESHOLD};
 use crate::stream_flush::PendingStreamFlush;
@@ -118,9 +119,18 @@ async fn commit_priority_streams(
     stream_terminals: &Arc<Mutex<StreamTerminals>>,
     kernel_actor_id: &str,
     lifecycle_tx: &mpsc::UnboundedSender<QueueCommand>,
+    output_redactor: &OutputRedactor,
 ) {
     for flush in request.flushes {
-        commit_stream_flush(state, blob_store, stream_terminals, kernel_actor_id, flush).await;
+        commit_stream_flush(
+            state,
+            blob_store,
+            stream_terminals,
+            kernel_actor_id,
+            flush,
+            output_redactor,
+        )
+        .await;
     }
     if let Some(signal) = request.signal {
         let _ = lifecycle_tx.send(signal);
@@ -136,8 +146,17 @@ async fn commit_periodic_stream(
     blob_store: &BlobStore,
     stream_terminals: &Arc<Mutex<StreamTerminals>>,
     kernel_actor_id: &str,
+    output_redactor: &OutputRedactor,
 ) {
-    commit_stream_flush(state, blob_store, stream_terminals, kernel_actor_id, flush).await;
+    commit_stream_flush(
+        state,
+        blob_store,
+        stream_terminals,
+        kernel_actor_id,
+        flush,
+        output_redactor,
+    )
+    .await;
 }
 
 async fn run_stream_committer(
@@ -148,6 +167,7 @@ async fn run_stream_committer(
     stream_terminals: Arc<Mutex<StreamTerminals>>,
     kernel_actor_id: String,
     lifecycle_tx: mpsc::UnboundedSender<QueueCommand>,
+    output_redactor: Arc<OutputRedactor>,
 ) {
     loop {
         tokio::select! {
@@ -161,6 +181,7 @@ async fn run_stream_committer(
                     &stream_terminals,
                     &kernel_actor_id,
                     &lifecycle_tx,
+                    &output_redactor,
                 ).await;
             }
 
@@ -171,6 +192,7 @@ async fn run_stream_committer(
                     &blob_store,
                     &stream_terminals,
                     &kernel_actor_id,
+                    &output_redactor,
                 ).await;
             }
 
@@ -185,6 +207,7 @@ pub(crate) fn start_stream_committer(
     stream_terminals: Arc<Mutex<StreamTerminals>>,
     kernel_actor_id: String,
     lifecycle_tx: mpsc::UnboundedSender<QueueCommand>,
+    output_redactor: Arc<OutputRedactor>,
 ) -> StreamCommitterHandle {
     let (periodic_tx, periodic_rx) = mpsc::channel(STREAM_COMMITTER_QUEUE_CAPACITY);
     let (priority_tx, priority_rx) = mpsc::unbounded_channel();
@@ -199,6 +222,7 @@ pub(crate) fn start_stream_committer(
             stream_terminals,
             kernel_actor_id,
             lifecycle_tx.clone(),
+            output_redactor,
         ),
         move |_| {
             let _ = panic_lifecycle_tx.send(QueueCommand::KernelDied);
@@ -217,6 +241,7 @@ pub(crate) async fn commit_stream_flush(
     stream_terminals: &Arc<Mutex<StreamTerminals>>,
     kernel_actor_id: &str,
     flush: PendingStreamFlush,
+    output_redactor: &OutputRedactor,
 ) {
     let (known_state, rendered_text) = {
         let terminals = stream_terminals.lock().await;
@@ -244,8 +269,13 @@ pub(crate) async fn commit_stream_flush(
     });
 
     let manifest =
-        match output_store::create_manifest(&nbformat_value, blob_store, DEFAULT_INLINE_THRESHOLD)
-            .await
+        match output_store::create_manifest_with_redactor(
+            &nbformat_value,
+            blob_store,
+            DEFAULT_INLINE_THRESHOLD,
+            output_redactor,
+        )
+        .await
         {
             Ok(manifest) => manifest,
             Err(e) => {
@@ -339,6 +369,7 @@ mod tests {
             terminals,
             "rt:kernel:test".to_string(),
             lifecycle_tx,
+            Arc::new(OutputRedactor::disabled()),
         );
 
         handle.flush_then_signal(
@@ -385,6 +416,7 @@ mod tests {
             terminals,
             "rt:kernel:test".to_string(),
             lifecycle_tx,
+            Arc::new(OutputRedactor::disabled()),
         );
 
         handle
@@ -418,6 +450,7 @@ mod tests {
                 execution_id: "exec-1".to_string(),
                 stream_name: "stdout".to_string(),
             },
+            &OutputRedactor::disabled(),
         )
         .await;
 

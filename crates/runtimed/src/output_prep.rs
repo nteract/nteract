@@ -13,6 +13,7 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 
 use crate::blob_store::BlobStore;
+use crate::output_redaction::OutputRedactor;
 use crate::output_store::{self, OutputManifest, DEFAULT_INLINE_THRESHOLD};
 use runtime_doc::RuntimeStateDoc;
 
@@ -359,16 +360,18 @@ pub(crate) async fn build_display_manifest_updates(
     new_data: &serde_json::Value,
     new_metadata: &serde_json::Map<String, serde_json::Value>,
     blob_store: &BlobStore,
+    redactor: &OutputRedactor,
 ) -> Result<Vec<DisplayManifestUpdate>, Box<dyn std::error::Error + Send + Sync>> {
     let mut updates = Vec::new();
     for target in targets {
-        if let Some(updated) = output_store::update_manifest_display_data(
+        if let Some(updated) = output_store::update_manifest_display_data_with_redactor(
             &target.manifest,
             display_id,
             new_data,
             new_metadata,
             blob_store,
             DEFAULT_INLINE_THRESHOLD,
+            redactor,
         )
         .await?
         {
@@ -415,9 +418,16 @@ pub(crate) async fn update_output_by_display_id_with_manifests(
     blob_store: &BlobStore,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let targets = collect_display_update_targets(state_doc, display_id);
-    let updates =
-        build_display_manifest_updates(targets, display_id, new_data, new_metadata, blob_store)
-            .await?;
+    let redactor = OutputRedactor::disabled();
+    let updates = build_display_manifest_updates(
+        targets,
+        display_id,
+        new_data,
+        new_metadata,
+        blob_store,
+        &redactor,
+    )
+    .await?;
     apply_display_manifest_updates(state_doc, &updates).map_err(Into::into)
 }
 

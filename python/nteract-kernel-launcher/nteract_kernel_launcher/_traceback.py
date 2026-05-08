@@ -52,6 +52,66 @@ _CONTEXT_AFTER = 2
 _MAX_HEAD_FRAMES = 5
 _MAX_TAIL_FRAMES = 5
 
+_REDACT_ENV_VALUES_FLAG = "NTERACT_REDACT_ENV_VALUES_IN_OUTPUTS"
+_REDACTION_MARKER = "[redacted env]"
+_MIN_REDACTION_VALUE_LEN = 8
+_COMMON_ENV_VALUES = {
+    "localhost",
+    "127.0.0.1",
+    "0.0.0.0",
+    "disabled",
+    "enabled",
+}
+
+
+# ─── Environment value redaction ───────────────────────────────────────────
+
+
+def _redaction_enabled() -> bool:
+    raw = os.environ.get(_REDACT_ENV_VALUES_FLAG)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _eligible_env_values() -> list[str]:
+    if not _redaction_enabled():
+        return []
+
+    values = set()
+    for raw in os.environ.values():
+        value = raw.strip()
+        if len(value) < _MIN_REDACTION_VALUE_LEN:
+            continue
+        if value.lower() in _COMMON_ENV_VALUES:
+            continue
+        values.add(value)
+
+    return sorted(values, key=lambda value: (-len(value), value))
+
+
+def _redact_text(text: str, values: list[str]) -> str:
+    for value in values:
+        text = text.replace(value, _REDACTION_MARKER)
+    return text
+
+
+def _redact_payload_value(value: Any, values: list[str]) -> Any:
+    if isinstance(value, str):
+        return _redact_text(value, values)
+    if isinstance(value, list):
+        return [_redact_payload_value(item, values) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_payload_value(item, values) for key, item in value.items()}
+    return value
+
+
+def _redact_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    values = _eligible_env_values()
+    if not values:
+        return payload
+    return _redact_payload_value(payload, values)
+
 
 # ─── Payload construction ───────────────────────────────────────────────────
 
@@ -189,7 +249,7 @@ def build_rich_payload(etype: Any, evalue: Any, tb: Any) -> dict[str, Any]:
     # no user-code frame, but the exception object has the caret info
     # (offset, text) we want to render.
     if isinstance(evalue, SyntaxError):
-        return _build_syntax_error_payload(etype, evalue, tb)
+        return _redact_payload(_build_syntax_error_payload(etype, evalue, tb))
 
     raw_frames = []
     for f in _pytraceback.extract_tb(tb):
@@ -209,13 +269,15 @@ def build_rich_payload(etype: Any, evalue: Any, tb: Any) -> dict[str, Any]:
     frames = _clip_frames(_strip_leading_library_frames(raw_frames))
     text = "".join(_pytraceback.format_exception(etype, evalue, tb))
     ename = etype.__name__ if isinstance(etype, type) else str(etype)
-    return {
-        "ename": ename,
-        "evalue": str(evalue),
-        "frames": frames,
-        "language": "python",
-        "text": text,
-    }
+    return _redact_payload(
+        {
+            "ename": ename,
+            "evalue": str(evalue),
+            "frames": frames,
+            "language": "python",
+            "text": text,
+        }
+    )
 
 
 # ─── Safe showtraceback wrapper ─────────────────────────────────────────────

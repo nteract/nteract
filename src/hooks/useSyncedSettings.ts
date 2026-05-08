@@ -198,6 +198,7 @@ export function useSyncedSettings() {
   // Telemetry state — surfaced to Settings → Privacy and the onboarding flow.
   const [telemetryEnabled, setTelemetryEnabledState] = useState<boolean>(true);
   const [telemetryConsentRecorded, setTelemetryConsentRecordedState] = useState<boolean>(false);
+  const [redactEnvValuesInOutputs, setRedactEnvValuesInOutputsState] = useState<boolean>(true);
   const [installId, setInstallIdState] = useState<string>("");
   const [lastDaemonPingAt, setLastDaemonPingAtState] = useState<number | null>(null);
   const [lastAppPingAt, setLastAppPingAtState] = useState<number | null>(null);
@@ -245,6 +246,9 @@ export function useSyncedSettings() {
         }
         if (typeof settings.telemetry_consent_recorded === "boolean") {
           setTelemetryConsentRecordedState(settings.telemetry_consent_recorded);
+        }
+        if (typeof settings.redact_env_values_in_outputs === "boolean") {
+          setRedactEnvValuesInOutputsState(settings.redact_env_values_in_outputs);
         }
         if (typeof settings.install_id === "string") {
           setInstallIdState(settings.install_id);
@@ -312,6 +316,9 @@ export function useSyncedSettings() {
       }
       if (typeof event.payload.telemetry_consent_recorded === "boolean") {
         setTelemetryConsentRecordedState(event.payload.telemetry_consent_recorded);
+      }
+      if (typeof event.payload.redact_env_values_in_outputs === "boolean") {
+        setRedactEnvValuesInOutputsState(event.payload.redact_env_values_in_outputs);
       }
       if (typeof event.payload.install_id === "string") {
         setInstallIdState(event.payload.install_id);
@@ -409,6 +416,15 @@ export function useSyncedSettings() {
     );
   }, []);
 
+  const setRedactEnvValuesInOutputs = useCallback((value: boolean) => {
+    setRedactEnvValuesInOutputsState(value);
+    persistSyncedSetting(
+      "redact_env_values_in_outputs",
+      value,
+      "[settings] Failed to persist redact_env_values_in_outputs:",
+    );
+  }, []);
+
   const rotateInstallId = useCallback(async (): Promise<string | null> => {
     try {
       const newId = await invokeTauri<string>("rotate_install_id");
@@ -448,6 +464,8 @@ export function useSyncedSettings() {
     setTelemetryEnabled,
     telemetryConsentRecorded,
     setTelemetryConsentRecorded,
+    redactEnvValuesInOutputs,
+    setRedactEnvValuesInOutputs,
     installId,
     rotateInstallId,
     lastDaemonPingAt,
