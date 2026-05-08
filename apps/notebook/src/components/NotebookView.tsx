@@ -71,6 +71,8 @@ const adderRibbonClasses: Record<string, string> = {
   ].join(" "),
 };
 const defaultAdderRibbonClass = adderRibbonClasses.code;
+const NOTEBOOK_TAIL_SPACE = "clamp(12rem, 35vh, 22rem)";
+const NOTEBOOK_TAIL_PIN_THRESHOLD_PX = 96;
 
 function CellAdder({
   afterCellId,
@@ -364,6 +366,7 @@ function NotebookViewContent({
 }: NotebookViewProps) {
   const presence = usePresenceContext();
   const containerRef = useRef<HTMLDivElement>(null);
+  const tailPinnedRef = useRef(false);
 
   // Read transient UI state from the store instead of props
   const focusedCellId = useFocusedCellId();
@@ -578,20 +581,59 @@ function NotebookViewContent({
   const hiddenGroupsRef = useRef(hiddenGroups);
   hiddenGroupsRef.current = hiddenGroups;
 
-  // Prevent horizontal scroll drift (can happen during text selection)
+  // Prevent horizontal scroll drift (can happen during text selection) and
+  // remember whether the user is already reading at the notebook tail.
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
-    const preventHorizontalScroll = () => {
+    const handleScroll = () => {
       if (container.scrollLeft !== 0) {
         container.scrollLeft = 0;
       }
+
+      const distanceFromTail =
+        container.scrollHeight - container.clientHeight - container.scrollTop;
+      if (distanceFromTail <= NOTEBOOK_TAIL_PIN_THRESHOLD_PX) {
+        tailPinnedRef.current = true;
+        return;
+      }
+
+      const lastCellId = cellIdsRef.current.at(-1);
+      const lastCellEl = lastCellId
+        ? container.querySelector(`[data-cell-id="${CSS.escape(lastCellId)}"]`)
+        : null;
+      if (!lastCellEl) {
+        tailPinnedRef.current = false;
+        return;
+      }
+
+      const containerRect = container.getBoundingClientRect();
+      const lastCellRect = lastCellEl.getBoundingClientRect();
+      tailPinnedRef.current =
+        lastCellRect.bottom >= containerRect.top &&
+        lastCellRect.top <= containerRect.bottom &&
+        lastCellRect.bottom >= containerRect.bottom - NOTEBOOK_TAIL_PIN_THRESHOLD_PX;
     };
 
-    container.addEventListener("scroll", preventHorizontalScroll);
-    return () => container.removeEventListener("scroll", preventHorizontalScroll);
+    handleScroll();
+    container.addEventListener("scroll", handleScroll);
+    return () => container.removeEventListener("scroll", handleScroll);
   }, []);
+
+  // If outputs or trailing cells arrive while the user is already at the
+  // notebook tail, keep the tail anchored so last-cell outputs do not grow
+  // below the viewport and vanish. Scrolling up opts out via tailPinnedRef.
+  useEffect(() => {
+    if (!tailPinnedRef.current) return;
+    const container = containerRef.current;
+    if (!container) return;
+
+    const frame = window.requestAnimationFrame(() => {
+      container.scrollTop = container.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [outputsVersion, cellIds.length]);
 
   // Scroll the current search match cell into view
   useEffect(() => {
@@ -848,7 +890,12 @@ function NotebookViewContent({
     <div
       ref={containerRef}
       className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain py-4 pl-8 pr-2"
-      style={{ contain: "paint", overflowAnchor: "none" }}
+      style={{
+        contain: "paint",
+        overflowAnchor: "none",
+        paddingBottom: NOTEBOOK_TAIL_SPACE,
+        scrollPaddingBlock: `1rem ${NOTEBOOK_TAIL_SPACE}`,
+      }}
       data-notebook-synced={!isLoading && cellIds.length > 0}
       data-session-runtime-state={sessionRuntimeState ?? "unknown"}
       data-session-ready={sessionRuntimeState === "ready"}
