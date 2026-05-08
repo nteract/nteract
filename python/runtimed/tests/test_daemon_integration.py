@@ -2671,9 +2671,13 @@ class TestCreateNotebook:
 
         Regression test for nteract/desktop#1643.
         """
+        import uuid
+
+        env_name = f"nteract-missing-env-{uuid.uuid4().hex}"
+
         # Create environment.yml in tmp_path
         (tmp_path / "environment.yml").write_text(
-            "name: test-conda\nchannels:\n  - conda-forge\ndependencies:\n  - python\n"
+            f"name: {env_name}\nchannels:\n  - conda-forge\ndependencies:\n  - python\n"
         )
 
         session = await client.create_notebook(runtime="python", working_dir=str(tmp_path))
@@ -2681,7 +2685,7 @@ class TestCreateNotebook:
 
         await async_wait_for_conda_env_yml_missing(
             session,
-            "test-conda",
+            env_name,
             expected_path_fragment="environment.yml",
         )
 
