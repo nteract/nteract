@@ -1,0 +1,10 @@
+{
+  "notebook": {
+    "command": "./bin/nteract-mcp",
+    "args": [],
+    "cwd": ".",
+    "env": {
+      "NTERACT_CHANNEL": "stable"
+    }
+  }
+}
