@@ -241,8 +241,9 @@ export interface ProjectFileParsed {
   dependencies: string[];
   /**
    * Dev-only dependencies. Populated from pyproject.toml's
-   * `[tool.uv.dev-dependencies]`; always empty for pixi and
-   * environment.yml (they carry their own sublists in `extras`).
+   * `[tool.uv].dev-dependencies` and `[dependency-groups].dev`; always
+   * empty for pixi and environment.yml (they carry their own sublists in
+   * `extras`).
    */
   dev_dependencies: string[];
   requires_python: string | null;

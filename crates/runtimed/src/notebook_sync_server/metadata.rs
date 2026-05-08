@@ -251,61 +251,162 @@ pub(crate) fn extract_pixi_toml_deps(content: &str) -> Vec<String> {
     deps
 }
 
-/// Extract dependency strings from a pyproject.toml's `[project].dependencies` list.
-/// Returns PEP 508 dependency strings (e.g., "pandas>=2.0", "numpy").
-///
-/// Only matches `dependencies` when inside the `[project]` table. Resets on
-/// any other `[...]` header so deps from `[tool.*]` tables are not captured.
-fn extract_pyproject_deps(content: &str) -> Vec<String> {
-    let mut in_project = false;
-    let mut in_deps = false;
-    let mut deps = Vec::new();
+#[derive(Default)]
+struct PyProjectDependencySections {
+    dependencies: Vec<String>,
+    dev_dependencies: Vec<String>,
+}
 
-    for line in content.lines() {
-        let trimmed = line.trim();
-        // Track which TOML table we're inside
-        if trimmed.starts_with('[') {
-            in_deps = false;
-            in_project = trimmed == "[project]";
-            continue;
-        }
-        if !in_project {
-            continue;
-        }
-        if trimmed == "dependencies = [" || trimmed.starts_with("dependencies = [") {
-            in_deps = true;
-            // Handle single-line: dependencies = ["foo", "bar"]
-            if let Some(rest) = trimmed.strip_prefix("dependencies = [") {
-                if let Some(inner) = rest.strip_suffix(']') {
-                    for dep in inner.split(',') {
-                        let dep = dep.trim().trim_matches('"').trim_matches('\'').trim();
-                        if !dep.is_empty() {
-                            deps.push(dep.to_string());
-                        }
-                    }
-                    in_deps = false;
+fn parse_pyproject_dependency_sections(content: &str) -> PyProjectDependencySections {
+    #[derive(serde::Deserialize, Default)]
+    struct Root {
+        #[serde(default)]
+        project: ProjectTable,
+        #[serde(default)]
+        tool: ToolTable,
+        #[serde(rename = "dependency-groups", default)]
+        dependency_groups: DependencyGroups,
+    }
+
+    #[derive(serde::Deserialize, Default)]
+    struct ProjectTable {
+        #[serde(default)]
+        dependencies: Vec<String>,
+    }
+
+    #[derive(serde::Deserialize, Default)]
+    struct ToolTable {
+        #[serde(default)]
+        uv: ToolUv,
+    }
+
+    #[derive(serde::Deserialize, Default)]
+    struct ToolUv {
+        #[serde(rename = "dev-dependencies", default)]
+        dev_dependencies: Vec<String>,
+    }
+
+    #[derive(serde::Deserialize, Default)]
+    struct DependencyGroups {
+        #[serde(default)]
+        dev: Vec<DependencyGroupEntry>,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum DependencyGroupEntry {
+        Spec(String),
+        Other(toml::Value),
+    }
+
+    impl DependencyGroupEntry {
+        fn into_spec(self) -> Option<String> {
+            match self {
+                Self::Spec(spec) => Some(spec),
+                Self::Other(value) => {
+                    let _ = value;
+                    None
                 }
             }
-            continue;
         }
-        if in_deps {
-            if trimmed == "]" || trimmed.starts_with(']') {
-                in_deps = false;
-                continue;
-            }
-            let dep = trimmed
-                .trim_matches(',')
-                .trim()
-                .trim_matches('"')
-                .trim_matches('\'')
-                .trim();
-            if !dep.is_empty() && !dep.starts_with('#') {
-                deps.push(dep.to_string());
-            }
+    }
+
+    let Ok(root) = toml::from_str::<Root>(content) else {
+        return PyProjectDependencySections::default();
+    };
+
+    let mut dev_dependencies = root.tool.uv.dev_dependencies;
+    for spec in root
+        .dependency_groups
+        .dev
+        .into_iter()
+        .filter_map(DependencyGroupEntry::into_spec)
+    {
+        if !dev_dependencies.contains(&spec) {
+            dev_dependencies.push(spec);
+        }
+    }
+
+    PyProjectDependencySections {
+        dependencies: root.project.dependencies,
+        dev_dependencies,
+    }
+}
+
+/// Extract dependency strings from a pyproject.toml's `[project].dependencies` list.
+/// Returns PEP 508 dependency strings (e.g., "pandas>=2.0", "numpy").
+fn extract_pyproject_deps(content: &str) -> Vec<String> {
+    let mut deps = parse_pyproject_dependency_sections(content).dependencies;
+    deps.sort();
+    deps
+}
+
+/// Extract pyproject dependency strings that should satisfy notebook metadata deps.
+///
+/// This includes runtime project dependencies plus dev-only deps from legacy
+/// `[tool.uv].dev-dependencies` and current `[dependency-groups].dev`. It is
+/// intentionally broader than `extract_pyproject_deps` so notebook-scoped dev
+/// packages are not promoted into `[project].dependencies` with `uv add`.
+fn extract_pyproject_satisfied_deps(content: &str) -> Vec<String> {
+    let sections = parse_pyproject_dependency_sections(content);
+    let mut deps = sections.dependencies;
+    for dep in sections.dev_dependencies {
+        if !deps.contains(&dep) {
+            deps.push(dep);
         }
     }
     deps.sort();
     deps
+}
+
+#[cfg(test)]
+mod pyproject_dependency_tests {
+    use super::{extract_pyproject_deps, extract_pyproject_satisfied_deps};
+
+    #[test]
+    fn extract_pyproject_deps_keeps_project_deps_only() {
+        let content = r#"
+[project]
+name = "demo"
+dependencies = ["pandas", "requests[security,socks]>=2"]
+
+[dependency-groups]
+dev = ["pytest", "plotly"]
+"#;
+
+        assert_eq!(
+            extract_pyproject_deps(content),
+            vec![
+                "pandas".to_string(),
+                "requests[security,socks]>=2".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_pyproject_satisfied_deps_includes_dev_groups() {
+        let content = r#"
+[project]
+name = "demo"
+dependencies = ["pandas"]
+
+[tool.uv]
+dev-dependencies = ["pytest", "plotly"]
+
+[dependency-groups]
+dev = ["plotly", "altair>=6", { include-group = "docs" }]
+"#;
+
+        assert_eq!(
+            extract_pyproject_satisfied_deps(content),
+            vec![
+                "altair>=6".to_string(),
+                "pandas".to_string(),
+                "plotly".to_string(),
+                "pytest".to_string(),
+            ]
+        );
+    }
 }
 
 /// Build a LaunchedEnvConfig from the current metadata snapshot.
@@ -4289,10 +4390,11 @@ pub(crate) async fn promote_inline_deps_to_project(
             .as_ref()
             .map(|u| u.dependencies.clone())
             .unwrap_or_default();
-        // For uv:pyproject, the launched baseline is the pyproject.toml deps.
-        // Read them from the file for comparison.
+        // For uv:pyproject, deps already present in either runtime or dev-only
+        // pyproject sections satisfy notebook metadata deps. Do not promote
+        // notebook-scoped dev packages into `[project].dependencies`.
         let launched_deps = if let Ok(content) = std::fs::read_to_string(pyproject_path) {
-            extract_pyproject_deps(&content)
+            extract_pyproject_satisfied_deps(&content)
         } else {
             vec![]
         };

@@ -60,8 +60,9 @@ pub struct ProjectFileParsed {
     #[serde(default)]
     pub dependencies: Vec<String>,
     /// Dev-only dependencies. Currently populated from pyproject.toml's
-    /// `[tool.uv.dev-dependencies]`; empty for pixi / environment.yml
-    /// (they have their own sublist conventions in `extras`).
+    /// `[tool.uv].dev-dependencies` and `[dependency-groups].dev`; empty for
+    /// pixi / environment.yml (they have their own sublist conventions in
+    /// `extras`).
     #[serde(default)]
     pub dev_dependencies: Vec<String>,
     /// `requires-python` / Python constraint, when the file carries one.
