@@ -13,6 +13,8 @@
 import { isVegaMimeType } from "./mime-priority";
 import { installPluginFromUrl } from "./plugin-executor";
 
+declare const __DAEMON_PLUGIN_ASSET_HASHES__: Record<string, string> | undefined;
+
 interface PluginInfo {
   name: string;
   /** Whether this plugin has a separate CSS file */
@@ -29,6 +31,8 @@ const MIME_TO_PLUGIN: Record<string, PluginInfo> = {
 };
 
 const VEGA_PLUGIN: PluginInfo = { name: "vega", hasCss: false };
+const PLUGIN_ASSET_HASHES =
+  typeof __DAEMON_PLUGIN_ASSET_HASHES__ === "object" ? __DAEMON_PLUGIN_ASSET_HASHES__ : {};
 
 function pluginInfoForMime(mime: string): PluginInfo | undefined {
   if (MIME_TO_PLUGIN[mime]) return MIME_TO_PLUGIN[mime];
@@ -71,8 +75,10 @@ export function loadPluginForMime(
   const existing = loadingPlugins.get(info.name);
   if (existing) return existing;
 
-  const jsUrl = `${blobBaseUrl}/plugins/${info.name}.js`;
-  const cssUrl = info.hasCss ? `${blobBaseUrl}/plugins/${info.name}.css` : undefined;
+  const jsUrl = daemonPluginAssetUrl(blobBaseUrl, `${info.name}.js`);
+  const cssUrl = info.hasCss
+    ? daemonPluginAssetUrl(blobBaseUrl, `${info.name}.css`)
+    : undefined;
 
   const promise = installPluginFromUrl(jsUrl, cssUrl)
     .then(() => {
@@ -86,4 +92,14 @@ export function loadPluginForMime(
 
   loadingPlugins.set(info.name, promise);
   return promise;
+}
+
+export function daemonPluginAssetUrl(
+  blobBaseUrl: string,
+  filename: string,
+  assetHashes: Record<string, string> = PLUGIN_ASSET_HASHES,
+): string {
+  const version = assetHashes[filename];
+  const suffix = version ? `?v=${encodeURIComponent(version)}` : "";
+  return `${blobBaseUrl}/plugins/${filename}${suffix}`;
 }
