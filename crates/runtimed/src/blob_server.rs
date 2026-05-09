@@ -306,10 +306,7 @@ fn serve_embedded_plugin(name: &str) -> Response<Full<Bytes>> {
         .status(StatusCode::OK)
         .header("Content-Type", content_type)
         .header("Content-Length", body_len.to_string())
-        // Plugin URLs are stable across app/daemon upgrades, but their bytes
-        // are version-specific. Do not let WebKit reuse an older sift WASM
-        // binary with a newer renderer bundle.
-        .header("Cache-Control", "no-store")
+        .header("Cache-Control", "public, max-age=86400")
         .header("Access-Control-Allow-Origin", "*")
         .header("X-Content-Type-Options", "nosniff")
         .body(body)
@@ -560,7 +557,7 @@ mod tests {
         );
         assert_eq!(
             response_header(&response, "cache-control"),
-            Some("no-store".into())
+            Some("public, max-age=86400".into())
         );
         assert_eq!(
             response_header(&response, "access-control-allow-origin"),
@@ -661,7 +658,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response_header(&response, "cache-control"),
-            Some("no-store".into())
+            Some("public, max-age=86400".into())
         );
     }
 

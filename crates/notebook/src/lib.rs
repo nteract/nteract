@@ -826,8 +826,8 @@ async fn setup_sync_receivers(
 #[cfg(test)]
 mod tests {
     use super::{
-        daemon_version_matches_bundled, extract_commit_hash, next_available_sample_path,
-        reopen_action, ReopenAction, SyncReadyState,
+        extract_commit_hash, next_available_sample_path, reopen_action, ReopenAction,
+        SyncReadyState,
     };
     use tempfile::TempDir;
 
@@ -840,28 +840,6 @@ mod tests {
             "dirty suffix is informational; SHA equality is what drives upgrade decisions"
         );
         assert_eq!(extract_commit_hash("1.4.1"), None);
-    }
-
-    #[test]
-    fn daemon_version_match_uses_commit_when_present() {
-        assert!(daemon_version_matches_bundled(
-            "2.4.7-nightly.202605091416+abc1234",
-            "2.4.7-nightly.202605091523+abc1234",
-        ));
-        assert!(daemon_version_matches_bundled(
-            "2.4.7+abc1234+dirty",
-            "2.4.7+abc1234",
-        ));
-        assert!(!daemon_version_matches_bundled(
-            "2.4.7+abc1234",
-            "2.4.7+def5678",
-        ));
-    }
-
-    #[test]
-    fn daemon_version_match_falls_back_when_commit_missing() {
-        assert!(daemon_version_matches_bundled("2.4.7", "2.4.7"));
-        assert!(!daemon_version_matches_bundled("2.4.7", "2.4.8"));
     }
 
     #[test]
@@ -976,13 +954,6 @@ fn extract_commit_hash(version: &str) -> Option<&str> {
     version.split('+').nth(1)
 }
 
-fn daemon_version_matches_bundled(running: &str, bundled: &str) -> bool {
-    match (extract_commit_hash(running), extract_commit_hash(bundled)) {
-        (Some(running_commit), Some(bundled_commit)) => running_commit == bundled_commit,
-        _ => runtimed_client::versions_match_ignoring_dirty(running, bundled),
-    }
-}
-
 /// Upgrade the daemon via sidecar when version mismatch detected.
 ///
 /// Runs `runtimed install` which handles: stop old → copy binary → start new.
@@ -998,7 +969,7 @@ where
 
     let bundled = bundled_daemon_version();
     log::info!("[startup] Upgrading daemon to bundled version: {}", bundled);
-    on_progress(DaemonProgress::Upgrading);
+    on_progress(DaemonProgress::Installing); // Reuse "installing" state for upgrade
 
     // "runtimed install" handles: stop old → copy binary → start new
     // The sidecar resolves to the runtimed binary bundled in the app.
@@ -1051,12 +1022,8 @@ where
         return Err(error);
     }
 
-    // Wait for upgraded daemon to be ready. A plain ping is not enough here:
-    // launchd can briefly leave the old daemon alive while the new service is
-    // being bootstrapped, and the old daemon serves stale embedded plugin WASM.
-    log::info!(
-        "[startup] Sidecar install exited successfully, waiting for bundled daemon version..."
-    );
+    // Wait for upgraded daemon to be ready
+    log::info!("[startup] Sidecar install exited successfully, waiting for daemon to be ready...");
     on_progress(DaemonProgress::Starting);
 
     let client = runtimed::client::PoolClient::default();
@@ -1067,48 +1034,47 @@ where
             max_attempts,
         });
 
-        let running_info =
-            runtimed_client::singleton::query_daemon_info(runt_workspace::default_socket_path())
-                .await;
+        if client.ping().await.is_ok() {
+            let endpoint = runt_workspace::default_socket_path()
+                .to_string_lossy()
+                .to_string();
 
-        if let Some(info) = running_info {
-            if daemon_version_matches_bundled(&info.version, &bundled) {
-                let endpoint = runt_workspace::default_socket_path()
-                    .to_string_lossy()
-                    .to_string();
-                log::info!(
-                    "[startup] Upgraded daemon version confirmed: {} (attempt {})",
-                    info.version,
-                    attempt
-                );
-                on_progress(DaemonProgress::Ready {
-                    endpoint: endpoint.clone(),
-                });
-                return Ok(endpoint);
+            // Verify the running daemon version matches what we intended to install.
+            // `query_daemon_info` is socket-first with a `daemon.json`
+            // fallback for the one-release compat window.
+            let running_version = runtimed_client::singleton::query_daemon_info(
+                runt_workspace::default_socket_path(),
+            )
+            .await
+            .map(|i| i.version);
+            if let Some(version) = running_version {
+                let running_commit = extract_commit_hash(&version);
+                let bundled_commit = extract_commit_hash(&bundled);
+                if running_commit == bundled_commit {
+                    log::info!(
+                        "[startup] Upgraded daemon version confirmed: {} (attempt {})",
+                        version,
+                        attempt
+                    );
+                } else {
+                    log::warn!(
+                        "[startup] Daemon version mismatch after upgrade! running={}, bundled={}",
+                        version,
+                        bundled
+                    );
+                }
             }
 
-            log::warn!(
-                "[startup] Waiting for upgraded daemon version: running={}, bundled={} (attempt {}/{})",
-                info.version,
-                bundled,
-                attempt,
-                max_attempts
-            );
-        } else if client.ping().await.is_ok() {
-            log::warn!(
-                "[startup] Daemon responded after upgrade but did not report version yet (attempt {}/{})",
-                attempt,
-                max_attempts
-            );
+            on_progress(DaemonProgress::Ready {
+                endpoint: endpoint.clone(),
+            });
+            return Ok(endpoint);
         }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
 
-    let error = format!(
-        "Upgraded daemon did not report bundled version {} within timeout",
-        bundled
-    );
+    let error = "Upgraded daemon did not become ready within timeout".to_string();
     log::error!("[startup] {}", error);
     on_progress(DaemonProgress::Failed {
         error: error.clone(),
@@ -1444,9 +1410,12 @@ where
             .await
             .map(|i| i.version);
             if let Some(version) = running_version {
-                // CI appends "+{git_sha}" at build time, so commit equality is
-                // the precise compatibility check when both versions include it.
-                if !daemon_version_matches_bundled(&version, &bundled_version) {
+                // Compare commit hashes only - CI appends "+{git_sha}" to the version
+                // at build time, so commit hash is the precise compatibility check.
+                let running_commit = extract_commit_hash(&version);
+                let bundled_commit = extract_commit_hash(&bundled_version);
+
+                if running_commit != bundled_commit {
                     log::info!(
                         "[startup] Daemon commit mismatch — will upgrade: running={}, bundled={}",
                         version,
@@ -1463,10 +1432,9 @@ where
             } else {
                 log::warn!(
                     "[startup] Daemon responded to ping but version unavailable via \
-                     socket or daemon.json; upgrading to bundled version {}",
+                     socket or daemon.json (bundled={})",
                     bundled_version
                 );
-                return upgrade_daemon_via_sidecar(app, on_progress).await;
             }
         }
 
