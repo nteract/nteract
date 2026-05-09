@@ -14,8 +14,8 @@
     "security": {
       "csp": {
         "default-src": "'self'",
-        "script-src": "'self' 'wasm-unsafe-eval'",
-        "style-src": "'self' 'unsafe-inline'",
+        "script-src": "'self' 'wasm-unsafe-eval' 'unsafe-eval' blob: https: http://127.0.0.1:* 'sha256-O/N72GCuG1dWVaY+Iz9rjgP7JT4TZuPk7omd2ijEPn4='",
+        "style-src": "'self' 'unsafe-inline' https: http://127.0.0.1:*",
         "img-src": "'self' data: blob: http://127.0.0.1:* https:",
         "font-src": "'self' data:",
         "media-src": "'self' data: blob: http://127.0.0.1:* https:",
