@@ -58,11 +58,17 @@ fn production_csp_is_enabled_and_restrictive() {
     assert_eq!(directive(csp, "form-action"), "'none'");
     assert_eq!(directive(csp, "frame-src"), "blob:");
     assert_eq!(directive(csp, "child-src"), "blob:");
+    assert_eq!(directive(csp, "worker-src"), "'self' blob:");
+    assert_eq!(
+        directive(csp, "object-src"),
+        "'self' data: blob: http://127.0.0.1:*"
+    );
 
     let connect_src = directive(csp, "connect-src");
     assert!(connect_src.contains("ipc:"));
     assert!(connect_src.contains("http://ipc.localhost"));
     assert!(connect_src.contains("http://127.0.0.1:*"));
+    assert!(!connect_src.contains("https:"));
 }
 
 #[test]
@@ -77,6 +83,15 @@ fn development_csp_is_separate_from_packaged_policy() {
     let dev_script_src = directive(dev_csp, "script-src");
     assert!(dev_script_src.contains("'unsafe-inline'"));
     assert!(dev_script_src.contains("'unsafe-eval'"));
+    assert!(dev_script_src.contains("http://localhost:*"));
+    assert!(!dev_script_src.contains("http://localhost:5174"));
+
+    assert!(directive(dev_csp, "default-src").contains("http://localhost:*"));
+    assert!(directive(dev_csp, "style-src").contains("http://localhost:*"));
+    assert_eq!(
+        directive(dev_csp, "worker-src"),
+        "'self' blob: http://localhost:*"
+    );
 
     let dev_connect_src = directive(dev_csp, "connect-src");
     assert!(dev_connect_src.contains("ws://localhost:*"));
