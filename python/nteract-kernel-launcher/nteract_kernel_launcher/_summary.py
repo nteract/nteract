@@ -353,12 +353,13 @@ def summarize_dataset(ds: Any) -> str:
     Does NOT call ``.to_pandas()`` or any materializing operation beyond
     reading ``ds[0]`` for a sample row.
     """
-    features = ds.features
-    num_rows = ds.num_rows
+    features = getattr(ds, "features", None)
+    num_rows = getattr(ds, "num_rows", None)
     n_features = len(features) if features else 0
 
     lines: list[str] = []
-    lines.append(f"HuggingFace Dataset: {_format_int(num_rows)} rows × {n_features} features")
+    row_count = _format_int(num_rows) if isinstance(num_rows, int) else "unknown"
+    lines.append(f"HuggingFace Dataset: {row_count} rows × {n_features} features")
 
     if features:
         lines.append("Features:")
@@ -376,7 +377,7 @@ def summarize_dataset(ds: Any) -> str:
             lines.append(f"Description: {excerpt}")
 
     # Sample row
-    if num_rows > 0:
+    if isinstance(num_rows, int) and num_rows > 0:
         try:
             row = ds[0]
             lines.append("")

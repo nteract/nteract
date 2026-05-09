@@ -315,6 +315,20 @@ def test_load_extension_swallows_per_step_failures(monkeypatch):
     assert called == ["hooks", "r"]
 
 
+def test_install_registers_iterable_dataset_formatter():
+    """Streaming HF datasets must reach the summary-only formatter path."""
+    from IPython.core.formatters import DisplayFormatter
+    from nteract_kernel_launcher import _bootstrap
+
+    display_formatter = DisplayFormatter()
+    ip = SimpleNamespace(display_formatter=display_formatter)
+
+    _bootstrap._install_dataframe_formatters(ip)
+
+    deferred = display_formatter.mimebundle_formatter.deferred_printers
+    assert ("datasets.iterable_dataset", "IterableDataset") in deferred
+
+
 # ─── emit path — only runs if pandas + pyarrow are importable ────────────
 
 
@@ -458,7 +472,6 @@ def test_dataset_mimebundle_falls_back_to_summary_when_no_table():
 
     class FakeStreamingDataset:
         features = FakeFeatures(id="string")
-        num_rows = 0
         info = None
 
         def __getitem__(self, _idx):

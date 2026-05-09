@@ -119,3 +119,14 @@ export function applyHfFeatureOverrides(
     }
   }
 }
+
+export function applyColumnOverrides(
+  columns: Column[],
+  columnOverrides?: Record<string, Partial<Column>>,
+): void {
+  if (!columnOverrides) return;
+  for (const col of columns) {
+    const override = columnOverrides[col.key];
+    if (override) Object.assign(col, override);
+  }
+}

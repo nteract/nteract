@@ -114,7 +114,10 @@ def _dataset_mimebundle(ds: Any, include=None, exclude=None) -> dict | None:
             log.debug("dataset mimebundle failed: %s", exc)
             return None
 
-    return _emit_arrow_table(table, total_rows=ds.num_rows, summary_fn=summary)
+    total_rows = getattr(ds, "num_rows", table.num_rows)
+    if not isinstance(total_rows, int):
+        total_rows = table.num_rows
+    return _emit_arrow_table(table, total_rows=total_rows, summary_fn=summary)
 
 
 def _unwrap_narwhals(nw_df: Any) -> tuple[Any, int] | tuple[None, int]:
@@ -319,7 +322,7 @@ def _install_dataframe_formatters(ip: Any) -> None:
     - polars: ``polars.dataframe.frame``
     - narwhals: ``narwhals.dataframe``
     - pyarrow: ``pyarrow.lib`` (Table / RecordBatch are C-extension types)
-    - datasets: ``datasets.arrow_dataset``
+    - datasets: ``datasets.arrow_dataset`` / ``datasets.iterable_dataset``
 
     We register the definitive module each library stamps on the class,
     plus a short-name fallback for pandas/polars/narwhals/pyarrow. Short
@@ -349,8 +352,10 @@ def _install_dataframe_formatters(ip: Any) -> None:
         ("pyarrow", "Table", _pyarrow_table_mimebundle),
         ("pyarrow.lib", "RecordBatch", _pyarrow_record_batch_mimebundle),
         ("pyarrow", "RecordBatch", _pyarrow_record_batch_mimebundle),
-        # datasets — single definitive path.
+        # datasets — materialized datasets can emit parquet; iterable
+        # datasets fall back to summary-only because they have no table.
         ("datasets.arrow_dataset", "Dataset", _dataset_mimebundle),
+        ("datasets.iterable_dataset", "IterableDataset", _dataset_mimebundle),
     ):
         try:
             mimebundle.for_type_by_name(module_path, type_name, fn)

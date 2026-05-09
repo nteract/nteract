@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  applyColumnOverrides,
   applyHfFeatureOverrides,
   applyPandasIndexOverrides,
   parseHfFeatures,
@@ -339,12 +340,13 @@ export function SiftTable({
       const handle = mod.load_parquet_row_group(parquetBytes, 0, 0);
       wasmHandle = handle;
 
-      const { tableData, columns, prefetchViewport } = createWasmTableData(handle, columnOverrides);
+      const { tableData, columns, prefetchViewport } = createWasmTableData(handle);
       tableData.prefetchViewport = prefetchViewport;
       tableData.recomputeSummaries = () => updateWasmSummaries(mod, handle, tableData, columns);
 
       applyPandasIndexOverrides(columns, pandasIndexCols, totalRows);
       applyHfFeatureOverrides(columns, hfFeatures);
+      applyColumnOverrides(columns, columnOverrides);
 
       updateWasmSummaries(mod, handle, tableData, columns);
 
