@@ -41,7 +41,7 @@ fn uv_run_base_args() -> Vec<OsString> {
     ]
 }
 
-pub(crate) fn uv_pyproject_prepare_args(_bootstrap_dx: bool) -> Vec<OsString> {
+pub(crate) fn uv_pyproject_prepare_args() -> Vec<OsString> {
     let mut args = uv_run_base_args();
     args.extend([
         OsString::from("python"),
@@ -133,7 +133,7 @@ pub(crate) async fn prepare_uv_pyproject_environment(
         .await
         .context("failed to locate uv executable")?;
     let mut cmd = Command::new(&uv_path);
-    cmd.args(uv_pyproject_prepare_args(bootstrap_dx));
+    cmd.args(uv_pyproject_prepare_args());
     cmd.current_dir(&cwd);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -185,25 +185,7 @@ mod tests {
     #[test]
     fn prepare_args_include_base_uv_packages() {
         assert_eq!(
-            args_to_strings(uv_pyproject_prepare_args(false)),
-            vec![
-                "run",
-                "--with",
-                "ipykernel",
-                "--with",
-                "uv",
-                "python",
-                "-Xfrozen_modules=off",
-                "-c",
-                "import ipykernel",
-            ]
-        );
-    }
-
-    #[test]
-    fn prepare_args_do_not_install_dx_when_bootstrap_is_enabled() {
-        assert_eq!(
-            args_to_strings(uv_pyproject_prepare_args(true)),
+            args_to_strings(uv_pyproject_prepare_args()),
             vec![
                 "run",
                 "--with",
