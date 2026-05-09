@@ -77,6 +77,16 @@ function makeMarkdownOutput(content = "```python\nprint('hello')\n```"): Jupyter
   ];
 }
 
+function makeStreamOutput(text = "hey\n"): JupyterOutput[] {
+  return [
+    {
+      output_type: "stream",
+      name: "stdout",
+      text,
+    },
+  ];
+}
+
 function makeParquetOutput(): JupyterOutput[] {
   return [
     {
@@ -260,6 +270,14 @@ describe("OutputArea iframe theme sync", () => {
     expect(outputContent.getAttribute("class") ?? "").toContain("overflow-y-auto");
     expect(outputContent.style.maxHeight).toBe("600px");
     expect(outputContent.style.minHeight).toBe("");
+  });
+
+  it("renders plain in-DOM output without output well constraints", () => {
+    const { container } = render(<OutputArea outputs={makeStreamOutput()} useOutputWell={false} />);
+
+    const outputContent = getOutputContent(container);
+    expect(outputContent.getAttribute("class") ?? "").not.toContain("overflow-y-auto");
+    expect(outputContent.style.maxHeight).toBe("");
   });
 
   it("can expand isolated iframe outputs past the default output well cap", () => {

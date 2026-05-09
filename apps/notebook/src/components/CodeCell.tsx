@@ -31,9 +31,13 @@ import { useCellOutputs } from "../lib/notebook-outputs";
 import { openUrl } from "../lib/open-url";
 import { presenceSenderExtension } from "../lib/presence-sender";
 import { tabCompletionKeymap } from "../lib/tab-completion";
-import type { CodeCell as CodeCellType } from "../types";
+import type { CodeCell as CodeCellType, JupyterOutput } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
 import { HistorySearchDialog } from "./HistorySearchDialog";
+
+const SIMPLE_OUTPUT_MAX_CHARS = 2000;
+const SIMPLE_OUTPUT_MAX_LINES = 24;
+const SIMPLE_OUTPUT_MAX_LINE_CHARS = 180;
 
 interface CodeCellProps {
   cell: CodeCellType;
@@ -88,6 +92,52 @@ function historyQueryFromEditor(view: EditorView | null, fallbackSource: string)
   }
 
   return fallbackSource.trim();
+}
+
+function normalizeOutputText(text: string | string[]): string {
+  return Array.isArray(text) ? text.join("") : text;
+}
+
+function simpleOutputText(output: JupyterOutput): string | null {
+  if (output.output_type === "stream") {
+    return normalizeOutputText(output.text);
+  }
+
+  if (output.output_type !== "execute_result" && output.output_type !== "display_data") {
+    return null;
+  }
+
+  const populatedMimeTypes = Object.entries(output.data).filter(([, value]) => value != null);
+  if (populatedMimeTypes.length !== 1) {
+    return null;
+  }
+
+  const [mimeType, value] = populatedMimeTypes[0]!;
+  if (mimeType !== "text/plain" || (typeof value !== "string" && !Array.isArray(value))) {
+    return null;
+  }
+
+  return normalizeOutputText(value as string | string[]);
+}
+
+function needsOutputChrome(outputs: readonly JupyterOutput[]): boolean {
+  let totalChars = 0;
+  let totalLines = 0;
+
+  for (const output of outputs) {
+    const text = simpleOutputText(output);
+    if (text == null) return true;
+
+    totalChars += text.length;
+    const lines = text.split(/\r\n|\r|\n/);
+    totalLines += lines.length;
+
+    if (lines.some((line) => line.length > SIMPLE_OUTPUT_MAX_LINE_CHARS)) {
+      return true;
+    }
+  }
+
+  return totalChars > SIMPLE_OUTPUT_MAX_CHARS || totalLines > SIMPLE_OUTPUT_MAX_LINES;
 }
 
 /**
@@ -180,6 +230,7 @@ export const CodeCell = memo(function CodeCell({
   const executionId = useCellExecutionId(cell.id);
   const execution = useExecution(executionId);
   const executionCount = execution?.execution_count ?? null;
+  const showOutputChrome = useMemo(() => needsOutputChrome(outputs), [outputs]);
 
   // Check cell metadata for visibility (JupyterLab convention)
   const isSourceHidden =
@@ -197,13 +248,13 @@ export const CodeCell = memo(function CodeCell({
   // share the strip, that gate stomped on focus the moment it engaged
   // for any non-iframe output.
   useEffect(() => {
-    if (isOutputsHidden || outputs.length === 0) {
+    if (isOutputsHidden || outputs.length === 0 || !showOutputChrome) {
       setIsIframeOutputExpanded(false);
       if (outputFocused) {
         onOutputFocusChange?.(false);
       }
     }
-  }, [isOutputsHidden, onOutputFocusChange, outputFocused, outputs.length]);
+  }, [isOutputsHidden, onOutputFocusChange, outputFocused, outputs.length, showOutputChrome]);
 
   // Register EditorView with the cursor registry for remote cursor rendering.
   // We use a ref + polling approach because the EditorView is created async
@@ -468,11 +519,12 @@ export const CodeCell = memo(function CodeCell({
               onIframeMouseDown={handleOutputMouseDown}
               expandIframeOutputs={isIframeOutputExpanded}
               focused={outputFocused}
+              useOutputWell={showOutputChrome}
             />
           )
         }
         outputRightGutterContent={
-          outputs.length > 0 && !isOutputsHidden ? (
+          outputs.length > 0 && !isOutputsHidden && showOutputChrome ? (
             <>
               <OutputModeStrip
                 mode={outputFocused ? "focused" : isIframeOutputExpanded ? "expanded" : "compact"}
