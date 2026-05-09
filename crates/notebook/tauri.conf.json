@@ -15,7 +15,7 @@
       "csp": {
         "default-src": "'self'",
         "script-src": "'self' 'wasm-unsafe-eval'",
-        "style-src": "'self' 'unsafe-inline' https: http://127.0.0.1:*",
+        "style-src": "'self' 'unsafe-inline'",
         "img-src": "'self' data: blob: http://127.0.0.1:* https:",
         "font-src": "'self' data:",
         "media-src": "'self' data: blob: http://127.0.0.1:* https:",

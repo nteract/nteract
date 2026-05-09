@@ -12,18 +12,20 @@ import { generateFrameHtml } from "../frame-html";
 
 describe("generateFrameHtml", () => {
   let html: string;
+  let source: string;
 
   beforeAll(() => {
     html = generateFrameHtml();
+    source = html.replace(/"/g, "'");
   });
 
   it("generates valid HTML document", () => {
-    expect(html).toContain("<!DOCTYPE html>");
-    expect(html).toContain("<html");
+    expect(html.toLowerCase()).toContain("<!doctype html>");
+    expect(html).toMatch(/<html\b/);
     expect(html).toContain("</html>");
-    expect(html).toContain("<head>");
+    expect(html).toMatch(/<head>/);
     expect(html).toContain("</head>");
-    expect(html).toContain("<body>");
+    expect(html).toMatch(/<body>/);
     expect(html).toContain("</body>");
   });
 
@@ -60,15 +62,15 @@ describe("generateFrameHtml", () => {
 
   it("sends ready message on load", () => {
     // Ready uses legacy format (bootstrap signal before JSON-RPC transport exists)
-    expect(html).toContain("sendLegacy('ready'");
+    expect(source).toContain("sendLegacy('ready'");
     expect(html).toContain("postMessage");
   });
 
   it("forwards wheel deltas when iframe scroll reaches a boundary", () => {
-    expect(html).toContain("document.addEventListener('wheel'");
+    expect(source).toMatch(/document\.addEventListener\(\s*'wheel'/);
     expect(html).toContain("isWheelAtScrollBoundary");
     expect(html).toContain("e.preventDefault()");
-    expect(html).toContain("sendRpc('nteract/wheelBoundary'");
+    expect(source).toContain("sendRpc('nteract/wheelBoundary'");
     expect(html).toContain("passive: false");
   });
 
@@ -95,7 +97,7 @@ describe("generateFrameHtml", () => {
     });
 
     it("ships document typography for markdown and html outputs", () => {
-      expect(html).toContain(
+      expect(source).toContain(
         "--output-document-font: KaTeX_Main, Georgia, 'Times New Roman', serif",
       );
       expect(html).toContain('[data-slot="markdown-output"], [data-slot="html-output"]');

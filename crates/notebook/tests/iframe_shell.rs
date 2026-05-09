@@ -92,7 +92,9 @@ fn html_contains_event_source_validation() {
 
 #[test]
 fn html_starts_with_doctype() {
-    assert!(FRAME_HTML.starts_with("<!DOCTYPE html>"));
+    assert!(FRAME_HTML
+        .to_ascii_lowercase()
+        .starts_with("<!doctype html>"));
 }
 
 #[test]

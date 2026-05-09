@@ -57,10 +57,7 @@ fn production_csp_is_enabled_and_restrictive() {
     assert!(!script_src.contains("http://127.0.0.1:*"));
 
     assert_eq!(directive(csp, "default-src"), "'self'");
-    assert_eq!(
-        directive(csp, "style-src"),
-        "'self' 'unsafe-inline' https: http://127.0.0.1:*"
-    );
+    assert_eq!(directive(csp, "style-src"), "'self' 'unsafe-inline'");
     assert_eq!(directive(csp, "base-uri"), "'none'");
     assert_eq!(directive(csp, "form-action"), "'none'");
     let frame_src = directive(csp, "frame-src");

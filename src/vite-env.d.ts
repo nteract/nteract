@@ -3,6 +3,11 @@
 // KaTeX CSS type declaration for side-effect imports
 declare module "katex/dist/katex.min.css";
 
+declare module "*.html?raw" {
+  const content: string;
+  export default content;
+}
+
 // Vega UMD builds loaded as raw strings via rawLibPlugin (see vite-plugin-raw-lib.ts).
 // These virtual modules bypass restrictive "exports" fields in vega v6+ packages.
 declare module "vega-raw" {
