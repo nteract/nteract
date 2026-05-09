@@ -754,8 +754,12 @@ h1 {
   display: flex;
   /* Top-anchor so images stay discoverable in tall rows driven by long
      adjacent text columns (e.g. MathNet's PROBLEM_MARKDOWN) instead of
-     drifting to the vertical centre of a 1000+ px row. */
+     drifting to the vertical centre of a 1000+ px row.
+     `align-content: flex-start` packs wrapped lines at the top too — the
+     default `stretch` would split a 2-line image strip across the full
+     height of an expanded row, leaving an empty gap between the lines. */
   align-items: flex-start;
+  align-content: flex-start;
   justify-content: flex-start;
   gap: 4px;
   padding: 2px;
