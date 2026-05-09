@@ -383,6 +383,14 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
               col.columnType = "categorical";
               col.numeric = false;
             }
+            if (hfFeature?._type === "Image") {
+              // HF Image features serialize as Struct{bytes, path}; render
+              // thumbnails inline instead of the formatter's "{...}" string.
+              col.columnType = "image";
+              col.numeric = false;
+              col.sortable = false;
+              if (col.width < 140) col.width = 140;
+            }
           }
 
           // Compute initial summaries from first row group
@@ -433,6 +441,10 @@ function updateWasmSummaries(
   tableData.rowCount = numRows;
   tableData.columnSummaries = columns.map((col, c) => {
     switch (col.columnType) {
+      // No header chart for image columns yet — show the column without a
+      // sparkline summary. Future: thumbnail strip or null/total count.
+      case "image":
+        return null;
       case "categorical": {
         const counts = mod.store_value_counts(handle, c) as {
           label: string;

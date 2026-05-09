@@ -738,6 +738,23 @@ h1 {
   align-items: center;
 }
 
+.sift-cell-image {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+}
+
+.sift-cell-image-thumb {
+  max-height: 64px;
+  max-width: 100%;
+  height: auto;
+  width: auto;
+  object-fit: contain;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--sift-muted) 8%, transparent);
+}
+
 /* --- Boolean summary in header --- */
 
 .sift-bool-summary {

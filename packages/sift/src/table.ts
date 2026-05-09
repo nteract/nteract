@@ -12,7 +12,7 @@ import { type ColumnAction, mountColumnMenu, unmountColumnMenu } from "./column-
 import { renderColumnSummary, unmountColumnSummary } from "./sparkline";
 // --- Types ---
 
-export type ColumnType = "numeric" | "categorical" | "timestamp" | "boolean";
+export type ColumnType = "numeric" | "categorical" | "timestamp" | "boolean" | "image";
 
 export type Column = {
   key: string;
@@ -146,6 +146,7 @@ const FONT = '14px Inter, "Helvetica Neue", Helvetica, Arial, sans-serif';
 const LINE_HEIGHT = 20;
 const CELL_PAD_H = 24; // 12px each side
 const CELL_PAD_V = 16; // 8px top + 8px bottom
+const IMAGE_THUMB_MAX_HEIGHT = 64; // matches .sift-cell-image-thumb max-height in style.css
 const MIN_COL_WIDTH = 60;
 const OVERSCAN = 40; // buffer rows above and below viewport
 
@@ -251,6 +252,10 @@ export function createTable(
         const colType = columns[c].columnType;
         if (colType === "numeric" || colType === "timestamp" || colType === "boolean") {
           cell.lastHeight = LINE_HEIGHT;
+        } else if (colType === "image") {
+          // Mirrors the thumbnail max-height in style.css (.sift-cell-image-thumb).
+          // Keep this in sync with that CSS value.
+          cell.lastHeight = IMAGE_THUMB_MAX_HEIGHT;
         } else {
           const { height } = layout(cell.prepared, cellW, LINE_HEIGHT);
           cell.lastHeight = height;
@@ -1179,11 +1184,71 @@ export function createTable(
 
   // --- Cell rendering (type-aware) ---
 
+  /**
+   * Sniff a known image MIME type from the first few bytes. We only render
+   * formats a browser can decode natively in <img>; unknown shapes degrade
+   * to a byte-count placeholder so we don't ship garbage to the decoder.
+   */
+  function sniffImageMime(bytes: Uint8Array): string | null {
+    if (
+      bytes.length >= 8 &&
+      bytes[0] === 0x89 &&
+      bytes[1] === 0x50 &&
+      bytes[2] === 0x4e &&
+      bytes[3] === 0x47
+    ) {
+      return "image/png";
+    }
+    if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+      return "image/jpeg";
+    }
+    if (
+      bytes.length >= 6 &&
+      bytes[0] === 0x47 &&
+      bytes[1] === 0x49 &&
+      bytes[2] === 0x46 &&
+      bytes[3] === 0x38
+    ) {
+      return "image/gif";
+    }
+    if (
+      bytes.length >= 12 &&
+      bytes[0] === 0x52 &&
+      bytes[1] === 0x49 &&
+      bytes[2] === 0x46 &&
+      bytes[3] === 0x46 &&
+      bytes[8] === 0x57 &&
+      bytes[9] === 0x45 &&
+      bytes[10] === 0x42 &&
+      bytes[11] === 0x50
+    ) {
+      return "image/webp";
+    }
+    return null;
+  }
+
+  /**
+   * Revoke any blob URLs attached to <img> children of `cellEl`. Called
+   * before clearing the cell on rerender so the virtual scroll recycler
+   * doesn't leak object URLs as it shuffles rows.
+   */
+  function revokeCellBlobUrls(cellEl: HTMLElement) {
+    const imgs = cellEl.querySelectorAll<HTMLImageElement>("img[data-sift-blob-url]");
+    for (const img of imgs) {
+      const url = img.dataset.siftBlobUrl;
+      if (url) URL.revokeObjectURL(url);
+    }
+  }
+
   function renderCell(cellEl: HTMLDivElement, dataRow: number, colIndex: number) {
     const col = columns[colIndex];
     const raw = data.getCellRaw(dataRow, colIndex);
     const str = data.getCell(dataRow, colIndex);
 
+    // Revoke any blob URL previously rendered into this cell before we
+    // wipe the children — virtual scroll recycles cells, so leftover URLs
+    // would leak unless we revoke at the same moment we drop the <img>.
+    revokeCellBlobUrls(cellEl);
     // Clear previous content
     cellEl.textContent = "";
     cellEl.className = "sift-cell";
@@ -1208,6 +1273,33 @@ export function createTable(
       case "timestamp": {
         cellEl.textContent = str;
         cellEl.classList.add("sift-cell-timestamp");
+        break;
+      }
+      case "image": {
+        if (!(raw instanceof Uint8Array) || raw.length === 0) {
+          cellEl.textContent = str;
+          break;
+        }
+        cellEl.classList.add("sift-cell-image");
+        const mime = sniffImageMime(raw);
+        if (!mime) {
+          // Unknown payload — degrade to byte-count text instead of a broken <img>.
+          cellEl.textContent = `${raw.length} bytes`;
+          break;
+        }
+        const img = document.createElement("img");
+        img.className = "sift-cell-image-thumb";
+        img.alt = "";
+        img.decoding = "async";
+        img.loading = "lazy";
+        // `raw.buffer` is typed `ArrayBufferLike` (could be SharedArrayBuffer)
+        // in lib.dom.d.ts; `slice()` returns a fresh ArrayBuffer-backed view.
+        const url = URL.createObjectURL(
+          new Blob([raw.slice() as Uint8Array<ArrayBuffer>], { type: mime }),
+        );
+        img.src = url;
+        img.dataset.siftBlobUrl = url;
+        cellEl.appendChild(img);
         break;
       }
       default:

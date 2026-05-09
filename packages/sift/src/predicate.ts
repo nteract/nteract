@@ -37,6 +37,7 @@ type PredicateModule = {
   col_timezone(handle: number, col: number): string | null;
   get_cell_string(handle: number, row: number, col: number): string;
   get_cell_f64(handle: number, row: number, col: number): number;
+  get_cell_bytes(handle: number, row: number, col: number): Uint8Array;
   is_null(handle: number, row: number, col: number): boolean;
   store_viewport_cells(handle: number, rows: Uint32Array): ViewportCells;
   // Store-based summaries (operates on handle, iterates in Rust)

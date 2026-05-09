@@ -113,10 +113,18 @@ export function createWasmTableData(
       return mod.get_cell_string(handle, row, col);
     },
     getCellRaw(row: number, col: number): unknown {
+      const colType = columns[col].columnType;
+      // Image bytes don't go through the prefetched viewport cache —
+      // copying every visible image into a JS array on prefetch would
+      // dwarf the rest of the viewport. Read on demand instead.
+      if (colType === "image") {
+        if (mod.is_null(handle, row, col)) return null;
+        const bytes = mod.get_cell_bytes(handle, row, col);
+        return bytes.length > 0 ? bytes : null;
+      }
       const cached = cache.get(row);
       if (cached) return cached.raws[col];
       if (mod.is_null(handle, row, col)) return null;
-      const colType = columns[col].columnType;
       if (colType === "numeric" || colType === "timestamp")
         return mod.get_cell_f64(handle, row, col);
       if (colType === "boolean") return mod.get_cell_string(handle, row, col) === "Yes";

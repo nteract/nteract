@@ -108,4 +108,15 @@ export const DATASETS: DatasetEntry[] = [
     path: "phihung/titanic",
     rows: "891",
   },
+  {
+    id: "cifar10",
+    label: "CIFAR-10 (image fingerprint demo)",
+    description:
+      "10k 32x32 RGB images + ClassLabel - exercises the HF Image feature path; the img column should render thumbnails inline",
+    source: "huggingface",
+    path: "cifar10",
+    config: "plain_text",
+    split: "test",
+    rows: "10,000",
+  },
 ];
