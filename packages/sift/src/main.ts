@@ -294,8 +294,15 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
           if (cancelled) return;
           try {
             const localResp = await fetch(localUrl);
+            // Vite's dev server doesn't always set Content-Type for .parquet;
+            // accept the response if the URL extension matches and the bytes
+            // fetched, in addition to the explicit octet-stream signal.
             const ct = localResp.headers.get("content-type") ?? "";
-            if (localResp.ok && ct.includes("octet-stream")) resp = localResp;
+            const looksLikeParquet =
+              ct.includes("octet-stream") ||
+              ct.includes("parquet") ||
+              (localResp.ok && localUrl.endsWith(".parquet"));
+            if (localResp.ok && looksLikeParquet) resp = localResp;
           } catch {
             /* local cache miss, fall back to HF */
           }
@@ -325,9 +332,20 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
           const totalRows = meta[1];
 
           // Read schema metadata for pandas index_columns and HuggingFace feature types
+          // `parquet_schema_metadata` is a Rust `HashMap` returned via
+          // `serde_wasm_bindgen`, which lands in JS as a `Map<string,string>` —
+          // NOT a plain object. Reading it via property access (the previous
+          // code) silently returned undefined for every key, leaving HF
+          // ClassLabel/Image detection dead. Coerce through `Object.fromEntries`
+          // so the rest of this function can keep doing record-style access.
           let schemaMetadata: Record<string, string> = {};
           try {
-            schemaMetadata = mod.parquet_schema_metadata(parquetBytes) as Record<string, string>;
+            const raw = mod.parquet_schema_metadata(parquetBytes) as unknown;
+            if (raw instanceof Map) {
+              schemaMetadata = Object.fromEntries(raw as Map<string, string>);
+            } else if (raw && typeof raw === "object") {
+              schemaMetadata = raw as Record<string, string>;
+            }
           } catch {
             /* metadata extraction is best-effort */
           }

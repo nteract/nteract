@@ -24,7 +24,13 @@ type PredicateModule = {
   load_ipc(ipc_bytes: Uint8Array): number;
   load_parquet(parquet_bytes: Uint8Array): number;
   parquet_metadata(parquet_bytes: Uint8Array): Uint32Array;
-  parquet_schema_metadata(parquet_bytes: Uint8Array): Record<string, string>;
+  /**
+   * Returns parquet file-level KV metadata as a `Map`, not a plain object —
+   * `serde_wasm_bindgen` defaults to `Map` for Rust `HashMap`. Callers must
+   * use `.get(key)` or coerce via `Object.fromEntries(...)` before any
+   * record-style access.
+   */
+  parquet_schema_metadata(parquet_bytes: Uint8Array): Map<string, string>;
   load_parquet_row_group(parquet_bytes: Uint8Array, row_group: number, handle: number): number;
   cast_column(handle: number, col: number, target_type: string): void;
   has_original_column(handle: number, col: number): boolean;
