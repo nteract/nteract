@@ -41,6 +41,14 @@ import runtimed._internals
 # Test utilities
 # ============================================================================
 
+KERNEL_LAUNCH_LIFECYCLES = {
+    "Resolving",
+    "PreparingEnv",
+    "Launching",
+    "Connecting",
+    "Running",
+}
+
 
 def wait_for_sync(check_fn, *, timeout=10.0, interval=0.1, description="sync"):
     """Poll until check_fn returns True or timeout.
@@ -201,28 +209,78 @@ async def async_wait_for_conda_env_yml_missing(
     expected_env_name,
     *,
     expected_path_fragment=None,
-    timeout=5.0,
+    timeout=20.0,
+    stable_after_seen=0.5,
 ):
-    """Wait until RuntimeState reports a missing named environment.yml env."""
+    """Wait until RuntimeState reports a stable missing named environment.yml env."""
     from runtimed import KERNEL_ERROR_REASON
     from runtimed._notebook import Notebook
 
-    notebook = Notebook(session)
-    deadline = asyncio.get_event_loop().time() + timeout
-    kernel_state = None
-    lifecycle_tag = None
-    while asyncio.get_event_loop().time() < deadline:
-        kernel_state = notebook.runtime.kernel
+    def lifecycle_tag_for(kernel_state):
         lifecycle = kernel_state.lifecycle
-        lifecycle_tag = getattr(lifecycle, "lifecycle", None) or str(lifecycle)
+        return getattr(lifecycle, "lifecycle", None) or str(lifecycle)
+
+    def record_state(kernel_state):
+        lifecycle_tag = lifecycle_tag_for(kernel_state)
+        reason = kernel_state.error_reason
+        details = kernel_state.error_details or ""
+        entry = (
+            loop.time() - started_at,
+            lifecycle_tag,
+            str(reason),
+            details,
+        )
+        if not timeline or timeline[-1][2:] != entry[1:]:
+            timeline.append((entry[0], entry[0], *entry[1:]))
+        else:
+            first_seen, _, *state = timeline[-1]
+            timeline[-1] = (first_seen, entry[0], *state)
+        return lifecycle_tag
+
+    def format_timeline():
+        return "\n".join(
+            f"  +{first_seen:.3f}..+{last_seen:.3f}s "
+            f"lifecycle={lifecycle!r} reason={reason!r} details={details!r}"
+            for first_seen, last_seen, lifecycle, reason, details in timeline
+        )
+
+    notebook = Notebook(session)
+    loop = asyncio.get_event_loop()
+    started_at = loop.time()
+    deadline = started_at + timeout
+    timeline = []
+    kernel_state = None
+    awaiting_state = None
+    awaiting_seen_at = None
+    overwritten_state = None
+
+    while loop.time() < deadline:
+        kernel_state = notebook.runtime.kernel
+        lifecycle_tag = record_state(kernel_state)
         if lifecycle_tag == "AwaitingEnvBuild":
+            if awaiting_state is None:
+                awaiting_state = kernel_state
+                awaiting_seen_at = loop.time()
+            elif (
+                awaiting_seen_at is not None and loop.time() - awaiting_seen_at >= stable_after_seen
+            ):
+                break
+        elif awaiting_state is not None and lifecycle_tag in KERNEL_LAUNCH_LIFECYCLES:
+            overwritten_state = kernel_state
             break
         await asyncio.sleep(0.1)
 
     assert kernel_state is not None
-    assert lifecycle_tag == "AwaitingEnvBuild", (
-        f"expected lifecycle=AwaitingEnvBuild after env.yml miss; got {lifecycle_tag!r}"
+    assert awaiting_state is not None, (
+        "expected lifecycle=AwaitingEnvBuild after env.yml miss; observed timeline:\n"
+        f"{format_timeline()}"
     )
+    assert overwritten_state is None, (
+        "lifecycle=AwaitingEnvBuild was overwritten by a launch state; "
+        "observed timeline:\n"
+        f"{format_timeline()}"
+    )
+    kernel_state = awaiting_state
     assert kernel_state.error_reason == KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING
     details = kernel_state.error_details or ""
     assert expected_env_name in details, (
@@ -1655,6 +1713,13 @@ class TestProjectFileDetection:
         envs are not built implicitly. Until the user creates that env, launch
         fails closed and RuntimeState explains the remediation.
         """
+        import uuid
+
+        env_name = f"audit-conda-env-{uuid.uuid4().hex}"
+        env_yml_path = isolated_fixtures / "conda-env-project" / "environment.yaml"
+        env_yml_path.write_text(
+            env_yml_path.read_text().replace("name: audit-conda-env", f"name: {env_name}")
+        )
         notebook_path = str(isolated_fixtures / "conda-env-project" / "7-environment-yml.ipynb")
 
         # Shutdown the auto-launched kernel so we can re-launch with
@@ -1675,10 +1740,10 @@ class TestProjectFileDetection:
                 notebook_path=notebook_path,
             )
         except runtimed.RuntimedError as e:
-            assert "audit-conda-env" in str(e)
+            assert env_name in str(e)
             await async_wait_for_conda_env_yml_missing(
                 session,
-                "audit-conda-env",
+                env_name,
                 expected_path_fragment="environment.yaml",
             )
         else:
@@ -2872,16 +2937,15 @@ class TestTrustApproval:
         silently fall back to a pool env, and NOT leave the kernel stuck in
         `initializing` forever.
         """
-        import asyncio
         import json
+        import uuid
 
-        from runtimed import KERNEL_ERROR_REASON
-        from runtimed._notebook import Notebook
+        suffix = uuid.uuid4().hex
+        env_name = f"nteract-integration-probe-unbuilt-env-{suffix}"
+        dep_name = f"nteract-unapproved-conda-dep-{suffix}"
 
         (tmp_path / "environment.yml").write_text(
-            "name: nteract-integration-probe-unbuilt-env-xyz\n"
-            "channels:\n  - conda-forge\n"
-            "dependencies:\n  - pandas\n"
+            f"name: {env_name}\nchannels:\n  - conda-forge\ndependencies:\n  - {dep_name}\n"
         )
         nb_path = tmp_path / "notebook.ipynb"
         nb_path.write_text(
@@ -2903,45 +2967,11 @@ class TestTrustApproval:
         )
 
         session = await client.open_notebook(str(nb_path))
-        notebook = Notebook(session)
-
-        # Poll briefly for the daemon to detect the miss and write the
-        # awaiting-env-build lifecycle. Auto-launch runs in a spawned task, so the
-        # state might lag the open_notebook response.
-        deadline = asyncio.get_event_loop().time() + 5.0
-        kernel_state = None
-        while asyncio.get_event_loop().time() < deadline:
-            kernel_state = notebook.runtime.kernel
-            lifecycle = kernel_state.lifecycle
-            # RuntimeLifecycle serializes as {"lifecycle": "AwaitingEnvBuild"} or the
-            # typed enum depending on binding — match both shapes.
-            if (
-                getattr(lifecycle, "lifecycle", None) == "AwaitingEnvBuild"
-                or str(lifecycle) == "AwaitingEnvBuild"
-            ):
-                break
-            await asyncio.sleep(0.1)
-
-        assert kernel_state is not None
-        lifecycle = kernel_state.lifecycle
-        lifecycle_tag = getattr(lifecycle, "lifecycle", None) or str(lifecycle)
-        # The daemon either blocks at AwaitingEnvBuild (env not found) or
-        # proceeds to PreparingEnv / AwaitingEnvBuild (env build started).
-        # Both are valid: the key invariant is that the daemon does NOT
-        # silently fall back to a pool env.
-        assert lifecycle_tag in ("AwaitingEnvBuild", "PreparingEnv"), (
-            "expected lifecycle=AwaitingEnvBuild or PreparingEnv after env.yml; "
-            f"got {lifecycle_tag!r}"
+        await async_wait_for_conda_env_yml_missing(
+            session,
+            env_name,
+            expected_path_fragment="environment.yml",
         )
-        if lifecycle_tag == "AwaitingEnvBuild":
-            assert kernel_state.error_reason == KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING
-            details = kernel_state.error_details or ""
-            assert "nteract-integration-probe-unbuilt-env-xyz" in details, (
-                f"error_details should name the declared env; got {details!r}"
-            )
-            assert "conda env create -f" in details, (
-                f"error_details should suggest the remediation; got {details!r}"
-            )
 
     async def test_envyml_channel_mismatch_blocks_heal(self, client, tmp_path):
         """Codex P1 on #2158: a notebook with matching conda deps but
