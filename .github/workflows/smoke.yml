@@ -26,7 +26,7 @@ env:
 jobs:
   windows-smoke:
     name: Windows (build + install + smoke)
-    runs-on: windows-latest
+    runs-on: blacksmith-4vcpu-windows-2025
     timeout-minutes: 75
     # Push-to-main + manual dispatch only. The Windows leg currently runs
     # ~32 minutes (cargo build + NSIS bundling + smoke). Gating PRs on it
