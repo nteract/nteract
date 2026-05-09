@@ -52,6 +52,22 @@ const HF_DATASETS: DatasetEntry[] = [
     path: "mstz/heart_failure",
   },
   { id: "titanic", label: "Titanic", source: "huggingface", path: "phihung/titanic" },
+  {
+    id: "cifar10",
+    label: "CIFAR-10",
+    source: "huggingface",
+    path: "cifar10",
+    config: "plain_text",
+    split: "test",
+  },
+  {
+    id: "mathnet",
+    label: "MathNet",
+    source: "huggingface",
+    path: "ShadenA/MathNet",
+    config: "all",
+    split: "train",
+  },
 ];
 
 async function resolveParquetUrl(

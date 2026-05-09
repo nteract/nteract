@@ -119,4 +119,15 @@ export const DATASETS: DatasetEntry[] = [
     split: "test",
     rows: "10,000",
   },
+  {
+    id: "mathnet",
+    label: "MathNet (math problems with images)",
+    description:
+      "First shard of ShadenA/MathNet — competition math problems with markdown bodies, multilingual countries/languages, and optional List<Image> diagrams. Wide-text rows + nested image lists.",
+    source: "huggingface",
+    path: "ShadenA/MathNet",
+    config: "all",
+    split: "train",
+    rows: "~5,300 (one shard of 56)",
+  },
 ];
