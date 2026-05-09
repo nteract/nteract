@@ -294,23 +294,15 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
           if (cancelled) return;
           try {
             const localResp = await fetch(localUrl);
-            // SPA hosts (Cloudflare Pages, Vercel) return the index.html
-            // shell with `200 OK + text/html` for any unknown path —
-            // including `/datasets/titanic.parquet` when the file isn't
-            // bundled. A naive `.parquet`-extension check would feed that
-            // shell to the parquet parser and crash with "Corrupt footer".
-            // Trust the response only when the Content-Type explicitly
-            // marks it as parquet/binary, OR when Vite serves it without a
-            // Content-Type AND the content-length looks like real bytes
-            // (the Vite dev case for cached parquets, where `.parquet` has
-            // no MIME mapping by default).
+            // SPA hosts (Cloudflare Pages, Vercel) return the `index.html`
+            // shell with `200 OK + text/html` for any unknown path. Vite
+            // dev serves cached parquets with no Content-Type at all.
+            // Both succeed `localResp.ok`, so the right test is "is this
+            // actually a binary body?" — i.e. not text. Reject HTML/text;
+            // accept everything else.
             const ct = localResp.headers.get("content-type") ?? "";
-            const cl = Number(localResp.headers.get("content-length") ?? "0");
-            const looksLikeBinary =
-              ct.includes("octet-stream") || ct.includes("parquet");
-            const viteCacheNoMime =
-              ct === "" && localUrl.endsWith(".parquet") && cl > 1024;
-            if (localResp.ok && (looksLikeBinary || viteCacheNoMime)) {
+            const isText = ct.startsWith("text/") || ct.includes("html");
+            if (localResp.ok && !isText) {
               resp = localResp;
             }
           } catch {
