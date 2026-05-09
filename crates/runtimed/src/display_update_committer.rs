@@ -14,11 +14,11 @@ use tokio::sync::{mpsc, oneshot, Notify};
 use tracing::{debug, error, warn};
 
 use crate::blob_store::BlobStore;
-use crate::output_redaction::OutputRedactor;
 use crate::output_prep::QueueCommand;
 use crate::output_prep::{
     apply_display_manifest_updates, build_display_manifest_updates, collect_display_update_targets,
 };
+use crate::output_redaction::OutputRedactor;
 use crate::task_supervisor::spawn_supervised;
 
 const MAX_PENDING_DISPLAY_IDS: usize = 128;

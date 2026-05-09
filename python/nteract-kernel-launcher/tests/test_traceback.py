@@ -108,6 +108,20 @@ def test_build_payload_does_not_redact_known_non_secret_env_keys(monkeypatch):
     assert value in serialized
 
 
+def test_build_payload_does_not_trim_boundary_whitespace_env_values(monkeypatch):
+    secret = "launcher-secret-token-12345"
+    monkeypatch.setenv("TRACEBACK_TEST_SECRET", f" {secret} ")
+    monkeypatch.delenv("NTERACT_REDACT_ENV_VALUES_IN_OUTPUTS", raising=False)
+
+    assert secret not in _traceback._eligible_env_values()
+
+    exc = _capture_secret_exc()
+    payload = build_rich_payload(type(exc), exc, exc.__traceback__)
+    serialized = json.dumps(payload)
+
+    assert secret in serialized
+
+
 # ─── leading-library-frame strip ───────────────────────────────────────────
 
 

@@ -15,8 +15,8 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{debug, warn};
 
 use crate::blob_store::BlobStore;
-use crate::output_redaction::OutputRedactor;
 use crate::output_prep::QueueCommand;
+use crate::output_redaction::OutputRedactor;
 use crate::output_store::{self, ContentRef, OutputManifest, DEFAULT_INLINE_THRESHOLD};
 use crate::stream_flush::PendingStreamFlush;
 use crate::stream_terminal::{StreamOutputState, StreamTerminals};
@@ -29,6 +29,15 @@ struct PriorityStreamCommit {
     flushes: Vec<PendingStreamFlush>,
     signal: Option<QueueCommand>,
     ack: Option<oneshot::Sender<()>>,
+}
+
+struct StreamCommitterContext {
+    state: RuntimeStateHandle,
+    blob_store: Arc<BlobStore>,
+    stream_terminals: Arc<Mutex<StreamTerminals>>,
+    kernel_actor_id: String,
+    lifecycle_tx: mpsc::UnboundedSender<QueueCommand>,
+    output_redactor: Arc<OutputRedactor>,
 }
 
 #[derive(Clone)]
@@ -162,12 +171,7 @@ async fn commit_periodic_stream(
 async fn run_stream_committer(
     mut periodic_rx: mpsc::Receiver<PendingStreamFlush>,
     mut priority_rx: mpsc::UnboundedReceiver<PriorityStreamCommit>,
-    state: RuntimeStateHandle,
-    blob_store: Arc<BlobStore>,
-    stream_terminals: Arc<Mutex<StreamTerminals>>,
-    kernel_actor_id: String,
-    lifecycle_tx: mpsc::UnboundedSender<QueueCommand>,
-    output_redactor: Arc<OutputRedactor>,
+    context: StreamCommitterContext,
 ) {
     loop {
         tokio::select! {
@@ -176,23 +180,23 @@ async fn run_stream_committer(
             Some(request) = priority_rx.recv() => {
                 commit_priority_streams(
                     request,
-                    &state,
-                    &blob_store,
-                    &stream_terminals,
-                    &kernel_actor_id,
-                    &lifecycle_tx,
-                    &output_redactor,
+                    &context.state,
+                    &context.blob_store,
+                    &context.stream_terminals,
+                    &context.kernel_actor_id,
+                    &context.lifecycle_tx,
+                    &context.output_redactor,
                 ).await;
             }
 
             Some(flush) = periodic_rx.recv() => {
                 commit_periodic_stream(
                     flush,
-                    &state,
-                    &blob_store,
-                    &stream_terminals,
-                    &kernel_actor_id,
-                    &output_redactor,
+                    &context.state,
+                    &context.blob_store,
+                    &context.stream_terminals,
+                    &context.kernel_actor_id,
+                    &context.output_redactor,
                 ).await;
             }
 
@@ -212,18 +216,17 @@ pub(crate) fn start_stream_committer(
     let (periodic_tx, periodic_rx) = mpsc::channel(STREAM_COMMITTER_QUEUE_CAPACITY);
     let (priority_tx, priority_rx) = mpsc::unbounded_channel();
     let panic_lifecycle_tx = lifecycle_tx.clone();
+    let context = StreamCommitterContext {
+        state,
+        blob_store,
+        stream_terminals,
+        kernel_actor_id,
+        lifecycle_tx: lifecycle_tx.clone(),
+        output_redactor,
+    };
     spawn_supervised(
         "stream-committer",
-        run_stream_committer(
-            periodic_rx,
-            priority_rx,
-            state,
-            blob_store,
-            stream_terminals,
-            kernel_actor_id,
-            lifecycle_tx.clone(),
-            output_redactor,
-        ),
+        run_stream_committer(periodic_rx, priority_rx, context),
         move |_| {
             let _ = panic_lifecycle_tx.send(QueueCommand::KernelDied);
         },
@@ -268,21 +271,20 @@ pub(crate) async fn commit_stream_flush(
         "text": rendered_text,
     });
 
-    let manifest =
-        match output_store::create_manifest_with_redactor(
-            &nbformat_value,
-            blob_store,
-            DEFAULT_INLINE_THRESHOLD,
-            output_redactor,
-        )
-        .await
-        {
-            Ok(manifest) => manifest,
-            Err(e) => {
-                warn!("[stream-committer] Failed to create stream manifest: {}", e);
-                return;
-            }
-        };
+    let manifest = match output_store::create_manifest_with_redactor(
+        &nbformat_value,
+        blob_store,
+        DEFAULT_INLINE_THRESHOLD,
+        output_redactor,
+    )
+    .await
+    {
+        Ok(manifest) => manifest,
+        Err(e) => {
+            warn!("[stream-committer] Failed to create stream manifest: {}", e);
+            return;
+        }
+    };
     let manifest_json = manifest.to_json();
 
     let blob_hash = if let OutputManifest::Stream { ref text, .. } = manifest {

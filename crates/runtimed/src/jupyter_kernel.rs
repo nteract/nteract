@@ -32,12 +32,12 @@ use crate::async_outcome::{
     await_result_with_timeout, recv_oneshot_with_timeout, TimedOneShot, TimedResult,
 };
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
-use crate::output_redaction::OutputRedactor;
 use crate::output_prep::{
     blob_store_large_state_values, escape_glob_pattern, extract_buffer_paths,
     media_to_display_data, message_content_to_nbformat, queue_command_channels,
     store_widget_buffers, QueueCommand, QueueCommandReceivers,
 };
+use crate::output_redaction::OutputRedactor;
 use crate::output_store::{self, OutputManifest, DEFAULT_INLINE_THRESHOLD};
 use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast};
 use crate::stream_flush::StreamFlushBuffer;
@@ -1699,25 +1699,26 @@ impl KernelConnection for JupyterKernel {
                                                 &blob_store,
                                             )
                                             .await;
-                                            let manifest_json = match output_store::create_manifest_with_redactor(
-                                                &nbformat_value,
-                                                &blob_store,
-                                                DEFAULT_INLINE_THRESHOLD,
-                                                &iopub_output_redactor,
-                                            )
-                                            .await
-                                            {
-                                                Ok(manifest) => manifest.to_json(),
-                                                Err(e) => {
-                                                    warn!(
+                                            let manifest_json =
+                                                match output_store::create_manifest_with_redactor(
+                                                    &nbformat_value,
+                                                    &blob_store,
+                                                    DEFAULT_INLINE_THRESHOLD,
+                                                    &iopub_output_redactor,
+                                                )
+                                                .await
+                                                {
+                                                    Ok(manifest) => manifest.to_json(),
+                                                    Err(e) => {
+                                                        warn!(
                                                         "[jupyter-kernel] Failed to create manifest: {}",
                                                         e
                                                     );
-                                                    let redacted = iopub_output_redactor
-                                                        .redact_output_value(&nbformat_value);
-                                                    crate::notebook_sync_server::fallback_output_with_id(&redacted)
-                                                }
-                                            };
+                                                        let redacted = iopub_output_redactor
+                                                            .redact_output_value(&nbformat_value);
+                                                        crate::notebook_sync_server::fallback_output_with_id(&redacted)
+                                                    }
+                                                };
 
                                             if let Err(e) = state_for_iopub
                                                 .transact_at_current_heads(
@@ -1903,25 +1904,26 @@ impl KernelConnection for JupyterKernel {
                                         if let Some(nbformat_value) =
                                             message_content_to_nbformat(&message.content)
                                         {
-                                            let manifest_json = match output_store::create_manifest_with_redactor(
-                                                &nbformat_value,
-                                                &blob_store,
-                                                DEFAULT_INLINE_THRESHOLD,
-                                                &iopub_output_redactor,
-                                            )
-                                            .await
-                                            {
-                                                Ok(manifest) => manifest.to_json(),
-                                                Err(e) => {
-                                                    warn!(
+                                            let manifest_json =
+                                                match output_store::create_manifest_with_redactor(
+                                                    &nbformat_value,
+                                                    &blob_store,
+                                                    DEFAULT_INLINE_THRESHOLD,
+                                                    &iopub_output_redactor,
+                                                )
+                                                .await
+                                                {
+                                                    Ok(manifest) => manifest.to_json(),
+                                                    Err(e) => {
+                                                        warn!(
                                                         "[jupyter-kernel] Failed to create error manifest: {}",
                                                         e
                                                     );
-                                                    let redacted = iopub_output_redactor
-                                                        .redact_output_value(&nbformat_value);
-                                                    crate::notebook_sync_server::fallback_output_with_id(&redacted)
-                                                }
-                                            };
+                                                        let redacted = iopub_output_redactor
+                                                            .redact_output_value(&nbformat_value);
+                                                        crate::notebook_sync_server::fallback_output_with_id(&redacted)
+                                                    }
+                                                };
 
                                             if let Err(e) = state_for_iopub
                                                 .transact_at_current_heads(

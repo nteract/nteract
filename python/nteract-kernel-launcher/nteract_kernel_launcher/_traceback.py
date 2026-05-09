@@ -130,8 +130,10 @@ def _eligible_env_values() -> list[str]:
     for key, raw in os.environ.items():
         if _is_known_non_secret_env_key(key):
             continue
-        value = raw.strip()
+        value = raw
         if len(value) < _MIN_REDACTION_VALUE_LEN:
+            continue
+        if value.strip() != value:
             continue
         if value.lower() in _COMMON_ENV_VALUES:
             continue
