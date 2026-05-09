@@ -72,6 +72,19 @@ describe("generateFrameHtml", () => {
     expect(html).toContain("passive: false");
   });
 
+  it("keeps the iframe bootstrap script parseable", () => {
+    const script = html.match(/<script>([\s\S]*)<\/script>/)?.[1];
+
+    expect(script).toBeDefined();
+    expect(() => new Function(script ?? "")).not.toThrow();
+  });
+
+  it("renders text/plain without the obsolete ANSI fallback", () => {
+    expect(html).toContain("pre.textContent = String(data)");
+    expect(html).not.toContain("parseAnsi");
+    expect(html).not.toContain("pre.innerHTML = parseAnsi");
+  });
+
   describe("neutral defaults", () => {
     it("bakes neutral dark defaults before theme sync arrives", () => {
       expect(html).toContain("--bg-primary: transparent");
