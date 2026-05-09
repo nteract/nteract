@@ -52,6 +52,22 @@ const HF_DATASETS: DatasetEntry[] = [
     path: "mstz/heart_failure",
   },
   { id: "titanic", label: "Titanic", source: "huggingface", path: "phihung/titanic" },
+  {
+    id: "cifar10",
+    label: "CIFAR-10",
+    source: "huggingface",
+    path: "uoft-cs/cifar10",
+    config: "plain_text",
+    split: "test",
+  },
+  {
+    id: "mathnet",
+    label: "MathNet",
+    source: "huggingface",
+    path: "ShadenA/MathNet",
+    config: "all",
+    split: "train",
+  },
 ];
 
 async function resolveParquetUrl(
@@ -82,7 +98,7 @@ async function downloadDataset(entry: DatasetEntry) {
   }
 
   console.log(`  downloading ${entry.id} (${entry.path})...`);
-  const url = await resolveParquetUrl(entry.path, entry.config);
+  const url = await resolveParquetUrl(entry.path, entry.config, entry.split);
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`Failed to fetch: ${resp.status}`);
   const bytes = new Uint8Array(await resp.arrayBuffer());

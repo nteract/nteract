@@ -24,7 +24,13 @@ type PredicateModule = {
   load_ipc(ipc_bytes: Uint8Array): number;
   load_parquet(parquet_bytes: Uint8Array): number;
   parquet_metadata(parquet_bytes: Uint8Array): Uint32Array;
-  parquet_schema_metadata(parquet_bytes: Uint8Array): Record<string, string>;
+  /**
+   * Returns parquet file-level KV metadata as a `Map`, not a plain object —
+   * `serde_wasm_bindgen` defaults to `Map` for Rust `HashMap`. Callers must
+   * use `.get(key)` or coerce via `Object.fromEntries(...)` before any
+   * record-style access.
+   */
+  parquet_schema_metadata(parquet_bytes: Uint8Array): Map<string, string>;
   load_parquet_row_group(parquet_bytes: Uint8Array, row_group: number, handle: number): number;
   cast_column(handle: number, col: number, target_type: string): void;
   has_original_column(handle: number, col: number): boolean;
@@ -37,6 +43,19 @@ type PredicateModule = {
   col_timezone(handle: number, col: number): string | null;
   get_cell_string(handle: number, row: number, col: number): string;
   get_cell_f64(handle: number, row: number, col: number): number;
+  get_cell_bytes(handle: number, row: number, col: number): Uint8Array;
+  /**
+   * Number of images in a cell. `1` for HF `Image` (`Struct{bytes,path}`),
+   * `len` for HF `List<Image>`, `0` for null/non-image cells. Pair with
+   * `get_cell_image_bytes_at` to lay out a thumbnail strip.
+   */
+  get_cell_image_count(handle: number, row: number, col: number): number;
+  /**
+   * Bytes for the `idx`-th image in a cell. For `Image` only `idx === 0` is
+   * valid; for `List<Image>` use `0..count - 1`. Empty Uint8Array means
+   * "no image at this position" (out of range, null, or wrong shape).
+   */
+  get_cell_image_bytes_at(handle: number, row: number, col: number, idx: number): Uint8Array;
   is_null(handle: number, row: number, col: number): boolean;
   store_viewport_cells(handle: number, rows: Uint32Array): ViewportCells;
   // Store-based summaries (operates on handle, iterates in Rust)

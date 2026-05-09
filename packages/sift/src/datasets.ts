@@ -108,4 +108,28 @@ export const DATASETS: DatasetEntry[] = [
     path: "phihung/titanic",
     rows: "891",
   },
+  {
+    id: "cifar10",
+    label: "CIFAR-10 (image fingerprint demo)",
+    description:
+      "10k 32x32 RGB images + ClassLabel - exercises the HF Image feature path; the img column should render thumbnails inline",
+    source: "huggingface",
+    // Renamed on HF in 2025; the bare `cifar10` slug now returns
+    // {"error":"The dataset has been renamed."} from datasets-server.
+    path: "uoft-cs/cifar10",
+    config: "plain_text",
+    split: "test",
+    rows: "10,000",
+  },
+  {
+    id: "mathnet",
+    label: "MathNet (math problems with images)",
+    description:
+      "First shard of ShadenA/MathNet — competition math problems with markdown bodies, multilingual countries/languages, and optional List<Image> diagrams. Wide-text rows + nested image lists.",
+    source: "huggingface",
+    path: "ShadenA/MathNet",
+    config: "all",
+    split: "train",
+    rows: "~5,300 (one shard of 56)",
+  },
 ];

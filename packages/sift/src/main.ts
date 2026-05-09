@@ -294,8 +294,17 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
           if (cancelled) return;
           try {
             const localResp = await fetch(localUrl);
+            // SPA hosts (Cloudflare Pages, Vercel) return the `index.html`
+            // shell with `200 OK + text/html` for any unknown path. Vite
+            // dev serves cached parquets with no Content-Type at all.
+            // Both succeed `localResp.ok`, so the right test is "is this
+            // actually a binary body?" — i.e. not text. Reject HTML/text;
+            // accept everything else.
             const ct = localResp.headers.get("content-type") ?? "";
-            if (localResp.ok && ct.includes("octet-stream")) resp = localResp;
+            const isText = ct.startsWith("text/") || ct.includes("html");
+            if (localResp.ok && !isText) {
+              resp = localResp;
+            }
           } catch {
             /* local cache miss, fall back to HF */
           }
@@ -303,7 +312,11 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
           if (!resp) {
             if (cancelled) return;
             renderLoadingSkeleton(tableRoot, "Resolving dataset…");
-            const url = await resolveHuggingFaceParquetUrl(dataset.path, dataset.config);
+            const url = await resolveHuggingFaceParquetUrl(
+              dataset.path,
+              dataset.config,
+              dataset.split,
+            );
             if (cancelled) return;
             renderLoadingSkeleton(tableRoot, "Downloading Parquet…");
             resp = await fetch(url);
@@ -325,9 +338,20 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
           const totalRows = meta[1];
 
           // Read schema metadata for pandas index_columns and HuggingFace feature types
+          // `parquet_schema_metadata` is a Rust `HashMap` returned via
+          // `serde_wasm_bindgen`, which lands in JS as a `Map<string,string>` —
+          // NOT a plain object. Reading it via property access (the previous
+          // code) silently returned undefined for every key, leaving HF
+          // ClassLabel/Image detection dead. Coerce through `Object.fromEntries`
+          // so the rest of this function can keep doing record-style access.
           let schemaMetadata: Record<string, string> = {};
           try {
-            schemaMetadata = mod.parquet_schema_metadata(parquetBytes) as Record<string, string>;
+            const raw = mod.parquet_schema_metadata(parquetBytes) as unknown;
+            if (raw instanceof Map) {
+              schemaMetadata = Object.fromEntries(raw as Map<string, string>);
+            } else if (raw && typeof raw === "object") {
+              schemaMetadata = raw as Record<string, string>;
+            }
           } catch {
             /* metadata extraction is best-effort */
           }
@@ -383,6 +407,23 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
               col.columnType = "categorical";
               col.numeric = false;
             }
+            // HF Image -> thumbnail. List<Image> / Sequence<Image> -> a strip
+            // of thumbs, sized wider so multiple fit. Both share the same
+            // wasm-side getter (`get_cell_image_count` + `_at`).
+            const inner =
+              hfFeature?._type === "Image"
+                ? hfFeature
+                : hfFeature?._type === "List" || hfFeature?._type === "Sequence"
+                  ? (hfFeature as { feature?: { _type?: string } }).feature
+                  : undefined;
+            if (inner?._type === "Image") {
+              col.columnType = "image";
+              col.numeric = false;
+              col.sortable = false;
+              const isList = hfFeature?._type !== "Image";
+              const minWidth = isList ? 320 : 140;
+              if (col.width < minWidth) col.width = minWidth;
+            }
           }
 
           // Compute initial summaries from first row group
@@ -433,6 +474,10 @@ function updateWasmSummaries(
   tableData.rowCount = numRows;
   tableData.columnSummaries = columns.map((col, c) => {
     switch (col.columnType) {
+      // No header chart for image columns yet — show the column without a
+      // sparkline summary. Future: thumbnail strip or null/total count.
+      case "image":
+        return null;
       case "categorical": {
         const counts = mod.store_value_counts(handle, c) as {
           label: string;

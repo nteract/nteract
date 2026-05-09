@@ -738,6 +738,42 @@ h1 {
   align-items: center;
 }
 
+.sift-cell-image {
+  display: flex;
+  /* Top-anchor so images stay discoverable in tall rows driven by long
+     adjacent text columns (e.g. MathNet's PROBLEM_MARKDOWN) instead of
+     drifting to the vertical centre of a 1000+ px row. */
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 4px;
+  padding: 2px;
+  overflow: hidden;
+  flex-wrap: wrap;
+}
+
+.sift-cell-image-thumb {
+  max-height: 64px;
+  max-width: 100%;
+  height: auto;
+  width: auto;
+  object-fit: contain;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--sift-muted) 8%, transparent);
+  flex: 0 0 auto;
+}
+
+.sift-cell-image-fallback,
+.sift-cell-image-more {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--sift-muted) 12%, transparent);
+  color: var(--sift-muted);
+  font: 600 11px/1.2 var(--sift-font);
+  flex: 0 0 auto;
+}
+
 /* --- Boolean summary in header --- */
 
 .sift-bool-summary {

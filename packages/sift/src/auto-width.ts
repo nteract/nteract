@@ -30,6 +30,8 @@ export function autoWidth(name: string, colType: ColumnType): number {
       return Math.max(100, Math.ceil(labelW));
     case "categorical":
       return Math.max(120, Math.min(280, Math.ceil(labelW)));
+    case "image":
+      return Math.max(120, Math.ceil(labelW));
   }
 }
 

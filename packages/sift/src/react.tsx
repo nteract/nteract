@@ -150,6 +150,9 @@ function updateWasmSummaries(
   tableData.rowCount = numRows;
   tableData.columnSummaries = columns.map((col, c) => {
     switch (col.columnType) {
+      // No header chart for image columns yet.
+      case "image":
+        return null;
       case "categorical": {
         const counts = mod.store_value_counts(handle, c) as {
           label: string;

@@ -1,6 +1,7 @@
 use arrow::array::{
-    Array, BooleanArray, Float64Array, Int32Array, Int64Array, LargeStringArray, StringArray,
-    UInt32Array, UInt64Array,
+    Array, BinaryArray, BooleanArray, Float64Array, Int32Array, Int64Array, LargeBinaryArray,
+    LargeListArray, LargeStringArray, ListArray, StringArray, StructArray, UInt32Array,
+    UInt64Array,
 };
 use arrow::datatypes::{DataType, TimeUnit};
 use arrow::ipc::reader::StreamReader;
@@ -455,6 +456,173 @@ pub fn get_cell_string(handle: u32, row: usize, col: usize) -> Result<String, Js
         cell_string_for(s, col, column.as_ref(), local_row)
     })
     .map_err(|e| JsValue::from_str(&e))
+}
+
+/// Extract the `bytes` field from a `Struct{bytes, path}` array at `idx`.
+/// Returns an empty vec when the cell is null, the struct lacks a `bytes`
+/// field, or the bytes field is itself null. Shared between the
+/// single-image and list-of-image code paths.
+fn extract_bytes_from_struct(arr: &dyn Array, idx: usize) -> Vec<u8> {
+    let Some(s) = arr.as_any().downcast_ref::<StructArray>() else {
+        return Vec::new();
+    };
+    if cell_is_null(arr, idx) {
+        return Vec::new();
+    }
+    let Some(bytes_col) = s.column_by_name("bytes") else {
+        return Vec::new();
+    };
+    if cell_is_null(bytes_col.as_ref(), idx) {
+        return Vec::new();
+    }
+    match bytes_col.data_type() {
+        DataType::Binary => bytes_col
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .map(|a| a.value(idx).to_vec())
+            .unwrap_or_default(),
+        DataType::LargeBinary => bytes_col
+            .as_any()
+            .downcast_ref::<LargeBinaryArray>()
+            .map(|a| a.value(idx).to_vec())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// Pull the `bytes` field out of a `Struct{bytes, path}` cell. HuggingFace's
+/// Image / Audio / Video / Pdf / Nifti features all share this on-disk shape;
+/// the viewer needs the raw payload to render thumbnails or build a Blob URL.
+/// Returns an empty vec for null cells, out-of-range rows, non-struct columns,
+/// or structs that lack a `bytes` field — callers detect "no image here" by
+/// the empty length.
+fn cell_bytes_for(store: &DataStore, row: usize, col: usize) -> Vec<u8> {
+    let (batch_idx, local_row) = match store.resolve_row(row) {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
+    let column = store.batches[batch_idx].column(col);
+    if cell_is_null(column.as_ref(), local_row) {
+        return Vec::new();
+    }
+    if column.as_any().downcast_ref::<StructArray>().is_none() {
+        return Vec::new();
+    }
+    extract_bytes_from_struct(column.as_ref(), local_row)
+}
+
+/// Number of images in a cell — `1` for a `Struct{bytes,path}`,
+/// `len(list)` for a `List<Struct{bytes,path}>`, `0` for null/OOB/other.
+fn cell_image_count_for(store: &DataStore, row: usize, col: usize) -> usize {
+    let (batch_idx, local_row) = match store.resolve_row(row) {
+        Some(r) => r,
+        None => return 0,
+    };
+    let column = store.batches[batch_idx].column(col);
+    if cell_is_null(column.as_ref(), local_row) {
+        return 0;
+    }
+    match column.data_type() {
+        DataType::Struct(_) => {
+            // HF parquets often leave the struct itself non-null when only
+            // the inner `bytes` field is missing; treat "bytes is null" as
+            // "no image here" so callers don't render a broken Blob.
+            let Some(s) = column.as_any().downcast_ref::<StructArray>() else {
+                return 0;
+            };
+            let Some(bytes_col) = s.column_by_name("bytes") else {
+                return 0;
+            };
+            if cell_is_null(bytes_col.as_ref(), local_row) {
+                0
+            } else {
+                1
+            }
+        }
+        DataType::List(_) => column
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .map(|a| a.value_length(local_row) as usize)
+            .unwrap_or(0),
+        DataType::LargeList(_) => column
+            .as_any()
+            .downcast_ref::<LargeListArray>()
+            .map(|a| a.value_length(local_row) as usize)
+            .unwrap_or(0),
+        _ => 0,
+    }
+}
+
+/// Bytes for the `idx`-th image in a cell. For a struct cell only `idx == 0`
+/// is valid; for a list cell, `idx` indexes into the inner list. Empty vec
+/// when the cell is null/OOB, the column isn't an image shape, or `idx` is
+/// past the cell's image count.
+fn cell_bytes_at_for(store: &DataStore, row: usize, col: usize, idx: usize) -> Vec<u8> {
+    let (batch_idx, local_row) = match store.resolve_row(row) {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
+    let column = store.batches[batch_idx].column(col);
+    if cell_is_null(column.as_ref(), local_row) {
+        return Vec::new();
+    }
+    match column.data_type() {
+        DataType::Struct(_) => {
+            if idx != 0 {
+                return Vec::new();
+            }
+            extract_bytes_from_struct(column.as_ref(), local_row)
+        }
+        DataType::List(_) => {
+            let Some(list) = column.as_any().downcast_ref::<ListArray>() else {
+                return Vec::new();
+            };
+            let inner = list.value(local_row);
+            if idx >= inner.len() {
+                return Vec::new();
+            }
+            extract_bytes_from_struct(inner.as_ref(), idx)
+        }
+        DataType::LargeList(_) => {
+            let Some(list) = column.as_any().downcast_ref::<LargeListArray>() else {
+                return Vec::new();
+            };
+            let inner = list.value(local_row);
+            if idx >= inner.len() {
+                return Vec::new();
+            }
+            extract_bytes_from_struct(inner.as_ref(), idx)
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Get the raw bytes of a `Struct{bytes, path}` cell — HuggingFace's
+/// Image/Audio/Video/Pdf/Nifti shape. See `cell_bytes_for` for semantics.
+#[wasm_bindgen]
+pub fn get_cell_bytes(handle: u32, row: usize, col: usize) -> Result<Vec<u8>, JsValue> {
+    with_store(handle, |s| cell_bytes_for(s, row, col)).map_err(|e| JsValue::from_str(&e))
+}
+
+/// Number of images in a cell. `1` for a single struct, `len` for a list,
+/// `0` otherwise. The renderer pairs this with `get_cell_image_bytes_at`
+/// to lay out a thumbnail strip without one round-trip per probe.
+#[wasm_bindgen]
+pub fn get_cell_image_count(handle: u32, row: usize, col: usize) -> Result<u32, JsValue> {
+    with_store(handle, |s| cell_image_count_for(s, row, col) as u32)
+        .map_err(|e| JsValue::from_str(&e))
+}
+
+/// Bytes for the `idx`-th image in a cell. Works for both `Struct{bytes,path}`
+/// (only `idx == 0`) and `List<Struct{bytes,path}>`. See `cell_bytes_at_for`.
+#[wasm_bindgen]
+pub fn get_cell_image_bytes_at(
+    handle: u32,
+    row: usize,
+    col: usize,
+    idx: usize,
+) -> Result<Vec<u8>, JsValue> {
+    with_store(handle, |s| cell_bytes_at_for(s, row, col, idx)).map_err(|e| JsValue::from_str(&e))
 }
 
 /// Get a cell value as f64. Returns NaN for null or unsupported types.
@@ -1824,8 +1992,8 @@ fn get_string_value(arr: &dyn Array, row: usize) -> String {
 mod tests {
     use super::*;
     use arrow::array::{
-        ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, NullArray, StringArray,
-        StructArray,
+        ArrayRef, BinaryArray, BooleanArray, Float64Array, Int32Array, Int64Array,
+        LargeBinaryArray, NullArray, StringArray, StructArray,
     };
     use arrow::datatypes::{Field, Schema};
     use std::collections::HashMap;
@@ -2100,5 +2268,226 @@ mod tests {
             ""
         );
         assert!(cell_f64_for(store.batches[0].column(0).as_ref(), 1).is_nan());
+    }
+
+    /// HuggingFace's Image / Audio / Video features all serialize as
+    /// `Struct{bytes: Binary, path: String}`. The viewer needs the raw
+    /// `bytes` field to render thumbnails / play audio; `cell_bytes_for`
+    /// is the helper that yields it without materializing the whole
+    /// struct cell.
+    fn image_struct(
+        rows: Vec<Option<&'static [u8]>>,
+        paths: Vec<Option<&'static str>>,
+    ) -> StructArray {
+        let bytes = BinaryArray::from_opt_vec(rows);
+        let path = StringArray::from(paths);
+        StructArray::from(vec![
+            (
+                Arc::new(Field::new("bytes", DataType::Binary, true)),
+                Arc::new(bytes) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("path", DataType::Utf8, true)),
+                Arc::new(path) as ArrayRef,
+            ),
+        ])
+    }
+
+    fn store_with_one_struct_column(arr: StructArray) -> DataStore {
+        let total_rows = arr.len();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "img",
+            arr.data_type().clone(),
+            true,
+        )]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(arr) as ArrayRef]).expect("record batch");
+        DataStore {
+            batches: vec![batch],
+            batch_offsets: vec![0],
+            total_rows,
+            num_cols: 1,
+            col_names: vec!["img".to_string()],
+            col_types: vec!["categorical".to_string()],
+            col_timezones: vec![None],
+            original_columns: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn cell_bytes_returns_struct_bytes_field_for_binary_inner() {
+        let arr = image_struct(
+            vec![Some(b"\x89PNG\r\n\x1a\n"), Some(b"\xff\xd8\xff\xe0")],
+            vec![Some("a.png"), Some("b.jpg")],
+        );
+        let store = store_with_one_struct_column(arr);
+
+        assert_eq!(cell_bytes_for(&store, 0, 0), b"\x89PNG\r\n\x1a\n");
+        assert_eq!(cell_bytes_for(&store, 1, 0), b"\xff\xd8\xff\xe0");
+    }
+
+    #[test]
+    fn cell_bytes_returns_empty_for_null_struct_bytes_field() {
+        let arr = image_struct(vec![None, Some(b"X")], vec![None, Some("ok")]);
+        let store = store_with_one_struct_column(arr);
+
+        assert!(cell_bytes_for(&store, 0, 0).is_empty());
+        assert_eq!(cell_bytes_for(&store, 1, 0), b"X");
+    }
+
+    #[test]
+    fn cell_bytes_returns_empty_for_out_of_range_row() {
+        let arr = image_struct(vec![Some(b"X")], vec![Some("ok")]);
+        let store = store_with_one_struct_column(arr);
+
+        assert!(cell_bytes_for(&store, 5, 0).is_empty());
+    }
+
+    #[test]
+    fn cell_bytes_supports_large_binary_inner() {
+        let bytes = LargeBinaryArray::from_opt_vec(vec![Some(b"\x47\x49\x46\x38".as_ref())]);
+        let path = StringArray::from(vec![Some("c.gif")]);
+        let arr = StructArray::from(vec![
+            (
+                Arc::new(Field::new("bytes", DataType::LargeBinary, true)),
+                Arc::new(bytes) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("path", DataType::Utf8, true)),
+                Arc::new(path) as ArrayRef,
+            ),
+        ]);
+        let store = store_with_one_struct_column(arr);
+
+        assert_eq!(cell_bytes_for(&store, 0, 0), b"\x47\x49\x46\x38");
+    }
+
+    #[test]
+    fn cell_bytes_returns_empty_when_struct_lacks_bytes_field() {
+        let metrics = StructArray::from(vec![
+            (
+                Arc::new(Field::new("clicks", DataType::Int32, false)),
+                Arc::new(Int32Array::from(vec![1])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("ratio", DataType::Float64, false)),
+                Arc::new(Float64Array::from(vec![0.5])) as ArrayRef,
+            ),
+        ]);
+        let store = store_with_one_struct_column(metrics);
+
+        assert!(cell_bytes_for(&store, 0, 0).is_empty());
+    }
+
+    /// HuggingFace's `images: List<Image>` shape (e.g. ShadenA/MathNet) needs
+    /// a per-cell count + per-index byte access so the renderer can lay out a
+    /// row of thumbnails. The list-cell helpers wrap that.
+    fn list_of_image_struct(rows: Vec<Vec<&'static [u8]>>) -> ListArray {
+        use arrow::array::ListBuilder;
+        use arrow::buffer::OffsetBuffer;
+
+        // Build flat children + offsets
+        let mut all_bytes: Vec<Option<&[u8]>> = Vec::new();
+        let mut all_paths: Vec<Option<&str>> = Vec::new();
+        let mut offsets: Vec<i32> = vec![0];
+        let _ = ListBuilder::<arrow::array::StringBuilder>::default;
+
+        for row in &rows {
+            for (i, b) in row.iter().enumerate() {
+                all_bytes.push(Some(b));
+                let _ = i;
+                all_paths.push(Some("p"));
+            }
+            offsets.push(all_bytes.len() as i32);
+        }
+        let bytes_arr = BinaryArray::from_opt_vec(all_bytes);
+        let path_arr = StringArray::from(all_paths);
+        let inner_struct = StructArray::from(vec![
+            (
+                Arc::new(Field::new("bytes", DataType::Binary, true)),
+                Arc::new(bytes_arr) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("path", DataType::Utf8, true)),
+                Arc::new(path_arr) as ArrayRef,
+            ),
+        ]);
+        let inner_field = Arc::new(Field::new("item", inner_struct.data_type().clone(), true));
+        ListArray::new(
+            inner_field,
+            OffsetBuffer::new(offsets.into()),
+            Arc::new(inner_struct) as ArrayRef,
+            None,
+        )
+    }
+
+    fn store_with_one_list_column(arr: ListArray) -> DataStore {
+        let total_rows = arr.len();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "images",
+            arr.data_type().clone(),
+            true,
+        )]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(arr) as ArrayRef]).expect("record batch");
+        DataStore {
+            batches: vec![batch],
+            batch_offsets: vec![0],
+            total_rows,
+            num_cols: 1,
+            col_names: vec!["images".to_string()],
+            col_types: vec!["categorical".to_string()],
+            col_timezones: vec![None],
+            original_columns: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn image_count_is_one_for_struct_cell_and_zero_for_null_or_oob() {
+        let arr = image_struct(vec![Some(b"x"), None], vec![Some("a"), None]);
+        let store = store_with_one_struct_column(arr);
+
+        assert_eq!(cell_image_count_for(&store, 0, 0), 1);
+        assert_eq!(cell_image_count_for(&store, 1, 0), 0, "null cell -> 0");
+        assert_eq!(cell_image_count_for(&store, 99, 0), 0, "oob -> 0");
+    }
+
+    #[test]
+    fn image_count_matches_inner_list_length() {
+        let arr = list_of_image_struct(vec![
+            vec![],
+            vec![b"\x89PNG", b"\xff\xd8\xff", b"\x47\x49\x46\x38"],
+            vec![b"only"],
+        ]);
+        let store = store_with_one_list_column(arr);
+
+        assert_eq!(cell_image_count_for(&store, 0, 0), 0);
+        assert_eq!(cell_image_count_for(&store, 1, 0), 3);
+        assert_eq!(cell_image_count_for(&store, 2, 0), 1);
+    }
+
+    #[test]
+    fn cell_bytes_at_returns_each_image_in_a_list() {
+        let arr = list_of_image_struct(vec![vec![b"\x89PNG", b"\xff\xd8\xff"]]);
+        let store = store_with_one_list_column(arr);
+
+        assert_eq!(cell_bytes_at_for(&store, 0, 0, 0), b"\x89PNG");
+        assert_eq!(cell_bytes_at_for(&store, 0, 0, 1), b"\xff\xd8\xff");
+        assert!(
+            cell_bytes_at_for(&store, 0, 0, 2).is_empty(),
+            "out-of-range idx -> empty"
+        );
+    }
+
+    #[test]
+    fn cell_bytes_at_for_struct_cell_only_accepts_idx_zero() {
+        let arr = image_struct(vec![Some(b"X")], vec![Some("a")]);
+        let store = store_with_one_struct_column(arr);
+
+        assert_eq!(cell_bytes_at_for(&store, 0, 0, 0), b"X");
+        assert!(
+            cell_bytes_at_for(&store, 0, 0, 1).is_empty(),
+            "struct cell has no idx > 0"
+        );
     }
 }
