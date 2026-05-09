@@ -255,7 +255,7 @@ describe("CodeCell output focus", () => {
 
     expect(getByTestId("output").getAttribute("data-use-output-well")).toBe("false");
     expect(queryByLabelText("Output mode")).toBeNull();
-    expect(queryByTitle("Hide outputs")).toBeNull();
+    expect(queryByTitle("Hide outputs")).toBeTruthy();
   });
 
   it("keeps output chrome for rich output", () => {
