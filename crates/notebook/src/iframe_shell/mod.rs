@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use tauri::http::{header, HeaderValue, Request, Response, StatusCode};
 
-pub const FRAME_HTML: &str = include_str!("frame.html");
+pub const FRAME_HTML: &str = include_str!("../../../../src/components/isolated/frame.html");
 pub const FRAME_SCHEME: &str = "nteract-frame";
 
 pub const FRAME_CSP: &str = "default-src 'self' blob: data:; \

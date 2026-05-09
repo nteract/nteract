@@ -42,7 +42,7 @@ child-src   'none';
 
 `http://127.0.0.1:*` in `script-src`/`style-src` is deliberate: anywidget ESM (`_esm`) and CSS (`_css`) are served from the daemon's blob-store HTTP server on a dynamic localhost port. Without that entry the browser rejects `import()` of blob-served JS with a MIME-type violation. It's safe because the sandbox still lacks `allow-same-origin`, and the blob server is read-only and content-addressed. `https:` covers CDN-hosted widget assets (anywidget ESM from unpkg/jsdelivr).
 
-Canonical files: `crates/notebook/src/iframe_shell/frame.html` and `src/components/isolated/frame-html.ts` → `generateFrameHtml()`. The Rust parity test keeps them byte-equal.
+Canonical file: `src/components/isolated/frame.html`. Rust embeds that file with `include_str!()` for the Tauri scheme response; TypeScript imports the same file as raw text for `generateFrameHtml()` / browser `srcDoc`.
 
 The scheme handler is registered in both packaged and Tauri dev shells. Plain browser-only `pnpm dev` still uses `srcDoc`, but `cargo xtask notebook` / Tauri dev can load `nteract-frame://localhost/`.
 
@@ -80,7 +80,8 @@ The iframe's message handler rejects anything whose `event.source !== window.par
 | `jsonrpc-transport.ts` | `src/components/isolated/jsonrpc-transport.ts` | JSON-RPC 2.0 transport over `postMessage` |
 | `rpc-methods.ts` | `src/components/isolated/rpc-methods.ts` | Shared widget-bridge method constants |
 | `WidgetBridgeClient` | `src/isolated-renderer/widget-bridge-client.ts` | Iframe-side widget bridge (`createWidgetBridgeClient`) |
-| `frame-html.ts` | `src/components/isolated/frame-html.ts` | Bootstrap HTML generator |
+| `frame.html` | `src/components/isolated/frame.html` | Bootstrap HTML served by Tauri and mounted by browser dev |
+| `frame-html.ts` | `src/components/isolated/frame-html.ts` | Raw HTML import and `generateFrameHtml()` wrapper |
 | `frame-bridge.ts` | `src/components/isolated/frame-bridge.ts` | Legacy frame-message types and guards |
 
 The core renderer bundle is built inline by `apps/notebook/vite-plugin-isolated-renderer.ts` and supplied through `IsolatedRendererProvider` (read via `useIsolatedRenderer()`). No HTTP fetch, no separate build step.
@@ -194,7 +195,7 @@ JSON-RPC widget methods:
 Review these carefully on every change:
 
 1. **Sandbox configuration** — `isolated-frame.tsx` / `SANDBOX_ATTRS`.
-2. **Source validation** — `frame-html.ts` / `event.source !== window.parent`.
+2. **Source validation** — `frame.html` / `event.source !== window.parent`.
 3. **Custom message forwarding** — `comm-bridge-manager.ts` / `subscribeToModelCustomMessages` (required for anywidgets like quak).
 4. **Type-guard whitelist** — `frame-bridge.ts` / `isIframeMessage` for legacy frame-bridge types; JSON-RPC methods live in `rpc-methods.ts`.
 
