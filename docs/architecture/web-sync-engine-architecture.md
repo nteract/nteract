@@ -45,28 +45,73 @@ or the exact sync-engine ABI needed to interpret daemon frames.
 
 ## Current Architecture Findings
 
-- The daemon accepts notebook connections whose preamble version is in
-  `MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION`, and v4 is current.
-- `ProtocolCapabilities` and `NotebookConnectionInfo` carry `protocol`,
-  `protocol_version`, and `daemon_version`, but no document compatibility data.
-- `SessionControlMessage::SyncStatus` has phases for notebook doc, runtime
-  state, and initial load, but no terminal compatibility error.
-- The browser dev host already uses a small TS relay layer over WebSocket and
-  forwards typed daemon frames unchanged.
+- Protocol constants live in `crates/notebook-protocol/src/connection/handshake.rs`
+  and `crates/notebook-wire/src/lib.rs`. `PROTOCOL_VERSION` is 4 and
+  `MIN_PROTOCOL_VERSION` is also 4 today, so the preamble check accepts v4 only.
+  Any wider window has to be reintroduced when we want to broaden the gate.
+- `ProtocolCapabilities` and `NotebookConnectionInfo`
+  (`crates/notebook-protocol/src/connection/handshake.rs:110-155`) carry
+  `protocol`, `protocol_version`, and `daemon_version`. They do not carry
+  document compatibility data, sync-engine package metadata, or feature flags.
+- `SessionControlMessage::SyncStatus`
+  (`crates/notebook-wire/src/lib.rs:159-169`) wraps `SessionSyncStatusWire` with
+  three phases:
+  - `NotebookDocPhaseWire`: `Pending`, `Syncing`, `Interactive`
+  - `RuntimeStatePhaseWire`: `Pending`, `Syncing`, `Ready`
+  - `InitialLoadPhaseWire`: `NotNeeded`, `Streaming`, `Ready`, `Failed { reason }`
+  `InitialLoadPhase::Failed` already exists for the initial-load bytes path. It
+  is not the right channel for a coarse compatibility-gate failure that has to
+  surface before any phase runs.
+- The browser dev host (`packages/notebook-host/src/browser/index.ts`) is a
+  small TS relay layer over WebSocket. It owns the daemon Unix-socket
+  connection and forwards typed daemon frames unchanged. Request/response frames
+  use the existing `FRAME_TYPE_REQUEST` / `FRAME_TYPE_RESPONSE` envelopes;
+  non-response frames are delivered to subscribers as raw typed frames.
+- `SessionControlMessage` decoding currently happens inside
+  `crates/runtimed-wasm/src/lib.rs:1787-1801` after `SyncEngine` passes frames
+  through `handle.receive_frame(...)`. That is fine for status updates after the
+  engine is loaded, but it is too late for compatibility failures that decide
+  whether an engine can be loaded at all.
 - The app imports `runtimed-wasm` directly from
-  `apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm.js`, and
-  `useAutomergeNotebook` creates `NotebookHandle` directly.
+  `apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm.js` in nine places, not
+  just `useAutomergeNotebook`. Other importers include `frame-pipeline.ts`,
+  `materialize-cells.ts`, `useCrdtBridge.tsx`, `usePresence.ts`,
+  `project-runtime-stores.ts`, `crdt-editor-bridge.ts`, and
+  `notebook-metadata.ts`. Phase 2's host abstraction has to span this surface,
+  not just the `NotebookHandle` constructor in
+  `apps/notebook/src/hooks/useAutomergeNotebook.ts:100`.
 - `PoolDoc` is different from notebook/runtime-state today: the daemon
-  scaffolds it with actor `runtimed:pool`, while clients start empty and only
-  receive daemon-authored sync. It still needs schema compatibility metadata,
-  but it does not currently need a shared frozen genesis artifact.
-- `packages/runtimed` already defines a narrow `SyncableHandle` interface used
-  by `SyncEngine`; that is the right seam for a hosted or dynamically loaded
-  sync engine.
+  scaffolds it with actor `runtimed:pool` in
+  `crates/notebook-doc/src/pool_state.rs:84-93`, while clients call
+  `PoolDoc::new_empty()` and only receive daemon-authored sync. It still needs
+  schema compatibility metadata, but it does not currently need a shared
+  frozen genesis artifact.
+- `packages/runtimed/src/handle.ts:86-172` defines `SyncableHandle` with about
+  fourteen methods, covering per-stream `flush_*` / `cancel_last_*_flush` /
+  `generate_*_sync_reply` for notebook, runtime-state, and pool-state, plus
+  `receive_frame`, `reset_sync_state`, `cell_count`, `get_heads_hex`,
+  `get_dependency_fingerprint`, and an optional `resolve_comm_state`. The
+  interface is the right seam for a hosted or dynamically loaded sync engine,
+  but the ABI it implies is wide. Treat ABI version bumps as expected when any
+  of these signatures shift.
 - Renderer plugins already prove the repo has build machinery for producing
   prebuilt JS assets, but those plugins run inside isolated renderer frames.
   The sync engine is more privileged because it owns document mutations and
   runtime-state interpretation.
+- The daemon already has the asset-serving discipline Phase 4 needs.
+  `crates/runtimed/src/blob_server.rs` serves `/blob/{hash}` content-addressed
+  blobs as `public, max-age=31536000, immutable` (line 178), dev filesystem
+  plugin files as `no-store` (line 261), and embedded plugin assets with a
+  bounded cache (`public, max-age=86400`, line 309). New sync-engine routes
+  should live alongside these and mirror the per-route cache policy.
+- There are no manifest endpoints, compatibility-check handlers, or
+  sync-engine asset routes in the daemon today. The blob server currently
+  exposes only `/blob/{hash}`, `/plugins/{name}`, and `/health`. Phase 4 is
+  greenfield.
+- `cargo xtask wasm runtimed` exists in `crates/xtask/src/main.rs` and emits
+  wasm-pack JS bindings into `apps/notebook/src/wasm/runtimed-wasm/`. It does
+  not currently emit a manifest. Adding manifest emission is a Phase 4 task,
+  not a discovery.
 
 ## Iframe and Asset Constraints
 
@@ -194,6 +239,13 @@ digest check with `crypto.subtle.digest`.
 The safest deployable boundary is a dedicated worker with a stable outer API.
 The main UI should not import daemon-served JS directly into the app realm.
 
+Compatibility-gate errors must be decodable by the stable TypeScript shell
+before any `runtimed-wasm` worker is selected. `SessionControlMessage` can carry
+the daemon-authored error shape, but the bootstrap layer should parse that JSON
+from the `SESSION_CONTROL` frame or manifest response directly. Do not rely on
+`NotebookHandle.receive_frame(...)` for the first compatibility failure; an
+engine that cannot be loaded cannot decode its own rejection.
+
 The worker API should be deliberately small:
 
 ```ts
@@ -309,29 +361,50 @@ initial notebook load failures.
 ### Phase 0: Document and Enforce Manifests
 
 - Add compile-time constants for document schema versions and genesis hashes in
-  `notebook-doc` and `runtime-doc`; add an explicit pool-state schema version
-  without implying a frozen pool genesis artifact.
-- Extend `ProtocolCapabilities` and `NotebookConnectionInfo` with optional
+  `crates/notebook-doc` and `crates/runtime-doc` next to the existing genesis
+  assets. Add an explicit pool-state schema version without implying a frozen
+  pool genesis artifact.
+- Extend `ProtocolCapabilities` and `NotebookConnectionInfo` in
+  `crates/notebook-protocol/src/connection/handshake.rs` with optional
   `document_compatibility` and `sync_engine` fields.
-- Keep fields optional initially so current clients remain source-compatible.
-- Add tests that assert manifest hashes match the checked-in `.am` artifacts.
+- Keep the new fields optional so current clients remain source-compatible
+  during the rollout. The wire-version gate (`PROTOCOL_VERSION = 4`,
+  `MIN_PROTOCOL_VERSION = 4`) does not need to move for additive metadata.
+- Add tests that assert manifest hashes match the checked-in `.am` artifacts at
+  `crates/notebook-doc/assets/notebook_genesis_v4.am` and
+  `crates/runtime-doc/assets/runtime_state_genesis_v1.am`.
 
 ### Phase 1: Typed Compatibility Failures
 
-- Add `SessionControlMessage::CompatibilityError`.
+- Add `SessionControlMessage::CompatibilityError` as a sibling of `SyncStatus`.
+  Keep this distinct from `InitialLoadPhaseWire::Failed`: the latter is for
+  failures inside the initial-load bytes phase, while compatibility errors
+  must surface before any phase begins.
+- Add the generated TypeScript protocol contract for `CompatibilityError` and
+  route that frame/manifest response through the bootstrap shell before frames
+  are released to the WASM demux.
 - Add a frontend/store path that displays compatibility errors before
   `Initializing`.
-- Teach browser relay and Tauri host to pass the new session-control frame
-  unchanged.
-- Add tests for schema/hash mismatch producing typed failure instead of
+- Teach the browser relay (`packages/notebook-host/src/browser/index.ts`) and
+  the Tauri host to pass the new session-control frame through unchanged.
+- Add tests for schema/hash mismatch producing a typed failure instead of
   runtime-state pending forever.
 
 ### Phase 2: Engine Host Abstraction
 
 - Extract direct `NotebookHandle` creation from `useAutomergeNotebook` behind a
   `NotebookEngineHost` interface.
+- Audit the nine direct importers of
+  `apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm.js` (notebook hook,
+  `frame-pipeline.ts`, `materialize-cells.ts`, `useCrdtBridge.tsx`,
+  `usePresence.ts`, `project-runtime-stores.ts`, `crdt-editor-bridge.ts`,
+  `notebook-metadata.ts`, plus the frame-pipeline test). Decide which routes
+  through the host and which stay as direct types-only imports. Type-only
+  imports do not block worker isolation; runtime calls do.
 - Keep the existing in-bundle WASM as the default implementation.
-- Preserve `SyncableHandle` as the core runtime package seam.
+- Preserve `SyncableHandle` (`packages/runtimed/src/handle.ts`) as the core
+  runtime package seam. Treat its current 14-method shape as the v1 ABI; bump
+  the engine ABI when any signature changes.
 - Add an integration test that runs `SyncEngine` against the host abstraction,
   not the concrete wasm-bindgen class.
 
@@ -346,19 +419,23 @@ initial notebook load failures.
 
 ### Phase 4: Daemon-Served Engine Package
 
-- Extend `cargo xtask wasm runtimed` to emit an engine manifest containing JS
-  and WASM hashes.
-- Add daemon HTTP routes for:
+- Extend `cargo xtask wasm runtimed` (in `crates/xtask/src/main.rs`) to emit an
+  engine manifest containing JS and WASM hashes alongside the existing
+  wasm-pack output under `apps/notebook/src/wasm/runtimed-wasm/`.
+- Add daemon HTTP routes alongside the existing handlers in
+  `crates/runtimed/src/blob_server.rs`:
   - `/sync-engine/manifest.json`
   - `/sync-engine/assets/{package_id}/runtimed_wasm.js`
   - `/sync-engine/assets/{package_id}/runtimed_wasm_bg.wasm`
 - Serve the manifest as mutable metadata: `no-store` in dev, and either
-  `no-store` or short-cache plus `ETag` in production.
+  `no-store` or short-cache plus `ETag` in production. This matches the
+  existing dev-plugin policy at `blob_server.rs:261`.
 - Serve dev worktree engine assets with `no-store`, matching current dev plugin
   behavior.
 - Serve release engine assets with long cache headers only when the route is
-  package-ID/hash scoped. Use `application/wasm` for `.wasm` and keep
-  `X-Content-Type-Options: nosniff`.
+  package-ID/hash scoped, modeled on the `/blob/{hash}` policy at
+  `blob_server.rs:178` (`public, max-age=31536000, immutable`). Use
+  `application/wasm` for `.wasm` and keep `X-Content-Type-Options: nosniff`.
 - Add explicit digest verification before instantiating downloaded assets.
 
 ### Phase 5: Remote Web Deployment
