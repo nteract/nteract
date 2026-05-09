@@ -165,10 +165,15 @@ function makeCell(): CodeCellType {
 
 describe("CodeCell output focus", () => {
   beforeEach(() => {
+    // Plotly rather than parquet: a single-sift cell now hides the
+    // OutputModeStrip (sift owns its own height + click-to-engage), so
+    // the focus-button + output-chrome assertions need a rich output that
+    // still renders the strip. Plotly fits the bill — it's classified as
+    // single-iframe-chart and keeps the strip.
     mockOutputs = [
       {
         output_type: "display_data",
-        data: { "application/vnd.apache.parquet": "blob://df" },
+        data: { "application/vnd.plotly.v1+json": { data: [], layout: {} } },
         metadata: {},
       },
     ];
@@ -273,6 +278,33 @@ describe("CodeCell output focus", () => {
     expect(getByTestId("output").getAttribute("data-use-output-well")).toBe("true");
     expect(getByLabelText("Output mode")).toBeTruthy();
     expect(getByTitle("Hide outputs")).toBeTruthy();
+  });
+
+  it("hides the output mode strip for a single sift table", () => {
+    // Sift cells default to scroll-passthrough + click-to-engage and use
+    // their own corner button for fullscreen, so the three-button strip
+    // would just be chrome noise. Hide-outputs is still available.
+    mockOutputs = [
+      {
+        output_type: "display_data",
+        data: { "application/vnd.apache.parquet": "blob://df" },
+        metadata: {},
+      },
+    ];
+
+    const { queryByLabelText, queryByTitle } = render(
+      <CodeCell
+        cell={makeCell()}
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+        onToggleOutputsHidden={() => {}}
+      />,
+    );
+
+    expect(queryByLabelText("Output mode")).toBeNull();
+    expect(queryByTitle("Hide outputs")).toBeTruthy();
   });
 
   it("hides the expand button while output-focused", () => {

@@ -258,12 +258,19 @@ export const CodeCell = memo(function CodeCell({
   // burying the override path.
   const metadataMode = (cell.metadata?.nteract as { outputMode?: OutputMode } | undefined)
     ?.outputMode;
-  const inferredMode = useMemo(
-    () => inferDefaultOutputMode(classifyOutputShape(outputs as JupyterOutput[])),
-    [outputs],
-  );
+  const outputShape = useMemo(() => classifyOutputShape(outputs as JupyterOutput[]), [outputs]);
+  const inferredMode = useMemo(() => inferDefaultOutputMode(outputShape), [outputShape]);
   const effectiveMode: OutputMode = metadataMode ?? inferredMode;
   const isIframeOutputExpanded = effectiveMode === "expanded";
+
+  // Hide the mode strip on cells where the strip's three modes don't
+  // produce meaningfully different layouts. A pure sift cell renders at
+  // sift's hardcoded 600px (which fits inside compact's 75% vh cap on
+  // every reasonable viewport, so compact and expanded look identical),
+  // and sift's own corner button is the entry point for fullscreen /
+  // focused interaction. Showing three nearly-equivalent buttons there
+  // is just chrome noise.
+  const showOutputModeStrip = outputShape.kind !== "single-table";
 
   // Auto-clear expand/focus when the cell has no visible outputs to
   // operate on. Previously also gated on `!hasIsolatedOutput`, which made
@@ -561,7 +568,7 @@ export const CodeCell = memo(function CodeCell({
         outputRightGutterContent={
           outputs.length > 0 && !isOutputsHidden && (showOutputChrome || onToggleOutputsHidden) ? (
             <>
-              {showOutputChrome && (
+              {showOutputChrome && showOutputModeStrip && (
                 <OutputModeStrip
                   mode={outputFocused ? "focused" : effectiveMode}
                   onChange={(next) => {

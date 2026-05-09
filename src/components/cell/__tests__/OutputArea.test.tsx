@@ -241,12 +241,16 @@ describe("OutputArea iframe theme sync", () => {
     );
   });
 
-  it("keeps parquet iframe outputs on the wheel-boundary path while idle", () => {
+  it("puts parquet iframe outputs on scroll passthrough so the page wheels through sift", () => {
+    // Sift renders interactive tables but iframes-in-a-doc are unwieldy: every
+    // wheel gesture that crosses a 600px sift box would otherwise get trapped.
+    // Sift now joins markdown / HTML / SVG on the click-to-engage path —
+    // pointer-down on the wrapper flips the iframe back into interactive mode.
     const { getByTestId } = render(<OutputArea outputs={makeParquetOutput()} isolated />);
 
-    expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("false");
+    expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("true");
     expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
-      "true",
+      "false",
     );
   });
 

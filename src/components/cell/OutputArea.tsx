@@ -201,7 +201,20 @@ function selectMimeType(
 }
 
 function isScrollPassthroughMimeType(mimeType: string): boolean {
-  return mimeType === "text/markdown" || mimeType === "text/html" || mimeType === "image/svg+xml";
+  // Static document-like outputs (markdown / HTML / SVG) and sift's
+  // interactive tables (parquet / arrow stream) all behave better as
+  // click-to-engage: the page wheels through them by default;
+  // pointer-down on the wrapper hands events back to the iframe so
+  // sift's column drag, sort, and internal scroll work; pointer-out
+  // releases. Without sift on this list the iframe traps every wheel
+  // gesture that crosses its 600px box.
+  return (
+    mimeType === "text/markdown" ||
+    mimeType === "text/html" ||
+    mimeType === "image/svg+xml" ||
+    mimeType === "application/vnd.apache.parquet" ||
+    mimeType === "application/vnd.apache.arrow.stream"
+  );
 }
 
 function outputAllowsScrollPassthrough(

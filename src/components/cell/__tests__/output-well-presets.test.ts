@@ -23,12 +23,12 @@ describe("inferDefaultOutputMode", () => {
     );
   });
 
-  it("single-table (parquet) -> focused", () => {
-    expect(inferDefaultOutputMode({ kind: "single-table", mime: "parquet" })).toBe("focused");
+  it("single-table (parquet) -> compact (sift owns its own height + passthrough)", () => {
+    expect(inferDefaultOutputMode({ kind: "single-table", mime: "parquet" })).toBe("compact");
   });
 
-  it("single-table (arrow) -> focused", () => {
-    expect(inferDefaultOutputMode({ kind: "single-table", mime: "arrow" })).toBe("focused");
+  it("single-table (arrow) -> compact", () => {
+    expect(inferDefaultOutputMode({ kind: "single-table", mime: "arrow" })).toBe("compact");
   });
 
   it("single-image -> compact", () => {
@@ -63,21 +63,21 @@ describe("inferDefaultOutputMode", () => {
     expect(inferDefaultOutputMode({ kind: "mixed" })).toBe("compact");
   });
 
-  it("streams-then-result(table) -> focused (recurses on result)", () => {
+  it("streams-then-result(table) -> expanded (no nested wrapper scrollbar)", () => {
     const shape: OutputShape = {
       kind: "streams-then-result",
       result: { kind: "single-table", mime: "parquet" },
     };
-    expect(inferDefaultOutputMode(shape)).toBe("focused");
+    expect(inferDefaultOutputMode(shape)).toBe("expanded");
   });
 
-  it("streams-then-result(plotly) -> compact", () => {
+  it("streams-then-result(plotly) -> expanded", () => {
     expect(
       inferDefaultOutputMode({
         kind: "streams-then-result",
         result: { kind: "single-iframe-chart", mime: "plotly" },
       }),
-    ).toBe("compact");
+    ).toBe("expanded");
   });
 
   it("streams-then-result(markdown) -> expanded", () => {
@@ -85,6 +85,15 @@ describe("inferDefaultOutputMode", () => {
       inferDefaultOutputMode({
         kind: "streams-then-result",
         result: { kind: "single-rich-text", mime: "markdown" },
+      }),
+    ).toBe("expanded");
+  });
+
+  it("streams-then-result(error) -> expanded", () => {
+    expect(
+      inferDefaultOutputMode({
+        kind: "streams-then-result",
+        result: { kind: "single-error" },
       }),
     ).toBe("expanded");
   });
