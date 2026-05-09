@@ -136,6 +136,17 @@ export type TableEngine = {
   getFilters(): { column: string; filter: ColumnFilter }[];
   /** Get the full explorer state (sort + filters + counts) in a serializable format. */
   getState(): TableEngineState;
+  /**
+   * Currently focused (expanded) data row, or `null` when every row uses the
+   * collapsed text-line cap. Tracked by data row, so focus survives sort
+   * changes; reset on filter changes since the focused row may filter out.
+   */
+  getFocusedDataRow(): number | null;
+  /**
+   * Programmatically focus a data row (expanding its text cells past the
+   * collapsed cap). Pass `null` to collapse everything.
+   */
+  setFocusedDataRow(dataRow: number | null): void;
 };
 
 type SortState = { col: number; dir: "asc" | "desc" } | null;
@@ -148,6 +159,14 @@ const CELL_PAD_H = 24; // 12px each side
 const CELL_PAD_V = 16; // 8px top + 8px bottom
 const IMAGE_THUMB_MAX_HEIGHT = 64; // matches .sift-cell-image-thumb max-height in style.css
 const IMAGE_THUMB_CAP = 6; // max thumbnails rendered per List<Image> cell; rest collapse to "+N"
+// Text cells render at most this many lines unless their row is focused.
+// Modeled after HuggingFace's dataset viewer: long markdown columns clamp by
+// default and the user clicks a row to expand it inline.
+const MAX_COLLAPSED_LINES = 3;
+// Pixel slop for distinguishing "click on a row" (toggle focus) from
+// "drag to select text" (no focus change). Matches the existing tap-vs-scroll
+// thresholds for the mobile detail sheet.
+const FOCUS_TOGGLE_MAX_DRAG_PX = 4;
 const MIN_COL_WIDTH = 60;
 const OVERSCAN = 40; // buffer rows above and below viewport
 
@@ -211,13 +230,21 @@ export function createTable(
     viewIndices = newSorted;
   }
 
-  // Per-cell cache: prepared text + last laid-out width/height
+  // Per-cell cache: prepared text + last laid-out width/height. `lastTruncated`
+  // tracks whether the cell's natural height exceeded the collapsed cap so
+  // renderCell can apply the soft fade affordance without re-running layout.
   type CellCache = {
     prepared: PreparedText;
     lastWidth: number;
     lastHeight: number;
+    lastTruncated: boolean;
   };
   const cellCaches: (CellCache[] | null)[] = [];
+
+  // Data row that the user clicked to expand. Tracked by data row (not view
+  // row) so focus survives sort changes; reset explicitly on filter changes.
+  // `null` means every row uses the collapsed cap.
+  let focusedDataRow: number | null = null;
 
   function prepareCellRow(r: number): CellCache[] {
     const row = Array.from<CellCache>({ length: columns.length });
@@ -226,6 +253,7 @@ export function createTable(
         prepared: prepare(data.getCell(r, c), FONT),
         lastWidth: -1,
         lastHeight: 0,
+        lastTruncated: false,
       };
     }
     return row;
@@ -244,6 +272,8 @@ export function createTable(
     const dataRow = viewIndices[sortedRow];
     const cache = cellCaches[dataRow];
     if (!cache) return LINE_HEIGHT + CELL_PAD_V; // estimate for unprepared rows
+    const isFocused = focusedDataRow === dataRow;
+    const cap = MAX_COLLAPSED_LINES * LINE_HEIGHT;
 
     let maxH = LINE_HEIGHT;
     for (let c = 0; c < columns.length; c++) {
@@ -253,13 +283,26 @@ export function createTable(
         const colType = columns[c].columnType;
         if (colType === "numeric" || colType === "timestamp" || colType === "boolean") {
           cell.lastHeight = LINE_HEIGHT;
+          cell.lastTruncated = false;
         } else if (colType === "image") {
           // Mirrors the thumbnail max-height in style.css (.sift-cell-image-thumb).
-          // Keep this in sync with that CSS value.
+          // Keep this in sync with that CSS value. Image rows don't expand
+          // when focused — they're already terse and the row's text columns
+          // are what the user wants to read.
           cell.lastHeight = IMAGE_THUMB_MAX_HEIGHT;
+          cell.lastTruncated = false;
         } else {
-          const { height } = layout(cell.prepared, cellW, LINE_HEIGHT);
-          cell.lastHeight = height;
+          // Pretext returns lineCount alongside height in 0.0.6, so the
+          // collapsed/expanded decision is free.
+          const { height, lineCount } = layout(cell.prepared, cellW, LINE_HEIGHT);
+          const overflows = lineCount > MAX_COLLAPSED_LINES;
+          if (overflows && !isFocused) {
+            cell.lastHeight = cap;
+            cell.lastTruncated = true;
+          } else {
+            cell.lastHeight = height;
+            cell.lastTruncated = false;
+          }
         }
         cell.lastWidth = cellW;
       }
@@ -268,12 +311,73 @@ export function createTable(
     return maxH + CELL_PAD_V;
   }
 
+  /// Force `computeRowHeight` to re-layout the given data row's text cells —
+  /// width didn't change but the focus-state input did, so the cached height
+  /// would otherwise lie. Numeric/boolean/image cells aren't affected, so
+  /// invalidating only when text exists keeps the recompute cheap.
+  function invalidateRowLayout(dataRow: number) {
+    const cache = cellCaches[dataRow];
+    if (!cache) return;
+    for (let c = 0; c < columns.length; c++) {
+      const colType = columns[c].columnType;
+      if (
+        colType !== "numeric" &&
+        colType !== "timestamp" &&
+        colType !== "boolean" &&
+        colType !== "image"
+      ) {
+        cache[c].lastWidth = -1;
+      }
+    }
+  }
+
   function recomputeAllHeights() {
     for (let i = 0; i < filteredCount; i++) {
       rowHeights[i] = computeRowHeight(i);
     }
     rebuildPositions();
     heightsDirty = false;
+  }
+
+  /// Toggle focus on a data row. Recomputes only the two affected rows'
+  /// heights (the previously focused one collapsing, the new one expanding)
+  /// then `rebuildPositions()` shifts everything below by the delta.
+  /// Pass `null` to clear focus.
+  function setFocusedDataRow(next: number | null) {
+    if (next === focusedDataRow) return;
+    const prev = focusedDataRow;
+    focusedDataRow = next;
+    if (prev !== null) invalidateRowLayout(prev);
+    if (next !== null) invalidateRowLayout(next);
+    // Recompute only the visible-or-affected rows. `rowHeights` is indexed by
+    // sortedRow (view index), so we have to translate from dataRow → viewRow
+    // via viewIndices. Cheap linear scan since viewIndices is filtered/sorted.
+    for (let i = 0; i < filteredCount; i++) {
+      const dr = viewIndices[i];
+      if (dr === prev || dr === next) {
+        rowHeights[i] = computeRowHeight(i);
+      }
+    }
+    rebuildPositions();
+    // Update DOM directly for any pooled row tied to the changed dataRows:
+    // toggle the focused class and re-render cells so the truncation class
+    // tracks the new state. The standard render loop's `if (existing)
+    // continue` short-circuits class updates for rows that didn't get
+    // reassigned, so we have to do it here.
+    for (const pr of pool) {
+      if (pr.assignedRow === -1) continue;
+      const dataRow = viewIndices[pr.assignedRow];
+      if (dataRow !== prev && dataRow !== next) continue;
+      if (focusedDataRow !== null && dataRow === focusedDataRow) {
+        pr.el.classList.add("sift-row-focused");
+      } else {
+        pr.el.classList.remove("sift-row-focused");
+      }
+      for (let c = 0; c < columns.length; c++) {
+        renderCell(pr.cells[c], dataRow, c);
+      }
+    }
+    scheduleRender();
   }
 
   function rebuildPositions() {
@@ -1253,6 +1357,13 @@ export function createTable(
     // Clear previous content
     cellEl.textContent = "";
     cellEl.className = "sift-cell";
+    // Apply the soft-fade affordance when this text cell's natural height
+    // exceeded the collapsed cap. `computeRowHeight` writes `lastTruncated`
+    // alongside `lastHeight` so we don't have to re-run pretext here.
+    const cellCache = cellCaches[dataRow]?.[colIndex];
+    if (cellCache?.lastTruncated) {
+      cellEl.classList.add("sift-cell-truncated");
+    }
 
     // Null values get a distinct badge regardless of column type
     if (raw == null) {
@@ -1463,6 +1574,11 @@ export function createTable(
 
       if (r % 2 === 1) pr.el.classList.add("sift-row-alt");
       else pr.el.classList.remove("sift-row-alt");
+      if (focusedDataRow !== null && dataRow === focusedDataRow) {
+        pr.el.classList.add("sift-row-focused");
+      } else {
+        pr.el.classList.remove("sift-row-focused");
+      }
 
       for (let c = 0; c < columns.length; c++) {
         renderCell(pr.cells[c], dataRow, c);
@@ -1633,6 +1749,48 @@ export function createTable(
       sheet.classList.add("sift-detail-sheet-open");
     });
   }
+
+  // Click detection on rows: toggle inline focus (HF-style row expand) on
+  // desktop / mouse, fall through to the mobile detail-sheet path below for
+  // touch under 768 px. Track pointerdown/up coordinates so dragging to
+  // select text doesn't trip the toggle.
+  let focusDownX = 0;
+  let focusDownY = 0;
+  let focusDownActive = false;
+
+  viewport.addEventListener("pointerdown", (e) => {
+    // Skip the cases owned by the mobile detail-sheet handler below.
+    if (window.innerWidth < 768 && e.pointerType === "touch") return;
+    focusDownX = e.clientX;
+    focusDownY = e.clientY;
+    focusDownActive = true;
+  });
+
+  viewport.addEventListener("pointerup", (e) => {
+    if (!focusDownActive) return;
+    focusDownActive = false;
+    if (window.innerWidth < 768 && e.pointerType === "touch") return;
+    if (e.button !== 0 && e.pointerType === "mouse") return; // left-click only
+    const dx = Math.abs(e.clientX - focusDownX);
+    const dy = Math.abs(e.clientY - focusDownY);
+    if (dx > FOCUS_TOGGLE_MAX_DRAG_PX || dy > FOCUS_TOGGLE_MAX_DRAG_PX) return; // dragged → text selection
+
+    const target = e.target as HTMLElement;
+    // Skip if the click landed on something interactive — the column resize
+    // handle, an image thumb, an inline button, the detail sheet, etc.
+    if (target.closest("button, a, .sift-resize-handle, .sift-cell-image-thumb")) {
+      return;
+    }
+    const rowEl = target.closest(".sift-row") as HTMLDivElement | null;
+    if (!rowEl) return;
+    for (const pr of pool) {
+      if (pr.el === rowEl && pr.assignedRow !== -1) {
+        const dataRow = viewIndices[pr.assignedRow];
+        setFocusedDataRow(focusedDataRow === dataRow ? null : dataRow);
+        break;
+      }
+    }
+  });
 
   // Tap detection on rows: click on narrow viewports opens detail sheet.
   // We use pointerdown/pointerup to distinguish taps from scrolls/long-presses.
@@ -2097,6 +2255,9 @@ export function createTable(
   }
 
   function onFilterChanged() {
+    // Filtering can hide the focused row entirely, leaving the user with no
+    // visual cue for what's still expanded. Reset and let them re-pick.
+    focusedDataRow = null;
     applyFilterAndSort();
     // Fast path: update rows immediately, defer expensive summary recomputation
     updateRowCountDisplay();
@@ -2396,5 +2557,7 @@ export function createTable(
     setSort: setSortByName,
     getFilters,
     getState,
+    getFocusedDataRow: () => focusedDataRow,
+    setFocusedDataRow,
   };
 }
