@@ -9,8 +9,9 @@ comparison.
 
 The Rust enums (``KernelErrorReason``, ``RuntimeLifecycle``) are the
 authoritative API; this module only surfaces the wire strings they
-serialise to. If you're adding a new variant, add it here AND on the
-Rust/TS sides to keep the three languages in lockstep.
+serialise to. Treat this file as a cross-language reference point: if
+you're adding a new variant, add it here AND on the Rust/TS sides to keep
+the three languages in lockstep.
 """
 
 from __future__ import annotations

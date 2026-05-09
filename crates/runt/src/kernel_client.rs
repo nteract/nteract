@@ -42,6 +42,8 @@ fn default_kernel_cwd() -> PathBuf {
     std::env::temp_dir()
 }
 
+/// Owns a launched Jupyter kernel process plus the connection metadata
+/// needed to communicate with it.
 pub struct KernelClient {
     kernel_id: String,
     session_id: String,
