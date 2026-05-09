@@ -9,6 +9,7 @@
  * (plotly alone is 20MB unminified).
  */
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -70,6 +71,14 @@ function resolveWasmGlue(): string {
   const realPath = path.resolve(srcDir, "../crates/sift-wasm/pkg/sift_wasm.js");
   const mockPath = path.resolve(srcDir, "../packages/sift/src/__mocks__/sift-wasm/sift_wasm.js");
   return fs.existsSync(realPath) ? realPath : mockPath;
+}
+
+function siftWasmCacheKey(): string {
+  const wasmPath = path.resolve(srcDir, "../crates/sift-wasm/pkg/sift_wasm_bg.wasm");
+  if (!fs.existsSync(wasmPath)) {
+    return "missing";
+  }
+  return crypto.createHash("sha256").update(fs.readFileSync(wasmPath)).digest("hex").slice(0, 16);
 }
 
 /**
@@ -195,6 +204,7 @@ export async function buildRendererPlugin(
       sourcemap: false,
     },
     define: {
+      __SIFT_WASM_CACHE_KEY__: JSON.stringify(siftWasmCacheKey()),
       "process.env.NODE_ENV": JSON.stringify("production"),
     },
     logLevel: "warn",

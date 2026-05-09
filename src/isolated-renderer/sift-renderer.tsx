@@ -12,6 +12,8 @@
 import { setWasmUrl, SiftTable } from "@nteract/sift";
 import "@nteract/sift/style.css";
 
+declare const __SIFT_WASM_CACHE_KEY__: string | undefined;
+
 // --- Types ---
 
 interface RendererProps {
@@ -24,6 +26,9 @@ interface RendererProps {
 
 let wasmConfigured = false;
 
+const SIFT_WASM_CACHE_KEY =
+  typeof __SIFT_WASM_CACHE_KEY__ === "string" ? __SIFT_WASM_CACHE_KEY__ : "dev";
+
 /**
  * Extract the blob server origin from a blob URL and configure WASM
  * to load from the same server's /plugins/ route.
@@ -32,9 +37,11 @@ function configureWasm(blobUrl: string): void {
   if (wasmConfigured) return;
   try {
     const parsed = new URL(blobUrl);
-    const wasmUrl = `${parsed.protocol}//${parsed.host}/plugins/sift_wasm.wasm`;
-    console.debug("[sift-renderer] setWasmUrl:", wasmUrl);
-    setWasmUrl(wasmUrl);
+    const wasmUrl = new URL("/plugins/sift_wasm.wasm", parsed.origin);
+    wasmUrl.searchParams.set("v", SIFT_WASM_CACHE_KEY);
+    const wasmUrlString = wasmUrl.toString();
+    console.debug("[sift-renderer] setWasmUrl:", wasmUrlString);
+    setWasmUrl(wasmUrlString);
     wasmConfigured = true;
   } catch (err) {
     console.warn("[sift-renderer] configureWasm failed, using defaults:", err);
