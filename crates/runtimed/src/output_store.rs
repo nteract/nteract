@@ -78,6 +78,8 @@ use crate::blob_store::BlobStore;
 /// payloads in the same output bundle.
 ///
 /// See `docs/superpowers/specs/2026-04-14-ipynb-save-blob-refs-design.md`.
+/// Order matters: when an output bundle carries multiple whitelisted payloads,
+/// the first match wins the single [`BLOB_REF_MIME`] slot.
 const REF_MIME_SAVE_WHITELIST: &[&str] = &[
     "application/vnd.apache.arrow.stream",
     "application/vnd.apache.parquet",
@@ -1126,15 +1128,13 @@ async fn resolve_data_bundle(
     blob_store: &BlobStore,
 ) -> io::Result<HashMap<String, Value>> {
     let mut result = HashMap::new();
-    let externalize_mime = REF_MIME_SAVE_WHITELIST
+    let externalizable_mimes: Vec<&str> = REF_MIME_SAVE_WHITELIST
         .iter()
         .copied()
-        .find(|mime_type| matches!(data.get(*mime_type), Some(ContentRef::Blob { .. })));
-    let externalizable_count = REF_MIME_SAVE_WHITELIST
-        .iter()
-        .filter(|mime_type| matches!(data.get(**mime_type), Some(ContentRef::Blob { .. })))
-        .count();
-    if externalizable_count > 1 {
+        .filter(|mime_type| matches!(data.get(*mime_type), Some(ContentRef::Blob { .. })))
+        .collect();
+    let externalize_mime = externalizable_mimes.first().copied();
+    if externalizable_mimes.len() > 1 {
         tracing::warn!(
             "[output-store] output bundle has multiple blob-ref table payloads; externalizing {} and base64-inlining the rest",
             externalize_mime.unwrap_or("<none>")
@@ -1146,7 +1146,7 @@ async fn resolve_data_bundle(
         // entry instead of re-inlining them as base64 in the .ipynb.
         // Non-whitelisted MIMEs (images, PDFs, HTML, audio, video) keep
         // the legacy path so vanilla Jupyter renders them unchanged.
-        if Some(mime_type.as_str()) == externalize_mime {
+        if externalize_mime.is_some_and(|selected| selected == mime_type) {
             if let ContentRef::Blob { blob: hash, size } = content_ref {
                 let ref_body = json!({
                     "hash": hash,

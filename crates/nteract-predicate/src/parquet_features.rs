@@ -102,6 +102,8 @@ pub fn parquet_column_hints(
 pub fn arrow_ipc_column_hints(
     ipc_bytes: &[u8],
 ) -> Result<Vec<ParquetColumnHint>, Box<dyn std::error::Error + Send + Sync>> {
+    // This exact-row-count variant walks the full stream. Callers that already
+    // loaded the table should prefer `arrow_ipc_column_hints_with_row_count`.
     let mut reader = StreamReader::try_new(Cursor::new(ipc_bytes), None)?;
     let mut total_rows = 0_u64;
     for batch in &mut reader {

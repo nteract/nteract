@@ -427,6 +427,31 @@ def test_emit_pyarrow_record_batch_promotes_to_table():
     assert BLOB_REF_MIME in bundle
 
 
+def test_emit_table_bytes_carries_sampled_row_hints():
+    from nteract_kernel_launcher import _bootstrap, _buffer_hook
+    from nteract_kernel_launcher._refs import BLOB_REF_MIME
+
+    _buffer_hook.pending_buffers().clear()
+
+    bundle = _bootstrap._emit_table_bytes(
+        b"sampled-table-bytes",
+        content_type="application/vnd.apache.arrow.stream",
+        total_rows=10,
+        included_rows=3,
+        summary_fn=lambda included, sampled: f"{included}:{sampled}",
+    )
+
+    ref = bundle[BLOB_REF_MIME]
+    assert ref["content_type"] == "application/vnd.apache.arrow.stream"
+    assert ref["summary"] == {
+        "total_rows": 10,
+        "included_rows": 3,
+        "sampled": True,
+        "sample_strategy": "head",
+    }
+    assert bundle["text/llm+plain"] == "3:True"
+
+
 def test_dataset_mimebundle_emits_arrow_ipc_with_hf_features():
     """``datasets.Dataset`` carries HF features both on ``ds.features`` and
     on the underlying ``ds.data.table`` schema KV. The bundle must include
