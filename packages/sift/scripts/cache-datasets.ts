@@ -98,7 +98,7 @@ async function downloadDataset(entry: DatasetEntry) {
   }
 
   console.log(`  downloading ${entry.id} (${entry.path})...`);
-  const url = await resolveParquetUrl(entry.path, entry.config);
+  const url = await resolveParquetUrl(entry.path, entry.config, entry.split);
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`Failed to fetch: ${resp.status}`);
   const bytes = new Uint8Array(await resp.arrayBuffer());

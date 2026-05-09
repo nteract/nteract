@@ -312,7 +312,11 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
           if (!resp) {
             if (cancelled) return;
             renderLoadingSkeleton(tableRoot, "Resolving dataset…");
-            const url = await resolveHuggingFaceParquetUrl(dataset.path, dataset.config);
+            const url = await resolveHuggingFaceParquetUrl(
+              dataset.path,
+              dataset.config,
+              dataset.split,
+            );
             if (cancelled) return;
             renderLoadingSkeleton(tableRoot, "Downloading Parquet…");
             resp = await fetch(url);

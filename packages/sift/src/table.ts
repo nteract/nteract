@@ -1928,6 +1928,12 @@ export function createTable(
     // Dismiss detail sheet if open
     dismissDetailSheet();
 
+    // Revoke every outstanding image Blob URL before we drop the DOM.
+    // Cell recycling already revokes per-cell on rerender; destroy() is
+    // the only path that wipes the container without first cycling
+    // through renderCell, so without this sweep the URLs hold memory
+    // until the document goes away.
+    revokeCellBlobUrls(container);
     // Clear DOM
     container.innerHTML = "";
     container.classList.remove("sift-table-container");
