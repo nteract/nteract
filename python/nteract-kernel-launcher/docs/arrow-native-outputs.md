@@ -7,6 +7,7 @@ version: Arrow IPC stream should become the canonical rich table output for
 notebooks. Parquet should remain a supported input/rendering format and a
 backward-compatibility path for already-saved notebooks, but new pandas, polars,
 pyarrow, narwhals, and Hugging Face table outputs should converge on Arrow IPC.
+The phases below are intended as targeted commits in this PR, not separate PRs.
 
 ## Research Constraints
 
@@ -26,7 +27,7 @@ pyarrow, narwhals, and Hugging Face table outputs should converge on Arrow IPC.
 - Polars exposes Arrow IPC stream IO directly (`write_ipc_stream` /
   `read_ipc_stream`), so polars does not need parquet as an intermediate
   notebook output format.
-  <https://docs.pola.rs/api/python/dev/reference/api/polars.DataFrame.write_ipc_stream.html>
+  <https://docs.pola.rs/api/python/stable/reference/api/polars.DataFrame.write_ipc_stream.html>
   <https://docs.pola.rs/api/python/stable/reference/api/polars.read_ipc_stream.html>
 - Jupyter-compatible incremental replacement is `display_id` plus
   `update_display_data`. It can carry the same MIME-bundle shape as
@@ -39,6 +40,18 @@ pyarrow, narwhals, and Hugging Face table outputs should converge on Arrow IPC.
 The launcher registers lazy IPython `mimebundle_formatter` handlers in
 `nteract_kernel_launcher/_bootstrap.py` for pandas, polars, narwhals,
 `pyarrow.Table`, `pyarrow.RecordBatch`, and Hugging Face datasets.
+
+Serialization helpers live in `nteract_kernel_launcher/_format.py`:
+
+- `_serialize_pandas` writes parquet via
+  `pa.Table.from_pandas(df, preserve_index=False)` plus
+  `pq.write_table(..., compression="snappy")`.
+- `_serialize_polars` writes parquet via
+  `df.write_parquet(buf, compression="snappy")`.
+- `_serialize_arrow_stream_table` already writes Arrow IPC stream bytes for
+  `pyarrow.Table` and `pyarrow.RecordBatch`.
+- `serialize_dataframe` returns `(bytes, PARQUET_MIME, included_rows)`. Phase 1
+  flips that to `ARROW_STREAM_MIME` and removes `preserve_index=False`.
 
 Today rich table outputs are stored as content-addressed blobs via
 `application/vnd.nteract.blob-ref+json`:
@@ -176,6 +189,18 @@ The MIME metadata namespace should stay:
 `summary` remains small and stable. `table` can evolve as a nteract-specific
 metadata object without changing the raw Arrow IPC payload.
 
+`producer` is one of: `pandas`, `polars`, `pyarrow-table`,
+`pyarrow-record-batch`, `huggingface`, or `narwhals/<backend>`. Renderers must
+treat unknown values as opaque rather than failing.
+
+Every manifest output must provide or preserve `text/plain` and
+`text/llm+plain` summaries. `text/plain` is the user-facing fallback for
+non-nteract Jupyter frontends. `text/llm+plain` stays the canonical short-form
+summary for `repr_llm` and MCP, built from manifest `summary` / `table` facts so
+consumers do not need to fetch chunk blobs. Manifest metadata is the source of
+truth for row counts and shape; `text/llm+plain` is human-readable text derived
+from those facts.
+
 ## Chunked Arrow Over CAS
 
 The right streaming unit is not "chunked parquet." It is an ordered Arrow stream
@@ -197,7 +222,7 @@ Shape:
   "content_type": "application/vnd.apache.arrow.stream",
   "schema": {
     "hash": "sha256...",
-    "content_type": "application/vnd.apache.arrow.schema+json",
+    "content_type": "application/vnd.apache.arrow.schema",
     "fields": 12,
     "metadata": {
       "pandas": true,
@@ -215,6 +240,12 @@ Shape:
     }
   ],
   "complete": true,
+  "coalesced": {
+    "kind": "single_blob",
+    "hash": "sha256...",
+    "content_type": "application/vnd.apache.arrow.stream",
+    "size": 12345678
+  },
   "summary": {
     "total_rows": 1000000,
     "included_rows": 4096,
@@ -227,6 +258,36 @@ Shape:
 The manifest is JSON and can live inline in the output manifest. The large bytes
 remain in ordinary CAS blobs. This keeps the notebook document small while still
 giving renderers enough structure to fetch and append parts.
+
+Hash domains:
+
+- `schema.hash` covers the Arrow IPC schema message bytes (the leading
+  message of an Arrow IPC stream), stored in CAS under the nteract-owned
+  `application/vnd.apache.arrow.schema` content type so renderers can parse it
+  once and key chunk validation off the same hash. Do not store this as JSON
+  unless the hash domain changes to canonical schema JSON at the same time.
+- Each `chunks[].hash` covers the bytes of the chunk blob the daemon stored
+  via `BlobStore::put`. With self-contained per-chunk Arrow IPC streams (see
+  "Chunk Boundaries"), `hash` covers a complete decodable mini-stream
+  including the schema and any dictionary batches.
+
+For v1, "schema compatibility" between chunks means byte-equal `schema.hash`
+against the manifest's top-level schema hash. Promotable type checks are
+deferred until we have a concrete reason for them.
+
+### Stored Forms
+
+The architecture has three related storage forms:
+
+- **Progressive manifest:** the authoritative display state. It owns chunk
+  order, row counts, completion/abort state, table hints, and optional
+  coalesced artifact references.
+- **Progressive chunks:** immutable CAS blobs, targeting 8 MiB before encoding
+  overhead, stored as independently decodable Arrow IPC mini-streams.
+- **Coalesced artifact:** an optional derived artifact written after completion
+  for reopen/export/full-table operations. It is one Arrow IPC stream blob if
+  the stream fits under `BlobStore::MAX_BLOB_SIZE`; otherwise it is a coalesced
+  segment manifest whose segments are larger ordered Arrow IPC blobs.
 
 ### Chunk Boundaries
 
@@ -261,6 +322,66 @@ Add a small daemon-side staging API:
 This avoids "mutable blobs" and keeps CAS immutable. We do not need a provisional
 hash if the staging unit is a complete Arrow chunk.
 
+The producer-side handshake is strict: upload chunk N, get its content hash
+from the daemon, only then publish the next manifest revision listing chunk N.
+A failed upload means the manifest revision is not emitted, so renderers
+never see a chunk reference whose bytes the daemon did not store.
+
+### Save Resolution
+
+When the daemon writes the notebook to disk, it walks the manifest:
+
+1. For each `chunks[].hash`, ensure the blob is in CAS, and rewrite the entry
+   to a blob-ref form the on-disk loader can resolve back into bytes.
+2. Apply the same to `schema.hash`.
+3. Write the rest of the manifest (chunk metadata, summary, table hints)
+   inline in the saved output JSON.
+
+Load reverses the walk: blob refs in chunk and schema slots are resolved back
+into hash + content_type before the manifest is handed to renderers. This
+keeps `.ipynb` files small without inlining base64 chunk bytes.
+
+### Coalesced Artifacts
+
+After the progressive manifest reaches `complete: true`, the runtime may write a
+derived coalesced artifact for efficient reopen, export, and full-table scans.
+This is best-effort and must never block first render or progressive chunk
+availability.
+
+If the complete Arrow IPC stream is below `BlobStore::MAX_BLOB_SIZE`, the
+coalesced artifact is a single CAS blob:
+
+```json
+{
+  "kind": "single_blob",
+  "hash": "sha256...",
+  "content_type": "application/vnd.apache.arrow.stream",
+  "size": 12345678
+}
+```
+
+If the complete stream would exceed the blob limit, the coalesced artifact is a
+segment manifest:
+
+```json
+{
+  "kind": "segment_manifest",
+  "content_type": "application/vnd.nteract.arrow-coalesced-segments+json",
+  "segments": [
+    {
+      "index": 0,
+      "hash": "sha256...",
+      "content_type": "application/vnd.apache.arrow.stream",
+      "size": 67108864,
+      "row_count": 250000
+    }
+  ]
+}
+```
+
+The progressive manifest remains the source of truth while output is still
+growing. The coalesced artifact is derived and can be regenerated or omitted.
+
 For kernel transport, there are two viable paths:
 
 - **Near-term:** keep using attached Jupyter buffers and blob-ref preflight for
@@ -272,6 +393,21 @@ For kernel transport, there are two viable paths:
 The durable path is better because it removes large binary payloads from the
 IOPub message stream and can be reused by other large-output producers.
 
+### First Paint Strategy
+
+Small tables should serialize once to Arrow IPC and emit a complete one-chunk
+manifest. Large eager dataframes should emit `df.head(n)` as the first Arrow IPC
+chunk, where `n` is chosen by byte budget, then continue producing chunks after
+the first display is visible. Arrow-native and streaming sources should publish
+the first available record batch or head chunk, then append later chunks as they
+arrive.
+
+The sub-200 ms first-render target applies after the dataframe/source object is
+available and only to the head-sample path. pandas/polars cannot render before
+an already-blocking dataframe conversion completes. The complete progressive
+manifest and any coalesced artifact are follow-on work and must not block the
+initial display.
+
 ### Display Update Flow
 
 Use Jupyter-compatible display updates:
@@ -282,7 +418,10 @@ Use Jupyter-compatible display updates:
    - `text/plain` and/or `text/html` fallback
    - `transient.display_id`
 2. As later chunks complete, Python emits `update_display_data` with the same
-   display id and a manifest containing the appended chunk list.
+   display id and the full manifest revision, including every chunk emitted
+   to date in order. Updates carry full state, not deltas. Renderers diff
+   `chunks[].hash` against chunks they already loaded and fetch only the
+   missing tail.
 3. Daemon updates all matching output manifests through the existing
    `display_index` path.
 4. Frontend sees the manifest revision and appends only new chunks.
@@ -290,6 +429,20 @@ Use Jupyter-compatible display updates:
 
 Plain Jupyter frontends will render the fallback MIME. nteract frontends will
 prefer the manifest MIME.
+
+Abort and recovery:
+
+- A producer that cannot continue (kernel restart caught by the launcher,
+  unrecoverable serialization error) emits a final `update_display_data`
+  with `complete: true` plus an `aborted: { reason: "..." }` field.
+  Renderers leave already-loaded rows intact and surface the reason instead
+  of pretending the table is whole.
+- An `update_display_data` whose `display_id` no longer maps to a live
+  output (cell cleared, kernel restarted before the update lands) is
+  dropped on the daemon side. This matches today's behavior and avoids
+  resurrecting orphaned manifests.
+- The daemon does not garbage-collect chunk blobs from CAS when a manifest
+  is dropped; CAS retention is decided independently of display lifetime.
 
 ## Sift/WASM Runtime Plan
 
@@ -316,28 +469,49 @@ Rust/WASM responsibilities:
 
 Frontend responsibilities:
 
+- fetch the first chunk immediately
+- fetch more chunks as viewport scrolling or table operations need them
 - fetch only chunks not already loaded
 - preserve Sift engine state across manifest revisions
 - avoid reloading the whole table when `chunks.length` grows
+- use a coalesced artifact for full-table operations when present
 - mark the table complete only when `complete: true`
 - keep `text/plain` fallback available when the plugin fails
 
 ## Phased Implementation
 
+Each phase below should land as an individual commit in this PR so the work can
+be reviewed and tested incrementally.
+
 ### Phase 1: Canonical Arrow For DataFrames
 
 Goal: all new dataframe display outputs use Arrow IPC stream by default.
 
-Changes:
+Changes (all in `python/nteract-kernel-launcher/nteract_kernel_launcher/_format.py`
+unless noted):
 
-- Change pandas `_serialize_pandas` to `pa.Table.from_pandas(df)` plus
-  `pa.ipc.new_stream`.
-- Change polars `_serialize_polars` to `df.write_ipc_stream`.
-- Rename Python helpers from parquet-specific names to table/Arrow names where
-  the behavior is now generic.
+- `_serialize_pandas` switches to `pa.Table.from_pandas(df)` (drop
+  `preserve_index=False`) plus `pa.ipc.new_stream` writing into a
+  `pa.BufferOutputStream`.
+- `_serialize_polars` switches to `df.write_ipc_stream(buf)`.
+- `serialize_dataframe` returns `ARROW_STREAM_MIME` instead of `PARQUET_MIME`.
+  Drop `PARQUET_MIME` from the dataframe return path; keep the constant for
+  parsing old fixtures only.
+- Audit `_bootstrap.py` formatter registrations and tests in
+  `python/nteract-kernel-launcher/tests/` for any callers that branch on
+  `PARQUET_MIME` for pandas/polars output and update them.
+- Rename helpers from parquet-specific names to Arrow/table names where the
+  behavior is now generic. A single `serialize_table` codepath shared by
+  pandas/polars/pyarrow is fine.
+- For narwhals, dispatch on backend: prefer `nw.to_native().to_arrow()` (or
+  the backend's native Arrow export), fall back to pandas conversion only if
+  no Arrow export is available.
+- Hugging Face: keep the Arrow-table-backed path. `IterableDataset` and other
+  streaming HF objects materialize a head sample then fall through to
+  `text/llm+plain`; do not silently consume the stream.
 - Keep parquet deserialization/rendering paths untouched.
-- Extend tests to assert pandas schema metadata survives and pandas index hints
-  are promoted through `nteract-predicate`.
+- Extend tests to assert pandas schema metadata survives and pandas index
+  hints are promoted through `nteract-predicate`.
 - Add polars IPC test coverage when polars is installed.
 
 Acceptance:
@@ -350,14 +524,20 @@ Acceptance:
 
 ### Phase 2: Manifest MIME Without Streaming
 
-Goal: introduce the manifest shape without changing producer timing.
+Goal: introduce the manifest shape without changing producer timing. Launcher
+formatters from Phase 1 switch to emitting the manifest MIME with
+`chunks: [single_chunk]` and `complete: true`. The raw
+`application/vnd.apache.arrow.stream` MIME stays valid for direct producers
+(external tools, tests, and old fixtures), but the launcher always wraps in a
+manifest from Phase 2 onward.
 
 Changes:
 
 - Add `application/vnd.nteract.arrow-stream-manifest+json` to MIME priority and
   Sift routing.
-- Allow a manifest with exactly one complete Arrow IPC chunk.
-- Teach runtime save/load to externalize manifest chunk blobs.
+- Switch launcher producers to emit one-chunk manifests by default.
+- Teach runtime save/load to externalize manifest chunk and schema blobs by
+  walking `chunks[].hash` and `schema.hash` (see "Save Resolution").
 - Teach Sift to load a single manifest chunk into the existing `load_ipc` path.
 
 Acceptance:
@@ -393,19 +573,45 @@ Changes:
 
 - Add a chunk writer abstraction in `nteract_kernel_launcher`.
 - Use `display_id` and `update_display_data` for progressive manifest updates.
-- For pandas/polars eager dataframes, chunk rows after conversion.
-- For Arrow-native sources, write record batches directly.
+- For pandas/polars eager dataframes, emit `df.head(n)` first, then chunk rows
+  after conversion for the remaining data.
+- For Arrow-native sources, write the first record batch/head chunk directly.
 - For large or lazy sources, publish batches as they are produced.
 
 Acceptance:
 
 - A large Arrow table displays first rows before the whole table is serialized.
+- For a table where full serialization takes more than 1 second, the head chunk
+  renders within 200 ms after the dataframe/source object is available when the
+  head-sample path can produce `df.head(n)` without forcing full conversion.
 - Final manifest is complete and durable.
 - Vanilla notebook fallback remains simple and stable.
 
-### Phase 5: Direct Daemon Blob Upload
+### Phase 5: Viewport-Driven Fetch
 
-Goal: avoid pushing large binary chunks through Jupyter IOPub buffers.
+Goal: Sift renders the first chunk immediately and fetches more data only as the
+user or operation needs it.
+
+Changes:
+
+- Load chunk 0 immediately when the manifest arrives.
+- Fetch additional chunks as the viewport nears unloaded rows.
+- For full-table sort/filter/search/export, request all missing chunks unless a
+  coalesced artifact is already available.
+- Preserve loaded table state while new chunks append.
+
+Acceptance:
+
+- Scrolling beyond loaded rows fetches the next chunk without reloading chunk 0.
+- Full-table operations either load all chunks or use the coalesced artifact.
+- A missing later chunk surfaces a recoverable table error and keeps loaded rows.
+
+### Phase 6: Direct Daemon Blob Upload
+
+Goal: avoid pushing large binary chunks through Jupyter IOPub buffers. This is
+a performance and scaling optimization, not a prerequisite for Phase 4.
+Progressive output ships first on the existing attached-buffer path; Phase 6
+swaps the transport without changing the manifest format.
 
 Changes:
 
@@ -420,17 +626,45 @@ Acceptance:
 - Hash mismatch, missing blob, and upload failure are explicit errors.
 - The manifest never references bytes that the daemon failed to store.
 
+### Phase 7: Coalesced Artifacts
+
+Goal: write a derived full-table artifact after completion without changing the
+progressive manifest contract.
+
+Changes:
+
+- If the full Arrow IPC stream fits under `BlobStore::MAX_BLOB_SIZE`, write one
+  coalesced Arrow IPC blob and reference it from `coalesced`.
+- If the full stream is too large, write larger ordered segment blobs and attach
+  a `segment_manifest` coalesced artifact.
+- Keep the progressive chunk manifest authoritative if coalescing fails.
+
+Acceptance:
+
+- Small completed tables get a single coalesced blob.
+- Too-large completed tables get a coalesced segment manifest.
+- Coalescing failure does not affect display, save, or reopen from progressive
+  chunks.
+
 ## Backward Compatibility
+
+Desktop client and runtime daemon ship together. There is no supported
+configuration where a release-N client talks to a release-M daemon, so the
+manifest MIME, blob-ref shape, attached-buffer protocol, and output store
+schema can change in a single release without compatibility shims. The only
+durable compatibility surface is saved `.ipynb` files on disk and the old
+parquet/Arrow IPC blob payloads users may still have in CAS.
 
 - Existing `.ipynb` files with parquet blob refs continue to load and render.
 - Existing `.ipynb` files with direct Arrow IPC blob refs continue to load and
   render.
-- New manifest outputs must save as ordinary JSON plus nteract blob refs, with
-  fallback text/html MIME for non-nteract frontends.
-- The old parquet MIME stays in Sift and MIME priority, but new Python producers
-  stop choosing it by default.
-- `update_display_data` without a matching display id should keep current
-  behavior: no destructive append, no new orphaned manifest.
+- New manifest outputs save as ordinary JSON plus nteract blob refs (chunks
+  and schema, plus coalesced artifacts when present), with `text/plain` /
+  `text/html` fallbacks for non-nteract frontends.
+- The old parquet MIME stays in Sift and MIME priority for old fixtures, but
+  new launcher producers do not choose it.
+- `update_display_data` without a matching display id keeps current behavior:
+  no destructive append, no new orphaned manifest.
 
 ## Testing Strategy
 
@@ -451,13 +685,18 @@ Rust:
   chunks.
 - update-display-data preserves metadata hints for manifest revisions.
 - blob upload rejects hash mismatches and missing chunks.
+- coalesced artifact generation chooses a single blob below
+  `BlobStore::MAX_BLOB_SIZE` and a segment manifest above it.
 
 WASM/Sift:
 
 - direct Arrow IPC renders.
 - one-chunk manifest renders.
 - multi-chunk manifest appends without full reload.
+- viewport-driven fetch loads later chunks only when needed.
 - filters/sorts survive append or are explicitly invalidated.
+- full-table operations use the coalesced artifact when present or fetch all
+  chunks when absent.
 - schema mismatch produces a visible table error with already-loaded rows left
   intact.
 
@@ -466,18 +705,26 @@ Notebook/E2E:
 - plain pandas display renders in nteract and saves with fallback MIME.
 - old parquet notebook fixture renders.
 - progressive output displays first chunk, then final row count after updates.
-- reopened notebook resolves manifest chunk blobs from CAS.
+- reopened notebook resolves manifest chunk blobs and coalesced artifacts from
+  CAS.
 
 ## Open Decisions
 
-- Compression: use uncompressed Arrow IPC first for simpler chunk validation, or
-  enable lz4/zstd once reader support is confirmed across Rust/WASM.
-- Chunk unit: start with self-contained Arrow IPC streams per chunk, then
-  optimize to lower-level IPC message fragments later if needed.
-- Index display: preserve pandas metadata by default, but decide whether
-  non-range index columns should be hidden, pinned, or visibly labeled in Sift.
-- Upload API: attached Jupyter buffers are enough for Phase 2/3; direct daemon
-  blob upload should be the durable design before large streaming ships.
-- Maximum chunk size: choose a target well below `BlobStore::MAX_BLOB_SIZE`
-  (for example 4-16 MiB) to balance CAS overhead, first paint, and WASM append
-  cost.
+- Compression: ship uncompressed Arrow IPC in Phase 2/3 for simpler chunk
+  validation. Phase 4 revisits lz4/zstd once Rust/WASM reader support is
+  confirmed end-to-end.
+- Chunk unit: Phase 2/3 use self-contained Arrow IPC streams per chunk.
+  Lower-level IPC message-fragment encoding stays deferred until measured
+  chunk bloat justifies the complexity.
+- Index display: pandas metadata is preserved by default starting in Phase 1.
+  Sift's presentation of non-range index columns (hidden, pinned, or visibly
+  labeled) is a Phase 3 UX decision, not a serialization decision.
+- Upload API: attached Jupyter buffers carry through Phase 4. Phase 6 swaps to
+  a direct daemon blob upload path; the manifest format does not change.
+- Maximum chunk size: `BlobStore::MAX_BLOB_SIZE` is 100 MiB
+  (`crates/runtimed/src/blob_store.rs:25`). Default to 8 MiB per chunk in
+  Phase 4 to balance CAS overhead, first paint, and WASM append cost.
+- Categoricals: pandas `Categorical` and polars `Categorical`/`Enum` columns
+  emit dictionary batches inside each self-contained chunk. The bloat from
+  recomputing dictionaries per chunk is the explicit tradeoff for chunk
+  independence in Phase 2/3 and is revisited only if it shows up in profiles.
