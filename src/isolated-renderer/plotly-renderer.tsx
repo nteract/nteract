@@ -74,16 +74,33 @@ function PlotlyRenderer({ data: rawData }: RendererProps) {
   const data =
     typeof rawData === "string" ? (JSON.parse(rawData) as PlotlyData) : (rawData as PlotlyData);
 
+  // Pre-size the container to match the user's explicit dimensions (if any).
+  // Plotly's `responsive: true` config installs a parent ResizeObserver and
+  // calls `Plots.resize(gd)` on parent size changes — `Plots.resize` reads
+  // `gd.offsetHeight` and overrides explicit `height` in the layout. If we
+  // let the iframe boot at its 24px minHeight, the container is briefly
+  // ~0px tall when plotly renders, and the responsive observer collapses
+  // the chart. Setting the container's CSS height up front means plotly
+  // sees its target dimensions from the first paint and the responsive
+  // observer simply confirms what's already there.
+  const userLayout = (data?.layout ?? {}) as Record<string, unknown>;
+  const explicitHeight = typeof userLayout.height === "number" ? userLayout.height : undefined;
+  const explicitWidth = typeof userLayout.width === "number" ? userLayout.width : undefined;
+
   useEffect(() => {
     if (!containerRef.current || !data?.data) return;
 
     const el = containerRef.current;
     const isDark = document.documentElement.classList.contains("dark");
 
+    // Honor user-set width/height in the layout. We do not add
+    // `autosize: true` — that would override explicit dimensions through
+    // plotly's relayout path. The container CSS above keeps the chart and
+    // its parent in agreement, so `responsive: true` (kept for window
+    // resize) doesn't race with iframe init.
     const layout: Record<string, unknown> = {
-      ...data.layout,
+      ...userLayout,
       ...darkLayoutOverrides(isDark),
-      autosize: true,
     };
 
     const config: Record<string, unknown> = {
@@ -100,11 +117,6 @@ function PlotlyRenderer({ data: rawData }: RendererProps) {
       frames: data.frames as Plotly.Frame[],
     });
 
-    const resizeObserver = new ResizeObserver(() => {
-      Plotly.Plots.resize(el);
-    });
-    resizeObserver.observe(el);
-
     const themeObserver = new MutationObserver(() => {
       const nowDark = document.documentElement.classList.contains("dark");
       Plotly.relayout(el, darkLayoutOverrides(nowDark));
@@ -115,20 +127,24 @@ function PlotlyRenderer({ data: rawData }: RendererProps) {
     });
 
     return () => {
-      resizeObserver.disconnect();
       themeObserver.disconnect();
       Plotly.purge(el);
     };
-  }, [data]);
+  }, [data, userLayout]);
 
   if (!data?.data) return null;
+
+  const containerStyle: React.CSSProperties = {
+    ...(explicitHeight !== undefined ? { height: `${explicitHeight}px` } : { minHeight: 450 }),
+    ...(explicitWidth !== undefined ? { width: `${explicitWidth}px` } : {}),
+  };
 
   return (
     <div
       ref={containerRef}
       data-slot="plotly-output"
       className={cn("not-prose py-2 max-w-full")}
-      style={{ minHeight: 400 }}
+      style={containerStyle}
     />
   );
 }
