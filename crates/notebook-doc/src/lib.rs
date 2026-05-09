@@ -75,11 +75,18 @@ pub const SCHEMA_VERSION: u64 = 4;
 /// This actor authors only the shared root skeleton. Peers load that same
 /// history and then switch to their real actor before writing notebook-specific
 /// content. Do not reuse this actor for live peer edits.
+#[cfg(test)]
 const SCHEMA_SEED_ACTOR: &str = "nteract:notebook-schema:v4";
+// Frozen Automerge genesis document for notebook schema v4.
+// This shared root skeleton lets fresh clients create cells immediately while
+// still agreeing on the `cells` and `metadata` object IDs before sync.
+const NOTEBOOK_GENESIS_V4_BYTES: &[u8] = include_bytes!("../assets/notebook_genesis_v4.am");
 
 use automerge::sync;
 use automerge::sync::SyncDoc;
-use automerge::transaction::{CommitOptions, Transactable};
+#[cfg(test)]
+use automerge::transaction::CommitOptions;
+use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, AutomergeError, LoadOptions, ObjId, ObjType, ReadDoc};
 use automerge_recovery::{catch_automerge_panic, AutomergeOperationError, AutomergeRebuildError};
 
@@ -964,6 +971,15 @@ impl NotebookDoc {
     }
 
     fn schema_seed_doc(encoding: TextEncoding) -> AutoCommit {
+        AutoCommit::load_with_options(
+            NOTEBOOK_GENESIS_V4_BYTES,
+            LoadOptions::new().text_encoding(encoding),
+        )
+        .unwrap_or_else(|err| panic!("load notebook genesis v4: {err}"))
+    }
+
+    #[cfg(test)]
+    fn generated_schema_seed_doc(encoding: TextEncoding) -> AutoCommit {
         let mut seed = AutoCommit::new_with_encoding(encoding);
         seed.set_actor(ActorId::from(SCHEMA_SEED_ACTOR.as_bytes()));
 
@@ -2890,6 +2906,39 @@ mod tests {
         assert_eq!(doc.schema_version(), Some(SCHEMA_VERSION));
         assert_eq!(doc.get_metadata("runtime"), None);
         assert!(doc.get_metadata_snapshot().is_none());
+    }
+
+    #[test]
+    fn notebook_genesis_artifact_matches_scaffold() {
+        let mut generated = NotebookDoc {
+            doc: NotebookDoc::generated_schema_seed_doc(TextEncoding::UnicodeCodePoint),
+        };
+        let mut frozen = NotebookDoc {
+            doc: NotebookDoc::schema_seed_doc(TextEncoding::UnicodeCodePoint),
+        };
+
+        assert_eq!(
+            generated.change_hashes_for_actor(SCHEMA_SEED_ACTOR),
+            frozen.change_hashes_for_actor(SCHEMA_SEED_ACTOR)
+        );
+        assert_eq!(generated.schema_version(), frozen.schema_version());
+        assert!(generated.has_cells_map());
+        assert!(frozen.has_cells_map());
+        assert_eq!(generated.cell_count(), frozen.cell_count());
+        assert_eq!(
+            generated.get_metadata_snapshot(),
+            frozen.get_metadata_snapshot()
+        );
+    }
+
+    #[test]
+    fn schema_seed_doc_loads_notebook_genesis_with_requested_encoding() {
+        let loaded = NotebookDoc::schema_seed_doc(TextEncoding::Utf16CodeUnit);
+        assert_eq!(
+            NotebookDoc { doc: loaded }.change_hashes_for_actor(SCHEMA_SEED_ACTOR),
+            NotebookDoc::bootstrap(TextEncoding::Utf16CodeUnit, "human:tab-1")
+                .change_hashes_for_actor(SCHEMA_SEED_ACTOR)
+        );
     }
 
     #[test]

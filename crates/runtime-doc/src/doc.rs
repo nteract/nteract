@@ -75,11 +75,11 @@
 //!   last_saved: Str|null   (ISO timestamp of last save)
 //! ```
 
+#[cfg(test)]
+use automerge::transaction::CommitOptions;
 use automerge::{
-    sync,
-    sync::SyncDoc,
-    transaction::{CommitOptions, Transactable},
-    ActorId, AutoCommit, AutomergeError, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT,
+    sync, sync::SyncDoc, transaction::Transactable, ActorId, AutoCommit, AutomergeError, ObjId,
+    ObjType, ReadDoc, ScalarValue, Value, ROOT,
 };
 use automerge_recovery::{catch_automerge_panic, AutomergeOperationError, AutomergeRebuildError};
 use serde::{Deserialize, Serialize};
@@ -332,7 +332,13 @@ impl RuntimeState {
 
 use crate::RuntimeStateError;
 
+#[cfg(test)]
 const RUNTIME_STATE_SCHEMA_SEED_ACTOR: &str = "nteract:runtime-state-schema:v1";
+// Frozen Automerge genesis document for runtime-state schema v1.
+// Do not update this for additive runtime-state fields; those must be
+// daemon-authored changes after genesis, or a negotiated schema v2.
+const RUNTIME_STATE_GENESIS_V1_BYTES: &[u8] =
+    include_bytes!("../assets/runtime_state_genesis_v1.am");
 
 // ── RuntimeStateDoc ─────────────────────────────────────────────────
 
@@ -393,10 +399,16 @@ impl RuntimeStateDoc {
     }
 
     fn schema_seed_doc() -> Result<AutoCommit, RuntimeStateError> {
-        Self::schema_seed_doc_with(scaffold_runtime_state_schema)
+        AutoCommit::load(RUNTIME_STATE_GENESIS_V1_BYTES).map_err(RuntimeStateError::from)
     }
 
-    fn schema_seed_doc_with(
+    #[cfg(test)]
+    fn generated_schema_seed_doc() -> Result<AutoCommit, RuntimeStateError> {
+        Self::generated_schema_seed_doc_with(scaffold_runtime_state_schema)
+    }
+
+    #[cfg(test)]
+    fn generated_schema_seed_doc_with(
         scaffold: impl FnOnce(&mut AutoCommit) -> Result<(), RuntimeStateError>,
     ) -> Result<AutoCommit, RuntimeStateError> {
         let mut doc = AutoCommit::new();
@@ -2933,6 +2945,7 @@ impl RuntimeStateDoc {
 /// All scalar fields start empty; `state` starts at `"pending"`. The
 /// daemon is the sole writer in production; clients rely on sync to
 /// populate the real values.
+#[cfg(test)]
 fn scaffold_project_context(doc: &mut AutoCommit) -> Result<(), RuntimeStateError> {
     let pc = doc.put_object(&ROOT, "project_context", ObjType::Map)?;
     doc.put(&pc, "state", "pending")?;
@@ -2951,6 +2964,7 @@ fn scaffold_project_context(doc: &mut AutoCommit) -> Result<(), RuntimeStateErro
     Ok(())
 }
 
+#[cfg(test)]
 fn scaffold_runtime_state_schema(doc: &mut AutoCommit) -> Result<(), RuntimeStateError> {
     let kernel = doc.put_object(&ROOT, "kernel", ObjType::Map)?;
     doc.put(&kernel, "name", "")?;
@@ -3213,6 +3227,23 @@ mod tests {
         })
     }
 
+    fn actor_label_from_id(actor: &ActorId) -> String {
+        std::str::from_utf8(actor.to_bytes())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|_| actor.to_hex_string())
+    }
+
+    fn change_hashes_for_actor(
+        doc: &mut AutoCommit,
+        actor_label: &str,
+    ) -> Vec<automerge::ChangeHash> {
+        doc.get_changes(&[])
+            .into_iter()
+            .filter(|change| actor_label_from_id(change.actor_id()) == actor_label)
+            .map(|change| change.hash())
+            .collect()
+    }
+
     #[test]
     fn test_new_doc_has_default_state() {
         let doc = RuntimeStateDoc::new();
@@ -3237,7 +3268,7 @@ mod tests {
 
     #[test]
     fn schema_seed_doc_returns_scaffold_errors() {
-        let err = RuntimeStateDoc::schema_seed_doc_with(|_| {
+        let err = RuntimeStateDoc::generated_schema_seed_doc_with(|_| {
             Err(RuntimeStateError::MissingScaffold("injected"))
         })
         .unwrap_err();
@@ -3246,6 +3277,34 @@ mod tests {
             err,
             RuntimeStateError::MissingScaffold("injected")
         ));
+    }
+
+    #[test]
+    fn runtime_state_genesis_artifact_matches_scaffold() {
+        let mut generated = RuntimeStateDoc::generated_schema_seed_doc().unwrap();
+        let mut frozen = RuntimeStateDoc::schema_seed_doc().unwrap();
+
+        assert_eq!(
+            change_hashes_for_actor(&mut generated, RUNTIME_STATE_SCHEMA_SEED_ACTOR),
+            change_hashes_for_actor(&mut frozen, RUNTIME_STATE_SCHEMA_SEED_ACTOR)
+        );
+        assert_eq!(
+            RuntimeStateDoc::from_doc(generated).read_state(),
+            RuntimeStateDoc::from_doc(frozen).read_state()
+        );
+    }
+
+    #[test]
+    fn schema_seed_doc_loads_frozen_genesis_artifact() {
+        let mut loaded = RuntimeStateDoc::schema_seed_doc().unwrap();
+        assert_eq!(
+            change_hashes_for_actor(&mut loaded, RUNTIME_STATE_SCHEMA_SEED_ACTOR).len(),
+            1
+        );
+        assert_eq!(
+            RuntimeStateDoc::from_doc(loaded).read_state(),
+            RuntimeStateDoc::new_empty().read_state()
+        );
     }
 
     #[test]
