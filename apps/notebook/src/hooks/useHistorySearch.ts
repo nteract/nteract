@@ -14,6 +14,10 @@ function getCacheKey(pattern: string | undefined): string {
   return pattern ?? "__tail__";
 }
 
+export function orderHistoryMostRecentFirst(entries: HistoryEntry[]): HistoryEntry[] {
+  return [...entries].sort((a, b) => b.session - a.session || b.line - a.line);
+}
+
 function getCachedResult(pattern: string | undefined): HistoryEntry[] | null {
   const key = getCacheKey(pattern);
   const result = searchCache.get(key);
@@ -67,7 +71,9 @@ export function useHistorySearch() {
       setError(null);
 
       try {
-        const results = await client.getHistory(pattern || null, 100, true);
+        const results = orderHistoryMostRecentFirst(
+          await client.getHistory(pattern || null, 100, true),
+        );
 
         if (currentSearchRef.current === pattern) {
           // Don't replace good entries with empty kernel results — the kernel

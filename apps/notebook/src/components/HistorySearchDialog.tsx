@@ -1,4 +1,13 @@
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { StaticCodeBlock } from "@/components/editor/static-highlight";
 import {
   Command,
@@ -64,19 +73,39 @@ export function HistorySearchDialog({
   const deferredSearchValue = useDeferredValue(searchValue);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const skipNextDebouncedSearchRef = useRef(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const shouldPlaceCaretAtEndRef = useRef(false);
 
   // Fetch initial history (Tail) when dialog opens
   useEffect(() => {
     if (open) {
       const query = initialQuery.trim();
       skipNextDebouncedSearchRef.current = true;
+      shouldPlaceCaretAtEndRef.current = true;
       setSearchValue(query);
       searchHistory(query || undefined);
     } else {
       clearEntries();
+      setSearchValue("");
       skipNextDebouncedSearchRef.current = false;
+      shouldPlaceCaretAtEndRef.current = false;
     }
   }, [open, initialQuery, searchHistory, clearEntries]);
+
+  useLayoutEffect(() => {
+    if (!open || !shouldPlaceCaretAtEndRef.current) return;
+    const input = inputRef.current;
+    if (!input || input.value !== searchValue) return;
+
+    shouldPlaceCaretAtEndRef.current = false;
+    const frame = window.requestAnimationFrame(() => {
+      input.focus();
+      const caret = input.value.length;
+      input.setSelectionRange(caret, caret);
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, searchValue]);
 
   // Debounced kernel search when user types
   useEffect(() => {
@@ -159,6 +188,7 @@ export function HistorySearchDialog({
           className="[&_[cmdk-group-heading]]:text-muted-foreground **:data-[slot=command-input-wrapper]:h-12 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group]]:px-2 [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-input-wrapper]_svg]:h-5 [&_[cmdk-input-wrapper]_svg]:w-5 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-1 [&_[cmdk-item]_svg]:h-5 [&_[cmdk-item]_svg]:w-5"
         >
           <CommandInput
+            ref={inputRef}
             placeholder="Search history..."
             value={searchValue}
             onValueChange={setSearchValue}
