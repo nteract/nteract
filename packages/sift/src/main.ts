@@ -294,15 +294,25 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
           if (cancelled) return;
           try {
             const localResp = await fetch(localUrl);
-            // Vite's dev server doesn't always set Content-Type for .parquet;
-            // accept the response if the URL extension matches and the bytes
-            // fetched, in addition to the explicit octet-stream signal.
+            // SPA hosts (Cloudflare Pages, Vercel) return the index.html
+            // shell with `200 OK + text/html` for any unknown path —
+            // including `/datasets/titanic.parquet` when the file isn't
+            // bundled. A naive `.parquet`-extension check would feed that
+            // shell to the parquet parser and crash with "Corrupt footer".
+            // Trust the response only when the Content-Type explicitly
+            // marks it as parquet/binary, OR when Vite serves it without a
+            // Content-Type AND the content-length looks like real bytes
+            // (the Vite dev case for cached parquets, where `.parquet` has
+            // no MIME mapping by default).
             const ct = localResp.headers.get("content-type") ?? "";
-            const looksLikeParquet =
-              ct.includes("octet-stream") ||
-              ct.includes("parquet") ||
-              (localResp.ok && localUrl.endsWith(".parquet"));
-            if (localResp.ok && looksLikeParquet) resp = localResp;
+            const cl = Number(localResp.headers.get("content-length") ?? "0");
+            const looksLikeBinary =
+              ct.includes("octet-stream") || ct.includes("parquet");
+            const viteCacheNoMime =
+              ct === "" && localUrl.endsWith(".parquet") && cl > 1024;
+            if (localResp.ok && (looksLikeBinary || viteCacheNoMime)) {
+              resp = localResp;
+            }
           } catch {
             /* local cache miss, fall back to HF */
           }

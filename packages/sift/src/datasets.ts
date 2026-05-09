@@ -114,7 +114,9 @@ export const DATASETS: DatasetEntry[] = [
     description:
       "10k 32x32 RGB images + ClassLabel - exercises the HF Image feature path; the img column should render thumbnails inline",
     source: "huggingface",
-    path: "cifar10",
+    // Renamed on HF in 2025; the bare `cifar10` slug now returns
+    // {"error":"The dataset has been renamed."} from datasets-server.
+    path: "uoft-cs/cifar10",
     config: "plain_text",
     split: "test",
     rows: "10,000",

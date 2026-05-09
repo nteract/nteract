@@ -56,7 +56,7 @@ const HF_DATASETS: DatasetEntry[] = [
     id: "cifar10",
     label: "CIFAR-10",
     source: "huggingface",
-    path: "cifar10",
+    path: "uoft-cs/cifar10",
     config: "plain_text",
     split: "test",
   },
