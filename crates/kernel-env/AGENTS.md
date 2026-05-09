@@ -92,7 +92,7 @@ Pool warmer and capture step strip a base set so captured metadata records only 
 
 | Constant | Value |
 |----------|-------|
-| `kernel_env::uv::UV_BASE_PACKAGES` | `[ipykernel, ipywidgets, anywidget, nbformat, uv, dx]` |
+| `kernel_env::uv::UV_BASE_PACKAGES` | `[ipykernel, ipywidgets, anywidget, nbformat, pyarrow>=14, uv]` |
 | `kernel_env::conda::CONDA_BASE_PACKAGES` | `[ipykernel, ipywidgets, anywidget, nbformat]` |
 
 ## Prewarming and daemon pool

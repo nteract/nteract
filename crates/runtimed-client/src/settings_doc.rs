@@ -285,10 +285,10 @@ pub struct SyncedSettings {
     #[serde(default = "default_install_default_data_packages")]
     pub install_default_data_packages: bool,
 
-    /// Enable the nteract data-experience kernel bootstrap (nteract/dx).
-    /// When true, the daemon installs `nteract-kernel-launcher` and `dx` into
-    /// UV kernel environments, launches kernels via `nteract_kernel_launcher`,
-    /// and runs `dx.install()` before the first user cell. Default: false.
+    /// Enable the nteract data-experience kernel bootstrap.
+    /// When true, the daemon launches kernels via `nteract_kernel_launcher`
+    /// so the vendored launcher can register rich display formatters before
+    /// the first user cell. Default: false.
     ///
     /// Mirrors `FeatureFlags::bootstrap_dx`. Flattened on the wire so the
     /// settings JSON and Automerge document keep a flat layout even as new
@@ -539,7 +539,7 @@ impl SettingsDoc {
         // Store onboarding_completed as boolean
         let _ = doc.put(automerge::ROOT, "onboarding_completed", false);
 
-        // nteract/dx kernel bootstrap (opt-in)
+        // nteract kernel-launcher bootstrap (opt-in)
         let _ = doc.put(automerge::ROOT, "bootstrap_dx", defaults.bootstrap_dx);
         let _ = doc.put(
             automerge::ROOT,

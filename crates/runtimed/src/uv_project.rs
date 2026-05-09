@@ -31,23 +31,18 @@ pub(crate) fn notebook_working_dir(notebook_path: Option<&Path>) -> PathBuf {
     }
 }
 
-fn uv_run_base_args(bootstrap_dx: bool) -> Vec<OsString> {
-    let mut args = vec![
+fn uv_run_base_args() -> Vec<OsString> {
+    vec![
         "run".into(),
         "--with".into(),
         "ipykernel".into(),
         "--with".into(),
         "uv".into(),
-    ];
-    if bootstrap_dx {
-        args.push("--with".into());
-        args.push("dx".into());
-    }
-    args
+    ]
 }
 
-pub(crate) fn uv_pyproject_prepare_args(bootstrap_dx: bool) -> Vec<OsString> {
-    let mut args = uv_run_base_args(bootstrap_dx);
+pub(crate) fn uv_pyproject_prepare_args(_bootstrap_dx: bool) -> Vec<OsString> {
+    let mut args = uv_run_base_args();
     args.extend([
         OsString::from("python"),
         OsString::from("-Xfrozen_modules=off"),
@@ -61,7 +56,7 @@ pub(crate) fn uv_pyproject_kernel_args(
     bootstrap_dx: bool,
     connection_file: &Path,
 ) -> Vec<OsString> {
-    let mut args = uv_run_base_args(bootstrap_dx);
+    let mut args = uv_run_base_args();
     let launcher_module = if bootstrap_dx {
         "nteract_kernel_launcher"
     } else {
@@ -146,7 +141,6 @@ pub(crate) async fn prepare_uv_pyproject_environment(
     cmd.env("LINES", TERMINAL_LINES_STR);
     if bootstrap_dx {
         apply_bootstrap_pythonpath(&mut cmd).await?;
-        cmd.env("RUNT_BOOTSTRAP_DX", "1");
     }
 
     info!(
@@ -207,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn prepare_args_include_dx_when_bootstrap_is_enabled() {
+    fn prepare_args_do_not_install_dx_when_bootstrap_is_enabled() {
         assert_eq!(
             args_to_strings(uv_pyproject_prepare_args(true)),
             vec![
@@ -216,8 +210,6 @@ mod tests {
                 "ipykernel",
                 "--with",
                 "uv",
-                "--with",
-                "dx",
                 "python",
                 "-Xfrozen_modules=off",
                 "-c",
@@ -264,8 +256,6 @@ mod tests {
                 "ipykernel",
                 "--with",
                 "uv",
-                "--with",
-                "dx",
                 "python",
                 "-Xfrozen_modules=off",
                 "-m",

@@ -629,13 +629,6 @@ impl KernelConnection for JupyterKernel {
             cmd.env(key, value);
         }
 
-        // Signal dx bootstrap to the launcher module inside the kernel process.
-        // The nteract_kernel_launcher reads RUNT_BOOTSTRAP_DX to decide whether
-        // to append `import dx; dx.install()` to ipykernel's exec_lines.
-        if bootstrap_dx {
-            cmd.env("RUNT_BOOTSTRAP_DX", "1");
-        }
-
         cmd.kill_on_drop(true);
 
         // Capture kernel stderr for diagnostics. Per-line logs go at debug
@@ -2485,13 +2478,29 @@ impl KernelConnection for JupyterKernel {
         let hb_cmd_tx = cmd_tx.clone();
         let hb_panic_cmd_tx = cmd_tx.clone();
         let hb_conn_info = connection_info.clone();
+        let hb_kernel_id = kernel_id.clone();
+        let hb_kernel_type = kernel_type.clone();
+        let hb_env_source = env_source.clone();
+        #[cfg(unix)]
+        let hb_kernel_pid = kernel_pid;
+        #[cfg(not(unix))]
+        let hb_kernel_pid: Option<i32> = None;
+        let hb_launch_elapsed = launch_started;
         let heartbeat_task = spawn_supervised(
             "heartbeat",
             async move {
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                const HEARTBEAT_INITIAL_DELAY: std::time::Duration =
+                    std::time::Duration::from_secs(5);
+                const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+                const HEARTBEAT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+                const HEARTBEAT_MAX_FAILURES: u8 = 3;
+
+                let mut consecutive_failures = 0u8;
+
+                tokio::time::sleep(HEARTBEAT_INITIAL_DELAY).await;
 
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    tokio::time::sleep(HEARTBEAT_INTERVAL).await;
 
                     let check = async {
                         let mut hb =
@@ -2500,21 +2509,76 @@ impl KernelConnection for JupyterKernel {
                         hb.single_heartbeat().await
                     };
 
-                    match tokio::time::timeout(std::time::Duration::from_secs(3), check).await {
+                    let failure = match tokio::time::timeout(HEARTBEAT_TIMEOUT, check).await {
                         Ok(Ok(())) => {
-                            // Kernel is alive
+                            if consecutive_failures > 0 {
+                                info!(
+                                    "[jupyter-kernel] Heartbeat recovered: kernel_id={} kernel_type={} env_source={} pid={:?} previous_failures={} launch_elapsed_ms={}",
+                                    hb_kernel_id,
+                                    hb_kernel_type,
+                                    hb_env_source,
+                                    hb_kernel_pid,
+                                    consecutive_failures,
+                                    hb_launch_elapsed.elapsed().as_millis()
+                                );
+                            }
+                            consecutive_failures = 0;
+                            continue;
                         }
                         Ok(Err(e)) => {
-                            warn!("[jupyter-kernel] Heartbeat connection error: {}", e);
-                            let _ = hb_cmd_tx.try_send(QueueCommand::KernelDied);
-                            break;
+                            format!("connection error: {e}")
                         }
                         Err(_) => {
-                            warn!("[jupyter-kernel] Heartbeat timeout, kernel unresponsive");
+                            format!("timeout after {}ms", HEARTBEAT_TIMEOUT.as_millis())
+                        }
+                    };
+
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+
+                    #[cfg(unix)]
+                    if let Some(pid) = hb_kernel_pid {
+                        if wait_for_pid_exit(pid, std::time::Duration::ZERO).await {
+                            warn!(
+                                "[jupyter-kernel] Heartbeat failed and kernel process is gone: kernel_id={} kernel_type={} env_source={} pid={} failure={} launch_elapsed_ms={}",
+                                hb_kernel_id,
+                                hb_kernel_type,
+                                hb_env_source,
+                                pid,
+                                failure,
+                                hb_launch_elapsed.elapsed().as_millis()
+                            );
                             let _ = hb_cmd_tx.try_send(QueueCommand::KernelDied);
                             break;
                         }
                     }
+
+                    if consecutive_failures < HEARTBEAT_MAX_FAILURES {
+                        warn!(
+                            "[jupyter-kernel] Heartbeat probe failed; retrying before declaring kernel dead: kernel_id={} kernel_type={} env_source={} pid={:?} failure={} consecutive_failures={}/{} launch_elapsed_ms={}",
+                            hb_kernel_id,
+                            hb_kernel_type,
+                            hb_env_source,
+                            hb_kernel_pid,
+                            failure,
+                            consecutive_failures,
+                            HEARTBEAT_MAX_FAILURES,
+                            hb_launch_elapsed.elapsed().as_millis()
+                        );
+                        continue;
+                    }
+
+                    warn!(
+                        "[jupyter-kernel] Heartbeat failed after retries, kernel unresponsive: kernel_id={} kernel_type={} env_source={} pid={:?} last_failure={} consecutive_failures={} launch_elapsed_ms={}",
+                        hb_kernel_id,
+                        hb_kernel_type,
+                        hb_env_source,
+                        hb_kernel_pid,
+                        failure,
+                        consecutive_failures,
+                        hb_launch_elapsed.elapsed().as_millis()
+                    );
+                    let _ = hb_cmd_tx.try_send(QueueCommand::KernelDied);
+                    break;
                 }
             },
             move |_| {
