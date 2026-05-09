@@ -37,13 +37,16 @@ vi.mock("@/components/cell/OutputArea", () => ({
   anyOutputNeedsIsolation: () => true,
   OutputArea: ({
     focused,
+    useOutputWell,
     onIframeMouseDown,
   }: {
     focused?: boolean;
+    useOutputWell?: boolean;
     onIframeMouseDown?: () => void;
   }) => (
     <button
       data-focused={String(focused)}
+      data-use-output-well={String(useOutputWell)}
       data-testid="output"
       type="button"
       onMouseDown={onIframeMouseDown}
@@ -182,6 +185,7 @@ describe("CodeCell output focus", () => {
         onExecute={() => {}}
         onInterrupt={() => {}}
         onDelete={() => {}}
+        onToggleOutputsHidden={() => {}}
       />,
     );
 
@@ -203,6 +207,7 @@ describe("CodeCell output focus", () => {
         onExecute={() => {}}
         onInterrupt={() => {}}
         onDelete={() => {}}
+        onToggleOutputsHidden={() => {}}
       />,
     );
 
@@ -219,12 +224,55 @@ describe("CodeCell output focus", () => {
         onExecute={() => {}}
         onInterrupt={() => {}}
         onDelete={() => {}}
+        onToggleOutputsHidden={() => {}}
       />,
     );
 
     fireEvent.click(getByTitle("Focus output"));
 
     expect(onOutputFocusChange).toHaveBeenCalledWith(true);
+  });
+
+  it("omits output chrome for short stream output", () => {
+    mockOutputs = [
+      {
+        output_type: "stream",
+        name: "stdout",
+        text: "hey\n",
+      },
+    ];
+
+    const { getByTestId, queryByLabelText, queryByTitle } = render(
+      <CodeCell
+        cell={makeCell()}
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+        onToggleOutputsHidden={() => {}}
+      />,
+    );
+
+    expect(getByTestId("output").getAttribute("data-use-output-well")).toBe("false");
+    expect(queryByLabelText("Output mode")).toBeNull();
+    expect(queryByTitle("Hide outputs")).toBeNull();
+  });
+
+  it("keeps output chrome for rich output", () => {
+    const { getByTestId, getByLabelText, getByTitle } = render(
+      <CodeCell
+        cell={makeCell()}
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+        onToggleOutputsHidden={() => {}}
+      />,
+    );
+
+    expect(getByTestId("output").getAttribute("data-use-output-well")).toBe("true");
+    expect(getByLabelText("Output mode")).toBeTruthy();
+    expect(getByTitle("Hide outputs")).toBeTruthy();
   });
 
   it("hides the expand button while output-focused", () => {

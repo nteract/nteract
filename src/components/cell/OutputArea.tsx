@@ -93,6 +93,11 @@ interface OutputAreaProps {
    */
   focused?: boolean;
   /**
+   * When false, simple in-DOM outputs render at intrinsic height without the
+   * compact/focused output well wrapper behavior.
+   */
+  useOutputWell?: boolean;
+  /**
    * Additional CSS classes for the container.
    */
   className?: string;
@@ -310,6 +315,7 @@ export function OutputArea({
   maxHeight,
   expandIframeOutputs = false,
   focused = false,
+  useOutputWell = true,
   className,
   renderers,
   priority = DEFAULT_PRIORITY,
@@ -342,17 +348,21 @@ export function OutputArea({
   //   expanded -> no cap (output grows as tall as its content)
   //   focused  -> focused max with floor, overflow-y-auto, overscroll-contain
   // Explicit `maxHeight` prop still overrides; pass 0 to opt out of compact.
-  const inDomMode: "compact" | "expanded" | "focused" = focused
-    ? "focused"
-    : expandIframeOutputs
-      ? "expanded"
-      : "compact";
-  const inDomMaxHeight =
-    inDomMode === "focused"
-      ? focusedOutputWellMaxHeight
-      : inDomMode === "expanded"
-        ? null
-        : (maxHeight ?? defaultOutputWellMaxHeight);
+  const inDomMode: "plain" | "compact" | "expanded" | "focused" = !useOutputWell
+    ? "plain"
+    : focused
+      ? "focused"
+      : expandIframeOutputs
+        ? "expanded"
+        : "compact";
+  let inDomMaxHeight: number | null;
+  if (inDomMode === "plain" || inDomMode === "expanded") {
+    inDomMaxHeight = null;
+  } else if (inDomMode === "focused") {
+    inDomMaxHeight = focusedOutputWellMaxHeight;
+  } else {
+    inDomMaxHeight = maxHeight ?? defaultOutputWellMaxHeight;
+  }
   const maxHeightStyle = useMemo<React.CSSProperties | undefined>(() => {
     if (!inDomMaxHeight) return undefined;
     if (inDomMode === "focused") {
