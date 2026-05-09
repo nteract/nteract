@@ -335,3 +335,137 @@ def test_emit_dataframe_stashes_bytes_and_returns_bundle():
     h = bundle[BLOB_REF_MIME]["hash"]
     assert h in _buffer_hook.pending_buffers()
     assert isinstance(_buffer_hook.pending_buffers()[h], bytes)
+
+
+# ─── pyarrow.Table path — preserves schema KV metadata ───────────────────
+
+
+def _pa_table_with_hf_metadata():
+    """Build a small ``pa.Table`` carrying a ``huggingface`` schema KV entry.
+
+    Mirrors the shape of HF parquets: features under ``huggingface``,
+    one column declared ``Image`` with ``Struct{bytes, path}``.
+    """
+    pa = pytest.importorskip("pyarrow")
+
+    image_struct = pa.struct([pa.field("bytes", pa.binary()), pa.field("path", pa.string())])
+    schema = pa.schema(
+        [pa.field("id", pa.string()), pa.field("image", image_struct)],
+        metadata={
+            "huggingface": (
+                '{"info": {"features": {'
+                '"id": {"dtype": "string", "_type": "Value"}, '
+                '"image": {"_type": "Image"}}}}'
+            )
+        },
+    )
+    return pa.Table.from_pylist(
+        [
+            {"id": "row-0", "image": {"bytes": b"\x89PNG\r\n", "path": "0.png"}},
+            {"id": "row-1", "image": {"bytes": b"\x89PNG\r\n", "path": "1.png"}},
+        ],
+        schema=schema,
+    )
+
+
+def test_emit_pyarrow_table_preserves_huggingface_kv_metadata():
+    """The pa.Table path is the load-bearing one for Sift's rich-type
+    detection — the dataframe path drops schema KV metadata, this one
+    keeps it. Verify by reading the parquet footer back out."""
+    import io
+
+    pq = pytest.importorskip("pyarrow.parquet")
+
+    from nteract_kernel_launcher import _bootstrap, _buffer_hook
+    from nteract_kernel_launcher._refs import BLOB_REF_MIME
+
+    _buffer_hook.pending_buffers().clear()
+    table = _pa_table_with_hf_metadata()
+
+    bundle = _bootstrap._pyarrow_table_mimebundle(table)
+
+    assert bundle is not None
+    assert BLOB_REF_MIME in bundle
+    assert "text/llm+plain" in bundle
+
+    h = bundle[BLOB_REF_MIME]["hash"]
+    data = _buffer_hook.pending_buffers()[h]
+    md = pq.read_metadata(io.BytesIO(data)).metadata or {}
+    assert b"huggingface" in md, f"missing huggingface KV; got keys: {[k.decode() for k in md]}"
+    assert b'"_type": "Image"' in md[b"huggingface"]
+
+
+def test_emit_pyarrow_record_batch_promotes_to_table():
+    """RecordBatch should produce the same kind of bundle as Table."""
+    pytest.importorskip("pyarrow")
+
+    from nteract_kernel_launcher import _bootstrap, _buffer_hook
+    from nteract_kernel_launcher._refs import BLOB_REF_MIME
+
+    _buffer_hook.pending_buffers().clear()
+    table = _pa_table_with_hf_metadata()
+    batch = table.to_batches()[0]
+
+    bundle = _bootstrap._pyarrow_record_batch_mimebundle(batch)
+
+    assert bundle is not None
+    assert BLOB_REF_MIME in bundle
+
+
+def test_dataset_mimebundle_emits_parquet_with_hf_features():
+    """``datasets.Dataset`` carries HF features both on ``ds.features`` and
+    on the underlying ``ds.data.table`` schema KV. The bundle must include
+    parquet bytes whose footer carries the ``huggingface`` key, not just
+    the legacy text-summary path."""
+    import io
+
+    pq = pytest.importorskip("pyarrow.parquet")
+    pytest.importorskip("datasets")
+    from datasets import Dataset
+    from nteract_kernel_launcher import _bootstrap, _buffer_hook
+    from nteract_kernel_launcher._refs import BLOB_REF_MIME
+
+    _buffer_hook.pending_buffers().clear()
+
+    table = _pa_table_with_hf_metadata()
+    ds = Dataset(arrow_table=table)
+
+    bundle = _bootstrap._dataset_mimebundle(ds)
+
+    assert bundle is not None
+    assert BLOB_REF_MIME in bundle
+    assert "text/llm+plain" in bundle
+    # Summary should still go through summarize_dataset (HF-feature aware),
+    # not the generic pandas-style summary.
+    assert "HuggingFace Dataset" in bundle["text/llm+plain"]
+
+    h = bundle[BLOB_REF_MIME]["hash"]
+    data = _buffer_hook.pending_buffers()[h]
+    md = pq.read_metadata(io.BytesIO(data)).metadata or {}
+    assert b"huggingface" in md
+    assert b'"_type": "Image"' in md[b"huggingface"]
+
+
+def test_dataset_mimebundle_falls_back_to_summary_when_no_table():
+    """Streaming / iterable datasets have no ``.data.table``; the formatter
+    must keep the legacy text-only behavior so it stays best-effort."""
+    pytest.importorskip("datasets")
+
+    from nteract_kernel_launcher import _bootstrap
+
+    class FakeFeatures(dict):
+        pass
+
+    class FakeStreamingDataset:
+        features = FakeFeatures(id="string")
+        num_rows = 0
+        info = None
+
+        def __getitem__(self, _idx):
+            raise RuntimeError("streaming")
+
+        # No `data` attribute — mirrors IterableDataset.
+
+    bundle = _bootstrap._dataset_mimebundle(FakeStreamingDataset())
+    assert bundle is not None
+    assert "text/llm+plain" in bundle
