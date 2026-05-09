@@ -215,14 +215,12 @@ function updateWasmSummaries(
           count: number;
         }[];
         if (bins.length === 0) return null;
-        const isPandasIndex = pandasIndexCols?.has(col.key) ?? false;
-        const isIndexName = /^(unnamed[: _]*\d*|index|_?id|rowid|row_?id|row_?num)$/i.test(col.key);
         return {
           kind: "numeric" as const,
           min: bins[0].x0,
           max: bins[bins.length - 1].x1,
           bins,
-          isIndex: isPandasIndex || isIndexName ? true : undefined,
+          isIndex: pandasIndexCols?.has(col.key) ? true : undefined,
         };
       }
     }

@@ -487,10 +487,7 @@ function updateWasmSummaries(
         if (nonZeroBins <= 10) {
           summary.uniqueCount = nonZeroBins;
         }
-        // Detect index/ID columns: pandas metadata or name pattern.
-        const isPandasIndex = pandasIndexCols?.has(col.key) ?? false;
-        const isIndexName = /^(unnamed[: _]*\d*|index|_?id|rowid|row_?id|row_?num)$/i.test(col.key);
-        if (isPandasIndex || isIndexName) {
+        if (pandasIndexCols?.has(col.key)) {
           (summary as any).isIndex = true;
         }
         return summary;
