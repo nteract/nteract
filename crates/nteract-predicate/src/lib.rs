@@ -12,10 +12,15 @@
 
 pub mod arrow_utils;
 pub mod filter;
+pub mod parquet_features;
 pub mod parquet_summary;
 pub mod summary;
 pub mod utils;
 
 pub use filter::{filter_rows, string_contains};
+pub use parquet_features::{
+    parquet_column_hints, parquet_file_key_value_metadata, parse_parquet_column_hints,
+    ParquetColumnHint, ParquetSemanticType,
+};
 pub use parquet_summary::{summarize_parquet, ColumnStats, ColumnSummary, ParquetSummary};
 pub use summary::{histogram, value_counts, CategoryCount, HistogramBin};

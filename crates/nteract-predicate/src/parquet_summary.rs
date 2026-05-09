@@ -18,6 +18,10 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::Serialize;
 use std::collections::HashMap;
 
+use crate::parquet_features::{
+    file_key_value_metadata, parse_parquet_column_hints, ParquetColumnHint,
+};
+
 /// Maximum number of distinct values to enumerate for categorical columns.
 const TOP_N_CATEGORIES: usize = 5;
 
@@ -40,6 +44,8 @@ pub struct ParquetSummary {
     pub num_bytes: u64,
     /// One entry per column, in schema order.
     pub columns: Vec<ColumnSummary>,
+    /// Rich semantic hints parsed from file-level Parquet metadata.
+    pub column_hints: Vec<ParquetColumnHint>,
 }
 
 /// Summary of a single column.
@@ -90,6 +96,15 @@ pub fn summarize_parquet(
     let bytes_vec = bytes.to_vec();
     let builder = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes_vec))?;
     let schema = builder.schema().clone();
+    let metadata = builder.metadata();
+    let kv_metadata = file_key_value_metadata(metadata);
+    let footer_rows = metadata.file_metadata().num_rows().max(0) as u64;
+    let column_names: Vec<String> = schema
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect();
+    let column_hints = parse_parquet_column_hints(&column_names, footer_rows, &kv_metadata);
     let reader = builder.build()?;
 
     let num_cols = schema.fields().len();
@@ -144,6 +159,7 @@ pub fn summarize_parquet(
         num_rows: total_rows,
         num_bytes: bytes.len() as u64,
         columns,
+        column_hints,
     })
 }
 
@@ -549,6 +565,7 @@ mod tests {
     use arrow::record_batch::RecordBatch;
     use parquet::arrow::ArrowWriter;
     use parquet::file::properties::WriterProperties;
+    use parquet::format::KeyValue;
     use std::sync::Arc;
 
     fn make_test_batch() -> RecordBatch {
@@ -581,8 +598,17 @@ mod tests {
     }
 
     fn batch_to_parquet_bytes(batch: &RecordBatch) -> Vec<u8> {
+        batch_to_parquet_bytes_with_metadata(batch, None)
+    }
+
+    fn batch_to_parquet_bytes_with_metadata(
+        batch: &RecordBatch,
+        metadata: Option<Vec<KeyValue>>,
+    ) -> Vec<u8> {
         let mut buf = Vec::new();
-        let props = WriterProperties::builder().build();
+        let props = WriterProperties::builder()
+            .set_key_value_metadata(metadata)
+            .build();
         let mut writer = ArrowWriter::try_new(&mut buf, batch.schema(), Some(props)).unwrap();
         writer.write(batch).unwrap();
         writer.close().unwrap();
@@ -634,6 +660,38 @@ mod tests {
             }
             _ => panic!("expected boolean stats"),
         }
+    }
+
+    #[test]
+    fn summarize_parquet_includes_footer_column_hints() {
+        let batch = make_test_batch();
+        let metadata = vec![KeyValue::new(
+            "huggingface".to_string(),
+            Some(
+                r#"{"info":{"features":{"name":{"_type":"ClassLabel","names":["alice","bob"]}}}}"#
+                    .to_string(),
+            ),
+        )];
+        let bytes = batch_to_parquet_bytes_with_metadata(&batch, Some(metadata));
+        let summary = summarize_parquet(&bytes).unwrap();
+
+        assert_eq!(summary.column_hints.len(), 2);
+        let id_hint = summary
+            .column_hints
+            .iter()
+            .find(|hint| hint.name == "id")
+            .unwrap();
+        assert!(id_hint.pandas_index);
+        let name_hint = summary
+            .column_hints
+            .iter()
+            .find(|hint| hint.name == "name")
+            .unwrap();
+        assert_eq!(name_hint.column_type.as_deref(), Some("categorical"));
+        assert_eq!(
+            name_hint.semantic_type,
+            Some(crate::parquet_features::ParquetSemanticType::HuggingfaceClassLabel)
+        );
     }
 
     #[test]
