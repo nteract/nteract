@@ -1,12 +1,9 @@
 /**
  * Map an {@link OutputShape} to a default output-well sizing mode.
  *
- * The mode strip in the cell chrome offers compact / expanded / focused.
- * Until the user clicks the strip, the cell falls back to whatever this
- * function returns — picked so the most common composition for each
- * shape feels right out of the box. User toggles persist in cell
- * metadata (`metadata.nteract.outputMode`) and override this default
- * until the cell's outputs are cleared.
+ * OutputArea supports compact / expanded / focused sizing. Code cells
+ * infer one of those modes from the current output shape so common
+ * compositions feel right without exposing per-cell layout controls.
  */
 
 import type { OutputShape } from "./output-shape";

@@ -37,15 +37,18 @@ vi.mock("@/components/cell/OutputArea", () => ({
   anyOutputNeedsIsolation: () => true,
   OutputArea: ({
     focused,
+    mode,
     useOutputWell,
     onIframeMouseDown,
   }: {
     focused?: boolean;
+    mode?: string;
     useOutputWell?: boolean;
     onIframeMouseDown?: () => void;
   }) => (
     <button
       data-focused={String(focused)}
+      data-mode={String(mode)}
       data-use-output-well={String(useOutputWell)}
       data-testid="output"
       type="button"
@@ -165,11 +168,6 @@ function makeCell(): CodeCellType {
 
 describe("CodeCell output focus", () => {
   beforeEach(() => {
-    // Plotly rather than parquet: a single-sift cell now hides the
-    // OutputModeStrip (sift owns its own height + click-to-engage), so
-    // the focus-button + output-chrome assertions need a rich output that
-    // still renders the strip. Plotly fits the bill — it's classified as
-    // single-iframe-chart and keeps the strip.
     mockOutputs = [
       {
         output_type: "display_data",
@@ -219,25 +217,6 @@ describe("CodeCell output focus", () => {
     expect(getByTestId("output").getAttribute("data-focused")).toBe("true");
   });
 
-  it("requests output focus from the gutter focus button", () => {
-    const onOutputFocusChange = vi.fn();
-    const { getByTitle } = render(
-      <CodeCell
-        cell={makeCell()}
-        onFocus={() => {}}
-        onOutputFocusChange={onOutputFocusChange}
-        onExecute={() => {}}
-        onInterrupt={() => {}}
-        onDelete={() => {}}
-        onToggleOutputsHidden={() => {}}
-      />,
-    );
-
-    fireEvent.click(getByTitle("Focus output"));
-
-    expect(onOutputFocusChange).toHaveBeenCalledWith(true);
-  });
-
   it("omits output chrome for short stream output", () => {
     mockOutputs = [
       {
@@ -263,8 +242,8 @@ describe("CodeCell output focus", () => {
     expect(queryByTitle("Hide outputs")).toBeTruthy();
   });
 
-  it("keeps output chrome for rich output", () => {
-    const { getByTestId, getByLabelText, getByTitle } = render(
+  it("keeps output chrome for rich output without layout mode controls", () => {
+    const { getByTestId, queryByLabelText, getByTitle } = render(
       <CodeCell
         cell={makeCell()}
         onFocus={() => {}}
@@ -276,14 +255,12 @@ describe("CodeCell output focus", () => {
     );
 
     expect(getByTestId("output").getAttribute("data-use-output-well")).toBe("true");
-    expect(getByLabelText("Output mode")).toBeTruthy();
+    expect(getByTestId("output").getAttribute("data-mode")).toBe("expanded");
+    expect(queryByLabelText("Output mode")).toBeNull();
     expect(getByTitle("Hide outputs")).toBeTruthy();
   });
 
-  it("hides the output mode strip for a single sift table", () => {
-    // Sift cells default to scroll-passthrough + click-to-engage and use
-    // their own corner button for fullscreen, so the three-button strip
-    // would just be chrome noise. Hide-outputs is still available.
+  it("infers expanded output sizing for a single sift table", () => {
     mockOutputs = [
       {
         output_type: "display_data",
@@ -292,7 +269,7 @@ describe("CodeCell output focus", () => {
       },
     ];
 
-    const { queryByLabelText, queryByTitle } = render(
+    const { getByTestId, queryByLabelText, queryByTitle } = render(
       <CodeCell
         cell={makeCell()}
         onFocus={() => {}}
@@ -303,15 +280,12 @@ describe("CodeCell output focus", () => {
       />,
     );
 
+    expect(getByTestId("output").getAttribute("data-mode")).toBe("expanded");
     expect(queryByLabelText("Output mode")).toBeNull();
     expect(queryByTitle("Hide outputs")).toBeTruthy();
   });
 
-  it("hides the expand button while output-focused", () => {
-    // While focus is on, the expand button is hidden so users don't see an
-    // inert active-styled control. Underlying expand state survives the
-    // focus toggle (local useState in CodeCell), so the button reappears
-    // in its prior state once focus exits.
+  it("does not show layout mode controls while output-focused", () => {
     const { queryByTitle } = render(
       <CodeCell
         cell={makeCell()}

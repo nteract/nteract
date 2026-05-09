@@ -106,10 +106,9 @@ interface OutputAreaProps {
   /**
    * Output-well sizing mode. When supplied, overrides
    * `expandIframeOutputs` and the sizing half of `focused`. Use this when
-   * the caller already knows the desired well shape (e.g. inferred from
-   * the cell's outputs or read from cell metadata). Pass alongside
-   * `focused` to keep the global focus-only behaviours independent of
-   * the per-cell sizing preference.
+   * the caller already knows the desired well shape, typically inferred
+   * from the cell's current outputs. Pass alongside `focused` to keep
+   * global focus-only behaviours independent of sizing.
    */
   mode?: OutputMode;
   /**

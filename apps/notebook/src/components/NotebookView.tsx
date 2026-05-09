@@ -53,7 +53,6 @@ interface NotebookViewProps {
   onReportOutputMatchCount?: (cellId: string, count: number) => void;
   onSetCellSourceHidden?: (cellId: string, hidden: boolean) => void;
   onSetCellOutputsHidden?: (cellId: string, hidden: boolean) => void;
-  onSetCellOutputMode?: (cellId: string, mode: "compact" | "expanded" | "focused" | null) => void;
 }
 
 /** Tailwind classes for cell adder ribbon colors — must be static strings for tree-shaking. */
@@ -364,7 +363,6 @@ function NotebookViewContent({
   onReportOutputMatchCount,
   onSetCellSourceHidden,
   onSetCellOutputsHidden,
-  onSetCellOutputMode,
 }: NotebookViewProps) {
   const presence = usePresenceContext();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -808,9 +806,6 @@ function NotebookViewContent({
                 ? (hidden: boolean) => onSetCellOutputsHidden(cell.id, hidden)
                 : undefined
             }
-            onSetOutputMode={
-              onSetCellOutputMode ? (mode) => onSetCellOutputMode(cell.id, mode) : undefined
-            }
             hiddenGroupCount={hiddenGroupsRef.current.get(cell.id)?.count}
             hiddenGroupErrorCount={hiddenGroupsRef.current.get(cell.id)?.errorCount}
             hiddenGroupCellIds={hiddenGroupsRef.current.get(cell.id)?.groupCellIds}
@@ -884,7 +879,6 @@ function NotebookViewContent({
       onReportOutputMatchCount,
       onSetCellSourceHidden,
       onSetCellOutputsHidden,
-      onSetCellOutputMode,
       outputFocusedCellId,
       focusCell,
       handleOutputFocusChange,

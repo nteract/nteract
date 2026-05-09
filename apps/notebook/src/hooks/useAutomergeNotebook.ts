@@ -629,20 +629,6 @@ export function useAutomergeNotebook() {
     [commitMutation],
   );
 
-  /**
-   * Persist the cell's output-well sizing preference under
-   * `metadata.nteract.outputMode`. Pass `null` to clear the preference and
-   * fall back to the inferred default the next time the cell renders.
-   */
-  const setCellOutputMode = useCallback(
-    (cellId: string, mode: "compact" | "expanded" | "focused" | null) => {
-      commitMutation((handle) => {
-        return !!handle.update_cell_metadata_at_value(cellId, ["nteract", "outputMode"], mode);
-      });
-    },
-    [commitMutation],
-  );
-
   // ── Sync flush ─────────────────────────────────────────────────────
 
   /**
@@ -766,7 +752,6 @@ export function useAutomergeNotebook() {
     applyExecutionCountFromDaemon,
     setCellSourceHidden,
     setCellOutputsHidden,
-    setCellOutputMode,
     flushSync,
     // CRDT bridge context deps
     getHandle,

@@ -1,5 +1,5 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
-import { ChevronRight, Code2, EyeOff, Maximize2, Square, SquareMousePointer } from "lucide-react";
+import { ChevronRight, Code2, EyeOff } from "lucide-react";
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
@@ -64,12 +64,6 @@ interface CodeCellProps {
   onToggleSourceHidden?: (hidden: boolean) => void;
   /** Callback to toggle outputs visibility (JupyterLab convention) */
   onToggleOutputsHidden?: (hidden: boolean) => void;
-  /**
-   * Persist the cell's output-well sizing mode at
-   * `metadata.nteract.outputMode`. Pass `null` to clear and fall back to
-   * the inferred default.
-   */
-  onSetOutputMode?: (mode: OutputMode | null) => void;
   /** Number of consecutive fully-hidden cells in this group (including this one) */
   hiddenGroupCount?: number;
   /** Callback to expand all cells in a hidden group */
@@ -80,11 +74,6 @@ interface CodeCellProps {
   hiddenGroupErrorCount?: number;
   /** Content for the right gutter (e.g., delete button, source toggle) */
   rightGutterContent?: ReactNode;
-}
-
-interface OutputModeStripProps {
-  mode: OutputMode;
-  onChange: (mode: OutputMode) => void;
 }
 
 function historyQueryFromEditor(view: EditorView | null, fallbackSource: string): string {
@@ -146,49 +135,6 @@ function needsOutputChrome(outputs: readonly JupyterOutput[]): boolean {
   return totalChars > SIMPLE_OUTPUT_MAX_CHARS || totalLines > SIMPLE_OUTPUT_MAX_LINES;
 }
 
-/**
- * Three-segment mode selector for an iframe output: compact, expanded,
- * focused. Mutually exclusive states grouped on a shared rail so the
- * "this is one piece of state" intent reads visually. Single click jumps
- * to any mode regardless of current.
- */
-function OutputModeStrip({ mode, onChange }: OutputModeStripProps) {
-  const segments: Array<{ value: OutputMode; title: string; Icon: typeof Square }> = [
-    { value: "compact", title: "Compact (default)", Icon: Square },
-    { value: "expanded", title: "Expand inline", Icon: Maximize2 },
-    { value: "focused", title: "Focus output", Icon: SquareMousePointer },
-  ];
-  return (
-    <div
-      role="group"
-      aria-label="Output mode"
-      className="flex flex-col items-center gap-0.5 rounded-md bg-muted/40 p-0.5"
-    >
-      {segments.map(({ value, title, Icon }) => {
-        const active = mode === value;
-        return (
-          <button
-            key={value}
-            type="button"
-            tabIndex={-1}
-            aria-pressed={active}
-            onClick={() => onChange(value)}
-            className={cn(
-              "flex items-center justify-center rounded p-1 transition-colors",
-              active
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground/50 hover:text-foreground",
-            )}
-            title={title}
-          >
-            <Icon className="h-3.5 w-3.5" />
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 export const CodeCell = memo(function CodeCell({
   cell,
   language = "python",
@@ -208,7 +154,6 @@ export const CodeCell = memo(function CodeCell({
   isDragging,
   onToggleSourceHidden,
   onToggleOutputsHidden,
-  onSetOutputMode,
   hiddenGroupCount,
   onExpandHiddenGroup,
   hiddenGroupCellIds,
@@ -248,29 +193,12 @@ export const CodeCell = memo(function CodeCell({
   // (outputs explicitly hidden, or no outputs at all).
   const bothHidden = isSourceHidden && (isOutputsHidden || outputs.length === 0);
 
-  // Output-well sizing mode. Two layers cooperate:
-  //   1. metadata.nteract.outputMode — the user's explicit choice via the
-  //      mode strip, persisted across reloads. Wins when present.
-  //   2. inferDefaultOutputMode(classifyOutputShape(outputs)) — a heuristic
-  //      default keyed on what the cell is currently showing (e.g. a single
-  //      sift table defaults to focused, a single plotly chart to compact).
-  // Together they give cells a reasonable shape on first render without
-  // burying the override path.
-  const metadataMode = (cell.metadata?.nteract as { outputMode?: OutputMode } | undefined)
-    ?.outputMode;
+  // Output-well sizing is inferred from the cell's current output shape.
+  // This keeps plots, rich text, and tables feeling document-native without
+  // asking users to pick between layout modes per cell.
   const outputShape = useMemo(() => classifyOutputShape(outputs as JupyterOutput[]), [outputs]);
-  const inferredMode = useMemo(() => inferDefaultOutputMode(outputShape), [outputShape]);
-  const effectiveMode: OutputMode = metadataMode ?? inferredMode;
-  const isIframeOutputExpanded = effectiveMode === "expanded";
-
-  // Hide the mode strip on cells where the strip's three modes don't
-  // produce meaningfully different layouts. A pure sift cell renders at
-  // sift's hardcoded 600px (which fits inside compact's 75% vh cap on
-  // every reasonable viewport, so compact and expanded look identical),
-  // and sift's own corner button is the entry point for fullscreen /
-  // focused interaction. Showing three nearly-equivalent buttons there
-  // is just chrome noise.
-  const showOutputModeStrip = outputShape.kind !== "single-table";
+  const outputMode: OutputMode = useMemo(() => inferDefaultOutputMode(outputShape), [outputShape]);
+  const isIframeOutputExpanded = outputMode === "expanded";
 
   // Auto-clear expand/focus when the cell has no visible outputs to
   // operate on. Previously also gated on `!hasIsolatedOutput`, which made
@@ -279,23 +207,11 @@ export const CodeCell = memo(function CodeCell({
   // for any non-iframe output.
   useEffect(() => {
     if (isOutputsHidden || outputs.length === 0 || !showOutputChrome) {
-      // Drop any persisted mode so the inferred default takes over the next
-      // time the cell renders outputs. Sticky-until-empty: no-op if the user
-      // hasn't toggled the strip (metadataMode is undefined).
-      if (metadataMode !== undefined) onSetOutputMode?.(null);
       if (outputFocused) {
         onOutputFocusChange?.(false);
       }
     }
-  }, [
-    isOutputsHidden,
-    metadataMode,
-    onOutputFocusChange,
-    onSetOutputMode,
-    outputFocused,
-    outputs.length,
-    showOutputChrome,
-  ]);
+  }, [isOutputsHidden, onOutputFocusChange, outputFocused, outputs.length, showOutputChrome]);
 
   // Register EditorView with the cursor registry for remote cursor rendering.
   // We use a ref + polling approach because the EditorView is created async
@@ -559,44 +475,23 @@ export const CodeCell = memo(function CodeCell({
               onLinkClick={handleLinkClick}
               onIframeMouseDown={handleOutputMouseDown}
               expandIframeOutputs={isIframeOutputExpanded}
-              mode={effectiveMode}
+              mode={outputMode}
               focused={outputFocused}
               useOutputWell={showOutputChrome}
             />
           )
         }
         outputRightGutterContent={
-          outputs.length > 0 && !isOutputsHidden && (showOutputChrome || onToggleOutputsHidden) ? (
-            <>
-              {showOutputChrome && showOutputModeStrip && (
-                <OutputModeStrip
-                  mode={outputFocused ? "focused" : effectiveMode}
-                  onChange={(next) => {
-                    // Persist the user's pick at metadata.nteract.outputMode
-                    // so it survives reload (overrides the inferred default
-                    // until outputs are cleared — see auto-clear effect).
-                    onSetOutputMode?.(next);
-                    if (next === "focused") {
-                      onOutputFocusChange?.(true);
-                    } else if (outputFocused) {
-                      onOutputFocusChange?.(false);
-                    }
-                    onFocus();
-                  }}
-                />
-              )}
-              {onToggleOutputsHidden && (
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  onClick={() => onToggleOutputsHidden(true)}
-                  className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-foreground"
-                  title="Hide outputs"
-                >
-                  <EyeOff className="h-3.5 w-3.5" />
-                </button>
-              )}
-            </>
+          outputs.length > 0 && !isOutputsHidden && onToggleOutputsHidden ? (
+            <button
+              type="button"
+              tabIndex={-1}
+              onClick={() => onToggleOutputsHidden(true)}
+              className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-foreground"
+              title="Hide outputs"
+            >
+              <EyeOff className="h-3.5 w-3.5" />
+            </button>
           ) : undefined
         }
         hideOutput={outputs.length === 0 || bothHidden}
