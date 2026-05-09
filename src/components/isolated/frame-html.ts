@@ -372,8 +372,7 @@ export const FRAME_HTML = String.raw`<!DOCTYPE html>
           output.appendChild(fragment);
         } else if (mimeType === 'text/plain') {
           const pre = document.createElement('pre');
-          // Handle ANSI escape codes for colored output
-          pre.innerHTML = parseAnsi(String(data));
+          pre.textContent = String(data);
           output.appendChild(pre);
         } else if (mimeType === 'image/svg+xml') {
           // SVG: render inline
@@ -428,51 +427,6 @@ export const FRAME_HTML = String.raw`<!DOCTYPE html>
         requestAnimationFrame(function() {
           sendRpc('nteract/renderComplete', { height: document.body.scrollHeight });
         });
-      }
-
-      // Basic ANSI escape code parser
-      function parseAnsi(text) {
-        // Simple ANSI color mapping
-        const colors = {
-          '30': '#000', '31': '#e74c3c', '32': '#2ecc71', '33': '#f1c40f',
-          '34': '#3498db', '35': '#9b59b6', '36': '#1abc9c', '37': '#ecf0f1',
-          '90': '#7f8c8d', '91': '#e74c3c', '92': '#2ecc71', '93': '#f1c40f',
-          '94': '#3498db', '95': '#9b59b6', '96': '#1abc9c', '97': '#fff'
-        };
-
-        // Escape HTML
-        let result = text
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;');
-
-        // Parse ANSI codes
-        result = result.replace(/\\x1b\\[(\\d+(?:;\\d+)*)m/g, function(match, codes) {
-          const codeList = codes.split(';');
-          let style = '';
-          for (const code of codeList) {
-            if (code === '0') return '</span>';
-            if (code === '1') style += 'font-weight:bold;';
-            if (code === '3') style += 'font-style:italic;';
-            if (code === '4') style += 'text-decoration:underline;';
-            if (colors[code]) style += 'color:' + colors[code] + ';';
-          }
-          return style ? '<span style="' + style + '">' : '';
-        });
-
-        // Also handle \\e[ format
-        result = result.replace(/\\e\\[(\\d+(?:;\\d+)*)m/g, function(match, codes) {
-          const codeList = codes.split(';');
-          let style = '';
-          for (const code of codeList) {
-            if (code === '0') return '</span>';
-            if (code === '1') style += 'font-weight:bold;';
-            if (colors[code]) style += 'color:' + colors[code] + ';';
-          }
-          return style ? '<span style="' + style + '">' : '';
-        });
-
-        return result;
       }
 
       function handleTheme(payload) {
