@@ -32,7 +32,6 @@ vi.mock("../jsonrpc-transport", () => ({
 }));
 
 vi.mock("../frame-html", () => ({
-  createFrameBlobUrl: vi.fn(() => "blob:isolated-frame-test"),
   generateFrameHtml: vi.fn(() => "<!DOCTYPE html><html><body></body></html>"),
 }));
 
@@ -131,5 +130,20 @@ describe("IsolatedFrame theme updates", () => {
 
     expect(iframe.getAttribute("srcdoc")).toContain("<!DOCTYPE html>");
     expect(iframe.getAttribute("src")).toBeNull();
+  });
+
+  it("loads the nteract-frame:// scheme when running inside Tauri", () => {
+    // Stub the runtime detection used by isolated-frame.tsx (`isTauriRuntime`).
+    const w = window as unknown as Record<string, unknown>;
+    const sentinel = {};
+    w.__TAURI_INTERNALS__ = sentinel;
+    try {
+      const { container } = render(<IsolatedFrame darkMode />);
+      const iframe = container.querySelector("iframe") as HTMLIFrameElement;
+      expect(iframe.getAttribute("src")).toBe("nteract-frame://localhost/");
+      expect(iframe.getAttribute("srcdoc")).toBeNull();
+    } finally {
+      delete w.__TAURI_INTERNALS__;
+    }
   });
 });

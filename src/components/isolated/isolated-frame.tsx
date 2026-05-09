@@ -1,7 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { IframeToParentMessage, ParentToIframeMessage, RenderPayload } from "./frame-bridge";
 import { isIframeMessage } from "./frame-bridge";
-import { createFrameBlobUrl, generateFrameHtml } from "./frame-html";
+import { generateFrameHtml } from "./frame-html";
 import { useIsolatedRenderer } from "./isolated-renderer-context";
 import { JsonRpcTransport } from "./jsonrpc-transport";
 import {
@@ -248,7 +248,22 @@ const SANDBOX_ATTRS = [
   // separate `allowFullScreen` iframe attribute (not a sandbox flag).
 ].join(" ");
 
-type FrameDocument = { kind: "blob"; url: string } | { kind: "srcdoc"; html: string };
+type FrameDocument = { kind: "src"; url: string } | { kind: "srcdoc"; html: string };
+
+/**
+ * URL the Tauri host iframes load from.
+ *
+ * Resolved by the `nteract-frame` URI scheme handler registered in
+ * `crates/notebook/src/lib.rs` (`crates/notebook/src/iframe_shell/`).
+ * Sandbox without `allow-same-origin` keeps the document at an opaque
+ * origin regardless of scheme; the scheme exists so the iframe gets its
+ * own CSP from the response header instead of inheriting the parent's.
+ *
+ * On Windows + WebView2, Tauri rewrites this to
+ * `http://nteract-frame.localhost/`. Both forms are allowed in
+ * `tauri.conf.json` `frame-src`/`child-src`.
+ */
+const TAURI_FRAME_SRC = "nteract-frame://localhost/";
 
 function isTauriRuntime(): boolean {
   const globalWindow = window as Window & {
@@ -261,9 +276,11 @@ function isTauriRuntime(): boolean {
 /**
  * IsolatedFrame component - Renders untrusted content in a secure iframe.
  *
- * Uses a blob: URL with sandbox restrictions to ensure the iframe content
- * cannot access Tauri APIs or the parent DOM. Communication happens via
- * postMessage.
+ * Loads the bootstrap HTML from the `nteract-frame://` URI scheme (Tauri)
+ * or via `srcDoc` (plain browser dev). The iframe `sandbox` attribute
+ * (without `allow-same-origin`) is what keeps the document at an opaque
+ * origin and blocks Tauri-IPC injection / parent-DOM reach. Communication
+ * happens via postMessage.
  *
  * **Requires** `IsolatedRendererProvider` to be present in the component tree.
  *
@@ -347,10 +364,6 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     // Any subsequent "ready" is a reload that needs the toggle trick.
     const hasReceivedReadyRef = useRef(false);
 
-    // Track initial darkMode for blob URL (don't recreate blob on theme change)
-    const initialDarkModeRef = useRef(darkMode);
-    const initialColorThemeRef = useRef(colorTheme);
-
     // Stable refs for callback props — avoids tearing down the message
     // handler when callers pass unstable (inline) callbacks.
     const onReadyRef = useRef(onReady);
@@ -390,27 +403,18 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       applyMeasuredHeight(measuredHeightRef.current);
     }, [applyMeasuredHeight]);
 
-    // Create frame document on mount (only once, with initial darkMode).
-    // Tauri keeps the blob URL path so the iframe has an opaque origin and
-    // the Tauri IPC bridge does not inject. The plain browser host uses
-    // srcDoc because Chrome rejects sandboxed blob: navigations from localhost.
+    // Resolve the frame document on mount. Tauri loads from a custom URI
+    // scheme so the iframe document gets its own CSP from the response
+    // header (instead of inheriting the parent's per CSP3). The plain
+    // browser dev host uses srcDoc because Chrome rejects sandboxed blob:
+    // navigations from localhost; sandbox-without-allow-same-origin keeps
+    // the document at an opaque origin in both modes.
     useEffect(() => {
-      const frameOptions = {
-        darkMode: initialDarkModeRef.current,
-        colorTheme: initialColorThemeRef.current,
-      };
-
-      if (!isTauriRuntime()) {
-        setFrameDocument({ kind: "srcdoc", html: generateFrameHtml(frameOptions) });
-        return;
+      if (isTauriRuntime()) {
+        setFrameDocument({ kind: "src", url: TAURI_FRAME_SRC });
+      } else {
+        setFrameDocument({ kind: "srcdoc", html: generateFrameHtml() });
       }
-
-      const url = createFrameBlobUrl(frameOptions);
-      setFrameDocument({ kind: "blob", url });
-
-      return () => {
-        URL.revokeObjectURL(url);
-      };
     }, []);
 
     // Send theme as soon as iframe is ready (before renderer bootstrap).
@@ -816,7 +820,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       <iframe
         ref={iframeRef}
         id={id}
-        src={frameDocument.kind === "blob" ? frameDocument.url : undefined}
+        src={frameDocument.kind === "src" ? frameDocument.url : undefined}
         srcDoc={frameDocument.kind === "srcdoc" ? frameDocument.html : undefined}
         sandbox={SANDBOX_ATTRS}
         allowFullScreen

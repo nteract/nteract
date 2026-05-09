@@ -47,22 +47,51 @@ fn production_csp_is_enabled_and_restrictive() {
     let config = tauri_config();
     let csp = object_field(security(&config), "csp");
 
+    // Parent shell loads only Vite-bundled JS; iframes have moved to the
+    // `nteract-frame://` scheme, so their bootstrap and renderer scripts
+    // no longer run under the parent CSP. That lets us drop the
+    // 'unsafe-inline' / 'unsafe-eval' / inline-script-hash relaxations.
     let script_src = directive(csp, "script-src");
-    assert_eq!(
-        script_src,
-        "'self' 'wasm-unsafe-eval' 'unsafe-eval' blob: https: http://127.0.0.1:* 'sha256-O/N72GCuG1dWVaY+Iz9rjgP7JT4TZuPk7omd2ijEPn4='"
+    assert_eq!(script_src, "'self' 'wasm-unsafe-eval'");
+    assert!(
+        !script_src.contains("'unsafe-inline'"),
+        "script-src must not allow inline scripts in the parent shell: {script_src}"
     );
-    assert!(!script_src.contains("'unsafe-inline'"));
+    assert!(
+        !script_src.contains("'unsafe-eval'"),
+        "script-src must not allow eval in the parent shell: {script_src}"
+    );
+    assert!(
+        !script_src.contains("sha256-"),
+        "script-src no longer needs an inline-script hash; iframes use the URI scheme: {script_src}"
+    );
 
     assert_eq!(directive(csp, "default-src"), "'self'");
-    assert_eq!(
-        directive(csp, "style-src"),
-        "'self' 'unsafe-inline' https: http://127.0.0.1:*"
-    );
+    assert_eq!(directive(csp, "style-src"), "'self' 'unsafe-inline'");
     assert_eq!(directive(csp, "base-uri"), "'none'");
     assert_eq!(directive(csp, "form-action"), "'none'");
-    assert_eq!(directive(csp, "frame-src"), "blob:");
-    assert_eq!(directive(csp, "child-src"), "blob:");
+
+    // Iframes load from `nteract-frame://localhost/` (macOS/Linux) or
+    // `http://nteract-frame.localhost/` (Windows). Both must be allowed.
+    let frame_src = directive(csp, "frame-src");
+    assert!(
+        frame_src.contains("nteract-frame:"),
+        "frame-src must allow the custom URI scheme: {frame_src}"
+    );
+    assert!(
+        frame_src.contains("http://nteract-frame.localhost"),
+        "frame-src must allow Windows-rewrite of the custom scheme: {frame_src}"
+    );
+    assert!(
+        !frame_src.contains("blob:"),
+        "frame-src no longer needs blob: — the iframe path moved off blob:: {frame_src}"
+    );
+
+    let child_src = directive(csp, "child-src");
+    assert!(child_src.contains("nteract-frame:"));
+    assert!(child_src.contains("http://nteract-frame.localhost"));
+    assert!(!child_src.contains("blob:"));
+
     assert_eq!(directive(csp, "worker-src"), "'self' blob:");
     assert_eq!(
         directive(csp, "object-src"),
@@ -87,11 +116,12 @@ fn development_csp_is_separate_from_packaged_policy() {
 
     assert_ne!(csp, dev_csp);
 
+    // Vite HMR + React Refresh inject inline scripts in dev mode.
     let dev_script_src = directive(dev_csp, "script-src");
-    assert_eq!(
-        dev_script_src,
-        "'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' http://localhost:*"
-    );
+    assert!(dev_script_src.contains("'unsafe-inline'"));
+    assert!(dev_script_src.contains("'unsafe-eval'"));
+    assert!(dev_script_src.contains("'wasm-unsafe-eval'"));
+    assert!(dev_script_src.contains("http://localhost:*"));
     assert!(!dev_script_src.contains("http://localhost:5174"));
 
     assert!(directive(dev_csp, "default-src").contains("http://localhost:*"));
@@ -100,6 +130,10 @@ fn development_csp_is_separate_from_packaged_policy() {
         directive(dev_csp, "worker-src"),
         "'self' blob: http://localhost:*"
     );
+
+    let dev_frame_src = directive(dev_csp, "frame-src");
+    assert!(dev_frame_src.contains("nteract-frame:"));
+    assert!(dev_frame_src.contains("http://nteract-frame.localhost"));
 
     let dev_connect_src = directive(dev_csp, "connect-src");
     assert!(dev_connect_src.contains("ws://localhost:*"));

@@ -25,9 +25,8 @@ export type {
   WidgetUpdateMessage,
 } from "./frame-bridge";
 export { isIframeMessage, isMessageType } from "./frame-bridge";
-export type { FrameHtmlOptions } from "./frame-html";
 // HTML template generator
-export { createFrameBlobUrl, generateFrameHtml } from "./frame-html";
+export { generateFrameHtml } from "./frame-html";
 // Security testing component
 export { IsolationTest } from "./IsolationTest";
 export type { IsolatedFrameHandle, IsolatedFrameProps } from "./isolated-frame";

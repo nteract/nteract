@@ -288,7 +288,7 @@ const ISOLATION_TEST_HTML = `<!DOCTYPE html>
  * IsolationTest component - A proof-of-concept to verify that blob URL iframes
  * are properly isolated from Tauri's IPC injection.
  *
- * This component creates an iframe using a blob: URL with sandbox attributes
+ * This component creates an iframe with sandbox attributes
  * that should prevent access to Tauri APIs while still allowing script execution.
  *
  * Expected results for proper isolation:
@@ -563,23 +563,30 @@ export function IsolationTest() {
       {/* Sandbox attribute explanation */}
       <div className="text-muted-foreground space-y-2 text-xs">
         <p>
-          <strong>Sandbox attributes:</strong> allow-scripts (no allow-same-origin)
-        </p>
-        <p>
-          Without <code>allow-same-origin</code>, the iframe gets an <strong>opaque origin</strong>{" "}
-          which:
+          <strong>Load-bearing isolation:</strong> the <code>sandbox</code> attribute (without{" "}
+          <code>allow-same-origin</code>) is what forces the iframe document to an opaque origin —
+          regardless of whether it loads from <code>blob:</code>, <code>nteract-frame://</code>, or{" "}
+          <code>srcdoc</code>. The opaque origin:
         </p>
         <ul className="ml-4 list-disc space-y-1">
           <li>Cannot access parent document, localStorage, or cookies</li>
           <li>Cannot use its own localStorage, cookies, or IndexedDB</li>
-          <li>Blocks Tauri IPC injection (Tauri only injects at app origin)</li>
+          <li>Blocks Tauri IPC injection (origin-gated; opaque origins skip injection)</li>
         </ul>
+        <p>
+          The production iframes load from the <code>nteract-frame://</code> URI scheme so the
+          iframe document gets its own CSP from the response header instead of inheriting the
+          parent&apos;s strict policy. The blob iframe used here in the isolation panel is a
+          standalone smoke-test surface; both paths produce the same opaque-origin guarantee because
+          of the sandbox flags.
+        </p>
         <p className="border-l-2 border-yellow-600 bg-yellow-950/30 p-2">
-          <strong>⚠️ Web Security Note:</strong> On the web, blob URLs inherit the creator&apos;s
-          origin. The sandbox attribute creates isolation, but for maximum security in production
-          web apps, serve untrusted content from a <strong>separate domain</strong> (e.g.,{" "}
-          <code>runtusercontent.com</code>) rather than a subdomain, as subdomains can share cookies
-          in some configurations.
+          <strong>⚠️ Web Security Note:</strong> All cell-output iframes share one{" "}
+          <code>nteract-frame://</code> scheme origin. Sandbox-without-
+          <code>allow-same-origin</code> is the only inter-iframe isolation. Adding{" "}
+          <code>allow-same-origin</code> would let any cell output DOM-script every other
+          cell-output iframe in the window. The render-time CI test in{" "}
+          <code>__tests__/isolated-frame-sandbox.test.tsx</code> guards this.
         </p>
       </div>
 

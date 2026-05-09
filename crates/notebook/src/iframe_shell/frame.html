@@ -1,18 +1,4 @@
-/**
- * Bootstrap HTML for the sandboxed cell-output iframe.
- *
- * The iframe is loaded from `nteract-frame://localhost/` (Tauri) or
- * `srcDoc` (plain browser dev). In Tauri the same HTML body is served
- * by the Rust scheme handler at `crates/notebook/src/iframe_shell/`.
- * Keep the two byte-identical — `iframe_shell_parity` enforces that.
- *
- * The opaque-origin isolation comes from `sandbox` (no `allow-same-origin`)
- * on the host iframe element. The custom URI scheme exists so the document
- * gets its own CSP from the response header instead of inheriting the
- * parent's per CSP3 §init-document-csp.
- */
-
-const FRAME_HTML = `<!DOCTYPE html>
+<!DOCTYPE html>
 <html style="background:transparent;color-scheme:dark">
 <head>
   <meta charset="UTF-8">
@@ -484,7 +470,7 @@ const FRAME_HTML = `<!DOCTYPE html>
           .replace(/>/g, '&gt;');
 
         // Parse ANSI codes
-        result = result.replace(/\\x1b\\[(\\d+(?:;\\d+)*)m/g, function(match, codes) {
+        result = result.replace(/\x1b\[(\d+(?:;\d+)*)m/g, function(match, codes) {
           const codeList = codes.split(';');
           let style = '';
           for (const code of codeList) {
@@ -497,8 +483,8 @@ const FRAME_HTML = `<!DOCTYPE html>
           return style ? '<span style="' + style + '">' : '';
         });
 
-        // Also handle \\e[ format
-        result = result.replace(/\\e\\[(\\d+(?:;\\d+)*)m/g, function(match, codes) {
+        // Also handle \e[ format
+        result = result.replace(/\e\[(\d+(?:;\d+)*)m/g, function(match, codes) {
           const codeList = codes.split(';');
           let style = '';
           for (const code of codeList) {
@@ -783,15 +769,4 @@ const FRAME_HTML = `<!DOCTYPE html>
     })();
   </script>
 </body>
-</html>`;
-
-/**
- * Returns the constant bootstrap HTML for the sandboxed cell-output iframe.
- *
- * The Tauri host loads this from a custom URI scheme; the plain-browser
- * dev host mounts it via `srcDoc`. Theme and per-frame CSS arrive after
- * load via the `nteract/theme` postMessage protocol.
- */
-export function generateFrameHtml(): string {
-  return FRAME_HTML;
-}
+</html>

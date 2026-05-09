@@ -2,6 +2,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod cli_install;
+pub mod iframe_shell;
 pub mod mcpb_install;
 pub mod menu;
 
@@ -3682,6 +3683,15 @@ pub fn run(
 
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
+        // Sandboxed cell-output iframes load from `nteract-frame://localhost/`
+        // (rewritten to `http://nteract-frame.localhost/` on Windows). The
+        // scheme handler ships a permissive CSP for the iframe document so
+        // user `display(HTML('<script>...'))` runs; sandbox without
+        // `allow-same-origin` keeps the document at an opaque origin so it
+        // cannot reach Tauri IPC. Must register before windows open.
+        .register_uri_scheme_protocol(iframe_shell::FRAME_SCHEME, |ctx, req| {
+            iframe_shell::handler(ctx, req)
+        })
         .plugin(log_plugin)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())

@@ -1,6 +1,6 @@
 # Isolated output frame — security model and renderers
 
-Untrusted cell outputs render inside a sandboxed iframe. Tauri loads the iframe from a `blob:` URL so the opaque origin prevents Tauri IPC injection. The plain browser dev host uses `srcDoc` because Chrome rejects this sandboxed `blob:` navigation from localhost; the sandbox attribute list remains the primary defense against malicious JavaScript in outputs.
+Untrusted cell outputs render inside a sandboxed iframe. **The sandbox attribute (without `allow-same-origin`) is what keeps the document at an opaque origin** — that's the load-bearing isolation against parent-DOM access, Tauri-IPC reach, and inter-iframe DOM scripting. The custom `nteract-frame://` URI scheme exists for a different reason: per CSP3 §init-document-csp, `blob:` documents inherit the creator's CSP, so loading the iframe from a real URL scheme lets the iframe document take its CSP from the response header instead of inheriting the parent's strict policy.
 
 Scope: `src/components/isolated/**`, `src/isolated-renderer/**`.
 
@@ -14,15 +14,17 @@ Keep the sandbox to exactly these flags:
 allow-scripts allow-downloads allow-forms allow-pointer-lock
 ```
 
-Fullscreen (sift maximize, maps, 3D) comes from the separate `allowFullScreen` iframe attribute, not a sandbox token. `allow-same-origin` stays off — adding it would give cell output access to `window.__TAURI__`, all Tauri APIs, parent DOM, localStorage, and cookies. A CI test in `src/components/isolated/__tests__/isolated-frame.test.ts` asserts the list stays clean; it's the single most important security invariant in this tree. `allow-popups` and `allow-modals` were removed to shrink the phishing surface — leave them out.
+Fullscreen (sift maximize, maps, 3D) comes from the separate `allowFullScreen` iframe attribute, not a sandbox token. `allow-same-origin` stays off — adding it would give cell output access to `window.__TAURI__`, all Tauri APIs, parent DOM, localStorage, and cookies. With every iframe sharing the same `nteract-frame://` scheme origin, sandbox-without-`allow-same-origin` is also the only inter-iframe isolation: drop the flag and any cell output can DOM-script every other cell-output iframe in the window. Two CI guards pin this: a string-constant test in `__tests__/isolated-frame.test.ts` and a render-time test in `__tests__/isolated-frame-sandbox.test.tsx` that queries the live iframe DOM. `allow-popups` and `allow-modals` were removed to shrink the phishing surface — leave them out.
 
-### Blob URL origin
+### Custom URI scheme
 
-In Tauri, generate HTML with `generateFrameHtml({ darkMode })`, wrap it in a `Blob`, and mount with `URL.createObjectURL`. Blob URLs produce a unique opaque origin (shown as `"null"`), so Tauri's IPC bridge doesn't inject into the iframe. In the browser dev host, mount the same generated HTML with `srcDoc`; do not add `allow-same-origin`.
+Iframes load from `nteract-frame://localhost/` (Tauri, macOS/Linux/iOS). On Windows + WebView2, Tauri/wry rewrites this to `http://nteract-frame.localhost/`; both forms are in `tauri.conf.json` `frame-src`/`child-src`. The plain-browser dev host (Vite at `localhost:5174`, no Tauri) uses `srcDoc` because Chrome rejects sandboxed `blob:` navigations from localhost; the same opaque-origin guarantee applies via sandbox alone.
+
+The Tauri scheme handler in `crates/notebook/src/iframe_shell/mod.rs` serves `frame.html` with `Content-Type: text/html`, `Content-Security-Policy: …`, and `Cache-Control: no-store, no-cache, must-revalidate`. The no-store header is non-negotiable: WKWebView caches custom-scheme responses, and a stale cache after an app update can serve outdated CSP on first launch. `frame.html` is byte-equal to the string returned by `generateFrameHtml()` in TS — `iframe_shell_parity.rs` runs `pnpm exec tsx scripts/dump-frame-html.mjs` and compares.
 
 ### Content Security Policy
 
-The generated iframe HTML ships a `<meta>` CSP as defense-in-depth:
+The Tauri scheme handler's response header AND the iframe HTML's `<meta>` tag both carry the same permissive policy. CSP intersects across sources, so the duplication is defense-in-depth: the meta tag also covers the browser-dev `srcDoc` path where there's no response to attach a header to.
 
 ```
 default-src 'self' blob: data:;
@@ -33,11 +35,28 @@ font-src    * data:;
 media-src   * data: blob:;
 object-src  * data: blob:;
 connect-src *;
+frame-src   'none';
+child-src   'none';
+worker-src  'self' blob:;
 ```
 
-`http://127.0.0.1:*` in `script-src`/`style-src` is deliberate: anywidget ESM (`_esm`) and CSS (`_css`) are served from the daemon's blob-store HTTP server on a dynamic localhost port. Without that entry the browser rejects `import()` of blob-served JS with a MIME-type violation. It's safe because the sandbox still lacks `allow-same-origin`, and the blob server is read-only and content-addressed. `https:` covers CDN-hosted widget assets (anywidget ESM from unpkg/jsdelivr).
+`'unsafe-inline'` and `'unsafe-eval'` are required: cell outputs run inline `<script>` (Plotly fallback, Bokeh embeds, `display(HTML('<script>...'))`), and renderer plugins use `new Function(code)`. `frame-src 'none'`/`child-src 'none'` block malicious cell output from spawning nested iframes for evasion of host-side observers. `http://127.0.0.1:*` in `script-src`/`style-src` lets anywidget ESM (`_esm`) and CSS (`_css`) load from the daemon's blob-store HTTP server on a dynamic localhost port. `https:` covers CDN-hosted widget assets (unpkg/jsdelivr).
 
-Canonical file: `src/components/isolated/frame-html.ts` → `generateFrameHtml()`.
+The parent shell CSP (`tauri.conf.json` `csp`) keeps `script-src 'self' 'wasm-unsafe-eval'` — strict, because the parent-shell JS is Vite-bundled with no inline scripts. `tests/tauri_csp.rs` pins this; it asserts no `'unsafe-inline'`, no `'unsafe-eval'`, no script hash, and that the new scheme is allowlisted in `frame-src`/`child-src`.
+
+Canonical files:
+- TS: `src/components/isolated/frame-html.ts` → `generateFrameHtml()`
+- Rust: `crates/notebook/src/iframe_shell/mod.rs` → `handler()`, `frame.html`
+
+### Per-platform origin shape
+
+| Platform | Iframe URL | Iframe `window.origin` (sandboxed) |
+|---|---|---|
+| macOS, Linux, iOS | `nteract-frame://localhost/` | `null` (opaque) |
+| Windows + WebView2 | `http://nteract-frame.localhost/` | `null` (opaque) |
+| Browser dev (`pnpm dev`) | `srcDoc` | `null` (opaque) |
+
+All three keep an opaque origin because of the sandbox attribute. Don't string-compare iframe URLs across platforms — `URL`-parse them.
 
 ### Source validation
 
@@ -53,7 +72,8 @@ The iframe's message handler rejects anything whose `event.source !== window.par
 └──────────────────────────────────┼───────────────────────────┘
                                    ▼
 ┌──────────────────────────────────────────────────────────────┐
-│                 ISOLATED IFRAME (blob:)                      │
+│         ISOLATED IFRAME (nteract-frame://localhost/)         │
+│         opaque origin (null) via sandbox flags               │
 │  WidgetBridgeClient ↔ WidgetStore ↔ WidgetView/AnyWidget    │
 │                                                              │
 │  window.__TAURI__         → undefined                        │
@@ -71,7 +91,8 @@ The iframe's message handler rejects anything whose `event.source !== window.par
 | `jsonrpc-transport.ts` | `src/components/isolated/jsonrpc-transport.ts` | JSON-RPC 2.0 transport over `postMessage` |
 | `rpc-methods.ts` | `src/components/isolated/rpc-methods.ts` | Shared widget-bridge method constants |
 | `WidgetBridgeClient` | `src/isolated-renderer/widget-bridge-client.ts` | Iframe-side widget bridge (`createWidgetBridgeClient`) |
-| `frame-html.ts` | `src/components/isolated/frame-html.ts` | Bootstrap HTML generator |
+| `frame-html.ts` | `src/components/isolated/frame-html.ts` | Bootstrap HTML (browser dev srcDoc path) |
+| `iframe_shell` | `crates/notebook/src/iframe_shell/` | Tauri scheme handler + `frame.html` (production iframe path) |
 | `frame-bridge.ts` | `src/components/isolated/frame-bridge.ts` | Legacy frame-message types and guards |
 
 The core renderer bundle is built inline by `apps/notebook/vite-plugin-isolated-renderer.ts` and supplied through `IsolatedRendererProvider` (read via `useIsolatedRenderer()`). No HTTP fetch, no separate build step.
@@ -191,11 +212,14 @@ Review these carefully on every change:
 
 ## Review checklist
 
-- Sandbox still excludes `allow-same-origin`.
-- CSP `script-src` / `style-src` stay scoped to `127.0.0.1:*` and `https:` — no new origins.
+- Sandbox still excludes `allow-same-origin` (constant + render-time tests both green).
+- Parent-shell CSP keeps `script-src 'self' 'wasm-unsafe-eval'` — no `'unsafe-inline'`, no `'unsafe-eval'`, no `sha256-…`. If you need to relax these, the iframe is probably back to inheriting the parent's CSP and the change is wrong.
+- Iframe meta CSP and Rust scheme-handler response header carry the same policy; both keep `frame-src 'none'`/`child-src 'none'`.
+- `Cache-Control: no-store` on scheme-handler responses.
+- `frame.html` byte-matches `generateFrameHtml()` (`iframe_shell_parity` enforces).
 - Source validation is intact (`event.source !== window.parent`).
 - Any new message types are added to the whitelist (`frame-bridge.ts`) and the JSON-RPC method list.
-- Unit tests updated; `pnpm test:run` green.
+- Unit tests updated; `pnpm test:run` green; `cargo test -p notebook` green.
 
 ## Testing
 
