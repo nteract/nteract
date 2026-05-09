@@ -285,10 +285,10 @@ const ISOLATION_TEST_HTML = `<!DOCTYPE html>
 </html>`;
 
 /**
- * IsolationTest component - A proof-of-concept to verify that blob URL iframes
+ * IsolationTest component - A proof-of-concept to verify that sandboxed iframes
  * are properly isolated from Tauri's IPC injection.
  *
- * This component creates an iframe using a blob: URL with sandbox attributes
+ * This component creates blob and custom-scheme iframes with sandbox attributes
  * that should prevent access to Tauri APIs while still allowing script execution.
  *
  * Expected results for proper isolation:
@@ -310,8 +310,10 @@ interface CommTestState {
 
 export function IsolationTest() {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const schemeIframeRef = useRef<HTMLIFrameElement>(null);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<IsolationTestResult | null>(null);
+  const [schemeTestResult, setSchemeTestResult] = useState<IsolationTestResult | null>(null);
   const [parentHasTauri, setParentHasTauri] = useState<boolean>(false);
   const [commState, setCommState] = useState<CommTestState>({
     iframeReady: false,
@@ -343,13 +345,39 @@ export function IsolationTest() {
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       const { type, payload } = event.data || {};
+      const fromSchemeFrame = event.source === schemeIframeRef.current?.contentWindow;
+      const fromBlobFrame = event.source === iframeRef.current?.contentWindow;
 
       switch (type) {
         case "isolation_test_result":
           setTestResult(payload ?? event.data.results);
           break;
         case "ready":
-          setCommState((prev) => ({ ...prev, iframeReady: true }));
+          if (fromSchemeFrame) {
+            schemeIframeRef.current?.contentWindow?.postMessage(
+              {
+                type: "eval",
+                payload: {
+                  code: `JSON.stringify({
+                    hasTauri: typeof window.__TAURI__ !== 'undefined',
+                    hasInvoke: typeof window.__TAURI_INTERNALS__?.invoke === 'function' ||
+                      typeof window.__TAURI__?.core?.invoke === 'function',
+                    canAccessParentDocument: (() => { try { void window.parent.document.body; return true; } catch { return false; } })(),
+                    canAccessParentLocalStorage: (() => { try { void window.parent.localStorage.getItem('test'); return true; } catch { return false; } })(),
+                    canUseOwnLocalStorage: (() => { try { localStorage.setItem('isolation_test', 'test'); localStorage.removeItem('isolation_test'); return true; } catch { return false; } })(),
+                    canUseOwnCookies: (() => { try { document.cookie = 'isolation_test=1'; return document.cookie.includes('isolation_test'); } catch { return false; } })(),
+                    canUseIndexedDB: false,
+                    canFetchParentOrigin: false,
+                    windowOrigin: window.origin || 'null'
+                  })`,
+                },
+              },
+              "*",
+            );
+          }
+          if (fromBlobFrame) {
+            setCommState((prev) => ({ ...prev, iframeReady: true }));
+          }
           break;
         case "pong":
           setCommState((prev) => ({
@@ -359,12 +387,16 @@ export function IsolationTest() {
           }));
           break;
         case "eval_result":
-          setCommState((prev) => ({
-            ...prev,
-            evalResult: payload?.success
-              ? `Success: ${payload.result}`
-              : `Error: ${payload?.error}`,
-          }));
+          if (fromSchemeFrame && payload?.success) {
+            setSchemeTestResult(JSON.parse(payload.result));
+          } else {
+            setCommState((prev) => ({
+              ...prev,
+              evalResult: payload?.success
+                ? `Success: ${payload.result}`
+                : `Error: ${payload?.error}`,
+            }));
+          }
           break;
         case "render_complete":
           setCommState((prev) => ({ ...prev, renderComplete: true }));
@@ -410,9 +442,18 @@ export function IsolationTest() {
     !testResult.canUseIndexedDB &&
     !testResult.canFetchParentOrigin;
 
+  const isSchemeIsolated =
+    schemeTestResult &&
+    !schemeTestResult.hasTauri &&
+    !schemeTestResult.hasInvoke &&
+    !schemeTestResult.canAccessParentDocument &&
+    !schemeTestResult.canAccessParentLocalStorage &&
+    !schemeTestResult.canUseOwnLocalStorage &&
+    !schemeTestResult.canUseOwnCookies;
+
   return (
     <div data-testid="isolation-test" className="bg-background text-foreground space-y-4 p-4">
-      <h2 className="text-lg font-semibold">Blob URL Iframe Isolation Test</h2>
+      <h2 className="text-lg font-semibold">Iframe Isolation Test</h2>
 
       {/* Parent context info */}
       <div className="bg-muted rounded p-3">
@@ -504,6 +545,49 @@ export function IsolationTest() {
         </div>
       )}
 
+      {schemeTestResult && (
+        <div
+          className={`rounded p-3 ${
+            isSchemeIsolated
+              ? "border border-green-700 bg-green-950"
+              : "border border-red-700 bg-red-950"
+          }`}
+        >
+          <h3 className="mb-2 font-medium">
+            {isSchemeIsolated
+              ? "Custom-scheme iframe is isolated"
+              : "Custom-scheme isolation FAILED"}
+          </h3>
+          <ul className="space-y-1 text-sm">
+            <li>
+              Tauri API blocked:{" "}
+              <span className={!schemeTestResult.hasTauri ? "text-green-500" : "text-red-500"}>
+                {!schemeTestResult.hasTauri ? "Yes" : "No"}
+              </span>
+            </li>
+            <li>
+              invoke() blocked:{" "}
+              <span className={!schemeTestResult.hasInvoke ? "text-green-500" : "text-red-500"}>
+                {!schemeTestResult.hasInvoke ? "Yes" : "No"}
+              </span>
+            </li>
+            <li>
+              Parent document blocked:{" "}
+              <span
+                className={
+                  !schemeTestResult.canAccessParentDocument ? "text-green-500" : "text-red-500"
+                }
+              >
+                {!schemeTestResult.canAccessParentDocument ? "Yes" : "No"}
+              </span>
+            </li>
+            <li>
+              Iframe origin: <code className="text-xs">{schemeTestResult.windowOrigin}</code>
+            </li>
+          </ul>
+        </div>
+      )}
+
       {/* Communication Test Controls */}
       <div className="bg-muted space-y-3 rounded p-3">
         <h3 className="font-medium">Bidirectional Communication Test:</h3>
@@ -560,14 +644,24 @@ export function IsolationTest() {
         </div>
       )}
 
+      <div className="overflow-hidden rounded border">
+        <iframe
+          ref={schemeIframeRef}
+          src="nteract-frame://localhost/"
+          sandbox="allow-scripts"
+          className="h-80 w-full bg-neutral-900"
+          title="Custom Scheme Isolation Test Frame"
+        />
+      </div>
+
       {/* Sandbox attribute explanation */}
       <div className="text-muted-foreground space-y-2 text-xs">
         <p>
-          <strong>Sandbox attributes:</strong> allow-scripts (no allow-same-origin)
+          <strong>Frame attributes:</strong> allow-scripts with same-origin disabled
         </p>
         <p>
-          Without <code>allow-same-origin</code>, the iframe gets an <strong>opaque origin</strong>{" "}
-          which:
+          Without <code>allow-same-origin</code>, the iframe gets a sandbox-induced{" "}
+          <strong>opaque origin</strong> which:
         </p>
         <ul className="ml-4 list-disc space-y-1">
           <li>Cannot access parent document, localStorage, or cookies</li>
@@ -575,11 +669,8 @@ export function IsolationTest() {
           <li>Blocks Tauri IPC injection (Tauri only injects at app origin)</li>
         </ul>
         <p className="border-l-2 border-yellow-600 bg-yellow-950/30 p-2">
-          <strong>⚠️ Web Security Note:</strong> On the web, blob URLs inherit the creator&apos;s
-          origin. The sandbox attribute creates isolation, but for maximum security in production
-          web apps, serve untrusted content from a <strong>separate domain</strong> (e.g.,{" "}
-          <code>runtusercontent.com</code>) rather than a subdomain, as subdomains can share cookies
-          in some configurations.
+          The custom scheme gives Tauri output frames their own CSP. The sandbox is the load-bearing
+          isolation for both blob and custom-scheme frames.
         </p>
       </div>
 
@@ -605,7 +696,7 @@ function ProductionFrameDemo() {
         <p>This content was rendered via the <code>IsolatedFrame</code> component.</p>
         <table>
           <tr><th>Feature</th><th>Status</th></tr>
-          <tr><td>Blob URL isolation</td><td style="color: #4ade80;">Works</td></tr>
+          <tr><td>Sandbox isolation</td><td style="color: #4ade80;">Works</td></tr>
           <tr><td>postMessage communication</td><td style="color: #4ade80;">Works</td></tr>
           <tr><td>Auto-resizing</td><td style="color: #4ade80;">Works</td></tr>
         </table>

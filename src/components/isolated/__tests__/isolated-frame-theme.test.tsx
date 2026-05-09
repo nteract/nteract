@@ -32,7 +32,6 @@ vi.mock("../jsonrpc-transport", () => ({
 }));
 
 vi.mock("../frame-html", () => ({
-  createFrameBlobUrl: vi.fn(() => "blob:isolated-frame-test"),
   generateFrameHtml: vi.fn(() => "<!DOCTYPE html><html><body></body></html>"),
 }));
 
@@ -65,6 +64,7 @@ describe("IsolatedFrame theme updates", () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("uses JSON-RPC for live color-theme updates after the renderer is ready", async () => {
@@ -131,5 +131,15 @@ describe("IsolatedFrame theme updates", () => {
 
     expect(iframe.getAttribute("srcdoc")).toContain("<!DOCTYPE html>");
     expect(iframe.getAttribute("src")).toBeNull();
+  });
+
+  it("uses nteract-frame://localhost/ src in Tauri runtime", () => {
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+
+    const { container } = render(<IsolatedFrame darkMode={false} />);
+    const iframe = container.querySelector("iframe") as HTMLIFrameElement;
+
+    expect(iframe.getAttribute("src")).toBe("nteract-frame://localhost/");
+    expect(iframe.getAttribute("srcdoc")).toBeNull();
   });
 });
