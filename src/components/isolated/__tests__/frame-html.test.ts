@@ -7,8 +7,17 @@
  * 3. Message handler validates source
  */
 
+import { createHash } from "node:crypto";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { createFrameBlobUrl, generateFrameHtml } from "../frame-html";
+
+const TAURI_IFRAME_BOOTSTRAP_SCRIPT_HASH = "sha256-O/N72GCuG1dWVaY+Iz9rjgP7JT4TZuPk7omd2ijEPn4=";
+
+function inlineScriptHash(html: string): string {
+  const match = html.match(/  <script>\n([\s\S]*?)\n  <\/script>/);
+  expect(match).not.toBeNull();
+  return `sha256-${createHash("sha256").update(match![1]).digest("base64")}`;
+}
 
 describe("generateFrameHtml", () => {
   let html: string;
@@ -29,6 +38,10 @@ describe("generateFrameHtml", () => {
 
   it("includes Content-Security-Policy meta tag", () => {
     expect(html).toContain('http-equiv="Content-Security-Policy"');
+  });
+
+  it("matches the bootstrap script hash allowlisted by Tauri", () => {
+    expect(inlineScriptHash(html)).toBe(TAURI_IFRAME_BOOTSTRAP_SCRIPT_HASH);
   });
 
   it("includes viewport meta tag", () => {

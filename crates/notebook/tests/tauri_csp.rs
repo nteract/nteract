@@ -48,9 +48,17 @@ fn production_csp_is_enabled_and_restrictive() {
     let csp = object_field(security(&config), "csp");
 
     let script_src = directive(csp, "script-src");
-    assert_eq!(script_src, "'self' 'wasm-unsafe-eval'");
+    assert_eq!(
+        script_src,
+        "'self' 'wasm-unsafe-eval' 'unsafe-eval' blob: https: http://127.0.0.1:* 'sha256-O/N72GCuG1dWVaY+Iz9rjgP7JT4TZuPk7omd2ijEPn4='"
+    );
+    assert!(!script_src.contains("'unsafe-inline'"));
 
     assert_eq!(directive(csp, "default-src"), "'self'");
+    assert_eq!(
+        directive(csp, "style-src"),
+        "'self' 'unsafe-inline' https: http://127.0.0.1:*"
+    );
     assert_eq!(directive(csp, "base-uri"), "'none'");
     assert_eq!(directive(csp, "form-action"), "'none'");
     assert_eq!(directive(csp, "frame-src"), "blob:");
