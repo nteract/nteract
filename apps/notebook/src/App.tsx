@@ -194,6 +194,7 @@ function AppContent() {
     applyExecutionCountFromDaemon,
     setCellSourceHidden,
     setCellOutputsHidden,
+    setCellOutputMode,
     flushSync,
     getHandle,
     getEngine,
@@ -1779,6 +1780,7 @@ function AppContent() {
             onReportOutputMatchCount={globalFind.reportOutputMatchCount}
             onSetCellSourceHidden={setCellSourceHidden}
             onSetCellOutputsHidden={setCellOutputsHidden}
+            onSetCellOutputMode={setCellOutputMode}
           />
         </CrdtBridgeProvider>
       </div>

@@ -59,6 +59,7 @@ function useOutputWellMaxHeight(viewportRatio: number): number {
 }
 
 import type { JupyterOutput } from "./jupyter-output";
+import type { OutputMode } from "./output-well-presets";
 // Re-export so existing imports continue to work.
 export type { JupyterOutput } from "./jupyter-output";
 
@@ -86,12 +87,31 @@ interface OutputAreaProps {
   /**
    * When true, isolated iframe outputs grow to their full rendered height
    * instead of using the output max-height cap.
+   *
+   * Ignored when `mode` is supplied — the explicit mode wins.
    */
   expandIframeOutputs?: boolean;
   /**
    * When true, iframe outputs receive focused sizing and own wheel gestures.
+   *
+   * Two responsibilities, kept on this prop for compatibility:
+   *  1. Sizing: switches the well to focused dimensions. `mode` overrides
+   *     this responsibility when supplied.
+   *  2. Global focus behaviour: disables scroll passthrough and wheel-
+   *     boundary forwarding so this cell owns wheel gestures. The
+   *     NotebookView one-cell-at-a-time `outputFocusedCellId` still
+   *     drives this; it is intentionally independent of `mode`.
    */
   focused?: boolean;
+  /**
+   * Output-well sizing mode. When supplied, overrides
+   * `expandIframeOutputs` and the sizing half of `focused`. Use this when
+   * the caller already knows the desired well shape (e.g. inferred from
+   * the cell's outputs or read from cell metadata). Pass alongside
+   * `focused` to keep the global focus-only behaviours independent of
+   * the per-cell sizing preference.
+   */
+  mode?: OutputMode;
   /**
    * When false, simple in-DOM outputs render at intrinsic height without the
    * compact/focused output well wrapper behavior.
@@ -315,6 +335,7 @@ export function OutputArea({
   maxHeight,
   expandIframeOutputs = false,
   focused = false,
+  mode,
   useOutputWell = true,
   className,
   renderers,
@@ -327,6 +348,12 @@ export function OutputArea({
   onSearchMatchCount,
   onIframeMouseDown,
 }: OutputAreaProps) {
+  // Sizing mode: explicit `mode` prop wins; otherwise derive from the
+  // legacy boolean pair so existing callers behave exactly as before.
+  // `focused` retains its non-sizing role (scroll passthrough off, wheel
+  // boundary off) regardless of `mode` — see prop docs above.
+  const sizingMode: OutputMode =
+    mode ?? (focused ? "focused" : expandIframeOutputs ? "expanded" : "compact");
   const id = useId();
   const frameRef = useRef<IsolatedFrameHandle>(null);
   const bridgeRef = useRef<CommBridgeManager | null>(null);
@@ -348,13 +375,7 @@ export function OutputArea({
   //   expanded -> no cap (output grows as tall as its content)
   //   focused  -> focused max with floor, overflow-y-auto, overscroll-contain
   // Explicit `maxHeight` prop still overrides; pass 0 to opt out of compact.
-  const inDomMode: "plain" | "compact" | "expanded" | "focused" = !useOutputWell
-    ? "plain"
-    : focused
-      ? "focused"
-      : expandIframeOutputs
-        ? "expanded"
-        : "compact";
+  const inDomMode: "plain" | OutputMode = !useOutputWell ? "plain" : sizingMode;
   let inDomMaxHeight: number | null;
   if (inDomMode === "plain" || inDomMode === "expanded") {
     inDomMaxHeight = null;
@@ -383,14 +404,15 @@ export function OutputArea({
   const shouldIsolate =
     outputs.length > 0 &&
     (isolated === true || (isolated === "auto" && anyOutputNeedsIsolation(outputs, priority)));
-  const shouldConstrainIsolatedOutput = shouldIsolate && (focused || !expandIframeOutputs);
-  const isolatedOutputWellMaxHeight = focused
-    ? focusedOutputWellMaxHeight
-    : (maxHeight ?? defaultOutputWellMaxHeight);
+  const shouldConstrainIsolatedOutput = shouldIsolate && sizingMode !== "expanded";
+  const isolatedOutputWellMaxHeight =
+    sizingMode === "focused"
+      ? focusedOutputWellMaxHeight
+      : (maxHeight ?? defaultOutputWellMaxHeight);
   const isolatedOutputWellStyle = shouldConstrainIsolatedOutput
     ? {
         maxHeight: `${isolatedOutputWellMaxHeight}px`,
-        ...(focused ? { minHeight: `${MIN_OUTPUT_WELL_HEIGHT}px` } : {}),
+        ...(sizingMode === "focused" ? { minHeight: `${MIN_OUTPUT_WELL_HEIGHT}px` } : {}),
       }
     : undefined;
 
@@ -736,7 +758,7 @@ export function OutputArea({
                 colorTheme={colorTheme}
                 minHeight={24}
                 maxHeight={isolatedOutputWellMaxHeight}
-                autoHeight={shouldIsolate && !focused}
+                autoHeight={shouldIsolate && sizingMode !== "focused"}
                 allowWheelBoundaryScroll={!focused && !shouldScrollPassthroughFrame}
                 scrollPassthrough={shouldScrollPassthroughFrame}
                 onReady={handleFrameReady}

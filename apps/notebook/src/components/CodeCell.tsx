@@ -4,6 +4,8 @@ import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState
 import { CellContainer } from "@/components/cell/CellContainer";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
 import { OutputArea } from "@/components/cell/OutputArea";
+import { classifyOutputShape } from "@/components/cell/output-shape";
+import { inferDefaultOutputMode, type OutputMode } from "@/components/cell/output-well-presets";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import type { SupportedLanguage } from "@/components/editor/languages";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
@@ -62,6 +64,12 @@ interface CodeCellProps {
   onToggleSourceHidden?: (hidden: boolean) => void;
   /** Callback to toggle outputs visibility (JupyterLab convention) */
   onToggleOutputsHidden?: (hidden: boolean) => void;
+  /**
+   * Persist the cell's output-well sizing mode at
+   * `metadata.nteract.outputMode`. Pass `null` to clear and fall back to
+   * the inferred default.
+   */
+  onSetOutputMode?: (mode: OutputMode | null) => void;
   /** Number of consecutive fully-hidden cells in this group (including this one) */
   hiddenGroupCount?: number;
   /** Callback to expand all cells in a hidden group */
@@ -73,8 +81,6 @@ interface CodeCellProps {
   /** Content for the right gutter (e.g., delete button, source toggle) */
   rightGutterContent?: ReactNode;
 }
-
-type OutputMode = "compact" | "expanded" | "focused";
 
 interface OutputModeStripProps {
   mode: OutputMode;
@@ -202,6 +208,7 @@ export const CodeCell = memo(function CodeCell({
   isDragging,
   onToggleSourceHidden,
   onToggleOutputsHidden,
+  onSetOutputMode,
   hiddenGroupCount,
   onExpandHiddenGroup,
   hiddenGroupCellIds,
@@ -220,7 +227,6 @@ export const CodeCell = memo(function CodeCell({
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
   const [historyInitialQuery, setHistoryInitialQuery] = useState("");
-  const [isIframeOutputExpanded, setIsIframeOutputExpanded] = useState(false);
   const presence = usePresenceContext();
   const { extension: crdtBridgeExt, bridge } = useCrdtBridge(cell.id);
   // Subscribe to outputs via the per-execution / per-output stores rather
@@ -242,6 +248,23 @@ export const CodeCell = memo(function CodeCell({
   // (outputs explicitly hidden, or no outputs at all).
   const bothHidden = isSourceHidden && (isOutputsHidden || outputs.length === 0);
 
+  // Output-well sizing mode. Two layers cooperate:
+  //   1. metadata.nteract.outputMode — the user's explicit choice via the
+  //      mode strip, persisted across reloads. Wins when present.
+  //   2. inferDefaultOutputMode(classifyOutputShape(outputs)) — a heuristic
+  //      default keyed on what the cell is currently showing (e.g. a single
+  //      sift table defaults to focused, a single plotly chart to compact).
+  // Together they give cells a reasonable shape on first render without
+  // burying the override path.
+  const metadataMode = (cell.metadata?.nteract as { outputMode?: OutputMode } | undefined)
+    ?.outputMode;
+  const inferredMode = useMemo(
+    () => inferDefaultOutputMode(classifyOutputShape(outputs as JupyterOutput[])),
+    [outputs],
+  );
+  const effectiveMode: OutputMode = metadataMode ?? inferredMode;
+  const isIframeOutputExpanded = effectiveMode === "expanded";
+
   // Auto-clear expand/focus when the cell has no visible outputs to
   // operate on. Previously also gated on `!hasIsolatedOutput`, which made
   // sense when the mode strip was iframe-only; now that stream outputs
@@ -249,12 +272,23 @@ export const CodeCell = memo(function CodeCell({
   // for any non-iframe output.
   useEffect(() => {
     if (isOutputsHidden || outputs.length === 0 || !showOutputChrome) {
-      setIsIframeOutputExpanded(false);
+      // Drop any persisted mode so the inferred default takes over the next
+      // time the cell renders outputs. Sticky-until-empty: no-op if the user
+      // hasn't toggled the strip (metadataMode is undefined).
+      if (metadataMode !== undefined) onSetOutputMode?.(null);
       if (outputFocused) {
         onOutputFocusChange?.(false);
       }
     }
-  }, [isOutputsHidden, onOutputFocusChange, outputFocused, outputs.length, showOutputChrome]);
+  }, [
+    isOutputsHidden,
+    metadataMode,
+    onOutputFocusChange,
+    onSetOutputMode,
+    outputFocused,
+    outputs.length,
+    showOutputChrome,
+  ]);
 
   // Register EditorView with the cursor registry for remote cursor rendering.
   // We use a ref + polling approach because the EditorView is created async
@@ -518,6 +552,7 @@ export const CodeCell = memo(function CodeCell({
               onLinkClick={handleLinkClick}
               onIframeMouseDown={handleOutputMouseDown}
               expandIframeOutputs={isIframeOutputExpanded}
+              mode={effectiveMode}
               focused={outputFocused}
               useOutputWell={showOutputChrome}
             />
@@ -528,14 +563,16 @@ export const CodeCell = memo(function CodeCell({
             <>
               {showOutputChrome && (
                 <OutputModeStrip
-                  mode={outputFocused ? "focused" : isIframeOutputExpanded ? "expanded" : "compact"}
+                  mode={outputFocused ? "focused" : effectiveMode}
                   onChange={(next) => {
+                    // Persist the user's pick at metadata.nteract.outputMode
+                    // so it survives reload (overrides the inferred default
+                    // until outputs are cleared — see auto-clear effect).
+                    onSetOutputMode?.(next);
                     if (next === "focused") {
-                      setIsIframeOutputExpanded(false);
                       onOutputFocusChange?.(true);
-                    } else {
-                      setIsIframeOutputExpanded(next === "expanded");
-                      if (outputFocused) onOutputFocusChange?.(false);
+                    } else if (outputFocused) {
+                      onOutputFocusChange?.(false);
                     }
                     onFocus();
                   }}
