@@ -29,6 +29,18 @@ export function pandasIndexColumnsFromHints(hints: ParquetColumnHint[]): Set<str
   return new Set(hints.filter((hint) => hint.pandasIndex).map((hint) => hint.name));
 }
 
+/**
+ * Name-based fallback for index/ID columns when the source has no parquet
+ * footer to read (Arrow IPC, generated data, …). Mirrors Rust's
+ * `nteract_predicate::is_index_like_name`; for parquet loads the Rust path is
+ * authoritative and these names already round-trip through `pandasIndexCols`.
+ */
+const INDEX_NAME_PATTERN = /^(unnamed[: _]*\d*|index|_?id|rowid|row_?id|row_?num)$/i;
+
+export function looksLikeIndexColumnName(name: string): boolean {
+  return INDEX_NAME_PATTERN.test(name);
+}
+
 export function applyColumnOverrides(
   columns: Column[],
   columnOverrides?: Record<string, Partial<Column>>,

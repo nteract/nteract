@@ -1,6 +1,10 @@
 import { catchError, defer, EMPTY, Observable, Subject, switchMap } from "rxjs";
 import { DATASETS, type DatasetEntry } from "./datasets";
-import { applyParquetColumnHints, pandasIndexColumnsFromHints } from "./parquet-features";
+import {
+  applyParquetColumnHints,
+  looksLikeIndexColumnName,
+  pandasIndexColumnsFromHints,
+} from "./parquet-features";
 import { resolveHuggingFaceParquetUrl } from "./parquet-loader";
 import { ensureModule, getModuleSync, loadIpc } from "./predicate";
 import { type Column, createTable, type TableData, type TableEngine } from "./table";
@@ -487,7 +491,9 @@ function updateWasmSummaries(
         if (nonZeroBins <= 10) {
           summary.uniqueCount = nonZeroBins;
         }
-        if (pandasIndexCols?.has(col.key)) {
+        // Parquet loads carry `pandasIndexCols` from the Rust hints; Arrow IPC
+        // and other sources without footer metadata fall back to a name match.
+        if (pandasIndexCols?.has(col.key) ?? looksLikeIndexColumnName(col.key)) {
           (summary as any).isIndex = true;
         }
         return summary;
