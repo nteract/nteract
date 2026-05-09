@@ -374,6 +374,12 @@ export function createTable(
         pr.el.classList.remove("sift-row-focused");
       }
       for (let c = 0; c < columns.length; c++) {
+        // Image cells don't have a focus-dependent state — they're capped at
+        // IMAGE_THUMB_MAX_HEIGHT and the row-height change is handled by CSS.
+        // Calling renderCell here would revoke the existing blob URLs and
+        // allocate fresh ones for the same bytes, forcing the browser to
+        // re-decode every <img>. That's the visible flicker on row click.
+        if (columns[c].columnType === "image") continue;
         renderCell(pr.cells[c], dataRow, c);
       }
     }

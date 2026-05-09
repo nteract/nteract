@@ -239,6 +239,93 @@ describe("createTable", () => {
       expect(focusedRow).not.toBeNull();
       expect(focusedRow?.querySelector(".sift-cell-truncated")).toBeNull();
     });
+
+    it("preserves image-cell <img> elements across focus toggle", async () => {
+      // Regression: setFocusedDataRow used to renderCell every cell in the
+      // affected rows, which destroyed the <img>s and re-allocated blob URLs
+      // for the same bytes — the browser had to re-decode every image and
+      // the user saw a flicker on row click.
+      engine.destroy();
+      container.innerHTML = "";
+
+      vi.mocked(prepare).mockImplementation(
+        (text: string) =>
+          ({ __brand: "PreparedText", text }) as unknown as ReturnType<typeof prepare>,
+      );
+      // Tall categorical so focus expansion has something to do.
+      vi.mocked(layout).mockImplementation(
+        () => ({ lineCount: 6, height: 120 }) as ReturnType<typeof layout>,
+      );
+
+      // 8-byte PNG signature is enough for sniffImageMime to recognize it;
+      // the <img> won't render in jsdom but the element + blob URL persist.
+      const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const columns: Column[] = [
+        {
+          key: "id",
+          label: "ID",
+          width: 80,
+          sortable: true,
+          numeric: true,
+          columnType: "numeric",
+        },
+        {
+          key: "name",
+          label: "Name",
+          width: 150,
+          sortable: true,
+          numeric: false,
+          columnType: "categorical",
+        },
+        {
+          key: "image",
+          label: "Image",
+          width: 140,
+          sortable: false,
+          numeric: false,
+          columnType: "image",
+        },
+      ];
+      const rows: unknown[][] = [
+        [1, "Person 0", [pngBytes]],
+        [2, "Person 1", [pngBytes]],
+      ];
+      const data: TableData = {
+        columns,
+        rowCount: rows.length,
+        getCell: (r, c) => String(rows[r][c] ?? ""),
+        getCellRaw: (r, c) => rows[r][c],
+        columnSummaries: columns.map(() => null),
+      };
+
+      engine = createTable(container, data);
+      const viewport = container.querySelector<HTMLElement>(".sift-viewport")!;
+      Object.defineProperty(viewport, "clientHeight", { value: 800, configurable: true });
+      viewport.dispatchEvent(new Event("scroll"));
+      await vi.advanceTimersByTimeAsync(20);
+
+      // Capture the <img> in row 1's image cell before toggling focus.
+      const beforeImg = container.querySelector<HTMLImageElement>(
+        '[aria-rowindex="3"] .sift-cell-image-thumb',
+      );
+      expect(beforeImg).not.toBeNull();
+      const beforeBlobUrl = beforeImg!.dataset.siftBlobUrl;
+      expect(beforeBlobUrl).toBeDefined();
+
+      engine.setFocusedDataRow(1);
+      await vi.advanceTimersByTimeAsync(20);
+
+      const afterImg = container.querySelector<HTMLImageElement>(
+        '[aria-rowindex="3"] .sift-cell-image-thumb',
+      );
+      // Same DOM node, same blob URL — no destroy + reallocate cycle.
+      expect(afterImg).toBe(beforeImg);
+      expect(afterImg!.dataset.siftBlobUrl).toBe(beforeBlobUrl);
+
+      // Focus class still applied so the rest of the row-focus contract holds.
+      const focusedRow = container.querySelector(".sift-row-focused");
+      expect(focusedRow).not.toBeNull();
+    });
   });
 
   describe("filtering", () => {
