@@ -184,6 +184,11 @@ export {
 
 // Notebook client
 export { NotebookClient, type NotebookClientOptions, SaveNotebookError } from "./notebook-client";
+export {
+  compareHistoryEntriesByRecency,
+  historySourceKey,
+  normalizeHistoryEntries,
+} from "./history";
 export type {
   CommRequestMessage,
   CompletionItem,

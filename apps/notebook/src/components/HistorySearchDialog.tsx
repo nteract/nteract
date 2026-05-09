@@ -152,10 +152,10 @@ export function HistorySearchDialog({ open, onOpenChange, onSelect }: HistorySea
             {emptyMessage ? (
               <CommandEmpty>{emptyMessage}</CommandEmpty>
             ) : (
-              <CommandGroup heading={`History${isLoading ? " (searching...)" : ""}`}>
-                {filteredEntries.map((entry, index) => (
+              <CommandGroup heading={`Recent history${isLoading ? " (updating...)" : ""}`}>
+                {filteredEntries.map((entry) => (
                   <CommandItem
-                    key={`${entry.session}-${entry.line}-${index}`}
+                    key={`${entry.session}-${entry.line}-${entry.source}`}
                     value={`${entry.session}-${entry.line}`}
                     onSelect={() => handleSelect(entry)}
                     className="cursor-pointer"

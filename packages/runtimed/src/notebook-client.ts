@@ -9,6 +9,7 @@
  */
 
 import type { SyncEngineLogger } from "./sync-engine";
+import { normalizeHistoryEntries } from "./history";
 import type { NotebookRequestOptions, NotebookTransport } from "./transport";
 import type {
   CommRequestMessage,
@@ -254,7 +255,9 @@ export class NotebookClient {
       });
       const result = (response as { result: string }).result;
       if (result === "history_result") {
-        return (response as { result: "history_result"; entries: HistoryEntry[] }).entries;
+        return normalizeHistoryEntries(
+          (response as { result: "history_result"; entries: HistoryEntry[] }).entries,
+        );
       }
       if (result === "no_kernel") {
         throw new Error("No kernel running");

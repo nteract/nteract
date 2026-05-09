@@ -89,6 +89,29 @@ describe("NotebookClient", () => {
     });
   });
 
+  it("normalizes kernel history results", async () => {
+    const { client, sendRequest } = stubClient();
+    sendRequest.mockResolvedValueOnce({
+      result: "history_result",
+      entries: [
+        { session: 10, line: 1, source: "print('old')" },
+        { session: 11, line: 1, source: "print('old')" },
+        { session: 10, line: 2, source: "print('middle')" },
+      ],
+    });
+
+    await expect(client.getHistory(null, 100, true)).resolves.toEqual([
+      { session: 11, line: 1, source: "print('old')" },
+      { session: 10, line: 2, source: "print('middle')" },
+    ]);
+    expect(sendRequest).toHaveBeenCalledWith({
+      type: "get_history",
+      pattern: null,
+      n: 100,
+      unique: true,
+    });
+  });
+
   it("attaches required heads to daemon-managed execute requests", async () => {
     const { client, flush, sendRequest } = stubClientWithHeads(["head-a"]);
 
