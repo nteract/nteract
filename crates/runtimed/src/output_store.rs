@@ -65,25 +65,25 @@ use crate::blob_store::BlobStore;
 /// in `.ipynb` files and have no vanilla-Jupyter fallback path if we
 /// replaced them. We only externalize MIMEs that:
 ///
-/// 1. Are nteract-specific and have a reasonable fallback elsewhere in
-///    the bundle (parquet ships alongside pandas `text/html` + `text/plain`).
-/// 2. Would otherwise blow up `.ipynb` size catastrophically (parquet
-///    exports can hit tens or hundreds of MiB).
+/// 1. Are nteract-specific and have a reasonable fallback elsewhere in the
+///    bundle (table payloads ship alongside `text/html` / `text/plain`).
+/// 2. Would otherwise blow up `.ipynb` size catastrophically (table exports can
+///    hit tens or hundreds of MiB).
 ///
 /// Because this whitelist holds at most one entry per output bundle in
-/// practice (dx emits exactly one parquet ref per display), we can write
+/// practice (dx emits exactly one table ref per display), we can write
 /// the ref as a single `{hash, content_type, size}` object under the
 /// [`BLOB_REF_MIME`] key. nbformat's schema wouldn't accept an array
-/// there, so a whitelist-of-one is the right shape.
+/// there, so producers should not emit multiple whitelisted binary table
+/// payloads in the same output bundle.
 ///
 /// See `docs/superpowers/specs/2026-04-14-ipynb-save-blob-refs-design.md`.
-const REF_MIME_SAVE_WHITELIST: &[&str] = &["application/vnd.apache.parquet"];
-
-/// Returns true if a binary MIME type should be externalized as a
-/// [`BLOB_REF_MIME`] entry on save instead of base64-inlined.
-fn should_externalize_mime_on_save(mime_type: &str) -> bool {
-    REF_MIME_SAVE_WHITELIST.contains(&mime_type)
-}
+/// Order matters: when an output bundle carries multiple whitelisted payloads,
+/// the first match wins the single [`BLOB_REF_MIME`] slot.
+const REF_MIME_SAVE_WHITELIST: &[&str] = &[
+    "application/vnd.apache.arrow.stream",
+    "application/vnd.apache.parquet",
+];
 
 /// Default inlining threshold: 1 KB.
 ///
@@ -1116,10 +1116,10 @@ async fn convert_data_bundle(
 /// reads raw bytes from the blob store and base64-encodes them for the
 /// Jupyter nbformat representation (used when saving .ipynb to disk).
 ///
-/// Whitelisted MIMEs ([`REF_MIME_SAVE_WHITELIST`] — currently parquet)
-/// are externalized as [`BLOB_REF_MIME`] entries instead of being
-/// re-inlined as base64. The original binary MIME key is dropped and
-/// replaced by a `BLOB_REF_MIME` → `{hash, content_type, size}` entry.
+/// Whitelisted MIMEs ([`REF_MIME_SAVE_WHITELIST`] — currently Arrow IPC and
+/// parquet) are externalized as [`BLOB_REF_MIME`] entries instead of being
+/// re-inlined as base64. The selected binary MIME key is dropped and replaced
+/// by a `BLOB_REF_MIME` → `{hash, content_type, size}` entry.
 /// See `docs/superpowers/specs/2026-04-14-ipynb-save-blob-refs-design.md`.
 /// The reverse transform is handled by `convert_data_bundle`'s
 /// existing `BLOB_REF_MIME` branch on load.
@@ -1128,13 +1128,25 @@ async fn resolve_data_bundle(
     blob_store: &BlobStore,
 ) -> io::Result<HashMap<String, Value>> {
     let mut result = HashMap::new();
+    let externalizable_mimes: Vec<&str> = REF_MIME_SAVE_WHITELIST
+        .iter()
+        .copied()
+        .filter(|mime_type| matches!(data.get(*mime_type), Some(ContentRef::Blob { .. })))
+        .collect();
+    let externalize_mime = externalizable_mimes.first().copied();
+    if externalizable_mimes.len() > 1 {
+        tracing::warn!(
+            "[output-store] output bundle has multiple blob-ref table payloads; externalizing {} and base64-inlining the rest",
+            externalize_mime.unwrap_or("<none>")
+        );
+    }
 
     for (mime_type, content_ref) in data {
         // Spec 2: externalize whitelisted binary blobs as a BLOB_REF_MIME
         // entry instead of re-inlining them as base64 in the .ipynb.
         // Non-whitelisted MIMEs (images, PDFs, HTML, audio, video) keep
         // the legacy path so vanilla Jupyter renders them unchanged.
-        if should_externalize_mime_on_save(mime_type) {
+        if externalize_mime.is_some_and(|selected| selected == mime_type) {
             if let ContentRef::Blob { blob: hash, size } = content_ref {
                 let ref_body = json!({
                     "hash": hash,
@@ -2692,12 +2704,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_resolve_data_bundle_emits_blob_ref_for_arrow_stream() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let raw = b"ARROW1-stream-payload-bytes";
+        let hash = store
+            .put(raw, "application/vnd.apache.arrow.stream")
+            .await
+            .unwrap();
+
+        let mut data = HashMap::new();
+        data.insert(
+            "application/vnd.apache.arrow.stream".to_string(),
+            ContentRef::Blob {
+                blob: hash.clone(),
+                size: raw.len() as u64,
+            },
+        );
+        data.insert(
+            "text/plain".to_string(),
+            ContentRef::Inline {
+                inline: "pyarrow.Table\nid: int64".to_string(),
+            },
+        );
+
+        let resolved = resolve_data_bundle(&data, &store).await.unwrap();
+
+        assert!(!resolved.contains_key("application/vnd.apache.arrow.stream"));
+        let ref_entry = resolved
+            .get(BLOB_REF_MIME)
+            .expect("BLOB_REF_MIME entry present");
+        assert_eq!(ref_entry["hash"], hash);
+        assert_eq!(
+            ref_entry["content_type"],
+            "application/vnd.apache.arrow.stream"
+        );
+        assert_eq!(ref_entry["size"], raw.len());
+        assert_eq!(
+            resolved.get("text/plain").and_then(|v| v.as_str()),
+            Some("pyarrow.Table\nid: int64")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_data_bundle_keeps_multiple_table_payloads() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let arrow = b"ARROW1-stream-payload-bytes";
+        let arrow_hash = store
+            .put(arrow, "application/vnd.apache.arrow.stream")
+            .await
+            .unwrap();
+        let parquet = b"PAR1-parquet-payload-bytes";
+        let parquet_hash = store
+            .put(parquet, "application/vnd.apache.parquet")
+            .await
+            .unwrap();
+
+        let mut data = HashMap::new();
+        data.insert(
+            "application/vnd.apache.arrow.stream".to_string(),
+            ContentRef::Blob {
+                blob: arrow_hash.clone(),
+                size: arrow.len() as u64,
+            },
+        );
+        data.insert(
+            "application/vnd.apache.parquet".to_string(),
+            ContentRef::Blob {
+                blob: parquet_hash,
+                size: parquet.len() as u64,
+            },
+        );
+
+        let resolved = resolve_data_bundle(&data, &store).await.unwrap();
+
+        assert!(!resolved.contains_key("application/vnd.apache.arrow.stream"));
+        assert!(
+            resolved
+                .get("application/vnd.apache.parquet")
+                .and_then(|v| v.as_str())
+                .is_some(),
+            "secondary whitelisted table payload should be base64-inlined, not dropped"
+        );
+        let ref_entry = resolved
+            .get(BLOB_REF_MIME)
+            .expect("BLOB_REF_MIME entry present");
+        assert_eq!(ref_entry["hash"], arrow_hash);
+        assert_eq!(
+            ref_entry["content_type"],
+            "application/vnd.apache.arrow.stream"
+        );
+        assert_eq!(ref_entry["size"], arrow.len());
+    }
+
+    #[tokio::test]
     async fn test_resolve_data_bundle_non_whitelisted_binary_stays_base64() {
         let dir = TempDir::new().unwrap();
         let store = test_store(&dir);
 
-        // A "large" image blob — whitelist-based externalization only
-        // applies to parquet, so images keep the classic base64 path
+        // A "large" image blob — whitelist-based externalization only applies
+        // to table payloads, so images keep the classic base64 path
         // regardless of size.
         let raw = vec![0xAAu8; 64 * 1024];
         let content_ref = ContentRef::from_binary(&raw, "image/png", &store)

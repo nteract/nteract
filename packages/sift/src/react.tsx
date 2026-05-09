@@ -371,10 +371,17 @@ export function SiftTable({
       wasmHandle = handle;
 
       const mod = getModuleSync();
-      const { tableData, columns, prefetchViewport } = createWasmTableData(handle, columnOverrides);
+      const columnHints = mod.arrow_ipc_column_hints_with_row_count(bytes, mod.num_rows(handle));
+      const pandasIndexCols = pandasIndexColumnsFromHints(columnHints);
+      const { tableData, columns, prefetchViewport } = createWasmTableData(handle);
       tableData.prefetchViewport = prefetchViewport;
-      tableData.recomputeSummaries = () => updateWasmSummaries(mod, handle, tableData, columns);
-      updateWasmSummaries(mod, handle, tableData, columns);
+      tableData.recomputeSummaries = () =>
+        updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
+
+      applyParquetColumnHints(columns, columnHints);
+      applyColumnOverrides(columns, columnOverrides);
+
+      updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
 
       if (cancelled) return;
       mountEngine(tableData);

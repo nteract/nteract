@@ -12,14 +12,14 @@ The launcher registers lazy IPython `mimebundle_formatter` handlers in
 `nteract_kernel_launcher/_bootstrap.py` for pandas, polars, narwhals,
 `pyarrow.Table`, `pyarrow.RecordBatch`, and Hugging Face datasets.
 
-Today those rich table paths serialize bytes as parquet, stash the bytes in the
-kernel-side pending buffer map, and return a bundle shaped like:
+Today the rich table paths serialize bytes, stash the bytes in the kernel-side
+pending buffer map, and return a bundle shaped like:
 
 ```json
 {
   "application/vnd.nteract.blob-ref+json": {
     "hash": "sha256...",
-    "content_type": "application/vnd.apache.parquet",
+    "content_type": "application/vnd.apache.arrow.stream",
     "size": 12345,
     "summary": {
       "total_rows": 1000,
@@ -37,11 +37,11 @@ The default IPython formatter chain can still add `text/plain` or `text/html`
 fallbacks. That is the compatibility contract: a vanilla notebook should render
 the fallback MIME, while nteract consumes the content-addressed binary payload.
 
-The `pyarrow.Table` and dataset paths are already the most metadata-correct
-paths because `serialize_arrow_table` writes the Arrow table directly to
-parquet, preserving schema key/value metadata such as Hugging Face `features`.
-The dataframe paths are less faithful because conversion through pandas/polars
-does not preserve arbitrary Arrow schema metadata.
+The `pyarrow.Table`, `pyarrow.RecordBatch`, and materialized Hugging Face
+dataset paths are Arrow-native: `serialize_arrow_table` writes Arrow IPC stream
+bytes and preserves schema key/value metadata such as Hugging Face `features`.
+The pandas and polars dataframe paths still emit parquet because those objects
+do not necessarily carry arbitrary Arrow schema metadata.
 
 ## Near-Term Rust Contract
 
@@ -75,8 +75,8 @@ content-addressed binary bytes. Non-null `query` hints should live next to
 
 ## Arrow IPC As A First-Class MIME
 
-The next incremental step is to add `application/vnd.apache.arrow.stream` as a
-first-class table output MIME alongside parquet.
+`application/vnd.apache.arrow.stream` is now a first-class table output MIME
+alongside parquet.
 
 Python should prefer Arrow IPC stream bytes when the object is already Arrow:
 
@@ -88,18 +88,18 @@ Python should prefer Arrow IPC stream bytes when the object is already Arrow:
 Parquet should remain available for persistence-oriented paths and as a
 fallback when Arrow IPC support is missing.
 
-Runtime and frontend work needed for the first-class MIME:
+Runtime and frontend work included for the first-class MIME:
 
-- Add `application/vnd.apache.arrow.stream` to the ref-MIME save whitelist so
+- `application/vnd.apache.arrow.stream` is in the ref-MIME save whitelist so
   saved `.ipynb` files keep the binary payload externalized as a blob ref
   instead of base64-inlining it.
-- Add the MIME to runtime/MCP MIME priority so Sift is selected before generic
+- The MIME is in runtime/MCP MIME priority so Sift is selected before generic
   text fallbacks.
-- Teach plugin loading and binary renderer gates that Arrow IPC is a Sift table
+- Plugin loading and binary renderer gates treat Arrow IPC as a Sift table
   MIME, just like parquet.
-- Add Rust-side Arrow IPC summary support in the predicate layer, then expose it
-  to `repr_llm` and Sift/WASM. This should live beside the parquet predicate
-  logic so both `repr_llm` and Sift share the same schema/type interpretation.
+- Rust-side Arrow IPC schema-hint support lives in the predicate layer and is
+  exposed to Sift/WASM, sharing the same pandas/Hugging Face interpretation as
+  parquet footer hints.
 
 This gives us an Arrow-native notebook at rest, but it is still not the full
 streaming design from issue #1816 because the blob is complete before renderers

@@ -66,9 +66,10 @@ export const DEFAULT_PRIORITY = [
   "application/vnd.vega.v5.json",
   "application/vnd.vega.v4+json",
   "application/geo+json",
-  // DataFrames — sift renders parquet as an interactive table. Must
+  // DataFrames — sift renders Arrow IPC/parquet as an interactive table. Must
   // outrank text/html so pandas's HTML fallback doesn't win when both
-  // are present (dx emits parquet + text/html for pandas/polars).
+  // are present (dx emits table bytes + text/html for rich table outputs).
+  "application/vnd.apache.arrow.stream",
   "application/vnd.apache.parquet",
   // HTML, PDF, markdown, and LaTeX
   "text/html",

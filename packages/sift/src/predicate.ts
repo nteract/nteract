@@ -27,6 +27,11 @@ type PredicateModule = {
   load_parquet(parquet_bytes: Uint8Array): number;
   parquet_metadata(parquet_bytes: Uint8Array): Uint32Array;
   parquet_column_hints(parquet_bytes: Uint8Array): ParquetColumnHint[];
+  arrow_ipc_column_hints(ipc_bytes: Uint8Array): ParquetColumnHint[];
+  arrow_ipc_column_hints_with_row_count(
+    ipc_bytes: Uint8Array,
+    total_rows: number,
+  ): ParquetColumnHint[];
   load_parquet_row_group(parquet_bytes: Uint8Array, row_group: number, handle: number): number;
   cast_column(handle: number, col: number, target_type: string): void;
   has_original_column(handle: number, col: number): boolean;

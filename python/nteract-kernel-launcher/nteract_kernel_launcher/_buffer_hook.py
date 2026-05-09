@@ -25,7 +25,7 @@ from nteract_kernel_launcher._refs import BLOB_REF_MIME
 
 log = logging.getLogger("nteract_kernel_launcher")
 
-# Per-thread stash of pending parquet bytes, keyed by content hash.
+# Per-thread stash of pending table bytes, keyed by content hash.
 # The formatter writes; the hook reads + pops.
 _pending = threading.local()
 

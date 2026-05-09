@@ -1,12 +1,12 @@
 /**
  * Sift Renderer Plugin
  *
- * On-demand renderer plugin for application/vnd.apache.parquet outputs.
+ * On-demand renderer plugin for table outputs.
  * Loaded into the isolated iframe via the renderer plugin API.
  *
- * Data flow: kernel outputs parquet bytes → daemon stores in blob server →
+ * Data flow: kernel outputs table bytes → daemon stores in blob server →
  * frontend gets blob URL → iframe loads sift plugin → SiftTable fetches
- * parquet from blob URL → WASM decodes → table renders.
+ * parquet or Arrow IPC from blob URL → WASM decodes → table renders.
  */
 
 import { setWasmUrl, SiftTable } from "@nteract/sift";
@@ -60,6 +60,9 @@ function SiftRenderer({ data, mimeType }: RendererProps) {
 export function install(ctx: {
   register: (mimeTypes: string[], component: React.ComponentType<RendererProps>) => void;
 }) {
-  console.debug("[sift-renderer] plugin installed for application/vnd.apache.parquet");
-  ctx.register(["application/vnd.apache.parquet"], SiftRenderer);
+  console.debug("[sift-renderer] plugin installed for table MIME types");
+  ctx.register(
+    ["application/vnd.apache.parquet", "application/vnd.apache.arrow.stream"],
+    SiftRenderer,
+  );
 }

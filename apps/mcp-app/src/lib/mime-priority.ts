@@ -6,7 +6,8 @@ export const MIME_PRIORITY: readonly string[] = [
   // Visualizations (highest priority — rich interactive content)
   "application/vnd.plotly.v1+json",
   "application/geo+json",
-  // Data tables (parquet → Sift renderer)
+  // Data tables (Arrow IPC/parquet -> Sift renderer)
+  "application/vnd.apache.arrow.stream",
   "application/vnd.apache.parquet",
   // Rich text
   "text/html",
