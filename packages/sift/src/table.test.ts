@@ -176,7 +176,9 @@ describe("createTable", () => {
       vi.mocked(layout).mockImplementation((prepared: unknown) => {
         const { text } = prepared as { text?: string };
         return {
-          lineCount: text?.includes("tall wrapped categorical text") ? 6 : 1,
+          // lineCount stays at MAX_COLLAPSED_LINES so the engine keeps the
+          // measured height instead of clamping for the row-collapse path.
+          lineCount: text?.includes("tall wrapped categorical text") ? 3 : 1,
           height: text?.includes("tall wrapped categorical text") ? 120 : 20,
         } as ReturnType<typeof layout>;
       });
@@ -189,6 +191,53 @@ describe("createTable", () => {
 
       const thirdRenderedRow = container.querySelector<HTMLElement>('[aria-rowindex="4"]');
       expect(thirdRenderedRow?.style.transform).toBe("translateY(172px)");
+    });
+
+    it("clamps a multi-line text cell to MAX_COLLAPSED_LINES until its row is focused", async () => {
+      engine.destroy();
+      container.innerHTML = "";
+
+      vi.mocked(prepare).mockImplementation(
+        (text: string) =>
+          ({ __brand: "PreparedText", text }) as unknown as ReturnType<typeof prepare>,
+      );
+      // Every categorical cell reports 6 lines — well over the cap of 3.
+      vi.mocked(layout).mockImplementation(
+        () =>
+          ({
+            lineCount: 6,
+            height: 120,
+          }) as ReturnType<typeof layout>,
+      );
+
+      engine = createTable(container, makeTableData(makeRows(4)));
+      const viewport = container.querySelector<HTMLElement>(".sift-viewport")!;
+      // Force enough viewport height that the render loop reaches all 4 rows
+      // and measures their categorical column.
+      Object.defineProperty(viewport, "clientHeight", { value: 800, configurable: true });
+      viewport.dispatchEvent(new Event("scroll"));
+      await vi.advanceTimersByTimeAsync(20);
+
+      // Collapsed: every row's tall categorical column caps at 3 × 20 + 16 = 76.
+      // View row 2 (aria-rowindex=4 — header is 1) sits at heights[0]+heights[1] = 152.
+      const beforeRow2 = container.querySelector<HTMLElement>('[aria-rowindex="4"]');
+      expect(beforeRow2?.style.transform).toBe("translateY(152px)");
+
+      // The truncated cell carries the soft-fade class.
+      expect(container.querySelector(".sift-cell-truncated")).not.toBeNull();
+
+      // Focus row 1 → its height grows to the full 120 + 16 = 136.
+      engine.setFocusedDataRow(1);
+      await vi.advanceTimersByTimeAsync(20);
+
+      const afterRow2 = container.querySelector<HTMLElement>('[aria-rowindex="4"]');
+      // Row 0 still capped (76), row 1 expanded (136). View row 2 sits at 76 + 136 = 212.
+      expect(afterRow2?.style.transform).toBe("translateY(212px)");
+
+      // Truncation class is gone for the focused row's text cells.
+      const focusedRow = container.querySelector(".sift-row-focused");
+      expect(focusedRow).not.toBeNull();
+      expect(focusedRow?.querySelector(".sift-cell-truncated")).toBeNull();
     });
   });
 
@@ -534,7 +583,9 @@ describe("createTable", () => {
         const { text } = prepared as { text?: string };
         const tall = text?.includes("wrap-sensitive above viewport") && width < 500;
         return {
-          lineCount: tall ? 6 : 1,
+          // lineCount stays at MAX_COLLAPSED_LINES so the row-collapse path
+          // doesn't clamp this fixture's height back to the cap.
+          lineCount: tall ? 3 : 1,
           height: tall ? 120 : 20,
         } as ReturnType<typeof layout>;
       });
@@ -583,7 +634,9 @@ describe("createTable", () => {
         const { text } = prepared as { text?: string };
         const tall = text?.includes("wrap-sensitive above viewport") && width < 500;
         return {
-          lineCount: tall ? 6 : 1,
+          // lineCount stays at MAX_COLLAPSED_LINES so the row-collapse path
+          // doesn't clamp this fixture's height back to the cap.
+          lineCount: tall ? 3 : 1,
           height: tall ? 120 : 20,
         } as ReturnType<typeof layout>;
       });

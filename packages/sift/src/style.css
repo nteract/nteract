@@ -702,6 +702,18 @@ h1 {
   text-overflow: ellipsis;
 }
 
+/* Soft fade on text cells whose natural height exceeded the collapsed cap.
+   The row's `height` style already clips the overflow; this just signals
+   "more text below, click the row to expand". */
+.sift-cell-truncated {
+  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 16px), transparent);
+  mask-image: linear-gradient(to bottom, black calc(100% - 16px), transparent);
+}
+
+.sift-row-focused {
+  background: color-mix(in srgb, var(--sift-accent) 6%, transparent);
+}
+
 .sift-badge {
   display: inline-block;
   padding: 2px 8px;
