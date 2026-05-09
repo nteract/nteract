@@ -1201,7 +1201,7 @@ fn merge_blob_ref_hints_into_metadata(metadata: &mut HashMap<String, Value>, dat
     };
 
     let mut hints = serde_json::Map::new();
-    if let Some(summary) = ref_map.get("summary") {
+    if let Some(summary) = ref_map.get("summary").filter(|value| !value.is_null()) {
         hints.insert("summary".to_string(), summary.clone());
     }
     if let Some(query) = ref_map.get("query").filter(|value| !value.is_null()) {
@@ -1215,6 +1215,10 @@ fn merge_blob_ref_hints_into_metadata(metadata: &mut HashMap<String, Value>, dat
         .entry(content_type.to_string())
         .or_insert_with(|| Value::Object(serde_json::Map::new()));
     let Value::Object(per_mime_map) = per_mime else {
+        tracing::warn!(
+            "[dx] blob-ref hints ignored because metadata for content_type={} is not an object",
+            content_type
+        );
         return;
     };
 
@@ -1222,10 +1226,16 @@ fn merge_blob_ref_hints_into_metadata(metadata: &mut HashMap<String, Value>, dat
         .entry("nteract".to_string())
         .or_insert_with(|| Value::Object(serde_json::Map::new()));
     let Value::Object(nteract_map) = nteract else {
+        tracing::warn!(
+            "[dx] blob-ref hints ignored because metadata for content_type={}.nteract is not an \
+             object",
+            content_type
+        );
         return;
     };
 
     for (key, value) in hints {
+        // Explicit caller-supplied metadata wins over transport-derived hints.
         nteract_map.entry(key).or_insert(value);
     }
 }
@@ -1484,6 +1494,85 @@ mod tests {
                 .is_none(),
             "null query hints should not be promoted"
         );
+    }
+
+    #[tokio::test]
+    async fn dx_ref_mime_drops_null_metadata_hints() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = test_store(&dir);
+
+        let raw = b"PAR1-fake-parquet-body";
+        let hash = blob_store
+            .put(raw, "application/vnd.apache.parquet")
+            .await
+            .unwrap();
+
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                notebook_doc::mime::BLOB_REF_MIME: {
+                    "hash": hash,
+                    "content_type": "application/vnd.apache.parquet",
+                    "size": raw.len(),
+                    "summary": null,
+                    "query": null,
+                }
+            },
+        });
+
+        let manifest = create_manifest(&output, &blob_store, 1024).await.unwrap();
+        let metadata = match manifest {
+            OutputManifest::DisplayData { metadata, .. } => metadata,
+            other => panic!("expected DisplayData, got {other:?}"),
+        };
+
+        assert!(
+            metadata.get("application/vnd.apache.parquet").is_none(),
+            "null summary/query hints should not create per-MIME metadata"
+        );
+    }
+
+    #[tokio::test]
+    async fn dx_ref_mime_does_not_overwrite_explicit_metadata_hints() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = test_store(&dir);
+
+        let raw = b"PAR1-fake-parquet-body";
+        let hash = blob_store
+            .put(raw, "application/vnd.apache.parquet")
+            .await
+            .unwrap();
+
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "metadata": {
+                "application/vnd.apache.parquet": {
+                    "nteract": {
+                        "summary": { "total_rows": 999, "sampled": true }
+                    }
+                }
+            },
+            "data": {
+                notebook_doc::mime::BLOB_REF_MIME: {
+                    "hash": hash,
+                    "content_type": "application/vnd.apache.parquet",
+                    "size": raw.len(),
+                    "summary": { "total_rows": 3, "sampled": false },
+                    "query": { "projection": ["x"] },
+                }
+            },
+        });
+
+        let manifest = create_manifest(&output, &blob_store, 1024).await.unwrap();
+        let metadata = match manifest {
+            OutputManifest::DisplayData { metadata, .. } => metadata,
+            other => panic!("expected DisplayData, got {other:?}"),
+        };
+        let nteract = &metadata["application/vnd.apache.parquet"]["nteract"];
+
+        assert_eq!(nteract["summary"]["total_rows"], 999);
+        assert_eq!(nteract["summary"]["sampled"], true);
+        assert_eq!(nteract["query"]["projection"][0], "x");
     }
 
     /// When a bundle carries BOTH a BLOB_REF_MIME and a fallback entry under

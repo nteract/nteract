@@ -71,7 +71,7 @@ This keeps the manifest canonical: renderers, MCP, `repr_llm`, and saved
 notebooks can inspect output-level metadata without knowing about the
 transport-only blob-ref MIME. The data bundle still points at the
 content-addressed binary bytes. Non-null `query` hints should live next to
-`summary` in the same `nteract` object.
+`summary` in the same `nteract` object. Null hint values are not promoted.
 
 ## Arrow IPC As A First-Class MIME
 
