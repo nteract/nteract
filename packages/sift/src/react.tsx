@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   applyColumnOverrides,
   applyParquetColumnHints,
+  looksLikeIndexColumnName,
   pandasIndexColumnsFromHints,
 } from "./parquet-features";
 import { ensureModule, getModuleSync, loadIpc } from "./predicate";
@@ -215,14 +216,15 @@ function updateWasmSummaries(
           count: number;
         }[];
         if (bins.length === 0) return null;
-        const isPandasIndex = pandasIndexCols?.has(col.key) ?? false;
-        const isIndexName = /^(unnamed[: _]*\d*|index|_?id|rowid|row_?id|row_?num)$/i.test(col.key);
+        // Parquet loads carry `pandasIndexCols` from the Rust hints; Arrow IPC
+        // and other sources without footer metadata fall back to a name match.
+        const isIndex = pandasIndexCols?.has(col.key) ?? looksLikeIndexColumnName(col.key);
         return {
           kind: "numeric" as const,
           min: bins[0].x0,
           max: bins[bins.length - 1].x1,
           bins,
-          isIndex: isPandasIndex || isIndexName ? true : undefined,
+          isIndex: isIndex ? true : undefined,
         };
       }
     }
