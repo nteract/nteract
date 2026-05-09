@@ -578,7 +578,8 @@ pub async fn create_manifest(
     let manifest = match output_type {
         "display_data" => {
             let data = convert_data_bundle(output.get("data"), blob_store, threshold).await?;
-            let metadata = extract_metadata(output.get("metadata"));
+            let metadata =
+                extract_metadata_with_blob_ref_hints(output.get("metadata"), output.get("data"));
             let transient = extract_transient(output.get("transient"));
             OutputManifest::DisplayData {
                 output_id: existing_output_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
@@ -589,7 +590,8 @@ pub async fn create_manifest(
         }
         "execute_result" => {
             let data = convert_data_bundle(output.get("data"), blob_store, threshold).await?;
-            let metadata = extract_metadata(output.get("metadata"));
+            let metadata =
+                extract_metadata_with_blob_ref_hints(output.get("metadata"), output.get("data"));
             let transient = extract_transient(output.get("transient"));
             let execution_count = output
                 .get("execution_count")
@@ -861,7 +863,9 @@ pub async fn update_manifest_display_data(
             ..
         } => {
             let data = convert_data_bundle(Some(new_data), blob_store, threshold).await?;
-            let metadata = new_metadata.clone().into_iter().collect();
+            let metadata_value = Value::Object(new_metadata.clone());
+            let metadata =
+                extract_metadata_with_blob_ref_hints(Some(&metadata_value), Some(new_data));
             let updated = OutputManifest::DisplayData {
                 output_id: output_id.clone(),
                 data,
@@ -877,7 +881,9 @@ pub async fn update_manifest_display_data(
             ..
         } => {
             let data = convert_data_bundle(Some(new_data), blob_store, threshold).await?;
-            let metadata = new_metadata.clone().into_iter().collect();
+            let metadata_value = Value::Object(new_metadata.clone());
+            let metadata =
+                extract_metadata_with_blob_ref_hints(Some(&metadata_value), Some(new_data));
             let updated = OutputManifest::ExecuteResult {
                 output_id: output_id.clone(),
                 data,
@@ -1167,6 +1173,63 @@ fn extract_metadata(metadata: Option<&Value>) -> HashMap<String, Value> {
     }
 }
 
+/// Extract metadata and lift transport-level blob-ref hints into the wrapped
+/// MIME's metadata namespace.
+///
+/// Python emits `BLOB_REF_MIME` as the buffer transport envelope, with
+/// `summary` and `query` describing the wrapped binary table payload. The
+/// manifest stores the payload under the wrapped `content_type`, so these hints
+/// need to move with it instead of being dropped with the transport MIME.
+fn extract_metadata_with_blob_ref_hints(
+    metadata: Option<&Value>,
+    data: Option<&Value>,
+) -> HashMap<String, Value> {
+    let mut metadata = extract_metadata(metadata);
+    merge_blob_ref_hints_into_metadata(&mut metadata, data);
+    metadata
+}
+
+fn merge_blob_ref_hints_into_metadata(metadata: &mut HashMap<String, Value>, data: Option<&Value>) {
+    let Some(Value::Object(data_map)) = data else {
+        return;
+    };
+    let Some(Value::Object(ref_map)) = data_map.get(BLOB_REF_MIME) else {
+        return;
+    };
+    let Some(content_type) = ref_map.get("content_type").and_then(Value::as_str) else {
+        return;
+    };
+
+    let mut hints = serde_json::Map::new();
+    if let Some(summary) = ref_map.get("summary") {
+        hints.insert("summary".to_string(), summary.clone());
+    }
+    if let Some(query) = ref_map.get("query").filter(|value| !value.is_null()) {
+        hints.insert("query".to_string(), query.clone());
+    }
+    if hints.is_empty() {
+        return;
+    }
+
+    let per_mime = metadata
+        .entry(content_type.to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    let Value::Object(per_mime_map) = per_mime else {
+        return;
+    };
+
+    let nteract = per_mime_map
+        .entry("nteract".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    let Value::Object(nteract_map) = nteract else {
+        return;
+    };
+
+    for (key, value) in hints {
+        nteract_map.entry(key).or_insert(value);
+    }
+}
+
 /// Extract transient data (display_id) from a Jupyter output.
 fn extract_transient(transient: Option<&Value>) -> TransientData {
     match transient {
@@ -1381,6 +1444,12 @@ mod tests {
                     "hash": hash,
                     "content_type": "application/vnd.apache.parquet",
                     "size": raw.len(),
+                    "summary": {
+                        "total_rows": 3,
+                        "included_rows": 3,
+                        "sampled": false,
+                        "sample_strategy": "none"
+                    },
                     "query": null,
                 },
                 "text/llm+plain": "DataFrame (pandas): 3 rows × 2 columns"
@@ -1388,8 +1457,8 @@ mod tests {
         });
 
         let manifest = create_manifest(&output, &blob_store, 1024).await.unwrap();
-        let data = match manifest {
-            OutputManifest::DisplayData { data, .. } => data,
+        let (data, metadata) = match manifest {
+            OutputManifest::DisplayData { data, metadata, .. } => (data, metadata),
             other => panic!("expected DisplayData, got {other:?}"),
         };
 
@@ -1404,6 +1473,17 @@ mod tests {
             }
             other => panic!("expected blob ref, got {other:?}"),
         }
+
+        assert_eq!(
+            metadata["application/vnd.apache.parquet"]["nteract"]["summary"]["total_rows"],
+            3
+        );
+        assert!(
+            metadata["application/vnd.apache.parquet"]["nteract"]
+                .get("query")
+                .is_none(),
+            "null query hints should not be promoted"
+        );
     }
 
     /// When a bundle carries BOTH a BLOB_REF_MIME and a fallback entry under
@@ -2391,6 +2471,13 @@ mod tests {
                 "hash": hash,
                 "content_type": "application/vnd.apache.parquet",
                 "size": payload_bytes.len(),
+                "summary": {
+                    "total_rows": 5,
+                    "included_rows": 5,
+                    "sampled": false,
+                    "sample_strategy": "none"
+                },
+                "query": { "projection": ["a", "b"] },
             }
         });
 
@@ -2409,7 +2496,7 @@ mod tests {
         // After update, the manifest's data map MUST contain the wrapped
         // content-type, not the raw blob-ref MIME. This is the fix: before
         // this change, the update path stored the ref MIME as-is.
-        let OutputManifest::DisplayData { data, .. } = updated else {
+        let OutputManifest::DisplayData { data, metadata, .. } = updated else {
             panic!("expected DisplayData variant");
         };
         assert!(
@@ -2420,6 +2507,14 @@ mod tests {
         assert!(
             !data.contains_key("application/vnd.nteract.blob-ref+json"),
             "raw blob-ref MIME must not appear in promoted manifest"
+        );
+        assert_eq!(
+            metadata["application/vnd.apache.parquet"]["nteract"]["summary"]["total_rows"],
+            5
+        );
+        assert_eq!(
+            metadata["application/vnd.apache.parquet"]["nteract"]["query"]["projection"][0],
+            "a"
         );
     }
 
