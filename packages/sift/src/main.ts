@@ -1,5 +1,12 @@
 import { catchError, defer, EMPTY, Observable, Subject, switchMap } from "rxjs";
 import { DATASETS, type DatasetEntry } from "./datasets";
+import {
+  applyHfFeatureOverrides,
+  applyPandasIndexOverrides,
+  parseHfFeatures,
+  parsePandasIndexColumns,
+  parseSchemaMetadata,
+} from "./parquet-features";
 import { resolveHuggingFaceParquetUrl } from "./parquet-loader";
 import { ensureModule, getModuleSync, loadIpc } from "./predicate";
 import { type Column, createTable, type TableData, type TableEngine } from "./table";
@@ -337,49 +344,17 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
           const numRowGroups = meta[0];
           const totalRows = meta[1];
 
-          // Read schema metadata for pandas index_columns and HuggingFace feature types
-          // `parquet_schema_metadata` is a Rust `HashMap` returned via
-          // `serde_wasm_bindgen`, which lands in JS as a `Map<string,string>` —
-          // NOT a plain object. Reading it via property access (the previous
-          // code) silently returned undefined for every key, leaving HF
-          // ClassLabel/Image detection dead. Coerce through `Object.fromEntries`
-          // so the rest of this function can keep doing record-style access.
-          let schemaMetadata: Record<string, string> = {};
-          try {
-            const raw = mod.parquet_schema_metadata(parquetBytes) as unknown;
-            if (raw instanceof Map) {
-              schemaMetadata = Object.fromEntries(raw as Map<string, string>);
-            } else if (raw && typeof raw === "object") {
-              schemaMetadata = raw as Record<string, string>;
-            }
-          } catch {
-            /* metadata extraction is best-effort */
-          }
-
-          // Parse pandas index columns
-          const pandasIndexCols = new Set<string>();
-          if (schemaMetadata.pandas) {
-            try {
-              const pandas = JSON.parse(schemaMetadata.pandas);
-              for (const ic of pandas.index_columns ?? []) {
-                if (typeof ic === "string") pandasIndexCols.add(ic);
-                // Range index descriptors don't map to a named column
+          const schemaMetadata = parseSchemaMetadata(
+            (() => {
+              try {
+                return mod.parquet_schema_metadata(parquetBytes);
+              } catch {
+                return undefined;
               }
-            } catch {
-              /* ignore parse errors */
-            }
-          }
-
-          // Parse HuggingFace feature metadata
-          const hfFeatures: Record<string, { _type: string; names?: string[] }> = {};
-          if (schemaMetadata.huggingface) {
-            try {
-              const hf = JSON.parse(schemaMetadata.huggingface);
-              Object.assign(hfFeatures, hf?.info?.features ?? {});
-            } catch {
-              /* ignore parse errors */
-            }
-          }
+            })(),
+          );
+          const pandasIndexCols = parsePandasIndexColumns(schemaMetadata);
+          const hfFeatures = parseHfFeatures(schemaMetadata);
 
           // Load first row group → mount table immediately
           const handle = mod.load_parquet_row_group(parquetBytes, 0, 0);
@@ -389,42 +364,8 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
           tableData.recomputeSummaries = () =>
             updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
 
-          // Apply metadata: mark pandas index columns, narrow index columns
-          const isIndexName = (name: string) =>
-            /^(unnamed[: _]*\d*|index|_?id|rowid|row_?id|row_?num)$/i.test(name);
-          for (const col of columns) {
-            if (pandasIndexCols.has(col.key) || isIndexName(col.key)) {
-              // Size to fit the max row number — estimate from digit count
-              const digits = totalRows.toLocaleString().length;
-              col.width = Math.max(60, digits * 9 + 24); // ~9px per char + cell padding
-              col.sortable = false;
-              // Hide labels for pandas artifacts — not real column names users would query
-              if (/^(unnamed[: _]*\d*|__index_level_\d+__)$/i.test(col.key)) col.label = "";
-            }
-            const hfFeature = hfFeatures[col.key];
-            if (hfFeature?._type === "ClassLabel" && col.columnType !== "categorical") {
-              // HF says this is a classification label — treat as categorical
-              col.columnType = "categorical";
-              col.numeric = false;
-            }
-            // HF Image -> thumbnail. List<Image> / Sequence<Image> -> a strip
-            // of thumbs, sized wider so multiple fit. Both share the same
-            // wasm-side getter (`get_cell_image_count` + `_at`).
-            const inner =
-              hfFeature?._type === "Image"
-                ? hfFeature
-                : hfFeature?._type === "List" || hfFeature?._type === "Sequence"
-                  ? (hfFeature as { feature?: { _type?: string } }).feature
-                  : undefined;
-            if (inner?._type === "Image") {
-              col.columnType = "image";
-              col.numeric = false;
-              col.sortable = false;
-              const isList = hfFeature?._type !== "Image";
-              const minWidth = isList ? 320 : 140;
-              if (col.width < minWidth) col.width = minWidth;
-            }
-          }
+          applyPandasIndexOverrides(columns, pandasIndexCols, totalRows);
+          applyHfFeatureOverrides(columns, hfFeatures);
 
           // Compute initial summaries from first row group
           updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
