@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capabilities for notebook windows",
-  "windows": ["main", "notebook-*", "onboarding", "upgrade", "feedback", "settings"],
+  "windows": ["main", "notebook-*"],
   "permissions": [
     "core:default",
     "core:event:default",
