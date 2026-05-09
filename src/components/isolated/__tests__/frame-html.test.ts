@@ -99,6 +99,20 @@ describe("generateFrameHtml", () => {
       expect(creamLightHtml).toContain("--border-color: #d8cec3");
     });
 
+    it("scopes cream document typography to markdown outputs", () => {
+      const creamHtml = generateFrameHtml({ darkMode: false, colorTheme: "cream" });
+      expect(creamHtml).toContain(
+        "--markdown-document-font: KaTeX_Main, Georgia, 'Times New Roman', serif",
+      );
+      expect(creamHtml).toContain('[data-color-theme="cream"] [data-slot="markdown-output"]');
+      expect(creamHtml).toContain('[data-color-theme="cream"] [data-slot="markdown-output"] code');
+
+      const classicHtml = generateFrameHtml({ darkMode: false });
+      expect(classicHtml).toContain(
+        "--markdown-document-font: system-ui, -apple-system, BlinkMacSystemFont",
+      );
+    });
+
     it("uses dark text colors when darkMode is true", () => {
       const darkHtml = generateFrameHtml({ darkMode: true });
       expect(darkHtml).toContain("--text-primary: #e0e0e0");

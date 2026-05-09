@@ -52,6 +52,11 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
       --accent-color: ${colorTheme === "cream" ? "#d4896a" : "#3b82f6"};
       --error-color: #ef4444;
       --success-color: #22c55e;
+      --markdown-document-font: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+
+    [data-color-theme="cream"] {
+      --markdown-document-font: KaTeX_Main, Georgia, 'Times New Roman', serif;
     }
 
     * {
@@ -85,6 +90,19 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
     pre, code {
       font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
       font-size: 0.875rem;
+    }
+
+    [data-color-theme="cream"] [data-slot="markdown-output"] {
+      font-family: var(--markdown-document-font);
+      font-size: 1rem;
+      line-height: 1.65;
+      font-kerning: normal;
+      text-rendering: optimizeLegibility;
+    }
+
+    [data-color-theme="cream"] [data-slot="markdown-output"] pre,
+    [data-color-theme="cream"] [data-slot="markdown-output"] code {
+      font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
     }
 
     pre {
