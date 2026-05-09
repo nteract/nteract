@@ -48,10 +48,7 @@ fn production_csp_is_enabled_and_restrictive() {
     let csp = object_field(security(&config), "csp");
 
     let script_src = directive(csp, "script-src");
-    assert!(script_src.contains("'self'"));
-    assert!(script_src.contains("'wasm-unsafe-eval'"));
-    assert!(!script_src.contains("'unsafe-inline'"));
-    assert!(!script_src.contains("'unsafe-eval'"));
+    assert_eq!(script_src, "'self' 'wasm-unsafe-eval'");
 
     assert_eq!(directive(csp, "default-src"), "'self'");
     assert_eq!(directive(csp, "base-uri"), "'none'");
@@ -69,6 +66,8 @@ fn production_csp_is_enabled_and_restrictive() {
     assert!(connect_src.contains("http://ipc.localhost"));
     assert!(connect_src.contains("http://127.0.0.1:*"));
     assert!(!connect_src.contains("https:"));
+    assert!(!connect_src.contains("ws:"));
+    assert!(!connect_src.contains("wss:"));
 }
 
 #[test]
@@ -81,9 +80,10 @@ fn development_csp_is_separate_from_packaged_policy() {
     assert_ne!(csp, dev_csp);
 
     let dev_script_src = directive(dev_csp, "script-src");
-    assert!(dev_script_src.contains("'unsafe-inline'"));
-    assert!(dev_script_src.contains("'unsafe-eval'"));
-    assert!(dev_script_src.contains("http://localhost:*"));
+    assert_eq!(
+        dev_script_src,
+        "'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' http://localhost:*"
+    );
     assert!(!dev_script_src.contains("http://localhost:5174"));
 
     assert!(directive(dev_csp, "default-src").contains("http://localhost:*"));
