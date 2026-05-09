@@ -73,6 +73,7 @@ pub const UV_BASE_PACKAGES: &[&str] = &[
     "ipywidgets",
     "anywidget",
     "nbformat",
+    // Required by `nteract_kernel_launcher`'s Arrow/DataFrame formatters.
     "pyarrow>=14",
     "uv",
 ];
