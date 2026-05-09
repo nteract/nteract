@@ -1,6 +1,7 @@
 import { catchError, defer, EMPTY, Observable, Subject, switchMap } from "rxjs";
 import { DATASETS, type DatasetEntry } from "./datasets";
 import {
+  applyColumnOverrides,
   applyParquetColumnHints,
   looksLikeIndexColumnName,
   pandasIndexColumnsFromHints,
@@ -248,15 +249,17 @@ function loadLocalArrow$(dataset: DatasetEntry, tableRoot: HTMLElement): Observa
           renderLoadingSkeleton(tableRoot, "Loading into WASM…");
           const handle = await loadIpc(arrowBytes);
 
-          const { tableData, columns, prefetchViewport } = createWasmTableData(
-            handle,
-            generatedColumnOverrides,
-          );
+          const { tableData, columns, prefetchViewport } = createWasmTableData(handle);
           tableData.prefetchViewport = prefetchViewport;
           const mod = getModuleSync();
-          tableData.recomputeSummaries = () => updateWasmSummaries(mod, handle, tableData, columns);
+          const columnHints = mod.arrow_ipc_column_hints(arrowBytes);
+          const pandasIndexCols = pandasIndexColumnsFromHints(columnHints);
+          tableData.recomputeSummaries = () =>
+            updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
 
-          updateWasmSummaries(mod, handle, tableData, columns);
+          applyParquetColumnHints(columns, columnHints);
+          applyColumnOverrides(columns, generatedColumnOverrides);
+          updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
 
           if (cancelled) return;
           tableRoot.innerHTML = "";

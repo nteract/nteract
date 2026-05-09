@@ -11,8 +11,11 @@ use arrow_cast::display::ArrayFormatter;
 use arrow_ord::sort::{sort_to_indices, SortOptions};
 use arrow_select::concat::concat;
 use chrono::DateTime;
-use nteract_predicate::parquet_column_hints as predicate_parquet_column_hints;
 use nteract_predicate::summary::{CategoryCount, HistogramBin};
+use nteract_predicate::{
+    arrow_ipc_column_hints as predicate_arrow_ipc_column_hints,
+    parquet_column_hints as predicate_parquet_column_hints,
+};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -1441,6 +1444,14 @@ pub fn parquet_metadata(parquet_bytes: &[u8]) -> Result<Vec<u32>, JsValue> {
 #[wasm_bindgen]
 pub fn parquet_column_hints(parquet_bytes: &[u8]) -> Result<JsValue, JsValue> {
     let hints = predicate_parquet_column_hints(parquet_bytes)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    serde_wasm_bindgen::to_value(&hints).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// Extract canonical column hints from Arrow IPC schema metadata.
+#[wasm_bindgen]
+pub fn arrow_ipc_column_hints(ipc_bytes: &[u8]) -> Result<JsValue, JsValue> {
+    let hints = predicate_arrow_ipc_column_hints(ipc_bytes)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
     serde_wasm_bindgen::to_value(&hints).map_err(|e| JsValue::from_str(&e.to_string()))
 }

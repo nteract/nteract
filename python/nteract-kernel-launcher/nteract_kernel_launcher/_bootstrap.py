@@ -16,7 +16,7 @@ user code runs. Four things happen on ``load_ipython_extension``:
    hook on *both* ``ip.display_pub`` and ``ip.displayhook``. With the
    hook chain in place on both seats, ``execute_result`` (bare ``df``
    on last line) and ``display_data`` / ``update_display_data`` all
-   pick up parquet buffers from the same pending-bytes stash.
+   pick up table buffers from the same pending-bytes stash.
 
 4. Third-party visualization libraries (altair, plotly) are flipped to
    their ``"nteract"`` renderer if they happen to be importable. Each
@@ -33,7 +33,6 @@ unnecessary.
 from __future__ import annotations
 
 import hashlib
-import io
 import logging
 import os
 from collections.abc import Callable
@@ -95,7 +94,7 @@ def _pyarrow_record_batch_mimebundle(batch: Any, include=None, exclude=None) -> 
 
 
 def _dataset_mimebundle(ds: Any, include=None, exclude=None) -> dict | None:
-    """Emit parquet bytes + HF features summary for a ``datasets.Dataset``.
+    """Emit Arrow IPC bytes + HF features summary for a ``datasets.Dataset``.
 
     The underlying ``ds.data.table`` carries the ``huggingface`` schema KV
     metadata that Sift uses to detect rich types (Image, ClassLabel,
@@ -167,7 +166,7 @@ def _emit_dataframe(df: Any, *, total_rows: int) -> dict | None:
     pandas' ``text/html`` / ``text/plain`` on top for host-side fallback.
     """
     try:
-        data, content_type = serialize_dataframe(df, max_bytes=_MAX_PAYLOAD_BYTES)
+        data, content_type, included_rows = serialize_dataframe(df, max_bytes=_MAX_PAYLOAD_BYTES)
     except Exception as exc:  # noqa: BLE001
         log.debug("serialize failed: %s — emitting summary-only bundle", exc)
         try:
@@ -178,10 +177,11 @@ def _emit_dataframe(df: Any, *, total_rows: int) -> dict | None:
         except Exception:  # noqa: BLE001
             return None
 
-    return _emit_parquet_bytes(
+    return _emit_table_bytes(
         data,
         content_type=content_type,
         total_rows=total_rows,
+        included_rows=included_rows,
         summary_fn=lambda included, sampled: summarize_dataframe(
             df, total_rows=total_rows, included_rows=included, sampled=sampled
         ),
@@ -194,21 +194,21 @@ def _emit_arrow_table(
     total_rows: int,
     summary_fn: Callable[[], str] | None = None,
 ) -> dict | None:
-    """Serialize a ``pa.Table`` to parquet, preserving schema KV metadata.
+    """Serialize a ``pa.Table`` to Arrow IPC, preserving schema KV metadata.
 
     Distinct from :func:`_emit_dataframe` because the dataframe path runs
-    bytes through ``pa.Table.from_pandas`` / ``pl.write_parquet``, which
-    drop schema KV metadata. The table path goes straight through
-    ``pq.write_table`` so the ``huggingface`` key survives — this is what
-    makes Sift's rich-type detection light up for HF parquets the user
-    loaded with ``pq.read_table`` or ``datasets.load_dataset``.
+    bytes through ``pa.Table.from_pandas`` / ``pl.write_parquet``, which drop
+    arbitrary schema KV metadata. The table path writes Arrow IPC directly, so
+    the ``huggingface`` key survives for Sift's rich-type detection.
 
     ``summary_fn`` lets callers (notably ``_dataset_mimebundle``) provide
     a richer per-domain summary (HF features) instead of the generic
     pandas-style preview.
     """
     try:
-        data, content_type = serialize_arrow_table(table, max_bytes=_MAX_PAYLOAD_BYTES)
+        data, content_type, included_rows = serialize_arrow_table(
+            table, max_bytes=_MAX_PAYLOAD_BYTES
+        )
     except Exception as exc:  # noqa: BLE001
         log.debug("arrow serialize failed: %s — emitting summary-only bundle", exc)
         if summary_fn is not None:
@@ -225,10 +225,11 @@ def _emit_arrow_table(
             table, total_rows=total_rows, included_rows=included, sampled=sampled
         )
 
-    return _emit_parquet_bytes(
+    return _emit_table_bytes(
         data,
         content_type=content_type,
         total_rows=total_rows,
+        included_rows=included_rows,
         summary_fn=_summary,
     )
 
@@ -248,11 +249,12 @@ def _summarize_arrow_table(
     )
 
 
-def _emit_parquet_bytes(
+def _emit_table_bytes(
     data: bytes,
     *,
     content_type: str,
     total_rows: int,
+    included_rows: int,
     summary_fn: Callable[[int, bool], str],
 ) -> dict:
     """Stash bytes, build the ref bundle, attach a summary.
@@ -260,23 +262,13 @@ def _emit_parquet_bytes(
     ``summary_fn`` receives ``(included_rows, sampled)`` so per-domain
     summaries can name the sampling state honestly.
     """
-    sampled = False
-    included = total_rows
-    try:
-        import pyarrow.parquet as pq
-
-        meta = pq.read_metadata(io.BytesIO(data))
-        if meta.num_rows != total_rows:
-            sampled = True
-            included = meta.num_rows
-    except Exception:  # noqa: BLE001
-        pass
+    sampled = included_rows != total_rows
 
     h = hashlib.sha256(data).hexdigest()
     ref = BlobRef(hash=h, size=len(data))
     summary_hints = {
         "total_rows": total_rows,
-        "included_rows": included,
+        "included_rows": included_rows,
         "sampled": sampled,
         "sample_strategy": "head" if sampled else "none",
     }
@@ -285,7 +277,7 @@ def _emit_parquet_bytes(
 
     bundle: dict[str, Any] = {BLOB_REF_MIME: ref_bundle}
     try:
-        bundle["text/llm+plain"] = summary_fn(included, sampled)
+        bundle["text/llm+plain"] = summary_fn(included_rows, sampled)
     except Exception as exc:  # noqa: BLE001
         log.debug("summary build failed: %s", exc)
 
@@ -346,8 +338,7 @@ def _install_dataframe_formatters(ip: Any) -> None:
         ("narwhals", "DataFrame", _narwhals_mimebundle),
         # pyarrow — Table / RecordBatch are stamped to pyarrow.lib by
         # the C extension. Preserves schema KV metadata end-to-end so
-        # Sift's HF rich-type detection lights up for parquets the user
-        # loaded with pq.read_table.
+        # Sift's HF rich-type detection lights up for Arrow-native tables.
         ("pyarrow.lib", "Table", _pyarrow_table_mimebundle),
         ("pyarrow", "Table", _pyarrow_table_mimebundle),
         ("pyarrow.lib", "RecordBatch", _pyarrow_record_batch_mimebundle),

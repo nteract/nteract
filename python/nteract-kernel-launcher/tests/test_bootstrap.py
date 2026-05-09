@@ -357,7 +357,7 @@ def test_emit_dataframe_stashes_bytes_and_returns_bundle():
 def _pa_table_with_hf_metadata():
     """Build a small ``pa.Table`` carrying a ``huggingface`` schema KV entry.
 
-    Mirrors the shape of HF parquets: features under ``huggingface``,
+    Mirrors the shape of HF Arrow-backed tables: features under ``huggingface``,
     one column declared ``Image`` with ``Struct{bytes, path}``.
     """
     pa = pytest.importorskip("pyarrow")
@@ -385,10 +385,10 @@ def _pa_table_with_hf_metadata():
 def test_emit_pyarrow_table_preserves_huggingface_kv_metadata():
     """The pa.Table path is the load-bearing one for Sift's rich-type
     detection — the dataframe path drops schema KV metadata, this one
-    keeps it. Verify by reading the parquet footer back out."""
+    keeps it. Verify by reading the Arrow IPC schema back out."""
     import io
 
-    pq = pytest.importorskip("pyarrow.parquet")
+    pa = pytest.importorskip("pyarrow")
 
     from nteract_kernel_launcher import _bootstrap, _buffer_hook
     from nteract_kernel_launcher._refs import BLOB_REF_MIME
@@ -403,8 +403,9 @@ def test_emit_pyarrow_table_preserves_huggingface_kv_metadata():
     assert "text/llm+plain" in bundle
 
     h = bundle[BLOB_REF_MIME]["hash"]
+    assert bundle[BLOB_REF_MIME]["content_type"] == "application/vnd.apache.arrow.stream"
     data = _buffer_hook.pending_buffers()[h]
-    md = pq.read_metadata(io.BytesIO(data)).metadata or {}
+    md = pa.ipc.open_stream(io.BytesIO(data)).read_all().schema.metadata or {}
     assert b"huggingface" in md, f"missing huggingface KV; got keys: {[k.decode() for k in md]}"
     assert b'"_type": "Image"' in md[b"huggingface"]
 
@@ -426,14 +427,14 @@ def test_emit_pyarrow_record_batch_promotes_to_table():
     assert BLOB_REF_MIME in bundle
 
 
-def test_dataset_mimebundle_emits_parquet_with_hf_features():
+def test_dataset_mimebundle_emits_arrow_ipc_with_hf_features():
     """``datasets.Dataset`` carries HF features both on ``ds.features`` and
     on the underlying ``ds.data.table`` schema KV. The bundle must include
-    parquet bytes whose footer carries the ``huggingface`` key, not just
+    Arrow IPC bytes whose schema carries the ``huggingface`` key, not just
     the legacy text-summary path."""
     import io
 
-    pq = pytest.importorskip("pyarrow.parquet")
+    pa = pytest.importorskip("pyarrow")
     pytest.importorskip("datasets")
     from datasets import Dataset
     from nteract_kernel_launcher import _bootstrap, _buffer_hook
@@ -454,8 +455,9 @@ def test_dataset_mimebundle_emits_parquet_with_hf_features():
     assert "HuggingFace Dataset" in bundle["text/llm+plain"]
 
     h = bundle[BLOB_REF_MIME]["hash"]
+    assert bundle[BLOB_REF_MIME]["content_type"] == "application/vnd.apache.arrow.stream"
     data = _buffer_hook.pending_buffers()[h]
-    md = pq.read_metadata(io.BytesIO(data)).metadata or {}
+    md = pa.ipc.open_stream(io.BytesIO(data)).read_all().schema.metadata or {}
     assert b"huggingface" in md
     assert b'"_type": "Image"' in md[b"huggingface"]
 

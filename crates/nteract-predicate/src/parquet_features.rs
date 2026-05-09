@@ -1,14 +1,17 @@
-//! Canonical interpretation of Parquet file-level metadata.
+//! Canonical interpretation of table schema metadata.
 //!
 //! Sift uses these hints for UI column behavior, while `repr-llm` can use the
-//! same signal when describing rich Parquet outputs for agents. Keep the JSON
-//! footer parsing here so native and WASM consumers agree on pandas/HF meaning.
+//! same signal when describing rich table outputs for agents. Keep the JSON
+//! metadata parsing here so native and WASM consumers agree on pandas/HF
+//! meaning for both Parquet footers and Arrow IPC schemas.
 
+use arrow::ipc::reader::StreamReader;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::metadata::ParquetMetaData;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::io::Cursor;
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -89,6 +92,30 @@ pub fn parquet_column_hints(
         .iter()
         .map(|field| field.name().clone())
         .collect();
+    Ok(parse_parquet_column_hints(
+        &column_names,
+        total_rows,
+        &kv_metadata,
+    ))
+}
+
+pub fn arrow_ipc_column_hints(
+    ipc_bytes: &[u8],
+) -> Result<Vec<ParquetColumnHint>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut reader = StreamReader::try_new(Cursor::new(ipc_bytes), None)?;
+    let schema = reader.schema();
+    let kv_metadata = schema.metadata().clone();
+    let column_names: Vec<String> = schema
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect();
+
+    let mut total_rows = 0_u64;
+    for batch in &mut reader {
+        total_rows += batch?.num_rows() as u64;
+    }
+
     Ok(parse_parquet_column_hints(
         &column_names,
         total_rows,
@@ -307,5 +334,53 @@ mod tests {
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].name, "index");
         assert!(hints[0].pandas_index);
+    }
+
+    #[test]
+    fn parses_arrow_ipc_schema_hints() {
+        use arrow::array::{ArrayRef, Int64Array, StringArray};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::ipc::writer::StreamWriter;
+        use arrow::record_batch::RecordBatch;
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new_with_metadata(
+            vec![
+                Field::new("__index_level_0__", DataType::Int64, false),
+                Field::new("image", DataType::Utf8, true),
+            ],
+            metadata(&[
+                ("pandas", r#"{"index_columns":["__index_level_0__"]}"#),
+                (
+                    "huggingface",
+                    r#"{"info":{"features":{"image":{"_type":"Image"}}}}"#,
+                ),
+            ]),
+        ));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![0, 1])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["0.png", "1.png"])) as ArrayRef,
+            ],
+        )
+        .unwrap();
+
+        let mut ipc = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut ipc, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let hints = arrow_ipc_column_hints(&ipc).unwrap();
+
+        assert_eq!(hints.len(), 2);
+        assert!(hints[0].pandas_index);
+        assert_eq!(hints[0].width, Some(60));
+        assert_eq!(
+            hints[1].semantic_type,
+            Some(ParquetSemanticType::HuggingfaceImage)
+        );
     }
 }

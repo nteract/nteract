@@ -65,19 +65,23 @@ use crate::blob_store::BlobStore;
 /// in `.ipynb` files and have no vanilla-Jupyter fallback path if we
 /// replaced them. We only externalize MIMEs that:
 ///
-/// 1. Are nteract-specific and have a reasonable fallback elsewhere in
-///    the bundle (parquet ships alongside pandas `text/html` + `text/plain`).
-/// 2. Would otherwise blow up `.ipynb` size catastrophically (parquet
-///    exports can hit tens or hundreds of MiB).
+/// 1. Are nteract-specific and have a reasonable fallback elsewhere in the
+///    bundle (table payloads ship alongside `text/html` / `text/plain`).
+/// 2. Would otherwise blow up `.ipynb` size catastrophically (table exports can
+///    hit tens or hundreds of MiB).
 ///
 /// Because this whitelist holds at most one entry per output bundle in
-/// practice (dx emits exactly one parquet ref per display), we can write
+/// practice (dx emits exactly one table ref per display), we can write
 /// the ref as a single `{hash, content_type, size}` object under the
 /// [`BLOB_REF_MIME`] key. nbformat's schema wouldn't accept an array
-/// there, so a whitelist-of-one is the right shape.
+/// there, so producers should not emit multiple whitelisted binary table
+/// payloads in the same output bundle.
 ///
 /// See `docs/superpowers/specs/2026-04-14-ipynb-save-blob-refs-design.md`.
-const REF_MIME_SAVE_WHITELIST: &[&str] = &["application/vnd.apache.parquet"];
+const REF_MIME_SAVE_WHITELIST: &[&str] = &[
+    "application/vnd.apache.parquet",
+    "application/vnd.apache.arrow.stream",
+];
 
 /// Returns true if a binary MIME type should be externalized as a
 /// [`BLOB_REF_MIME`] entry on save instead of base64-inlined.
@@ -2692,12 +2696,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_resolve_data_bundle_emits_blob_ref_for_arrow_stream() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let raw = b"ARROW1-stream-payload-bytes";
+        let hash = store
+            .put(raw, "application/vnd.apache.arrow.stream")
+            .await
+            .unwrap();
+
+        let mut data = HashMap::new();
+        data.insert(
+            "application/vnd.apache.arrow.stream".to_string(),
+            ContentRef::Blob {
+                blob: hash.clone(),
+                size: raw.len() as u64,
+            },
+        );
+        data.insert(
+            "text/plain".to_string(),
+            ContentRef::Inline {
+                inline: "pyarrow.Table\nid: int64".to_string(),
+            },
+        );
+
+        let resolved = resolve_data_bundle(&data, &store).await.unwrap();
+
+        assert!(!resolved.contains_key("application/vnd.apache.arrow.stream"));
+        let ref_entry = resolved
+            .get(BLOB_REF_MIME)
+            .expect("BLOB_REF_MIME entry present");
+        assert_eq!(ref_entry["hash"], hash);
+        assert_eq!(
+            ref_entry["content_type"],
+            "application/vnd.apache.arrow.stream"
+        );
+        assert_eq!(ref_entry["size"], raw.len());
+        assert_eq!(
+            resolved.get("text/plain").and_then(|v| v.as_str()),
+            Some("pyarrow.Table\nid: int64")
+        );
+    }
+
+    #[tokio::test]
     async fn test_resolve_data_bundle_non_whitelisted_binary_stays_base64() {
         let dir = TempDir::new().unwrap();
         let store = test_store(&dir);
 
-        // A "large" image blob — whitelist-based externalization only
-        // applies to parquet, so images keep the classic base64 path
+        // A "large" image blob — whitelist-based externalization only applies
+        // to table payloads, so images keep the classic base64 path
         // regardless of size.
         let raw = vec![0xAAu8; 64 * 1024];
         let content_ref = ContentRef::from_binary(&raw, "image/png", &store)
