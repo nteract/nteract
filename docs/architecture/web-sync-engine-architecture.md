@@ -68,6 +68,32 @@ or the exact sync-engine ABI needed to interpret daemon frames.
   The sync engine is more privileged because it owns document mutations and
   runtime-state interpretation.
 
+## Iframe and Asset Constraints
+
+The current isolated-output stack is useful prior art, but it should not become
+the sync-engine model.
+
+- Output iframes are deliberately permissive execution sandboxes. The frame CSP
+  allows inline/eval/blob/localhost/CDN renderer code because it is constrained
+  by the iframe sandbox without `allow-same-origin`.
+- The Tauri iframe shell is served with `no-store, no-cache, must-revalidate`.
+  That is correct for mutable bootstrap HTML and should remain separate from
+  durable asset caching.
+- Renderer plugins are loaded by MIME type through Vite virtual modules, cached
+  in app memory, and injected into each iframe with `frame.installRenderer(...)`.
+  This is the right shape for output renderers, not for the privileged sync
+  engine.
+- Daemon-hosted plugin assets already use different cache policies by mutability:
+  dev filesystem plugin files are `no-store`, embedded plugin assets get a
+  bounded cache lifetime, and content-addressed blobs get
+  `public, max-age=31536000, immutable`.
+
+For the sync engine, copy the content-addressed asset discipline, not the iframe
+plugin discipline. The engine package should have its own manifest and package
+cache keyed by ABI, package ID, and byte digests. It should not be installed into
+output iframes, should not use the MIME-type plugin cache, and should not require
+the isolated-frame CSP.
+
 ## Recommended Shape
 
 Use a stable TypeScript bootstrap shell plus a versioned sync-engine package.
@@ -144,11 +170,18 @@ Use this order:
 
 1. Prefer the app-bundled engine when its manifest matches the daemon's ABI,
    document schema versions, and genesis hashes.
-2. Reuse an IndexedDB/browser-cache engine when the package ID and hashes match.
+2. Reuse an IndexedDB/browser-cache engine when the ABI, package ID, and hashes
+   match. This must be a sync-engine package cache, not the renderer plugin
+   cache or isolated-renderer bundle cache.
 3. Fetch the daemon-served engine only when the bundled/cached engine cannot
    satisfy the manifest.
 4. Refuse to connect with a typed compatibility error if no acceptable engine
    can be loaded.
+
+Treat the manifest as mutable metadata and engine assets as immutable only when
+their URLs are content-addressed or otherwise package-ID scoped. A stale manifest
+must never pin a client to an old engine after the daemon changes its compatibility
+requirements.
 
 The manifest should be authenticated by same-origin transport or by a trusted
 daemon endpoint token. Asset bytes must be hash-checked before use even when
@@ -245,6 +278,10 @@ then pool state should get the same frozen genesis treatment as
   app window.
 - The worker should not receive DOM handles, React state setters, auth tokens
   unrelated to the daemon, or arbitrary network helpers.
+- Do not reuse the isolated-output iframe CSP for the sync engine. Output frames
+  need permissive renderer execution; the sync worker should get the narrowest
+  `worker-src`, `script-src`, and WASM permissions that the selected loading mode
+  needs.
 - CSP needs explicit `worker-src` and `script-src 'wasm-unsafe-eval'` planning.
   Avoid general `unsafe-eval` for the main app.
 - If the worker is built from a blob URL, CSP must allow `worker-src blob:`.
@@ -313,10 +350,15 @@ initial notebook load failures.
   and WASM hashes.
 - Add daemon HTTP routes for:
   - `/sync-engine/manifest.json`
-  - `/sync-engine/runtimed_wasm.js`
-  - `/sync-engine/runtimed_wasm_bg.wasm`
-- Serve `.wasm` with `application/wasm` and long cache headers keyed by content
-  hash.
+  - `/sync-engine/assets/{package_id}/runtimed_wasm.js`
+  - `/sync-engine/assets/{package_id}/runtimed_wasm_bg.wasm`
+- Serve the manifest as mutable metadata: `no-store` in dev, and either
+  `no-store` or short-cache plus `ETag` in production.
+- Serve dev worktree engine assets with `no-store`, matching current dev plugin
+  behavior.
+- Serve release engine assets with long cache headers only when the route is
+  package-ID/hash scoped. Use `application/wasm` for `.wasm` and keep
+  `X-Content-Type-Options: nosniff`.
 - Add explicit digest verification before instantiating downloaded assets.
 
 ### Phase 5: Remote Web Deployment
@@ -349,6 +391,11 @@ initial notebook load failures.
 - Bundled engine ABI mismatch, daemon engine available: daemon engine loads in
   worker and syncs.
 - Daemon engine hash mismatch: asset rejected with `engine_integrity_failed`.
+- Cached daemon engine package with stale package ID or digest: cache entry is
+  ignored and assets are refetched or rejected with `engine_integrity_failed`.
+- Mutable engine manifest is not served with immutable cache headers.
+- Dev worktree engine assets are served with `no-store` so rebuilds are visible
+  without clearing browser caches.
 - WASM served with wrong content type: loader falls back or reports
   `engine_unavailable` with diagnostic detail.
 - Worker creation blocked by CSP: typed `engine_unavailable` with CSP guidance.
