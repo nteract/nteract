@@ -401,13 +401,22 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
               col.columnType = "categorical";
               col.numeric = false;
             }
-            if (hfFeature?._type === "Image") {
-              // HF Image features serialize as Struct{bytes, path}; render
-              // thumbnails inline instead of the formatter's "{...}" string.
+            // HF Image -> thumbnail. List<Image> / Sequence<Image> -> a strip
+            // of thumbs, sized wider so multiple fit. Both share the same
+            // wasm-side getter (`get_cell_image_count` + `_at`).
+            const inner =
+              hfFeature?._type === "Image"
+                ? hfFeature
+                : hfFeature?._type === "List" || hfFeature?._type === "Sequence"
+                  ? (hfFeature as { feature?: { _type?: string } }).feature
+                  : undefined;
+            if (inner?._type === "Image") {
               col.columnType = "image";
               col.numeric = false;
               col.sortable = false;
-              if (col.width < 140) col.width = 140;
+              const isList = hfFeature?._type !== "Image";
+              const minWidth = isList ? 320 : 140;
+              if (col.width < minWidth) col.width = minWidth;
             }
           }
 

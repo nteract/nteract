@@ -147,6 +147,7 @@ const LINE_HEIGHT = 20;
 const CELL_PAD_H = 24; // 12px each side
 const CELL_PAD_V = 16; // 8px top + 8px bottom
 const IMAGE_THUMB_MAX_HEIGHT = 64; // matches .sift-cell-image-thumb max-height in style.css
+const IMAGE_THUMB_CAP = 6; // max thumbnails rendered per List<Image> cell; rest collapse to "+N"
 const MIN_COL_WIDTH = 60;
 const OVERSCAN = 40; // buffer rows above and below viewport
 
@@ -1276,30 +1277,50 @@ export function createTable(
         break;
       }
       case "image": {
-        if (!(raw instanceof Uint8Array) || raw.length === 0) {
+        // wasm-table-data normalizes both HF `Image` and `List<Image>` to
+        // an array of byte chunks; HF `Image` is just an array of length 1.
+        const chunks: Uint8Array[] = Array.isArray(raw)
+          ? (raw as Uint8Array[])
+          : raw instanceof Uint8Array
+            ? [raw]
+            : [];
+        if (chunks.length === 0) {
           cellEl.textContent = str;
           break;
         }
         cellEl.classList.add("sift-cell-image");
-        const mime = sniffImageMime(raw);
-        if (!mime) {
-          // Unknown payload — degrade to byte-count text instead of a broken <img>.
-          cellEl.textContent = `${raw.length} bytes`;
-          break;
+        const visible = chunks.slice(0, IMAGE_THUMB_CAP);
+        for (const bytes of visible) {
+          const mime = sniffImageMime(bytes);
+          if (!mime) {
+            // Unknown payload — keep the strip dense; show a small marker
+            // so a malformed item doesn't push the rest off the row.
+            const span = document.createElement("span");
+            span.className = "sift-cell-image-fallback";
+            span.textContent = `${bytes.length}b`;
+            cellEl.appendChild(span);
+            continue;
+          }
+          const img = document.createElement("img");
+          img.className = "sift-cell-image-thumb";
+          img.alt = "";
+          img.decoding = "async";
+          img.loading = "lazy";
+          // `raw.buffer` is typed `ArrayBufferLike` (could be SharedArrayBuffer)
+          // in lib.dom.d.ts; `slice()` returns a fresh ArrayBuffer-backed view.
+          const url = URL.createObjectURL(
+            new Blob([bytes.slice() as Uint8Array<ArrayBuffer>], { type: mime }),
+          );
+          img.src = url;
+          img.dataset.siftBlobUrl = url;
+          cellEl.appendChild(img);
         }
-        const img = document.createElement("img");
-        img.className = "sift-cell-image-thumb";
-        img.alt = "";
-        img.decoding = "async";
-        img.loading = "lazy";
-        // `raw.buffer` is typed `ArrayBufferLike` (could be SharedArrayBuffer)
-        // in lib.dom.d.ts; `slice()` returns a fresh ArrayBuffer-backed view.
-        const url = URL.createObjectURL(
-          new Blob([raw.slice() as Uint8Array<ArrayBuffer>], { type: mime }),
-        );
-        img.src = url;
-        img.dataset.siftBlobUrl = url;
-        cellEl.appendChild(img);
+        if (chunks.length > IMAGE_THUMB_CAP) {
+          const more = document.createElement("span");
+          more.className = "sift-cell-image-more";
+          more.textContent = `+${chunks.length - IMAGE_THUMB_CAP}`;
+          cellEl.appendChild(more);
+        }
         break;
       }
       default:

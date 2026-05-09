@@ -44,6 +44,18 @@ type PredicateModule = {
   get_cell_string(handle: number, row: number, col: number): string;
   get_cell_f64(handle: number, row: number, col: number): number;
   get_cell_bytes(handle: number, row: number, col: number): Uint8Array;
+  /**
+   * Number of images in a cell. `1` for HF `Image` (`Struct{bytes,path}`),
+   * `len` for HF `List<Image>`, `0` for null/non-image cells. Pair with
+   * `get_cell_image_bytes_at` to lay out a thumbnail strip.
+   */
+  get_cell_image_count(handle: number, row: number, col: number): number;
+  /**
+   * Bytes for the `idx`-th image in a cell. For `Image` only `idx === 0` is
+   * valid; for `List<Image>` use `0..count - 1`. Empty Uint8Array means
+   * "no image at this position" (out of range, null, or wrong shape).
+   */
+  get_cell_image_bytes_at(handle: number, row: number, col: number, idx: number): Uint8Array;
   is_null(handle: number, row: number, col: number): boolean;
   store_viewport_cells(handle: number, rows: Uint32Array): ViewportCells;
   // Store-based summaries (operates on handle, iterates in Rust)
