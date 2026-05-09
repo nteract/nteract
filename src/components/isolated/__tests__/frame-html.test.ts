@@ -99,18 +99,25 @@ describe("generateFrameHtml", () => {
       expect(creamLightHtml).toContain("--border-color: #d8cec3");
     });
 
-    it("scopes cream document typography to markdown outputs", () => {
+    it("ships document typography for markdown and html outputs", () => {
       const creamHtml = generateFrameHtml({ darkMode: false, colorTheme: "cream" });
       expect(creamHtml).toContain(
-        "--markdown-document-font: KaTeX_Main, Georgia, 'Times New Roman', serif",
+        "--output-document-font: KaTeX_Main, Georgia, 'Times New Roman', serif",
       );
-      expect(creamHtml).toContain('[data-color-theme="cream"] [data-slot="markdown-output"]');
-      expect(creamHtml).toContain('[data-color-theme="cream"] [data-slot="markdown-output"] code');
+      expect(creamHtml).toContain('[data-slot="markdown-output"], [data-slot="html-output"]');
+      expect(creamHtml).toContain(
+        ':is([data-slot="markdown-output"], [data-slot="html-output"]) h3',
+      );
+      expect(creamHtml).toContain(
+        ':is([data-slot="markdown-output"], [data-slot="html-output"]) table',
+      );
+      expect(creamHtml).toContain(
+        ':is([data-slot="markdown-output"], [data-slot="html-output"]) button',
+      );
+      expect(creamHtml).toContain("font-family: var(--output-mono-font)");
 
       const classicHtml = generateFrameHtml({ darkMode: false });
-      expect(classicHtml).toContain(
-        "--markdown-document-font: system-ui, -apple-system, BlinkMacSystemFont",
-      );
+      expect(classicHtml).toContain("--output-document-font: var(--output-ui-font)");
     });
 
     it("uses dark text colors when darkMode is true", () => {

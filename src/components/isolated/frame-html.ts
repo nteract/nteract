@@ -52,11 +52,13 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
       --accent-color: ${colorTheme === "cream" ? "#d4896a" : "#3b82f6"};
       --error-color: #ef4444;
       --success-color: #22c55e;
-      --markdown-document-font: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      --output-ui-font: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      --output-mono-font: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+      --output-document-font: var(--output-ui-font);
     }
 
     [data-color-theme="cream"] {
-      --markdown-document-font: KaTeX_Main, Georgia, 'Times New Roman', serif;
+      --output-document-font: KaTeX_Main, Georgia, 'Times New Roman', serif;
     }
 
     * {
@@ -66,7 +68,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
     html, body {
       margin: 0;
       padding: 0;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-family: var(--output-ui-font);
       line-height: 1.5;
       background: transparent;
       color: var(--text-primary);
@@ -88,21 +90,104 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
 
     /* Reset common elements - 0.875rem matches Tailwind's text-sm */
     pre, code {
-      font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+      font-family: var(--output-mono-font);
       font-size: 0.875rem;
     }
 
-    [data-color-theme="cream"] [data-slot="markdown-output"] {
-      font-family: var(--markdown-document-font);
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) {
+      font-family: var(--output-document-font);
       font-size: 1rem;
       line-height: 1.65;
       font-kerning: normal;
       text-rendering: optimizeLegibility;
     }
 
-    [data-color-theme="cream"] [data-slot="markdown-output"] pre,
-    [data-color-theme="cream"] [data-slot="markdown-output"] code {
-      font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) h1,
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) h2,
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) h3,
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) h4,
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) h5,
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) h6 {
+      color: var(--text-primary);
+      font-family: var(--output-document-font);
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) h1 {
+      margin: 1.5rem 0 1rem;
+      font-size: 1.875rem;
+    }
+
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) h2 {
+      margin: 1.35rem 0 0.75rem;
+      font-size: 1.5rem;
+    }
+
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) h3 {
+      margin: 1.2rem 0 0.625rem;
+      font-size: 1.25rem;
+    }
+
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) h4 {
+      margin: 1rem 0 0.5rem;
+      font-size: 1.125rem;
+    }
+
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) h5 {
+      margin: 0.875rem 0 0.4rem;
+      font-size: 1rem;
+    }
+
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) h6 {
+      margin: 0.75rem 0 0.35rem;
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--text-secondary);
+    }
+
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) p {
+      margin: 0.75rem 0;
+    }
+
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) ul,
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) ol {
+      margin: 0.75rem 0;
+      padding-left: 1.5rem;
+    }
+
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) li {
+      margin: 0.25rem 0;
+    }
+
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) blockquote {
+      margin: 1rem 0;
+      padding-left: 1rem;
+      border-left: 4px solid var(--border-color);
+      color: var(--text-secondary);
+      font-style: italic;
+    }
+
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) hr {
+      margin: 1.5rem 0;
+      border: 0;
+      border-top: 1px solid var(--border-color);
+    }
+
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) pre,
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) code {
+      font-family: var(--output-mono-font);
+    }
+
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) table,
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) button,
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) input,
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) select,
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) textarea,
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) svg,
+    :is([data-slot="markdown-output"], [data-slot="html-output"]) canvas {
+      font-family: var(--output-ui-font);
+      line-height: 1.5;
     }
 
     pre {
