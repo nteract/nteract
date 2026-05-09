@@ -1319,6 +1319,10 @@ h1 {
   background: transparent;
 }
 
+.sift-viewport::-webkit-scrollbar-corner {
+  background: var(--sift-bg);
+}
+
 .sift-viewport::-webkit-scrollbar-thumb {
   background: var(--sift-scrollbar-thumb);
   border-radius: 4px;
