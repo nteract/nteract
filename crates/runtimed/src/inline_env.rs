@@ -1125,7 +1125,7 @@ mod tests {
     #[test]
     fn test_compare_subset_matches_real_user_seeded_notebook() {
         // Exact shape of a newly-created notebook seeded from the
-        // default rgbkrk user settings (9 UV deps, mix of bare +
+        // default rgbkrk user settings (8 UV deps, mix of bare +
         // version-specifier + marker). Pool built from the same set
         // plus the pool-essentials prefix.
         let pool = vec![
@@ -1134,7 +1134,6 @@ mod tests {
             "anywidget".into(),
             "nbformat".into(),
             "uv".into(),
-            "dx".into(),
             "gremlin ; sys_platform == 'darwin'".into(),
             "narwhals>=1.0".into(),
             "nteract".into(),
@@ -1145,7 +1144,6 @@ mod tests {
             "pyarrow>=14".into(),
         ];
         let inline = vec![
-            "dx".into(),
             "gremlin ; sys_platform == 'darwin'".into(),
             "narwhals>=1.0".into(),
             "nteract".into(),

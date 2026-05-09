@@ -5602,7 +5602,6 @@ fn effective_user_deps_from_launched_ignores_prewarmed_packages() {
             "anywidget".to_string(),
             "nbformat".to_string(),
             "uv".to_string(),
-            "dx".to_string(),
             "pandas".to_string(),
         ],
         ..LaunchedEnvConfig::default()

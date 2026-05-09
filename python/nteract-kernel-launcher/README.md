@@ -8,14 +8,12 @@ a drop-in replacement for `python -m ipykernel_launcher`:
 python -m nteract_kernel_launcher -f <connection_file>
 ```
 
-## Bootstrap flags
+## Bootstrap behavior
 
-All bootstrap is gated on environment variables so the behavior can be
-controlled per-kernel by the daemon:
-
-| Env var | Effect |
-|---------|--------|
-| `RUNT_BOOTSTRAP_DX=1` | Import `dx` and call `dx.install()` before the kernel starts, wiring up DataFrame formatters and visualization renderers. Silently skipped if `dx` is not installed. |
+When the daemon launches a kernel with `python -m nteract_kernel_launcher`,
+the launcher auto-loads its bundled bootstrap extension before user code runs.
+The bootstrap registers rich DataFrame, Arrow, and dataset formatters without
+requiring the legacy `dx` PyPI package.
 
 If bootstrap raises, the error is logged to stderr but the launcher still
 starts the kernel — a broken bootstrap should not prevent the user from
