@@ -1527,7 +1527,7 @@ mod tests {
         };
 
         assert!(
-            metadata.get("application/vnd.apache.parquet").is_none(),
+            !metadata.contains_key("application/vnd.apache.parquet"),
             "null summary/query hints should not create per-MIME metadata"
         );
     }
