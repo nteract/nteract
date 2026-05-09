@@ -252,7 +252,10 @@ function loadLocalArrow$(dataset: DatasetEntry, tableRoot: HTMLElement): Observa
           const { tableData, columns, prefetchViewport } = createWasmTableData(handle);
           tableData.prefetchViewport = prefetchViewport;
           const mod = getModuleSync();
-          const columnHints = mod.arrow_ipc_column_hints(arrowBytes);
+          const columnHints = mod.arrow_ipc_column_hints_with_row_count(
+            arrowBytes,
+            mod.num_rows(handle),
+          );
           const pandasIndexCols = pandasIndexColumnsFromHints(columnHints);
           tableData.recomputeSummaries = () =>
             updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);

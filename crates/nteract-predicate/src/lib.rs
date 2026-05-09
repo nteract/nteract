@@ -19,8 +19,9 @@ pub mod utils;
 
 pub use filter::{filter_rows, string_contains};
 pub use parquet_features::{
-    arrow_ipc_column_hints, parquet_column_hints, parquet_file_key_value_metadata,
-    parse_parquet_column_hints, ParquetColumnHint, ParquetSemanticType,
+    arrow_ipc_column_hints, arrow_ipc_column_hints_with_row_count, parquet_column_hints,
+    parquet_file_key_value_metadata, parse_parquet_column_hints, ParquetColumnHint,
+    ParquetSemanticType,
 };
 pub use parquet_summary::{summarize_parquet, ColumnStats, ColumnSummary, ParquetSummary};
 pub use summary::{histogram, value_counts, CategoryCount, HistogramBin};

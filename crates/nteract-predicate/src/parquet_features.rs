@@ -103,6 +103,18 @@ pub fn arrow_ipc_column_hints(
     ipc_bytes: &[u8],
 ) -> Result<Vec<ParquetColumnHint>, Box<dyn std::error::Error + Send + Sync>> {
     let mut reader = StreamReader::try_new(Cursor::new(ipc_bytes), None)?;
+    let mut total_rows = 0_u64;
+    for batch in &mut reader {
+        total_rows += batch?.num_rows() as u64;
+    }
+    arrow_ipc_column_hints_with_row_count(ipc_bytes, total_rows)
+}
+
+pub fn arrow_ipc_column_hints_with_row_count(
+    ipc_bytes: &[u8],
+    total_rows: u64,
+) -> Result<Vec<ParquetColumnHint>, Box<dyn std::error::Error + Send + Sync>> {
+    let reader = StreamReader::try_new(Cursor::new(ipc_bytes), None)?;
     let schema = reader.schema();
     let kv_metadata = schema.metadata().clone();
     let column_names: Vec<String> = schema
@@ -110,12 +122,6 @@ pub fn arrow_ipc_column_hints(
         .iter()
         .map(|field| field.name().clone())
         .collect();
-
-    let mut total_rows = 0_u64;
-    for batch in &mut reader {
-        total_rows += batch?.num_rows() as u64;
-    }
-
     Ok(parse_parquet_column_hints(
         &column_names,
         total_rows,
@@ -377,6 +383,13 @@ mod tests {
 
         assert_eq!(hints.len(), 2);
         assert!(hints[0].pandas_index);
+        assert_eq!(hints[0].width, Some(60));
+        assert_eq!(
+            hints[1].semantic_type,
+            Some(ParquetSemanticType::HuggingfaceImage)
+        );
+
+        let hints = arrow_ipc_column_hints_with_row_count(&ipc, 2).unwrap();
         assert_eq!(hints[0].width, Some(60));
         assert_eq!(
             hints[1].semantic_type,

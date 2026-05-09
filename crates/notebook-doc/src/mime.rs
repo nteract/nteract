@@ -30,6 +30,8 @@ use serde::{Deserialize, Serialize};
 /// { "hash": "sha256:...", "content_type": "application/vnd.apache.arrow.stream",
 ///   "size": 104857600, "summary": {...}?, "query": null }
 /// ```
+/// `content_type` may also name another externalized table payload MIME such as
+/// `application/vnd.apache.parquet`.
 pub const BLOB_REF_MIME: &str = "application/vnd.nteract.blob-ref+json";
 
 /// Three-way classification of a MIME type.

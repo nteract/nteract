@@ -14,6 +14,7 @@ use chrono::DateTime;
 use nteract_predicate::summary::{CategoryCount, HistogramBin};
 use nteract_predicate::{
     arrow_ipc_column_hints as predicate_arrow_ipc_column_hints,
+    arrow_ipc_column_hints_with_row_count as predicate_arrow_ipc_column_hints_with_row_count,
     parquet_column_hints as predicate_parquet_column_hints,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -1452,6 +1453,18 @@ pub fn parquet_column_hints(parquet_bytes: &[u8]) -> Result<JsValue, JsValue> {
 #[wasm_bindgen]
 pub fn arrow_ipc_column_hints(ipc_bytes: &[u8]) -> Result<JsValue, JsValue> {
     let hints = predicate_arrow_ipc_column_hints(ipc_bytes)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    serde_wasm_bindgen::to_value(&hints).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// Extract canonical column hints from Arrow IPC schema metadata using a row
+/// count the caller already has from the loaded table.
+#[wasm_bindgen]
+pub fn arrow_ipc_column_hints_with_row_count(
+    ipc_bytes: &[u8],
+    total_rows: u32,
+) -> Result<JsValue, JsValue> {
+    let hints = predicate_arrow_ipc_column_hints_with_row_count(ipc_bytes, u64::from(total_rows))
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
     serde_wasm_bindgen::to_value(&hints).map_err(|e| JsValue::from_str(&e.to_string()))
 }
