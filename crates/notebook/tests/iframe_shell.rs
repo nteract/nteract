@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use notebook::iframe_shell::{frame_response, FRAME_CSP, FRAME_HTML, FRAME_SCHEME};
 use tauri::http::{header, Request, StatusCode};
 

@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::{path::Path, process::Command};
 
 use notebook::iframe_shell::FRAME_HTML;
