@@ -1307,17 +1307,17 @@ impl AsyncSession {
     }
 
     /// Get execution history from the kernel.
-    #[pyo3(signature = (pattern=None, n=100, unique=true))]
+    #[pyo3(signature = (query=None, limit=100, dedupe=true))]
     fn get_history<'py>(
         &self,
         py: Python<'py>,
-        pattern: Option<String>,
-        n: i32,
-        unique: bool,
+        query: Option<String>,
+        limit: i32,
+        dedupe: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
         future_into_py(py, async move {
-            session_core::get_history(&state, pattern.as_deref(), n, unique).await
+            session_core::get_history(&state, query.as_deref(), limit, dedupe).await
         })
     }
 

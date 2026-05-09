@@ -131,9 +131,9 @@ pub trait KernelConnection: Send {
     /// This is safe because the agent's select! loop is the sole caller.
     fn get_history(
         &mut self,
-        pattern: Option<&str>,
-        n: i32,
-        unique: bool,
+        query: Option<&str>,
+        limit: i32,
+        dedupe: bool,
     ) -> impl std::future::Future<Output = Result<Vec<HistoryEntry>>> + Send;
 
     // ── Read-only metadata accessors ──────────────────────────────────────

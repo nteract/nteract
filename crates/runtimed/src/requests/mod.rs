@@ -99,9 +99,11 @@ pub(crate) async fn handle_notebook_request(
 
         NotebookRequest::SendComm { message } => send_comm::handle(room, message).await,
 
-        NotebookRequest::GetHistory { pattern, n, unique } => {
-            get_history::handle(room, pattern, n, unique).await
-        }
+        NotebookRequest::GetHistory {
+            query,
+            limit,
+            dedupe,
+        } => get_history::handle(room, query, limit, dedupe).await,
 
         NotebookRequest::Complete { code, cursor_pos } => {
             complete::handle(room, code, cursor_pos).await

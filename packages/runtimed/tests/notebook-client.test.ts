@@ -89,6 +89,38 @@ describe("NotebookClient", () => {
     });
   });
 
+  it("uses the structured history request payload", async () => {
+    const { client, sendRequest } = stubClient();
+    sendRequest.mockResolvedValueOnce({
+      result: "history_result",
+      entries: [
+        {
+          session: 4,
+          line: 9,
+          source: "import pandas as pd",
+          source_key: "import pandas as pd",
+          recency_rank: 0,
+        },
+      ],
+    });
+
+    await expect(client.getHistory("pandas", 50, true)).resolves.toEqual([
+      {
+        session: 4,
+        line: 9,
+        source: "import pandas as pd",
+        source_key: "import pandas as pd",
+        recency_rank: 0,
+      },
+    ]);
+    expect(sendRequest).toHaveBeenCalledWith({
+      type: "get_history",
+      query: "pandas",
+      limit: 50,
+      dedupe: true,
+    });
+  });
+
   it("attaches required heads to daemon-managed execute requests", async () => {
     const { client, flush, sendRequest } = stubClientWithHeads(["head-a"]);
 

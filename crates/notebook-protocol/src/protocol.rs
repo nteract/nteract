@@ -182,6 +182,10 @@ pub struct HistoryEntry {
     pub line: i32,
     /// The source code that was executed
     pub source: String,
+    /// Canonical key for source-level deduplication and stable UI identity.
+    pub source_key: String,
+    /// Zero-based rank after daemon-side normalization; 0 is the newest result.
+    pub recency_rank: u32,
 }
 
 /// A single completion item (LSP-ready structure).
@@ -333,12 +337,12 @@ pub enum NotebookRequest {
     /// Search the kernel's input history.
     /// Returns matching history entries via HistoryResult response.
     GetHistory {
-        /// Pattern to search for (glob-style, optional)
-        pattern: Option<String>,
+        /// User query to search for (substring-style, optional)
+        query: Option<String>,
         /// Maximum number of entries to return
-        n: i32,
-        /// Only return unique entries (deduplicate)
-        unique: bool,
+        limit: i32,
+        /// Only return unique source entries (deduplicate)
+        dedupe: bool,
     },
 
     /// Request code completions from the kernel.
@@ -610,9 +614,9 @@ pub enum RuntimeAgentRequest {
 
     /// Search the kernel's input history.
     GetHistory {
-        pattern: Option<String>,
-        n: i32,
-        unique: bool,
+        query: Option<String>,
+        limit: i32,
+        dedupe: bool,
     },
 
     /// Hot-install packages into the running kernel's environment.
@@ -846,6 +850,25 @@ mod tests {
     }
 
     #[test]
+    fn get_history_payload_uses_query_limit_dedupe() {
+        let payload = serde_json::json!({
+            "action": "get_history",
+            "query": "import",
+            "limit": 25,
+            "dedupe": true,
+        });
+        let parsed: NotebookRequest = serde_json::from_value(payload).unwrap();
+        assert!(matches!(
+            parsed,
+            NotebookRequest::GetHistory {
+                query: Some(ref q),
+                limit: 25,
+                dedupe: true,
+            } if q == "import"
+        ));
+    }
+
+    #[test]
     fn guarded_requests_round_trip() {
         let observed_heads = vec!["0123456789abcdef".to_string()];
         let cases = vec![
@@ -983,9 +1006,9 @@ mod tests {
                 "get_history",
                 serde_json::json!({
                     "action": "get_history",
-                    "pattern": null,
-                    "n": 100,
-                    "unique": false,
+                    "query": null,
+                    "limit": 100,
+                    "dedupe": false,
                 }),
             ),
             (
@@ -1276,9 +1299,9 @@ mod tests {
         }
         .is_command());
         assert!(!RuntimeAgentRequest::GetHistory {
-            pattern: None,
-            n: 10,
-            unique: false,
+            query: None,
+            limit: 10,
+            dedupe: false,
         }
         .is_command());
     }

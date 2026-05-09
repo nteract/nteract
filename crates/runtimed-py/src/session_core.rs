@@ -2106,9 +2106,9 @@ pub(crate) async fn complete(
 /// Get execution history.
 pub(crate) async fn get_history(
     state: &Arc<Mutex<SessionState>>,
-    pattern: Option<&str>,
-    n: i32,
-    unique: bool,
+    query: Option<&str>,
+    limit: i32,
+    dedupe: bool,
 ) -> PyResult<Vec<HistoryEntry>> {
     let st = state.lock().await;
     let handle = st
@@ -2118,9 +2118,9 @@ pub(crate) async fn get_history(
 
     let response = handle
         .send_request(NotebookRequest::GetHistory {
-            pattern: pattern.map(|s| s.to_string()),
-            n,
-            unique,
+            query: query.map(|s| s.to_string()),
+            limit,
+            dedupe,
         })
         .await
         .map_err(to_py_err)?;

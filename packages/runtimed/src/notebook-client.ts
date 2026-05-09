@@ -244,13 +244,13 @@ export class NotebookClient {
    * "no results" from "can't search right now" (e.g., the
    * `HistorySearchDialog`'s "Start a kernel to search history" state).
    */
-  async getHistory(pattern: string | null, n: number, unique: boolean): Promise<HistoryEntry[]> {
+  async getHistory(query: string | null, limit: number, dedupe: boolean): Promise<HistoryEntry[]> {
     try {
       const response = await this.sendRequest({
         type: "get_history",
-        pattern,
-        n,
-        unique,
+        query,
+        limit,
+        dedupe,
       });
       const result = (response as { result: string }).result;
       if (result === "history_result") {

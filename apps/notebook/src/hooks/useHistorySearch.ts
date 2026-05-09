@@ -5,17 +5,17 @@ import type { HistoryEntry } from "runtimed";
 
 export type { HistoryEntry };
 
-// MRU cache for search queries (pattern -> entries)
+// MRU cache for search queries (query -> entries)
 // Uses Map iteration order: oldest at start, newest at end
 const MAX_CACHE_SIZE = 20;
 const searchCache = new Map<string, HistoryEntry[]>();
 
-function getCacheKey(pattern: string | undefined): string {
-  return pattern ?? "__tail__";
+function getCacheKey(query: string | undefined): string {
+  return query ?? "__tail__";
 }
 
-function getCachedResult(pattern: string | undefined): HistoryEntry[] | null {
-  const key = getCacheKey(pattern);
+function getCachedResult(query: string | undefined): HistoryEntry[] | null {
+  const key = getCacheKey(query);
   const result = searchCache.get(key);
   if (result) {
     // Move to end (most recently used) - delete and re-add
@@ -26,8 +26,8 @@ function getCachedResult(pattern: string | undefined): HistoryEntry[] | null {
   return null;
 }
 
-function setCacheResult(pattern: string | undefined, entries: HistoryEntry[]) {
-  const key = getCacheKey(pattern);
+function setCacheResult(query: string | undefined, entries: HistoryEntry[]) {
+  const key = getCacheKey(query);
   // Remove if exists (will re-add at end)
   searchCache.delete(key);
   // Evict oldest if at capacity
@@ -51,14 +51,14 @@ export function useHistorySearch() {
   const [entries, setEntries] = useState<HistoryEntry[]>(getTailCache);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Track the current search pattern to avoid race conditions
+  // Track the current search query to avoid race conditions
   const currentSearchRef = useRef<string | undefined>(undefined);
 
   const searchHistory = useCallback(
-    async (pattern?: string) => {
-      currentSearchRef.current = pattern;
+    async (query?: string) => {
+      currentSearchRef.current = query;
 
-      const cached = getCachedResult(pattern);
+      const cached = getCachedResult(query);
       if (cached) {
         setEntries(cached);
       }
@@ -67,24 +67,24 @@ export function useHistorySearch() {
       setError(null);
 
       try {
-        const results = await client.getHistory(pattern || null, 100, true);
+        const results = await client.getHistory(query || null, 100, true);
 
-        if (currentSearchRef.current === pattern) {
+        if (currentSearchRef.current === query) {
           // Don't replace good entries with empty kernel results — the kernel
-          // glob search may legitimately return nothing for very narrow patterns
+          // search may legitimately return nothing for very narrow queries
           // while client-side filtering of the tail still has useful matches.
-          if (results.length > 0 || !pattern) {
+          if (results.length > 0 || !query) {
             setEntries(results);
-            setCacheResult(pattern, results);
+            setCacheResult(query, results);
           }
         }
       } catch (e) {
         const errorMsg = e instanceof Error ? e.message : String(e);
-        if (currentSearchRef.current === pattern) {
+        if (currentSearchRef.current === query) {
           setError(errorMsg);
         }
       } finally {
-        if (currentSearchRef.current === pattern) {
+        if (currentSearchRef.current === query) {
           setIsLoading(false);
         }
       }

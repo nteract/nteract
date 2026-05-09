@@ -649,6 +649,10 @@ pub struct HistoryEntry {
     pub line: i32,
     /// The source code that was executed
     pub source: String,
+    /// Canonical key for source-level deduplication and stable identity
+    pub source_key: String,
+    /// Zero-based rank after daemon-side normalization
+    pub recency_rank: u32,
 }
 
 #[pymethods]
@@ -657,8 +661,8 @@ impl HistoryEntry {
         let preview: String = self.source.chars().take(30).collect();
         let ellipsis = if self.source.len() > 30 { "..." } else { "" };
         format!(
-            "HistoryEntry(session={}, line={}, source={:?}{})",
-            self.session, self.line, preview, ellipsis
+            "HistoryEntry(session={}, line={}, recency_rank={}, source={:?}{})",
+            self.session, self.line, self.recency_rank, preview, ellipsis
         )
     }
 }
@@ -669,6 +673,8 @@ impl HistoryEntry {
             session: entry.session,
             line: entry.line,
             source: entry.source,
+            source_key: entry.source_key,
+            recency_rank: entry.recency_rank,
         }
     }
 }

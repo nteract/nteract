@@ -61,7 +61,7 @@ export function HistorySearchDialog({ open, onOpenChange, onSelect }: HistorySea
   // Fetch initial history (Tail) when dialog opens
   useEffect(() => {
     if (open) {
-      searchHistory(); // No pattern = Tail request
+      searchHistory(); // No query = tail request
       setSearchValue("");
     } else {
       clearEntries();
@@ -152,10 +152,10 @@ export function HistorySearchDialog({ open, onOpenChange, onSelect }: HistorySea
             {emptyMessage ? (
               <CommandEmpty>{emptyMessage}</CommandEmpty>
             ) : (
-              <CommandGroup heading={`History${isLoading ? " (searching...)" : ""}`}>
-                {filteredEntries.map((entry, index) => (
+              <CommandGroup heading={`Recent history${isLoading ? " (updating...)" : ""}`}>
+                {filteredEntries.map((entry) => (
                   <CommandItem
-                    key={`${entry.session}-${entry.line}-${index}`}
+                    key={`${entry.source_key}-${entry.recency_rank}`}
                     value={`${entry.session}-${entry.line}`}
                     onSelect={() => handleSelect(entry)}
                     className="cursor-pointer"

@@ -5,9 +5,9 @@ use crate::protocol::NotebookResponse;
 
 pub(crate) async fn handle(
     room: &NotebookRoom,
-    pattern: Option<String>,
-    n: i32,
-    unique: bool,
+    query: Option<String>,
+    limit: i32,
+    dedupe: bool,
 ) -> NotebookResponse {
     // Agent path: forward via RPC
     let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
@@ -15,9 +15,9 @@ pub(crate) async fn handle(
         match send_runtime_agent_request(
             room,
             notebook_protocol::protocol::RuntimeAgentRequest::GetHistory {
-                pattern: pattern.clone(),
-                n,
-                unique,
+                query: query.clone(),
+                limit,
+                dedupe,
             },
         )
         .await

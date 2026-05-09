@@ -141,12 +141,12 @@ export type NotebookRequest =
   | {{ type: "send_comm"; message: CommRequestMessage }}
   | {{
       type: "get_history";
-      /** Glob-style pattern to match. null for no filter. */
-      pattern: string | null;
+      /** User query to search for. null for no filter. */
+      query: string | null;
       /** Maximum number of entries to return. */
-      n: number;
-      /** Deduplicate identical entries when true. */
-      unique: boolean;
+      limit: number;
+      /** Deduplicate equivalent source entries when true. */
+      dedupe: boolean;
     }}
   | {{ type: "complete"; code: string; cursor_pos: number }}
   | {{
@@ -167,6 +167,8 @@ export interface HistoryEntry {{
   session: number;
   line: number;
   source: string;
+  source_key: string;
+  recency_rank: number;
 }}
 
 /** One item returned in a `completion_result`. */

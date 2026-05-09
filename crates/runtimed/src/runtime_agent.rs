@@ -1015,9 +1015,13 @@ async fn handle_runtime_agent_request(
             }
         }
 
-        RuntimeAgentRequest::GetHistory { pattern, n, unique } => {
+        RuntimeAgentRequest::GetHistory {
+            query,
+            limit,
+            dedupe,
+        } => {
             if let Some(ref mut k) = kernel {
-                match k.get_history(pattern.as_deref(), n, unique).await {
+                match k.get_history(query.as_deref(), limit, dedupe).await {
                     Ok(entries) => (RuntimeAgentResponse::HistoryResult { entries }, None),
                     Err(e) => (
                         RuntimeAgentResponse::Error {

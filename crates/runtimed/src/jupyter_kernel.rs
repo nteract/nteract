@@ -28,6 +28,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+use crate::history::{normalize_history_entries, provider_history_limit, raw_history_entry};
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
 use crate::output_prep::{
     apply_display_manifest_updates, blob_store_large_state_values, build_display_manifest_updates,
@@ -2397,20 +2398,20 @@ impl KernelConnection for JupyterKernel {
                                                         session,
                                                         line,
                                                         source,
-                                                    ) => HistoryEntry {
-                                                        session: *session as i32,
-                                                        line: *line as i32,
-                                                        source: source.clone(),
-                                                    },
+                                                    ) => raw_history_entry(
+                                                        *session as i32,
+                                                        *line as i32,
+                                                        source.clone(),
+                                                    ),
                                                     jupyter_protocol::HistoryEntry::InputOutput(
                                                         session,
                                                         line,
                                                         (source, _output),
-                                                    ) => HistoryEntry {
-                                                        session: *session as i32,
-                                                        line: *line as i32,
-                                                        source: source.clone(),
-                                                    },
+                                                    ) => raw_history_entry(
+                                                        *session as i32,
+                                                        *line as i32,
+                                                        source.clone(),
+                                                    ),
                                                 }
                                                     })
                                                     .collect();
@@ -3010,9 +3011,9 @@ impl KernelConnection for JupyterKernel {
 
     async fn get_history(
         &mut self,
-        pattern: Option<&str>,
-        n: i32,
-        unique: bool,
+        query: Option<&str>,
+        limit: i32,
+        dedupe: bool,
     ) -> Result<Vec<HistoryEntry>> {
         // Clone Arc before taking &mut shell_writer to avoid borrow conflicts.
         let pending = self.pending_history.clone();
@@ -3022,13 +3023,14 @@ impl KernelConnection for JupyterKernel {
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("No kernel running"))?;
 
-        let glob_pattern = escape_glob_pattern(pattern);
+        let glob_pattern = escape_glob_pattern(query);
+        let provider_limit = provider_history_limit(limit, dedupe);
         let request = HistoryRequest::Search {
             pattern: glob_pattern,
-            unique,
+            unique: false,
             output: false,
             raw: true,
-            n,
+            n: provider_limit,
         };
 
         let message: JupyterMessage = request.into();
@@ -3044,7 +3046,7 @@ impl KernelConnection for JupyterKernel {
         debug!("[jupyter-kernel] Sent history_request: msg_id={}", msg_id);
 
         match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
-            Ok(Ok(entries)) => Ok(entries),
+            Ok(Ok(entries)) => Ok(normalize_history_entries(entries, limit, dedupe)),
             Ok(Err(_)) => Err(anyhow::anyhow!("History request cancelled")),
             Err(_) => {
                 if let Ok(mut guard) = pending.lock() {
