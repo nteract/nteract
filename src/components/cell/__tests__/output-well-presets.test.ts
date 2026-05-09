@@ -7,28 +7,28 @@ describe("inferDefaultOutputMode", () => {
     expect(inferDefaultOutputMode({ kind: "empty" })).toBe("compact");
   });
 
-  it("single-iframe-chart (plotly) -> compact", () => {
+  it("single-iframe-chart (plotly) -> expanded (chart owns its requested height)", () => {
     expect(
       inferDefaultOutputMode({ kind: "single-iframe-chart", mime: "plotly", explicitHeight: 900 }),
-    ).toBe("compact");
+    ).toBe("expanded");
   });
 
-  it("single-iframe-chart (vega) -> compact", () => {
-    expect(inferDefaultOutputMode({ kind: "single-iframe-chart", mime: "vega" })).toBe("compact");
+  it("single-iframe-chart (vega) -> expanded", () => {
+    expect(inferDefaultOutputMode({ kind: "single-iframe-chart", mime: "vega" })).toBe("expanded");
   });
 
-  it("single-iframe-chart (leaflet) -> compact", () => {
+  it("single-iframe-chart (leaflet) -> expanded", () => {
     expect(inferDefaultOutputMode({ kind: "single-iframe-chart", mime: "leaflet" })).toBe(
-      "compact",
+      "expanded",
     );
   });
 
-  it("single-table (parquet) -> compact (sift owns its own height + passthrough)", () => {
-    expect(inferDefaultOutputMode({ kind: "single-table", mime: "parquet" })).toBe("compact");
+  it("single-table (parquet) -> expanded (sift owns its own height + passthrough)", () => {
+    expect(inferDefaultOutputMode({ kind: "single-table", mime: "parquet" })).toBe("expanded");
   });
 
-  it("single-table (arrow) -> compact", () => {
-    expect(inferDefaultOutputMode({ kind: "single-table", mime: "arrow" })).toBe("compact");
+  it("single-table (arrow) -> expanded", () => {
+    expect(inferDefaultOutputMode({ kind: "single-table", mime: "arrow" })).toBe("expanded");
   });
 
   it("single-image -> compact", () => {

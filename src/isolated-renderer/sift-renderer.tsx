@@ -54,14 +54,18 @@ function configureWasm(blobUrl: string): void {
 // Size estimates for sift's internal layout. These don't have to match
 // pretext's per-cell pixel-perfect math — the goal is a sensible default
 // container height before any scrolling kicks in. Sift handles overflow
-// internally regardless.
-const SIFT_HEADER_PX = 60; // sparkline summary band + column header row
-const SIFT_FOOTER_PX = 30; // "N rows" + corner controls strip
-const SIFT_ROW_PX = 32; // approximate row height in default theme
+// internally regardless. Underestimating *does* clip the bottom rows
+// because sift's virtual scroller doesn't compress rows to fit, so err
+// generous: better a bit of empty space below the table than missing
+// rows.
+const SIFT_HEADER_PX = 104; // column header row (~24) + sparkline summary band (~80)
+const SIFT_FOOTER_PX = 36; // "N rows" + corner controls strip
+const SIFT_ROW_PX = 40; // default-theme row height (line-height + padding)
 
 // Above this row count we stop fitting and let sift's virtual scroll page
-// the rest. Tuned so that a typical .head() (5 rows) fits naturally and a
-// typical .describe() (8 rows) does too, while a real dataset is paged.
+// the rest. With the new constants 12 rows still fits inside the 720px
+// cap (104 + 12*40 + 36 = 620), keeping a typical .head() / .describe()
+// fully visible.
 const SIFT_FIT_ROW_THRESHOLD = 12;
 
 // Hard cap for the iframe container. The output well wrapper is already
@@ -69,11 +73,11 @@ const SIFT_FIT_ROW_THRESHOLD = 12;
 // so on a small screen the wrapper shows a scrollbar above this. Keeping
 // the cap as a constant pixel value avoids the chicken-and-egg of asking
 // the iframe for a "viewport" that's actually the iframe's own height.
-const SIFT_MAX_PX = 600;
+const SIFT_MAX_PX = 720;
 
 // Floor so an empty / one-row dataframe still has somewhere to render
 // the header band and footer.
-const SIFT_MIN_PX = 200;
+const SIFT_MIN_PX = 220;
 
 function fitHeightForRowCount(rowCount: number): number {
   if (rowCount <= 0) return SIFT_MIN_PX;

@@ -15,14 +15,20 @@ export type OutputMode = "compact" | "expanded" | "focused";
 
 export function inferDefaultOutputMode(shape: OutputShape): OutputMode {
   switch (shape.kind) {
+    case "single-iframe-chart":
+      // Plotly / vega / leaflet at the user's requested height should flow
+      // inline like any other tall block. Compact's 75% vh wrapper cap
+      // would clip a `height=900` chart inside a 722px scrollable
+      // wrapper — producing a "double scrollbar" (page + wrapper). Expanded
+      // drops the wrapper cap; the chart takes its requested height in
+      // document order, the page scrolls naturally past it.
+      return "expanded";
     case "single-table":
-      // Sift renders at a fixed 600px and is now scroll-passthrough — the
-      // page wheels past it, click engages the table. Compact's 75% vh cap
-      // never engages at that height, so compact and expanded are visually
-      // identical. We pick compact as the conservative default and hide
-      // the mode strip on these cells (sift's own maximize button is the
-      // entry to fullscreen).
-      return "compact";
+      // Sift owns its own size (200–600px) and is scroll-passthrough — the
+      // page wheels past, click engages the table. Expanded keeps the
+      // wrapper out of the way so the cell behaves like any other inline
+      // block in the document.
+      return "expanded";
     case "single-rich-text":
       // Markdown / HTML / SVG already pass scroll through to the page;
       // capping them with a wrapper scrollbar is hostile. Let them grow.
@@ -31,12 +37,8 @@ export function inferDefaultOutputMode(shape: OutputShape): OutputMode {
       // A long stdout block plus a final result (dataframe, plot, etc.)
       // looks wrong inside a wrapper scrollbar — the streams want to flow
       // inline like document content, and the page is already scrollable.
-      // Expanded drops the wrapper cap so the whole cell grows naturally;
-      // sift / plotly / md tail still gets its own click-to-engage behavior
-      // when applicable.
       return "expanded";
     case "empty":
-    case "single-iframe-chart":
     case "single-image":
     case "single-widget":
     case "single-error":
