@@ -434,12 +434,12 @@ jobs:
       matrix:
         platform:
           - name: macOS
-            runner: macos-14-xlarge
+            runner: macos-14
             setup: echo "No extra deps needed on macOS"
             run_on_pr: false
             non_blocking: false
           - name: Windows
-            runner: windows-latest
+            runner: blacksmith-4vcpu-windows-2025
             setup: echo "No extra deps needed on Windows"
             run_on_pr: false
             non_blocking: true

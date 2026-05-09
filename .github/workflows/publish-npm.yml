@@ -51,7 +51,7 @@ jobs:
           - target: linux-x64-gnu
             runner: ubuntu-latest
           - target: win32-x64-msvc
-            runner: windows-latest
+            runner: blacksmith-4vcpu-windows-2025
     steps:
       - uses: actions/checkout@v6
         with:
