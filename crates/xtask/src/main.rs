@@ -703,7 +703,6 @@ fn maturin_develop_reason() -> Option<&'static str> {
         latest_modified_time_under(Path::new("crates/runtimed-client/Cargo.toml")),
         latest_modified_time_under(Path::new("crates/runtimed-client/src")),
         latest_modified_time_under(Path::new("python/runtimed/pyproject.toml")),
-        latest_modified_time_under(Path::new("python/runtimed/src")),
         latest_modified_time_under(Path::new("pyproject.toml")),
         latest_modified_time_under(Path::new(".venv/pyvenv.cfg")),
     ];
