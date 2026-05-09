@@ -7,23 +7,14 @@
  * 3. Message handler validates source
  */
 
-import { createHash } from "node:crypto";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { createFrameBlobUrl, generateFrameHtml } from "../frame-html";
-
-const TAURI_IFRAME_BOOTSTRAP_SCRIPT_HASH = "sha256-O/N72GCuG1dWVaY+Iz9rjgP7JT4TZuPk7omd2ijEPn4=";
-
-function inlineScriptHash(html: string): string {
-  const match = html.match(/  <script>\n([\s\S]*?)\n  <\/script>/);
-  expect(match).not.toBeNull();
-  return `sha256-${createHash("sha256").update(match![1]).digest("base64")}`;
-}
+import { beforeAll, describe, expect, it } from "vite-plus/test";
+import { generateFrameHtml } from "../frame-html";
 
 describe("generateFrameHtml", () => {
   let html: string;
 
   beforeAll(() => {
-    html = generateFrameHtml({ darkMode: false });
+    html = generateFrameHtml();
   });
 
   it("generates valid HTML document", () => {
@@ -40,12 +31,17 @@ describe("generateFrameHtml", () => {
     expect(html).toContain('http-equiv="Content-Security-Policy"');
   });
 
-  it("matches the bootstrap script hash allowlisted by Tauri", () => {
-    expect(inlineScriptHash(html)).toBe(TAURI_IFRAME_BOOTSTRAP_SCRIPT_HASH);
-  });
-
   it("includes viewport meta tag", () => {
     expect(html).toContain('name="viewport"');
+  });
+
+  it("blocks nested frames from cell output", () => {
+    expect(html).toContain("frame-src 'none'");
+  });
+
+  it("keeps worker policy explicit when child-src is none", () => {
+    expect(html).toContain("child-src 'none'");
+    expect(html).toContain("worker-src 'self' blob:");
   });
 
   /**
@@ -76,94 +72,27 @@ describe("generateFrameHtml", () => {
     expect(html).toContain("passive: false");
   });
 
-  describe("dark mode", () => {
-    it("bakes theme-correct background to prevent flash", () => {
-      // --bg-primary is always transparent; the notebook background shows through
-      const darkHtml = generateFrameHtml({ darkMode: true });
-      expect(darkHtml).toContain("--bg-primary: transparent");
-      expect(darkHtml).toContain("--bg-secondary: #1a1a1a");
-
-      const lightHtml = generateFrameHtml({ darkMode: false });
-      expect(lightHtml).toContain("--bg-primary: transparent");
-      expect(lightHtml).toContain("--bg-secondary: #f5f5f5");
-
-      // Cream uses warm tones
-      const creamDarkHtml = generateFrameHtml({ darkMode: true, colorTheme: "cream" });
-      expect(creamDarkHtml).toContain("--bg-secondary: #242120");
-      expect(creamDarkHtml).toContain("--text-primary: #e8e2dc");
-      expect(creamDarkHtml).toContain("--border-color: #3a3533");
-
-      const creamLightHtml = generateFrameHtml({ darkMode: false, colorTheme: "cream" });
-      expect(creamLightHtml).toContain("--bg-secondary: #f0ede7");
-      expect(creamLightHtml).toContain("--text-primary: #1e1a18");
-      expect(creamLightHtml).toContain("--border-color: #d8cec3");
+  describe("neutral defaults", () => {
+    it("bakes neutral dark defaults before theme sync arrives", () => {
+      expect(html).toContain("--bg-primary: transparent");
+      expect(html).toContain("--bg-secondary: #1a1a1a");
+      expect(html).toContain("--text-primary: #e0e0e0");
+      expect(html).toContain("--text-secondary: #a0a0a0");
+      expect(html).toContain("--border-color: #333333");
     });
 
     it("ships document typography for markdown and html outputs", () => {
-      const creamHtml = generateFrameHtml({ darkMode: false, colorTheme: "cream" });
-      expect(creamHtml).toContain(
+      expect(html).toContain(
         "--output-document-font: KaTeX_Main, Georgia, 'Times New Roman', serif",
       );
-      expect(creamHtml).toContain('[data-slot="markdown-output"], [data-slot="html-output"]');
-      expect(creamHtml).toContain(
-        ':is([data-slot="markdown-output"], [data-slot="html-output"]) h3',
-      );
-      expect(creamHtml).toContain(
-        ':is([data-slot="markdown-output"], [data-slot="html-output"]) table',
-      );
-      expect(creamHtml).toContain(
+      expect(html).toContain('[data-slot="markdown-output"], [data-slot="html-output"]');
+      expect(html).toContain(':is([data-slot="markdown-output"], [data-slot="html-output"]) h3');
+      expect(html).toContain(':is([data-slot="markdown-output"], [data-slot="html-output"]) table');
+      expect(html).toContain(
         ':is([data-slot="markdown-output"], [data-slot="html-output"]) button',
       );
-      expect(creamHtml).toContain("font-family: var(--output-mono-font)");
-
-      const classicHtml = generateFrameHtml({ darkMode: false });
-      expect(classicHtml).toContain("--output-document-font: var(--output-ui-font)");
+      expect(html).toContain("font-family: var(--output-mono-font)");
+      expect(html).toContain("--output-document-font: var(--output-ui-font)");
     });
-
-    it("uses dark text colors when darkMode is true", () => {
-      const darkHtml = generateFrameHtml({ darkMode: true });
-      expect(darkHtml).toContain("--text-primary: #e0e0e0");
-      expect(darkHtml).toContain("--border-color: #333333");
-    });
-
-    it("uses light text colors when darkMode is false", () => {
-      const lightHtml = generateFrameHtml({ darkMode: false });
-      expect(lightHtml).toContain("--text-primary: #1a1a1a");
-      expect(lightHtml).toContain("--border-color: #e0e0e0");
-    });
-  });
-});
-
-describe("createFrameBlobUrl", () => {
-  let mockCreateObjectURL: ReturnType<typeof vi.fn>;
-  let mockRevokeObjectURL: ReturnType<typeof vi.fn>;
-  let urlCounter = 0;
-
-  beforeEach(() => {
-    urlCounter = 0;
-    mockCreateObjectURL = vi.fn(() => `blob:mock-${++urlCounter}`);
-    mockRevokeObjectURL = vi.fn();
-    vi.stubGlobal("URL", {
-      ...URL,
-      createObjectURL: mockCreateObjectURL,
-      revokeObjectURL: mockRevokeObjectURL,
-    });
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("returns a blob: URL", () => {
-    const url = createFrameBlobUrl({ darkMode: false });
-    expect(url).toMatch(/^blob:/);
-    expect(mockCreateObjectURL).toHaveBeenCalledWith(expect.any(Blob));
-  });
-
-  it("creates unique URLs each call", () => {
-    const url1 = createFrameBlobUrl({ darkMode: false });
-    const url2 = createFrameBlobUrl({ darkMode: false });
-    expect(url1).not.toBe(url2);
-    expect(mockCreateObjectURL).toHaveBeenCalledTimes(2);
   });
 });

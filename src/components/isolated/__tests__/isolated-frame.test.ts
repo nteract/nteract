@@ -6,7 +6,20 @@
  * If these tests fail, DO NOT PROCEED - the security model is broken.
  */
 
-import { describe, expect, it } from "vite-plus/test";
+import { render } from "@testing-library/react";
+import { createElement } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
+
+vi.mock("../isolated-renderer-context", () => ({
+  useIsolatedRenderer: () => ({
+    rendererCode: undefined,
+    rendererCss: undefined,
+    isLoading: false,
+    error: null,
+  }),
+}));
+
+import { IsolatedFrame } from "../isolated-frame";
 
 /**
  * The sandbox attributes string from isolated-frame.tsx.
@@ -33,6 +46,15 @@ describe("iframe sandbox security", () => {
    */
   it("sandbox does NOT include allow-same-origin", () => {
     expect(EXPECTED_SANDBOX_ATTRS).not.toContain("allow-same-origin");
+  });
+
+  it("rendered iframe sandbox does NOT include allow-same-origin", () => {
+    const { container } = render(createElement(IsolatedFrame));
+    const iframe = container.querySelector("iframe") as HTMLIFrameElement;
+
+    expect(iframe).not.toBeNull();
+    const sandboxTokens = iframe.getAttribute("sandbox")?.split(/\s+/) ?? [];
+    expect(sandboxTokens).not.toContain("allow-same-origin");
   });
 
   it("sandbox includes allow-scripts (required for widgets)", () => {

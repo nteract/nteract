@@ -5,6 +5,7 @@ pub mod cli_install;
 pub mod mcpb_install;
 pub mod menu;
 
+pub mod iframe_shell;
 pub mod session;
 pub mod settings;
 pub mod shell_env;
@@ -3700,6 +3701,9 @@ pub fn run(
     }
 
     let app = builder
+        .register_uri_scheme_protocol(iframe_shell::FRAME_SCHEME, |_context, request| {
+            iframe_shell::frame_response(&request)
+        })
         .manage(window_registry.clone())
         .manage(reconnect_in_progress)
         .manage(restart_in_progress)

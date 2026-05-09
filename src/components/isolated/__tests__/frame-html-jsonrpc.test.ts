@@ -10,7 +10,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { generateFrameHtml } from "../frame-html";
 
 describe("bootstrap HTML JSON-RPC support", () => {
-  const html = generateFrameHtml({ darkMode: true });
+  const html = generateFrameHtml();
 
   it("checks for jsonrpc 2.0 format before legacy format", () => {
     // The handler should check data.jsonrpc === '2.0' early

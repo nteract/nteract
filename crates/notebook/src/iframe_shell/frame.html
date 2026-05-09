@@ -1,4 +1,4 @@
-export const FRAME_HTML = String.raw`<!DOCTYPE html>
+<!DOCTYPE html>
 <html style="background:transparent;color-scheme:dark">
 <head>
   <meta charset="UTF-8">
@@ -762,15 +762,3 @@ export const FRAME_HTML = String.raw`<!DOCTYPE html>
   </script>
 </body>
 </html>
-`;
-
-/**
- * Generate the HTML template for an isolated output frame.
- *
- * Tauri loads this HTML through the nteract-frame custom scheme so the frame
- * receives its own CSP. Browser-only development keeps using srcDoc with the
- * same sandbox-induced opaque origin behavior.
- */
-export function generateFrameHtml(): string {
-  return FRAME_HTML;
-}

@@ -1,6 +1,6 @@
 # Isolated output frame — security model and renderers
 
-Untrusted cell outputs render inside a sandboxed iframe. Tauri loads the iframe from a `blob:` URL so the opaque origin prevents Tauri IPC injection. The plain browser dev host uses `srcDoc` because Chrome rejects this sandboxed `blob:` navigation from localhost; the sandbox attribute list remains the primary defense against malicious JavaScript in outputs.
+Untrusted cell outputs render inside a sandboxed iframe. Tauri loads the iframe from the `nteract-frame` custom URI scheme so the iframe receives its own CSP. The sandbox attribute list, without `allow-same-origin`, is the load-bearing isolation against parent DOM, storage, and Tauri IPC access. The plain browser dev host uses `srcDoc` with the same sandbox-induced opaque origin behavior.
 
 Scope: `src/components/isolated/**`, `src/isolated-renderer/**`.
 
@@ -16,9 +16,11 @@ allow-scripts allow-downloads allow-forms allow-pointer-lock
 
 Fullscreen (sift maximize, maps, 3D) comes from the separate `allowFullScreen` iframe attribute, not a sandbox token. `allow-same-origin` stays off — adding it would give cell output access to `window.__TAURI__`, all Tauri APIs, parent DOM, localStorage, and cookies. A CI test in `src/components/isolated/__tests__/isolated-frame.test.ts` asserts the list stays clean; it's the single most important security invariant in this tree. `allow-popups` and `allow-modals` were removed to shrink the phishing surface — leave them out.
 
-### Blob URL origin
+### Custom URI scheme + sandbox-induced opaque origin
 
-In Tauri, generate HTML with `generateFrameHtml({ darkMode })`, wrap it in a `Blob`, and mount with `URL.createObjectURL`. Blob URLs produce a unique opaque origin (shown as `"null"`), so Tauri's IPC bridge doesn't inject into the iframe. In the browser dev host, mount the same generated HTML with `srcDoc`; do not add `allow-same-origin`.
+In Tauri, mount the frame at `nteract-frame://localhost/`. On Windows, Tauri/wry rewrites this to `http://nteract-frame.localhost/` while still routing through the same scheme handler. Do not string-compare iframe URLs across platforms; parse the URL and account for the platform-specific origin shape.
+
+All `nteract-frame://` iframes share one scheme origin. The custom scheme exists so the iframe gets its own CSP; it is not the isolation boundary. The sandbox attribute creates the opaque origin (shown as `"null"`) and is the only inter-iframe isolation. Render-time tests enforce that `allow-same-origin` stays absent.
 
 ### Content Security Policy
 
@@ -33,11 +35,18 @@ font-src    * data:;
 media-src   * data: blob:;
 object-src  * data: blob:;
 connect-src *;
+worker-src  'self' blob:;
+frame-src   'none';
+child-src   'none';
 ```
 
 `http://127.0.0.1:*` in `script-src`/`style-src` is deliberate: anywidget ESM (`_esm`) and CSS (`_css`) are served from the daemon's blob-store HTTP server on a dynamic localhost port. Without that entry the browser rejects `import()` of blob-served JS with a MIME-type violation. It's safe because the sandbox still lacks `allow-same-origin`, and the blob server is read-only and content-addressed. `https:` covers CDN-hosted widget assets (anywidget ESM from unpkg/jsdelivr).
 
-Canonical file: `src/components/isolated/frame-html.ts` → `generateFrameHtml()`.
+Canonical files: `crates/notebook/src/iframe_shell/frame.html` and `src/components/isolated/frame-html.ts` → `generateFrameHtml()`. The Rust parity test keeps them byte-equal.
+
+The scheme handler is registered in both packaged and Tauri dev shells. Plain browser-only `pnpm dev` still uses `srcDoc`, but `cargo xtask notebook` / Tauri dev can load `nteract-frame://localhost/`.
+
+Future hosted/web production should not treat `srcDoc` as the equivalent security boundary. A remote deployment with real auth and attribution should serve output documents from a separate output origin that does not share cookie scope, localStorage, or ambient credentials with the authenticated app origin. Keep those output iframes sandboxed without `allow-same-origin`; give the output origin its own permissive CSP; use explicit `postMessage` with origin/session validation; scope output URLs by signed, short-lived capability/session tokens; and keep attribution/audit data server-side instead of exposing identifiers to output JavaScript.
 
 ### Source validation
 
@@ -53,7 +62,7 @@ The iframe's message handler rejects anything whose `event.source !== window.par
 └──────────────────────────────────┼───────────────────────────┘
                                    ▼
 ┌──────────────────────────────────────────────────────────────┐
-│                 ISOLATED IFRAME (blob:)                      │
+│           ISOLATED IFRAME (nteract-frame://)                 │
 │  WidgetBridgeClient ↔ WidgetStore ↔ WidgetView/AnyWidget    │
 │                                                              │
 │  window.__TAURI__         → undefined                        │
@@ -192,6 +201,7 @@ Review these carefully on every change:
 ## Review checklist
 
 - Sandbox still excludes `allow-same-origin`.
+- Iframe CSP keeps `frame-src 'none'` and `child-src 'none'`.
 - CSP `script-src` / `style-src` stay scoped to `127.0.0.1:*` and `https:` — no new origins.
 - Source validation is intact (`event.source !== window.parent`).
 - Any new message types are added to the whitelist (`frame-bridge.ts`) and the JSON-RPC method list.

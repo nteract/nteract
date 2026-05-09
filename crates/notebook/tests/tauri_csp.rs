@@ -48,11 +48,13 @@ fn production_csp_is_enabled_and_restrictive() {
     let csp = object_field(security(&config), "csp");
 
     let script_src = directive(csp, "script-src");
-    assert_eq!(
-        script_src,
-        "'self' 'wasm-unsafe-eval' 'unsafe-eval' blob: https: http://127.0.0.1:* 'sha256-O/N72GCuG1dWVaY+Iz9rjgP7JT4TZuPk7omd2ijEPn4='"
-    );
+    assert_eq!(script_src, "'self' 'wasm-unsafe-eval'");
     assert!(!script_src.contains("'unsafe-inline'"));
+    assert!(!script_src.contains("'unsafe-eval'"));
+    assert!(!script_src.contains("sha256-"));
+    assert!(!script_src.contains("blob:"));
+    assert!(!script_src.contains("https:"));
+    assert!(!script_src.contains("http://127.0.0.1:*"));
 
     assert_eq!(directive(csp, "default-src"), "'self'");
     assert_eq!(
@@ -61,8 +63,15 @@ fn production_csp_is_enabled_and_restrictive() {
     );
     assert_eq!(directive(csp, "base-uri"), "'none'");
     assert_eq!(directive(csp, "form-action"), "'none'");
-    assert_eq!(directive(csp, "frame-src"), "blob:");
-    assert_eq!(directive(csp, "child-src"), "blob:");
+    let frame_src = directive(csp, "frame-src");
+    assert!(frame_src.contains("nteract-frame:"));
+    assert!(frame_src.contains("http://nteract-frame.localhost"));
+    assert!(!frame_src.contains("blob:"));
+
+    let child_src = directive(csp, "child-src");
+    assert!(child_src.contains("nteract-frame:"));
+    assert!(child_src.contains("http://nteract-frame.localhost"));
+    assert!(!child_src.contains("blob:"));
     assert_eq!(directive(csp, "worker-src"), "'self' blob:");
     assert_eq!(
         directive(csp, "object-src"),
@@ -90,8 +99,11 @@ fn development_csp_is_separate_from_packaged_policy() {
     let dev_script_src = directive(dev_csp, "script-src");
     assert_eq!(
         dev_script_src,
-        "'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' http://localhost:*"
+        "'self' 'wasm-unsafe-eval' http://localhost:*"
     );
+    assert!(!dev_script_src.contains("'unsafe-inline'"));
+    assert!(!dev_script_src.contains("'unsafe-eval'"));
+    assert!(!dev_script_src.contains("sha256-"));
     assert!(!dev_script_src.contains("http://localhost:5174"));
 
     assert!(directive(dev_csp, "default-src").contains("http://localhost:*"));
@@ -100,6 +112,16 @@ fn development_csp_is_separate_from_packaged_policy() {
         directive(dev_csp, "worker-src"),
         "'self' blob: http://localhost:*"
     );
+
+    let dev_frame_src = directive(dev_csp, "frame-src");
+    assert!(dev_frame_src.contains("nteract-frame:"));
+    assert!(dev_frame_src.contains("http://nteract-frame.localhost"));
+    assert!(!dev_frame_src.contains("blob:"));
+
+    let dev_child_src = directive(dev_csp, "child-src");
+    assert!(dev_child_src.contains("nteract-frame:"));
+    assert!(dev_child_src.contains("http://nteract-frame.localhost"));
+    assert!(!dev_child_src.contains("blob:"));
 
     let dev_connect_src = directive(dev_csp, "connect-src");
     assert!(dev_connect_src.contains("ws://localhost:*"));
