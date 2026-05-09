@@ -46,6 +46,8 @@ Canonical files: `crates/notebook/src/iframe_shell/frame.html` and `src/componen
 
 The scheme handler is registered in both packaged and Tauri dev shells. Plain browser-only `pnpm dev` still uses `srcDoc`, but `cargo xtask notebook` / Tauri dev can load `nteract-frame://localhost/`.
 
+Future hosted/web production should not treat `srcDoc` as the equivalent security boundary. A remote deployment with real auth and attribution should serve output documents from a separate output origin that does not share cookie scope, localStorage, or ambient credentials with the authenticated app origin. Keep those output iframes sandboxed without `allow-same-origin`; give the output origin its own permissive CSP; use explicit `postMessage` with origin/session validation; scope output URLs by signed, short-lived capability/session tokens; and keep attribution/audit data server-side instead of exposing identifiers to output JavaScript.
+
 ### Source validation
 
 The iframe's message handler rejects anything whose `event.source !== window.parent`. Keep that check in place — it prevents other windows/iframes from spoofing messages.
