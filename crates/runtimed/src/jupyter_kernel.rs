@@ -76,6 +76,103 @@ async fn bind_kernel_port_listeners(ip: IpAddr, ports: KernelPorts) -> Result<Ve
 type PendingCompletions =
     Arc<StdMutex<HashMap<String, oneshot::Sender<(Vec<CompletionItem>, usize, usize)>>>>;
 
+const HISTORY_CACHE_CAPACITY: usize = 64;
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct HistoryCacheKey {
+    pattern: Option<String>,
+    unique: bool,
+}
+
+impl HistoryCacheKey {
+    fn new(pattern: Option<&str>, unique: bool) -> Self {
+        Self {
+            pattern: pattern
+                .filter(|pattern| !pattern.is_empty())
+                .map(str::to_string),
+            unique,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct HistoryCacheValue {
+    requested_limit: i32,
+    entries: Vec<HistoryEntry>,
+}
+
+#[derive(Debug)]
+struct HistoryLruCache {
+    capacity: usize,
+    entries: HashMap<HistoryCacheKey, HistoryCacheValue>,
+    lru: VecDeque<HistoryCacheKey>,
+}
+
+impl HistoryLruCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            entries: HashMap::new(),
+            lru: VecDeque::new(),
+        }
+    }
+
+    fn get(&mut self, key: &HistoryCacheKey, limit: i32) -> Option<Vec<HistoryEntry>> {
+        let value = self.entries.get(key)?;
+        if !history_cache_value_satisfies_limit(value, limit) {
+            return None;
+        }
+
+        let mut results = value.entries.clone();
+        results.truncate(normalize_history_limit(limit));
+        self.touch(key);
+        Some(results)
+    }
+
+    fn insert(&mut self, key: HistoryCacheKey, requested_limit: i32, entries: Vec<HistoryEntry>) {
+        if self.capacity == 0 {
+            return;
+        }
+
+        self.entries.insert(
+            key.clone(),
+            HistoryCacheValue {
+                requested_limit,
+                entries,
+            },
+        );
+        self.touch(&key);
+
+        while self.entries.len() > self.capacity {
+            if let Some(oldest) = self.lru.pop_front() {
+                self.entries.remove(&oldest);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn touch(&mut self, key: &HistoryCacheKey) {
+        self.lru.retain(|candidate| candidate != key);
+        self.lru.push_back(key.clone());
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.lru.clear();
+    }
+}
+
+fn normalize_history_limit(limit: i32) -> usize {
+    limit.max(0) as usize
+}
+
+fn history_cache_value_satisfies_limit(value: &HistoryCacheValue, limit: i32) -> bool {
+    let requested = normalize_history_limit(limit);
+    let fetched = normalize_history_limit(value.requested_limit);
+    fetched >= requested || value.entries.len() < fetched
+}
+
 /// Handle for interrupting a kernel without exclusive access.
 ///
 /// What an IOPub status message translates to on the RuntimeStateDoc.
@@ -185,6 +282,8 @@ pub struct JupyterKernel {
     pending_history: Arc<StdMutex<HashMap<String, oneshot::Sender<Vec<HistoryEntry>>>>>,
     /// Pending completion requests: msg_id -> response channel.
     pending_completions: PendingCompletions,
+    /// Per-kernel LRU cache for history searches.
+    history_cache: HistoryLruCache,
     /// Terminal emulators for stream outputs (stdout/stderr).
     stream_terminals: Arc<tokio::sync::Mutex<StreamTerminals>>,
 }
@@ -2695,6 +2794,7 @@ impl KernelConnection for JupyterKernel {
             comm_seq,
             pending_history,
             pending_completions,
+            history_cache: HistoryLruCache::new(HISTORY_CACHE_CAPACITY),
             stream_terminals,
         };
 
@@ -2726,6 +2826,7 @@ impl KernelConnection for JupyterKernel {
         }
 
         shell.send(message).await?;
+        self.history_cache.clear();
         info!(
             "[jupyter-kernel] Sent execute_request: cell_id={} execution_id={}",
             cell_id, execution_id
@@ -3014,6 +3115,22 @@ impl KernelConnection for JupyterKernel {
         n: i32,
         unique: bool,
     ) -> Result<Vec<HistoryEntry>> {
+        if n <= 0 {
+            return Ok(Vec::new());
+        }
+
+        let cache_key = HistoryCacheKey::new(pattern, unique);
+        if let Some(entries) = self.history_cache.get(&cache_key, n) {
+            debug!(
+                "[jupyter-kernel] History cache hit: pattern={:?} unique={} n={} entries={}",
+                pattern,
+                unique,
+                n,
+                entries.len()
+            );
+            return Ok(entries);
+        }
+
         // Clone Arc before taking &mut shell_writer to avoid borrow conflicts.
         let pending = self.pending_history.clone();
 
@@ -3044,7 +3161,10 @@ impl KernelConnection for JupyterKernel {
         debug!("[jupyter-kernel] Sent history_request: msg_id={}", msg_id);
 
         match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
-            Ok(Ok(entries)) => Ok(entries),
+            Ok(Ok(entries)) => {
+                self.history_cache.insert(cache_key, n, entries.clone());
+                Ok(entries)
+            }
             Ok(Err(_)) => Err(anyhow::anyhow!("History request cancelled")),
             Err(_) => {
                 if let Ok(mut guard) = pending.lock() {
@@ -3169,6 +3289,14 @@ fn prepend_to_path(dir: &std::path::Path) -> String {
 mod tests {
     use super::*;
 
+    fn history_entry(source: &str, line: i32) -> HistoryEntry {
+        HistoryEntry {
+            session: 1,
+            line,
+            source: source.to_string(),
+        }
+    }
+
     #[tokio::test]
     async fn bind_kernel_port_listeners_uses_provided_ports() {
         let ports = KernelPorts {
@@ -3188,5 +3316,66 @@ mod tests {
             .collect();
 
         assert_eq!(bound_ports, vec![19100, 19101, 19102, 19103, 19104]);
+    }
+
+    #[test]
+    fn history_lru_returns_cached_prefix_and_refreshes_recency() {
+        let mut cache = HistoryLruCache::new(2);
+        let import_key = HistoryCacheKey::new(Some("import p"), true);
+        let plot_key = HistoryCacheKey::new(Some("plt"), true);
+        let numpy_key = HistoryCacheKey::new(Some("np"), true);
+
+        cache.insert(
+            import_key.clone(),
+            3,
+            vec![
+                history_entry("import pandas as pd", 3),
+                history_entry("import polars as pl", 2),
+                history_entry("import pathlib", 1),
+            ],
+        );
+        cache.insert(plot_key.clone(), 1, vec![history_entry("plt.plot(x)", 4)]);
+
+        let hit = cache.get(&import_key, 2).expect("cache hit");
+        assert_eq!(
+            hit.iter()
+                .map(|entry| entry.source.as_str())
+                .collect::<Vec<_>>(),
+            vec!["import pandas as pd", "import polars as pl"]
+        );
+
+        cache.insert(
+            numpy_key.clone(),
+            1,
+            vec![history_entry("np.arange(10)", 5)],
+        );
+
+        assert!(cache.get(&plot_key, 1).is_none());
+        assert!(cache.get(&import_key, 1).is_some());
+        assert!(cache.get(&numpy_key, 1).is_some());
+    }
+
+    #[test]
+    fn history_lru_misses_when_cached_result_may_be_too_small() {
+        let mut cache = HistoryLruCache::new(2);
+        let key = HistoryCacheKey::new(Some("import"), false);
+        cache.insert(
+            key.clone(),
+            2,
+            vec![
+                history_entry("import pandas", 1),
+                history_entry("import numpy", 2),
+            ],
+        );
+
+        assert!(cache.get(&key, 3).is_none());
+
+        let exhausted_key = HistoryCacheKey::new(Some("rare"), false);
+        cache.insert(exhausted_key.clone(), 5, vec![history_entry("rare()", 1)]);
+
+        assert_eq!(
+            cache.get(&exhausted_key, 10).expect("exhausted hit").len(),
+            1
+        );
     }
 }

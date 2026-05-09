@@ -22,6 +22,7 @@ interface HistorySearchDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSelect: (source: string) => void;
+  initialQuery?: string;
 }
 
 /** Syntax-highlighted code preview for history entries (memoized to avoid re-renders) */
@@ -51,26 +52,40 @@ const CodePreview = memo(function CodePreview({
   );
 });
 
-export function HistorySearchDialog({ open, onOpenChange, onSelect }: HistorySearchDialogProps) {
+export function HistorySearchDialog({
+  open,
+  onOpenChange,
+  onSelect,
+  initialQuery = "",
+}: HistorySearchDialogProps) {
   const { entries, isLoading, error, searchHistory, clearEntries } = useHistorySearch();
   const [searchValue, setSearchValue] = useState("");
   // Defer the search value for filtering to keep input responsive
   const deferredSearchValue = useDeferredValue(searchValue);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const skipNextDebouncedSearchRef = useRef(false);
 
   // Fetch initial history (Tail) when dialog opens
   useEffect(() => {
     if (open) {
-      searchHistory(); // No pattern = Tail request
-      setSearchValue("");
+      const query = initialQuery.trim();
+      skipNextDebouncedSearchRef.current = true;
+      setSearchValue(query);
+      searchHistory(query || undefined);
     } else {
       clearEntries();
+      skipNextDebouncedSearchRef.current = false;
     }
-  }, [open, searchHistory, clearEntries]);
+  }, [open, initialQuery, searchHistory, clearEntries]);
 
   // Debounced kernel search when user types
   useEffect(() => {
     if (!open) return;
+
+    if (skipNextDebouncedSearchRef.current) {
+      skipNextDebouncedSearchRef.current = false;
+      return;
+    }
 
     if (debounceRef.current) {
       clearTimeout(debounceRef.current);

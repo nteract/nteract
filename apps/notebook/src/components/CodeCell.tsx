@@ -77,6 +77,19 @@ interface OutputModeStripProps {
   onChange: (mode: OutputMode) => void;
 }
 
+function historyQueryFromEditor(view: EditorView | null, fallbackSource: string): string {
+  if (view) {
+    const head = view.state.selection.main.head;
+    const line = view.state.doc.lineAt(head);
+    const linePrefix = line.text.slice(0, head - line.from).trim();
+    if (linePrefix) {
+      return linePrefix;
+    }
+  }
+
+  return fallbackSource.trim();
+}
+
 /**
  * Three-segment mode selector for an iframe output: compact, expanded,
  * focused. Mutually exclusive states grouped on a shared rail so the
@@ -156,6 +169,7 @@ export const CodeCell = memo(function CodeCell({
   const isGroupExecuting = useIsGroupExecuting(hiddenGroupCellIds);
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
+  const [historyInitialQuery, setHistoryInitialQuery] = useState("");
   const [isIframeOutputExpanded, setIsIframeOutputExpanded] = useState(false);
   const presence = usePresenceContext();
   const { extension: crdtBridgeExt, bridge } = useCrdtBridge(cell.id);
@@ -262,16 +276,19 @@ export const CodeCell = memo(function CodeCell({
     cellId: cell.id,
   });
 
-  // Ctrl+R to open history search
+  // Cmd/Ctrl+R to open history search seeded from the active editor line.
   const historyKeyBinding: KeyBinding = useMemo(
     () => ({
-      key: "Ctrl-r",
+      key: "Mod-r",
       run: () => {
+        setHistoryInitialQuery(
+          historyQueryFromEditor(editorRef.current?.getEditor() ?? null, cell.source),
+        );
         setHistoryDialogOpen(true);
         return true;
       },
     }),
-    [],
+    [cell.source],
   );
 
   // Handle history selection - replace cell content via CRDT bridge
@@ -493,6 +510,7 @@ export const CodeCell = memo(function CodeCell({
           open={historyDialogOpen}
           onOpenChange={setHistoryDialogOpen}
           onSelect={handleHistorySelect}
+          initialQuery={historyInitialQuery}
         />
       )}
     </>
