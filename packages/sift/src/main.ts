@@ -1,12 +1,6 @@
 import { catchError, defer, EMPTY, Observable, Subject, switchMap } from "rxjs";
 import { DATASETS, type DatasetEntry } from "./datasets";
-import {
-  applyHfFeatureOverrides,
-  applyPandasIndexOverrides,
-  parseHfFeatures,
-  parsePandasIndexColumns,
-  parseSchemaMetadata,
-} from "./parquet-features";
+import { applyParquetColumnHints, pandasIndexColumnsFromHints } from "./parquet-features";
 import { resolveHuggingFaceParquetUrl } from "./parquet-loader";
 import { ensureModule, getModuleSync, loadIpc } from "./predicate";
 import { type Column, createTable, type TableData, type TableEngine } from "./table";
@@ -342,19 +336,8 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
           // Get metadata to know how many row groups
           const meta = mod.parquet_metadata(parquetBytes);
           const numRowGroups = meta[0];
-          const totalRows = meta[1];
-
-          const schemaMetadata = parseSchemaMetadata(
-            (() => {
-              try {
-                return mod.parquet_schema_metadata(parquetBytes);
-              } catch {
-                return undefined;
-              }
-            })(),
-          );
-          const pandasIndexCols = parsePandasIndexColumns(schemaMetadata);
-          const hfFeatures = parseHfFeatures(schemaMetadata);
+          const columnHints = mod.parquet_column_hints(parquetBytes);
+          const pandasIndexCols = pandasIndexColumnsFromHints(columnHints);
 
           // Load first row group → mount table immediately
           const handle = mod.load_parquet_row_group(parquetBytes, 0, 0);
@@ -364,8 +347,7 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
           tableData.recomputeSummaries = () =>
             updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
 
-          applyPandasIndexOverrides(columns, pandasIndexCols, totalRows);
-          applyHfFeatureOverrides(columns, hfFeatures);
+          applyParquetColumnHints(columns, columnHints);
 
           // Compute initial summaries from first row group
           updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);

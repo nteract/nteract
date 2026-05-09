@@ -1,6 +1,8 @@
 //! Format a `nteract_predicate::ParquetSummary` as compact text for LLM consumption.
 
-use nteract_predicate::{ColumnStats, ColumnSummary, ParquetSummary};
+use nteract_predicate::{
+    ColumnStats, ColumnSummary, ParquetColumnHint, ParquetSemanticType, ParquetSummary,
+};
 
 /// Summarize a parquet dataset for LLM consumption.
 /// Returns a compact multi-line string describing row count, size, and per-column stats.
@@ -30,13 +32,17 @@ pub fn summarize(summary: &ParquetSummary) -> String {
 
     out.push_str("\nColumns:\n");
     for col in &summary.columns {
-        out.push_str(&format_column(col, summary.num_rows));
+        let hint = summary
+            .column_hints
+            .iter()
+            .find(|hint| hint.name == col.name);
+        out.push_str(&format_column(col, summary.num_rows, hint));
     }
 
     out
 }
 
-fn format_column(col: &ColumnSummary, total_rows: u64) -> String {
+fn format_column(col: &ColumnSummary, total_rows: u64, hint: Option<&ParquetColumnHint>) -> String {
     let null_info = if col.null_count == 0 {
         String::new()
     } else if total_rows > 0 {
@@ -111,7 +117,22 @@ fn format_column(col: &ColumnSummary, total_rows: u64) -> String {
         ColumnStats::Other => String::new(),
     };
 
-    format!("  {} ({}){}{}\n", col.name, col.data_type, null_info, stats)
+    let hint_info = format_column_hint(hint);
+
+    format!(
+        "  {} ({}){}{}{}\n",
+        col.name, col.data_type, hint_info, null_info, stats
+    )
+}
+
+fn format_column_hint(hint: Option<&ParquetColumnHint>) -> String {
+    match hint.and_then(|hint| hint.semantic_type) {
+        Some(ParquetSemanticType::HuggingfaceImage) => " · HF Image".to_string(),
+        Some(ParquetSemanticType::HuggingfaceImageList) => " · HF Image list".to_string(),
+        Some(ParquetSemanticType::HuggingfaceClassLabel) => " · HF ClassLabel".to_string(),
+        Some(ParquetSemanticType::PandasIndex) => " · pandas index".to_string(),
+        _ => String::new(),
+    }
 }
 
 fn format_bytes(n: u64) -> String {
@@ -174,6 +195,7 @@ mod tests {
             num_rows: 0,
             num_bytes: 0,
             columns: vec![],
+            column_hints: vec![],
         });
         assert!(s.contains("0 rows × 0 columns"));
     }
@@ -213,6 +235,7 @@ mod tests {
                     },
                 },
             ],
+            column_hints: vec![],
         };
         let s = summarize(&summary);
         assert!(s.contains("1,200 rows × 3 columns"));
@@ -223,6 +246,34 @@ mod tests {
         assert!(s.contains("12 nulls (1%)"));
         assert!(s.contains("500 distinct"));
         assert!(s.contains("\"alice\""));
+    }
+
+    #[test]
+    fn summarize_surfaces_rich_parquet_hints() {
+        let summary = ParquetSummary {
+            num_rows: 3,
+            num_bytes: 0,
+            columns: vec![ColumnSummary {
+                name: "image".to_string(),
+                data_type: "struct<2 fields>".to_string(),
+                null_count: 0,
+                stats: ColumnStats::Other,
+            }],
+            column_hints: vec![ParquetColumnHint {
+                name: "image".to_string(),
+                column_type: Some("image".to_string()),
+                numeric: Some(false),
+                sortable: Some(false),
+                width: Some(140),
+                label: None,
+                pandas_index: false,
+                semantic_type: Some(ParquetSemanticType::HuggingfaceImage),
+            }],
+        };
+
+        let s = summarize(&summary);
+
+        assert!(s.contains("image (struct<2 fields>) · HF Image"));
     }
 
     #[test]
@@ -293,6 +344,7 @@ mod tests {
                     max: f64::NAN,
                 },
             }],
+            column_hints: vec![],
         };
         let s = summarize(&summary);
         assert!(s.contains("score (float64)"));
@@ -319,6 +371,7 @@ mod tests {
                     top: vec![],
                 },
             }],
+            column_hints: vec![],
         };
         let s = summarize(&summary);
         assert!(s.contains("≥100,000 distinct"));
@@ -339,6 +392,7 @@ mod tests {
                     max: "2024-12-31T23:59:59".to_string(),
                 },
             }],
+            column_hints: vec![],
         };
         let s = summarize(&summary);
         assert!(s.contains("2024-01-01T00:00:00 to 2024-12-31T23:59:59"));
@@ -361,6 +415,7 @@ mod tests {
                     max: String::new(),
                 },
             }],
+            column_hints: vec![],
         };
         let s = summarize(&summary);
         assert!(s.contains("ts (timestamp[us])"));
@@ -381,6 +436,7 @@ mod tests {
                 null_count: 0,
                 stats: ColumnStats::Other,
             }],
+            column_hints: vec![],
         };
         let s = summarize(&summary);
         assert!(s.contains("payload (binary)"));
@@ -400,6 +456,7 @@ mod tests {
                 null_count: 5,
                 stats: ColumnStats::Other,
             }],
+            column_hints: vec![],
         };
         let s = summarize(&summary);
         assert!(s.contains("5 nulls"));
@@ -422,6 +479,7 @@ mod tests {
                     false_count: 100,
                 },
             }],
+            column_hints: vec![],
         };
         let s = summarize(&summary);
         assert!(s.contains("true 0% / false 100%"));
@@ -446,6 +504,7 @@ mod tests {
                     top: vec![(long_label, 30)],
                 },
             }],
+            column_hints: vec![],
         };
         let s = summarize(&summary);
         assert!(s.contains('…'));

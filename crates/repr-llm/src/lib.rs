@@ -37,7 +37,10 @@ pub use json::summarize_json;
 pub use parquet::summarize as summarize_parquet_summary;
 
 // Re-export the core types so callers don't need a separate dep on nteract-predicate.
-pub use nteract_predicate::{summarize_parquet, ColumnStats, ColumnSummary, ParquetSummary};
+pub use nteract_predicate::{
+    summarize_parquet, ColumnStats, ColumnSummary, ParquetColumnHint, ParquetSemanticType,
+    ParquetSummary,
+};
 
 /// Attempt to produce an LLM-friendly text summary from a visualization spec.
 ///

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   applyColumnOverrides,
-  applyHfFeatureOverrides,
-  applyPandasIndexOverrides,
+  applyParquetColumnHints,
+  pandasIndexColumnsFromHints,
 } from "./parquet-features";
 import type { Column } from "./table";
 
@@ -32,8 +32,27 @@ describe("parquet feature overrides", () => {
       column(),
     ];
 
-    applyPandasIndexOverrides(columns, new Set(["__index_level_0__"]), 10_000);
-    applyHfFeatureOverrides(columns, { image: { _type: "Image" } });
+    const hints = [
+      {
+        name: "__index_level_0__",
+        sortable: false,
+        width: 78,
+        label: "",
+        pandasIndex: true,
+        semanticType: "pandas_index",
+      },
+      {
+        name: "image",
+        columnType: "image" as const,
+        numeric: false,
+        sortable: false,
+        width: 140,
+        pandasIndex: false,
+        semanticType: "huggingface_image",
+      },
+    ];
+
+    applyParquetColumnHints(columns, hints);
     applyColumnOverrides(columns, {
       __index_level_0__: { label: "Row", width: 120, sortable: true },
       image: { columnType: "categorical", sortable: true, width: 180 },
@@ -45,5 +64,6 @@ describe("parquet feature overrides", () => {
       sortable: true,
       width: 180,
     });
+    expect([...pandasIndexColumnsFromHints(hints)]).toEqual(["__index_level_0__"]);
   });
 });

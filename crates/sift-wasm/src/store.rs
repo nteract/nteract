@@ -11,6 +11,7 @@ use arrow_cast::display::ArrayFormatter;
 use arrow_ord::sort::{sort_to_indices, SortOptions};
 use arrow_select::concat::concat;
 use chrono::DateTime;
+use nteract_predicate::parquet_column_hints as predicate_parquet_column_hints;
 use nteract_predicate::summary::{CategoryCount, HistogramBin};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::{Deserialize, Serialize};
@@ -1436,26 +1437,12 @@ pub fn parquet_metadata(parquet_bytes: &[u8]) -> Result<Vec<u32>, JsValue> {
     Ok(vec![num_row_groups, total_rows])
 }
 
-/// Extract file-level key-value metadata from a Parquet footer.
-/// Returns metadata keys like "pandas", "huggingface", etc.
+/// Extract canonical column hints from Parquet file-level metadata.
 #[wasm_bindgen]
-pub fn parquet_schema_metadata(parquet_bytes: &[u8]) -> Result<JsValue, JsValue> {
-    let bytes = bytes::Bytes::copy_from_slice(parquet_bytes);
-    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)
+pub fn parquet_column_hints(parquet_bytes: &[u8]) -> Result<JsValue, JsValue> {
+    let hints = predicate_parquet_column_hints(parquet_bytes)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let metadata = builder.metadata();
-    let map: HashMap<String, String> = metadata
-        .file_metadata()
-        .key_value_metadata()
-        .into_iter()
-        .flatten()
-        .filter_map(|kv| {
-            kv.value
-                .as_ref()
-                .map(|value| (kv.key.clone(), value.clone()))
-        })
-        .collect();
-    serde_wasm_bindgen::to_value(&map).map_err(|e| JsValue::from_str(&e.to_string()))
+    serde_wasm_bindgen::to_value(&hints).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
 /// Load a single Parquet row group into a new or existing store.
