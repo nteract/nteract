@@ -327,10 +327,10 @@ export const CodeCell = memo(function CodeCell({
     cellId: cell.id,
   });
 
-  // Cmd/Ctrl+R to open history search seeded from the active editor line.
+  // Ctrl+R opens history search seeded from the active editor line.
   const historyKeyBinding: KeyBinding = useMemo(
     () => ({
-      key: "Mod-r",
+      key: "Ctrl-r",
       run: () => {
         setHistoryInitialQuery(
           historyQueryFromEditor(editorRef.current?.getEditor() ?? null, cell.source),
