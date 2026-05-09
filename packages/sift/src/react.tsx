@@ -14,6 +14,14 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  applyColumnOverrides,
+  applyHfFeatureOverrides,
+  applyPandasIndexOverrides,
+  parseHfFeatures,
+  parsePandasIndexColumns,
+  parseSchemaMetadata,
+} from "./parquet-features";
 import { ensureModule, getModuleSync, loadIpc } from "./predicate";
 import {
   type Column,
@@ -304,6 +312,7 @@ export function SiftTable({
 
       const meta = mod.parquet_metadata(parquetBytes);
       const numRowGroups = meta[0];
+      const totalRows = meta[1];
 
       if (numRowGroups === 0) {
         setError("Parquet file has no row groups.");
@@ -311,13 +320,34 @@ export function SiftTable({
         return;
       }
 
+      // Pull rich-type hints from the parquet footer. HF features
+      // (Image, ClassLabel, …) and pandas index columns get applied
+      // to the column list before the engine mounts so headers and
+      // cell renderers light up on first paint.
+      const schemaMetadata = parseSchemaMetadata(
+        (() => {
+          try {
+            return mod.parquet_schema_metadata(parquetBytes);
+          } catch {
+            return undefined;
+          }
+        })(),
+      );
+      const pandasIndexCols = parsePandasIndexColumns(schemaMetadata);
+      const hfFeatures = parseHfFeatures(schemaMetadata);
+
       // Load first row group → mount table immediately
       const handle = mod.load_parquet_row_group(parquetBytes, 0, 0);
       wasmHandle = handle;
 
-      const { tableData, columns, prefetchViewport } = createWasmTableData(handle, columnOverrides);
+      const { tableData, columns, prefetchViewport } = createWasmTableData(handle);
       tableData.prefetchViewport = prefetchViewport;
       tableData.recomputeSummaries = () => updateWasmSummaries(mod, handle, tableData, columns);
+
+      applyPandasIndexOverrides(columns, pandasIndexCols, totalRows);
+      applyHfFeatureOverrides(columns, hfFeatures);
+      applyColumnOverrides(columns, columnOverrides);
+
       updateWasmSummaries(mod, handle, tableData, columns);
 
       if (cancelled) return;

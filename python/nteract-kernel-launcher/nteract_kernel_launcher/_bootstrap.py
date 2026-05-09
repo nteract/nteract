@@ -36,6 +36,7 @@ import hashlib
 import io
 import logging
 import os
+from collections.abc import Callable
 from typing import Any
 
 from IPython.core.formatters import BaseFormatter
@@ -43,7 +44,7 @@ from traitlets import ObjectName, Unicode
 
 from nteract_kernel_launcher import _buffer_hook, _traceback
 from nteract_kernel_launcher._buffer_hook import pending_buffers
-from nteract_kernel_launcher._format import serialize_dataframe
+from nteract_kernel_launcher._format import serialize_arrow_table, serialize_dataframe
 from nteract_kernel_launcher._refs import BLOB_REF_MIME, BlobRef, build_ref_bundle
 from nteract_kernel_launcher._summary import summarize_dataframe, summarize_dataset
 
@@ -82,12 +83,41 @@ def _narwhals_mimebundle(df: Any, include=None, exclude=None) -> dict | None:
     return _emit_dataframe(native, total_rows=total_rows)
 
 
+def _pyarrow_table_mimebundle(table: Any, include=None, exclude=None) -> dict | None:
+    return _emit_arrow_table(table, total_rows=table.num_rows)
+
+
+def _pyarrow_record_batch_mimebundle(batch: Any, include=None, exclude=None) -> dict | None:
+    import pyarrow as pa
+
+    table = pa.Table.from_batches([batch])
+    return _emit_arrow_table(table, total_rows=table.num_rows)
+
+
 def _dataset_mimebundle(ds: Any, include=None, exclude=None) -> dict | None:
-    try:
-        return {"text/llm+plain": summarize_dataset(ds)}
-    except Exception as exc:  # noqa: BLE001
-        log.debug("dataset mimebundle failed: %s", exc)
-        return None
+    """Emit parquet bytes + HF features summary for a ``datasets.Dataset``.
+
+    The underlying ``ds.data.table`` carries the ``huggingface`` schema KV
+    metadata that Sift uses to detect rich types (Image, ClassLabel,
+    Translation, …). Going through the arrow table preserves that metadata
+    end-to-end. When no underlying table is available (IterableDataset,
+    streaming, …), fall back to the legacy summary-only bundle so the
+    formatter stays best-effort.
+    """
+    table = getattr(getattr(ds, "data", None), "table", None)
+    summary = lambda: summarize_dataset(ds)  # noqa: E731
+
+    if table is None:
+        try:
+            return {"text/llm+plain": summary()}
+        except Exception as exc:  # noqa: BLE001
+            log.debug("dataset mimebundle failed: %s", exc)
+            return None
+
+    total_rows = getattr(ds, "num_rows", table.num_rows)
+    if not isinstance(total_rows, int):
+        total_rows = table.num_rows
+    return _emit_arrow_table(table, total_rows=total_rows, summary_fn=summary)
 
 
 def _unwrap_narwhals(nw_df: Any) -> tuple[Any, int] | tuple[None, int]:
@@ -148,7 +178,88 @@ def _emit_dataframe(df: Any, *, total_rows: int) -> dict | None:
         except Exception:  # noqa: BLE001
             return None
 
-    # Detect downsampling by reading parquet metadata (footer only, cheap).
+    return _emit_parquet_bytes(
+        data,
+        content_type=content_type,
+        total_rows=total_rows,
+        summary_fn=lambda included, sampled: summarize_dataframe(
+            df, total_rows=total_rows, included_rows=included, sampled=sampled
+        ),
+    )
+
+
+def _emit_arrow_table(
+    table: Any,
+    *,
+    total_rows: int,
+    summary_fn: Callable[[], str] | None = None,
+) -> dict | None:
+    """Serialize a ``pa.Table`` to parquet, preserving schema KV metadata.
+
+    Distinct from :func:`_emit_dataframe` because the dataframe path runs
+    bytes through ``pa.Table.from_pandas`` / ``pl.write_parquet``, which
+    drop schema KV metadata. The table path goes straight through
+    ``pq.write_table`` so the ``huggingface`` key survives — this is what
+    makes Sift's rich-type detection light up for HF parquets the user
+    loaded with ``pq.read_table`` or ``datasets.load_dataset``.
+
+    ``summary_fn`` lets callers (notably ``_dataset_mimebundle``) provide
+    a richer per-domain summary (HF features) instead of the generic
+    pandas-style preview.
+    """
+    try:
+        data, content_type = serialize_arrow_table(table, max_bytes=_MAX_PAYLOAD_BYTES)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("arrow serialize failed: %s — emitting summary-only bundle", exc)
+        if summary_fn is not None:
+            try:
+                return {"text/llm+plain": summary_fn()}
+            except Exception:  # noqa: BLE001
+                return None
+        return None
+
+    def _summary(included: int, sampled: bool) -> str:
+        if summary_fn is not None:
+            return summary_fn()
+        return _summarize_arrow_table(
+            table, total_rows=total_rows, included_rows=included, sampled=sampled
+        )
+
+    return _emit_parquet_bytes(
+        data,
+        content_type=content_type,
+        total_rows=total_rows,
+        summary_fn=_summary,
+    )
+
+
+def _summarize_arrow_table(
+    table: Any, *, total_rows: int, included_rows: int, sampled: bool
+) -> str:
+    """Summary for a ``pa.Table`` — convert head to pandas, reuse summarizer.
+
+    Cheap for the typical display case (modest row counts). Heavy tables
+    pay a one-time conversion of the head sample, which is bounded.
+    """
+    head_n = 50
+    head = table.slice(0, head_n).to_pandas()
+    return summarize_dataframe(
+        head, total_rows=total_rows, included_rows=included_rows, sampled=sampled
+    )
+
+
+def _emit_parquet_bytes(
+    data: bytes,
+    *,
+    content_type: str,
+    total_rows: int,
+    summary_fn: Callable[[int, bool], str],
+) -> dict:
+    """Stash bytes, build the ref bundle, attach a summary.
+
+    ``summary_fn`` receives ``(included_rows, sampled)`` so per-domain
+    summaries can name the sampling state honestly.
+    """
     sampled = False
     included = total_rows
     try:
@@ -172,10 +283,14 @@ def _emit_dataframe(df: Any, *, total_rows: int) -> dict | None:
     ref_bundle = build_ref_bundle(ref, content_type=content_type, summary=summary_hints)
     ref_bundle["buffer_index"] = 0
 
-    llm = summarize_dataframe(df, total_rows=total_rows, included_rows=included, sampled=sampled)
+    bundle: dict[str, Any] = {BLOB_REF_MIME: ref_bundle}
+    try:
+        bundle["text/llm+plain"] = summary_fn(included, sampled)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("summary build failed: %s", exc)
 
     pending_buffers()[h] = data
-    return {BLOB_REF_MIME: ref_bundle, "text/llm+plain": llm}
+    return bundle
 
 
 # ─── Install functions — called from load_ipython_extension ───────────────
@@ -206,11 +321,12 @@ def _install_dataframe_formatters(ip: Any) -> None:
     - pandas: ``pandas`` (pandas sets ``DataFrame.__module__ = "pandas"``)
     - polars: ``polars.dataframe.frame``
     - narwhals: ``narwhals.dataframe``
-    - datasets: ``datasets.arrow_dataset``
+    - pyarrow: ``pyarrow.lib`` (Table / RecordBatch are C-extension types)
+    - datasets: ``datasets.arrow_dataset`` / ``datasets.iterable_dataset``
 
     We register the definitive module each library stamps on the class,
-    plus a short-name fallback for pandas/polars/narwhals. Short names
-    cover both conservative stamping by the library and any future
+    plus a short-name fallback for pandas/polars/narwhals/pyarrow. Short
+    names cover both conservative stamping by the library and any future
     flattening. Registration is cheap and idempotent, so the spray
     costs nothing.
     """
@@ -228,8 +344,18 @@ def _install_dataframe_formatters(ip: Any) -> None:
         # narwhals — class lives in narwhals.dataframe.
         ("narwhals.dataframe", "DataFrame", _narwhals_mimebundle),
         ("narwhals", "DataFrame", _narwhals_mimebundle),
-        # datasets — single definitive path.
+        # pyarrow — Table / RecordBatch are stamped to pyarrow.lib by
+        # the C extension. Preserves schema KV metadata end-to-end so
+        # Sift's HF rich-type detection lights up for parquets the user
+        # loaded with pq.read_table.
+        ("pyarrow.lib", "Table", _pyarrow_table_mimebundle),
+        ("pyarrow", "Table", _pyarrow_table_mimebundle),
+        ("pyarrow.lib", "RecordBatch", _pyarrow_record_batch_mimebundle),
+        ("pyarrow", "RecordBatch", _pyarrow_record_batch_mimebundle),
+        # datasets — materialized datasets can emit parquet; iterable
+        # datasets fall back to summary-only because they have no table.
         ("datasets.arrow_dataset", "Dataset", _dataset_mimebundle),
+        ("datasets.iterable_dataset", "IterableDataset", _dataset_mimebundle),
     ):
         try:
             mimebundle.for_type_by_name(module_path, type_name, fn)

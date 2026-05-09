@@ -1436,18 +1436,24 @@ pub fn parquet_metadata(parquet_bytes: &[u8]) -> Result<Vec<u32>, JsValue> {
     Ok(vec![num_row_groups, total_rows])
 }
 
-/// Extract key-value metadata from a Parquet file's schema.
-/// Returns a JSON object with metadata keys like "pandas", "huggingface", etc.
+/// Extract file-level key-value metadata from a Parquet footer.
+/// Returns metadata keys like "pandas", "huggingface", etc.
 #[wasm_bindgen]
 pub fn parquet_schema_metadata(parquet_bytes: &[u8]) -> Result<JsValue, JsValue> {
     let bytes = bytes::Bytes::copy_from_slice(parquet_bytes);
     let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let schema = builder.schema();
-    let metadata = schema.metadata();
+    let metadata = builder.metadata();
     let map: HashMap<String, String> = metadata
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
+        .file_metadata()
+        .key_value_metadata()
+        .into_iter()
+        .flatten()
+        .filter_map(|kv| {
+            kv.value
+                .as_ref()
+                .map(|value| (kv.key.clone(), value.clone()))
+        })
         .collect();
     serde_wasm_bindgen::to_value(&map).map_err(|e| JsValue::from_str(&e.to_string()))
 }
