@@ -3,7 +3,7 @@ export const FRAME_HTML = String.raw`<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob: data:; script-src 'unsafe-inline' 'unsafe-eval' blob: https: http://127.0.0.1:*; style-src 'unsafe-inline' https: http://127.0.0.1:*; img-src * data: blob:; font-src * data:; media-src * data: blob:; object-src * data: blob:; connect-src *; frame-src 'none'; child-src 'none';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob: data:; script-src 'unsafe-inline' 'unsafe-eval' blob: https: http://127.0.0.1:*; style-src 'unsafe-inline' https: http://127.0.0.1:*; img-src * data: blob:; font-src * data:; media-src * data: blob:; object-src * data: blob:; connect-src *; worker-src 'self' blob:; frame-src 'none'; child-src 'none';">
   <style>
     :root {
       --bg-primary: transparent;
@@ -761,7 +761,8 @@ export const FRAME_HTML = String.raw`<!DOCTYPE html>
     })();
   </script>
 </body>
-</html>`;
+</html>
+`;
 
 /**
  * Generate the HTML template for an isolated output frame.

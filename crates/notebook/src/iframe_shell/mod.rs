@@ -13,6 +13,7 @@ font-src * data:; \
 media-src * data: blob:; \
 object-src * data: blob:; \
 connect-src *; \
+worker-src 'self' blob:; \
 frame-src 'none'; \
 child-src 'none';";
 

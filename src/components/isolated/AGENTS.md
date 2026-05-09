@@ -35,6 +35,7 @@ font-src    * data:;
 media-src   * data: blob:;
 object-src  * data: blob:;
 connect-src *;
+worker-src  'self' blob:;
 frame-src   'none';
 child-src   'none';
 ```
@@ -42,6 +43,8 @@ child-src   'none';
 `http://127.0.0.1:*` in `script-src`/`style-src` is deliberate: anywidget ESM (`_esm`) and CSS (`_css`) are served from the daemon's blob-store HTTP server on a dynamic localhost port. Without that entry the browser rejects `import()` of blob-served JS with a MIME-type violation. It's safe because the sandbox still lacks `allow-same-origin`, and the blob server is read-only and content-addressed. `https:` covers CDN-hosted widget assets (anywidget ESM from unpkg/jsdelivr).
 
 Canonical files: `crates/notebook/src/iframe_shell/frame.html` and `src/components/isolated/frame-html.ts` → `generateFrameHtml()`. The Rust parity test keeps them byte-equal.
+
+The scheme handler is registered in both packaged and Tauri dev shells. Plain browser-only `pnpm dev` still uses `srcDoc`, but `cargo xtask notebook` / Tauri dev can load `nteract-frame://localhost/`.
 
 ### Source validation
 

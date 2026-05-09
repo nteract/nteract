@@ -43,6 +43,7 @@ fn handler_emits_csp_with_frame_src_none() {
 
     assert!(csp.contains("frame-src 'none'"));
     assert!(csp.contains("child-src 'none'"));
+    assert!(csp.contains("worker-src 'self' blob:"));
 }
 
 #[test]
@@ -54,11 +55,21 @@ fn handler_csp_matches_html_meta_csp() {
         .unwrap()
         .to_str()
         .unwrap();
-    let meta_prefix = "<meta http-equiv=\"Content-Security-Policy\" content=\"";
-    let meta_start = FRAME_HTML.find(meta_prefix).unwrap() + meta_prefix.len();
-    let meta_end = FRAME_HTML[meta_start..].find("\">").unwrap() + meta_start;
+    let meta_tag = FRAME_HTML
+        .split('>')
+        .find(|tag| tag.contains("<meta") && tag.contains("http-equiv=\"Content-Security-Policy\""))
+        .expect("frame HTML should include a CSP meta tag");
+    let content_prefix = "content=\"";
+    let content_start = meta_tag
+        .find(content_prefix)
+        .expect("CSP meta tag should include content")
+        + content_prefix.len();
+    let content_end = meta_tag[content_start..]
+        .find('"')
+        .expect("CSP meta content should close")
+        + content_start;
 
-    assert_eq!(response_csp, &FRAME_HTML[meta_start..meta_end]);
+    assert_eq!(response_csp, &meta_tag[content_start..content_end]);
     assert_eq!(response_csp, FRAME_CSP);
 }
 

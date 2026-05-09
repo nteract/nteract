@@ -39,6 +39,11 @@ describe("generateFrameHtml", () => {
     expect(html).toContain("frame-src 'none'");
   });
 
+  it("keeps worker policy explicit when child-src is none", () => {
+    expect(html).toContain("child-src 'none'");
+    expect(html).toContain("worker-src 'self' blob:");
+  });
+
   /**
    * SECURITY: Message handler must validate event.source.
    * This prevents accepting messages from windows other than the parent.
