@@ -12,20 +12,33 @@ test.describe("Renderer plugin fixtures", () => {
     for (let i = 0; i < FIXTURE_COUNT; i++) {
       const status = page.locator(`[data-testid="fixture-status-${i}"]`);
       await expect(status).toBeVisible({ timeout: 30_000 });
-      await expect(status).toHaveAttribute("data-ready", "true", {
-        timeout: 30_000,
-      });
     }
+
+    await expect(page.frameLocator("#fixture-0").locator("code")).toContainText(
+      "Hello from the renderer test app.",
+      { timeout: 30_000 },
+    );
+    await expect(page.frameLocator("#fixture-1").getByRole("heading", { name: "HTML Output" })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.frameLocator("#fixture-2").getByText('"renderer-test"')).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.frameLocator("#fixture-3").getByText("SVG Output")).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.frameLocator("#fixture-4").getByRole("heading", { name: "Markdown Plugin" })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(
+      page.frameLocator("#fixture-5").getByRole("button", { name: "Zoom", exact: true }),
+    ).toBeVisible({ timeout: 30_000 });
   });
 
   test("iframes have non-zero height", async ({ page }) => {
-    // Wait for all to be ready first
-    for (let i = 0; i < FIXTURE_COUNT; i++) {
-      const status = page.locator(`[data-testid="fixture-status-${i}"]`);
-      await expect(status).toHaveAttribute("data-ready", "true", {
-        timeout: 30_000,
-      });
-    }
+    await expect(page.frameLocator("#fixture-4").getByRole("heading", { name: "Markdown Plugin" })).toBeVisible({
+      timeout: 30_000,
+    });
 
     const iframes = page.locator("iframe");
     const count = await iframes.count();
