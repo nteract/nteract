@@ -1,11 +1,53 @@
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite-plus";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const appDir = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(appDir, "../..");
+const rendererPluginDir = path.join(repoRoot, "apps/notebook/src/renderer-plugins");
+const siftWasmPath = path.join(repoRoot, "crates/sift-wasm/pkg/sift_wasm_bg.wasm");
+const daemonPluginAssets = [
+  "markdown.js",
+  "markdown.css",
+  "plotly.js",
+  "vega.js",
+  "leaflet.js",
+  "leaflet.css",
+  "sift.js",
+  "sift.css",
+] as const;
+
+function hashFile(filePath: string): string | undefined {
+  if (!fs.existsSync(filePath)) return undefined;
+  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex").slice(0, 16);
+}
+
+function daemonPluginAssetHashes(): Record<string, string> {
+  const hashes: Record<string, string> = {};
+  for (const asset of daemonPluginAssets) {
+    const hash = hashFile(path.join(rendererPluginDir, asset));
+    if (hash) hashes[asset] = hash;
+  }
+
+  const wasmHash = hashFile(siftWasmPath);
+  if (wasmHash) hashes["sift_wasm.wasm"] = wasmHash;
+  return hashes;
+}
 
 export default defineConfig(({ command }) => {
+  const define = {
+    __DAEMON_PLUGIN_ASSET_HASHES__: JSON.stringify(daemonPluginAssetHashes()),
+    "process.env.NODE_ENV": JSON.stringify("production"),
+  };
+
   if (command === "serve") {
     return {
       root: "src",
       plugins: [tailwindcss()],
+      define,
       server: {
         open: "/dev/index.html",
       },
@@ -58,9 +100,7 @@ export default defineConfig(({ command }) => {
         },
       },
     },
-    define: {
-      "process.env.NODE_ENV": JSON.stringify("production"),
-    },
+    define,
     logLevel: "warn",
   };
 });

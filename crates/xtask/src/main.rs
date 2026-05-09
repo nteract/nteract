@@ -2752,6 +2752,15 @@ fn mcp_widget_needs_rebuild() -> Option<&'static str> {
         Path::new("apps/mcp-app/vite.config.ts"),
         Path::new("apps/mcp-app/build-plugins.ts"),
         Path::new("src/build/renderer-plugin-builder.ts"),
+        Path::new("apps/notebook/src/renderer-plugins/markdown.js"),
+        Path::new("apps/notebook/src/renderer-plugins/markdown.css"),
+        Path::new("apps/notebook/src/renderer-plugins/plotly.js"),
+        Path::new("apps/notebook/src/renderer-plugins/vega.js"),
+        Path::new("apps/notebook/src/renderer-plugins/leaflet.js"),
+        Path::new("apps/notebook/src/renderer-plugins/leaflet.css"),
+        Path::new("apps/notebook/src/renderer-plugins/sift.js"),
+        Path::new("apps/notebook/src/renderer-plugins/sift.css"),
+        Path::new("crates/sift-wasm/pkg/sift_wasm_bg.wasm"),
         Path::new("pnpm-lock.yaml"),
     ];
     for src in &top_level_sources {
