@@ -333,7 +333,7 @@ async def daemon_health_check(daemon_process):
     except Exception as e:
         print(f"[health] WARNING: could not read status: {e}", file=sys.stderr)
 
-    # 3. Create notebook + start kernel + execute
+    # 3. Create notebook + start kernel + execute. CI probe marker: PR #2647.
     try:
         session = await client.create_notebook(runtime="python")
         print(f"[health] Created notebook: {session.notebook_id}", file=sys.stderr)
