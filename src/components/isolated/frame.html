@@ -223,6 +223,24 @@
         // --- State ---
         let isReady = false;
         const root = document.getElementById("root");
+        const IFRAME_HEIGHT_FUDGE_PX = 2;
+
+        function measureDocumentHeight() {
+          var doc = document.documentElement;
+          var body = document.body;
+          var rootRectBottom = root ? root.getBoundingClientRect().bottom : 0;
+          return (
+            Math.ceil(
+              Math.max(
+                body ? body.scrollHeight : 0,
+                body ? body.offsetHeight : 0,
+                doc ? doc.scrollHeight : 0,
+                doc ? doc.offsetHeight : 0,
+                rootRectBottom,
+              ),
+            ) + IFRAME_HEIGHT_FUDGE_PX
+          );
+        }
 
         // --- Message Handler ---
         // Note: When the React renderer bundle is loaded, it sets window.__REACT_RENDERER_ACTIVE__
@@ -432,7 +450,7 @@
 
           // Notify completion
           requestAnimationFrame(function () {
-            sendRpc("nteract/renderComplete", { height: document.body.scrollHeight });
+            sendRpc("nteract/renderComplete", { height: measureDocumentHeight() });
           });
         }
 
@@ -491,7 +509,7 @@
 
         function handleClear() {
           root.innerHTML = "";
-          sendRpc("nteract/renderComplete", { height: document.body.scrollHeight });
+          sendRpc("nteract/renderComplete", { height: measureDocumentHeight() });
         }
 
         function handleWidgetState(payload) {
@@ -616,7 +634,7 @@
           requestAnimationFrame(function () {
             resizeRafPending = false;
             if (window.__REACT_RENDERER_ACTIVE__) return;
-            var height = document.body.scrollHeight;
+            var height = measureDocumentHeight();
             sendRpc("nteract/resize", { height: height });
           });
         });
@@ -687,15 +705,32 @@
           return false;
         }
 
+        // Honor the inner scroller's `overscroll-behavior-y`. Sift sets
+        // `overscroll-behavior: none` on `.sift-viewport` to opt out of
+        // scroll-chaining; without this check we'd forward the wheel to
+        // the parent at the table's top/bottom anyway, scrolling the
+        // notebook out from under the user mid-interaction. `contain`
+        // also opts out — same behavior as `none` for chaining purposes.
+        function scrollerOptsOutOfChaining(scroller) {
+          if (!scroller) return false;
+          var behavior = window.getComputedStyle(scroller).overscrollBehaviorY;
+          return behavior === "none" || behavior === "contain";
+        }
+
         document.addEventListener(
           "wheel",
           function (e) {
             if (!e.deltaY) return;
             var scroller = nearestVerticalScroller(e.target);
-            if (isWheelAtScrollBoundary(scroller, e.deltaY)) {
-              e.preventDefault();
-              sendRpc("nteract/wheelBoundary", { deltaY: e.deltaY });
+            if (!isWheelAtScrollBoundary(scroller, e.deltaY)) return;
+            if (scrollerOptsOutOfChaining(scroller)) {
+              // Let the native overscroll-behavior take over: the wheel
+              // event runs but stops at the scroller's boundary instead
+              // of chaining to the parent page.
+              return;
             }
+            e.preventDefault();
+            sendRpc("nteract/wheelBoundary", { deltaY: e.deltaY });
           },
           { capture: true, passive: false },
         );

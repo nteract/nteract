@@ -1,5 +1,5 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
-import { ChevronRight, Code2, EyeOff, Maximize2, Square, SquareMousePointer } from "lucide-react";
+import { ChevronRight, Code2, EyeOff } from "lucide-react";
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
@@ -74,13 +74,6 @@ interface CodeCellProps {
   rightGutterContent?: ReactNode;
 }
 
-type OutputMode = "compact" | "expanded" | "focused";
-
-interface OutputModeStripProps {
-  mode: OutputMode;
-  onChange: (mode: OutputMode) => void;
-}
-
 function historyQueryFromEditor(view: EditorView | null, fallbackSource: string): string {
   if (view) {
     const head = view.state.selection.main.head;
@@ -140,49 +133,6 @@ function needsOutputChrome(outputs: readonly JupyterOutput[]): boolean {
   return totalChars > SIMPLE_OUTPUT_MAX_CHARS || totalLines > SIMPLE_OUTPUT_MAX_LINES;
 }
 
-/**
- * Three-segment mode selector for an iframe output: compact, expanded,
- * focused. Mutually exclusive states grouped on a shared rail so the
- * "this is one piece of state" intent reads visually. Single click jumps
- * to any mode regardless of current.
- */
-function OutputModeStrip({ mode, onChange }: OutputModeStripProps) {
-  const segments: Array<{ value: OutputMode; title: string; Icon: typeof Square }> = [
-    { value: "compact", title: "Compact (default)", Icon: Square },
-    { value: "expanded", title: "Expand inline", Icon: Maximize2 },
-    { value: "focused", title: "Focus output", Icon: SquareMousePointer },
-  ];
-  return (
-    <div
-      role="group"
-      aria-label="Output mode"
-      className="flex flex-col items-center gap-0.5 rounded-md bg-muted/40 p-0.5"
-    >
-      {segments.map(({ value, title, Icon }) => {
-        const active = mode === value;
-        return (
-          <button
-            key={value}
-            type="button"
-            tabIndex={-1}
-            aria-pressed={active}
-            onClick={() => onChange(value)}
-            className={cn(
-              "flex items-center justify-center rounded p-1 transition-colors",
-              active
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground/50 hover:text-foreground",
-            )}
-            title={title}
-          >
-            <Icon className="h-3.5 w-3.5" />
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 export const CodeCell = memo(function CodeCell({
   cell,
   language = "python",
@@ -220,7 +170,6 @@ export const CodeCell = memo(function CodeCell({
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
   const [historyInitialQuery, setHistoryInitialQuery] = useState("");
-  const [isIframeOutputExpanded, setIsIframeOutputExpanded] = useState(false);
   const presence = usePresenceContext();
   const { extension: crdtBridgeExt, bridge } = useCrdtBridge(cell.id);
   // Subscribe to outputs via the per-execution / per-output stores rather
@@ -249,7 +198,6 @@ export const CodeCell = memo(function CodeCell({
   // for any non-iframe output.
   useEffect(() => {
     if (isOutputsHidden || outputs.length === 0 || !showOutputChrome) {
-      setIsIframeOutputExpanded(false);
       if (outputFocused) {
         onOutputFocusChange?.(false);
       }
@@ -517,42 +465,22 @@ export const CodeCell = memo(function CodeCell({
               onSearchMatchCount={onSearchMatchCount}
               onLinkClick={handleLinkClick}
               onIframeMouseDown={handleOutputMouseDown}
-              expandIframeOutputs={isIframeOutputExpanded}
               focused={outputFocused}
               useOutputWell={showOutputChrome}
             />
           )
         }
         outputRightGutterContent={
-          outputs.length > 0 && !isOutputsHidden && (showOutputChrome || onToggleOutputsHidden) ? (
-            <>
-              {showOutputChrome && (
-                <OutputModeStrip
-                  mode={outputFocused ? "focused" : isIframeOutputExpanded ? "expanded" : "compact"}
-                  onChange={(next) => {
-                    if (next === "focused") {
-                      setIsIframeOutputExpanded(false);
-                      onOutputFocusChange?.(true);
-                    } else {
-                      setIsIframeOutputExpanded(next === "expanded");
-                      if (outputFocused) onOutputFocusChange?.(false);
-                    }
-                    onFocus();
-                  }}
-                />
-              )}
-              {onToggleOutputsHidden && (
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  onClick={() => onToggleOutputsHidden(true)}
-                  className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-foreground"
-                  title="Hide outputs"
-                >
-                  <EyeOff className="h-3.5 w-3.5" />
-                </button>
-              )}
-            </>
+          outputs.length > 0 && !isOutputsHidden && onToggleOutputsHidden ? (
+            <button
+              type="button"
+              tabIndex={-1}
+              onClick={() => onToggleOutputsHidden(true)}
+              className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-foreground"
+              title="Hide outputs"
+            >
+              <EyeOff className="h-3.5 w-3.5" />
+            </button>
           ) : undefined
         }
         hideOutput={outputs.length === 0 || bothHidden}

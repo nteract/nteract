@@ -199,20 +199,42 @@ type MessageHandler = (type: string, payload: unknown) => void;
 let messageHandler: MessageHandler | null = null;
 
 const LAYOUT_PULSE_DELAYS_MS = [0, 160, 600];
+const IFRAME_HEIGHT_FUDGE_PX = 2;
 let layoutPulseTimers: number[] = [];
+
+function measureDocumentHeight(): number {
+  const doc = document.documentElement;
+  const body = document.body;
+  const root = document.getElementById("root");
+  return (
+    Math.ceil(
+      Math.max(
+        body?.scrollHeight ?? 0,
+        body?.offsetHeight ?? 0,
+        doc?.scrollHeight ?? 0,
+        doc?.offsetHeight ?? 0,
+        root?.getBoundingClientRect().bottom ?? 0,
+      ),
+    ) + IFRAME_HEIGHT_FUDGE_PX
+  );
+}
+
+function postMeasuredHeight(type: "resize" | "render_complete"): void {
+  window.parent.postMessage(
+    {
+      type,
+      payload: { height: measureDocumentHeight() },
+    },
+    "*",
+  );
+}
 
 function pulseRendererLayout(): void {
   window.dispatchEvent(new Event("resize"));
   window.dispatchEvent(new Event("scroll"));
   document.dispatchEvent(new Event("scroll"));
   document.body?.dispatchEvent(new Event("scroll"));
-  window.parent.postMessage(
-    {
-      type: "resize",
-      payload: { height: document.body.scrollHeight },
-    },
-    "*",
-  );
+  postMeasuredHeight("resize");
 }
 
 function scheduleRendererLayoutPulses(): void {
@@ -319,13 +341,7 @@ function IsolatedRendererApp() {
 
         // Notify parent of render completion after next paint
         requestAnimationFrame(() => {
-          window.parent.postMessage(
-            {
-              type: "render_complete",
-              payload: { height: document.body.scrollHeight },
-            },
-            "*",
-          );
+          postMeasuredHeight("render_complete");
         });
         scheduleRendererLayoutPulses();
         break;
@@ -347,13 +363,7 @@ function IsolatedRendererApp() {
         setState((prev) => ({ ...prev, outputs: entries }));
 
         requestAnimationFrame(() => {
-          window.parent.postMessage(
-            {
-              type: "render_complete",
-              payload: { height: document.body.scrollHeight },
-            },
-            "*",
-          );
+          postMeasuredHeight("render_complete");
         });
         scheduleRendererLayoutPulses();
         break;
@@ -362,13 +372,7 @@ function IsolatedRendererApp() {
       case "clear":
         setState((prev) => ({ ...prev, outputs: [] }));
         requestAnimationFrame(() => {
-          window.parent.postMessage(
-            {
-              type: "render_complete",
-              payload: { height: document.body.scrollHeight },
-            },
-            "*",
-          );
+          postMeasuredHeight("render_complete");
         });
         scheduleRendererLayoutPulses();
         break;
@@ -583,10 +587,7 @@ export function init() {
     resizeRafPending = true;
     requestAnimationFrame(() => {
       resizeRafPending = false;
-      window.parent.postMessage(
-        { type: "resize", payload: { height: document.body.scrollHeight } },
-        "*",
-      );
+      postMeasuredHeight("resize");
     });
   });
   resizeObserver.observe(document.body);

@@ -1,5 +1,6 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
 import {
+  type KeyboardEvent,
   type PointerEvent,
   type ReactNode,
   useCallback,
@@ -34,9 +35,10 @@ function formatPluginLoadError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-const DEFAULT_OUTPUT_WELL_VIEWPORT_RATIO = 0.75;
 const FOCUSED_OUTPUT_WELL_VIEWPORT_RATIO = 0.8;
 const MIN_OUTPUT_WELL_HEIGHT = 360;
+const SIFT_VIEWPORT_TOP_INSET_PX = 96;
+const SIFT_VIEWPORT_BOTTOM_INSET_PX = 32;
 
 function getOutputWellMaxHeight(viewportRatio: number): number {
   if (typeof window === "undefined") return 720;
@@ -84,17 +86,15 @@ interface OutputAreaProps {
    */
   maxHeight?: number;
   /**
-   * When true, isolated iframe outputs grow to their full rendered height
-   * instead of using the output max-height cap.
-   */
-  expandIframeOutputs?: boolean;
-  /**
    * When true, iframe outputs receive focused sizing and own wheel gestures.
+   * This disables scroll passthrough and wheel-boundary forwarding so this
+   * cell owns wheel gestures while active.
    */
   focused?: boolean;
   /**
-   * When false, simple in-DOM outputs render at intrinsic height without the
-   * compact/focused output well wrapper behavior.
+   * When false, explicit max-height constraints are ignored for in-DOM
+   * outputs. Code cells use this for short text output so it renders as
+   * plain notebook content.
    */
   useOutputWell?: boolean;
   /**
@@ -181,7 +181,27 @@ function selectMimeType(
 }
 
 function isScrollPassthroughMimeType(mimeType: string): boolean {
-  return mimeType === "text/markdown" || mimeType === "text/html" || mimeType === "image/svg+xml";
+  // Static document-like outputs (markdown / HTML / SVG) and sift's
+  // interactive tables (parquet / arrow stream) all behave better as
+  // click-to-engage: the page wheels through them by default;
+  // pointer-down on the wrapper hands events back to the iframe so
+  // sift's column drag, sort, and internal scroll work; pointer-out
+  // releases. Without sift on this list the iframe traps every wheel
+  // gesture that crosses its 600px box.
+  return (
+    mimeType === "text/markdown" ||
+    mimeType === "text/html" ||
+    mimeType === "image/svg+xml" ||
+    mimeType === "application/vnd.apache.parquet" ||
+    mimeType === "application/vnd.apache.arrow.stream"
+  );
+}
+
+function isSiftMimeType(mimeType: string): boolean {
+  return (
+    mimeType === "application/vnd.apache.parquet" ||
+    mimeType === "application/vnd.apache.arrow.stream"
+  );
 }
 
 function outputAllowsScrollPassthrough(
@@ -193,6 +213,42 @@ function outputAllowsScrollPassthrough(
     return mimeType != null && isScrollPassthroughMimeType(mimeType);
   }
 
+  return true;
+}
+
+function outputUsesSift(
+  output: JupyterOutput,
+  priority: readonly string[] = DEFAULT_PRIORITY,
+): boolean {
+  if (output.output_type === "execute_result" || output.output_type === "display_data") {
+    const mimeType = selectMimeType(output.data, priority);
+    return mimeType != null && isSiftMimeType(mimeType);
+  }
+
+  return false;
+}
+
+function scrollElementIntoComfortableView(element: HTMLElement | null): boolean {
+  if (!element || typeof window === "undefined") return false;
+
+  const rect = element.getBoundingClientRect();
+  const bottomLimit = window.innerHeight - SIFT_VIEWPORT_BOTTOM_INSET_PX;
+  const availableHeight = bottomLimit - SIFT_VIEWPORT_TOP_INSET_PX;
+  let top = 0;
+
+  if (rect.height > availableHeight) {
+    if (Math.abs(rect.top - SIFT_VIEWPORT_TOP_INSET_PX) > 1) {
+      top = rect.top - SIFT_VIEWPORT_TOP_INSET_PX;
+    }
+  } else if (rect.top < SIFT_VIEWPORT_TOP_INSET_PX) {
+    top = rect.top - SIFT_VIEWPORT_TOP_INSET_PX;
+  } else if (rect.bottom > bottomLimit) {
+    top = rect.bottom - bottomLimit;
+  }
+
+  if (Math.abs(top) <= 1) return false;
+
+  window.scrollBy({ top, behavior: "auto" });
   return true;
 }
 
@@ -295,7 +351,9 @@ function renderOutput(
  * OutputArea renders multiple Jupyter outputs with proper layout.
  *
  * Handles all Jupyter output types: execute_result, display_data, stream, and error.
- * Supports collapsible state and scroll behavior for large outputs.
+ * Supports collapsible state. Outputs render in natural document flow by
+ * default; callers opt into wrapper scrolling with `maxHeight` or by marking
+ * an isolated output as focused.
  *
  * @example
  * ```tsx
@@ -303,7 +361,6 @@ function renderOutput(
  *   outputs={cell.outputs}
  *   collapsed={outputsCollapsed}
  *   onToggleCollapse={() => setOutputsCollapsed(!outputsCollapsed)}
- *   maxHeight={400}
  * />
  * ```
  */
@@ -313,7 +370,6 @@ export function OutputArea({
   collapsed = false,
   onToggleCollapse,
   maxHeight,
-  expandIframeOutputs = false,
   focused = false,
   useOutputWell = true,
   className,
@@ -332,6 +388,8 @@ export function OutputArea({
   const bridgeRef = useRef<CommBridgeManager | null>(null);
   const inDomOutputRef = useRef<HTMLDivElement>(null);
   const staticFrameInteractionRef = useRef<HTMLDivElement>(null);
+  const ignoreScrollDeactivationRef = useRef(false);
+  const ignoreScrollDeactivationTimerRef = useRef<number | null>(null);
   const injectedLibsRef = useRef(new Set<string>());
   const renderGenRef = useRef(0);
   const searchQueryRef = useRef(searchQuery);
@@ -340,36 +398,12 @@ export function OutputArea({
 
   const darkMode = useDarkMode();
   const colorTheme = useColorTheme();
-  const defaultOutputWellMaxHeight = useOutputWellMaxHeight(DEFAULT_OUTPUT_WELL_VIEWPORT_RATIO);
   const focusedOutputWellMaxHeight = useOutputWellMaxHeight(FOCUSED_OUTPUT_WELL_VIEWPORT_RATIO);
-  // Non-isolated outputs (stream/text/error) render in-DOM. Apply the same
-  // three-mode contract that the iframe path uses, just on the wrapper:
-  //   compact  -> default well cap with overflow-y-auto
-  //   expanded -> no cap (output grows as tall as its content)
-  //   focused  -> focused max with floor, overflow-y-auto, overscroll-contain
-  // Explicit `maxHeight` prop still overrides; pass 0 to opt out of compact.
-  const inDomMode: "plain" | "compact" | "expanded" | "focused" = !useOutputWell
-    ? "plain"
-    : focused
-      ? "focused"
-      : expandIframeOutputs
-        ? "expanded"
-        : "compact";
-  let inDomMaxHeight: number | null;
-  if (inDomMode === "plain" || inDomMode === "expanded") {
-    inDomMaxHeight = null;
-  } else if (inDomMode === "focused") {
-    inDomMaxHeight = focusedOutputWellMaxHeight;
-  } else {
-    inDomMaxHeight = maxHeight ?? defaultOutputWellMaxHeight;
-  }
+  const inDomMaxHeight = useOutputWell ? (maxHeight ?? null) : null;
   const maxHeightStyle = useMemo<React.CSSProperties | undefined>(() => {
     if (!inDomMaxHeight) return undefined;
-    if (inDomMode === "focused") {
-      return { maxHeight: `${inDomMaxHeight}px`, minHeight: `${MIN_OUTPUT_WELL_HEIGHT}px` };
-    }
     return { maxHeight: `${inDomMaxHeight}px` };
-  }, [inDomMaxHeight, inDomMode]);
+  }, [inDomMaxHeight]);
   // Ref for reading current darkMode in callbacks without adding to deps
   const darkModeRef = useRef(darkMode);
   darkModeRef.current = darkMode;
@@ -383,10 +417,10 @@ export function OutputArea({
   const shouldIsolate =
     outputs.length > 0 &&
     (isolated === true || (isolated === "auto" && anyOutputNeedsIsolation(outputs, priority)));
-  const shouldConstrainIsolatedOutput = shouldIsolate && (focused || !expandIframeOutputs);
+  const shouldConstrainIsolatedOutput = shouldIsolate && (focused || maxHeight != null);
   const isolatedOutputWellMaxHeight = focused
     ? focusedOutputWellMaxHeight
-    : (maxHeight ?? defaultOutputWellMaxHeight);
+    : (maxHeight ?? focusedOutputWellMaxHeight);
   const isolatedOutputWellStyle = shouldConstrainIsolatedOutput
     ? {
         maxHeight: `${isolatedOutputWellMaxHeight}px`,
@@ -400,6 +434,7 @@ export function OutputArea({
 
   // Check if we have widgets and should set up comm bridge
   const hasWidgets = hasWidgetOutputs(outputs, priority);
+  const hasSiftOutputs = outputs.some((output) => outputUsesSift(output, priority));
   const shouldUseBridge = shouldIsolate && hasWidgets && widgetContext !== null;
   const shouldUseScrollPassthroughFrame =
     shouldIsolate &&
@@ -417,15 +452,52 @@ export function OutputArea({
     }
   }, [shouldUseScrollPassthroughFrame, staticFrameInteractionActive]);
 
+  useEffect(() => {
+    return () => {
+      if (ignoreScrollDeactivationTimerRef.current != null) {
+        window.clearTimeout(ignoreScrollDeactivationTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!staticFrameInteractionActive) return;
+
+    const handleScroll = () => {
+      if (ignoreScrollDeactivationRef.current) return;
+      setStaticFrameInteractionActive(false);
+    };
+
+    window.addEventListener("scroll", handleScroll, true);
+    return () => window.removeEventListener("scroll", handleScroll, true);
+  }, [staticFrameInteractionActive]);
+
   const activateStaticFrameInteraction = useCallback(() => {
     if (shouldUseScrollPassthroughFrame) {
+      if (!staticFrameInteractionActive && hasSiftOutputs) {
+        ignoreScrollDeactivationRef.current = scrollElementIntoComfortableView(
+          staticFrameInteractionRef.current,
+        );
+        if (ignoreScrollDeactivationTimerRef.current != null) {
+          window.clearTimeout(ignoreScrollDeactivationTimerRef.current);
+        }
+        ignoreScrollDeactivationTimerRef.current = window.setTimeout(() => {
+          ignoreScrollDeactivationRef.current = false;
+          ignoreScrollDeactivationTimerRef.current = null;
+        }, 250);
+      }
       setStaticFrameInteractionActive(true);
       // Move DOM focus off CodeMirror without scrolling; this wrapper owns
       // focus until iframe pointer interaction is active.
       staticFrameInteractionRef.current?.focus({ preventScroll: true });
     }
     onIframeMouseDown?.();
-  }, [shouldUseScrollPassthroughFrame, onIframeMouseDown]);
+  }, [
+    hasSiftOutputs,
+    shouldUseScrollPassthroughFrame,
+    staticFrameInteractionActive,
+    onIframeMouseDown,
+  ]);
 
   const deactivateStaticFrameInteractionWhenIdle = useCallback(
     (event: PointerEvent<HTMLDivElement>) => {
@@ -441,6 +513,12 @@ export function OutputArea({
     },
     [],
   );
+
+  const handleStaticFrameKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      setStaticFrameInteractionActive(false);
+    }
+  }, []);
 
   // Handle messages from iframe, routing widget messages to comm bridge
   const handleIframeMessage = useCallback(
@@ -710,7 +788,6 @@ export function OutputArea({
           className={cn(
             "space-y-2",
             !shouldIsolate && inDomMaxHeight !== null && "overflow-y-auto",
-            !shouldIsolate && inDomMode === "focused" && "overscroll-contain",
             shouldConstrainIsolatedOutput && "overflow-y-auto",
           )}
           style={shouldIsolate ? isolatedOutputWellStyle : maxHeightStyle}
@@ -719,7 +796,18 @@ export function OutputArea({
           {(shouldIsolate || showPreloadedIframe) && (
             <div
               ref={staticFrameInteractionRef}
-              className={cn(shouldIsolate ? "outline-none" : "hidden")}
+              className={cn(
+                shouldIsolate ? "outline-none transition-shadow" : "hidden",
+                hasSiftOutputs &&
+                  shouldUseScrollPassthroughFrame &&
+                  !staticFrameInteractionActive &&
+                  "rounded-sm hover:ring-1 hover:ring-sky-300/50",
+                hasSiftOutputs &&
+                  staticFrameInteractionActive &&
+                  "rounded-sm ring-2 ring-sky-400/70",
+              )}
+              data-frame-interaction-active={staticFrameInteractionActive ? "true" : undefined}
+              data-sift-output={hasSiftOutputs ? "true" : undefined}
               tabIndex={shouldUseScrollPassthroughFrame ? -1 : undefined}
               onPointerDown={
                 shouldUseScrollPassthroughFrame ? activateStaticFrameInteraction : undefined
@@ -729,6 +817,7 @@ export function OutputArea({
                   ? deactivateStaticFrameInteractionWhenIdle
                   : undefined
               }
+              onKeyDown={shouldUseScrollPassthroughFrame ? handleStaticFrameKeyDown : undefined}
             >
               <IsolatedFrame
                 ref={frameRef}

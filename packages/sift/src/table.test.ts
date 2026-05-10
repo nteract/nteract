@@ -448,7 +448,7 @@ describe("createTable", () => {
       engine.setFilter(2, { kind: "range", min: 10, max: 50 });
       await flushRAF();
       expect(onChange).toHaveBeenCalled();
-      const state = onChange.mock.calls[0][0];
+      const state = onChange.mock.calls.at(-1)?.[0];
       expect(state.filters).toHaveLength(1);
     });
   });

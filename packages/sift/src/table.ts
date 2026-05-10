@@ -1976,6 +1976,10 @@ export function createTable(
     progressBar.addEventListener("transitionend", () => progressBar.remove(), {
       once: true,
     });
+    // Notify consumers — totalCount may have grown across row groups, and
+    // host UIs that size their container based on row count want to settle
+    // on the final value rather than the first batch.
+    notifyChange();
   }
 
   // --- Boot ---
@@ -2551,6 +2555,12 @@ export function createTable(
       }
     }
   }
+
+  // Surface the initial state once the engine is wired so consumers can
+  // size their container based on `totalCount` without waiting for the
+  // user to interact. Subsequent state changes still fire through
+  // notifyChange on sort / filter / append.
+  options?.onChange?.(getState());
 
   return {
     onBatchAppended,

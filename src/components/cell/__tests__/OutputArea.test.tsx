@@ -241,13 +241,55 @@ describe("OutputArea iframe theme sync", () => {
     );
   });
 
-  it("keeps parquet iframe outputs on the wheel-boundary path while idle", () => {
+  it("puts parquet iframe outputs on scroll passthrough so the page wheels through sift", () => {
+    // Sift renders interactive tables but iframes-in-a-doc are unwieldy: every
+    // wheel gesture that crosses a 600px sift box would otherwise get trapped.
+    // Sift now joins markdown / HTML / SVG on the click-to-engage path —
+    // pointer-down on the wrapper flips the iframe back into interactive mode.
     const { getByTestId } = render(<OutputArea outputs={makeParquetOutput()} isolated />);
 
-    expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("false");
+    expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("true");
     expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
-      "true",
+      "false",
     );
+  });
+
+  it("aligns sift before engaging iframe scrolling and releases on Escape", () => {
+    const scrollBy = vi.fn();
+    Object.defineProperty(window, "scrollBy", {
+      configurable: true,
+      value: scrollBy,
+    });
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 800,
+    });
+
+    const { getByTestId } = render(<OutputArea outputs={makeParquetOutput()} isolated />);
+    const frame = getByTestId("isolated-frame");
+    const activationWell = frame.parentElement as HTMLElement;
+    vi.spyOn(activationWell, "getBoundingClientRect").mockReturnValue({
+      top: 700,
+      bottom: 1420,
+      left: 0,
+      right: 1200,
+      width: 1200,
+      height: 720,
+      x: 0,
+      y: 700,
+      toJSON: () => ({}),
+    } as DOMRect);
+
+    fireEvent.pointerDown(activationWell);
+
+    expect(scrollBy).toHaveBeenCalledWith({ top: 604, behavior: "auto" });
+    expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
+    expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
+
+    fireEvent.keyDown(activationWell, { key: "Escape" });
+
+    expect(activationWell.getAttribute("data-frame-interaction-active")).toBeNull();
+    expect(frame.getAttribute("data-scroll-passthrough")).toBe("true");
   });
 
   it("forces focused iframe outputs off scroll passthrough and wheel-boundary forwarding", () => {
@@ -259,7 +301,7 @@ describe("OutputArea iframe theme sync", () => {
     );
   });
 
-  it("constrains isolated iframe outputs to a viewport-sized output well by default", () => {
+  it("renders isolated iframe outputs at natural height by default", () => {
     const { container, getByTestId } = render(
       <OutputArea outputs={makeMarkdownOutput()} isolated />,
     );
@@ -267,8 +309,8 @@ describe("OutputArea iframe theme sync", () => {
     const outputContent = getOutputContent(container);
 
     expect(getByTestId("isolated-frame").getAttribute("data-auto-height")).toBe("true");
-    expect(outputContent.getAttribute("class") ?? "").toContain("overflow-y-auto");
-    expect(outputContent.style.maxHeight).toBe("600px");
+    expect(outputContent.getAttribute("class") ?? "").not.toContain("overflow-y-auto");
+    expect(outputContent.style.maxHeight).toBe("");
     expect(outputContent.style.minHeight).toBe("");
   });
 
@@ -280,14 +322,15 @@ describe("OutputArea iframe theme sync", () => {
     expect(outputContent.style.maxHeight).toBe("");
   });
 
-  it("can expand isolated iframe outputs past the default output well cap", () => {
+  it("constrains isolated iframe outputs when maxHeight is explicit", () => {
     const { container, getByTestId } = render(
-      <OutputArea outputs={makeMarkdownOutput()} isolated expandIframeOutputs />,
+      <OutputArea outputs={makeMarkdownOutput()} isolated maxHeight={420} />,
     );
 
     expect(getByTestId("isolated-frame").getAttribute("data-auto-height")).toBe("true");
     const outputContent = getOutputContent(container);
-    expect(outputContent.style.maxHeight).toBe("");
+    expect(outputContent.getAttribute("class") ?? "").toContain("overflow-y-auto");
+    expect(outputContent.style.maxHeight).toBe("420px");
   });
 
   it("uses a focused output well floor for short iframe content", () => {
@@ -318,10 +361,8 @@ describe("OutputArea iframe theme sync", () => {
     expect(getOutputContent(container).style.height).toBe("");
   });
 
-  it("keeps the focused output well clamp when expand is also enabled", () => {
-    const { container } = render(
-      <OutputArea outputs={makeMarkdownOutput()} isolated expandIframeOutputs focused />,
-    );
+  it("keeps the focused output well clamp", () => {
+    const { container } = render(<OutputArea outputs={makeMarkdownOutput()} isolated focused />);
 
     const outputContent = getOutputContent(container);
     expect(outputContent.style.maxHeight).toBe("640px");

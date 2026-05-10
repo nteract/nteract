@@ -168,7 +168,7 @@ describe("CodeCell output focus", () => {
     mockOutputs = [
       {
         output_type: "display_data",
-        data: { "application/vnd.apache.parquet": "blob://df" },
+        data: { "application/vnd.plotly.v1+json": { data: [], layout: {} } },
         metadata: {},
       },
     ];
@@ -214,25 +214,6 @@ describe("CodeCell output focus", () => {
     expect(getByTestId("output").getAttribute("data-focused")).toBe("true");
   });
 
-  it("requests output focus from the gutter focus button", () => {
-    const onOutputFocusChange = vi.fn();
-    const { getByTitle } = render(
-      <CodeCell
-        cell={makeCell()}
-        onFocus={() => {}}
-        onOutputFocusChange={onOutputFocusChange}
-        onExecute={() => {}}
-        onInterrupt={() => {}}
-        onDelete={() => {}}
-        onToggleOutputsHidden={() => {}}
-      />,
-    );
-
-    fireEvent.click(getByTitle("Focus output"));
-
-    expect(onOutputFocusChange).toHaveBeenCalledWith(true);
-  });
-
   it("omits output chrome for short stream output", () => {
     mockOutputs = [
       {
@@ -258,8 +239,8 @@ describe("CodeCell output focus", () => {
     expect(queryByTitle("Hide outputs")).toBeTruthy();
   });
 
-  it("keeps output chrome for rich output", () => {
-    const { getByTestId, getByLabelText, getByTitle } = render(
+  it("keeps output chrome for rich output without layout mode controls", () => {
+    const { getByTestId, queryByLabelText, getByTitle } = render(
       <CodeCell
         cell={makeCell()}
         onFocus={() => {}}
@@ -271,15 +252,36 @@ describe("CodeCell output focus", () => {
     );
 
     expect(getByTestId("output").getAttribute("data-use-output-well")).toBe("true");
-    expect(getByLabelText("Output mode")).toBeTruthy();
+    expect(queryByLabelText("Output mode")).toBeNull();
     expect(getByTitle("Hide outputs")).toBeTruthy();
   });
 
-  it("hides the expand button while output-focused", () => {
-    // While focus is on, the expand button is hidden so users don't see an
-    // inert active-styled control. Underlying expand state survives the
-    // focus toggle (local useState in CodeCell), so the button reappears
-    // in its prior state once focus exits.
+  it("keeps output chrome for a single sift table without layout mode controls", () => {
+    mockOutputs = [
+      {
+        output_type: "display_data",
+        data: { "application/vnd.apache.parquet": "blob://df" },
+        metadata: {},
+      },
+    ];
+
+    const { getByTestId, queryByLabelText, queryByTitle } = render(
+      <CodeCell
+        cell={makeCell()}
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+        onToggleOutputsHidden={() => {}}
+      />,
+    );
+
+    expect(getByTestId("output").getAttribute("data-use-output-well")).toBe("true");
+    expect(queryByLabelText("Output mode")).toBeNull();
+    expect(queryByTitle("Hide outputs")).toBeTruthy();
+  });
+
+  it("does not show layout mode controls while output-focused", () => {
     const { queryByTitle } = render(
       <CodeCell
         cell={makeCell()}

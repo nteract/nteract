@@ -1,6 +1,6 @@
 import Anser from "anser";
 import { escapeCarriageReturn } from "escape-carriage";
-import type { CSSProperties, ReactNode } from "react";
+import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -228,18 +228,97 @@ interface AnsiStreamOutputProps {
   className?: string;
 }
 
+const STREAM_PREVIEW_LINE_LIMIT = 160;
+const STREAM_PREVIEW_CHAR_LIMIT = 24_000;
+const STREAM_PREVIEW_HEAD_LINES = 7;
+const STREAM_PREVIEW_TAIL_LINES = 20;
+
+function formatBytes(chars: number): string {
+  if (chars < 1024) return `${chars} B`;
+  if (chars < 1024 * 1024) return `${(chars / 1024).toFixed(1)} KB`;
+  return `${(chars / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function splitLines(text: string): string[] {
+  if (text.length === 0) return [];
+  const lines = text.split(/\r?\n/);
+  return lines.at(-1) === "" ? lines.slice(0, -1) : lines;
+}
+
+function buildStreamPreview(text: string): {
+  lineCount: number;
+  isLong: boolean;
+  previewText: string;
+  omittedLines: number;
+} {
+  const lines = splitLines(text);
+  const lineCount = lines.length;
+  const isLong = lineCount > STREAM_PREVIEW_LINE_LIMIT || text.length > STREAM_PREVIEW_CHAR_LIMIT;
+
+  if (!isLong) {
+    return { lineCount, isLong, previewText: text, omittedLines: 0 };
+  }
+
+  const head = lines.slice(0, STREAM_PREVIEW_HEAD_LINES);
+  const tail = lines.slice(-STREAM_PREVIEW_TAIL_LINES);
+  const omittedLines = Math.max(0, lineCount - head.length - tail.length);
+  const omittedMarker =
+    omittedLines > 0 ? [`\n... ${omittedLines.toLocaleString()} lines omitted ...\n`] : [];
+
+  return {
+    lineCount,
+    isLong,
+    previewText: [...head, ...omittedMarker, ...tail].join("\n"),
+    omittedLines,
+  };
+}
+
 /**
  * AnsiStreamOutput component specifically for stdout/stderr rendering.
  */
 export function AnsiStreamOutput({ text, streamName, className = "" }: AnsiStreamOutputProps) {
+  const [expanded, setExpanded] = useState(false);
+  const preview = useMemo(() => buildStreamPreview(text), [text]);
   const isStderr = streamName === "stderr";
   const streamClasses = isStderr
     ? "text-red-600 dark:text-red-400"
     : "text-gray-700 dark:text-gray-300";
+  const displayedText = preview.isLong && !expanded ? preview.previewText : text;
+  const label = streamName === "stderr" ? "stderr" : "stdout";
 
   return (
     <div data-slot="ansi-stream-output" className={cn("not-prose py-2", streamClasses, className)}>
-      <AnsiOutput isError={isStderr}>{text}</AnsiOutput>
+      {preview.isLong && (
+        <div
+          className={cn(
+            "mb-2 flex flex-wrap items-center gap-2 rounded-md border px-2 py-1 text-xs",
+            isStderr
+              ? "border-red-200 bg-red-50 text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300"
+              : "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-800 dark:bg-slate-900/50 dark:text-slate-300",
+          )}
+        >
+          <span className="font-semibold">{label}</span>
+          <span>
+            {preview.lineCount.toLocaleString()} lines · {formatBytes(text.length)}
+          </span>
+          {!expanded && preview.omittedLines > 0 && (
+            <span>{preview.omittedLines.toLocaleString()} lines hidden</span>
+          )}
+          <button
+            type="button"
+            className={cn(
+              "ml-auto rounded px-1.5 py-0.5 font-medium transition-colors",
+              isStderr
+                ? "hover:bg-red-100 dark:hover:bg-red-900/50"
+                : "hover:bg-slate-200 dark:hover:bg-slate-800",
+            )}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {expanded ? "Collapse log" : "Show full log"}
+          </button>
+        </div>
+      )}
+      <AnsiOutput isError={isStderr}>{displayedText}</AnsiOutput>
     </div>
   );
 }
