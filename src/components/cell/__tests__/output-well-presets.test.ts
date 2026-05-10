@@ -59,8 +59,8 @@ describe("inferDefaultOutputMode", () => {
     expect(inferDefaultOutputMode({ kind: "streams-only" })).toBe("compact");
   });
 
-  it("mixed -> compact", () => {
-    expect(inferDefaultOutputMode({ kind: "mixed" })).toBe("compact");
+  it("mixed -> expanded", () => {
+    expect(inferDefaultOutputMode({ kind: "mixed" })).toBe("expanded");
   });
 
   it("streams-then-result(table) -> expanded (no nested wrapper scrollbar)", () => {

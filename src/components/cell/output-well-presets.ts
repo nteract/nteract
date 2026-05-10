@@ -35,12 +35,19 @@ export function inferDefaultOutputMode(shape: OutputShape): OutputMode {
       // looks wrong inside a wrapper scrollbar — the streams want to flow
       // inline like document content, and the page is already scrollable.
       return "expanded";
+    case "mixed":
+      // Mixed output stacks are usually the notebook-native case:
+      // display(HTML), display(plotly), display(altair), streams followed
+      // by diagnostics, etc. A compact wrapper hides later siblings behind
+      // an output-well scrollbar, which makes the cell feel broken even
+      // though each renderer is working. Let the stack participate in the
+      // page's natural scroll.
+      return "expanded";
     case "empty":
     case "single-image":
     case "single-widget":
     case "single-error":
     case "streams-only":
-    case "mixed":
       return "compact";
   }
 }
