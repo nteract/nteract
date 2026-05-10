@@ -1,0 +1,36 @@
+.sift-scroll-handoff-cue {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--sift-rule, var(--border, #e5e7eb)) 82%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--sift-panel, var(--background, #ffffff)) 94%, transparent);
+  color: color-mix(
+    in srgb,
+    var(--sift-muted, var(--muted-foreground, #6b7280)) 92%,
+    var(--sift-ink, var(--foreground, #111827))
+  );
+  cursor: pointer;
+  font: 500 11px/1.2 var(--sift-font, Inter, ui-sans-serif, system-ui, sans-serif);
+  padding: 3px 7px;
+  white-space: nowrap;
+  transition:
+    border-color 120ms ease,
+    color 120ms ease,
+    background-color 120ms ease;
+}
+
+.sift-scroll-handoff-cue:hover {
+  border-color: color-mix(
+    in srgb,
+    var(--sift-muted, var(--muted-foreground, #6b7280)) 34%,
+    var(--sift-rule, var(--border, #e5e7eb))
+  );
+  background: var(--sift-panel, var(--background, #ffffff));
+  color: var(--sift-ink, var(--foreground, #111827));
+}
+
+.sift-scroll-handoff-cue:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--sift-accent, var(--ring, #3b82f6)) 45%, transparent);
+  outline-offset: 2px;
+}

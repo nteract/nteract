@@ -72,6 +72,9 @@ importers:
       '@lezer/lr':
         specifier: ^1.4.8
         version: 1.4.8
+      '@nteract/sift':
+        specifier: workspace:*
+        version: link:packages/sift
       '@radix-ui/react-accordion':
         specifier: ^1.2.12
         version: 1.2.12(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
@@ -362,6 +365,9 @@ importers:
       '@nteract/notebook-host':
         specifier: workspace:*
         version: link:../../packages/notebook-host
+      '@nteract/sift':
+        specifier: workspace:*
+        version: link:../../packages/sift
       '@tauri-apps/api':
         specifier: ^2.10.1
         version: 2.10.1
