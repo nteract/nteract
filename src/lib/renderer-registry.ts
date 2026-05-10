@@ -15,6 +15,7 @@ export interface RendererProps {
   data: unknown;
   metadata?: Record<string, unknown>;
   mimeType: string;
+  interactionActive?: boolean;
 }
 
 const exactMatches = new Map<string, ComponentType<RendererProps>>();

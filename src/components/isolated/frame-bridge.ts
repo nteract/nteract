@@ -231,6 +231,17 @@ export interface SearchNavigateMessage {
 }
 
 /**
+ * Parent-side interaction state for iframe outputs.
+ */
+export interface InteractionStateMessage {
+  type: "interaction_state";
+  payload: {
+    /** Whether the parent wrapper has handed pointer/wheel interaction to the iframe. */
+    active: boolean;
+  };
+}
+
+/**
  * All message types that can be sent from parent to iframe.
  */
 export type ParentToIframeMessage =
@@ -248,7 +259,8 @@ export type ParentToIframeMessage =
   | WidgetSnapshotMessage
   | BridgeReadyMessage
   | SearchMessage
-  | SearchNavigateMessage;
+  | SearchNavigateMessage
+  | InteractionStateMessage;
 
 // --- Message Types: Iframe → Parent ---
 

@@ -118,6 +118,8 @@ export type TableEngineState = {
 export type TableEngineOptions = {
   /** Called whenever sort or filter state changes from UI interaction. */
   onChange?: (state: TableEngineState) => void;
+  /** Optional control rendered in the stats/footer bar before built-in buttons. */
+  footerControl?: HTMLElement;
 };
 
 export type TableEngine = {
@@ -1050,6 +1052,7 @@ export function createTable(
     debugGroup,
     filterPillsEl,
     statsSpacer,
+    ...(options?.footerControl ? [options.footerControl] : []),
     debugBtn,
     fullscreenBtn,
   );

@@ -21,6 +21,7 @@ interface RendererProps {
   data: unknown;
   metadata?: Record<string, unknown>;
   mimeType: string;
+  interactionActive?: boolean;
 }
 
 // --- WASM configuration ---
@@ -88,7 +89,7 @@ function fitHeightForRowCount(rowCount: number): number {
 
 // --- SiftRenderer component ---
 
-function SiftRenderer({ data, mimeType }: RendererProps) {
+function SiftRenderer({ data, mimeType, interactionActive = false }: RendererProps) {
   const url = String(data);
   console.debug("[sift-renderer] render", { mimeType, url: url.slice(0, 120) });
   configureWasm(url);
@@ -119,7 +120,20 @@ function SiftRenderer({ data, mimeType }: RendererProps) {
 
   return (
     <div style={{ height: tableHeight, width: "100%" }}>
-      <SiftTable url={url} onChange={handleChange} />
+      <SiftTable
+        url={url}
+        onChange={handleChange}
+        footerControl={
+          <div className="sift-footer-control">
+            {interactionActive && (
+              <span className="sift-focus-hint">
+                <span>Focused</span>
+                <span className="sift-focus-key">Esc</span>
+              </span>
+            )}
+          </div>
+        }
+      />
     </div>
   );
 }

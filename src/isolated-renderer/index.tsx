@@ -40,6 +40,7 @@ import { TracebackOutput } from "@/components/outputs/traceback-output";
 import { VideoOutput } from "@/components/outputs/video-output";
 import { SvgOutput } from "@/components/outputs/svg-output";
 import { WidgetView } from "@/components/widgets/widget-view";
+import { measureDocumentHeight } from "./layout-measure";
 // Import widget support
 import { IframeWidgetStoreProvider } from "./widget-provider";
 
@@ -119,6 +120,7 @@ interface OutputEntry {
 interface RendererState {
   outputs: OutputEntry[];
   isDark: boolean;
+  interactionActive: boolean;
 }
 
 // --- Theme Management ---
@@ -199,25 +201,7 @@ type MessageHandler = (type: string, payload: unknown) => void;
 let messageHandler: MessageHandler | null = null;
 
 const LAYOUT_PULSE_DELAYS_MS = [0, 160, 600];
-const IFRAME_HEIGHT_FUDGE_PX = 2;
 let layoutPulseTimers: number[] = [];
-
-function measureDocumentHeight(): number {
-  const doc = document.documentElement;
-  const body = document.body;
-  const root = document.getElementById("root");
-  return (
-    Math.ceil(
-      Math.max(
-        body?.scrollHeight ?? 0,
-        body?.offsetHeight ?? 0,
-        doc?.scrollHeight ?? 0,
-        doc?.offsetHeight ?? 0,
-        root?.getBoundingClientRect().bottom ?? 0,
-      ),
-    ) + IFRAME_HEIGHT_FUDGE_PX
-  );
-}
 
 function postMeasuredHeight(type: "resize" | "render_complete"): void {
   window.parent.postMessage(
@@ -308,6 +292,7 @@ function IsolatedRendererApp() {
   const [state, setState] = useState<RendererState>({
     outputs: [],
     isDark: document.documentElement.classList.contains("dark"),
+    interactionActive: false,
   });
 
   // Handle messages from parent
@@ -388,6 +373,14 @@ function IsolatedRendererApp() {
         }
         break;
       }
+      case "interaction_state": {
+        const interactionPayload = payload as { active?: boolean };
+        setState((prev) => ({
+          ...prev,
+          interactionActive: interactionPayload.active ?? false,
+        }));
+        break;
+      }
     }
   }, []);
 
@@ -406,7 +399,11 @@ function IsolatedRendererApp() {
   return (
     <div className="isolated-renderer" data-theme={state.isDark ? "dark" : "light"}>
       {state.outputs.map((entry) => (
-        <OutputRenderer key={entry.id} payload={entry.payload} />
+        <OutputRenderer
+          key={entry.id}
+          payload={entry.payload}
+          interactionActive={state.interactionActive}
+        />
       ))}
     </div>
   );
@@ -416,7 +413,13 @@ function IsolatedRendererApp() {
  * Render a single output based on its MIME type.
  * Uses direct component imports (not lazy loading) for isolated iframe compatibility.
  */
-function OutputRenderer({ payload }: { payload: RenderPayload }) {
+function OutputRenderer({
+  payload,
+  interactionActive,
+}: {
+  payload: RenderPayload;
+  interactionActive: boolean;
+}) {
   const { mimeType, data, metadata } = payload;
   const content = data;
 
@@ -457,7 +460,14 @@ function OutputRenderer({ payload }: { payload: RenderPayload }) {
   // Check renderer plugin registry first (exact match, then pattern matchers)
   const RegisteredRenderer = getRenderer(mimeType);
   if (RegisteredRenderer) {
-    return <RegisteredRenderer data={data} metadata={metadata} mimeType={mimeType} />;
+    return (
+      <RegisteredRenderer
+        data={data}
+        metadata={metadata}
+        mimeType={mimeType}
+        interactionActive={interactionActive}
+      />
+    );
   }
 
   // Widget view - render interactive Jupyter widget
@@ -591,6 +601,10 @@ export function init() {
     });
   });
   resizeObserver.observe(document.body);
+  resizeObserver.observe(rootEl);
+
+  document.addEventListener("fullscreenchange", scheduleRendererLayoutPulses);
+  document.addEventListener("webkitfullscreenchange", scheduleRendererLayoutPulses);
 
   // Note: "renderer_ready" is sent from the React component's useEffect
   // to ensure the message handler is registered before parent sends messages

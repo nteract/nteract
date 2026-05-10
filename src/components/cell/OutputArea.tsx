@@ -40,6 +40,13 @@ const MIN_OUTPUT_WELL_HEIGHT = 360;
 const SIFT_VIEWPORT_TOP_INSET_PX = 96;
 const SIFT_VIEWPORT_BOTTOM_INSET_PX = 32;
 
+function siftFocusAccent(isDark: boolean, colorTheme?: string): string {
+  if (colorTheme === "cream") {
+    return isDark ? "#d4896a" : "#955f3b";
+  }
+  return isDark ? "#60a5fa" : "#3b82f6";
+}
+
 function getOutputWellMaxHeight(viewportRatio: number): number {
   if (typeof window === "undefined") return 720;
   return Math.max(MIN_OUTPUT_WELL_HEIGHT, Math.floor(window.innerHeight * viewportRatio));
@@ -443,6 +450,20 @@ export function OutputArea({
     outputs.every((output) => outputAllowsScrollPassthrough(output, priority));
   const shouldScrollPassthroughFrame =
     shouldUseScrollPassthroughFrame && !staticFrameInteractionActive;
+  const allowWheelBoundaryScroll =
+    !focused && !shouldScrollPassthroughFrame && !(hasSiftOutputs && staticFrameInteractionActive);
+  const showSiftInteractionCue =
+    hasSiftOutputs && shouldUseScrollPassthroughFrame && !staticFrameInteractionActive;
+  const siftFrameAccent = siftFocusAccent(darkMode, colorTheme);
+  const siftFrameStyle = hasSiftOutputs
+    ? ({
+        "--notebook-sift-focus": siftFrameAccent,
+        "--notebook-sift-focus-hover": `${siftFrameAccent}66`,
+        boxShadow: staticFrameInteractionActive
+          ? `0 0 0 2px ${siftFrameAccent}cc, 0 12px 30px ${siftFrameAccent}24`
+          : undefined,
+      } as React.CSSProperties)
+    : undefined;
 
   const hasCollapseControl = onToggleCollapse !== undefined;
 
@@ -451,6 +472,14 @@ export function OutputArea({
       setStaticFrameInteractionActive(false);
     }
   }, [shouldUseScrollPassthroughFrame, staticFrameInteractionActive]);
+
+  useEffect(() => {
+    if (!hasSiftOutputs) return;
+    frameRef.current?.send({
+      type: "interaction_state",
+      payload: { active: staticFrameInteractionActive },
+    });
+  }, [hasSiftOutputs, staticFrameInteractionActive]);
 
   useEffect(() => {
     return () => {
@@ -470,6 +499,21 @@ export function OutputArea({
 
     window.addEventListener("scroll", handleScroll, true);
     return () => window.removeEventListener("scroll", handleScroll, true);
+  }, [staticFrameInteractionActive]);
+
+  useEffect(() => {
+    if (!staticFrameInteractionActive) return;
+
+    const handlePointerDown = (event: globalThis.PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && staticFrameInteractionRef.current?.contains(target)) {
+        return;
+      }
+      setStaticFrameInteractionActive(false);
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    return () => document.removeEventListener("pointerdown", handlePointerDown, true);
   }, [staticFrameInteractionActive]);
 
   const activateStaticFrameInteraction = useCallback(() => {
@@ -797,15 +841,15 @@ export function OutputArea({
             <div
               ref={staticFrameInteractionRef}
               className={cn(
-                shouldIsolate ? "outline-none transition-shadow" : "hidden",
+                shouldIsolate ? "relative outline-none transition-shadow" : "hidden",
+                hasSiftOutputs && "group/sift",
                 hasSiftOutputs &&
                   shouldUseScrollPassthroughFrame &&
                   !staticFrameInteractionActive &&
-                  "rounded-sm hover:ring-1 hover:ring-sky-300/50",
-                hasSiftOutputs &&
-                  staticFrameInteractionActive &&
-                  "rounded-sm ring-2 ring-sky-400/70",
+                  "rounded-md hover:ring-1 hover:ring-[var(--notebook-sift-focus-hover)]",
+                hasSiftOutputs && staticFrameInteractionActive && "rounded-md bg-background",
               )}
+              style={siftFrameStyle}
               data-frame-interaction-active={staticFrameInteractionActive ? "true" : undefined}
               data-sift-output={hasSiftOutputs ? "true" : undefined}
               tabIndex={shouldUseScrollPassthroughFrame ? -1 : undefined}
@@ -826,7 +870,7 @@ export function OutputArea({
                 minHeight={24}
                 maxHeight={isolatedOutputWellMaxHeight}
                 autoHeight={shouldIsolate && !focused}
-                allowWheelBoundaryScroll={!focused && !shouldScrollPassthroughFrame}
+                allowWheelBoundaryScroll={allowWheelBoundaryScroll}
                 scrollPassthrough={shouldScrollPassthroughFrame}
                 onReady={handleFrameReady}
                 onLinkClick={onLinkClick}
@@ -835,6 +879,25 @@ export function OutputArea({
                 onMessage={handleIframeMessage}
                 onError={handleIframeError}
               />
+              {showSiftInteractionCue && (
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-center rounded-b-md bg-gradient-to-t from-background via-background/85 to-transparent pb-2 pt-8 opacity-0 transition-opacity duration-150 group-hover/sift:opacity-100 group-focus-within/sift:opacity-100">
+                  <button
+                    type="button"
+                    className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-border/70 bg-background/95 px-2.5 py-1 text-[11px] font-medium text-muted-foreground shadow-sm backdrop-blur transition-colors hover:border-sky-300 hover:text-sky-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 dark:hover:border-sky-700 dark:hover:text-sky-300"
+                    onPointerDown={(event) => {
+                      event.stopPropagation();
+                      activateStaticFrameInteraction();
+                    }}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      activateStaticFrameInteraction();
+                    }}
+                  >
+                    <ChevronDown className="h-3 w-3" />
+                    <span>Focus table scrolling</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
