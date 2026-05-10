@@ -1,5 +1,6 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
 import {
+  type KeyboardEvent,
   type PointerEvent,
   type ReactNode,
   useCallback,
@@ -36,6 +37,8 @@ function formatPluginLoadError(error: unknown): string {
 
 const FOCUSED_OUTPUT_WELL_VIEWPORT_RATIO = 0.8;
 const MIN_OUTPUT_WELL_HEIGHT = 360;
+const SIFT_VIEWPORT_TOP_INSET_PX = 96;
+const SIFT_VIEWPORT_BOTTOM_INSET_PX = 32;
 
 function getOutputWellMaxHeight(viewportRatio: number): number {
   if (typeof window === "undefined") return 720;
@@ -194,6 +197,13 @@ function isScrollPassthroughMimeType(mimeType: string): boolean {
   );
 }
 
+function isSiftMimeType(mimeType: string): boolean {
+  return (
+    mimeType === "application/vnd.apache.parquet" ||
+    mimeType === "application/vnd.apache.arrow.stream"
+  );
+}
+
 function outputAllowsScrollPassthrough(
   output: JupyterOutput,
   priority: readonly string[] = DEFAULT_PRIORITY,
@@ -203,6 +213,42 @@ function outputAllowsScrollPassthrough(
     return mimeType != null && isScrollPassthroughMimeType(mimeType);
   }
 
+  return true;
+}
+
+function outputUsesSift(
+  output: JupyterOutput,
+  priority: readonly string[] = DEFAULT_PRIORITY,
+): boolean {
+  if (output.output_type === "execute_result" || output.output_type === "display_data") {
+    const mimeType = selectMimeType(output.data, priority);
+    return mimeType != null && isSiftMimeType(mimeType);
+  }
+
+  return false;
+}
+
+function scrollElementIntoComfortableView(element: HTMLElement | null): boolean {
+  if (!element || typeof window === "undefined") return false;
+
+  const rect = element.getBoundingClientRect();
+  const bottomLimit = window.innerHeight - SIFT_VIEWPORT_BOTTOM_INSET_PX;
+  const availableHeight = bottomLimit - SIFT_VIEWPORT_TOP_INSET_PX;
+  let top = 0;
+
+  if (rect.height > availableHeight) {
+    if (Math.abs(rect.top - SIFT_VIEWPORT_TOP_INSET_PX) > 1) {
+      top = rect.top - SIFT_VIEWPORT_TOP_INSET_PX;
+    }
+  } else if (rect.top < SIFT_VIEWPORT_TOP_INSET_PX) {
+    top = rect.top - SIFT_VIEWPORT_TOP_INSET_PX;
+  } else if (rect.bottom > bottomLimit) {
+    top = rect.bottom - bottomLimit;
+  }
+
+  if (Math.abs(top) <= 1) return false;
+
+  window.scrollBy({ top, behavior: "auto" });
   return true;
 }
 
@@ -342,6 +388,8 @@ export function OutputArea({
   const bridgeRef = useRef<CommBridgeManager | null>(null);
   const inDomOutputRef = useRef<HTMLDivElement>(null);
   const staticFrameInteractionRef = useRef<HTMLDivElement>(null);
+  const ignoreScrollDeactivationRef = useRef(false);
+  const ignoreScrollDeactivationTimerRef = useRef<number | null>(null);
   const injectedLibsRef = useRef(new Set<string>());
   const renderGenRef = useRef(0);
   const searchQueryRef = useRef(searchQuery);
@@ -386,6 +434,7 @@ export function OutputArea({
 
   // Check if we have widgets and should set up comm bridge
   const hasWidgets = hasWidgetOutputs(outputs, priority);
+  const hasSiftOutputs = outputs.some((output) => outputUsesSift(output, priority));
   const shouldUseBridge = shouldIsolate && hasWidgets && widgetContext !== null;
   const shouldUseScrollPassthroughFrame =
     shouldIsolate &&
@@ -403,15 +452,52 @@ export function OutputArea({
     }
   }, [shouldUseScrollPassthroughFrame, staticFrameInteractionActive]);
 
+  useEffect(() => {
+    return () => {
+      if (ignoreScrollDeactivationTimerRef.current != null) {
+        window.clearTimeout(ignoreScrollDeactivationTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!staticFrameInteractionActive) return;
+
+    const handleScroll = () => {
+      if (ignoreScrollDeactivationRef.current) return;
+      setStaticFrameInteractionActive(false);
+    };
+
+    window.addEventListener("scroll", handleScroll, true);
+    return () => window.removeEventListener("scroll", handleScroll, true);
+  }, [staticFrameInteractionActive]);
+
   const activateStaticFrameInteraction = useCallback(() => {
     if (shouldUseScrollPassthroughFrame) {
+      if (!staticFrameInteractionActive && hasSiftOutputs) {
+        ignoreScrollDeactivationRef.current = scrollElementIntoComfortableView(
+          staticFrameInteractionRef.current,
+        );
+        if (ignoreScrollDeactivationTimerRef.current != null) {
+          window.clearTimeout(ignoreScrollDeactivationTimerRef.current);
+        }
+        ignoreScrollDeactivationTimerRef.current = window.setTimeout(() => {
+          ignoreScrollDeactivationRef.current = false;
+          ignoreScrollDeactivationTimerRef.current = null;
+        }, 250);
+      }
       setStaticFrameInteractionActive(true);
       // Move DOM focus off CodeMirror without scrolling; this wrapper owns
       // focus until iframe pointer interaction is active.
       staticFrameInteractionRef.current?.focus({ preventScroll: true });
     }
     onIframeMouseDown?.();
-  }, [shouldUseScrollPassthroughFrame, onIframeMouseDown]);
+  }, [
+    hasSiftOutputs,
+    shouldUseScrollPassthroughFrame,
+    staticFrameInteractionActive,
+    onIframeMouseDown,
+  ]);
 
   const deactivateStaticFrameInteractionWhenIdle = useCallback(
     (event: PointerEvent<HTMLDivElement>) => {
@@ -427,6 +513,12 @@ export function OutputArea({
     },
     [],
   );
+
+  const handleStaticFrameKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      setStaticFrameInteractionActive(false);
+    }
+  }, []);
 
   // Handle messages from iframe, routing widget messages to comm bridge
   const handleIframeMessage = useCallback(
@@ -704,7 +796,18 @@ export function OutputArea({
           {(shouldIsolate || showPreloadedIframe) && (
             <div
               ref={staticFrameInteractionRef}
-              className={cn(shouldIsolate ? "outline-none" : "hidden")}
+              className={cn(
+                shouldIsolate ? "outline-none transition-shadow" : "hidden",
+                hasSiftOutputs &&
+                  shouldUseScrollPassthroughFrame &&
+                  !staticFrameInteractionActive &&
+                  "rounded-sm hover:ring-1 hover:ring-sky-300/50",
+                hasSiftOutputs &&
+                  staticFrameInteractionActive &&
+                  "rounded-sm ring-2 ring-sky-400/70",
+              )}
+              data-frame-interaction-active={staticFrameInteractionActive ? "true" : undefined}
+              data-sift-output={hasSiftOutputs ? "true" : undefined}
               tabIndex={shouldUseScrollPassthroughFrame ? -1 : undefined}
               onPointerDown={
                 shouldUseScrollPassthroughFrame ? activateStaticFrameInteraction : undefined
@@ -714,6 +817,7 @@ export function OutputArea({
                   ? deactivateStaticFrameInteractionWhenIdle
                   : undefined
               }
+              onKeyDown={shouldUseScrollPassthroughFrame ? handleStaticFrameKeyDown : undefined}
             >
               <IsolatedFrame
                 ref={frameRef}

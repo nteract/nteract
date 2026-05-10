@@ -254,6 +254,44 @@ describe("OutputArea iframe theme sync", () => {
     );
   });
 
+  it("aligns sift before engaging iframe scrolling and releases on Escape", () => {
+    const scrollBy = vi.fn();
+    Object.defineProperty(window, "scrollBy", {
+      configurable: true,
+      value: scrollBy,
+    });
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 800,
+    });
+
+    const { getByTestId } = render(<OutputArea outputs={makeParquetOutput()} isolated />);
+    const frame = getByTestId("isolated-frame");
+    const activationWell = frame.parentElement as HTMLElement;
+    vi.spyOn(activationWell, "getBoundingClientRect").mockReturnValue({
+      top: 700,
+      bottom: 1420,
+      left: 0,
+      right: 1200,
+      width: 1200,
+      height: 720,
+      x: 0,
+      y: 700,
+      toJSON: () => ({}),
+    } as DOMRect);
+
+    fireEvent.pointerDown(activationWell);
+
+    expect(scrollBy).toHaveBeenCalledWith({ top: 604, behavior: "auto" });
+    expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
+    expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
+
+    fireEvent.keyDown(activationWell, { key: "Escape" });
+
+    expect(activationWell.getAttribute("data-frame-interaction-active")).toBeNull();
+    expect(frame.getAttribute("data-scroll-passthrough")).toBe("true");
+  });
+
   it("forces focused iframe outputs off scroll passthrough and wheel-boundary forwarding", () => {
     const { getByTestId } = render(<OutputArea outputs={makeMarkdownOutput()} isolated focused />);
 
