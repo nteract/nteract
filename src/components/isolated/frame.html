@@ -223,6 +223,24 @@
         // --- State ---
         let isReady = false;
         const root = document.getElementById("root");
+        const IFRAME_HEIGHT_FUDGE_PX = 2;
+
+        function measureDocumentHeight() {
+          var doc = document.documentElement;
+          var body = document.body;
+          var rootRectBottom = root ? root.getBoundingClientRect().bottom : 0;
+          return (
+            Math.ceil(
+              Math.max(
+                body ? body.scrollHeight : 0,
+                body ? body.offsetHeight : 0,
+                doc ? doc.scrollHeight : 0,
+                doc ? doc.offsetHeight : 0,
+                rootRectBottom,
+              ),
+            ) + IFRAME_HEIGHT_FUDGE_PX
+          );
+        }
 
         // --- Message Handler ---
         // Note: When the React renderer bundle is loaded, it sets window.__REACT_RENDERER_ACTIVE__
@@ -432,7 +450,7 @@
 
           // Notify completion
           requestAnimationFrame(function () {
-            sendRpc("nteract/renderComplete", { height: document.body.scrollHeight });
+            sendRpc("nteract/renderComplete", { height: measureDocumentHeight() });
           });
         }
 
@@ -491,7 +509,7 @@
 
         function handleClear() {
           root.innerHTML = "";
-          sendRpc("nteract/renderComplete", { height: document.body.scrollHeight });
+          sendRpc("nteract/renderComplete", { height: measureDocumentHeight() });
         }
 
         function handleWidgetState(payload) {
@@ -616,7 +634,7 @@
           requestAnimationFrame(function () {
             resizeRafPending = false;
             if (window.__REACT_RENDERER_ACTIVE__) return;
-            var height = document.body.scrollHeight;
+            var height = measureDocumentHeight();
             sendRpc("nteract/resize", { height: height });
           });
         });
