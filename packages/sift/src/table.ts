@@ -1052,7 +1052,7 @@ export function createTable(
     debugGroup,
     filterPillsEl,
     statsSpacer,
-    ...(options.footerControl ? [options.footerControl] : []),
+    ...(options?.footerControl ? [options.footerControl] : []),
     debugBtn,
     fullscreenBtn,
   );
