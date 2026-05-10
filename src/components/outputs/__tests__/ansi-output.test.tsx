@@ -264,8 +264,12 @@ describe("AnsiStreamOutput", () => {
 
     expect(screen.getByText("stdout")).toBeInTheDocument();
     expect(screen.getByText(/360 lines/)).toBeInTheDocument();
-    expect(screen.getByText(/312 lines hidden/)).toBeInTheDocument();
+    expect(screen.getByText(/333 lines hidden/)).toBeInTheDocument();
     expect(screen.getByText(/line-0/)).toBeInTheDocument();
+    expect(screen.getByText(/line-6/)).toBeInTheDocument();
+    expect(screen.queryByText(/line-7/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/line-339/)).not.toBeInTheDocument();
+    expect(screen.getByText(/line-340/)).toBeInTheDocument();
     expect(screen.queryByText(/line-180/)).not.toBeInTheDocument();
     expect(screen.getByText(/line-359/)).toBeInTheDocument();
   });

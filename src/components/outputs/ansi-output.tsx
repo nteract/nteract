@@ -230,8 +230,8 @@ interface AnsiStreamOutputProps {
 
 const STREAM_PREVIEW_LINE_LIMIT = 160;
 const STREAM_PREVIEW_CHAR_LIMIT = 24_000;
-const STREAM_PREVIEW_HEAD_LINES = 16;
-const STREAM_PREVIEW_TAIL_LINES = 32;
+const STREAM_PREVIEW_HEAD_LINES = 7;
+const STREAM_PREVIEW_TAIL_LINES = 20;
 
 function formatBytes(chars: number): string {
   if (chars < 1024) return `${chars} B`;
