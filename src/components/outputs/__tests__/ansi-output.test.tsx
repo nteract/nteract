@@ -5,7 +5,7 @@
  * and rendered with appropriate styles and CSS classes.
  */
 
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vite-plus/test";
 import { AnsiErrorOutput, AnsiOutput, AnsiStreamOutput } from "../ansi-output";
 
@@ -240,6 +240,39 @@ describe("AnsiStreamOutput", () => {
   it("renders text content", () => {
     render(<AnsiStreamOutput text="Plain stream output" streamName="stdout" />);
     expect(screen.getByText("Plain stream output")).toBeInTheDocument();
+  });
+
+  it("keeps short streams plain", () => {
+    const { container } = render(<AnsiStreamOutput text="short\nstream" streamName="stdout" />);
+    expect(container.querySelector("button")).toBeNull();
+    expect(screen.queryByText(/lines hidden/)).not.toBeInTheDocument();
+  });
+
+  it("collapses long stdout streams with a head and tail preview", () => {
+    const text = Array.from({ length: 120 }, (_, index) => `line-${index}`).join("\n");
+
+    render(<AnsiStreamOutput text={text} streamName="stdout" />);
+
+    expect(screen.getByText("stdout")).toBeInTheDocument();
+    expect(screen.getByText(/120 lines/)).toBeInTheDocument();
+    expect(screen.getByText(/64 lines hidden/)).toBeInTheDocument();
+    expect(screen.getByText(/line-0/)).toBeInTheDocument();
+    expect(screen.queryByText(/line-50/)).not.toBeInTheDocument();
+    expect(screen.getByText(/line-119/)).toBeInTheDocument();
+  });
+
+  it("can expand and collapse long stream logs", () => {
+    const text = Array.from({ length: 120 }, (_, index) => `line-${index}`).join("\n");
+
+    render(<AnsiStreamOutput text={text} streamName="stdout" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Show full log" }));
+    expect(screen.getByRole("button", { name: "Collapse log" })).toBeInTheDocument();
+    expect(screen.getByText(/line-50/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse log" }));
+    expect(screen.getByRole("button", { name: "Show full log" })).toBeInTheDocument();
+    expect(screen.queryByText(/line-50/)).not.toBeInTheDocument();
   });
 });
 
