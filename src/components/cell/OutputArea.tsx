@@ -443,6 +443,9 @@ export function OutputArea({
     outputs.every((output) => outputAllowsScrollPassthrough(output, priority));
   const shouldScrollPassthroughFrame =
     shouldUseScrollPassthroughFrame && !staticFrameInteractionActive;
+  const showSiftInteractionCue =
+    hasSiftOutputs && shouldUseScrollPassthroughFrame && !staticFrameInteractionActive;
+  const showSiftFocusedAffordance = hasSiftOutputs && staticFrameInteractionActive;
 
   const hasCollapseControl = onToggleCollapse !== undefined;
 
@@ -470,6 +473,21 @@ export function OutputArea({
 
     window.addEventListener("scroll", handleScroll, true);
     return () => window.removeEventListener("scroll", handleScroll, true);
+  }, [staticFrameInteractionActive]);
+
+  useEffect(() => {
+    if (!staticFrameInteractionActive) return;
+
+    const handlePointerDown = (event: globalThis.PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && staticFrameInteractionRef.current?.contains(target)) {
+        return;
+      }
+      setStaticFrameInteractionActive(false);
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    return () => document.removeEventListener("pointerdown", handlePointerDown, true);
   }, [staticFrameInteractionActive]);
 
   const activateStaticFrameInteraction = useCallback(() => {
@@ -797,14 +815,15 @@ export function OutputArea({
             <div
               ref={staticFrameInteractionRef}
               className={cn(
-                shouldIsolate ? "outline-none transition-shadow" : "hidden",
+                shouldIsolate ? "relative outline-none transition-shadow" : "hidden",
+                hasSiftOutputs && "group/sift",
                 hasSiftOutputs &&
                   shouldUseScrollPassthroughFrame &&
                   !staticFrameInteractionActive &&
-                  "rounded-sm hover:ring-1 hover:ring-sky-300/50",
+                  "rounded-md hover:ring-1 hover:ring-sky-300/60",
                 hasSiftOutputs &&
                   staticFrameInteractionActive &&
-                  "rounded-sm ring-2 ring-sky-400/70",
+                  "rounded-md bg-background ring-2 ring-sky-400/80 shadow-lg shadow-sky-950/10",
               )}
               data-frame-interaction-active={staticFrameInteractionActive ? "true" : undefined}
               data-sift-output={hasSiftOutputs ? "true" : undefined}
@@ -835,6 +854,28 @@ export function OutputArea({
                 onMessage={handleIframeMessage}
                 onError={handleIframeError}
               />
+              {showSiftInteractionCue && (
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-center rounded-b-md bg-gradient-to-t from-background via-background/85 to-transparent pb-2 pt-8 opacity-0 transition-opacity duration-150 group-hover/sift:opacity-100 group-focus-within/sift:opacity-100"
+                >
+                  <div className="flex items-center gap-1.5 rounded-full border border-border/70 bg-background/95 px-2.5 py-1 text-[11px] font-medium text-muted-foreground shadow-sm backdrop-blur">
+                    <ChevronDown className="h-3 w-3" />
+                    <span>Click table to scroll rows</span>
+                  </div>
+                </div>
+              )}
+              {showSiftFocusedAffordance && (
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute bottom-3 right-3 z-10 flex items-center gap-2 rounded-md border border-sky-300 bg-background/95 px-2.5 py-1 text-[11px] font-medium text-sky-700 shadow-sm backdrop-blur dark:border-sky-700 dark:text-sky-300"
+                >
+                  <span>Focused</span>
+                  <span className="rounded border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[10px] text-sky-700 dark:border-sky-800 dark:bg-sky-950/50 dark:text-sky-300">
+                    Esc
+                  </span>
+                </div>
+              )}
             </div>
           )}
 
