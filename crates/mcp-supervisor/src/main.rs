@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use rmcp::model::{
@@ -366,7 +366,78 @@ fn wait_for_daemon(project_root: &Path, workspace_path: &Path, timeout: Duration
     false
 }
 
-/// Ensure maturin develop has been run (check if runtimed is importable).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MaturinDevelopStatus {
+    Built,
+    Fresh,
+    Failed,
+}
+
+impl MaturinDevelopStatus {
+    fn success(self) -> bool {
+        !matches!(self, Self::Failed)
+    }
+}
+
+const MATURIN_DEVELOP_STAMP: &str = "target/maturin/.develop-stamp";
+
+fn modified_time(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
+}
+
+fn latest_modified_time_under(path: &Path) -> Option<SystemTime> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let mut latest = metadata.modified().ok()?;
+
+    if metadata.is_dir() {
+        for entry in std::fs::read_dir(path).ok()? {
+            let entry = entry.ok()?;
+            let entry_latest = latest_modified_time_under(&entry.path())?;
+            latest = latest.max(entry_latest);
+        }
+    }
+
+    Some(latest)
+}
+
+fn freshness_reason<I>(stamp_time: Option<SystemTime>, watched_times: I) -> Option<&'static str>
+where
+    I: IntoIterator<Item = Option<SystemTime>>,
+{
+    let Some(stamp_time) = stamp_time else {
+        return Some("missing develop stamp");
+    };
+
+    for watched_time in watched_times {
+        let Some(watched_time) = watched_time else {
+            return Some("could not read binding source timestamps");
+        };
+        if watched_time > stamp_time {
+            return Some("binding sources changed");
+        }
+    }
+
+    None
+}
+
+fn maturin_develop_reason(project_root: &Path) -> Option<&'static str> {
+    let stamp_time = modified_time(&project_root.join(MATURIN_DEVELOP_STAMP));
+    let watched_times = [
+        latest_modified_time_under(&project_root.join("Cargo.lock")),
+        latest_modified_time_under(&project_root.join("crates/runtimed-py/Cargo.toml")),
+        latest_modified_time_under(&project_root.join("crates/runtimed-py/src")),
+        latest_modified_time_under(&project_root.join("crates/runtimed/Cargo.toml")),
+        latest_modified_time_under(&project_root.join("crates/runtimed/src")),
+        latest_modified_time_under(&project_root.join("crates/runtimed-client/Cargo.toml")),
+        latest_modified_time_under(&project_root.join("crates/runtimed-client/src")),
+        latest_modified_time_under(&project_root.join("python/runtimed/pyproject.toml")),
+        latest_modified_time_under(&project_root.join("pyproject.toml")),
+        latest_modified_time_under(&project_root.join(".venv/pyvenv.cfg")),
+    ];
+    freshness_reason(stamp_time, watched_times)
+}
+
+/// Ensure maturin develop has been run and the installed bindings are fresh.
 fn ensure_maturin_develop(project_root: &Path) -> bool {
     let status = std::process::Command::new("uv")
         .args([
@@ -383,10 +454,10 @@ fn ensure_maturin_develop(project_root: &Path) -> bool {
         .status();
 
     match status {
-        Ok(s) if s.success() => true,
+        Ok(s) if s.success() => run_maturin_develop(project_root).success(),
         _ => {
             info!("runtimed not importable, running maturin develop...");
-            run_maturin_develop(project_root)
+            run_maturin_develop_force(project_root).success()
         }
     }
 }
@@ -579,7 +650,17 @@ fn build_runt_cli(project_root: &Path) -> bool {
     }
 }
 
-fn run_maturin_develop(project_root: &Path) -> bool {
+fn run_maturin_develop(project_root: &Path) -> MaturinDevelopStatus {
+    let Some(reason) = maturin_develop_reason(project_root) else {
+        info!("Skipping maturin develop (bindings are up to date)");
+        return MaturinDevelopStatus::Fresh;
+    };
+
+    info!("Running maturin develop ({reason})");
+    run_maturin_develop_force(project_root)
+}
+
+fn run_maturin_develop_force(project_root: &Path) -> MaturinDevelopStatus {
     // Route stdout to null — the supervisor uses stdout for MCP transport,
     // so maturin output would corrupt the JSON-RPC stream. Stderr goes to
     // our stderr (which is the supervisor's log stream).
@@ -614,16 +695,22 @@ fn run_maturin_develop(project_root: &Path) -> bool {
 
     match status {
         Ok(s) if s.success() => {
+            let stamp = maturin_target.join(".develop-stamp");
+            if let Err(e) =
+                std::fs::create_dir_all(&maturin_target).and_then(|_| std::fs::write(&stamp, ""))
+            {
+                warn!("failed to write maturin develop stamp: {e}");
+            }
             info!("maturin develop succeeded");
-            true
+            MaturinDevelopStatus::Built
         }
         Ok(s) => {
             error!("maturin develop failed with {s}");
-            false
+            MaturinDevelopStatus::Failed
         }
         Err(e) => {
             error!("Failed to run maturin develop: {e}");
-            false
+            MaturinDevelopStatus::Failed
         }
     }
 }
@@ -1163,12 +1250,6 @@ impl Supervisor {
                     error!("cargo build -p runt failed, keeping current child");
                     return;
                 }
-                if !skip_maturin {
-                    let pr = project_root.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let _ = run_maturin_develop(&pr);
-                    });
-                }
             }
             ChangeKind::RustChanged => {
                 info!(
@@ -1183,17 +1264,12 @@ impl Supervisor {
                     error!("cargo build -p runt failed, keeping current child");
                     return;
                 }
-                if !skip_maturin && !run_maturin_develop(&project_root) {
+                if !skip_maturin && !run_maturin_develop(&project_root).success() {
                     warn!("maturin develop failed (runt mcp will still restart)");
                 }
             }
             ChangeKind::PythonOnly => {
-                if !skip_maturin {
-                    let pr = project_root.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let _ = run_maturin_develop(&pr);
-                    });
-                }
+                info!("Python files changed; restarting child without rebuilding native bindings");
             }
         }
 
@@ -1396,13 +1472,20 @@ impl Supervisor {
             );
 
             if std::env::var("SKIP_MATURIN").unwrap_or_default() != "1" {
-                if !run_maturin_develop(&project_root) {
-                    return Ok(CallToolResult::success(vec![Content::text(
-                        "up: maturin develop failed. Daemon binary was rebuilt; \
-                         Python bindings were not. See the supervisor logs.",
-                    )]));
+                match run_maturin_develop(&project_root) {
+                    MaturinDevelopStatus::Built => {
+                        report.push("rebuild: python bindings rebuilt".into());
+                    }
+                    MaturinDevelopStatus::Fresh => {
+                        report.push("rebuild: python bindings fresh".into());
+                    }
+                    MaturinDevelopStatus::Failed => {
+                        return Ok(CallToolResult::success(vec![Content::text(
+                            "up: maturin develop failed. Daemon binary was rebuilt; \
+                             Python bindings were not. See the supervisor logs.",
+                        )]));
+                    }
                 }
-                report.push("rebuild: python bindings rebuilt".into());
             } else {
                 report.push("rebuild: maturin skipped (SKIP_MATURIN=1)".into());
             }
@@ -2119,7 +2202,7 @@ impl ServerHandler for Supervisor {
                 // 2. Rebuild Python bindings (maturin develop) — skip if
                 // SKIP_MATURIN=1 is set (speeds up Rust-only iteration).
                 if std::env::var("SKIP_MATURIN").unwrap_or_default() != "1" {
-                    if !run_maturin_develop(&project_root) {
+                    if !run_maturin_develop(&project_root).success() {
                         return Ok(CallToolResult::success(vec![Content::text(
                             "maturin develop failed — check the supervisor logs for details\n\
                              (daemon binary was rebuilt successfully)",
@@ -3185,6 +3268,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::UNIX_EPOCH;
 
     fn root() -> PathBuf {
         PathBuf::from("/repo")
@@ -3206,6 +3290,35 @@ mod tests {
                 "{rel} should be PythonOnly",
             );
         }
+    }
+
+    #[test]
+    fn freshness_reason_requires_stamp() {
+        let watched = [Some(UNIX_EPOCH + Duration::from_secs(5))];
+        assert_eq!(
+            freshness_reason(None, watched),
+            Some("missing develop stamp")
+        );
+    }
+
+    #[test]
+    fn freshness_reason_detects_newer_sources() {
+        let stamp = UNIX_EPOCH + Duration::from_secs(5);
+        let watched = [Some(UNIX_EPOCH + Duration::from_secs(6))];
+        assert_eq!(
+            freshness_reason(Some(stamp), watched),
+            Some("binding sources changed")
+        );
+    }
+
+    #[test]
+    fn freshness_reason_skips_when_stamp_is_newer() {
+        let stamp = UNIX_EPOCH + Duration::from_secs(10);
+        let watched = [
+            Some(UNIX_EPOCH + Duration::from_secs(5)),
+            Some(UNIX_EPOCH + Duration::from_secs(9)),
+        ];
+        assert_eq!(freshness_reason(Some(stamp), watched), None);
     }
 
     #[test]
