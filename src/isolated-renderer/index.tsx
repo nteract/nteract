@@ -40,6 +40,7 @@ import { TracebackOutput } from "@/components/outputs/traceback-output";
 import { VideoOutput } from "@/components/outputs/video-output";
 import { SvgOutput } from "@/components/outputs/svg-output";
 import { WidgetView } from "@/components/widgets/widget-view";
+import { measureDocumentHeight } from "./layout-measure";
 // Import widget support
 import { IframeWidgetStoreProvider } from "./widget-provider";
 
@@ -199,25 +200,7 @@ type MessageHandler = (type: string, payload: unknown) => void;
 let messageHandler: MessageHandler | null = null;
 
 const LAYOUT_PULSE_DELAYS_MS = [0, 160, 600];
-const IFRAME_HEIGHT_FUDGE_PX = 2;
 let layoutPulseTimers: number[] = [];
-
-function measureDocumentHeight(): number {
-  const doc = document.documentElement;
-  const body = document.body;
-  const root = document.getElementById("root");
-  return (
-    Math.ceil(
-      Math.max(
-        body?.scrollHeight ?? 0,
-        body?.offsetHeight ?? 0,
-        doc?.scrollHeight ?? 0,
-        doc?.offsetHeight ?? 0,
-        root?.getBoundingClientRect().bottom ?? 0,
-      ),
-    ) + IFRAME_HEIGHT_FUDGE_PX
-  );
-}
 
 function postMeasuredHeight(type: "resize" | "render_complete"): void {
   window.parent.postMessage(
@@ -591,6 +574,10 @@ export function init() {
     });
   });
   resizeObserver.observe(document.body);
+  resizeObserver.observe(rootEl);
+
+  document.addEventListener("fullscreenchange", scheduleRendererLayoutPulses);
+  document.addEventListener("webkitfullscreenchange", scheduleRendererLayoutPulses);
 
   // Note: "renderer_ready" is sent from the React component's useEffect
   // to ensure the message handler is registered before parent sends messages
