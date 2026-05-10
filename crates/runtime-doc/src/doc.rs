@@ -632,6 +632,22 @@ impl RuntimeStateDoc {
         })?
     }
 
+    fn recover_patch_log_mismatch(
+        &mut self,
+        peer_state: &mut sync::State,
+        label: &str,
+        source: AutomergeError,
+    ) -> Result<(), AutomergeOperationError> {
+        if !matches!(source, AutomergeError::PatchLogMismatch) {
+            return Err(AutomergeOperationError::automerge(label, source));
+        }
+        *peer_state = sync::State::new();
+        if let Err(source) = self.rebuild_from_save() {
+            return Err(AutomergeOperationError::rebuild_failed(label, source));
+        }
+        Ok(())
+    }
+
     /// Compact the document if its serialized size exceeds `threshold` bytes.
     ///
     /// Returns `true` if compaction was performed.
@@ -2738,17 +2754,29 @@ impl RuntimeStateDoc {
         Ok(())
     }
 
-    /// Receive a read-only sync message, recovering from Automerge panics by
-    /// rebuilding this doc and resetting peer sync state.
+    /// Receive a read-only sync message, recovering from Automerge panics and
+    /// patch-log mismatch errors by rebuilding this doc and resetting peer sync
+    /// state.
     pub fn receive_sync_message_recovering(
         &mut self,
         peer_state: &mut sync::State,
         message: sync::Message,
         label: &str,
     ) -> Result<(), AutomergeOperationError> {
-        match catch_automerge_panic(label, || self.receive_sync_message(peer_state, message)) {
+        match catch_automerge_panic(label, || {
+            self.receive_sync_message(peer_state, message.clone())
+        }) {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+            Ok(Err(source)) => {
+                self.recover_patch_log_mismatch(peer_state, label, source)?;
+                match catch_automerge_panic(label, || {
+                    self.receive_sync_message(peer_state, message)
+                }) {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+                    Err(err) => Err(AutomergeOperationError::Panic(err)),
+                }
+            }
             Err(err) => {
                 *peer_state = sync::State::new();
                 if let Err(source) = self.rebuild_from_save() {
@@ -2778,8 +2806,9 @@ impl RuntimeStateDoc {
         Ok(heads_before != heads_after)
     }
 
-    /// Receive a writable sync message, recovering from Automerge panics by
-    /// rebuilding this doc and resetting peer sync state.
+    /// Receive a writable sync message, recovering from Automerge panics and
+    /// patch-log mismatch errors by rebuilding this doc and resetting peer sync
+    /// state.
     pub fn receive_sync_message_with_changes_recovering(
         &mut self,
         peer_state: &mut sync::State,
@@ -2787,10 +2816,19 @@ impl RuntimeStateDoc {
         label: &str,
     ) -> Result<bool, AutomergeOperationError> {
         match catch_automerge_panic(label, || {
-            self.receive_sync_message_with_changes(peer_state, message)
+            self.receive_sync_message_with_changes(peer_state, message.clone())
         }) {
             Ok(Ok(changed)) => Ok(changed),
-            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+            Ok(Err(source)) => {
+                self.recover_patch_log_mismatch(peer_state, label, source)?;
+                match catch_automerge_panic(label, || {
+                    self.receive_sync_message_with_changes(peer_state, message)
+                }) {
+                    Ok(Ok(changed)) => Ok(changed),
+                    Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+                    Err(err) => Err(AutomergeOperationError::Panic(err)),
+                }
+            }
             Err(err) => {
                 *peer_state = sync::State::new();
                 if let Err(source) = self.rebuild_from_save() {
@@ -2912,8 +2950,8 @@ impl RuntimeStateDoc {
     }
 
     /// Receive a writable sync message and compute a foreign-actor comm view,
-    /// recovering from Automerge panics by rebuilding this doc and resetting
-    /// peer sync state.
+    /// recovering from Automerge panics and patch-log mismatch errors by
+    /// rebuilding this doc and resetting peer sync state.
     pub fn receive_sync_and_foreign_comms_recovering<F>(
         &mut self,
         peer_state: &mut sync::State,
@@ -2925,10 +2963,19 @@ impl RuntimeStateDoc {
         F: Fn(&ActorId) -> bool,
     {
         match catch_automerge_panic(label, || {
-            self.receive_sync_and_foreign_comms(peer_state, message, is_foreign)
+            self.receive_sync_and_foreign_comms(peer_state, message.clone(), &is_foreign)
         }) {
             Ok(Ok(view)) => Ok(view),
-            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+            Ok(Err(source)) => {
+                self.recover_patch_log_mismatch(peer_state, label, source)?;
+                match catch_automerge_panic(label, || {
+                    self.receive_sync_and_foreign_comms(peer_state, message, is_foreign)
+                }) {
+                    Ok(Ok(view)) => Ok(view),
+                    Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+                    Err(err) => Err(AutomergeOperationError::Panic(err)),
+                }
+            }
             Err(err) => {
                 *peer_state = sync::State::new();
                 if let Err(source) = self.rebuild_from_save() {
@@ -5449,6 +5496,69 @@ mod tests {
             }
         }
         panic!("sync never converged");
+    }
+
+    fn doc_with_active_patch_log(actor: &str) -> RuntimeStateDoc {
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_actor(actor);
+        doc.doc_mut().update_diff_cursor();
+        doc.doc_mut().put(ROOT, "patch_log_probe", "dirty").unwrap();
+        doc
+    }
+
+    fn patch_log_mismatch_sync_message() -> (RuntimeStateDoc, sync::State, sync::Message) {
+        let mut donor = RuntimeStateDoc::try_new_with_actor("a:frontend").unwrap();
+        donor
+            .set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+            .unwrap();
+
+        let mut receiver = doc_with_active_patch_log("z:runtime");
+        let mut receiver_sync = sync::State::new();
+        let mut donor_sync = sync::State::new();
+        let handshake = receiver
+            .generate_sync_message(&mut receiver_sync)
+            .expect("receiver should advertise its current heads");
+        donor
+            .doc
+            .sync()
+            .receive_sync_message(&mut donor_sync, handshake)
+            .expect("donor should accept receiver handshake");
+        let message = donor
+            .generate_sync_message(&mut donor_sync)
+            .expect("donor should advertise runtime-state change");
+
+        (receiver, receiver_sync, message)
+    }
+
+    #[test]
+    fn patch_log_mismatch_recovery_rebuilds_then_sync_can_retry() {
+        let (mut recovering_receiver, mut recovering_receiver_sync, recovering_message) =
+            patch_log_mismatch_sync_message();
+        recovering_receiver
+            .recover_patch_log_mismatch(
+                &mut recovering_receiver_sync,
+                "runtime-state-patch-log-mismatch-test",
+                AutomergeError::PatchLogMismatch,
+            )
+            .expect("patch-log mismatch should rebuild and reset peer sync");
+        let view = recovering_receiver
+            .receive_sync_and_foreign_comms(
+                &mut recovering_receiver_sync,
+                recovering_message,
+                |_| true,
+            )
+            .expect("sync message should apply after recovery");
+
+        assert!(
+            view.applied_actors
+                .iter()
+                .any(|actor| actor_label_from_id(actor) == "a:frontend"),
+            "frontend actor should be applied after recovery"
+        );
+        assert_eq!(
+            recovering_receiver.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Idle)
+        );
     }
 
     #[test]

@@ -108,9 +108,16 @@ impl SharedDocState {
         message: sync::Message,
         label: &str,
     ) -> Result<(), AutomergeOperationError> {
-        match catch_automerge_panic(label, || self.receive_sync_message(message)) {
+        match catch_automerge_panic(label, || self.receive_sync_message(message.clone())) {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+            Ok(Err(source)) => {
+                self.recover_doc_patch_log_mismatch(label, source)?;
+                match catch_automerge_panic(label, || self.receive_sync_message(message)) {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+                    Err(err) => Err(AutomergeOperationError::Panic(err)),
+                }
+            }
             Err(err) => {
                 if let Err(source) = self.rebuild_doc() {
                     return Err(AutomergeOperationError::rebuild_failed(label, source));
@@ -161,9 +168,16 @@ impl SharedDocState {
         message: sync::Message,
         label: &str,
     ) -> Result<(), AutomergeOperationError> {
-        match catch_automerge_panic(label, || self.receive_state_sync_message(message)) {
+        match catch_automerge_panic(label, || self.receive_state_sync_message(message.clone())) {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+            Ok(Err(source)) => {
+                self.recover_state_patch_log_mismatch(label, source)?;
+                match catch_automerge_panic(label, || self.receive_state_sync_message(message)) {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+                    Err(err) => Err(AutomergeOperationError::Panic(err)),
+                }
+            }
             Err(err) => {
                 if let Err(source) = self.rebuild_state_doc() {
                     return Err(AutomergeOperationError::rebuild_failed(label, source));
@@ -175,9 +189,9 @@ impl SharedDocState {
 
     /// Rebuild the RuntimeStateDoc via save→load and reset its sync state.
     ///
-    /// Used after catching an automerge panic during `RuntimeStateSync`
-    /// processing — the same recovery pattern as `rebuild_doc` for the
-    /// notebook doc, but targeting the state doc.
+    /// Used after catching an automerge panic or patch-log mismatch during
+    /// `RuntimeStateSync` processing — the same recovery pattern as
+    /// `rebuild_doc` for the notebook doc, but targeting the state doc.
     pub fn rebuild_state_doc(&mut self) -> Result<(), AutomergeRebuildError> {
         let rebuilt = self.state_doc.rebuild_from_save();
         if let Err(err) = &rebuilt {
@@ -234,6 +248,30 @@ impl SharedDocState {
                 Err(e.into())
             }
         }
+    }
+
+    fn recover_doc_patch_log_mismatch(
+        &mut self,
+        label: &str,
+        source: automerge::AutomergeError,
+    ) -> Result<(), AutomergeOperationError> {
+        if !matches!(source, automerge::AutomergeError::PatchLogMismatch) {
+            return Err(AutomergeOperationError::automerge(label, source));
+        }
+        self.rebuild_doc()
+            .map_err(|source| AutomergeOperationError::rebuild_failed(label, source))
+    }
+
+    fn recover_state_patch_log_mismatch(
+        &mut self,
+        label: &str,
+        source: automerge::AutomergeError,
+    ) -> Result<(), AutomergeOperationError> {
+        if !matches!(source, automerge::AutomergeError::PatchLogMismatch) {
+            return Err(AutomergeOperationError::automerge(label, source));
+        }
+        self.rebuild_state_doc()
+            .map_err(|source| AutomergeOperationError::rebuild_failed(label, source))
     }
 
     #[cfg(test)]
