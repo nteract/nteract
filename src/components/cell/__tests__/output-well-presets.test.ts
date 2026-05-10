@@ -55,8 +55,8 @@ describe("inferDefaultOutputMode", () => {
     expect(inferDefaultOutputMode({ kind: "single-error" })).toBe("compact");
   });
 
-  it("streams-only -> compact", () => {
-    expect(inferDefaultOutputMode({ kind: "streams-only" })).toBe("compact");
+  it("streams-only -> expanded (stream renderer owns long-log collapse)", () => {
+    expect(inferDefaultOutputMode({ kind: "streams-only" })).toBe("expanded");
   });
 
   it("mixed -> expanded", () => {

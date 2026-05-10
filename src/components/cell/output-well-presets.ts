@@ -35,6 +35,10 @@ export function inferDefaultOutputMode(shape: OutputShape): OutputMode {
       // looks wrong inside a wrapper scrollbar — the streams want to flow
       // inline like document content, and the page is already scrollable.
       return "expanded";
+    case "streams-only":
+      // Stream output has its own long-log preview, so normal stdout/stderr
+      // should flow at full height without an extra output-well scrollbar.
+      return "expanded";
     case "mixed":
       // Mixed output stacks are usually the notebook-native case:
       // display(HTML), display(plotly), display(altair), streams followed
@@ -47,7 +51,6 @@ export function inferDefaultOutputMode(shape: OutputShape): OutputMode {
     case "single-image":
     case "single-widget":
     case "single-error":
-    case "streams-only":
       return "compact";
   }
 }
