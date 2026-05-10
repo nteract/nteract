@@ -445,7 +445,6 @@ export function OutputArea({
     shouldUseScrollPassthroughFrame && !staticFrameInteractionActive;
   const showSiftInteractionCue =
     hasSiftOutputs && shouldUseScrollPassthroughFrame && !staticFrameInteractionActive;
-  const showSiftFocusedAffordance = hasSiftOutputs && staticFrameInteractionActive;
 
   const hasCollapseControl = onToggleCollapse !== undefined;
 
@@ -454,6 +453,14 @@ export function OutputArea({
       setStaticFrameInteractionActive(false);
     }
   }, [shouldUseScrollPassthroughFrame, staticFrameInteractionActive]);
+
+  useEffect(() => {
+    if (!hasSiftOutputs) return;
+    frameRef.current?.send({
+      type: "interaction_state",
+      payload: { active: staticFrameInteractionActive },
+    });
+  }, [hasSiftOutputs, staticFrameInteractionActive]);
 
   useEffect(() => {
     return () => {
@@ -871,17 +878,6 @@ export function OutputArea({
                     <ChevronDown className="h-3 w-3" />
                     <span>Focus table scrolling</span>
                   </button>
-                </div>
-              )}
-              {showSiftFocusedAffordance && (
-                <div
-                  aria-hidden="true"
-                  className="pointer-events-none absolute bottom-3 right-20 z-10 flex items-center gap-2 rounded-md border border-sky-300 bg-background/95 px-2.5 py-1 text-[11px] font-medium text-sky-700 shadow-sm backdrop-blur dark:border-sky-700 dark:text-sky-300"
-                >
-                  <span>Focused</span>
-                  <span className="rounded border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[10px] text-sky-700 dark:border-sky-800 dark:bg-sky-950/50 dark:text-sky-300">
-                    Esc
-                  </span>
                 </div>
               )}
             </div>

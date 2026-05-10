@@ -1001,6 +1001,12 @@ h1 {
   display: inline;
 }
 
+.sift-footer-control {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 6px;
+}
+
 .sift-debug-btn {
   background: none;
   border: 1px solid var(--sift-rule);

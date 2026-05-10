@@ -13,7 +13,8 @@
  * cleaning up on unmount.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import {
   applyColumnOverrides,
   applyParquetColumnHints,
@@ -45,6 +46,8 @@ export type SiftTableProps = {
   columnOverrides?: Record<string, Partial<Column>>;
   /** Called whenever sort or filter state changes from UI interaction. */
   onChange?: (state: TableEngineState) => void;
+  /** Optional control rendered in Sift's footer before built-in buttons. */
+  footerControl?: ReactNode;
   /** CSS class name for the container div. */
   className?: string;
   /** Inline styles for the container div. */
@@ -239,13 +242,17 @@ export function SiftTable({
   typeOverrides,
   columnOverrides,
   onChange,
+  footerControl,
   className,
   style,
 }: SiftTableProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<TableEngine | null>(null);
+  const footerControlRef = useRef<HTMLDivElement | null>(null);
+  const footerControlRootRef = useRef<Root | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
+  const hasFooterControl = footerControl != null;
 
   // Stable callback ref to avoid re-mounting engine when onChange identity changes
   const onChangeRef = useRef(onChange);
@@ -253,6 +260,30 @@ export function SiftTable({
 
   const stableOnChange = useCallback((state: TableEngineState) => {
     onChangeRef.current?.(state);
+  }, []);
+
+  const getFooterControlElement = useCallback(() => {
+    if (!hasFooterControl) return undefined;
+    if (!footerControlRef.current) {
+      footerControlRef.current = document.createElement("div");
+      footerControlRootRef.current = createRoot(footerControlRef.current);
+    }
+    return footerControlRef.current;
+  }, [hasFooterControl]);
+
+  useEffect(() => {
+    if (hasFooterControl) {
+      getFooterControlElement();
+    }
+    footerControlRootRef.current?.render(footerControl);
+  }, [footerControl, getFooterControlElement, hasFooterControl]);
+
+  useEffect(() => {
+    return () => {
+      footerControlRootRef.current?.unmount();
+      footerControlRootRef.current = null;
+      footerControlRef.current = null;
+    };
   }, []);
 
   // Mount engine when `data` prop is provided directly
@@ -272,6 +303,7 @@ export function SiftTable({
 
     engineRef.current = createTable(engineDiv, data, {
       onChange: stableOnChange,
+      footerControl: getFooterControlElement(),
     });
     setStatus("ready");
 
@@ -280,7 +312,7 @@ export function SiftTable({
       engineRef.current = null;
       engineDiv.remove();
     };
-  }, [data, stableOnChange]);
+  }, [data, stableOnChange, getFooterControlElement]);
 
   // Load from URL when `url` prop is provided.
   // Detects format via Content-Type header + magic byte fallback:
@@ -305,6 +337,7 @@ export function SiftTable({
       container.appendChild(engineDiv);
       engineRef.current = createTable(engineDiv, tableData, {
         onChange: stableOnChange,
+        footerControl: getFooterControlElement(),
       });
     }
 
@@ -447,7 +480,7 @@ export function SiftTable({
       engineRef.current = null;
       engineDiv?.remove();
     };
-  }, [url, typeOverrides, columnOverrides, stableOnChange]);
+  }, [url, typeOverrides, columnOverrides, stableOnChange, getFooterControlElement]);
 
   return (
     <div ref={containerRef} className={className} style={{ height: "100%", ...style }}>

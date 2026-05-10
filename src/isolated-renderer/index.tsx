@@ -120,6 +120,7 @@ interface OutputEntry {
 interface RendererState {
   outputs: OutputEntry[];
   isDark: boolean;
+  interactionActive: boolean;
 }
 
 // --- Theme Management ---
@@ -291,6 +292,7 @@ function IsolatedRendererApp() {
   const [state, setState] = useState<RendererState>({
     outputs: [],
     isDark: document.documentElement.classList.contains("dark"),
+    interactionActive: false,
   });
 
   // Handle messages from parent
@@ -371,6 +373,14 @@ function IsolatedRendererApp() {
         }
         break;
       }
+      case "interaction_state": {
+        const interactionPayload = payload as { active?: boolean };
+        setState((prev) => ({
+          ...prev,
+          interactionActive: interactionPayload.active ?? false,
+        }));
+        break;
+      }
     }
   }, []);
 
@@ -389,7 +399,11 @@ function IsolatedRendererApp() {
   return (
     <div className="isolated-renderer" data-theme={state.isDark ? "dark" : "light"}>
       {state.outputs.map((entry) => (
-        <OutputRenderer key={entry.id} payload={entry.payload} />
+        <OutputRenderer
+          key={entry.id}
+          payload={entry.payload}
+          interactionActive={state.interactionActive}
+        />
       ))}
     </div>
   );
@@ -399,7 +413,13 @@ function IsolatedRendererApp() {
  * Render a single output based on its MIME type.
  * Uses direct component imports (not lazy loading) for isolated iframe compatibility.
  */
-function OutputRenderer({ payload }: { payload: RenderPayload }) {
+function OutputRenderer({
+  payload,
+  interactionActive,
+}: {
+  payload: RenderPayload;
+  interactionActive: boolean;
+}) {
   const { mimeType, data, metadata } = payload;
   const content = data;
 
@@ -440,7 +460,14 @@ function OutputRenderer({ payload }: { payload: RenderPayload }) {
   // Check renderer plugin registry first (exact match, then pattern matchers)
   const RegisteredRenderer = getRenderer(mimeType);
   if (RegisteredRenderer) {
-    return <RegisteredRenderer data={data} metadata={metadata} mimeType={mimeType} />;
+    return (
+      <RegisteredRenderer
+        data={data}
+        metadata={metadata}
+        mimeType={mimeType}
+        interactionActive={interactionActive}
+      />
+    );
   }
 
   // Widget view - render interactive Jupyter widget
