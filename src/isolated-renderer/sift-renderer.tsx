@@ -126,11 +126,9 @@ function SiftRenderer({ data, mimeType, interactionActive = false }: RendererPro
         footerControl={
           <div className="sift-footer-control">
             {interactionActive && (
-              <span className="inline-flex items-center gap-2 rounded-md border border-sky-300 bg-background/95 px-2.5 py-1 text-[11px] font-medium text-sky-700 shadow-sm dark:border-sky-700 dark:text-sky-300">
+              <span className="sift-focus-hint">
                 <span>Focused</span>
-                <span className="rounded border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[10px] text-sky-700 dark:border-sky-800 dark:bg-sky-950/50 dark:text-sky-300">
-                  Esc
-                </span>
+                <span className="sift-focus-key">Esc</span>
               </span>
             )}
           </div>

@@ -40,6 +40,13 @@ const MIN_OUTPUT_WELL_HEIGHT = 360;
 const SIFT_VIEWPORT_TOP_INSET_PX = 96;
 const SIFT_VIEWPORT_BOTTOM_INSET_PX = 32;
 
+function siftFocusAccent(isDark: boolean, colorTheme?: string): string {
+  if (colorTheme === "cream") {
+    return isDark ? "#d4896a" : "#955f3b";
+  }
+  return isDark ? "#60a5fa" : "#3b82f6";
+}
+
 function getOutputWellMaxHeight(viewportRatio: number): number {
   if (typeof window === "undefined") return 720;
   return Math.max(MIN_OUTPUT_WELL_HEIGHT, Math.floor(window.innerHeight * viewportRatio));
@@ -443,8 +450,20 @@ export function OutputArea({
     outputs.every((output) => outputAllowsScrollPassthrough(output, priority));
   const shouldScrollPassthroughFrame =
     shouldUseScrollPassthroughFrame && !staticFrameInteractionActive;
+  const allowWheelBoundaryScroll =
+    !focused && !shouldScrollPassthroughFrame && !(hasSiftOutputs && staticFrameInteractionActive);
   const showSiftInteractionCue =
     hasSiftOutputs && shouldUseScrollPassthroughFrame && !staticFrameInteractionActive;
+  const siftFrameAccent = siftFocusAccent(darkMode, colorTheme);
+  const siftFrameStyle = hasSiftOutputs
+    ? ({
+        "--notebook-sift-focus": siftFrameAccent,
+        "--notebook-sift-focus-hover": `${siftFrameAccent}66`,
+        boxShadow: staticFrameInteractionActive
+          ? `0 0 0 2px ${siftFrameAccent}cc, 0 12px 30px ${siftFrameAccent}24`
+          : undefined,
+      } as React.CSSProperties)
+    : undefined;
 
   const hasCollapseControl = onToggleCollapse !== undefined;
 
@@ -827,11 +846,10 @@ export function OutputArea({
                 hasSiftOutputs &&
                   shouldUseScrollPassthroughFrame &&
                   !staticFrameInteractionActive &&
-                  "rounded-md hover:ring-1 hover:ring-sky-300/60",
-                hasSiftOutputs &&
-                  staticFrameInteractionActive &&
-                  "rounded-md bg-background ring-2 ring-sky-400/80 shadow-lg shadow-sky-950/10",
+                  "rounded-md hover:ring-1 hover:ring-[var(--notebook-sift-focus-hover)]",
+                hasSiftOutputs && staticFrameInteractionActive && "rounded-md bg-background",
               )}
+              style={siftFrameStyle}
               data-frame-interaction-active={staticFrameInteractionActive ? "true" : undefined}
               data-sift-output={hasSiftOutputs ? "true" : undefined}
               tabIndex={shouldUseScrollPassthroughFrame ? -1 : undefined}
@@ -852,7 +870,7 @@ export function OutputArea({
                 minHeight={24}
                 maxHeight={isolatedOutputWellMaxHeight}
                 autoHeight={shouldIsolate && !focused}
-                allowWheelBoundaryScroll={!focused && !shouldScrollPassthroughFrame}
+                allowWheelBoundaryScroll={allowWheelBoundaryScroll}
                 scrollPassthrough={shouldScrollPassthroughFrame}
                 onReady={handleFrameReady}
                 onLinkClick={onLinkClick}
