@@ -263,7 +263,7 @@ describe("OutputArea iframe theme sync", () => {
     );
   });
 
-  it("constrains isolated iframe outputs to a viewport-sized output well by default", () => {
+  it("renders isolated iframe outputs at natural height by default", () => {
     const { container, getByTestId } = render(
       <OutputArea outputs={makeMarkdownOutput()} isolated />,
     );
@@ -271,8 +271,8 @@ describe("OutputArea iframe theme sync", () => {
     const outputContent = getOutputContent(container);
 
     expect(getByTestId("isolated-frame").getAttribute("data-auto-height")).toBe("true");
-    expect(outputContent.getAttribute("class") ?? "").toContain("overflow-y-auto");
-    expect(outputContent.style.maxHeight).toBe("600px");
+    expect(outputContent.getAttribute("class") ?? "").not.toContain("overflow-y-auto");
+    expect(outputContent.style.maxHeight).toBe("");
     expect(outputContent.style.minHeight).toBe("");
   });
 
@@ -284,14 +284,15 @@ describe("OutputArea iframe theme sync", () => {
     expect(outputContent.style.maxHeight).toBe("");
   });
 
-  it("can expand isolated iframe outputs past the default output well cap", () => {
+  it("constrains isolated iframe outputs when maxHeight is explicit", () => {
     const { container, getByTestId } = render(
-      <OutputArea outputs={makeMarkdownOutput()} isolated expandIframeOutputs />,
+      <OutputArea outputs={makeMarkdownOutput()} isolated maxHeight={420} />,
     );
 
     expect(getByTestId("isolated-frame").getAttribute("data-auto-height")).toBe("true");
     const outputContent = getOutputContent(container);
-    expect(outputContent.style.maxHeight).toBe("");
+    expect(outputContent.getAttribute("class") ?? "").toContain("overflow-y-auto");
+    expect(outputContent.style.maxHeight).toBe("420px");
   });
 
   it("uses a focused output well floor for short iframe content", () => {
@@ -322,10 +323,8 @@ describe("OutputArea iframe theme sync", () => {
     expect(getOutputContent(container).style.height).toBe("");
   });
 
-  it("keeps the focused output well clamp when expand is also enabled", () => {
-    const { container } = render(
-      <OutputArea outputs={makeMarkdownOutput()} isolated expandIframeOutputs focused />,
-    );
+  it("keeps the focused output well clamp", () => {
+    const { container } = render(<OutputArea outputs={makeMarkdownOutput()} isolated focused />);
 
     const outputContent = getOutputContent(container);
     expect(outputContent.style.maxHeight).toBe("640px");

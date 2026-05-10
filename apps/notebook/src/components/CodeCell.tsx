@@ -4,8 +4,6 @@ import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState
 import { CellContainer } from "@/components/cell/CellContainer";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
 import { OutputArea } from "@/components/cell/OutputArea";
-import { classifyOutputShape } from "@/components/cell/output-shape";
-import { inferDefaultOutputMode, type OutputMode } from "@/components/cell/output-well-presets";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import type { SupportedLanguage } from "@/components/editor/languages";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
@@ -192,13 +190,6 @@ export const CodeCell = memo(function CodeCell({
   // Fully collapsed when source is hidden AND there's nothing else to show
   // (outputs explicitly hidden, or no outputs at all).
   const bothHidden = isSourceHidden && (isOutputsHidden || outputs.length === 0);
-
-  // Output-well sizing is inferred from the cell's current output shape.
-  // This keeps plots, rich text, and tables feeling document-native without
-  // asking users to pick between layout modes per cell.
-  const outputShape = useMemo(() => classifyOutputShape(outputs as JupyterOutput[]), [outputs]);
-  const outputMode: OutputMode = useMemo(() => inferDefaultOutputMode(outputShape), [outputShape]);
-  const isIframeOutputExpanded = outputMode === "expanded";
 
   // Auto-clear expand/focus when the cell has no visible outputs to
   // operate on. Previously also gated on `!hasIsolatedOutput`, which made
@@ -474,8 +465,6 @@ export const CodeCell = memo(function CodeCell({
               onSearchMatchCount={onSearchMatchCount}
               onLinkClick={handleLinkClick}
               onIframeMouseDown={handleOutputMouseDown}
-              expandIframeOutputs={isIframeOutputExpanded}
-              mode={outputMode}
               focused={outputFocused}
               useOutputWell={showOutputChrome}
             />

@@ -37,18 +37,15 @@ vi.mock("@/components/cell/OutputArea", () => ({
   anyOutputNeedsIsolation: () => true,
   OutputArea: ({
     focused,
-    mode,
     useOutputWell,
     onIframeMouseDown,
   }: {
     focused?: boolean;
-    mode?: string;
     useOutputWell?: boolean;
     onIframeMouseDown?: () => void;
   }) => (
     <button
       data-focused={String(focused)}
-      data-mode={String(mode)}
       data-use-output-well={String(useOutputWell)}
       data-testid="output"
       type="button"
@@ -255,12 +252,11 @@ describe("CodeCell output focus", () => {
     );
 
     expect(getByTestId("output").getAttribute("data-use-output-well")).toBe("true");
-    expect(getByTestId("output").getAttribute("data-mode")).toBe("expanded");
     expect(queryByLabelText("Output mode")).toBeNull();
     expect(getByTitle("Hide outputs")).toBeTruthy();
   });
 
-  it("infers expanded output sizing for a single sift table", () => {
+  it("keeps output chrome for a single sift table without layout mode controls", () => {
     mockOutputs = [
       {
         output_type: "display_data",
@@ -280,7 +276,7 @@ describe("CodeCell output focus", () => {
       />,
     );
 
-    expect(getByTestId("output").getAttribute("data-mode")).toBe("expanded");
+    expect(getByTestId("output").getAttribute("data-use-output-well")).toBe("true");
     expect(queryByLabelText("Output mode")).toBeNull();
     expect(queryByTitle("Hide outputs")).toBeTruthy();
   });
