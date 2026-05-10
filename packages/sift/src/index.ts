@@ -46,6 +46,8 @@ export {
   predicateToPandas,
   predicateToSQL,
 } from "./filter-schema";
+export type { SiftFocusStatusProps, SiftScrollHandoffCueProps } from "./handoff";
+export { SiftFocusStatus, SiftScrollHandoffCue } from "./handoff";
 export type { SiftTableHandle, SiftTableProps } from "./react";
 // React component
 export { SiftTable, useSiftEngine } from "./react";

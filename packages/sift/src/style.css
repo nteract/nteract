@@ -216,6 +216,7 @@ h1 {
   display: flex;
   flex-direction: column;
   height: 100%; /* fill parent */
+  border-radius: var(--sift-radius, 6px);
   background: var(--sift-panel);
 }
 
@@ -1010,27 +1011,24 @@ h1 {
 .sift-focus-hint {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  border: 1px solid color-mix(in srgb, var(--sift-accent) 34%, var(--sift-rule));
+  gap: 7px;
+  border: 1px solid color-mix(in srgb, var(--sift-muted) 24%, var(--sift-rule));
   border-radius: 6px;
-  background: color-mix(in srgb, var(--sift-accent) 7%, var(--sift-panel));
-  color: var(--sift-accent);
-  font:
-    600 11px/1.2 "SF Mono",
-    ui-monospace,
-    monospace;
-  padding: 4px 8px;
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--sift-accent) 16%, transparent);
+  background: color-mix(in srgb, var(--sift-muted) 7%, var(--sift-panel));
+  color: color-mix(in srgb, var(--sift-muted) 88%, var(--sift-ink));
+  font: 500 11px/1.2 var(--sift-font);
+  padding: 3px 7px;
 }
 
 .sift-focus-key {
-  border: 1px solid color-mix(in srgb, var(--sift-accent) 26%, var(--sift-rule));
+  border: 1px solid color-mix(in srgb, var(--sift-muted) 28%, var(--sift-rule));
   border-radius: 4px;
-  background: color-mix(in srgb, var(--sift-accent) 11%, var(--sift-panel));
-  color: var(--sift-accent);
+  background: color-mix(in srgb, var(--sift-muted) 8%, var(--sift-panel));
+  color: color-mix(in srgb, var(--sift-muted) 92%, var(--sift-ink));
+  font-family: "SF Mono", ui-monospace, monospace;
   font-size: 10px;
   line-height: 1;
-  padding: 2px 6px;
+  padding: 2px 5px;
 }
 
 .sift-debug-btn {

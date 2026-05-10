@@ -19,9 +19,12 @@ export default defineConfig({
   },
   build: {
     lib: {
-      entry: resolve(__dirname, "src/index.ts"),
+      entry: {
+        index: resolve(__dirname, "src/index.ts"),
+        handoff: resolve(__dirname, "src/handoff.tsx"),
+      },
       formats: ["es"],
-      fileName: "index",
+      fileName: (_format, entryName) => `${entryName}.js`,
     },
     outDir: "lib",
     rolldownOptions: {

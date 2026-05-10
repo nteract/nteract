@@ -9,7 +9,7 @@
  * parquet or Arrow IPC from blob URL → WASM decodes → table renders.
  */
 
-import { setWasmUrl, SiftTable, type TableEngineState } from "@nteract/sift";
+import { setWasmUrl, SiftFocusStatus, SiftTable, type TableEngineState } from "@nteract/sift";
 import "@nteract/sift/style.css";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -41,9 +41,7 @@ function configureWasm(blobUrl: string): void {
     const parsed = new URL(blobUrl);
     const wasmUrl = new URL("/plugins/sift_wasm.wasm", parsed.origin);
     wasmUrl.searchParams.set("v", SIFT_WASM_CACHE_KEY);
-    const wasmUrlString = wasmUrl.toString();
-    console.debug("[sift-renderer] setWasmUrl:", wasmUrlString);
-    setWasmUrl(wasmUrlString);
+    setWasmUrl(wasmUrl.toString());
     wasmConfigured = true;
   } catch (err) {
     console.warn("[sift-renderer] configureWasm failed, using defaults:", err);
@@ -89,9 +87,8 @@ function fitHeightForRowCount(rowCount: number): number {
 
 // --- SiftRenderer component ---
 
-function SiftRenderer({ data, mimeType, interactionActive = false }: RendererProps) {
+function SiftRenderer({ data, interactionActive = false }: RendererProps) {
   const url = String(data);
-  console.debug("[sift-renderer] render", { mimeType, url: url.slice(0, 120) });
   configureWasm(url);
 
   // Default to the cap so the table is visible while sift's WASM loads
@@ -124,14 +121,7 @@ function SiftRenderer({ data, mimeType, interactionActive = false }: RendererPro
         url={url}
         onChange={handleChange}
         footerControl={
-          <div className="sift-footer-control">
-            {interactionActive && (
-              <span className="sift-focus-hint">
-                <span>Focused</span>
-                <span className="sift-focus-key">Esc</span>
-              </span>
-            )}
-          </div>
+          <div className="sift-footer-control">{interactionActive && <SiftFocusStatus />}</div>
         }
       />
     </div>
@@ -143,7 +133,6 @@ function SiftRenderer({ data, mimeType, interactionActive = false }: RendererPro
 export function install(ctx: {
   register: (mimeTypes: string[], component: React.ComponentType<RendererProps>) => void;
 }) {
-  console.debug("[sift-renderer] plugin installed for table MIME types");
   ctx.register(
     ["application/vnd.apache.parquet", "application/vnd.apache.arrow.stream"],
     SiftRenderer,

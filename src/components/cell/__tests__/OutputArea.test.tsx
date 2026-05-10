@@ -286,13 +286,15 @@ describe("OutputArea iframe theme sync", () => {
     expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
     expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
     expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
-    expect(screen.queryByText("Focus table scrolling")).toBeNull();
+    expect(screen.queryByText("Click inside the table to scroll")).toBeNull();
 
     fireEvent.keyDown(activationWell, { key: "Escape" });
 
     expect(activationWell.getAttribute("data-frame-interaction-active")).toBeNull();
     expect(frame.getAttribute("data-scroll-passthrough")).toBe("true");
-    expect(screen.getByRole("button", { name: "Focus table scrolling" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Click inside the table to scroll" }),
+    ).toBeInTheDocument();
   });
 
   it("activates sift iframe scrolling from the magnetize cue", () => {
@@ -300,12 +302,12 @@ describe("OutputArea iframe theme sync", () => {
     const frame = getByTestId("isolated-frame");
     const activationWell = frame.parentElement as HTMLElement;
 
-    fireEvent.pointerDown(screen.getByRole("button", { name: "Focus table scrolling" }));
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Click inside the table to scroll" }));
 
     expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
     expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
     expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
-    expect(screen.queryByRole("button", { name: "Focus table scrolling" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Click inside the table to scroll" })).toBeNull();
   });
 
   it("releases sift iframe scrolling on outside pointer down", () => {
@@ -322,8 +324,10 @@ describe("OutputArea iframe theme sync", () => {
 
     expect(activationWell.getAttribute("data-frame-interaction-active")).toBeNull();
     expect(frame.getAttribute("data-scroll-passthrough")).toBe("true");
-    expect(screen.queryByText("Focused")).toBeNull();
-    expect(screen.getByRole("button", { name: "Focus table scrolling" })).toBeInTheDocument();
+    expect(screen.queryByText("Table focused")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Click inside the table to scroll" }),
+    ).toBeInTheDocument();
   });
 
   it("forces focused iframe outputs off scroll passthrough and wheel-boundary forwarding", () => {

@@ -6,7 +6,9 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./style.css": "./src/style.css"
+    "./handoff": "./src/handoff.tsx",
+    "./style.css": "./src/style.css",
+    "./handoff.css": "./src/handoff.css"
   },
   "publishConfig": {
     "main": "./lib/index.js",
@@ -16,7 +18,12 @@
         "import": "./lib/index.js",
         "types": "./lib/index.d.ts"
       },
-      "./style.css": "./lib/style.css"
+      "./handoff": {
+        "import": "./lib/handoff.js",
+        "types": "./lib/handoff.d.ts"
+      },
+      "./style.css": "./lib/style.css",
+      "./handoff.css": "./lib/handoff.css"
     }
   },
   "files": [
@@ -27,7 +34,7 @@
     "generate": "npx tsx src/generate-data.ts",
     "dev": "vp dev",
     "build": "tsc && vp build",
-    "build:lib": "tsc && vp build --config vite.lib.config.ts && npx @tailwindcss/cli -i src/style.css -o lib/style.css --minify",
+    "build:lib": "tsc && vp build --config vite.lib.config.ts && npx @tailwindcss/cli -i src/style.css -o lib/style.css --minify && cp src/handoff.css lib/handoff.css",
     "preview": "vp preview",
     "test": "vp test run",
     "test:watch": "vp test",

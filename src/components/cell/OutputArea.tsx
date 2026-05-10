@@ -1,3 +1,5 @@
+import { SiftScrollHandoffCue } from "@nteract/sift/handoff";
+import "@nteract/sift/handoff.css";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import {
   type KeyboardEvent,
@@ -842,12 +844,12 @@ export function OutputArea({
               ref={staticFrameInteractionRef}
               className={cn(
                 shouldIsolate ? "relative outline-none transition-shadow" : "hidden",
-                hasSiftOutputs && "group/sift",
+                hasSiftOutputs && "group/sift rounded-md overflow-hidden",
                 hasSiftOutputs &&
                   shouldUseScrollPassthroughFrame &&
                   !staticFrameInteractionActive &&
-                  "rounded-md hover:ring-1 hover:ring-[var(--notebook-sift-focus-hover)]",
-                hasSiftOutputs && staticFrameInteractionActive && "rounded-md bg-background",
+                  "hover:ring-1 hover:ring-[var(--notebook-sift-focus-hover)]",
+                hasSiftOutputs && staticFrameInteractionActive && "bg-background",
               )}
               style={siftFrameStyle}
               data-frame-interaction-active={staticFrameInteractionActive ? "true" : undefined}
@@ -880,10 +882,9 @@ export function OutputArea({
                 onError={handleIframeError}
               />
               {showSiftInteractionCue && (
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-center rounded-b-md bg-gradient-to-t from-background via-background/85 to-transparent pb-2 pt-8 opacity-0 transition-opacity duration-150 group-hover/sift:opacity-100 group-focus-within/sift:opacity-100">
-                  <button
-                    type="button"
-                    className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-border/70 bg-background/95 px-2.5 py-1 text-[11px] font-medium text-muted-foreground shadow-sm backdrop-blur transition-colors hover:border-sky-300 hover:text-sky-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 dark:hover:border-sky-700 dark:hover:text-sky-300"
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-end rounded-b-md pb-[9px] pr-[84px] opacity-0 transition-opacity duration-150 group-hover/sift:opacity-100 group-focus-within/sift:opacity-100">
+                  <SiftScrollHandoffCue
+                    className="pointer-events-auto"
                     onPointerDown={(event) => {
                       event.stopPropagation();
                       activateStaticFrameInteraction();
@@ -892,10 +893,7 @@ export function OutputArea({
                       event.stopPropagation();
                       activateStaticFrameInteraction();
                     }}
-                  >
-                    <ChevronDown className="h-3 w-3" />
-                    <span>Focus table scrolling</span>
-                  </button>
+                  />
                 </div>
               )}
             </div>

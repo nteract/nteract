@@ -1,5 +1,6 @@
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { SiftFocusStatus, SiftScrollHandoffCue } from "./handoff";
 import { SiftTable } from "./react";
 import type { Column, TableData } from "./table";
 
@@ -165,5 +166,18 @@ describe("SiftTable", () => {
     const wrapper = container.firstElementChild as HTMLElement;
     expect(wrapper.classList.contains("my-table")).toBe(true);
     expect(wrapper.style.border).toBe("1px solid red");
+  });
+
+  it("renders the scroll handoff cue with accessible default copy", () => {
+    const { getByRole } = render(<SiftScrollHandoffCue />);
+
+    expect(getByRole("button", { name: "Click inside the table to scroll" })).not.toBeNull();
+  });
+
+  it("renders the focused status with the escape key hint", () => {
+    const { getByText } = render(<SiftFocusStatus />);
+
+    expect(getByText("Table focused")).not.toBeNull();
+    expect(getByText("Esc")).not.toBeNull();
   });
 });
