@@ -33,6 +33,25 @@ test.describe("Renderer plugin fixtures", () => {
     await expect(
       page.frameLocator("#fixture-5").getByRole("button", { name: "Zoom", exact: true }),
     ).toBeVisible({ timeout: 30_000 });
+    const buckarooFrame = page.frameLocator("#fixture-6");
+
+    await expect(buckarooFrame.locator("[data-widget-id='buckaroo-table-model']")).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(buckarooFrame.locator("[data-widget-loading='true']")).toHaveCount(0);
+    await expect(buckarooFrame.locator("[data-widget-error='true']")).toHaveCount(0);
+    await expect(buckarooFrame.locator(".ag-root-wrapper").first()).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(buckarooFrame.locator(".buckaroo_anywidget")).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(buckarooFrame.locator(".ag-header-cell-text", { hasText: "score" }).first()).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(buckarooFrame.locator(".ag-cell", { hasText: "Alice" }).first()).toBeVisible({
+      timeout: 30_000,
+    });
   });
 
   test("iframes have non-zero height", async ({ page }) => {

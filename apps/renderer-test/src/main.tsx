@@ -8,6 +8,7 @@ import { fixtures, type Fixture } from "./fixtures";
 function FixtureCard({ fixture, index }: { fixture: Fixture; index: number }) {
   const frameRef = useRef<IsolatedFrameHandle>(null);
   const injectedRef = useRef(new Set<string>());
+  const sentWidgetSnapshotRef = useRef(false);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -71,6 +72,15 @@ function FixtureCard({ fixture, index }: { fixture: Fixture; index: number }) {
           ref={frameRef}
           id={`fixture-${index}`}
           onReady={onReady}
+          onMessage={(message) => {
+            if (message.type === "widget_ready" && fixture.widgetModels?.length && !sentWidgetSnapshotRef.current) {
+              sentWidgetSnapshotRef.current = true;
+              frameRef.current?.send({
+                type: "widget_snapshot",
+                payload: { models: fixture.widgetModels },
+              });
+            }
+          }}
           onError={(e) => setError(e.message)}
           minHeight={40}
           maxHeight={400}

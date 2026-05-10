@@ -8,6 +8,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "buckaroo": "0.7.12",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

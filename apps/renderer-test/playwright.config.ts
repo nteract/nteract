@@ -5,7 +5,7 @@ export default defineConfig({
   timeout: 60_000,
   retries: process.env.CI ? 2 : 0,
   use: {
-    baseURL: "http://localhost:5176",
+    baseURL: "http://127.0.0.1:5176",
     headless: true,
   },
   webServer: {
