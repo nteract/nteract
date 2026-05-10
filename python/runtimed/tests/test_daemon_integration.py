@@ -2728,7 +2728,7 @@ class TestCreateNotebook:
         assert await session.is_connected()
 
     async def test_create_notebook_conda_with_environment_yml(self, client, tmp_path):
-        """create_notebook() with working_dir containing environment.yml fails closed.
+        """create_notebook() with unapproved environment.yml deps fails closed.
 
         When working_dir points to a directory with an environment.yml file,
         the daemon should detect it via project file search and report the
@@ -2738,11 +2738,13 @@ class TestCreateNotebook:
         """
         import uuid
 
-        env_name = f"nteract-missing-env-{uuid.uuid4().hex}"
+        suffix = uuid.uuid4().hex
+        env_name = f"nteract-missing-env-{suffix}"
+        dep_name = f"nteract-unapproved-conda-dep-{suffix}"
 
         # Create environment.yml in tmp_path
         (tmp_path / "environment.yml").write_text(
-            f"name: {env_name}\nchannels:\n  - conda-forge\ndependencies:\n  - python\n"
+            f"name: {env_name}\nchannels:\n  - conda-forge\ndependencies:\n  - {dep_name}\n"
         )
 
         session = await client.create_notebook(runtime="python", working_dir=str(tmp_path))
