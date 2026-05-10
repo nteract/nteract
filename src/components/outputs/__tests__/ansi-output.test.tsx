@@ -248,31 +248,40 @@ describe("AnsiStreamOutput", () => {
     expect(screen.queryByText(/lines hidden/)).not.toBeInTheDocument();
   });
 
+  it("keeps terminal-screen-sized streams plain", () => {
+    const text = Array.from({ length: 120 }, (_, index) => `vim-screen-line-${index}`).join("\n");
+
+    const { container } = render(<AnsiStreamOutput text={text} streamName="stdout" />);
+
+    expect(container.querySelector("button")).toBeNull();
+    expect(screen.getByText(/vim-screen-line-119/)).toBeInTheDocument();
+  });
+
   it("collapses long stdout streams with a head and tail preview", () => {
-    const text = Array.from({ length: 120 }, (_, index) => `line-${index}`).join("\n");
+    const text = Array.from({ length: 360 }, (_, index) => `line-${index}`).join("\n");
 
     render(<AnsiStreamOutput text={text} streamName="stdout" />);
 
     expect(screen.getByText("stdout")).toBeInTheDocument();
-    expect(screen.getByText(/120 lines/)).toBeInTheDocument();
-    expect(screen.getByText(/64 lines hidden/)).toBeInTheDocument();
+    expect(screen.getByText(/360 lines/)).toBeInTheDocument();
+    expect(screen.getByText(/248 lines hidden/)).toBeInTheDocument();
     expect(screen.getByText(/line-0/)).toBeInTheDocument();
-    expect(screen.queryByText(/line-50/)).not.toBeInTheDocument();
-    expect(screen.getByText(/line-119/)).toBeInTheDocument();
+    expect(screen.queryByText(/line-180/)).not.toBeInTheDocument();
+    expect(screen.getByText(/line-359/)).toBeInTheDocument();
   });
 
   it("can expand and collapse long stream logs", () => {
-    const text = Array.from({ length: 120 }, (_, index) => `line-${index}`).join("\n");
+    const text = Array.from({ length: 360 }, (_, index) => `line-${index}`).join("\n");
 
     render(<AnsiStreamOutput text={text} streamName="stdout" />);
 
     fireEvent.click(screen.getByRole("button", { name: "Show full log" }));
     expect(screen.getByRole("button", { name: "Collapse log" })).toBeInTheDocument();
-    expect(screen.getByText(/line-50/)).toBeInTheDocument();
+    expect(screen.getByText(/line-180/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Collapse log" }));
     expect(screen.getByRole("button", { name: "Show full log" })).toBeInTheDocument();
-    expect(screen.queryByText(/line-50/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/line-180/)).not.toBeInTheDocument();
   });
 });
 
