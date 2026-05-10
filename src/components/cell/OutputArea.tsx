@@ -855,20 +855,28 @@ export function OutputArea({
                 onError={handleIframeError}
               />
               {showSiftInteractionCue && (
-                <div
-                  aria-hidden="true"
-                  className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-center rounded-b-md bg-gradient-to-t from-background via-background/85 to-transparent pb-2 pt-8 opacity-0 transition-opacity duration-150 group-hover/sift:opacity-100 group-focus-within/sift:opacity-100"
-                >
-                  <div className="flex items-center gap-1.5 rounded-full border border-border/70 bg-background/95 px-2.5 py-1 text-[11px] font-medium text-muted-foreground shadow-sm backdrop-blur">
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-center rounded-b-md bg-gradient-to-t from-background via-background/85 to-transparent pb-2 pt-8 opacity-0 transition-opacity duration-150 group-hover/sift:opacity-100 group-focus-within/sift:opacity-100">
+                  <button
+                    type="button"
+                    className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-border/70 bg-background/95 px-2.5 py-1 text-[11px] font-medium text-muted-foreground shadow-sm backdrop-blur transition-colors hover:border-sky-300 hover:text-sky-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 dark:hover:border-sky-700 dark:hover:text-sky-300"
+                    onPointerDown={(event) => {
+                      event.stopPropagation();
+                      activateStaticFrameInteraction();
+                    }}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      activateStaticFrameInteraction();
+                    }}
+                  >
                     <ChevronDown className="h-3 w-3" />
-                    <span>Click table to scroll rows</span>
-                  </div>
+                    <span>Focus table scrolling</span>
+                  </button>
                 </div>
               )}
               {showSiftFocusedAffordance && (
                 <div
                   aria-hidden="true"
-                  className="pointer-events-none absolute bottom-3 right-3 z-10 flex items-center gap-2 rounded-md border border-sky-300 bg-background/95 px-2.5 py-1 text-[11px] font-medium text-sky-700 shadow-sm backdrop-blur dark:border-sky-700 dark:text-sky-300"
+                  className="pointer-events-none absolute right-3 top-3 z-10 flex items-center gap-2 rounded-md border border-sky-300 bg-background/95 px-2.5 py-1 text-[11px] font-medium text-sky-700 shadow-sm backdrop-blur dark:border-sky-700 dark:text-sky-300"
                 >
                   <span>Focused</span>
                   <span className="rounded border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[10px] text-sky-700 dark:border-sky-800 dark:bg-sky-950/50 dark:text-sky-300">

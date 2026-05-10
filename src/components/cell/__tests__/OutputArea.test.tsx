@@ -286,13 +286,26 @@ describe("OutputArea iframe theme sync", () => {
     expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
     expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
     expect(screen.getByText("Focused")).toBeInTheDocument();
-    expect(screen.queryByText("Click table to scroll rows")).toBeNull();
+    expect(screen.queryByText("Focus table scrolling")).toBeNull();
 
     fireEvent.keyDown(activationWell, { key: "Escape" });
 
     expect(activationWell.getAttribute("data-frame-interaction-active")).toBeNull();
     expect(frame.getAttribute("data-scroll-passthrough")).toBe("true");
-    expect(screen.getByText("Click table to scroll rows")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Focus table scrolling" })).toBeInTheDocument();
+  });
+
+  it("activates sift iframe scrolling from the magnetize cue", () => {
+    const { getByTestId } = render(<OutputArea outputs={makeParquetOutput()} isolated />);
+    const frame = getByTestId("isolated-frame");
+    const activationWell = frame.parentElement as HTMLElement;
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Focus table scrolling" }));
+
+    expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
+    expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
+    expect(screen.getByText("Focused")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Focus table scrolling" })).toBeNull();
   });
 
   it("releases sift iframe scrolling on outside pointer down", () => {
@@ -311,7 +324,7 @@ describe("OutputArea iframe theme sync", () => {
     expect(activationWell.getAttribute("data-frame-interaction-active")).toBeNull();
     expect(frame.getAttribute("data-scroll-passthrough")).toBe("true");
     expect(screen.queryByText("Focused")).toBeNull();
-    expect(screen.getByText("Click table to scroll rows")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Focus table scrolling" })).toBeInTheDocument();
   });
 
   it("forces focused iframe outputs off scroll passthrough and wheel-boundary forwarding", () => {
