@@ -46,8 +46,12 @@ impl RuntimeAgentHandle {
         runtime_agent_id: String,
         blob_root: PathBuf,
         socket_path: PathBuf,
+        runtime_agent_exe: Option<PathBuf>,
     ) -> Result<Self> {
-        let exe = std::env::current_exe()?;
+        let exe = match runtime_agent_exe {
+            Some(path) => path,
+            None => std::env::current_exe()?,
+        };
         info!(
             "[runtime-agent-handle] Spawning runtime agent: {} runtime-agent --notebook-id {} (socket: {})",
             exe.display(),

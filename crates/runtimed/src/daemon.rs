@@ -88,6 +88,12 @@ pub struct DaemonConfig {
     /// Global by default, per-test when overridden. Integration tests set this
     /// to avoid write contention under parallel boot.
     pub settings_json_path: Option<PathBuf>,
+    /// Override for the runtime agent executable path.
+    ///
+    /// Production defaults to the current daemon executable. Integration tests
+    /// set this so in-process daemon tests do not spawn the test harness binary
+    /// when launching runtime agents.
+    pub runtime_agent_exe: Option<PathBuf>,
 }
 
 impl Default for DaemonConfig {
@@ -113,6 +119,7 @@ impl Default for DaemonConfig {
             env_cache_max_count: 10,
             use_preferred_blob_port: true,
             settings_json_path: None,
+            runtime_agent_exe: None,
         }
     }
 }

@@ -95,8 +95,13 @@ fn test_config(temp_dir: &TempDir) -> DaemonConfig {
         // Pin settings.json per-temp-dir so parallel daemons don't contend on
         // the global `~/.config/runt*/settings.json` at boot.
         settings_json_path: Some(temp_dir.path().join("settings.json")),
+        runtime_agent_exe: test_runtime_agent_exe(),
         ..Default::default()
     }
+}
+
+fn test_runtime_agent_exe() -> Option<std::path::PathBuf> {
+    option_env!("CARGO_BIN_EXE_runtimed").map(std::path::PathBuf::from)
 }
 
 /// Max time we'll wait for a test daemon's socket to accept `ping`.
