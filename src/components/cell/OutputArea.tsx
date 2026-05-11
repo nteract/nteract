@@ -287,8 +287,12 @@ function outputNeedsIsolation(
 /**
  * Check if any outputs in the array need iframe isolation.
  * If any output needs isolation, ALL outputs should go to the iframe.
+ *
+ * Not exported: keeping every `.tsx` export limited to components and
+ * hooks lets React Fast Refresh hot-patch this module instead of bailing
+ * to a full reload on every edit.
  */
-export function anyOutputNeedsIsolation(
+function anyOutputNeedsIsolation(
   outputs: JupyterOutput[],
   priority: readonly string[] = DEFAULT_PRIORITY,
 ): boolean {
