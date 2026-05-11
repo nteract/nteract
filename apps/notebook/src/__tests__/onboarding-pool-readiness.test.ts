@@ -25,4 +25,12 @@ describe("onboarding pool readiness", () => {
       }),
     ).toBe(true);
   });
+
+  it("treats a disabled selected pool as ready", () => {
+    expect(
+      isOnboardingPoolReady("uv", {
+        uv: { available: 0, warming: 0, pool_size: 0 },
+      }),
+    ).toBe(true);
+  });
 });

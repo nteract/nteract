@@ -178,6 +178,7 @@ export default function App() {
   const [daemonReady, setDaemonReady] = useState(false);
   const [daemonFailed, setDaemonFailed] = useState(false);
   const [selectedPoolReady, setSelectedPoolReady] = useState(false);
+  const [poolWaitTimedOut, setPoolWaitTimedOut] = useState(false);
   const [setupComplete, setSetupComplete] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -246,6 +247,7 @@ export default function App() {
 
     const envLabel = PYTHON_ENV_LABELS[pythonEnv];
     setSelectedPoolReady(false);
+    setPoolWaitTimedOut(false);
     setSteps((prev) =>
       prev.map((s) =>
         s.id === "tools"
@@ -286,32 +288,38 @@ export default function App() {
               ),
             );
             if (attempts >= WARMING_POOL_POLL_ATTEMPTS) {
+              setPoolWaitTimedOut(true);
               setSteps((prev) =>
                 prev.map((s) =>
                   s.id === "tools"
-                    ? { ...s, label: `Still warming ${envLabel} runtime`, status: "in_progress" }
+                    ? { ...s, label: `Still warming ${envLabel} runtime`, status: "failed" }
                     : s,
                 ),
               );
+              return;
             }
           } else if (attempts >= IDLE_POOL_POLL_ATTEMPTS) {
+            setPoolWaitTimedOut(true);
             setSteps((prev) =>
               prev.map((s) =>
                 s.id === "tools"
-                  ? { ...s, label: `Waiting for ${envLabel} runtime`, status: "in_progress" }
+                  ? { ...s, label: `Waiting for ${envLabel} runtime`, status: "failed" }
                   : s,
               ),
             );
+            return;
           }
         } catch {
           if (attempts >= IDLE_POOL_POLL_ATTEMPTS) {
+            setPoolWaitTimedOut(true);
             setSteps((prev) =>
               prev.map((s) =>
                 s.id === "tools"
-                  ? { ...s, label: `Waiting for ${envLabel} runtime`, status: "in_progress" }
+                  ? { ...s, label: `Waiting for ${envLabel} runtime`, status: "failed" }
                   : s,
               ),
             );
+            return;
           }
         }
         await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -340,6 +348,7 @@ export default function App() {
   const handlePythonEnvSelect = useCallback((selected: PythonEnv) => {
     setPythonEnv(selected);
     setSelectedPoolReady(false);
+    setPoolWaitTimedOut(false);
     setSteps((prev) =>
       prev.map((s) =>
         s.id === "tools"
@@ -378,7 +387,7 @@ export default function App() {
     async (telemetryEnabled: boolean) => {
       if (!runtime || !pythonEnv) return;
       if (!daemonReady) return;
-      if (!selectedPoolReady) return;
+      if (!selectedPoolReady && !poolWaitTimedOut) return;
       if (isSubmitting) return;
       setIsSubmitting(true);
 
@@ -424,7 +433,7 @@ export default function App() {
         setErrorMessage("Failed to save settings. Please try again.");
       }
     },
-    [daemonReady, runtime, pythonEnv, selectedPoolReady, isSubmitting],
+    [daemonReady, runtime, pythonEnv, selectedPoolReady, poolWaitTimedOut, isSubmitting],
   );
 
   // Fallback path when the daemon failed to install. Still records the
@@ -460,7 +469,7 @@ export default function App() {
     runtime !== null &&
     pythonEnv !== null &&
     daemonReady &&
-    selectedPoolReady &&
+    (selectedPoolReady || poolWaitTimedOut) &&
     !setupComplete;
 
   // Page titles based on selections

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../../onboarding/App";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -27,6 +27,10 @@ function chooseUvRuntime() {
 describe("onboarding flow", () => {
   beforeEach(() => {
     invokeMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("does not allow onboarding completion while the selected pool is still warming", async () => {
@@ -80,5 +84,33 @@ describe("onboarding flow", () => {
         expect.objectContaining({ defaultPythonEnv: "uv" }),
       );
     });
+  });
+
+  it("allows onboarding completion after the selected pool does not warm in time", async () => {
+    vi.useFakeTimers();
+    invokeMock.mockImplementation((command) => {
+      if (command === "get_daemon_status") {
+        return Promise.resolve({ status: "ready", endpoint: "test" });
+      }
+      if (command === "get_pool_status") {
+        return Promise.resolve({
+          uv: { available: 0, warming: 1, pool_size: 2 },
+        });
+      }
+      return Promise.resolve();
+    });
+
+    render(<App />);
+    chooseUvRuntime();
+
+    await act(async () => {});
+    const startButton = screen.getByRole("button", { name: /Setting up/ });
+    expect(startButton).toBeDisabled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(180_000);
+    });
+
+    expect(screen.getByRole("button", { name: /Share ping and start/ })).toBeEnabled();
   });
 });
