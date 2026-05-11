@@ -56,6 +56,7 @@ def _bundle_for_progressive_chunk(
         included_rows=included_rows,
         complete=complete,
     )
+    llm_text = _summary_text(summary, complete=complete)
 
     bundle: dict[str, Any] = {
         ARROW_STREAM_MANIFEST_MIME: build_arrow_stream_manifest_from_chunks(
@@ -63,8 +64,9 @@ def _bundle_for_progressive_chunk(
             complete=complete,
             summary=summary,
             schema=schema,
+            llm={"text": llm_text},
         ),
-        "text/llm+plain": _summary_text(summary, complete=complete),
+        "text/llm+plain": llm_text,
     }
     if include_blob_ref:
         if current_chunk is None:

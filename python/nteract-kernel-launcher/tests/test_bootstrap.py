@@ -475,6 +475,7 @@ def test_emit_pyarrow_table_chunks_when_full_stream_exceeds_limit(monkeypatch):
         "sampled": False,
         "sample_strategy": "none",
     }
+    assert manifest["llm"]["text"] == bundle["text/llm+plain"]
     assert len(manifest["chunks"]) > 1
     refs = bundle[BLOB_REF_MIME]["refs"]
     assert len(refs) == len(manifest["chunks"])

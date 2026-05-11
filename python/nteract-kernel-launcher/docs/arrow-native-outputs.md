@@ -277,6 +277,13 @@ a structured `llm.columns[].stats` object derived from the existing Python-side
 dataframe stat extractors and/or `nteract-predicate`, so consumers can avoid
 parsing summary prose.
 
+The precompute boundary is the Python launcher. Do not expand runtime Python or
+Node consumer APIs just to recover this text. Automatic dataframe/table
+formatters and the explicit progressive Arrow display helper should publish the
+same bounded summary both as the sibling `text/llm+plain` MIME and as manifest
+`llm.text`, so MCP, runtimed-py, runtimed-node, and frontend renderers can read
+the producer-authored text instead of calculating it independently.
+
 ## Chunked Arrow Over CAS
 
 The right streaming unit is not "chunked parquet." It is an ordered Arrow stream
@@ -694,10 +701,7 @@ for the staged implementation.
     limits for million-row tables. That is independent of the Arrow producer
     fix and should land as a Sift virtual-scroller follow-up before marketing
     arrow-native tables as production-ready for very large local data.
-- Next: decide whether automatic large dataframe reprs should opt into the
-  helper by publishing their own display output, or stay one-shot while direct
-  daemon blob upload and save/load manifest externalization are completed.
-- In progress: durable manifest save/load and GC collection follow-up
+- Done in PR #2715: durable manifest save/load and GC collection follow-up
   - runtime save rewrites `chunks[].hash`, `coalesced.hash`, and
     `coalesced.segments[].hash` to nested `{blob, size, content_type}` refs
     while preserving the manifest MIME and fallback siblings.
@@ -706,6 +710,13 @@ for the staged implementation.
   - active-room blob GC now marks Arrow manifest chunk/coalesced hashes.
   - `schema.hash` intentionally remains a plain fingerprint until schema bytes
     become their own stored artifact.
+- In progress: launcher-side LLM repr precompute follow-up
+  - automatic dataframe/table formatters already publish `text/llm+plain` and
+    manifest `llm.text` from the same launcher-computed summary.
+  - progressive Arrow display revisions now do the same, including incomplete
+    and completion-only manifest updates.
+  - richer structured `TABLE_REPR v1` hints remain a follow-on PR; this pass
+    only makes the current compact text available early and consistently.
 
 ### Phase 1: Canonical Arrow For DataFrames
 

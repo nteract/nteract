@@ -43,6 +43,9 @@ def test_display_arrow_stream_publishes_manifest_revisions():
     manifests = [message[1][ARROW_STREAM_MANIFEST_MIME] for message in messages]
     assert [len(manifest["chunks"]) for manifest in manifests] == [1, 2, 3, 3]
     assert [manifest["complete"] for manifest in manifests] == [False, False, False, True]
+    assert [manifest["llm"]["text"] for manifest in manifests] == [
+        message[1]["text/llm+plain"] for message in messages
+    ]
     assert BLOB_REF_MIME not in messages[-1][1]
     assert manifests[-1]["summary"] == {
         "total_rows": 6,
@@ -89,6 +92,7 @@ def test_display_arrow_stream_single_chunk_publishes_complete_once():
         "sampled": False,
         "sample_strategy": "none",
     }
+    assert manifest["llm"]["text"] == messages[0][1]["text/llm+plain"]
 
 
 def test_display_arrow_stream_is_exported_from_package():
