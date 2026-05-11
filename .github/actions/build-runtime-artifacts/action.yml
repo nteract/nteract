@@ -49,9 +49,9 @@ runs:
 
     - name: Install wasm-pack
       if: inputs.skip-wasm != 'true'
-      uses: taiki-e/install-action@v2
+      uses: ./.github/actions/install-wasm-pack
       with:
-        tool: wasm-pack@${{ inputs.wasm-pack-version }}
+        version: ${{ inputs.wasm-pack-version }}
 
     # Apple's system clang can't target wasm32-unknown-unknown.
     # Prepend Homebrew LLVM to PATH so cc-rs finds a wasm-capable clang.
