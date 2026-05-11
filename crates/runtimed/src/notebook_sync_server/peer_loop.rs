@@ -219,106 +219,103 @@ where
                     idle_deadline.as_mut().reset(tokio::time::Instant::now() + idle_peer_timeout);
                 }
                 match frame.frame_type {
-                            NotebookFrameType::AutomergeSync => {
-                                let notebook_doc_effects = match handle_notebook_doc_frame(
-                                    room,
-                                    &mut peer_state,
+                    NotebookFrameType::AutomergeSync => {
+                        let NotebookDocFrameOutcome::Applied(notebook_doc_effects) =
+                            handle_notebook_doc_frame(
+                                room,
+                                &mut peer_state,
+                                &peer_writer,
+                                &frame.payload,
+                            )
+                            .await?;
+
+                        if notebook_doc_phase
+                            != notebook_protocol::protocol::NotebookDocPhaseWire::Interactive
+                        {
+                            notebook_doc_phase =
+                                notebook_protocol::protocol::NotebookDocPhaseWire::Interactive;
+                            if client_protocol_version >= 3 {
+                                queue_session_status(
                                     &peer_writer,
-                                    &frame.payload,
-                                )
-                                .await?
-                                {
-                                    NotebookDocFrameOutcome::Applied(effects) => effects,
-                                };
-
-                                if notebook_doc_phase
-                                    != notebook_protocol::protocol::NotebookDocPhaseWire::Interactive
-                                {
-                                    notebook_doc_phase =
-                                        notebook_protocol::protocol::NotebookDocPhaseWire::Interactive;
-                                    if client_protocol_version >= 3 {
-                                        queue_session_status(
-                                            &peer_writer,
-                                            notebook_doc_phase,
-                                            runtime_state_phase,
-                                            initial_load_phase.clone(),
-                                        )?;
-                                    }
-                                }
-
-                                // Keep session status queued before these awaits so the sync reply
-                                // and readiness transition remain adjacent on the peer writer.
-                                finish_notebook_doc_frame(room, notebook_doc_effects).await;
-                            }
-
-                            NotebookFrameType::Request => {
-                                enqueue_notebook_request(
-                                    &request_worker,
-                                    &peer_writer,
-                                    &frame.payload,
-                                    &notebook_id,
-                                    peer_id,
+                                    notebook_doc_phase,
+                                    runtime_state_phase,
+                                    initial_load_phase.clone(),
                                 )?;
                             }
+                        }
 
-                            NotebookFrameType::Presence => {
-                                handle_presence_frame(room, peer_id, &peer_writer, &frame.payload)
-                                    .await?;
-                            }
+                        // Keep session status queued before these awaits so the sync reply
+                        // and readiness transition remain adjacent on the peer writer.
+                        finish_notebook_doc_frame(room, notebook_doc_effects).await;
+                    }
 
-                            NotebookFrameType::RuntimeStateSync => {
-                                if !handle_runtime_state_frame(
-                                    room,
-                                    &mut state_peer_state,
+                    NotebookFrameType::Request => {
+                        enqueue_notebook_request(
+                            &request_worker,
+                            &peer_writer,
+                            &frame.payload,
+                            &notebook_id,
+                            peer_id,
+                        )?;
+                    }
+
+                    NotebookFrameType::Presence => {
+                        handle_presence_frame(room, peer_id, &peer_writer, &frame.payload).await?;
+                    }
+
+                    NotebookFrameType::RuntimeStateSync => {
+                        if !handle_runtime_state_frame(
+                            room,
+                            &mut state_peer_state,
+                            &peer_writer,
+                            &frame.payload,
+                            &execution_store,
+                            &mut persisted_execution_records,
+                        )
+                        .await?
+                        {
+                            continue;
+                        }
+
+                        if runtime_state_phase
+                            != notebook_protocol::protocol::RuntimeStatePhaseWire::Ready
+                        {
+                            runtime_state_phase =
+                                notebook_protocol::protocol::RuntimeStatePhaseWire::Ready;
+                            if client_protocol_version >= 3 {
+                                queue_session_status(
                                     &peer_writer,
-                                    &frame.payload,
-                                    &execution_store,
-                                    &mut persisted_execution_records,
-                                )
-                                .await?
-                                {
-                                    continue;
-                                }
-
-                                if runtime_state_phase
-                                    != notebook_protocol::protocol::RuntimeStatePhaseWire::Ready
-                                {
-                                    runtime_state_phase =
-                                        notebook_protocol::protocol::RuntimeStatePhaseWire::Ready;
-                                    if client_protocol_version >= 3 {
-                                        queue_session_status(
-                                            &peer_writer,
-                                            notebook_doc_phase,
-                                            runtime_state_phase,
-                                            initial_load_phase.clone(),
-                                        )?;
-                                    }
-                                }
-                            }
-
-                            NotebookFrameType::PoolStateSync => {
-                                if !handle_pool_state_frame(
-                                    &daemon,
-                                    &mut pool_peer_state,
-                                    &peer_writer,
-                                    &frame.payload,
-                                )
-                                .await?
-                                {
-                                    continue;
-                                }
-                            }
-
-                            NotebookFrameType::Response
-                            | NotebookFrameType::Broadcast
-                            | NotebookFrameType::SessionControl => {
-                                // Clients shouldn't send these
-                                warn!(
-                                    "[notebook-sync] Unexpected frame type from client: {:?}",
-                                    frame.frame_type
-                                );
+                                    notebook_doc_phase,
+                                    runtime_state_phase,
+                                    initial_load_phase.clone(),
+                                )?;
                             }
                         }
+                    }
+
+                    NotebookFrameType::PoolStateSync => {
+                        if !handle_pool_state_frame(
+                            &daemon,
+                            &mut pool_peer_state,
+                            &peer_writer,
+                            &frame.payload,
+                        )
+                        .await?
+                        {
+                            continue;
+                        }
+                    }
+
+                    NotebookFrameType::Response
+                    | NotebookFrameType::Broadcast
+                    | NotebookFrameType::SessionControl => {
+                        // Clients shouldn't send these
+                        warn!(
+                            "[notebook-sync] Unexpected frame type from client: {:?}",
+                            frame.frame_type
+                        );
+                    }
+                }
             }
 
             // Another peer changed the document — push update to this client
