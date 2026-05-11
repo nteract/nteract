@@ -6846,6 +6846,9 @@ mod tests {
         std::fs::create_dir_all(&config.cache_dir).unwrap();
         let project_dir = config.cache_dir.join("runtimed-pixi-matching");
         let venv_path = project_dir.join(".pixi").join("envs").join("default");
+        #[cfg(target_os = "windows")]
+        let python_path = venv_path.join("python.exe");
+        #[cfg(not(target_os = "windows"))]
         let python_path = venv_path.join("bin").join("python");
         std::fs::create_dir_all(python_path.parent().unwrap()).unwrap();
         std::fs::write(&python_path, "").unwrap();
