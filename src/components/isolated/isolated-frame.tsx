@@ -813,6 +813,8 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
           border: "none",
           display: "block",
           pointerEvents: scrollPassthrough ? "none" : undefined,
+          userSelect: "none",
+          WebkitUserSelect: "none",
           background: "transparent",
           colorScheme: darkMode ? "dark" : "light",
           // Hide iframe during reload to prevent white flash from blank document.
