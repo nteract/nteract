@@ -385,6 +385,11 @@ def test_emit_dataframe_stashes_bytes_and_returns_bundle():
     assert isinstance(_buffer_hook.pending_buffers()[h], bytes)
     assert bundle[ARROW_STREAM_MANIFEST_MIME]["chunks"][0]["hash"] == h
     assert bundle[ARROW_STREAM_MANIFEST_MIME]["summary"]["included_rows"] == 3
+    assert bundle[ARROW_STREAM_MANIFEST_MIME]["llm"]["text"] == bundle["text/llm+plain"]
+    assert bundle[ARROW_STREAM_MANIFEST_MIME]["schema"]["columns"] == [
+        {"name": "a", "type": "int64", "nullable": True},
+        {"name": "b", "type": "large_string", "nullable": True},
+    ]
 
 
 # ─── pyarrow.Table path — preserves schema KV metadata ───────────────────

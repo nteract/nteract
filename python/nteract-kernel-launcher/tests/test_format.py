@@ -228,6 +228,7 @@ def test_build_arrow_stream_manifest_describes_one_chunk():
     assert manifest["content_type"] == ARROW_STREAM_MIME
     assert manifest["complete"] is True
     assert manifest["schema"]["fields"] == 1
+    assert manifest["schema"]["columns"] == [{"name": "a", "type": "int64", "nullable": True}]
     assert manifest["schema"]["content_type"] == "application/vnd.apache.arrow.schema"
     assert manifest["chunks"] == [
         {
@@ -239,6 +240,31 @@ def test_build_arrow_stream_manifest_describes_one_chunk():
             "encoding": "arrow-ipc-stream",
         }
     ]
+
+
+def test_build_arrow_stream_manifest_carries_precomputed_llm_text():
+    pa = pytest.importorskip("pyarrow")
+    from nteract_kernel_launcher._format import build_arrow_stream_manifest
+
+    table = pa.table({"a": [1, 2, 3], "label": ["x", "y", "z"]})
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, table.schema) as writer:
+        writer.write_table(table)
+    data = sink.getvalue().to_pybytes()
+
+    manifest = build_arrow_stream_manifest(
+        data,
+        content_hash="abc123",
+        content_size=len(data),
+        row_count=3,
+        summary={"total_rows": 3, "included_rows": 3},
+        llm={"text": "DataFrame: 3 rows x 2 columns"},
+    )
+
+    assert manifest["llm"] == {
+        "content_type": "text/llm+plain",
+        "text": "DataFrame: 3 rows x 2 columns",
+    }
 
 
 def test_iter_arrow_stream_chunks_yields_decodable_mini_streams():

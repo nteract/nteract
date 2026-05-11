@@ -272,6 +272,12 @@ def _emit_arrow_table_chunks(
     )
     included_rows = sum(chunk.row_count for chunk in chunks)
     sampled = included_rows != total_rows
+    llm_text: str | None = None
+    try:
+        llm_text = summary_fn(included_rows, sampled)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("summary build failed: %s", exc)
+
     summary_hints = {
         "total_rows": total_rows,
         "included_rows": included_rows,
@@ -290,12 +296,11 @@ def _emit_arrow_table_chunks(
             complete=True,
             summary=summary_hints,
             schema=table.schema,
+            llm={"text": llm_text} if llm_text is not None else None,
         ),
     }
-    try:
-        bundle["text/llm+plain"] = summary_fn(included_rows, sampled)
-    except Exception as exc:  # noqa: BLE001
-        log.debug("summary build failed: %s", exc)
+    if llm_text is not None:
+        bundle["text/llm+plain"] = llm_text
 
     pending = pending_buffers()
     for chunk in chunks:
@@ -332,6 +337,11 @@ def _emit_table_bytes(
     summaries can name the sampling state honestly.
     """
     sampled = included_rows != total_rows
+    llm_text: str | None = None
+    try:
+        llm_text = summary_fn(included_rows, sampled)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("summary build failed: %s", exc)
 
     h = hashlib.sha256(data).hexdigest()
     ref = BlobRef(hash=h, size=len(data))
@@ -353,13 +363,12 @@ def _emit_table_bytes(
                 content_size=len(data),
                 row_count=included_rows,
                 summary=summary_hints,
+                llm={"text": llm_text} if llm_text is not None else None,
             )
         except Exception as exc:  # noqa: BLE001
             log.debug("arrow manifest build failed: %s", exc)
-    try:
-        bundle["text/llm+plain"] = summary_fn(included_rows, sampled)
-    except Exception as exc:  # noqa: BLE001
-        log.debug("summary build failed: %s", exc)
+    if llm_text is not None:
+        bundle["text/llm+plain"] = llm_text
 
     pending_buffers()[h] = data
     return bundle

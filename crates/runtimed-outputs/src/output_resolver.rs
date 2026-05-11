@@ -78,7 +78,11 @@ const SYNTHESIS_PREFIXES: &[&str] = &[
 ];
 
 /// Exact MIME matches that have dedicated synthesizers.
-const SYNTHESIS_EXACT: &[&str] = &["application/geo+json", "application/vnd.apache.parquet"];
+const SYNTHESIS_EXACT: &[&str] = &[
+    "application/geo+json",
+    "application/vnd.apache.parquet",
+    notebook_doc::mime::ARROW_STREAM_MANIFEST_MIME,
+];
 
 /// When `text/plain` exceeds this size, synthesize a truncated `text/llm+plain`.
 const LLM_TEXT_MAX_SIZE: usize = 4 * 1024;
@@ -735,6 +739,11 @@ async fn resolve_display_for_llm(
         }
         synthesize_llm_plain_for_viz(&mut output_data);
 
+        if !output_data.contains_key("text/llm+plain") {
+            synthesize_llm_plain_for_arrow_manifest(&mut output_data);
+        }
+        output_data.remove(notebook_doc::mime::ARROW_STREAM_MANIFEST_MIME);
+
         // Resolve parquet bytes transiently for summarization, then drop them
         // so we don't ship raw parquet bytes back through MCP. The summary
         // ends up in text/llm+plain.
@@ -859,6 +868,136 @@ async fn resolve_display_for_llm(
     } else {
         Some(Output::display_data(output_data))
     }
+}
+
+/// Synthesize `text/llm+plain` from an Arrow stream manifest's precomputed LLM
+/// hint. This consumes only the small JSON manifest, never the table chunks.
+fn synthesize_llm_plain_for_arrow_manifest(output_data: &mut HashMap<String, DataValue>) {
+    if output_data.contains_key("text/llm+plain") {
+        return;
+    }
+    let Some(manifest) = output_data.get(notebook_doc::mime::ARROW_STREAM_MANIFEST_MIME) else {
+        return;
+    };
+    let text = match manifest {
+        DataValue::Json(value) => arrow_manifest_llm_text(value),
+        DataValue::Text(text) => serde_json::from_str::<Value>(text)
+            .ok()
+            .and_then(|value| arrow_manifest_llm_text(&value)),
+        DataValue::Binary(_) => None,
+    };
+    if let Some(text) = text {
+        output_data.insert("text/llm+plain".to_string(), DataValue::Text(text));
+    }
+}
+
+fn arrow_manifest_llm_text(manifest: &Value) -> Option<String> {
+    if let Some(llm) = manifest.get("llm").and_then(Value::as_object) {
+        let content_type = llm
+            .get("content_type")
+            .and_then(Value::as_str)
+            .unwrap_or("text/llm+plain");
+        if content_type == "text/llm+plain" {
+            if let Some(text) = llm
+                .get("text")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+            {
+                return Some(text.to_string());
+            }
+        }
+    }
+    synthesize_basic_arrow_manifest_summary(manifest)
+}
+
+fn synthesize_basic_arrow_manifest_summary(manifest: &Value) -> Option<String> {
+    let summary = manifest.get("summary").and_then(Value::as_object);
+    let included_rows = summary
+        .and_then(|summary| summary.get("included_rows"))
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            summary
+                .and_then(|summary| summary.get("total_rows"))
+                .and_then(Value::as_u64)
+        })
+        .or_else(|| manifest.get("row_count").and_then(Value::as_u64))
+        .or_else(|| {
+            manifest
+                .get("chunks")
+                .and_then(Value::as_array)
+                .map(|chunks| {
+                    chunks
+                        .iter()
+                        .filter_map(|chunk| chunk.get("row_count").and_then(Value::as_u64))
+                        .sum()
+                })
+        })?;
+    let total_rows = summary
+        .and_then(|summary| summary.get("total_rows"))
+        .and_then(Value::as_u64);
+    let schema = manifest.get("schema").and_then(Value::as_object);
+    let columns = schema
+        .and_then(|schema| schema.get("columns"))
+        .and_then(Value::as_array);
+    let field_count = columns.map_or_else(
+        || {
+            schema
+                .and_then(|schema| schema.get("fields"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+        },
+        |columns| columns.len() as u64,
+    );
+
+    let mut lines = vec![format!(
+        "Arrow table: {} rows x {} columns",
+        format_count(included_rows),
+        format_count(field_count)
+    )];
+    if let Some(total_rows) = total_rows.filter(|total| *total != included_rows) {
+        lines[0].push_str(&format!(
+            " (sampled from {} total rows)",
+            format_count(total_rows)
+        ));
+    }
+
+    if let Some(columns) = columns {
+        lines.push("Columns:".to_string());
+        for column in columns.iter().take(40) {
+            let name = column
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("<unnamed>");
+            let ty = column
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let nullable_suffix = if column.get("nullable").and_then(Value::as_bool) == Some(false)
+            {
+                ", non-nullable"
+            } else {
+                ""
+            };
+            lines.push(format!("  - {name} ({ty}{nullable_suffix})"));
+        }
+        if columns.len() > 40 {
+            lines.push(format!("  ...[+{} more columns]", columns.len() - 40));
+        }
+    }
+
+    Some(lines.join("\n"))
+}
+
+fn format_count(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (idx, ch) in s.chars().enumerate() {
+        if idx > 0 && (s.len() - idx).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// Truncate text keeping head and tail, since errors and results tend to
@@ -1699,6 +1838,93 @@ mod tests {
         );
         assert!(!data.contains_key("text/plain"));
         assert!(!data.contains_key("image/png"));
+    }
+
+    #[tokio::test]
+    async fn llm_uses_arrow_manifest_precomputed_text_without_chunks() {
+        let manifest_text = serde_json::json!({
+            "version": 1,
+            "content_type": "application/vnd.apache.arrow.stream",
+            "summary": {
+                "total_rows": 2_000_000,
+                "included_rows": 2_000_000,
+                "sampled": false,
+                "sample_strategy": "none"
+            },
+            "schema": {
+                "fields": 2,
+                "columns": [
+                    {"name": "row_id", "type": "int64", "nullable": true},
+                    {"name": "event", "type": "string", "nullable": true}
+                ]
+            },
+            "chunks": [
+                {"hash": "chunk_hash_should_not_be_fetched", "size": 123456, "row_count": 2_000_000}
+            ],
+            "llm": {
+                "content_type": "text/llm+plain",
+                "text": "DataFrame (pyarrow): 2,000,000 rows x 2 columns\nColumns:\n  - row_id (int64)\n  - event (string)"
+            }
+        })
+        .to_string();
+        let manifest = make_display_manifest(json!({
+            "application/vnd.nteract.arrow-stream-manifest+json": inline_ref(&manifest_text),
+        }));
+
+        let Some(output) = resolve_output_for_llm(&manifest, ResolveCtx::default()).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
+
+        let Some(DataValue::Text(summary)) = data.get("text/llm+plain") else {
+            panic!("expected precomputed manifest llm text");
+        };
+        assert!(summary.contains("2,000,000 rows x 2 columns"));
+        assert!(summary.contains("row_id"));
+        assert!(!data.contains_key("application/vnd.nteract.arrow-stream-manifest+json"));
+    }
+
+    #[tokio::test]
+    async fn llm_synthesizes_basic_arrow_manifest_summary_from_schema() {
+        let manifest_text = serde_json::json!({
+            "version": 1,
+            "summary": {
+                "total_rows": 100,
+                "included_rows": 25,
+                "sampled": true
+            },
+            "schema": {
+                "fields": 2,
+                "columns": [
+                    {"name": "value", "type": "float64", "nullable": false},
+                    {"name": "category", "type": "large_string", "nullable": true}
+                ]
+            },
+            "chunks": [
+                {"hash": "chunk_hash_should_not_be_fetched", "size": 123456, "row_count": 25}
+            ]
+        })
+        .to_string();
+        let manifest = make_display_manifest(json!({
+            "application/vnd.nteract.arrow-stream-manifest+json": inline_ref(&manifest_text),
+        }));
+
+        let Some(output) = resolve_output_for_llm(&manifest, ResolveCtx::default()).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
+
+        let Some(DataValue::Text(summary)) = data.get("text/llm+plain") else {
+            panic!("expected manifest-derived llm summary");
+        };
+        assert!(summary.contains("Arrow table: 25 rows x 2 columns"));
+        assert!(summary.contains("sampled from 100 total rows"));
+        assert!(summary.contains("value (float64, non-nullable)"));
+        assert!(summary.contains("category (large_string)"));
     }
 
     #[tokio::test]
