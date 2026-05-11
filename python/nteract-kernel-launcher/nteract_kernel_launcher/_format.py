@@ -12,12 +12,36 @@ from __future__ import annotations
 
 import hashlib
 import io
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from typing import Any
 
 PARQUET_MIME = "application/vnd.apache.parquet"
 ARROW_STREAM_MIME = "application/vnd.apache.arrow.stream"
 ARROW_STREAM_MANIFEST_MIME = "application/vnd.nteract.arrow-stream-manifest+json"
+DEFAULT_ARROW_CHUNK_BYTES = 8 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class ArrowStreamChunk:
+    """A self-contained Arrow IPC mini-stream chunk."""
+
+    index: int
+    data: bytes
+    content_hash: str
+    size: int
+    row_count: int
+    record_batch_count: int
+
+    def manifest_entry(self) -> dict[str, Any]:
+        return {
+            "index": self.index,
+            "hash": self.content_hash,
+            "size": self.size,
+            "row_count": self.row_count,
+            "record_batch_count": self.record_batch_count,
+            "encoding": "arrow-ipc-stream",
+        }
 
 
 def _detect_flavor(df: Any) -> str:
@@ -83,6 +107,95 @@ def _serialize_record_batch_reader(reader: Any) -> bytes:
         for batch in reader:
             writer.write_batch(batch)
     return sink.getvalue().to_pybytes()
+
+
+def _serialize_record_batches(schema: Any, batches: list[Any]) -> bytes:
+    import pyarrow as pa
+
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, schema) as writer:
+        for batch in batches:
+            writer.write_batch(batch)
+    return sink.getvalue().to_pybytes()
+
+
+def _record_batch_estimated_bytes(batch: Any) -> int:
+    nbytes = getattr(batch, "nbytes", None)
+    if isinstance(nbytes, int):
+        return nbytes
+    get_total_buffer_size = getattr(batch, "get_total_buffer_size", None)
+    if callable(get_total_buffer_size):
+        size = get_total_buffer_size()
+        if isinstance(size, int):
+            return size
+    return 0
+
+
+def _make_arrow_stream_chunk(
+    *,
+    index: int,
+    schema: Any,
+    batches: list[Any],
+    row_count: int,
+) -> ArrowStreamChunk:
+    data = _serialize_record_batches(schema, batches)
+    return ArrowStreamChunk(
+        index=index,
+        data=data,
+        content_hash=hashlib.sha256(data).hexdigest(),
+        size=len(data),
+        row_count=row_count,
+        record_batch_count=len(batches),
+    )
+
+
+def iter_arrow_stream_chunks(
+    source: Any,
+    *,
+    max_chunk_bytes: int = DEFAULT_ARROW_CHUNK_BYTES,
+) -> Iterator[ArrowStreamChunk]:
+    """Yield independently decodable Arrow IPC stream chunks from ``source``.
+
+    The source is consumed once as a ``RecordBatchReader``. Chunk boundaries are
+    record-batch boundaries; this intentionally avoids splitting serialized IPC
+    bytes after the fact.
+    """
+    if max_chunk_bytes <= 0:
+        raise ValueError("max_chunk_bytes must be positive")
+
+    reader = _record_batch_reader_from_stream(source)
+    schema = reader.schema
+    chunk_index = 0
+    batches: list[Any] = []
+    row_count = 0
+    estimated_bytes = 0
+
+    for batch in reader:
+        batch_rows = getattr(batch, "num_rows", 0)
+        batch_bytes = _record_batch_estimated_bytes(batch)
+        if batches and estimated_bytes + batch_bytes > max_chunk_bytes:
+            yield _make_arrow_stream_chunk(
+                index=chunk_index,
+                schema=schema,
+                batches=batches,
+                row_count=row_count,
+            )
+            chunk_index += 1
+            batches = []
+            row_count = 0
+            estimated_bytes = 0
+
+        batches.append(batch)
+        row_count += batch_rows
+        estimated_bytes += batch_bytes
+
+    if batches or chunk_index == 0:
+        yield _make_arrow_stream_chunk(
+            index=chunk_index,
+            schema=schema,
+            batches=batches,
+            row_count=row_count,
+        )
 
 
 def _serialize_arrow_stream_exportable(source: Any, rows: int | None = None) -> bytes:

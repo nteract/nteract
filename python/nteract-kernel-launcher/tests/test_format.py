@@ -239,3 +239,80 @@ def test_build_arrow_stream_manifest_describes_one_chunk():
             "encoding": "arrow-ipc-stream",
         }
     ]
+
+
+def test_iter_arrow_stream_chunks_yields_decodable_mini_streams():
+    pa = pytest.importorskip("pyarrow")
+    from nteract_kernel_launcher._format import iter_arrow_stream_chunks
+
+    table = pa.table({"a": list(range(6)), "b": [f"row-{i}" for i in range(6)]})
+    reader = pa.RecordBatchReader.from_batches(table.schema, table.to_batches(max_chunksize=2))
+
+    chunks = list(iter_arrow_stream_chunks(reader, max_chunk_bytes=1))
+
+    assert [chunk.index for chunk in chunks] == [0, 1, 2]
+    assert [chunk.row_count for chunk in chunks] == [2, 2, 2]
+    assert [chunk.record_batch_count for chunk in chunks] == [1, 1, 1]
+    decoded = [pa.ipc.open_stream(io.BytesIO(chunk.data)).read_all() for chunk in chunks]
+    assert [part.num_rows for part in decoded] == [2, 2, 2]
+    assert [part.column_names for part in decoded] == [["a", "b"], ["a", "b"], ["a", "b"]]
+    assert [chunk.manifest_entry()["hash"] for chunk in chunks] == [
+        chunk.content_hash for chunk in chunks
+    ]
+
+
+def test_iter_arrow_stream_chunks_preserves_schema_metadata():
+    pa = pytest.importorskip("pyarrow")
+    from nteract_kernel_launcher._format import iter_arrow_stream_chunks
+
+    table = _pa_table_with_hf_metadata()
+    reader = pa.RecordBatchReader.from_batches(table.schema, table.to_batches(max_chunksize=500))
+
+    chunks = list(iter_arrow_stream_chunks(reader, max_chunk_bytes=1))
+
+    assert len(chunks) == 2
+    for chunk in chunks:
+        decoded = pa.ipc.open_stream(io.BytesIO(chunk.data)).read_all()
+        md = decoded.schema.metadata or {}
+        assert b"huggingface" in md
+        assert md[b"custom"] == b"value"
+
+
+def test_iter_arrow_stream_chunks_consumes_pycapsule_stream_once():
+    pa = pytest.importorskip("pyarrow")
+    from nteract_kernel_launcher._format import iter_arrow_stream_chunks
+
+    class SinglePassStream:
+        def __init__(self):
+            self._used = False
+            self._table = pa.table({"a": list(range(4))})
+
+        def __arrow_c_stream__(self, requested_schema=None):
+            if self._used:
+                raise RuntimeError("stream already consumed")
+            self._used = True
+            return self._table.__arrow_c_stream__(requested_schema)
+
+    source = SinglePassStream()
+    chunks = list(iter_arrow_stream_chunks(source, max_chunk_bytes=1))
+
+    assert len(chunks) == 1
+    assert chunks[0].row_count == 4
+    assert source._used is True
+
+
+def test_iter_arrow_stream_chunks_emits_empty_stream_for_empty_reader():
+    pa = pytest.importorskip("pyarrow")
+    from nteract_kernel_launcher._format import iter_arrow_stream_chunks
+
+    schema = pa.schema([pa.field("a", pa.int64())])
+    reader = pa.RecordBatchReader.from_batches(schema, [])
+
+    chunks = list(iter_arrow_stream_chunks(reader))
+
+    assert len(chunks) == 1
+    assert chunks[0].row_count == 0
+    assert chunks[0].record_batch_count == 0
+    decoded = pa.ipc.open_stream(io.BytesIO(chunks[0].data)).read_all()
+    assert decoded.schema == schema
+    assert decoded.num_rows == 0

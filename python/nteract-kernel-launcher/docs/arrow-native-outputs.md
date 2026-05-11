@@ -616,8 +616,16 @@ for the staged implementation.
   - the isolated renderer now passes manifest objects to Sift instead of
     collapsing them back to a direct URL.
 - Review rerun: `pr-reviewer` reported `verdict: clear` for `f62da4f6`.
-- Next: start producer-side progressive chunks with a narrow Python manifest
-  update path; preserve one-shot behavior until chunk publication is verified.
+- Done: `feat(outputs): add arrow stream chunk writer`
+  - Python can drain an Arrow PyCapsule-compatible source once as a
+    `RecordBatchReader` and yield independently decodable Arrow IPC mini-stream
+    chunks on record-batch boundaries.
+  - the existing dataframe/table display formatter still emits one complete
+    chunk; the chunk writer is the Phase 4 producer seam before display-id
+    updates are wired into the formatter path.
+- Next: wire a Jupyter-compatible `display_id` / `update_display_data` path
+  that can publish the first chunk and then manifest revisions without changing
+  the existing one-shot fallback.
 
 ### Phase 1: Canonical Arrow For DataFrames
 
