@@ -27,10 +27,12 @@ def test_build_review_prompt_includes_pr_context() -> None:
             changed_files=["src/a.py"],
             diff_stat=" src/a.py | 1 +\n",
         ),
+        diff_patch="diff --git a/src/a.py b/src/a.py\n",
     )
 
     prompt = build_review_prompt(workspace, extra_prompt="Only high confidence findings.")
 
     assert "https://github.com/nteract/desktop/pull/5" in prompt
     assert "- src/a.py" in prompt
+    assert "diff --git a/src/a.py b/src/a.py" in prompt
     assert "Only high confidence findings." in prompt

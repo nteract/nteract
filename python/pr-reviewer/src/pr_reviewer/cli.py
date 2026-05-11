@@ -7,7 +7,7 @@ from pathlib import Path
 
 from pr_reviewer import git
 from pr_reviewer.agent import run_doctor, run_review
-from pr_reviewer.config import DEFAULT_MAX_TURNS, ReviewerConfig
+from pr_reviewer.config import DEFAULT_DOCTOR_MAX_TURNS, ReviewerConfig, estimate_review_turns
 from pr_reviewer.report import write_report
 from pr_reviewer.workspace import prepare_review_workspace, remove_review_workspace
 
@@ -31,18 +31,18 @@ def build_doctor_parser() -> argparse.ArgumentParser:
         prog="pr-review doctor",
         description="Smoke-test Bedrock authentication and model access.",
     )
-    add_common_args(parser)
+    add_common_args(parser, default_max_turns=DEFAULT_DOCTOR_MAX_TURNS)
     return parser
 
 
-def add_common_args(parser: argparse.ArgumentParser) -> None:
+def add_common_args(parser: argparse.ArgumentParser, *, default_max_turns: int | None) -> None:
     parser.add_argument("--model", default=None)
     parser.add_argument("--aws-region", default=None)
-    parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
+    parser.add_argument("--max-turns", type=int, default=default_max_turns)
 
 
 def add_review_args(parser: argparse.ArgumentParser) -> None:
-    add_common_args(parser)
+    add_common_args(parser, default_max_turns=None)
     parser.add_argument("pr", nargs="?", help="PR number or URL. Omit when using a subcommand.")
     parser.add_argument(
         "--repo", default=None, help="GitHub repo for numeric PR selectors, e.g. owner/name."
@@ -63,11 +63,11 @@ def add_review_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def config_from_args(args: argparse.Namespace) -> ReviewerConfig:
+def config_from_args(args: argparse.Namespace, *, max_turns: int | None = None) -> ReviewerConfig:
     return ReviewerConfig.from_env(
         model=args.model,
         aws_region=args.aws_region,
-        max_turns=args.max_turns,
+        max_turns=max_turns if max_turns is not None else args.max_turns,
         output_path=getattr(args, "out", None),
     )
 
@@ -85,12 +85,16 @@ def run_review_command(args: argparse.Namespace) -> int:
         base_ref=args.base,
         workspace_dir=args.workspace,
     )
+    max_turns = args.max_turns or estimate_review_turns(
+        diff_patch=workspace.diff_patch,
+        changed_files=workspace.reviewed_diff.changed_files,
+    )
 
     try:
         report = asyncio.run(
             run_review(
                 workspace,
-                config=config_from_args(args),
+                config=config_from_args(args, max_turns=max_turns),
                 extra_prompt=args.extra_prompt,
             )
         )
@@ -101,6 +105,7 @@ def run_review_command(args: argparse.Namespace) -> int:
                 "pr": pr.url,
                 "workspace": str(workspace.path),
                 "cleanup": args.cleanup,
+                "max_turns": max_turns,
             },
         )
     finally:

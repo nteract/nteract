@@ -16,6 +16,7 @@ class ReviewWorkspace:
     base_ref: str
     head_ref: str
     reviewed_diff: ReviewedDiff
+    diff_patch: str
 
 
 def default_workspace_dir(repo_root: Path, pr_number: int) -> Path:
@@ -43,6 +44,7 @@ def prepare_review_workspace(
     merge_base = git.merge_base(base_remote, "HEAD", cwd=path, runner=runner)
     files = git.changed_files(base_remote, "HEAD", cwd=path, runner=runner)
     stat = git.diff_stat(base_remote, "HEAD", cwd=path, runner=runner)
+    patch = git.diff_patch(base_remote, "HEAD", cwd=path, runner=runner)
 
     return ReviewWorkspace(
         path=path,
@@ -56,6 +58,7 @@ def prepare_review_workspace(
             changed_files=files,
             diff_stat=stat,
         ),
+        diff_patch=patch,
     )
 
 

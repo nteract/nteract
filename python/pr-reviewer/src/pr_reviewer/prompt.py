@@ -11,6 +11,11 @@ missing tests that could allow the diff to regress.
 Do not report style-only comments. Do not invent findings. Each finding must
 identify the affected file, line when possible, the failure mode, and why the
 diff introduced or exposed it. If there are no actionable issues, say so.
+
+You may use Read, Glob, Grep, and Bash inside this isolated disposable review
+workspace. Prefer read-only inspection, but use Bash freely when it helps you
+understand the diff. Do not intentionally edit source files; this review should
+produce findings, not patches.
 """
 
 
@@ -34,8 +39,11 @@ Diff stat:
 {workspace.reviewed_diff.diff_stat or "(empty)"}
 
 You are in the PR workspace. Inspect files as needed and compare the PR against
-the base using read-only git/search commands. Return only the structured review
-result requested by the host.
+the full diff below. Return only the structured review result requested by the
+host.
+
+Full diff:
+{workspace.diff_patch or "(empty)"}
 """
     if extra_prompt:
         prompt += f"\nAdditional review constraints:\n{extra_prompt}\n"

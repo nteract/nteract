@@ -19,6 +19,8 @@ def test_prepare_review_workspace_builds_isolated_worktree(tmp_path: Path) -> No
             stdout = "src/a.py\nsrc/b.py\n"
         elif args[:4] == ["git", "diff", "--find-renames", "--stat"]:
             stdout = " src/a.py | 2 ++\n"
+        elif args[:3] == ["git", "diff", "--find-renames"]:
+            stdout = "diff --git a/src/a.py b/src/a.py\n"
         else:
             stdout = ""
         return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
@@ -38,6 +40,7 @@ def test_prepare_review_workspace_builds_isolated_worktree(tmp_path: Path) -> No
     assert result.path == workspace
     assert result.reviewed_diff.merge_base == "mergebase"
     assert result.reviewed_diff.changed_files == ["src/a.py", "src/b.py"]
+    assert result.diff_patch == "diff --git a/src/a.py b/src/a.py\n"
     assert (
         ["git", "worktree", "add", "--detach", str(workspace), "refs/remotes/origin/pr/12"],
         repo,

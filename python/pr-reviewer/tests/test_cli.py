@@ -5,6 +5,7 @@ def test_review_parser_accepts_pr_url_without_subcommand() -> None:
     args = build_parser().parse_args(["https://github.com/nteract/desktop/pull/2508"])
 
     assert args.pr == "https://github.com/nteract/desktop/pull/2508"
+    assert args.max_turns is None
 
 
 def test_doctor_parser_accepts_common_args() -> None:
@@ -12,6 +13,7 @@ def test_doctor_parser_accepts_common_args() -> None:
 
     assert args.model == "model"
     assert args.aws_region == "us-west-2"
+    assert args.max_turns == 1
 
 
 def test_config_from_args_respects_model_env(monkeypatch) -> None:

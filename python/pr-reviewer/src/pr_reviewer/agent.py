@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 from pr_reviewer.config import ReviewerConfig
-from pr_reviewer.permissions import DISALLOWED_TOOLS, READ_ONLY_TOOLS, review_can_use_tool
 from pr_reviewer.prompt import SYSTEM_PROMPT, build_review_prompt
 from pr_reviewer.schema import REVIEW_SCHEMA, ReviewReport, normalize_structured_output
 from pr_reviewer.workspace import ReviewWorkspace
+
+ALLOWED_TOOLS = ["Read", "Glob", "Grep", "Bash"]
+DISALLOWED_TOOLS = [
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "NotebookEdit",
+    "TodoWrite",
+    "WebSearch",
+    "WebFetch",
+]
 
 
 async def _single_prompt_stream(prompt: str):
@@ -33,9 +43,8 @@ async def run_review(
         effort=config.effort,
         max_turns=config.max_turns,
         env=config.sdk_env(),
-        allowed_tools=READ_ONLY_TOOLS,
+        allowed_tools=ALLOWED_TOOLS,
         disallowed_tools=DISALLOWED_TOOLS,
-        can_use_tool=review_can_use_tool,
         output_format={"type": "json_schema", "schema": REVIEW_SCHEMA},
         setting_sources=config.setting_sources,
         strict_mcp_config=True,
