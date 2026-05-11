@@ -82,8 +82,8 @@ use automerge::{
     ObjType, ReadDoc, ScalarValue, Value, ROOT,
 };
 use automerge_recovery::{
-    catch_automerge_panic, recoverable_automerge_operation, AutomergeOperationError,
-    AutomergeRebuildError,
+    catch_automerge_panic, catch_automerge_result, recoverable_automerge_operation,
+    AutomergeAttempt, AutomergeOperationError, AutomergeRebuildError,
 };
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -540,10 +540,12 @@ impl RuntimeStateDoc {
         other: &mut RuntimeStateDoc,
         label: &str,
     ) -> Result<Vec<automerge::ChangeHash>, AutomergeOperationError> {
-        match catch_automerge_panic(label, || self.doc.merge(&mut other.doc)) {
-            Ok(Ok(changes)) => Ok(changes),
-            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
-            Err(err) => {
+        match catch_automerge_result(label, || self.doc.merge(&mut other.doc)) {
+            AutomergeAttempt::Success(changes) => Ok(changes),
+            AutomergeAttempt::OperationError(source) => {
+                Err(AutomergeOperationError::automerge(label, source))
+            }
+            AutomergeAttempt::Panic(err) => {
                 let self_rebuilt = self.rebuild_from_save();
                 let other_rebuilt = other.rebuild_from_save();
                 if let Err(source) = self_rebuilt {
@@ -586,7 +588,7 @@ impl RuntimeStateDoc {
         let isolated = Cell::new(false);
         let mut recovery_panic = None;
 
-        let result = catch_automerge_panic(label, || {
+        let result = catch_automerge_result(label, || {
             if let Some(actor) = actor {
                 self.doc.set_actor(ActorId::from(actor.as_bytes()));
             }
@@ -613,9 +615,9 @@ impl RuntimeStateDoc {
         }
 
         match (result, recovery_panic) {
-            (Ok(Ok(value)), None) => Ok(value),
-            (Ok(Err(source)), None) => Err(source),
-            (Err(err), _) | (_, Some(err)) => {
+            (AutomergeAttempt::Success(value), None) => Ok(value),
+            (AutomergeAttempt::OperationError(source), None) => Err(source),
+            (AutomergeAttempt::Panic(err), _) | (_, Some(err)) => {
                 if let Err(source) = self.rebuild_from_save() {
                     return Err(AutomergeOperationError::rebuild_failed(label, source).into());
                 }

@@ -111,19 +111,38 @@ pub fn catch_automerge_panic<T>(
     }
 }
 
-enum AutomergeAttempt<T> {
+/// Flattened outcome from an Automerge operation that can either return an
+/// operation error or panic.
+#[derive(Debug)]
+pub enum AutomergeAttempt<T, E = automerge::AutomergeError> {
     Success(T),
-    AutomergeError(automerge::AutomergeError),
+    OperationError(E),
     Panic(AutomergeRecoveryError),
 }
 
-fn catch_automerge_result<T>(
+impl<T> AutomergeAttempt<T, automerge::AutomergeError> {
+    pub fn into_operation_result(
+        self,
+        label: impl Into<String>,
+    ) -> Result<T, AutomergeOperationError> {
+        let label = label.into();
+        match self {
+            Self::Success(value) => Ok(value),
+            Self::OperationError(source) => Err(AutomergeOperationError::automerge(label, source)),
+            Self::Panic(error) => Err(AutomergeOperationError::Panic(error)),
+        }
+    }
+}
+
+/// Catch an Automerge operation that returns a `Result` and flatten the
+/// operation error plus panic channels into an explicit outcome.
+pub fn catch_automerge_result<T, E>(
     label: impl Into<String>,
-    f: impl FnOnce() -> Result<T, automerge::AutomergeError>,
-) -> AutomergeAttempt<T> {
+    f: impl FnOnce() -> Result<T, E>,
+) -> AutomergeAttempt<T, E> {
     match catch_automerge_panic(label, f) {
         Ok(Ok(value)) => AutomergeAttempt::Success(value),
-        Ok(Err(source)) => AutomergeAttempt::AutomergeError(source),
+        Ok(Err(source)) => AutomergeAttempt::OperationError(source),
         Err(error) => AutomergeAttempt::Panic(error),
     }
 }
@@ -145,8 +164,8 @@ pub fn recoverable_automerge_operation<C, T>(
 
     let first_panic = match catch_automerge_result(label.clone(), || operation(context)) {
         AutomergeAttempt::Success(value) => return Ok(value),
-        AutomergeAttempt::AutomergeError(source) if should_rebuild(&source) => None,
-        AutomergeAttempt::AutomergeError(source) => {
+        AutomergeAttempt::OperationError(source) if should_rebuild(&source) => None,
+        AutomergeAttempt::OperationError(source) => {
             return Err(AutomergeOperationError::automerge(label, source));
         }
         AutomergeAttempt::Panic(error) => Some(error),
@@ -158,7 +177,7 @@ pub fn recoverable_automerge_operation<C, T>(
 
     match catch_automerge_result(label.clone(), || operation(context)) {
         AutomergeAttempt::Success(value) => Ok(value),
-        AutomergeAttempt::AutomergeError(source) => {
+        AutomergeAttempt::OperationError(source) => {
             Err(AutomergeOperationError::automerge(label, source))
         }
         AutomergeAttempt::Panic(error) => {
