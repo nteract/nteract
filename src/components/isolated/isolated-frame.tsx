@@ -358,6 +358,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     const onErrorRef = useRef(onError);
     const onMessageRef = useRef(onMessage);
     const allowWheelBoundaryScrollRef = useRef(allowWheelBoundaryScroll);
+    const scrollPassthroughRef = useRef(scrollPassthrough);
 
     // Sync refs during render so effects always see the latest callbacks.
     onReadyRef.current = onReady;
@@ -369,6 +370,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     onErrorRef.current = onError;
     onMessageRef.current = onMessage;
     allowWheelBoundaryScrollRef.current = allowWheelBoundaryScroll;
+    scrollPassthroughRef.current = scrollPassthrough;
 
     const applyMeasuredHeight = useCallback(
       (contentHeight: number) => {
@@ -574,7 +576,12 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
                 onMouseDownRef.current?.();
               });
               transport.onNotification(NTERACT_WHEEL_BOUNDARY, (params) => {
-                if (!allowWheelBoundaryScrollRef.current) {
+                // Two forward paths: the normal boundary-chaining case, and
+                // the scroll-passthrough leak case where pointer-events: none
+                // didn't fully prevent the iframe from receiving a wheel
+                // (e.g., WKWebView momentum pulse). In both cases the wheel
+                // should scroll the parent's nearest scrollable ancestor.
+                if (!allowWheelBoundaryScrollRef.current && !scrollPassthroughRef.current) {
                   return;
                 }
                 scrollFrameWheelBoundary(iframeRef.current, params as { deltaY?: number });

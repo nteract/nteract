@@ -342,6 +342,19 @@
                 handleSearchNavigate(payload);
                 break;
 
+              case "interaction_state":
+                // Mirror the parent's iframe-interaction state into a flag
+                // the bootstrap wheel handler can read. active=false means
+                // the parent is in scroll-passthrough mode (sift output not
+                // clicked into) and any wheel events that reach this
+                // document — including momentum pulses that WKWebView lets
+                // through `pointer-events: none` — should be redirected
+                // to the notebook page instead of scrolling inner content.
+                if (payload && typeof payload === "object") {
+                  scrollPassthroughActive = payload.active === false;
+                }
+                break;
+
               case "bridge_ready":
               case "comm_open":
               case "comm_msg":
@@ -717,10 +730,24 @@
           return behavior === "none" || behavior === "contain";
         }
 
+        // Tracks parent-signaled scroll-passthrough mode. The parent
+        // already sets `pointer-events: none` on the iframe element when
+        // it wants wheels to bypass the iframe; this is a defensive
+        // backstop because WKWebView occasionally delivers momentum-scroll
+        // pulses to the iframe despite that style. When the flag is set,
+        // we eat every wheel and forward its delta to the parent so the
+        // notebook page scrolls instead of the inner content.
+        var scrollPassthroughActive = false;
+
         document.addEventListener(
           "wheel",
           function (e) {
             if (!e.deltaY) return;
+            if (scrollPassthroughActive) {
+              e.preventDefault();
+              sendRpc("nteract/wheelBoundary", { deltaY: e.deltaY });
+              return;
+            }
             var scroller = nearestVerticalScroller(e.target);
             if (!isWheelAtScrollBoundary(scroller, e.deltaY)) return;
             if (scrollerOptsOutOfChaining(scroller)) {
