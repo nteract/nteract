@@ -637,6 +637,7 @@ for the staged implementation.
   sizing/focus renderer. Disposition:
   - confirmed-fix: keep all React hooks in `SiftRenderer` before the invalid
     manifest fallback return.
+- Review rerun: `pr-reviewer` reported `verdict: clear` for `a2944dd0`.
 - Next: decide whether automatic large dataframe reprs should opt into the
   helper by publishing their own display output, or stay one-shot while direct
   daemon blob upload and save/load manifest externalization are completed.
