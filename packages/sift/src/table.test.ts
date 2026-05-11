@@ -766,4 +766,94 @@ describe("createTable", () => {
       expect(viewport.scrollTop).toBe(252);
     });
   });
+
+  describe("scaled virtual scroll for tall tables", () => {
+    // jsdom doesn't enforce a max element height. measureMaxElementHeight
+    // converges to lo=1 in jsdom (probe.offsetHeight is always 0) and the
+    // table.ts floor clamps the cached cap to 1,000,000 px. These tests
+    // exercise the scaled-scroll path by exceeding that 1M-px effective cap
+    // through row count rather than per-row height — only OVERSCAN rows get
+    // lazy-prepared into their true heights at viewport=0, so making a few
+    // rows tall doesn't move totalHeight much; growing the row count does.
+    // At the default 20-px line height + 16-px padding, each unprepared row
+    // contributes 36 px to totalHeight, so 30,000 rows is ~1.08M virtual.
+    const JSDOM_CAP_PX = 1_000_000;
+    const TALL_ROW_COUNT = 30_000;
+    const DEFAULT_ROW_PX = 36; // LINE_HEIGHT (20) + CELL_PAD_V (16)
+
+    function recreateEngine(rowCount: number) {
+      engine.destroy();
+      container.innerHTML = "";
+      engine = createTable(container, makeTableData(makeRows(rowCount)));
+    }
+
+    it("matches scrollContent height to totalHeight when virtual fits under cap", async () => {
+      recreateEngine(50);
+      await vi.advanceTimersByTimeAsync(20);
+
+      const scrollContent = container.querySelector<HTMLElement>(".sift-scroll-content")!;
+      const heightPx = Number.parseFloat(scrollContent.style.height);
+      // 50 rows × 36 = 1800 px, far under the 1M cap. The spacer is exactly
+      // totalHeight + headerH; no scaling kicks in.
+      expect(heightPx).toBeGreaterThan(50 * 30);
+      expect(heightPx).toBeLessThan(10_000);
+    });
+
+    it("caps scrollContent height when virtual exceeds measured cap", async () => {
+      recreateEngine(TALL_ROW_COUNT);
+      await vi.advanceTimersByTimeAsync(20);
+
+      const scrollContent = container.querySelector<HTMLElement>(".sift-scroll-content")!;
+      const heightPx = Number.parseFloat(scrollContent.style.height);
+      // 30,000 rows × 36 = 1,080,000 px > 1M. Spacer clamps at the measured
+      // cap (cap - SCROLL_SPACER_SAFETY_PX of 1024). Allow a tolerance band
+      // since headerH adds a few px on top in some render paths.
+      expect(heightPx).toBeGreaterThan(JSDOM_CAP_PX - 10_000);
+      expect(heightPx).toBeLessThanOrEqual(JSDOM_CAP_PX);
+    });
+
+    it("renders rows near the last index when scrolled to viewport bottom", async () => {
+      recreateEngine(TALL_ROW_COUNT);
+      const viewport = container.querySelector<HTMLElement>(".sift-viewport")!;
+      Object.defineProperty(viewport, "clientHeight", { value: 5000, configurable: true });
+      await vi.advanceTimersByTimeAsync(20);
+
+      const scrollContent = container.querySelector<HTMLElement>(".sift-scroll-content")!;
+      const spacerHeight = Number.parseFloat(scrollContent.style.height);
+      viewport.scrollTop = spacerHeight - viewport.clientHeight;
+      viewport.dispatchEvent(new Event("scroll"));
+      await vi.advanceTimersByTimeAsync(20);
+
+      // At max scroll, virtualOffset places the visible window at the tail of
+      // the virtual range. Pre-fix the bottom reachable row was near
+      // row 27,778 (1M / 36) regardless of TALL_ROW_COUNT; post-fix the
+      // visible aria-rowindex sits near the end of the 30,000-row table.
+      // Walk the rendered rows and take the largest aria-rowindex (header
+      // is row 1, so data rows start at 2 and the last data row is 30,001).
+      const rowEls = container.querySelectorAll<HTMLElement>("[aria-rowindex]");
+      let maxRowIndex = 0;
+      for (const el of rowEls) {
+        const idx = Number.parseInt(el.getAttribute("aria-rowindex") ?? "0", 10);
+        if (idx > maxRowIndex) maxRowIndex = idx;
+      }
+      expect(maxRowIndex).toBeGreaterThan(29_000);
+    });
+
+    it("shrinks scrollContent height back to totalHeight when filter drops below cap", async () => {
+      recreateEngine(TALL_ROW_COUNT);
+      await vi.advanceTimersByTimeAsync(20);
+
+      const scrollContent = container.querySelector<HTMLElement>(".sift-scroll-content")!;
+      expect(Number.parseFloat(scrollContent.style.height)).toBeGreaterThan(JSDOM_CAP_PX - 10_000);
+
+      // Apply a numeric range filter that matches no rows. Score is in [0,100]
+      // by construction in makeRows, so [999,1000] guarantees filteredCount=0.
+      engine.setFilter(2, { kind: "range", min: 999, max: 1000 });
+      await vi.advanceTimersByTimeAsync(20);
+
+      const filteredHeight = Number.parseFloat(scrollContent.style.height);
+      // With filteredCount=0, totalHeight is 0 and the spacer is just headerH.
+      expect(filteredHeight).toBeLessThan(DEFAULT_ROW_PX * 10);
+    });
+  });
 });
