@@ -30,7 +30,7 @@ pub(super) async fn handle_notebook_doc_frame(
             Ok(()) => {}
             Err(e) => {
                 warn!("[notebook-sync] receive_sync_message error: {}", e);
-                return Ok(NotebookDocFrameOutcome::Skipped);
+                return Err(anyhow::anyhow!("doc receive_sync_message error: {e}"));
             }
         }
 
@@ -46,7 +46,7 @@ pub(super) async fn handle_notebook_doc_frame(
             Ok(message) => message.map(|reply| reply.encode()),
             Err(e) => {
                 warn!("[notebook-sync] doc sync reply failed: {}", e);
-                None
+                return Err(anyhow::anyhow!("doc sync reply failed: {e}"));
             }
         };
 
@@ -67,7 +67,6 @@ pub(super) async fn handle_notebook_doc_frame(
 
 pub(super) enum NotebookDocFrameOutcome {
     Applied(NotebookDocSideEffects),
-    Skipped,
 }
 
 pub(super) struct NotebookDocSideEffects {
@@ -102,7 +101,7 @@ pub(super) async fn forward_notebook_doc_broadcast(
             Ok(message) => message.map(|msg| msg.encode()),
             Err(e) => {
                 warn!("[notebook-sync] doc broadcast failed: {}", e);
-                None
+                return Err(anyhow::anyhow!("doc broadcast failed: {e}"));
             }
         }
     };
@@ -127,7 +126,7 @@ pub(super) async fn queue_doc_sync(
             Ok(message) => message.map(|msg| msg.encode()),
             Err(e) => {
                 warn!("[notebook-sync] queue doc sync failed: {}", e);
-                None
+                return Err(anyhow::anyhow!("queue doc sync failed: {e}"));
             }
         }
     };

@@ -388,7 +388,7 @@ impl SyncReactor {
         writer: &mut W,
     ) -> Result<(), SyncError> {
         self.note_frame_activity();
-        self.handle_task_frame(frame, writer).await;
+        self.handle_task_frame(frame, writer).await?;
         if frame.frame_type == NotebookFrameType::AutomergeSync {
             self.state.acked_sync_generation = self.state.sync_generation;
         }
@@ -498,7 +498,7 @@ impl SyncReactor {
         &mut self,
         frame: &connection::TypedNotebookFrame,
         writer: &mut W,
-    ) {
+    ) -> Result<(), SyncError> {
         match frame.frame_type {
             NotebookFrameType::AutomergeSync => {
                 let msg = match sync::Message::decode(&frame.payload) {
@@ -508,35 +508,37 @@ impl SyncReactor {
                             "[notebook-sync] Failed to decode sync message for {}: {}",
                             self.io.notebook_id, e
                         );
-                        return;
+                        return Ok(());
                     }
                 };
 
-                // Apply and generate ack while the mutex guard is alive so panic
-                // recovery can rebuild the document without poisoning the mutex.
+                // Apply and generate ack while the mutex guard is alive. Caught
+                // Automerge panics are fatal for this sync task; recoverable
+                // Automerge errors are retried by the document boundary.
                 let ack_bytes = {
                     let mut state = self.io.doc.lock().unwrap_or_else(|e| e.into_inner());
                     match state.receive_sync_message_recovering(msg, "notebook-sync-receive") {
                         Ok(()) => {}
-                        Err(AutomergeOperationError::Panic(e)) => {
+                        Err(e @ AutomergeOperationError::Panic(_))
+                        | Err(e @ AutomergeOperationError::RebuildFailed { .. }) => {
                             warn!(
-                                "[notebook-sync] Recovered from sync panic for {}: {}",
+                                "[notebook-sync] Closing sync task after Automerge sync failure for {}: {}",
                                 self.io.notebook_id, e
                             );
-                        }
-                        Err(AutomergeOperationError::RebuildFailed { label, source }) => {
-                            warn!(
-                                "[notebook-sync] Failed to rebuild after sync panic for {}: {}: {}",
-                                self.io.notebook_id, label, source
-                            );
-                            return;
+                            return Err(SyncError::Protocol(format!(
+                                "automerge sync failure for {}: {e}",
+                                self.io.notebook_id
+                            )));
                         }
                         Err(e) => {
                             warn!(
                                 "[notebook-sync] Failed to apply sync message for {}: {}",
                                 self.io.notebook_id, e
                             );
-                            return;
+                            return Err(SyncError::Protocol(format!(
+                                "automerge sync apply failed for {}: {e}",
+                                self.io.notebook_id
+                            )));
                         }
                     }
                     match state.generate_sync_message_recovering("notebook-sync-reply") {
@@ -546,7 +548,10 @@ impl SyncReactor {
                                 "[notebook-sync] Failed to generate sync reply for {}: {}",
                                 self.io.notebook_id, e
                             );
-                            None
+                            return Err(SyncError::Protocol(format!(
+                                "automerge sync reply failed for {}: {e}",
+                                self.io.notebook_id
+                            )));
                         }
                     }
                 };
@@ -569,6 +574,7 @@ impl SyncReactor {
                         );
                     }
                 }
+                Ok(())
             }
 
             NotebookFrameType::Broadcast => {
@@ -583,6 +589,7 @@ impl SyncReactor {
                         );
                     }
                 }
+                Ok(())
             }
 
             NotebookFrameType::Presence => {
@@ -595,7 +602,7 @@ impl SyncReactor {
                         "[notebook-sync] Dropping oversized presence frame for {}: {}",
                         self.io.notebook_id, e
                     );
-                    return;
+                    return Ok(());
                 }
 
                 match decode_message(&frame.payload) {
@@ -642,6 +649,7 @@ impl SyncReactor {
                         );
                     }
                 }
+                Ok(())
             }
 
             NotebookFrameType::Response => {
@@ -650,6 +658,7 @@ impl SyncReactor {
                     "[notebook-sync] Unexpected Response frame for {} in background loop",
                     self.io.notebook_id
                 );
+                Ok(())
             }
 
             NotebookFrameType::Request => {
@@ -657,6 +666,7 @@ impl SyncReactor {
                     "[notebook-sync] Unexpected Request frame from daemon for {}",
                     self.io.notebook_id
                 );
+                Ok(())
             }
 
             NotebookFrameType::RuntimeStateSync => {
@@ -667,37 +677,39 @@ impl SyncReactor {
                             "[notebook-sync] Failed to decode RuntimeStateSync for {}: {}",
                             self.io.notebook_id, e
                         );
-                        return;
+                        return Ok(());
                     }
                 };
 
-                // Apply and generate reply while the mutex guard is alive so
-                // recovery can rebuild the RuntimeStateDoc without poisoning it.
+                // Apply and generate reply while the mutex guard is alive. Caught
+                // Automerge panics are fatal for this sync task; recoverable
+                // Automerge errors are retried by the document boundary.
                 let (reply_bytes, runtime_state) = {
                     let mut state = self.io.doc.lock().unwrap_or_else(|e| e.into_inner());
                     match state
                         .receive_state_sync_message_recovering(msg, "runtime-state-sync-receive")
                     {
                         Ok(()) => {}
-                        Err(AutomergeOperationError::Panic(e)) => {
+                        Err(e @ AutomergeOperationError::Panic(_))
+                        | Err(e @ AutomergeOperationError::RebuildFailed { .. }) => {
                             warn!(
-                                "[notebook-sync] Recovered from RuntimeStateSync panic for {}: {}",
+                                "[notebook-sync] Closing sync task after RuntimeStateSync failure for {}: {}",
                                 self.io.notebook_id, e
                             );
-                        }
-                        Err(AutomergeOperationError::RebuildFailed { label, source }) => {
-                            warn!(
-                                "[notebook-sync] Failed to rebuild after RuntimeStateSync panic for {}: {}: {}",
-                                self.io.notebook_id, label, source
-                            );
-                            return;
+                            return Err(SyncError::Protocol(format!(
+                                "runtime-state sync failure for {}: {e}",
+                                self.io.notebook_id
+                            )));
                         }
                         Err(e) => {
                             warn!(
                                 "[notebook-sync] Failed to apply RuntimeStateSync for {}: {}",
                                 self.io.notebook_id, e
                             );
-                            return;
+                            return Err(SyncError::Protocol(format!(
+                                "runtime-state sync apply failed for {}: {e}",
+                                self.io.notebook_id
+                            )));
                         }
                     };
                     let reply_bytes = match state
@@ -709,7 +721,10 @@ impl SyncReactor {
                                 "[notebook-sync] Failed to generate RuntimeStateSync reply for {}: {}",
                                 self.io.notebook_id, e
                             );
-                            None
+                            return Err(SyncError::Protocol(format!(
+                                "runtime-state sync reply failed for {}: {e}",
+                                self.io.notebook_id
+                            )));
                         }
                     };
                     (reply_bytes, state.state_doc.read_state())
@@ -730,6 +745,7 @@ impl SyncReactor {
                         );
                     }
                 }
+                Ok(())
             }
 
             NotebookFrameType::PoolStateSync => {
@@ -739,6 +755,7 @@ impl SyncReactor {
                     "[notebook-sync] Ignoring PoolStateSync frame for {} (handled by frontend)",
                     self.io.notebook_id
                 );
+                Ok(())
             }
 
             NotebookFrameType::SessionControl => {
@@ -750,7 +767,7 @@ impl SyncReactor {
                             "[notebook-sync] Failed to parse SessionControl for {}: {}",
                             self.io.notebook_id, e
                         );
-                        return;
+                        return Ok(());
                     }
                 };
 
@@ -766,6 +783,7 @@ impl SyncReactor {
                         );
                     }
                 }
+                Ok(())
             }
         }
     }
@@ -818,7 +836,7 @@ impl SyncReactor {
         &mut self,
         frame: &connection::TypedNotebookFrame,
         writer: &mut W,
-    ) {
+    ) -> Result<(), SyncError> {
         match frame.frame_type {
             NotebookFrameType::Response => {
                 match serde_json::from_slice::<NotebookResponseEnvelope>(&frame.payload) {
@@ -843,6 +861,7 @@ impl SyncReactor {
                         );
                     }
                 }
+                Ok(())
             }
 
             NotebookFrameType::Broadcast => {
@@ -862,6 +881,7 @@ impl SyncReactor {
                         );
                     }
                 }
+                Ok(())
             }
 
             _ => self.handle_incoming_frame(frame, writer).await,
@@ -1390,9 +1410,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_state_sync_panic_is_caught_and_later_updates_still_apply() {
-        // Recovery resets the runtime-state peer state. After the daemon peer
-        // also rejoins with fresh sync state, later updates still apply.
+    async fn automerge_sync_panic_closes_sync_task_without_recovery() {
+        let mut reactor = test_reactor();
+        {
+            let mut state = reactor.io.doc.lock().unwrap();
+            state.panic_on_next_doc_sync_for_test();
+        }
+
+        let mut daemon_state = SharedDocState::new(
+            notebook_doc::NotebookDoc::new("test-notebook").into_inner(),
+            "test-notebook".into(),
+        );
+        let daemon_msg = daemon_state
+            .generate_sync_message()
+            .expect("daemon should generate notebook sync message");
+        let (client_reply_writer, daemon_reply_reader) = tokio::io::duplex(4096);
+        let mut writer = client_reply_writer;
+        let mut reply_reader =
+            connection::FramedReader::spawn(BufReader::new(daemon_reply_reader), 16);
+        let frame = connection::TypedNotebookFrame {
+            frame_type: NotebookFrameType::AutomergeSync,
+            payload: daemon_msg.encode(),
+        };
+
+        let error = reactor
+            .handle_incoming_frame(&frame, &mut writer)
+            .await
+            .expect_err("notebook doc panic should close sync path");
+
+        assert!(
+            error.to_string().contains("automerge sync failure"),
+            "expected automerge sync failure, got {error}"
+        );
+        assert!(
+            timeout(Duration::from_millis(10), reply_reader.recv())
+                .await
+                .is_err(),
+            "panic path should not send a notebook sync reply"
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_state_sync_panic_closes_sync_task_without_recovery() {
         let mut reactor = test_reactor();
         {
             let mut state = reactor.io.doc.lock().unwrap();
@@ -1413,68 +1472,38 @@ mod tests {
         let mut writer = client_reply_writer;
         let mut reply_reader =
             connection::FramedReader::spawn(BufReader::new(daemon_reply_reader), 16);
-        let mut later_update_sent = false;
 
-        for _ in 0..8 {
-            let client_msg = {
-                let mut state = reactor.io.doc.lock().unwrap();
-                state.generate_state_sync_message()
-            };
-            if let Some(client_msg) = client_msg {
-                daemon_state
-                    .receive_state_sync_message(client_msg)
-                    .expect("daemon receives client runtime-state handshake");
-            }
-
-            if let Some(daemon_msg) = daemon_state.generate_state_sync_message() {
-                let frame = connection::TypedNotebookFrame {
-                    frame_type: NotebookFrameType::RuntimeStateSync,
-                    payload: daemon_msg.encode(),
-                };
-                reactor.handle_incoming_frame(&frame, &mut writer).await;
-
-                if !later_update_sent {
-                    let _ = daemon_state.rebuild_state_doc();
-                    daemon_state
-                        .state_doc
-                        .create_execution_with_source("exec-2", "cell-2", "y = 2", 2)
-                        .expect("daemon creates later queued execution");
-                    later_update_sent = true;
-                }
-            }
-
-            while let Ok(Some(Ok(reply))) =
-                timeout(Duration::from_millis(10), reply_reader.recv()).await
-            {
-                if reply.frame_type != NotebookFrameType::RuntimeStateSync {
-                    continue;
-                }
-                let msg = sync::Message::decode(&reply.payload)
-                    .expect("client runtime-state reply decodes");
-                daemon_state
-                    .receive_state_sync_message(msg)
-                    .expect("daemon receives client runtime-state reset reply");
-            }
-
-            let state = reactor.io.doc.lock().unwrap();
-            if state
-                .state_doc
-                .read_state()
-                .executions
-                .contains_key("exec-2")
-            {
-                return;
-            }
+        let client_msg = {
+            let mut state = reactor.io.doc.lock().unwrap();
+            state.generate_state_sync_message()
+        };
+        if let Some(client_msg) = client_msg {
+            daemon_state
+                .receive_state_sync_message(client_msg)
+                .expect("daemon receives client runtime-state handshake");
         }
 
-        let state = reactor.io.doc.lock().unwrap();
+        let daemon_msg = daemon_state
+            .generate_state_sync_message()
+            .expect("daemon should generate runtime-state sync message");
+        let frame = connection::TypedNotebookFrame {
+            frame_type: NotebookFrameType::RuntimeStateSync,
+            payload: daemon_msg.encode(),
+        };
+        let error = reactor
+            .handle_incoming_frame(&frame, &mut writer)
+            .await
+            .expect_err("runtime-state panic should close sync path");
+
         assert!(
-            state
-                .state_doc
-                .read_state()
-                .executions
-                .contains_key("exec-2"),
-            "runtime-state replica should remain usable for later updates after caught panic"
+            error.to_string().contains("runtime-state sync failure"),
+            "expected runtime-state sync failure, got {error}"
+        );
+        assert!(
+            timeout(Duration::from_millis(10), reply_reader.recv())
+                .await
+                .is_err(),
+            "panic path should not send a runtime-state sync reply"
         );
     }
 

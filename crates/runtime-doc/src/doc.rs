@@ -2656,8 +2656,11 @@ impl RuntimeStateDoc {
         self.doc.sync().generate_sync_message(peer_state)
     }
 
-    /// Generate a sync message, recovering from Automerge panics by rebuilding
-    /// this doc, resetting peer sync state, and retrying once.
+    /// Generate a sync message through the document-owned error boundary.
+    ///
+    /// Panics are returned to the caller as diagnostic failures. Caller-marked
+    /// recoverable Automerge errors rebuild this doc, reset peer sync state,
+    /// and retry once.
     pub fn generate_sync_message_recovering(
         &mut self,
         peer_state: &mut sync::State,
@@ -2717,8 +2720,11 @@ impl RuntimeStateDoc {
             .map(|m| m.encode())
     }
 
-    /// Generate a bounded encoded sync message, recovering from Automerge panics
-    /// by rebuilding this doc, resetting peer sync state, and retrying once.
+    /// Generate a bounded encoded sync message through the document-owned error boundary.
+    ///
+    /// Panics are returned to the caller as diagnostic failures. Caller-marked
+    /// recoverable Automerge errors rebuild this doc, reset peer sync state,
+    /// and retry once.
     pub fn generate_sync_message_bounded_encoded_recovering(
         &mut self,
         peer_state: &mut sync::State,
@@ -2779,8 +2785,11 @@ impl RuntimeStateDoc {
         Ok(())
     }
 
-    /// Receive a read-only sync message, recovering from Automerge panics by
-    /// rebuilding this doc and resetting peer sync state.
+    /// Receive a read-only sync message through the document-owned error boundary.
+    ///
+    /// Panics are returned to the caller as diagnostic failures. Caller-marked
+    /// recoverable Automerge errors rebuild this doc, reset peer sync state,
+    /// and retry once.
     pub fn receive_sync_message_recovering(
         &mut self,
         peer_state: &mut sync::State,
@@ -2835,8 +2844,11 @@ impl RuntimeStateDoc {
         Ok(heads_before != heads_after)
     }
 
-    /// Receive a writable sync message, recovering from Automerge panics by
-    /// rebuilding this doc and resetting peer sync state.
+    /// Receive a writable sync message through the document-owned error boundary.
+    ///
+    /// Panics are returned to the caller as diagnostic failures. Caller-marked
+    /// recoverable Automerge errors rebuild this doc, reset peer sync state,
+    /// and retry once.
     pub fn receive_sync_message_with_changes_recovering(
         &mut self,
         peer_state: &mut sync::State,
@@ -2982,9 +2994,12 @@ impl RuntimeStateDoc {
         })
     }
 
-    /// Receive a writable sync message and compute a foreign-actor comm view,
-    /// recovering from Automerge panics by rebuilding this doc and resetting
-    /// peer sync state.
+    /// Receive a writable sync message and compute a foreign-actor comm view
+    /// through the document-owned error boundary.
+    ///
+    /// Panics are returned to the caller as diagnostic failures. Caller-marked
+    /// recoverable Automerge errors rebuild this doc, reset peer sync state,
+    /// and retry once.
     pub fn receive_sync_and_foreign_comms_recovering<F>(
         &mut self,
         peer_state: &mut sync::State,

@@ -72,7 +72,7 @@ where
             Ok(message) => message.map(|msg| msg.encode()),
             Err(e) => {
                 warn!("[notebook-sync] initial doc sync failed: {}", e);
-                None
+                return Err(anyhow::anyhow!("initial doc sync failed: {e}"));
             }
         }
     };
@@ -106,20 +106,18 @@ where
             if state_doc.compact_if_oversized(COMPACTION_THRESHOLD) {
                 info!("[notebook-sync] Compacted oversized RuntimeStateDoc before initial sync");
             }
-            match state_doc.generate_sync_message_bounded_encoded_recovering(
-                state_peer_state,
-                STATE_SYNC_COMPACT_THRESHOLD,
-                "initial-state-sync",
-            ) {
-                Ok(encoded) => Ok(encoded),
-                Err(e) => {
+            state_doc
+                .generate_sync_message_bounded_encoded_recovering(
+                    state_peer_state,
+                    STATE_SYNC_COMPACT_THRESHOLD,
+                    "initial-state-sync",
+                )
+                .map_err(|e| {
                     warn!("[notebook-sync] initial runtime state sync failed: {}", e);
-                    Ok(None)
-                }
-            }
+                    runtime_doc::RuntimeStateError::from(e)
+                })
         })
-        .ok()
-        .flatten();
+        .map_err(|e| anyhow::anyhow!("initial runtime state sync failed: {e}"))?;
     if let Some(encoded) = initial_state_encoded {
         connection::send_typed_frame(writer, NotebookFrameType::RuntimeStateSync, &encoded).await?;
     }

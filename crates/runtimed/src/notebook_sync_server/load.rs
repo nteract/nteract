@@ -564,7 +564,7 @@ where
                 Ok(message) => message.map(|m| m.encode()),
                 Err(e) => {
                     warn!("[streaming-load] cell sync generation failed: {}", e);
-                    None
+                    return Err(format!("cell sync generation failed: {e}"));
                 }
             }
         };
@@ -603,7 +603,7 @@ where
                 Ok(message) => message.map(|m| m.encode()),
                 Err(e) => {
                     warn!("[streaming-load] metadata sync generation failed: {}", e);
-                    None
+                    return Err(format!("metadata sync generation failed: {e}"));
                 }
             }
         };

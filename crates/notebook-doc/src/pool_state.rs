@@ -300,8 +300,11 @@ impl PoolDoc {
         self.doc.sync().generate_sync_message(peer_state)
     }
 
-    /// Generate a sync message, recovering from Automerge panics by rebuilding
-    /// this doc, resetting peer sync state, and retrying once.
+    /// Generate a sync message through the document-owned error boundary.
+    ///
+    /// Panics are returned to the caller as diagnostic failures. Caller-marked
+    /// recoverable Automerge errors rebuild this doc, reset peer sync state,
+    /// and retry once.
     pub fn generate_sync_message_recovering(
         &mut self,
         peer_state: &mut sync::State,

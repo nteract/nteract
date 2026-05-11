@@ -220,17 +220,14 @@ where
                 }
                 match frame.frame_type {
                             NotebookFrameType::AutomergeSync => {
-                                let notebook_doc_effects = match handle_notebook_doc_frame(
+                                let NotebookDocFrameOutcome::Applied(notebook_doc_effects) =
+                                    handle_notebook_doc_frame(
                                     room,
                                     &mut peer_state,
                                     &peer_writer,
                                     &frame.payload,
                                 )
-                                .await?
-                                {
-                                    NotebookDocFrameOutcome::Applied(effects) => effects,
-                                    NotebookDocFrameOutcome::Skipped => continue,
-                                };
+                                .await?;
 
                                 if notebook_doc_phase
                                     != notebook_protocol::protocol::NotebookDocPhaseWire::Interactive
