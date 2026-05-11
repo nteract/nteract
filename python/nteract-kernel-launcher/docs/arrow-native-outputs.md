@@ -35,6 +35,24 @@ The phases below are intended as targeted commits in this PR, not separate PRs.
   cuDF, narwhals, and other Arrow-compatible DataFrames without depending on
   producer-specific `_export_to_c` or PyArrow-only object types.
   <https://arrow.apache.org/docs/format/CDataInterface/PyCapsuleInterface.html>
+- The Arrow C stream interface is a pull stream of chunks with a shared schema:
+  consumers call `get_next` serially until end-of-stream. That maps cleanly to a
+  Python `RecordBatchReader`, but it also means a producer stream should be
+  treated as single-pass unless a library documents replay support.
+  <https://arrow.apache.org/docs/format/CStreamInterface.html>
+- Polars, pandas, DataFusion, DuckDB relations, narwhals wrappers, pyarrow
+  tables, and pyarrow record-batch readers all expose or consume this protocol
+  in current releases. The implementation should therefore avoid hardcoding a
+  small producer list and instead treat `__arrow_c_stream__()` as the broad
+  dataframe/table acceptance path.
+  <https://docs.pola.rs/user-guide/misc/arrow/>
+  <https://pandas.pydata.org/docs/dev/reference/api/pandas.DataFrame.from_arrow.html>
+  <https://datafusion.apache.org/python/user-guide/io/arrow.html>
+- Nanoarrow is a useful reference for lightweight Python consumers/producers of
+  Arrow PyCapsule streams. It reinforces that the PyCapsule protocol is the
+  interchange surface, while IPC serialization is a separate transport/storage
+  decision.
+  <https://arrow.apache.org/nanoarrow/latest/getting-started/python.html>
 - Jupyter-compatible incremental replacement is `display_id` plus
   `update_display_data`. It can carry the same MIME-bundle shape as
   `display_data`, so it is the compatibility bridge for progressive updates
@@ -146,6 +164,12 @@ This matches the DataFrame binding model used by Jupyter Scatter: pandas,
 polars, and any DataFrame implementing the Arrow PyCapsule interface can be
 handled through the same stream import path. Producer-specific logic should be
 fallback or row-limiting glue, not the default serialization model.
+
+Treat the imported `RecordBatchReader` as a potentially single-use source. For
+the current one-shot path, it is fine to drain the reader into one complete IPC
+stream. For the progressive path, the chunk writer should drain the same reader
+incrementally and publish chunks as batches arrive; it should not first build a
+complete IPC stream and then split the serialized bytes.
 
 For older pandas versions that do not expose `__arrow_c_stream__`, convert
 through PyArrow and write Arrow IPC stream bytes:
@@ -314,7 +338,20 @@ The architecture has three related storage forms:
 
 ### Chunk Boundaries
 
-Each chunk must be independently valid enough for Rust/WASM to validate:
+The chunking unit is one or more `RecordBatch` values pulled from a
+`RecordBatchReader`, encoded as a self-contained Arrow IPC mini-stream. Do not
+split already-serialized IPC bytes after the fact; that risks cutting through
+message boundaries and dictionary state. The producer should instead:
+
+1. Import the source object as a `RecordBatchReader` via `__arrow_c_stream__()`.
+2. Read batches in order.
+3. Accumulate batches until a byte or row budget is reached.
+4. Write those batches to a new `pa.ipc.new_stream` sink using the shared
+   schema.
+5. Store that complete mini-stream as one immutable CAS chunk before publishing
+   a manifest revision that references it.
+
+Each stored chunk must be independently valid enough for Rust/WASM to validate:
 
 - The first chunk should carry the stream schema and the first batch sequence.
 - Later chunks should align to Arrow IPC message / record-batch boundaries.
@@ -327,6 +364,11 @@ chunk a small self-contained Arrow IPC stream with the same schema. That is less
 compact than one long stream, but it is much simpler for CAS, retries, and
 renderer append. Once stable, we can consider a lower-level message-fragment
 format.
+
+Because PyCapsule streams can be single-pass, failed upload or render
+publication should not require rewinding the source. The safe retry boundary is
+the completed mini-stream bytes for the current chunk, not the upstream
+`RecordBatchReader`.
 
 ### CAS Write Model
 
@@ -601,8 +643,11 @@ Changes:
 - Use `display_id` and `update_display_data` for progressive manifest updates.
 - For pandas/polars eager dataframes, emit `df.head(n)` first, then chunk rows
   after conversion for the remaining data.
-- For Arrow-native sources, write the first record batch/head chunk directly.
-- For large or lazy sources, publish batches as they are produced.
+- For Arrow-native and PyCapsule-compatible sources, import a
+  `RecordBatchReader`, then write the first record batch or bounded mini-stream
+  chunk directly.
+- For large or lazy sources, publish completed mini-stream chunks as batches are
+  produced. Do not require a replayable source.
 
 Acceptance:
 
