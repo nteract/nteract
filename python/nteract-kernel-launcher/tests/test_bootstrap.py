@@ -385,7 +385,7 @@ def test_emit_dataframe_stashes_bytes_and_returns_bundle():
     assert isinstance(_buffer_hook.pending_buffers()[h], bytes)
     assert bundle[ARROW_STREAM_MANIFEST_MIME]["chunks"][0]["hash"] == h
     assert bundle[ARROW_STREAM_MANIFEST_MIME]["summary"]["included_rows"] == 3
-    assert bundle[ARROW_STREAM_MANIFEST_MIME]["llm"]["text"] == bundle["text/llm+plain"]
+    assert "llm" not in bundle[ARROW_STREAM_MANIFEST_MIME]
     assert bundle[ARROW_STREAM_MANIFEST_MIME]["schema"]["columns"] == [
         {"name": "a", "type": "int64", "nullable": True},
         {"name": "b", "type": "large_string", "nullable": True},
@@ -475,7 +475,7 @@ def test_emit_pyarrow_table_chunks_when_full_stream_exceeds_limit(monkeypatch):
         "sampled": False,
         "sample_strategy": "none",
     }
-    assert manifest["llm"]["text"] == bundle["text/llm+plain"]
+    assert "llm" not in manifest
     assert len(manifest["chunks"]) > 1
     refs = bundle[BLOB_REF_MIME]["refs"]
     assert len(refs) == len(manifest["chunks"])

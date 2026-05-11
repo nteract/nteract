@@ -64,7 +64,6 @@ def _bundle_for_progressive_chunk(
             complete=complete,
             summary=summary,
             schema=schema,
-            llm={"text": llm_text},
         ),
         "text/llm+plain": llm_text,
     }

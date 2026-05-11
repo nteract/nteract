@@ -296,7 +296,6 @@ def _emit_arrow_table_chunks(
             complete=True,
             summary=summary_hints,
             schema=table.schema,
-            llm={"text": llm_text} if llm_text is not None else None,
         ),
     }
     if llm_text is not None:
@@ -363,7 +362,6 @@ def _emit_table_bytes(
                 content_size=len(data),
                 row_count=included_rows,
                 summary=summary_hints,
-                llm={"text": llm_text} if llm_text is not None else None,
             )
         except Exception as exc:  # noqa: BLE001
             log.debug("arrow manifest build failed: %s", exc)

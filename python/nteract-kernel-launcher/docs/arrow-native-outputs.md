@@ -248,8 +248,8 @@ consumers do not need to fetch chunk blobs. Manifest metadata is the source of
 truth for row counts and shape; `text/llm+plain` is human-readable text derived
 from those facts.
 
-Follow-up after PR #2712: Arrow stream manifests now carry the first bounded
-LLM hint directly on the manifest:
+Follow-up after PR #2712: keep the LLM representation canonical as sibling
+`text/llm+plain`, not duplicated inside the Arrow manifest:
 
 ```json
 {
@@ -260,29 +260,24 @@ LLM hint directly on the manifest:
       { "name": "event", "type": "large_string", "nullable": true }
     ]
   },
-  "summary": { "total_rows": 2000000, "included_rows": 2000000 },
-  "llm": {
-    "content_type": "text/llm+plain",
-    "text": "DataFrame (pyarrow): 2,000,000 rows × 2 columns\n..."
-  }
+  "summary": { "total_rows": 2000000, "included_rows": 2000000 }
 }
 ```
 
-This is intentionally small. It lets MCP / runtime bindings recover a useful
-LLM table summary by reading only the manifest JSON if the sibling
-`text/llm+plain` MIME is absent, without touching Arrow chunk blobs. If
-`llm.text` is missing, the resolver can still synthesize a basic row/column/type
-summary from `summary` and `schema.columns`. The richer future research path is
-a structured `llm.columns[].stats` object derived from the existing Python-side
-dataframe stat extractors and/or `nteract-predicate`, so consumers can avoid
-parsing summary prose.
+The manifest stays a structured description of the Arrow payload. MCP / runtime
+bindings should read sibling `text/llm+plain` first and treat it as the
+producer-authored LLM text. If that sibling MIME is absent, resolvers may still
+synthesize a basic row/column/type summary from manifest `summary` and
+`schema.columns` without touching Arrow chunk blobs. The richer future research
+path is a new structured table-representation surface, not another prose copy
+inside the manifest.
 
 The precompute boundary is the Python launcher. Do not expand runtime Python or
 Node consumer APIs just to recover this text. Automatic dataframe/table
-formatters and the explicit progressive Arrow display helper should publish the
-same bounded summary both as the sibling `text/llm+plain` MIME and as manifest
-`llm.text`, so MCP, runtimed-py, runtimed-node, and frontend renderers can read
-the producer-authored text instead of calculating it independently.
+formatters and the explicit progressive Arrow display helper publish bounded
+summary text as sibling `text/llm+plain`, so MCP, runtimed-py, runtimed-node,
+and frontend renderers can read the producer-authored text instead of
+calculating it independently.
 
 ## Chunked Arrow Over CAS
 
@@ -711,10 +706,10 @@ for the staged implementation.
   - `schema.hash` intentionally remains a plain fingerprint until schema bytes
     become their own stored artifact.
 - In progress: launcher-side LLM repr precompute follow-up
-  - automatic dataframe/table formatters already publish `text/llm+plain` and
-    manifest `llm.text` from the same launcher-computed summary.
-  - progressive Arrow display revisions now do the same, including incomplete
-    and completion-only manifest updates.
+  - automatic dataframe/table formatters publish launcher-computed
+    `text/llm+plain` beside Arrow stream manifests.
+  - progressive Arrow display revisions now publish the same canonical sibling
+    MIME for incomplete and completion-only manifest updates.
   - richer structured `TABLE_REPR v1` hints remain a follow-on PR; this pass
     only makes the current compact text available early and consistently.
 
@@ -918,8 +913,8 @@ Python:
 - polars output emits Arrow IPC stream.
 - downsampled outputs carry consistent `included_rows` and `sampled` hints.
 - fallback still produces `text/llm+plain` when Arrow serialization fails.
-- Arrow stream manifests carry schema column descriptors and precomputed
-  `llm.text` when the launcher generated a table summary.
+- Arrow stream bundles carry schema column descriptors in the manifest and the
+  precomputed LLM summary as sibling `text/llm+plain`.
 
 Rust:
 
@@ -927,9 +922,9 @@ Rust:
   Face hints.
 - output store save/load externalizes direct Arrow IPC, parquet, and manifest
   chunks.
-- LLM-selective output resolution uses manifest-level `llm.text` before any
-  Arrow chunk fetch if the sibling `text/llm+plain` MIME is missing, then falls
-  back to a manifest-derived row/column/type summary.
+- LLM-selective output resolution uses sibling `text/llm+plain` first and can
+  fall back to a manifest-derived row/column/type summary without fetching
+  Arrow chunks.
 - update-display-data preserves metadata hints for manifest revisions.
 - blob upload rejects hash mismatches and missing chunks.
 - coalesced artifact generation chooses a single blob below
