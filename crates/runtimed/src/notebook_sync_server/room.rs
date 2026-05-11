@@ -1,4 +1,5 @@
 use super::*;
+use crate::async_outcome::{recv_oneshot_with_timeout, TimedOneShot};
 
 /// Per-room identity.
 ///
@@ -235,15 +236,15 @@ impl NotebookFileBinding {
             if previous_tx.send(ack_tx).is_err() {
                 return;
             }
-            match tokio::time::timeout(std::time::Duration::from_secs(5), ack_rx).await {
-                Ok(Ok(true)) => {}
-                Ok(Ok(false)) => {
+            match recv_oneshot_with_timeout(ack_rx, std::time::Duration::from_secs(5)).await {
+                TimedOneShot::Received(true) => {}
+                TimedOneShot::Received(false) => {
                     warn!("[autosave] Replaced autosave task reported failed shutdown");
                 }
-                Ok(Err(_)) => {
+                TimedOneShot::SenderDropped => {
                     warn!("[autosave] Replaced autosave task dropped shutdown ack");
                 }
-                Err(_) => {
+                TimedOneShot::TimedOut => {
                     warn!("[autosave] Timed out waiting for replaced autosave task shutdown");
                 }
             }
@@ -265,17 +266,17 @@ impl NotebookFileBinding {
             return true;
         }
 
-        match tokio::time::timeout(timeout, ack_rx).await {
-            Ok(Ok(true)) => true,
-            Ok(Ok(false)) => false,
-            Ok(Err(_)) => {
+        match recv_oneshot_with_timeout(ack_rx, timeout).await {
+            TimedOneShot::Received(true) => true,
+            TimedOneShot::Received(false) => false,
+            TimedOneShot::SenderDropped => {
                 warn!(
                     "[autosave] Shutdown ack dropped for {} before final save completed",
                     notebook_id
                 );
                 false
             }
-            Err(_) => {
+            TimedOneShot::TimedOut => {
                 warn!(
                     "[autosave] Timed out waiting for final save during shutdown of {}",
                     notebook_id

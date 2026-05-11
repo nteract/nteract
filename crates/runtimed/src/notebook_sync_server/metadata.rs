@@ -1,4 +1,5 @@
 use super::*;
+use crate::async_outcome::{recv_oneshot_with_timeout, TimedOneShot};
 use runtime_doc::{KernelActivity, KernelErrorReason, RuntimeLifecycle, TrustRuntimeState};
 
 pub struct TrustState {
@@ -3885,16 +3886,16 @@ pub(crate) async fn auto_launch_kernel(
                 }
 
                 // Wait for THIS runtime agent to establish its sync connection
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(30),
+                match recv_oneshot_with_timeout(
                     runtime_agent_connect_rx,
+                    std::time::Duration::from_secs(30),
                 )
                 .await
                 {
-                    Ok(Ok(())) => {
+                    TimedOneShot::Received(()) => {
                         info!("[notebook-sync] Agent connected, sending LaunchKernel");
                     }
-                    Ok(Err(_)) => {
+                    TimedOneShot::SenderDropped => {
                         // Oneshot sender dropped — runtime agent died or was
                         // superseded by a newer spawn before connecting.
                         warn!(
@@ -3903,7 +3904,7 @@ pub(crate) async fn auto_launch_kernel(
                         reset_starting_state(room, Some(&runtime_agent_id)).await;
                         return;
                     }
-                    Err(_) => {
+                    TimedOneShot::TimedOut => {
                         warn!("[notebook-sync] Agent failed to connect within 30s");
                         reset_starting_state(room, Some(&runtime_agent_id)).await;
                         return;

@@ -14,6 +14,7 @@ use notebook_doc::presence;
 use notebook_protocol::connection::{EnvSource, LaunchSpec, PackageManager};
 use runtime_doc::{KernelActivity, KernelErrorReason, RuntimeLifecycle};
 
+use crate::async_outcome::{recv_oneshot_with_timeout, TimedOneShot};
 use crate::daemon::Daemon;
 use crate::notebook_sync_server::{
     acquire_prewarmed_env_with_capture, build_launched_config, captured_env_for_runtime,
@@ -1581,21 +1582,21 @@ pub(crate) async fn handle(
                 }
 
                 // Wait for THIS runtime agent to connect back via socket
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(30),
+                match recv_oneshot_with_timeout(
                     runtime_agent_connect_rx,
+                    std::time::Duration::from_secs(30),
                 )
                 .await
                 {
-                    Ok(Ok(())) => {}
-                    Ok(Err(_)) => {
+                    TimedOneShot::Received(()) => {}
+                    TimedOneShot::SenderDropped => {
                         reset_starting_state(room, Some(&runtime_agent_id)).await;
                         return NotebookResponse::Error {
                             error: "Runtime agent connect cancelled (superseded or died)"
                                 .to_string(),
                         };
                     }
-                    Err(_) => {
+                    TimedOneShot::TimedOut => {
                         reset_starting_state(room, Some(&runtime_agent_id)).await;
                         return NotebookResponse::Error {
                             error: "Agent failed to connect within 30s".to_string(),
