@@ -44,6 +44,13 @@ export interface IsolatedFrameProps {
   id?: string;
 
   /**
+   * Human-readable frame name. Surfaces in dev-tools frame pickers and
+   * `window.frames` lookups. Not rendered visually - `title` is a
+   * separate attribute that we always leave empty.
+   */
+  name?: string;
+
+  /**
    * Initial content to render when the frame is ready.
    */
   initialContent?: RenderPayload;
@@ -294,6 +301,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
   function IsolatedFrame(
     {
       id,
+      name,
       initialContent,
       darkMode = true,
       colorTheme,
@@ -799,6 +807,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       <iframe
         ref={iframeRef}
         id={id}
+        name={name}
         src={frameDocument.kind === "src" ? frameDocument.url : undefined}
         srcDoc={frameDocument.kind === "srcdoc" ? frameDocument.html : undefined}
         sandbox={SANDBOX_ATTRS}
