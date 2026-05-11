@@ -171,6 +171,11 @@ const MAX_COLLAPSED_LINES = 3;
 const FOCUS_TOGGLE_MAX_DRAG_PX = 4;
 const MIN_COL_WIDTH = 60;
 const OVERSCAN = 40; // buffer rows above and below viewport
+// Chrome caps a single element's height at 16,777,214 px (2^24 - 2);
+// Firefox at ~17,895,696. Stay below the lowest with headroom. When the
+// table's true height exceeds this, the scrollbar represents a compressed
+// range and scrollTop maps non-trivially to virtual row position.
+const SCROLL_SPACER_CAP_PX = 16_000_000;
 
 // --- Table Engine ---
 
@@ -217,6 +222,17 @@ export function createTable(
 
   let totalHeight = 0;
   let heightsDirty = true;
+
+  // Scroll geometry. When totalHeight + headerH fits under SCROLL_SPACER_CAP_PX,
+  // scrollScale stays 1 and behavior is identical to a plain virtual scroller.
+  // When the virtual height exceeds the cap, the spacer is capped, scrollScale
+  // > 1, and viewport.scrollTop must be multiplied by scrollScale to recover
+  // the virtual offset that rowAtOffset() / rowPositions[] live in. Row
+  // transforms subtract virtualOffset so visible rows sit at the right
+  // viewport-relative Y as the user scrolls.
+  let spacerHeight = 0;
+  let scrollScale = 1;
+  let virtualOffset = 0;
 
   function growBuffers(needed: number) {
     if (needed <= capacity) return;
@@ -394,6 +410,28 @@ export function createTable(
       rowPositions[i + 1] = rowPositions[i] + rowHeights[i];
     }
     totalHeight = rowPositions[filteredCount];
+    recomputeScrollGeometry();
+  }
+
+  function recomputeScrollGeometry() {
+    const headerH = headerEl.offsetHeight;
+    const viewportH = viewport.clientHeight;
+    const virtualTotal = totalHeight + headerH;
+    if (virtualTotal <= SCROLL_SPACER_CAP_PX) {
+      spacerHeight = virtualTotal;
+      scrollScale = 1;
+    } else {
+      spacerHeight = SCROLL_SPACER_CAP_PX;
+      // Affine map: scrollTop ∈ [0, spacerHeight - viewportH] → virtual ∈ [0, virtualTotal - viewportH]
+      const renderedRange = Math.max(1, spacerHeight - viewportH);
+      const virtualRange = Math.max(1, virtualTotal - viewportH);
+      scrollScale = virtualRange / renderedRange;
+    }
+    updateVirtualOffset();
+  }
+
+  function updateVirtualOffset() {
+    virtualOffset = scrollScale === 1 ? 0 : viewport.scrollTop * (scrollScale - 1);
   }
 
   function rowAtOffset(offset: number): number {
@@ -433,7 +471,7 @@ export function createTable(
       }
     }
 
-    const scrollTop = Math.max(0, viewport.scrollTop - headerH);
+    const scrollTop = Math.max(0, viewport.scrollTop * scrollScale - headerH);
     const row = Math.min(rowAtOffset(scrollTop), filteredCount - 1);
     return {
       row,
@@ -454,8 +492,11 @@ export function createTable(
     pendingScrollAnchor = null;
     if (filteredCount === 0) return;
     const row = Math.min(anchor.row, filteredCount - 1);
-    const maxScrollTop = Math.max(0, totalHeight + headerH - viewport.clientHeight);
-    viewport.scrollTop = Math.min(maxScrollTop, headerH + rowPositions[row] + anchor.offset);
+    const targetVirtual = headerH + rowPositions[row] + anchor.offset;
+    const targetScroll = scrollScale === 1 ? targetVirtual : targetVirtual / scrollScale;
+    const maxScrollTop = Math.max(0, spacerHeight - viewport.clientHeight);
+    viewport.scrollTop = Math.min(maxScrollTop, targetScroll);
+    updateVirtualOffset();
   }
 
   // --- Filter + Sort ---
@@ -1501,7 +1542,7 @@ export function createTable(
       // Account for header height — row pool is absolute inside scroll-content
       const headerH = headerEl.offsetHeight;
       rowPool.style.top = headerH + "px";
-      scrollContent.style.height = totalHeight + headerH + "px";
+      scrollContent.style.height = spacerHeight + "px";
       restoreScrollAnchor(headerH);
     }
 
@@ -1516,7 +1557,7 @@ export function createTable(
     const headerH = headerEl.offsetHeight;
     // Always keep the row pool below the sticky header
     rowPool.style.top = headerH + "px";
-    const scrollTop = Math.max(0, viewport.scrollTop - headerH);
+    const scrollTop = Math.max(0, viewport.scrollTop * scrollScale - headerH);
     const viewportH = viewport.clientHeight;
 
     // True visible range (no overscan) — used for header overlays
@@ -1560,7 +1601,7 @@ export function createTable(
     // some rows use measured heights and others still use estimated offsets.
     if (lazyPrepared) {
       rebuildPositions();
-      scrollContent.style.height = totalHeight + headerH + "px";
+      scrollContent.style.height = spacerHeight + "px";
     }
 
     for (let r = first; r <= last; r++) {
@@ -1577,7 +1618,7 @@ export function createTable(
       const pr = getPooledRow();
       pr.assignedRow = r;
       pr.el.style.display = "";
-      pr.el.style.transform = `translateY(${rowPositions[r]}px)`;
+      pr.el.style.transform = `translateY(${rowPositions[r] - virtualOffset}px)`;
       pr.el.style.height = rowHeights[r] + "px";
       pr.el.setAttribute("aria-rowindex", String(r + 2)); // 1-based, header is row 1
 
@@ -1596,6 +1637,17 @@ export function createTable(
       }
     }
 
+    // Transforms depend on virtualOffset, which changes with scrollTop whenever
+    // scrollScale > 1. Re-apply to every visible row on every render so scaled
+    // tables track the scrollbar correctly. The ~50 style writes are trivial
+    // next to the scroll event rate.
+    if (scrollScale !== 1) {
+      for (const pr of pool) {
+        if (pr.assignedRow === -1) continue;
+        pr.el.style.transform = `translateY(${rowPositions[pr.assignedRow] - virtualOffset}px)`;
+      }
+    }
+
     if (lazyPrepared || (lastScrollTop === scrollTop && lastViewportHeight === viewportH)) {
       for (const pr of pool) {
         if (pr.assignedRow === -1) continue;
@@ -1603,7 +1655,7 @@ export function createTable(
           pr.cells[c].style.width = colWidths[c] + "px";
         }
         pr.el.style.height = rowHeights[pr.assignedRow] + "px";
-        pr.el.style.transform = `translateY(${rowPositions[pr.assignedRow]}px)`;
+        pr.el.style.transform = `translateY(${rowPositions[pr.assignedRow] - virtualOffset}px)`;
       }
     }
 
@@ -1624,6 +1676,7 @@ export function createTable(
 
   function onScroll() {
     // Header scrolls naturally with content (it's inside scroll-content)
+    updateVirtualOffset();
     scheduleRender();
   }
 
@@ -1631,6 +1684,7 @@ export function createTable(
 
   const onWindowResize = () => {
     fitLastColumnToViewport();
+    recomputeScrollGeometry();
     scheduleRender();
   };
   window.addEventListener("resize", onWindowResize);
