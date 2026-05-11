@@ -34,6 +34,13 @@ use serde::{Deserialize, Serialize};
 /// `application/vnd.apache.parquet`.
 pub const BLOB_REF_MIME: &str = "application/vnd.nteract.blob-ref+json";
 
+/// MIME type for Arrow IPC stream bytes.
+pub const ARROW_STREAM_MIME: &str = "application/vnd.apache.arrow.stream";
+
+/// MIME type for nteract's JSON manifest that references ordered Arrow stream
+/// chunk blobs.
+pub const ARROW_STREAM_MANIFEST_MIME: &str = "application/vnd.nteract.arrow-stream-manifest+json";
+
 /// Three-way classification of a MIME type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MimeKind {

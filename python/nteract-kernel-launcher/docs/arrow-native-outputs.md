@@ -309,18 +309,18 @@ giving renderers enough structure to fetch and append parts.
 Hash domains:
 
 - `schema.hash` covers the Arrow IPC schema message bytes (the leading
-  message of an Arrow IPC stream), stored in CAS under the nteract-owned
-  `application/vnd.apache.arrow.schema` content type so renderers can parse it
-  once and key chunk validation off the same hash. Do not store this as JSON
-  unless the hash domain changes to canonical schema JSON at the same time.
+  message of an Arrow IPC stream) or another stable schema fingerprint chosen
+  by the manifest producer. In the current implementation it is a fingerprint
+  only, not a CAS blob reference. Save/load and GC must not rewrite it until a
+  future schema-blob design stores schema bytes separately.
 - Each `chunks[].hash` covers the bytes of the chunk blob the daemon stored
   via `BlobStore::put`. With self-contained per-chunk Arrow IPC streams (see
   "Chunk Boundaries"), `hash` covers a complete decodable mini-stream
   including the schema and any dictionary batches.
 
-For v1, "schema compatibility" between chunks means byte-equal `schema.hash`
-against the manifest's top-level schema hash. Promotable type checks are
-deferred until we have a concrete reason for them.
+For v1, "schema compatibility" between chunks means byte-equal schema
+fingerprints against the manifest's top-level schema hash. Promotable type
+checks are deferred until we have a concrete reason for them.
 
 ### Stored Forms
 
@@ -398,13 +398,18 @@ When the daemon writes the notebook to disk, it walks the manifest:
 
 1. For each `chunks[].hash`, ensure the blob is in CAS, and rewrite the entry
    to a blob-ref form the on-disk loader can resolve back into bytes.
-2. Apply the same to `schema.hash`.
-3. Write the rest of the manifest (chunk metadata, summary, table hints)
+2. Apply the same transform to `coalesced.hash` and
+   `coalesced.segments[].hash` when present.
+3. Leave `schema.hash` unchanged because it is a fingerprint, not a stored
+   schema blob.
+4. Write the rest of the manifest (chunk metadata, summary, table hints)
    inline in the saved output JSON.
 
-Load reverses the walk: blob refs in chunk and schema slots are resolved back
-into hash + content_type before the manifest is handed to renderers. This
-keeps `.ipynb` files small without inlining base64 chunk bytes.
+Load reverses the walk: blob refs in chunk/coalesced slots are resolved back
+into hash + content_type before the manifest is handed to renderers. Missing
+chunk blobs drop only the manifest MIME and preserve fallback siblings such as
+`text/plain` / `text/llm+plain`. This keeps `.ipynb` files small without
+inlining base64 chunk bytes.
 
 ### Coalesced Artifacts
 
@@ -663,6 +668,15 @@ for the staged implementation.
 - Next: decide whether automatic large dataframe reprs should opt into the
   helper by publishing their own display output, or stay one-shot while direct
   daemon blob upload and save/load manifest externalization are completed.
+- In progress: durable manifest save/load and GC collection follow-up
+  - runtime save rewrites `chunks[].hash`, `coalesced.hash`, and
+    `coalesced.segments[].hash` to nested `{blob, size, content_type}` refs
+    while preserving the manifest MIME and fallback siblings.
+  - runtime load restores those nested refs back to renderer-facing `hash`
+    entries; missing chunk blobs drop only the manifest MIME.
+  - active-room blob GC now marks Arrow manifest chunk/coalesced hashes.
+  - `schema.hash` intentionally remains a plain fingerprint until schema bytes
+    become their own stored artifact.
 
 ### Phase 1: Canonical Arrow For DataFrames
 
@@ -720,8 +734,9 @@ Changes:
 - Add `application/vnd.nteract.arrow-stream-manifest+json` to MIME priority and
   Sift routing.
 - Switch launcher producers to emit one-chunk manifests by default.
-- Teach runtime save/load to externalize manifest chunk and schema blobs by
-  walking `chunks[].hash` and `schema.hash` (see "Save Resolution").
+- Teach runtime save/load to externalize manifest chunk/coalesced blobs by
+  walking `chunks[].hash`, `coalesced.hash`, and
+  `coalesced.segments[].hash` (see "Save Resolution").
 - Teach Sift to load a single manifest chunk into the existing `load_ipc` path.
 
 Acceptance:
