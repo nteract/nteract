@@ -197,17 +197,22 @@ async fn flush_stream_output(
     kernel_actor_id: &str,
     flush: PendingStreamFlush,
 ) {
-    let known_state = {
+    let (known_state, rendered_text) = {
         let terminals = stream_terminals.lock().await;
-        terminals
-            .get_output_state(&flush.execution_id, &flush.stream_name)
-            .cloned()
+        (
+            terminals
+                .get_output_state(&flush.execution_id, &flush.stream_name)
+                .cloned(),
+            terminals
+                .render(&flush.execution_id, &flush.stream_name)
+                .unwrap_or_default(),
+        )
     };
 
     let nbformat_value = serde_json::json!({
         "output_type": "stream",
         "name": flush.stream_name,
-        "text": flush.rendered_text,
+        "text": rendered_text,
     });
 
     let manifest =
@@ -1537,15 +1542,14 @@ impl KernelConnection for JupyterKernel {
                                         };
                                         let eid = execution_id.clone().unwrap_or_default();
 
-                                        let rendered_text = {
+                                        {
                                             let mut terminals = iopub_stream_terminals.lock().await;
-                                            terminals.feed(&eid, stream_name, &stream.text)
-                                        };
+                                            terminals.feed_chunk(&eid, stream_name, &stream.text);
+                                        }
 
                                         if let Some(flush) = stream_flushes.record_chunk(
                                             &eid,
                                             stream_name,
-                                            rendered_text,
                                             stream.text.len(),
                                             std::time::Instant::now(),
                                         ) {

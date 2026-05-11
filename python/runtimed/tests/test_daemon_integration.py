@@ -1064,6 +1064,28 @@ print("line 3")
         expected = "line 1\nline 2\nline 3\n"
         assert result.stdout == expected
 
+    async def test_noisy_stdout_final_output_reconciles(self, session):
+        """Coalesced stdout chunks should still reconcile to the final stream text."""
+        await async_start_kernel_with_retry(session)
+
+        line_count = 2_000
+        cell_id = await async_create_cell_and_wait_for_sync(
+            session,
+            f"""
+import sys
+
+for i in range({line_count}):
+    sys.stdout.write(f"chunk-{{i}}\\n")
+    sys.stdout.flush()
+""",
+        )
+        result = await session.execute_cell(cell_id, timeout_secs=30)
+
+        assert result.success, result.stderr
+        assert "chunk-0\n" in result.stdout
+        assert f"chunk-{line_count - 1}\n" in result.stdout
+        assert result.stdout.count("chunk-") == line_count
+
     async def test_interleaved_stdout_stderr_separate(self, session):
         """Interleaved stdout and stderr should remain separate streams."""
         await async_start_kernel_with_retry(session)

@@ -18,12 +18,10 @@ pub(crate) const STREAM_FLUSH_MAX_BYTES: usize = 64 * 1024;
 pub(crate) struct PendingStreamFlush {
     pub execution_id: String,
     pub stream_name: String,
-    pub rendered_text: String,
 }
 
 #[derive(Debug, Clone)]
 struct StreamFlushEntry {
-    rendered_text: Option<String>,
     pending_bytes: usize,
     has_flushed: bool,
     last_flush: Instant,
@@ -55,18 +53,15 @@ impl StreamFlushBuffer {
         &mut self,
         execution_id: &str,
         stream_name: &str,
-        rendered_text: String,
         chunk_bytes: usize,
         now: Instant,
     ) -> Option<PendingStreamFlush> {
         let key = (execution_id.to_string(), stream_name.to_string());
         let entry = self.entries.entry(key.clone()).or_insert(StreamFlushEntry {
-            rendered_text: None,
             pending_bytes: 0,
             has_flushed: false,
             last_flush: now,
         });
-        entry.rendered_text = Some(rendered_text);
         entry.pending_bytes = entry.pending_bytes.saturating_add(chunk_bytes);
 
         let delay_elapsed =
@@ -101,14 +96,12 @@ impl StreamFlushBuffer {
 
     fn take_key(&mut self, key: &StreamKey, now: Instant) -> Option<PendingStreamFlush> {
         let entry = self.entries.get_mut(key)?;
-        let rendered_text = entry.rendered_text.take()?;
         entry.pending_bytes = 0;
         entry.has_flushed = true;
         entry.last_flush = now;
         Some(PendingStreamFlush {
             execution_id: key.0.clone(),
             stream_name: key.1.clone(),
-            rendered_text,
         })
     }
 }
@@ -127,109 +120,69 @@ mod tests {
         let mut buffer = buffer();
 
         let flush = buffer
-            .record_chunk("e1", "stdout", "hello".into(), 5, now)
+            .record_chunk("e1", "stdout", 5, now)
             .expect("first chunk should flush");
 
         assert_eq!(flush.execution_id, "e1");
         assert_eq!(flush.stream_name, "stdout");
-        assert_eq!(flush.rendered_text, "hello");
     }
 
     #[test]
     fn subsequent_small_chunks_are_coalesced_until_delay() {
         let now = Instant::now();
         let mut buffer = buffer();
+        assert!(buffer.record_chunk("e1", "stdout", 1, now).is_some());
         assert!(buffer
-            .record_chunk("e1", "stdout", "a".into(), 1, now)
-            .is_some());
-        assert!(buffer
-            .record_chunk(
-                "e1",
-                "stdout",
-                "ab".into(),
-                1,
-                now + Duration::from_millis(10)
-            )
+            .record_chunk("e1", "stdout", 1, now + Duration::from_millis(10))
             .is_none());
 
-        let flush = buffer
-            .record_chunk(
-                "e1",
-                "stdout",
-                "abc".into(),
-                1,
-                now + Duration::from_millis(100),
-            )
-            .expect("delay should flush latest rendered text");
-
-        assert_eq!(flush.rendered_text, "abc");
+        buffer
+            .record_chunk("e1", "stdout", 1, now + Duration::from_millis(100))
+            .expect("delay should flush");
     }
 
     #[test]
-    fn byte_threshold_flushes_latest_rendered_text() {
+    fn byte_threshold_flushes() {
         let now = Instant::now();
         let mut buffer = buffer();
-        assert!(buffer
-            .record_chunk("e1", "stdout", "a".into(), 1, now)
-            .is_some());
-        assert!(buffer
-            .record_chunk("e1", "stdout", "abcdef".into(), 6, now)
-            .is_none());
+        assert!(buffer.record_chunk("e1", "stdout", 1, now).is_some());
+        assert!(buffer.record_chunk("e1", "stdout", 6, now).is_none());
 
-        let flush = buffer
-            .record_chunk("e1", "stdout", "abcdefghij".into(), 4, now)
+        buffer
+            .record_chunk("e1", "stdout", 4, now)
             .expect("byte threshold should flush");
-
-        assert_eq!(flush.rendered_text, "abcdefghij");
     }
 
     #[test]
     fn flush_execution_returns_all_dirty_streams_for_execution() {
         let now = Instant::now();
         let mut buffer = buffer();
-        assert!(buffer
-            .record_chunk("e1", "stdout", "out".into(), 3, now)
-            .is_some());
-        assert!(buffer
-            .record_chunk("e1", "stdout", "out2".into(), 4, now)
-            .is_none());
-        assert!(buffer
-            .record_chunk("e1", "stderr", "err".into(), 3, now)
-            .is_some());
-        assert!(buffer
-            .record_chunk("e1", "stderr", "err2".into(), 4, now)
-            .is_none());
-        assert!(buffer
-            .record_chunk("e2", "stdout", "other".into(), 5, now)
-            .is_some());
-        assert!(buffer
-            .record_chunk("e2", "stdout", "other2".into(), 6, now)
-            .is_none());
+        assert!(buffer.record_chunk("e1", "stdout", 3, now).is_some());
+        assert!(buffer.record_chunk("e1", "stdout", 4, now).is_none());
+        assert!(buffer.record_chunk("e1", "stderr", 3, now).is_some());
+        assert!(buffer.record_chunk("e1", "stderr", 4, now).is_none());
+        assert!(buffer.record_chunk("e2", "stdout", 5, now).is_some());
+        assert!(buffer.record_chunk("e2", "stdout", 6, now).is_none());
 
         let mut flushes = buffer.flush_execution("e1", now);
         flushes.sort_by(|a, b| a.stream_name.cmp(&b.stream_name));
 
         assert_eq!(flushes.len(), 2);
         assert_eq!(flushes[0].stream_name, "stderr");
-        assert_eq!(flushes[0].rendered_text, "err2");
         assert_eq!(flushes[1].stream_name, "stdout");
-        assert_eq!(flushes[1].rendered_text, "out2");
 
         let remaining = buffer.flush_execution("e2", now);
         assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].rendered_text, "other2");
+        assert_eq!(remaining[0].execution_id, "e2");
+        assert_eq!(remaining[0].stream_name, "stdout");
     }
 
     #[test]
     fn clear_execution_discards_dirty_streams() {
         let now = Instant::now();
         let mut buffer = buffer();
-        assert!(buffer
-            .record_chunk("e1", "stdout", "out".into(), 3, now)
-            .is_some());
-        assert!(buffer
-            .record_chunk("e1", "stdout", "out2".into(), 4, now)
-            .is_none());
+        assert!(buffer.record_chunk("e1", "stdout", 3, now).is_some());
+        assert!(buffer.record_chunk("e1", "stdout", 4, now).is_none());
 
         buffer.clear_execution("e1");
 
