@@ -276,6 +276,7 @@ def build_arrow_stream_manifest_from_chunks(
     *,
     complete: bool,
     summary: dict[str, Any] | None = None,
+    schema: Any | None = None,
 ) -> dict[str, Any]:
     """Build an Arrow stream manifest for ordered IPC mini-stream chunks."""
     import pyarrow as pa
@@ -283,8 +284,8 @@ def build_arrow_stream_manifest_from_chunks(
     if not chunks:
         raise ValueError("at least one Arrow stream chunk is required")
 
-    reader = pa.ipc.open_stream(pa.BufferReader(chunks[0].data))
-    schema = reader.schema
+    if schema is None:
+        schema = pa.ipc.open_stream(pa.BufferReader(chunks[0].data)).schema
     schema_bytes = schema.serialize().to_pybytes()
     metadata = schema.metadata or {}
 

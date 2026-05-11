@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from itertools import chain
 from typing import Any
 
 from nteract_kernel_launcher._buffer_hook import pending_buffers
@@ -42,10 +43,12 @@ def _summary_text(summary: dict[str, Any], *, complete: bool) -> str:
 
 def _bundle_for_progressive_chunk(
     *,
-    current_chunk: ArrowStreamChunk,
+    current_chunk: ArrowStreamChunk | None,
     chunks: list[ArrowStreamChunk],
     complete: bool,
     total_rows: int | None,
+    schema: Any,
+    include_blob_ref: bool,
 ) -> dict[str, Any]:
     included_rows = sum(chunk.row_count for chunk in chunks)
     summary = _summary_hints(
@@ -54,20 +57,30 @@ def _bundle_for_progressive_chunk(
         complete=complete,
     )
 
-    ref = BlobRef(hash=current_chunk.content_hash, size=current_chunk.size)
-    ref_bundle = build_ref_bundle(ref, content_type=ARROW_STREAM_MIME, summary=summary)
-    ref_bundle["buffer_index"] = 0
-
-    pending_buffers()[current_chunk.content_hash] = current_chunk.data
-    return {
-        BLOB_REF_MIME: ref_bundle,
+    bundle: dict[str, Any] = {
         ARROW_STREAM_MANIFEST_MIME: build_arrow_stream_manifest_from_chunks(
             chunks,
             complete=complete,
             summary=summary,
+            schema=schema,
         ),
         "text/llm+plain": _summary_text(summary, complete=complete),
     }
+    if include_blob_ref:
+        if current_chunk is None:
+            raise ValueError("current_chunk is required when include_blob_ref=True")
+        ref = BlobRef(hash=current_chunk.content_hash, size=current_chunk.size)
+        ref_bundle = build_ref_bundle(ref, content_type=ARROW_STREAM_MIME, summary=summary)
+        ref_bundle["buffer_index"] = 0
+        pending_buffers()[current_chunk.content_hash] = current_chunk.data
+        bundle[BLOB_REF_MIME] = ref_bundle
+    return bundle
+
+
+def _schema_for_chunk(chunk: ArrowStreamChunk) -> Any:
+    import pyarrow as pa
+
+    return pa.ipc.open_stream(pa.BufferReader(chunk.data)).schema
 
 
 def display_arrow_stream(
@@ -87,28 +100,58 @@ def display_arrow_stream(
     if display_fn is None:
         from IPython.display import display as display_fn
 
-    chunks: list[ArrowStreamChunk] = []
-    handle = None
-    for chunk in iter_arrow_stream_chunks(source, max_chunk_bytes=max_chunk_bytes):
+    iterator = iter(iter_arrow_stream_chunks(source, max_chunk_bytes=max_chunk_bytes))
+    try:
+        first_chunk = next(iterator)
+    except StopIteration:
+        return None
+
+    schema = _schema_for_chunk(first_chunk)
+    chunks: list[ArrowStreamChunk] = [first_chunk]
+
+    try:
+        second_chunk = next(iterator)
+    except StopIteration:
+        bundle = _bundle_for_progressive_chunk(
+            current_chunk=first_chunk,
+            chunks=chunks,
+            complete=True,
+            total_rows=total_rows,
+            schema=schema,
+            include_blob_ref=True,
+        )
+        return display_fn(bundle, raw=True, display_id=display_id)
+
+    first_bundle = _bundle_for_progressive_chunk(
+        current_chunk=first_chunk,
+        chunks=chunks,
+        complete=False,
+        total_rows=total_rows,
+        schema=schema,
+        include_blob_ref=True,
+    )
+    handle = display_fn(first_bundle, raw=True, display_id=display_id)
+
+    for chunk in chain([second_chunk], iterator):
         chunks.append(chunk)
         bundle = _bundle_for_progressive_chunk(
             current_chunk=chunk,
             chunks=chunks,
             complete=False,
             total_rows=total_rows,
+            schema=schema,
+            include_blob_ref=True,
         )
-        if handle is None:
-            handle = display_fn(bundle, raw=True, display_id=display_id)
-        else:
-            handle.update(bundle, raw=True)
+        handle.update(bundle, raw=True)
 
-    if chunks and handle is not None:
-        final_bundle = _bundle_for_progressive_chunk(
-            current_chunk=chunks[-1],
-            chunks=chunks,
-            complete=True,
-            total_rows=total_rows,
-        )
-        handle.update(final_bundle, raw=True)
+    final_bundle = _bundle_for_progressive_chunk(
+        current_chunk=None,
+        chunks=chunks,
+        complete=True,
+        total_rows=total_rows,
+        schema=schema,
+        include_blob_ref=False,
+    )
+    handle.update(final_bundle, raw=True)
 
     return handle

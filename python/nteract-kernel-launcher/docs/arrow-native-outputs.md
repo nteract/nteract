@@ -638,6 +638,13 @@ for the staged implementation.
   - confirmed-fix: keep all React hooks in `SiftRenderer` before the invalid
     manifest fallback return.
 - Review rerun: `pr-reviewer` reported `verdict: clear` for `a2944dd0`.
+- Review rerun found two progressive-helper performance concerns. Disposition:
+  - confirmed-fix: single-chunk sources publish one complete `display_data`
+    bundle instead of an incomplete display followed by a duplicate completion
+    update.
+  - confirmed-fix: completion-only manifest updates do not resend chunk bytes,
+    and progressive manifest construction reuses the first chunk schema instead
+    of reparsing it for every revision.
 - Next: decide whether automatic large dataframe reprs should opt into the
   helper by publishing their own display output, or stay one-shot while direct
   daemon blob upload and save/load manifest externalization are completed.
