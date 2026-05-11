@@ -53,7 +53,7 @@ tokio = { version = "1.36.0", features = ["full"] }
 jupyter-zmq-client = { version = "1.0.0", default-features = false }
 jupyter-protocol = "2.0.1"
 nbformat = "3.0.0"
-automerge = { git = "https://github.com/nteract/automerge", rev = "286937778b7d04e25049e70918a9a9a943e8e9ca" }
+automerge = { git = "https://github.com/nteract/automerge", rev = "8bf500569ff404967d1bb2370645d4f97a5f42cd" }
 thiserror = "2"
 schemars = "1"
 notify = "8"
