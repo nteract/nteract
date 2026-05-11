@@ -28,7 +28,10 @@ use automerge::sync;
 use automerge::sync::SyncDoc;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, AutomergeError, ObjId, ObjType, ReadDoc};
-use automerge_recovery::{catch_automerge_panic, AutomergeOperationError, AutomergeRecoveryError};
+use automerge_recovery::{
+    catch_automerge_panic, catch_automerge_result, AutomergeAttempt, AutomergeOperationError,
+    AutomergeRecoveryError,
+};
 use log::info;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -1162,14 +1165,16 @@ impl SettingsDoc {
         message: sync::Message,
     ) -> Result<(), AutomergeOperationError> {
         let label = label.into();
-        match catch_automerge_panic(label.clone(), || {
+        match catch_automerge_result(label.clone(), || {
             #[cfg(debug_assertions)]
             Self::panic_if_requested(&PANIC_ON_NEXT_RECEIVE_SYNC_CALLS, "receive sync");
             self.receive_sync_message(peer_state, message)
         }) {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
-            Err(error) => Err(AutomergeOperationError::Panic(error)),
+            AutomergeAttempt::Success(()) => Ok(()),
+            AutomergeAttempt::OperationError(source) => {
+                Err(AutomergeOperationError::automerge(label, source))
+            }
+            AutomergeAttempt::Panic(error) => Err(AutomergeOperationError::Panic(error)),
         }
     }
 
