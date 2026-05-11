@@ -515,7 +515,10 @@ jobs:
 
       - name: Clippy
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        # runtimed-py is built/tested in the dedicated maturin/PyO3 job below.
+        # Testing it as a plain workspace crate links the extension-module build
+        # without Python symbols on macOS.
+        run: cargo clippy --workspace --exclude runtimed-py --all-targets -- -D warnings
 
       - name: Build
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
@@ -523,7 +526,7 @@ jobs:
 
       - name: Run tests
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
-        run: cargo test --workspace --exclude runtimed-node --verbose
+        run: cargo test --workspace --exclude runtimed-node --exclude runtimed-py --verbose
 
   # Build Tauri app once and share with E2E shards
   # E2E smoke test - verifies basic app functionality
