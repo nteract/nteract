@@ -3860,9 +3860,12 @@ impl Daemon {
                         "[runtimed] GC: 0 active rooms and no room has loaded since startup; skipping blob sweep this cycle"
                     );
                 } else {
-                    let mut referenced_hashes =
-                        Self::collect_blob_refs_for_gc(&room_arcs, &self.config.notebook_docs_dir)
-                            .await;
+                    let mut referenced_hashes = Self::collect_blob_refs_for_gc(
+                        &room_arcs,
+                        &self.config.notebook_docs_dir,
+                        &self.blob_store,
+                    )
+                    .await;
                     referenced_hashes.extend(execution_store_refs);
                     Self::sweep_orphaned_blobs(&self.blob_store, &referenced_hashes, blob_max_age)
                         .await;
@@ -3886,7 +3889,10 @@ fn collect_blob_hashes(
 ) {
     // display_data / execute_result: data.{mime_type}.blob
     if let Some(data) = manifest.get("data").and_then(|d| d.as_object()) {
-        for mime_data in data.values() {
+        for (mime_type, mime_data) in data {
+            if mime_type == notebook_doc::mime::ARROW_STREAM_MANIFEST_MIME {
+                collect_arrow_manifest_hashes(mime_data, hashes);
+            }
             if let Some(hash) = mime_data.get("blob").and_then(|b| b.as_str()) {
                 hashes.insert(hash.to_string());
             }
@@ -3908,6 +3914,98 @@ fn collect_blob_hashes(
         .and_then(|t| t.get("blob"))
         .and_then(|b| b.as_str())
     {
+        hashes.insert(hash.to_string());
+    }
+}
+
+async fn collect_blob_hashes_with_store(
+    manifest: &serde_json::Value,
+    hashes: &mut std::collections::HashSet<String>,
+    blob_store: &BlobStore,
+) {
+    collect_blob_hashes(manifest, hashes);
+
+    let Some(data) = manifest.get("data").and_then(|d| d.as_object()) else {
+        return;
+    };
+    let Some(manifest_ref) = data.get(notebook_doc::mime::ARROW_STREAM_MANIFEST_MIME) else {
+        return;
+    };
+    let Some(hash) = manifest_ref.get("blob").and_then(|b| b.as_str()) else {
+        return;
+    };
+
+    let bytes = match blob_store.get(hash).await {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return,
+        Err(e) => {
+            warn!(
+                "[runtimed] GC: failed to read Arrow stream manifest blob {}: {}",
+                hash, e
+            );
+            return;
+        }
+    };
+    let content = match String::from_utf8(bytes) {
+        Ok(content) => content,
+        Err(e) => {
+            warn!(
+                "[runtimed] GC: Arrow stream manifest blob {} is not UTF-8 JSON: {}",
+                hash, e
+            );
+            return;
+        }
+    };
+    let parsed = match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            warn!(
+                "[runtimed] GC: failed to parse Arrow stream manifest blob {}: {}",
+                hash, e
+            );
+            return;
+        }
+    };
+    collect_arrow_manifest_hashes(&parsed, hashes);
+}
+
+fn collect_arrow_manifest_hashes(
+    manifest: &serde_json::Value,
+    hashes: &mut std::collections::HashSet<String>,
+) {
+    if let Some(inline) = manifest.get("inline").and_then(|v| v.as_str()) {
+        match serde_json::from_str::<serde_json::Value>(inline) {
+            Ok(parsed) => {
+                collect_arrow_manifest_hashes(&parsed, hashes);
+            }
+            Err(e) => {
+                warn!(
+                    "[runtimed] GC: failed to parse inline Arrow stream manifest: {}",
+                    e
+                );
+            }
+        }
+        return;
+    }
+
+    if let Some(chunks) = manifest.get("chunks").and_then(|v| v.as_array()) {
+        for chunk in chunks {
+            collect_hash_field(chunk, hashes);
+        }
+    }
+
+    if let Some(coalesced) = manifest.get("coalesced") {
+        collect_hash_field(coalesced, hashes);
+        if let Some(segments) = coalesced.get("segments").and_then(|v| v.as_array()) {
+            for segment in segments {
+                collect_hash_field(segment, hashes);
+            }
+        }
+    }
+}
+
+fn collect_hash_field(value: &serde_json::Value, hashes: &mut std::collections::HashSet<String>) {
+    if let Some(hash) = value.get("hash").and_then(|h| h.as_str()) {
         hashes.insert(hash.to_string());
     }
 }
@@ -4062,6 +4160,7 @@ impl Daemon {
     pub(crate) async fn collect_blob_refs_for_gc(
         rooms: &[(String, Arc<crate::notebook_sync_server::NotebookRoom>)],
         notebook_docs_dir: &Path,
+        blob_store: &BlobStore,
     ) -> std::collections::HashSet<String> {
         /// Rooms are scanned in batches so the sweep yields back to other
         /// daemon tasks; keeping the constant local keeps it near the loop.
@@ -4074,20 +4173,25 @@ impl Daemon {
         // 1. In-memory: active rooms (RuntimeStateDoc + notebook doc).
         for batch in rooms.chunks(ROOM_BATCH_SIZE) {
             for (_id, room) in batch {
+                let mut outputs = Vec::new();
                 let _ = room.state.read(|sd| {
                     let state = sd.read_state();
                     for exec in state.executions.values() {
                         for output in &exec.outputs {
-                            collect_blob_hashes(output, &mut referenced_hashes);
+                            outputs.push(output.clone());
                         }
                     }
                     for comm in state.comms.values() {
                         for output in &comm.outputs {
-                            collect_blob_hashes(output, &mut referenced_hashes);
+                            outputs.push(output.clone());
                         }
                         collect_blob_hashes_recursive(&comm.state, &mut referenced_hashes);
                     }
                 });
+                for output in outputs {
+                    collect_blob_hashes_with_store(&output, &mut referenced_hashes, blob_store)
+                        .await;
+                }
                 {
                     let doc = room.doc.read().await;
                     for cell in doc.get_cells() {
@@ -6232,6 +6336,95 @@ mod tests {
     }
 
     #[test]
+    fn test_collect_blob_hashes_arrow_stream_manifest_chunks() {
+        let arrow_manifest = serde_json::json!({
+            "version": 1,
+            "chunks": [
+                {"hash": "chunk_a", "size": 10, "row_count": 5},
+                {"hash": "chunk_b", "size": 11, "row_count": 5}
+            ],
+            "coalesced": {
+                "strategy": "segment_manifest",
+                "segments": [
+                    {"hash": "segment_a", "offset": 0, "size": 10},
+                    {"hash": "segment_b", "offset": 10, "size": 11}
+                ]
+            },
+            "schema": {"hash": "schema-fingerprint-only"}
+        });
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                "application/vnd.nteract.arrow-stream-manifest+json": {
+                    "inline": arrow_manifest.to_string()
+                }
+            }
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes(&output, &mut hashes);
+
+        assert!(hashes.contains("chunk_a"));
+        assert!(hashes.contains("chunk_b"));
+        assert!(hashes.contains("segment_a"));
+        assert!(hashes.contains("segment_b"));
+        assert!(
+            !hashes.contains("schema-fingerprint-only"),
+            "schema.hash is a fingerprint, not a blob ref"
+        );
+        assert_eq!(hashes.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_collect_blob_hashes_arrow_stream_manifest_blob_ref() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = BlobStore::new(tmp.path().join("blobs"));
+        let arrow_manifest = serde_json::json!({
+            "version": 1,
+            "chunks": [
+                {"hash": "chunk_a", "size": 10, "row_count": 5},
+                {"hash": "chunk_b", "size": 11, "row_count": 5}
+            ],
+            "coalesced": {
+                "strategy": "segment_manifest",
+                "segments": [
+                    {"hash": "segment_a", "offset": 0, "size": 10},
+                    {"hash": "segment_b", "offset": 10, "size": 11}
+                ]
+            },
+            "schema": {"hash": "schema-fingerprint-only"}
+        });
+        let manifest_hash = blob_store
+            .put(
+                arrow_manifest.to_string().as_bytes(),
+                notebook_doc::mime::ARROW_STREAM_MANIFEST_MIME,
+            )
+            .await
+            .unwrap();
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                "application/vnd.nteract.arrow-stream-manifest+json": {
+                    "blob": manifest_hash,
+                    "size": arrow_manifest.to_string().len()
+                }
+            }
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes_with_store(&output, &mut hashes, &blob_store).await;
+
+        assert!(hashes.contains(&manifest_hash));
+        assert!(hashes.contains("chunk_a"));
+        assert!(hashes.contains("chunk_b"));
+        assert!(hashes.contains("segment_a"));
+        assert!(hashes.contains("segment_b"));
+        assert!(
+            !hashes.contains("schema-fingerprint-only"),
+            "schema.hash is a fingerprint, not a blob ref"
+        );
+        assert_eq!(hashes.len(), 5);
+    }
+
+    #[test]
     fn test_collect_blob_hashes_stream() {
         let manifest = serde_json::json!({
             "output_type": "stream",
@@ -7115,7 +7308,8 @@ mod tests {
         write_persisted_doc_with_blob(&docs_dir, "untitled-xyz", "cafebabe", "facefeed");
 
         let rooms: Vec<(String, Arc<crate::notebook_sync_server::NotebookRoom>)> = vec![];
-        let refs = Daemon::collect_blob_refs_for_gc(&rooms, &docs_dir).await;
+        let blob_store = BlobStore::new(tmp.path().join("blobs"));
+        let refs = Daemon::collect_blob_refs_for_gc(&rooms, &docs_dir, &blob_store).await;
         assert!(
             refs.contains("cafebabe"),
             "persisted-doc blob ref should be collected, got {:?}",

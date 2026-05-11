@@ -52,7 +52,9 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use notebook_doc::mime::{is_binary_mime, BLOB_REF_MIME};
+use notebook_doc::mime::{
+    is_binary_mime, ARROW_STREAM_MANIFEST_MIME, ARROW_STREAM_MIME, BLOB_REF_MIME,
+};
 
 use crate::blob_store::BlobStore;
 
@@ -1066,6 +1068,15 @@ async fn convert_data_bundle(
             }
         }
     }
+    if let Some(manifest_value) = bundle.get_mut(ARROW_STREAM_MANIFEST_MIME) {
+        let keep_manifest = restore_arrow_manifest_refs(manifest_value, blob_store)?;
+        if !keep_manifest {
+            tracing::warn!(
+                "[output-store] dropping Arrow stream manifest because a referenced chunk blob is missing"
+            );
+            bundle.remove(ARROW_STREAM_MANIFEST_MIME);
+        }
+    }
 
     let media: jupyter_protocol::media::Media = serde_json::from_value(Value::Object(bundle))
         .map_err(|e| {
@@ -1168,7 +1179,17 @@ async fn resolve_data_bundle(
             }
         }
 
-        let value = if is_binary_mime(mime_type) {
+        let value = if mime_type == ARROW_STREAM_MANIFEST_MIME {
+            let content = content_ref.resolve(blob_store).await?;
+            let mut manifest = serde_json::from_str(&content).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("failed to parse Arrow stream manifest: {e}"),
+                )
+            })?;
+            externalize_arrow_manifest_refs(&mut manifest, blob_store).await?;
+            manifest
+        } else if is_binary_mime(mime_type) {
             // Binary: read raw bytes from blob → base64-encode for nbformat
             let base64_str = content_ref.resolve_binary_as_base64(blob_store).await?;
             Value::String(base64_str)
@@ -1185,6 +1206,150 @@ async fn resolve_data_bundle(
     }
 
     Ok(result)
+}
+
+async fn externalize_arrow_manifest_refs(
+    manifest: &mut Value,
+    blob_store: &BlobStore,
+) -> io::Result<()> {
+    if let Some(chunks) = manifest.get_mut("chunks").and_then(|v| v.as_array_mut()) {
+        for chunk in chunks {
+            if let Some(obj) = chunk.as_object_mut() {
+                externalize_arrow_ref_object(obj, blob_store).await?;
+            }
+        }
+    }
+
+    if let Some(coalesced) = manifest
+        .get_mut("coalesced")
+        .and_then(|v| v.as_object_mut())
+    {
+        externalize_arrow_ref_object(coalesced, blob_store).await?;
+        if let Some(segments) = coalesced.get_mut("segments").and_then(|v| v.as_array_mut()) {
+            for segment in segments {
+                if let Some(obj) = segment.as_object_mut() {
+                    externalize_arrow_ref_object(obj, blob_store).await?;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn externalize_arrow_ref_object(
+    obj: &mut serde_json::Map<String, Value>,
+    blob_store: &BlobStore,
+) -> io::Result<()> {
+    let Some(hash) = obj.get("hash").and_then(|v| v.as_str()).map(str::to_string) else {
+        return Ok(());
+    };
+
+    if !blob_store.exists(&hash) {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("arrow manifest references missing blob: {hash}"),
+        ));
+    }
+
+    let size = match obj.get("size").and_then(|v| v.as_u64()) {
+        Some(size) => size,
+        None => {
+            blob_store
+                .get_meta(&hash)
+                .await?
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("arrow manifest references missing blob metadata: {hash}"),
+                    )
+                })?
+                .size
+        }
+    };
+
+    obj.remove("hash");
+    obj.insert("blob".to_string(), Value::String(hash));
+    obj.insert("size".to_string(), json!(size));
+    obj.insert(
+        "content_type".to_string(),
+        Value::String(ARROW_STREAM_MIME.to_string()),
+    );
+
+    Ok(())
+}
+
+fn restore_arrow_manifest_refs(manifest: &mut Value, blob_store: &BlobStore) -> io::Result<bool> {
+    if let Value::String(content) = manifest {
+        let parsed: Value = serde_json::from_str(content).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to parse Arrow stream manifest: {e}"),
+            )
+        })?;
+        *manifest = parsed;
+    }
+
+    if let Some(chunks) = manifest.get_mut("chunks").and_then(|v| v.as_array_mut()) {
+        for chunk in chunks {
+            if let Some(obj) = chunk.as_object_mut() {
+                if !restore_arrow_ref_object(obj, blob_store)? {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+
+    if let Some(coalesced) = manifest
+        .get_mut("coalesced")
+        .and_then(|v| v.as_object_mut())
+    {
+        if !restore_arrow_ref_object(coalesced, blob_store)? {
+            return Ok(false);
+        }
+        if let Some(segments) = coalesced.get_mut("segments").and_then(|v| v.as_array_mut()) {
+            for segment in segments {
+                if let Some(obj) = segment.as_object_mut() {
+                    if !restore_arrow_ref_object(obj, blob_store)? {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(true)
+}
+
+fn restore_arrow_ref_object(
+    obj: &mut serde_json::Map<String, Value>,
+    blob_store: &BlobStore,
+) -> io::Result<bool> {
+    if obj.get("hash").and_then(|v| v.as_str()).is_some() {
+        return Ok(true);
+    }
+
+    let Some(hash) = obj.get("blob").and_then(|v| v.as_str()).map(str::to_string) else {
+        return Ok(true);
+    };
+    let Some(size) = obj.get("size").and_then(|v| v.as_u64()) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Arrow manifest blob ref missing size for blob: {hash}"),
+        ));
+    };
+
+    if !blob_store.exists(&hash) {
+        return Ok(false);
+    }
+
+    obj.remove("blob");
+    obj.insert("hash".to_string(), Value::String(hash));
+    obj.insert("size".to_string(), json!(size));
+    obj.entry("content_type".to_string())
+        .or_insert_with(|| Value::String(ARROW_STREAM_MIME.to_string()));
+
+    Ok(true)
 }
 
 /// Extract metadata from a Jupyter output, preserving as Value.
@@ -2977,6 +3142,194 @@ mod tests {
             saved_again["data"][BLOB_REF_MIME],
             saved["data"][BLOB_REF_MIME]
         );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_data_bundle_externalizes_arrow_stream_manifest_chunks() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let first = b"arrow-stream-chunk-1";
+        let second = b"arrow-stream-chunk-2";
+        let first_hash = store
+            .put(first, "application/vnd.apache.arrow.stream")
+            .await
+            .unwrap();
+        let second_hash = store
+            .put(second, "application/vnd.apache.arrow.stream")
+            .await
+            .unwrap();
+        let manifest = serde_json::json!({
+            "version": 1,
+            "kind": "arrow-stream",
+            "complete": true,
+            "row_count": 10,
+            "schema": {"hash": "schema-fingerprint-only"},
+            "chunks": [
+                {"hash": first_hash, "size": first.len(), "row_count": 5},
+                {"hash": second_hash, "size": second.len(), "row_count": 5}
+            ],
+            "summary": {"columns": 2},
+            "unknown_future_field": {"keep": true}
+        });
+
+        let mut data = HashMap::new();
+        data.insert(
+            "application/vnd.nteract.arrow-stream-manifest+json".to_string(),
+            ContentRef::Inline {
+                inline: manifest.to_string(),
+            },
+        );
+        data.insert(
+            "text/plain".to_string(),
+            ContentRef::Inline {
+                inline: "10 rows x 2 columns".to_string(),
+            },
+        );
+
+        let resolved = resolve_data_bundle(&data, &store).await.unwrap();
+        let saved_manifest = resolved
+            .get("application/vnd.nteract.arrow-stream-manifest+json")
+            .expect("manifest MIME should be preserved");
+
+        assert_eq!(saved_manifest["chunks"][0]["blob"], first_hash);
+        assert_eq!(saved_manifest["chunks"][0]["size"], first.len());
+        assert_eq!(
+            saved_manifest["chunks"][0]["content_type"],
+            "application/vnd.apache.arrow.stream"
+        );
+        assert!(saved_manifest["chunks"][0].get("hash").is_none());
+        assert_eq!(saved_manifest["chunks"][1]["blob"], second_hash);
+        assert_eq!(
+            saved_manifest["schema"]["hash"], "schema-fingerprint-only",
+            "schema.hash is a fingerprint, not a blob ref"
+        );
+        assert_eq!(saved_manifest["unknown_future_field"]["keep"], true);
+        assert_eq!(
+            resolved.get("text/plain").and_then(|v| v.as_str()),
+            Some("10 rows x 2 columns")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_manifest_restores_arrow_stream_manifest_chunk_refs() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let raw = b"arrow-stream-chunk";
+        let hash = store
+            .put(raw, "application/vnd.apache.arrow.stream")
+            .await
+            .unwrap();
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                "application/vnd.nteract.arrow-stream-manifest+json": {
+                    "version": 1,
+                    "chunks": [
+                        {
+                            "blob": hash,
+                            "size": raw.len(),
+                            "content_type": "application/vnd.apache.arrow.stream",
+                            "row_count": 7
+                        }
+                    ],
+                    "schema": {"hash": "schema-fingerprint-only"}
+                },
+                "text/plain": "7 rows x 1 column"
+            },
+            "metadata": {}
+        });
+
+        let manifest = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+        let OutputManifest::DisplayData { data, .. } = manifest else {
+            panic!("expected display data manifest");
+        };
+        let content = data
+            .get("application/vnd.nteract.arrow-stream-manifest+json")
+            .expect("manifest MIME should survive load")
+            .resolve(&store)
+            .await
+            .unwrap();
+        let runtime_manifest: Value = serde_json::from_str(&content).unwrap();
+
+        assert_eq!(runtime_manifest["chunks"][0]["hash"], hash);
+        assert_eq!(runtime_manifest["chunks"][0]["size"], raw.len());
+        assert_eq!(runtime_manifest["chunks"][0]["row_count"], 7);
+        assert!(runtime_manifest["chunks"][0].get("blob").is_none());
+        assert_eq!(
+            runtime_manifest["chunks"][0]["content_type"],
+            "application/vnd.apache.arrow.stream"
+        );
+        assert_eq!(
+            runtime_manifest["schema"]["hash"],
+            "schema-fingerprint-only"
+        );
+        assert!(data.contains_key("text/plain"));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_data_bundle_errors_for_missing_arrow_manifest_chunk_blob() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+        let manifest = serde_json::json!({
+            "version": 1,
+            "chunks": [{"hash": "0".repeat(64), "size": 12}]
+        });
+        let mut data = HashMap::new();
+        data.insert(
+            "application/vnd.nteract.arrow-stream-manifest+json".to_string(),
+            ContentRef::Inline {
+                inline: manifest.to_string(),
+            },
+        );
+
+        let err = resolve_data_bundle(&data, &store).await.unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(
+            err.to_string()
+                .contains("arrow manifest references missing blob"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_manifest_drops_arrow_manifest_with_missing_chunk_blob() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                "application/vnd.nteract.arrow-stream-manifest+json": {
+                    "version": 1,
+                    "chunks": [
+                        {
+                            "blob": "0".repeat(64),
+                            "size": 12,
+                            "content_type": "application/vnd.apache.arrow.stream"
+                        }
+                    ]
+                },
+                "text/plain": "fallback survives"
+            },
+            "metadata": {}
+        });
+
+        let manifest = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+        let OutputManifest::DisplayData { data, .. } = manifest else {
+            panic!("expected display data manifest");
+        };
+
+        assert!(
+            !data.contains_key("application/vnd.nteract.arrow-stream-manifest+json"),
+            "unloadable manifest MIME should be dropped without removing fallback siblings"
+        );
+        assert!(data.contains_key("text/plain"));
     }
 
     #[tokio::test]
