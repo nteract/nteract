@@ -111,6 +111,39 @@ pub fn catch_automerge_panic<T>(
     }
 }
 
+/// Run an Automerge operation and, when it panics or returns a caller-marked
+/// recoverable error, rebuild caller-owned state and retry once.
+///
+/// The `context` is intentionally opaque to this crate. Document owners use it
+/// to keep their document, per-peer `sync::State`, and any retry frame together
+/// without making this small crate depend on higher-level document crates.
+pub fn recoverable_automerge_operation<C, T>(
+    label: impl Into<String>,
+    context: &mut C,
+    mut operation: impl FnMut(&mut C) -> Result<T, automerge::AutomergeError>,
+    should_rebuild: impl Fn(&automerge::AutomergeError) -> bool,
+    mut rebuild: impl FnMut(&mut C) -> Result<(), AutomergeRebuildError>,
+) -> Result<T, AutomergeOperationError> {
+    let label = label.into();
+
+    let first_panic = match catch_automerge_panic(label.clone(), || operation(context)) {
+        Ok(Ok(value)) => return Ok(value),
+        Ok(Err(source)) if should_rebuild(&source) => None,
+        Ok(Err(source)) => return Err(AutomergeOperationError::automerge(label, source)),
+        Err(error) => Some(error),
+    };
+
+    if let Err(source) = rebuild(context) {
+        return Err(AutomergeOperationError::rebuild_failed(label, source));
+    }
+
+    match catch_automerge_panic(label.clone(), || operation(context)) {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+        Err(error) => Err(AutomergeOperationError::Panic(first_panic.unwrap_or(error))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,6 +194,95 @@ mod tests {
 
         assert_eq!(error.label, "unknown");
         assert_eq!(error.panic_message, "unknown panic");
+    }
+
+    #[test]
+    fn recoverable_operation_returns_normal_value_without_rebuild() {
+        let mut rebuilds = 0;
+        let value = recoverable_automerge_operation(
+            "normal",
+            &mut rebuilds,
+            |_| Ok(42),
+            |_| true,
+            |rebuilds| {
+                *rebuilds += 1;
+                Ok(())
+            },
+        )
+        .expect("normal operation should succeed");
+
+        assert_eq!(value, 42);
+        assert_eq!(rebuilds, 0);
+    }
+
+    #[test]
+    fn recoverable_operation_rebuilds_after_marked_error_and_retries_once() {
+        let mut calls = 0;
+        let value = recoverable_automerge_operation(
+            "recoverable-error",
+            &mut calls,
+            |calls| {
+                *calls += 1;
+                if *calls == 1 {
+                    Err(automerge::AutomergeError::PatchLogMismatch)
+                } else {
+                    Ok("retried")
+                }
+            },
+            |source| matches!(source, automerge::AutomergeError::PatchLogMismatch),
+            |_| Ok(()),
+        )
+        .expect("recoverable error should rebuild and retry");
+
+        assert_eq!(value, "retried");
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn recoverable_operation_returns_unmarked_error_without_rebuild() {
+        let mut rebuilt = false;
+        let error = recoverable_automerge_operation::<_, ()>(
+            "nonrecoverable-error",
+            &mut rebuilt,
+            |_| Err(automerge::AutomergeError::InvalidObjId("bad object".into())),
+            |_| false,
+            |rebuilt| {
+                *rebuilt = true;
+                Ok(())
+            },
+        )
+        .expect_err("unmarked error should not recover");
+
+        assert!(!rebuilt);
+        assert!(matches!(error, AutomergeOperationError::Automerge { .. }));
+    }
+
+    #[test]
+    fn recoverable_operation_rebuilds_after_panic_and_preserves_first_repeated_panic() {
+        let mut calls = 0;
+        let error = recoverable_automerge_operation::<_, ()>(
+            "repeated-panic",
+            &mut calls,
+            |calls| {
+                *calls += 1;
+                if *calls == 1 {
+                    panic!("first panic");
+                }
+                panic!("second panic");
+            },
+            |_| false,
+            |_| Ok(()),
+        )
+        .expect_err("repeated panic should fail");
+
+        match error {
+            AutomergeOperationError::Panic(error) => {
+                assert_eq!(error.label, "repeated-panic");
+                assert_eq!(error.panic_message, "first panic");
+            }
+            other => panic!("expected panic error, got {other:?}"),
+        }
+        assert_eq!(calls, 2);
     }
 
     #[test]

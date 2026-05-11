@@ -88,7 +88,10 @@ use automerge::sync::SyncDoc;
 use automerge::transaction::CommitOptions;
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, AutomergeError, LoadOptions, ObjId, ObjType, ReadDoc};
-use automerge_recovery::{catch_automerge_panic, AutomergeOperationError, AutomergeRebuildError};
+use automerge_recovery::{
+    catch_automerge_panic, recoverable_automerge_operation, AutomergeOperationError,
+    AutomergeRebuildError,
+};
 
 /// Re-export so downstream crates (runtimed-wasm) can set text encoding
 /// without depending on automerge directly.
@@ -2118,17 +2121,20 @@ impl NotebookDoc {
         peer_state: &mut sync::State,
         label: &str,
     ) -> Result<Option<sync::Message>, AutomergeOperationError> {
-        match catch_automerge_panic(label, || self.generate_sync_message(peer_state)) {
-            Ok(message) => Ok(message),
-            Err(_err) => {
-                *peer_state = sync::State::new();
-                if let Err(source) = self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(label, source));
-                }
-                catch_automerge_panic(label, || self.generate_sync_message(peer_state))
-                    .map_err(AutomergeOperationError::Panic)
-            }
-        }
+        let mut context = SyncRecoveryContext {
+            doc: self,
+            peer_state,
+        };
+        recoverable_automerge_operation(
+            label,
+            &mut context,
+            |context| Ok(context.doc.generate_sync_message(context.peer_state)),
+            |_| false,
+            |context| {
+                *context.peer_state = sync::State::new();
+                context.doc.rebuild_from_save()
+            },
+        )
     }
 
     /// Receive and apply a sync message from a peer.
@@ -2149,42 +2155,30 @@ impl NotebookDoc {
         message: sync::Message,
         label: &str,
     ) -> Result<(), AutomergeOperationError> {
-        let retry_message = message.clone();
-        match catch_automerge_panic(label, || self.receive_sync_message(peer_state, message)) {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(source)) if is_recoverable_sync_error(&source) => {
-                *peer_state = sync::State::new();
-                if let Err(rebuild_source) = self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(
-                        label,
-                        rebuild_source,
-                    ));
-                }
-                match catch_automerge_panic(label, || {
-                    self.receive_sync_message(peer_state, retry_message)
-                }) {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(retry_source)) => {
-                        Err(AutomergeOperationError::automerge(label, retry_source))
-                    }
-                    Err(err) => Err(AutomergeOperationError::Panic(err)),
-                }
-            }
-            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
-            Err(err) => {
-                *peer_state = sync::State::new();
-                if let Err(source) = self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(label, source));
-                }
-                match catch_automerge_panic(label, || {
-                    self.receive_sync_message(peer_state, retry_message)
-                }) {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
-                    Err(_) => Err(AutomergeOperationError::Panic(err)),
-                }
-            }
-        }
+        let mut context = SyncReceiveRecoveryContext {
+            doc: self,
+            peer_state,
+            next_message: Some(message.clone()),
+            retry_message: message,
+        };
+        recoverable_automerge_operation(
+            label,
+            &mut context,
+            |context| {
+                let message = context
+                    .next_message
+                    .take()
+                    .unwrap_or_else(|| context.retry_message.clone());
+                context
+                    .doc
+                    .receive_sync_message(context.peer_state, message)
+            },
+            is_recoverable_sync_error,
+            |context| {
+                *context.peer_state = sync::State::new();
+                context.doc.rebuild_from_save()
+            },
+        )
     }
 
     // ── Provenance queries ──────────────────────────────────────────
@@ -2506,6 +2500,18 @@ impl NotebookDoc {
 
 fn is_recoverable_sync_error(source: &automerge::AutomergeError) -> bool {
     matches!(source, automerge::AutomergeError::PatchLogMismatch)
+}
+
+struct SyncRecoveryContext<'a> {
+    doc: &'a mut NotebookDoc,
+    peer_state: &'a mut sync::State,
+}
+
+struct SyncReceiveRecoveryContext<'a> {
+    doc: &'a mut NotebookDoc,
+    peer_state: &'a mut sync::State,
+    next_message: Option<sync::Message>,
+    retry_message: sync::Message,
 }
 
 // ── Free helpers ─────────────────────────────────────────────────────
