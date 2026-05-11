@@ -42,9 +42,15 @@ pub(crate) async fn send_runtime_agent_query(
     tx.send(RuntimeAgentMessage::Query(envelope, reply_tx))
         .await
         .map_err(|_| anyhow::anyhow!("Runtime agent disconnected"))?;
+    recv_runtime_agent_query_response(reply_rx, timeout).await
+}
+
+async fn recv_runtime_agent_query_response(
+    reply_rx: tokio::sync::oneshot::Receiver<notebook_protocol::protocol::RuntimeAgentResponse>,
+    timeout: std::time::Duration,
+) -> anyhow::Result<notebook_protocol::protocol::RuntimeAgentResponse> {
     match tokio::time::timeout(timeout, reply_rx).await {
-        Ok(Ok(response)) => Ok(response),
-        Ok(Err(_)) => Err(anyhow::anyhow!("Runtime agent dropped reply")),
+        Ok(response) => response.map_err(|_| anyhow::anyhow!("Runtime agent dropped reply")),
         Err(_) => Err(anyhow::anyhow!("Runtime agent query timed out")),
     }
 }
@@ -100,4 +106,47 @@ where
     }
 
     unreachable!("kernel port launch retry loop must return from the final attempt")
+}
+
+#[cfg(test)]
+mod tests {
+    use notebook_protocol::protocol::RuntimeAgentResponse;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn runtime_agent_query_response_returns_success() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tx.send(RuntimeAgentResponse::Ok)
+            .expect("receiver should be live");
+
+        let response = recv_runtime_agent_query_response(rx, std::time::Duration::from_secs(1))
+            .await
+            .expect("response should succeed");
+
+        assert!(matches!(response, RuntimeAgentResponse::Ok));
+    }
+
+    #[tokio::test]
+    async fn runtime_agent_query_response_reports_dropped_reply() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        drop(tx);
+
+        let error = recv_runtime_agent_query_response(rx, std::time::Duration::from_secs(1))
+            .await
+            .expect_err("dropped reply should fail");
+
+        assert_eq!(error.to_string(), "Runtime agent dropped reply");
+    }
+
+    #[tokio::test]
+    async fn runtime_agent_query_response_reports_timeout() {
+        let (_tx, rx) = tokio::sync::oneshot::channel();
+
+        let error = recv_runtime_agent_query_response(rx, std::time::Duration::from_millis(1))
+            .await
+            .expect_err("timeout should fail");
+
+        assert_eq!(error.to_string(), "Runtime agent query timed out");
+    }
 }
