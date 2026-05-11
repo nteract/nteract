@@ -1085,6 +1085,8 @@ pub struct Daemon {
     pool_ready_pixi: Notify,
     /// Content-addressed blob store.
     pub(crate) blob_store: Arc<BlobStore>,
+    /// Durable terminal execution-result records.
+    execution_store: runtimed_client::execution_store::ExecutionStore,
     /// Local package allowlist used to auto-approve familiar dependencies.
     pub(crate) trusted_packages: TrustedPackageStore,
     /// HTTP port for the blob server (set after startup).
@@ -1349,6 +1351,9 @@ impl Daemon {
         let pool_doc = Arc::new(RwLock::new(notebook_doc::pool_state::PoolDoc::new()));
 
         let blob_store = Arc::new(BlobStore::new(config.blob_store_dir.clone()));
+        let execution_store = runtimed_client::execution_store::ExecutionStore::new(
+            config.execution_store_dir.clone(),
+        );
         let trusted_packages = match TrustedPackageStore::open(
             config.trusted_packages_db_path.clone(),
         ) {
@@ -1383,6 +1388,7 @@ impl Daemon {
             pool_doc,
             pool_doc_changed,
             blob_store,
+            execution_store,
             trusted_packages,
             blob_port: Mutex::new(None),
             started_at: chrono::Utc::now(),
@@ -1441,10 +1447,7 @@ impl Daemon {
     }
 
     async fn build_execution_result(&self, execution_id: String) -> Response {
-        let store = runtimed_client::execution_store::ExecutionStore::new(
-            self.config.execution_store_dir.clone(),
-        );
-        if let Some(record) = store.read_record(&execution_id).await {
+        if let Some(record) = self.execution_store.read_record(&execution_id).await {
             return Response::ExecutionResult { record };
         }
 
@@ -1488,7 +1491,7 @@ impl Daemon {
                 &exec,
             );
 
-            if let Err(e) = store.write_record(record.clone()).await {
+            if let Err(e) = self.execution_store.write_record(record.clone()).await {
                 warn!(
                     "[execution-store] Failed to persist live execution record {}: {}",
                     execution_id, e
