@@ -7,7 +7,7 @@ from pathlib import Path
 
 from pr_reviewer import git
 from pr_reviewer.agent import run_doctor, run_review
-from pr_reviewer.config import DEFAULT_MAX_TURNS, DEFAULT_MODEL, ReviewerConfig
+from pr_reviewer.config import DEFAULT_MAX_TURNS, ReviewerConfig
 from pr_reviewer.report import write_report
 from pr_reviewer.workspace import prepare_review_workspace, remove_review_workspace
 
@@ -36,7 +36,7 @@ def build_doctor_parser() -> argparse.ArgumentParser:
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--model", default=None)
     parser.add_argument("--aws-region", default=None)
     parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
 
@@ -118,13 +118,12 @@ def run_review_command(args: argparse.Namespace) -> int:
 
 
 def run_doctor_command(args: argparse.Namespace) -> int:
-    result = asyncio.run(run_doctor(config_from_args(args)))
+    config = config_from_args(args)
+    result = asyncio.run(run_doctor(config))
     if result.strip() != "OK":
         print(f"doctor returned unexpected response: {result!r}", file=sys.stderr)
         return INFRA_ERROR
-    print(
-        f"Bedrock SDK smoke test OK: model={args.model} region={args.aws_region or 'env/default'}"
-    )
+    print(f"Bedrock SDK smoke test OK: model={config.model} region={config.aws_region}")
     return CLEAR
 
 

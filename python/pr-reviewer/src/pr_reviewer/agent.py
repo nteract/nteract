@@ -7,6 +7,13 @@ from pr_reviewer.schema import REVIEW_SCHEMA, ReviewReport, normalize_structured
 from pr_reviewer.workspace import ReviewWorkspace
 
 
+async def _single_prompt_stream(prompt: str):
+    yield {
+        "type": "user",
+        "message": {"role": "user", "content": prompt},
+    }
+
+
 async def run_review(
     workspace: ReviewWorkspace,
     *,
@@ -36,7 +43,7 @@ async def run_review(
     )
 
     prompt = build_review_prompt(workspace, extra_prompt=extra_prompt)
-    async for message in query(prompt=prompt, options=options):
+    async for message in query(prompt=_single_prompt_stream(prompt), options=options):
         if isinstance(message, SystemMessage) and message.subtype == "init":
             session_id = message.data.get("session_id")
             model = message.data.get("model") or model

@@ -11,6 +11,9 @@ def test_safe_bash_allows_read_only_git_and_search_commands() -> None:
 def test_safe_bash_blocks_shell_metacharacters_and_writes() -> None:
     assert not is_safe_bash_command("git diff > /tmp/diff")
     assert not is_safe_bash_command("rg TODO | head")
+    assert not is_safe_bash_command("git log\nrm -rf /")
     assert not is_safe_bash_command("git reset --hard")
     assert not is_safe_bash_command("python script.py")
     assert not is_safe_bash_command("find . -delete")
+    assert not is_safe_bash_command("sed -i 's/foo/bar/' file.py")
+    assert not is_safe_bash_command("sed --in-place 's/foo/bar/' file.py")

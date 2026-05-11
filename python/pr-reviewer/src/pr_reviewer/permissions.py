@@ -25,7 +25,7 @@ _SAFE_GIT_SUBCOMMANDS = {
     "status",
 }
 _SAFE_COMMANDS = {"cat", "find", "git", "nl", "rg", "sed", "wc"}
-_SHELL_METACHARS = {"|", ">", "<", "&", ";", "$(", "`"}
+_SHELL_METACHARS = {"|", ">", "<", "&", ";", "$(", "`", "\n", "\r"}
 
 
 def is_safe_bash_command(command: str) -> bool:
@@ -52,6 +52,12 @@ def is_safe_bash_command(command: str) -> bool:
     if executable == "find":
         blocked = {"-delete", "-exec", "-execdir", "-ok", "-okdir"}
         return not any(part in blocked for part in parts[1:])
+
+    if executable == "sed":
+        return not any(
+            part == "-i" or part.startswith("-i.") or part.startswith("--in-place")
+            for part in parts[1:]
+        )
 
     return True
 
