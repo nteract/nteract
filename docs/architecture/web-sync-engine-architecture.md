@@ -356,6 +356,69 @@ initializing state. Suggested user-facing buckets:
 The UI should keep these distinct from kernel launch, trust approval, and
 initial notebook load failures.
 
+Fresh-notebook editing is allowed only after the bootstrap selects a compatible
+engine. In the happy path this is still instant because the bundled engine can
+create the frozen-genesis `NotebookDoc` before daemon sync frames arrive. If no
+compatible engine is available, do not accept local edits into a document that
+cannot safely sync or execute; show the typed compatibility error with the
+right action (`Refresh`, `Restart daemon`, `Update desktop`, or `Open
+diagnostics`).
+
+## Cross-Perspective Review Requirements
+
+### Product
+
+- Preserve the current "open a fresh notebook and type" feel when the bundled
+  engine matches the daemon manifest.
+- Treat dynamic engine fetch as an implementation detail. Users should see a
+  short compatibility/loading state, not a plugin-install workflow.
+- Provide actionable mismatch states with daemon version, client version,
+  document schema, engine source, and a copyable diagnostic payload.
+
+### Systems Engineering
+
+- Maintain Automerge's reliable, in-order, per-peer sync assumption. If the web
+  relay buffers frames while the engine loads, the buffer must be ordered,
+  bounded, and drained only after the engine is ready.
+- Do not release notebook, runtime-state, or pool-state sync frames to the
+  worker before the compatibility gate passes. `SESSION_CONTROL` compatibility
+  frames and manifest responses are the only pre-engine protocol inputs.
+- Worker replacement must preserve the user's actor label and reset only
+  transport sync state. It must not fork the same actor into two live engines.
+
+### Maintainers
+
+- Treat the worker API and `SyncableHandle` as explicit versioned contracts.
+  Adding a method, changing event shape, or changing error semantics requires an
+  ABI bump, generated TS contract update, and cross-version tests.
+- Keep each phase independently mergeable: manifest metadata, typed failures,
+  host abstraction, worker boundary, and daemon-served package should not be one
+  large migration.
+- Add a schema/engine bump checklist next to the genesis assets once the first
+  manifest constants land.
+
+### User Experience
+
+- Avoid "Initializing" for compatibility failures. That state should mean normal
+  notebook startup, not "this client can never converge."
+- If the client falls back from bundled to cached to daemon-served engine, expose
+  only the final state unless diagnostics are open.
+- Keep kernel launch and trust-approval errors visually separate from
+  compatibility errors so users do not retry the wrong operation.
+
+### Security
+
+- The manifest must bind protocol version, document schema versions, genesis
+  hashes, engine ABI, package ID, asset URLs, and asset digests in one object.
+  A valid asset hash is not enough if an attacker can replay a stale manifest.
+- Daemon-served engine routes should be authenticated and same-origin where
+  possible. If cross-origin is unavoidable, use an allowlist and credentials
+  strategy; do not copy the permissive blob/plugin CORS policy by default.
+- Serve worker scripts with their own CSP response header. Workers are not a
+  reason to relax the main app CSP.
+- Keep daemon-served JS out of the main realm even after digest verification.
+  Hash checking proves bytes, not behavior.
+
 ## Implementation Plan
 
 ### Phase 0: Document and Enforce Manifests
@@ -373,6 +436,8 @@ initial notebook load failures.
 - Add tests that assert manifest hashes match the checked-in `.am` artifacts at
   `crates/notebook-doc/assets/notebook_genesis_v4.am` and
   `crates/runtime-doc/assets/runtime_state_genesis_v1.am`.
+- Add a manifest replay test: an older valid manifest with stale schema or
+  package metadata must be rejected against a newer daemon capability response.
 
 ### Phase 1: Typed Compatibility Failures
 
@@ -387,6 +452,8 @@ initial notebook load failures.
   `Initializing`.
 - Teach the browser relay (`packages/notebook-host/src/browser/index.ts`) and
   the Tauri host to pass the new session-control frame through unchanged.
+- Add a small stable TS decoder for pre-engine `SESSION_CONTROL` compatibility
+  frames. WASM can keep decoding post-engine session status.
 - Add tests for schema/hash mismatch producing a typed failure instead of
   runtime-state pending forever.
 
@@ -413,6 +480,9 @@ initial notebook load failures.
 - Build a same-bundle worker that wraps the current `runtimed-wasm` glue.
 - Move frame receive, flush, runtime-state projection, and mutations into the
   worker API.
+- Add a bounded, ordered pre-engine frame buffer or delay daemon sync frame
+  release until worker initialization finishes. Overflow should fail with
+  `engine_unavailable`, not silently drop frames.
 - Keep materialization outputs compatible with the current stores.
 - Verify that startup, cell typing, runtime-state sync, comm projection, and
   output updates match the direct-WASM path.
@@ -436,6 +506,8 @@ initial notebook load failures.
   package-ID/hash scoped, modeled on the `/blob/{hash}` policy at
   `blob_server.rs:178` (`public, max-age=31536000, immutable`). Use
   `application/wasm` for `.wasm` and keep `X-Content-Type-Options: nosniff`.
+- Serve worker script responses with a narrow worker CSP. Do not depend only on
+  the parent document CSP.
 - Add explicit digest verification before instantiating downloaded assets.
 
 ### Phase 5: Remote Web Deployment
@@ -465,9 +537,18 @@ initial notebook load failures.
 - Pool-state schema is newer than the engine supports: pool sync is disabled or
   connection stops with a typed compatibility error, depending on whether pool
   state is required for the current UI route.
+- Pre-engine sync frames arrive before worker readiness: frames are buffered in
+  order within the configured limit or connection fails typed; no frames are
+  dropped or reordered.
+- User starts a fresh notebook with a compatible bundled engine: local editing
+  becomes available before the first daemon sync frame.
+- User starts a fresh notebook with no compatible engine: editing stays blocked
+  and the compatibility error offers the correct action.
 - Bundled engine ABI mismatch, daemon engine available: daemon engine loads in
   worker and syncs.
 - Daemon engine hash mismatch: asset rejected with `engine_integrity_failed`.
+- Stale but hash-valid manifest replay: manifest rejected because it does not
+  match current daemon capability metadata.
 - Cached daemon engine package with stale package ID or digest: cache entry is
   ignored and assets are refetched or rejected with `engine_integrity_failed`.
 - Mutable engine manifest is not served with immutable cache headers.
@@ -507,6 +588,10 @@ initial notebook load failures.
   <https://developer.mozilla.org/en-US/docs/Web/Security/Defenses/Subresource_Integrity>
 - MDN cross-origin isolation guidance:
   <https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cross-Origin-Embedder-Policy>
+- MDN `Cache-Control` guidance:
+  <https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control>
+- WebAssembly security model:
+  <https://webassembly.org/docs/security/>
 - Automerge sync concepts:
   <https://automerge.org/docs/reference/concepts/>
 - Automerge Rust sync API:
