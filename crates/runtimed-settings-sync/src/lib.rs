@@ -133,24 +133,12 @@ impl SyncClient<tokio::net::windows::named_pipe::NamedPipeClient> {
         timeout: Duration,
     ) -> Result<Self, SyncClientError> {
         let pipe_name = socket_path.to_string_lossy().to_string();
-        // ERROR_PIPE_BUSY (231): all pipe instances are in use between server rotations
-        const ERROR_PIPE_BUSY: i32 = 231;
-        let client = tokio::time::timeout(timeout, async {
-            let mut attempts = 0;
-            loop {
-                match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name) {
-                    Ok(client) => return Ok(client),
-                    Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && attempts < 5 => {
-                        attempts += 1;
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-        })
-        .await
-        .map_err(|_| SyncClientError::Timeout)?
-        .map_err(SyncClientError::ConnectionFailed)?;
+        let client = connection::connect_named_pipe_client(&socket_path, timeout)
+            .await
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::TimedOut => SyncClientError::Timeout,
+                _ => SyncClientError::ConnectionFailed(error),
+            })?;
 
         info!("[sync-client] Connected to {}", pipe_name);
 
@@ -174,23 +162,15 @@ impl SyncClient<tokio::net::windows::named_pipe::NamedPipeClient> {
     ) -> Result<Self, SyncClientError> {
         let deadline = snapshot_deadline(timeout);
         let pipe_name = socket_path.to_string_lossy().to_string();
-        const ERROR_PIPE_BUSY: i32 = 231;
-        let client = tokio::time::timeout(remaining_snapshot_timeout(deadline)?, async {
-            let mut attempts = 0;
-            loop {
-                match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name) {
-                    Ok(client) => return Ok(client),
-                    Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && attempts < 5 => {
-                        attempts += 1;
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-        })
+        let client = connection::connect_named_pipe_client(
+            &socket_path,
+            remaining_snapshot_timeout(deadline)?,
+        )
         .await
-        .map_err(|_| SyncClientError::Timeout)?
-        .map_err(SyncClientError::ConnectionFailed)?;
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::TimedOut => SyncClientError::Timeout,
+            _ => SyncClientError::ConnectionFailed(error),
+        })?;
 
         info!("[sync-client] Connected to {}", pipe_name);
 
