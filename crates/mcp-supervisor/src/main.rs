@@ -3488,14 +3488,8 @@ mod tests {
     // binary and sensitive to size changes.
 
     fn write_bin(project_root: &Path, name: &str, bytes: &[u8]) -> PathBuf {
-        let target = project_root.join("target");
-        let subdir = target.join(if use_release_binaries() {
-            "release"
-        } else {
-            "debug"
-        });
-        std::fs::create_dir_all(&subdir).unwrap();
-        let path = subdir.join(name);
+        let path = cargo_binary(project_root, name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, bytes).unwrap();
         path
     }

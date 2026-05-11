@@ -8,7 +8,8 @@ _AUTOMERGE_RECOVERY_PATTERNS = (
     re.compile(r"\[[^\]]+\]\s+automerge panicked:", re.IGNORECASE),
     re.compile(r"after Automerge panic", re.IGNORECASE),
     re.compile(
-        r"Closing (?:sync task )?after (?:(?:outbound )?RuntimeStateSync(?: reply)?|Automerge sync) failure",
+        r"Closing (?:sync task )?after "
+        r"(?:(?:outbound )?RuntimeStateSync(?: reply)?|Automerge sync) failure",
         re.IGNORECASE,
     ),
     re.compile(r"Recovered from (?:sync|RuntimeStateSync) panic", re.IGNORECASE),
