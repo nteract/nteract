@@ -1440,6 +1440,68 @@ impl Daemon {
         }
     }
 
+    async fn build_execution_result(&self, execution_id: String) -> Response {
+        let store = runtimed_client::execution_store::ExecutionStore::new(
+            self.config.execution_store_dir.clone(),
+        );
+        if let Some(record) = store.read_record(&execution_id).await {
+            return Response::ExecutionResult { record };
+        }
+
+        let rooms = {
+            let rooms_guard = self.notebook_rooms.lock().await;
+            rooms_guard.values().cloned().collect::<Vec<_>>()
+        };
+
+        for room in rooms {
+            let Some(exec) = room
+                .state
+                .read(|state_doc| {
+                    state_doc
+                        .read_state()
+                        .executions
+                        .get(&execution_id)
+                        .cloned()
+                })
+                .unwrap_or_default()
+            else {
+                continue;
+            };
+            if !matches!(exec.status.as_str(), "done" | "error") {
+                continue;
+            }
+
+            let notebook_path = room
+                .file_binding
+                .path()
+                .await
+                .map(|path| path.to_string_lossy().to_string());
+            let context_id = crate::notebook_sync_server::notebook_execution_context_id(
+                &room,
+                notebook_path.as_deref(),
+            );
+            let record = runtimed_client::execution_store::ExecutionRecord::from_execution_state(
+                &execution_id,
+                "notebook",
+                context_id,
+                notebook_path,
+                &exec,
+            );
+
+            if let Err(e) = store.write_record(record.clone()).await {
+                warn!(
+                    "[execution-store] Failed to persist live execution record {}: {}",
+                    execution_id, e
+                );
+            }
+            return Response::ExecutionResult { record };
+        }
+
+        Response::Error {
+            message: format!("Execution not found in durable store: {execution_id}"),
+        }
+    }
+
     /// Snapshot tokio runtime metrics for diagnostics.
     ///
     /// Uses only stable APIs (`worker_total_busy_duration`,
@@ -3383,6 +3445,10 @@ impl Daemon {
             },
 
             Request::GetDaemonInfo => self.build_daemon_info().await,
+
+            Request::GetExecutionResult { execution_id } => {
+                self.build_execution_result(execution_id).await
+            }
 
             Request::GetRuntimeMetrics => self.build_runtime_metrics(),
 

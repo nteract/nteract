@@ -239,6 +239,25 @@ impl PoolClient {
         }
     }
 
+    /// Read a terminal execution record by execution ID from the daemon.
+    pub async fn get_execution_record(
+        &self,
+        execution_id: &str,
+    ) -> Result<crate::execution_store::ExecutionRecord, ClientError> {
+        let response = self
+            .send_request(Request::GetExecutionResult {
+                execution_id: execution_id.to_string(),
+            })
+            .await?;
+        match response {
+            Response::ExecutionResult { record } => Ok(record),
+            Response::Error { message } => Err(ClientError::DaemonError(message)),
+            _ => Err(ClientError::ProtocolError(
+                "Unexpected response".to_string(),
+            )),
+        }
+    }
+
     /// Query tokio runtime metrics (worker utilization, task counts).
     ///
     /// Returns the raw metrics snapshot as a JSON value. Daemons that

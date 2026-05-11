@@ -1325,14 +1325,10 @@ pub async fn get_execution_result(
 ) -> Result<CellResult> {
     let opts = options.unwrap_or_default();
     let socket_path = resolve_socket_path(opts.socket_path);
-    let info = runtimed_client::singleton::query_daemon_info(socket_path.clone()).await;
-    let execution_store_dir = execution_store_dir_for_socket(&socket_path, info.as_ref());
-    let store = runtimed_client::execution_store::ExecutionStore::new(execution_store_dir);
-    let record = store.read_record(&execution_id).await.ok_or_else(|| {
-        Error::from_reason(format!(
-            "Execution not found in durable store: {execution_id}"
-        ))
-    })?;
+    let record = PoolClient::new(socket_path.clone())
+        .get_execution_record(&execution_id)
+        .await
+        .map_err(to_napi_err)?;
 
     cell_result_from_record(&socket_path, record).await
 }
@@ -1343,20 +1339,6 @@ fn resolve_socket_path(override_path: Option<String>) -> PathBuf {
     override_path
         .map(PathBuf::from)
         .unwrap_or_else(runt_workspace::default_socket_path)
-}
-
-fn execution_store_dir_for_socket(
-    socket_path: &std::path::Path,
-    daemon_info: Option<&runtimed_client::singleton::DaemonInfo>,
-) -> PathBuf {
-    if let Some(dir) = daemon_info.and_then(|info| info.execution_store_dir.as_ref()) {
-        return PathBuf::from(dir);
-    }
-
-    socket_path
-        .parent()
-        .map(|parent| parent.join("executions"))
-        .unwrap_or_else(runtimed_client::default_execution_store_dir)
 }
 
 async fn resolve_blob_paths(socket_path: &std::path::Path) -> (Option<String>, Option<PathBuf>) {
@@ -2198,14 +2180,6 @@ mod tests {
             dependency_package_manager(None, None, &metadata),
             PackageManager::Uv
         );
-    }
-
-    #[test]
-    fn execution_store_dir_falls_back_to_socket_namespace() {
-        let dir =
-            execution_store_dir_for_socket(Path::new("/tmp/runtimed-test/runtimed.sock"), None);
-
-        assert_eq!(dir, PathBuf::from("/tmp/runtimed-test/executions"));
     }
 
     #[tokio::test]
