@@ -210,20 +210,8 @@ async fn connect_raw_stream(socket_path: &std::path::Path) -> Result<RawStream, 
 
 #[cfg(windows)]
 async fn connect_raw_stream(socket_path: &std::path::Path) -> Result<RawStream, std::io::Error> {
-    const ERROR_PIPE_BUSY: i32 = 231;
-    let pipe_name = socket_path.to_string_lossy().to_string();
-    let mut attempts = 0;
-
-    loop {
-        match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name) {
-            Ok(client) => return Ok(client),
-            Err(err) if err.raw_os_error() == Some(ERROR_PIPE_BUSY) && attempts < 5 => {
-                attempts += 1;
-                sleep(Duration::from_millis(50)).await;
-            }
-            Err(err) => return Err(err),
-        }
-    }
+    notebook_protocol::connection::connect_named_pipe_client(socket_path, Duration::from_secs(2))
+        .await
 }
 
 #[tokio::test]

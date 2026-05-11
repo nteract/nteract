@@ -634,18 +634,11 @@ async fn connect_and_handshake(
 
     #[cfg(windows)]
     let stream = {
-        let pipe_name = socket_path.to_string_lossy().to_string();
-        let mut attempts = 0u32;
-        loop {
-            match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name) {
-                Ok(client) => break client,
-                Err(_) if attempts < 10 => {
-                    attempts += 1;
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                }
-                Err(e) => return Err(e.into()),
-            }
-        }
+        notebook_protocol::connection::connect_named_pipe_client(
+            socket_path,
+            std::time::Duration::from_secs(2),
+        )
+        .await?
     };
 
     let (reader, mut writer) = tokio::io::split(stream);

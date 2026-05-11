@@ -49,9 +49,6 @@ pub enum DaemonProgress {
 #[cfg(unix)]
 use tokio::net::UnixStream;
 
-#[cfg(windows)]
-use tokio::net::windows::named_pipe::ClientOptions;
-
 /// Result of inspecting a notebook's state.
 #[derive(Debug, Clone)]
 pub struct InspectResult {
@@ -463,27 +460,17 @@ impl PoolClient {
 
         #[cfg(windows)]
         let stream = {
-            let pipe_name = self.socket_path.to_string_lossy().to_string();
-            let connect_result = tokio::time::timeout(self.connect_timeout, async {
-                // Named pipes may need retry if server is between connections
-                let mut attempts = 0;
-                loop {
-                    match ClientOptions::new().open(&pipe_name) {
-                        Ok(client) => return Ok(client),
-                        Err(_) if attempts < 5 => {
-                            attempts += 1;
-                            tokio::time::sleep(Duration::from_millis(50)).await;
-                        }
-                        Err(e) => return Err(e),
-                    }
+            match notebook_protocol::connection::connect_named_pipe_client(
+                &self.socket_path,
+                self.connect_timeout,
+            )
+            .await
+            {
+                Ok(s) => s,
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                    return Err(ClientError::Timeout);
                 }
-            })
-            .await;
-
-            match connect_result {
-                Ok(Ok(s)) => s,
-                Ok(Err(e)) => return Err(ClientError::ConnectionFailed(e)),
-                Err(_) => return Err(ClientError::Timeout),
+                Err(e) => return Err(ClientError::ConnectionFailed(e)),
             }
         };
 

@@ -6,6 +6,7 @@
 mod env;
 mod framing;
 mod handshake;
+mod pipe;
 
 pub use env::{CreateNotebookEnvironmentMode, EnvSource, LaunchSpec, PackageManager};
 
@@ -18,6 +19,9 @@ pub use framing::{
 pub use handshake::{
     Handshake, NotebookConnectionInfo, ProtocolCapabilities, PROTOCOL_V4, PROTOCOL_VERSION,
 };
+
+#[cfg(windows)]
+pub use pipe::{connect_named_pipe_client, is_retryable_named_pipe_connect_error, ERROR_PIPE_BUSY};
 
 #[cfg(test)]
 mod tests {

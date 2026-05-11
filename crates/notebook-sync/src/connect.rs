@@ -106,7 +106,11 @@ macro_rules! connect_stream {
             }
             #[cfg(windows)]
             {
-                tokio::net::windows::named_pipe::ClientOptions::new().open(path)
+                notebook_protocol::connection::connect_named_pipe_client(
+                    path,
+                    std::time::Duration::from_secs(2),
+                )
+                .await
             }
         };
         match result {
