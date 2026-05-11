@@ -3918,30 +3918,18 @@ fn collect_blob_hashes(
     }
 }
 
-async fn collect_blob_hashes_with_store(
-    manifest: &serde_json::Value,
+async fn collect_arrow_manifest_blob_hashes(
+    manifest_hash: &str,
     hashes: &mut std::collections::HashSet<String>,
     blob_store: &BlobStore,
 ) {
-    collect_blob_hashes(manifest, hashes);
-
-    let Some(data) = manifest.get("data").and_then(|d| d.as_object()) else {
-        return;
-    };
-    let Some(manifest_ref) = data.get(notebook_doc::mime::ARROW_STREAM_MANIFEST_MIME) else {
-        return;
-    };
-    let Some(hash) = manifest_ref.get("blob").and_then(|b| b.as_str()) else {
-        return;
-    };
-
-    let bytes = match blob_store.get(hash).await {
+    let bytes = match blob_store.get(manifest_hash).await {
         Ok(Some(bytes)) => bytes,
         Ok(None) => return,
         Err(e) => {
             warn!(
                 "[runtimed] GC: failed to read Arrow stream manifest blob {}: {}",
-                hash, e
+                manifest_hash, e
             );
             return;
         }
@@ -3951,7 +3939,7 @@ async fn collect_blob_hashes_with_store(
         Err(e) => {
             warn!(
                 "[runtimed] GC: Arrow stream manifest blob {} is not UTF-8 JSON: {}",
-                hash, e
+                manifest_hash, e
             );
             return;
         }
@@ -3961,12 +3949,22 @@ async fn collect_blob_hashes_with_store(
         Err(e) => {
             warn!(
                 "[runtimed] GC: failed to parse Arrow stream manifest blob {}: {}",
-                hash, e
+                manifest_hash, e
             );
             return;
         }
     };
     collect_arrow_manifest_hashes(&parsed, hashes);
+}
+
+fn arrow_manifest_blob_hash(manifest: &serde_json::Value) -> Option<String> {
+    manifest
+        .get("data")
+        .and_then(|d| d.as_object())
+        .and_then(|data| data.get(notebook_doc::mime::ARROW_STREAM_MANIFEST_MIME))
+        .and_then(|manifest_ref| manifest_ref.get("blob"))
+        .and_then(|blob| blob.as_str())
+        .map(str::to_string)
 }
 
 fn collect_arrow_manifest_hashes(
@@ -4006,6 +4004,8 @@ fn collect_arrow_manifest_hashes(
 
 fn collect_hash_field(value: &serde_json::Value, hashes: &mut std::collections::HashSet<String>) {
     if let Some(hash) = value.get("hash").and_then(|h| h.as_str()) {
+        hashes.insert(hash.to_string());
+    } else if let Some(hash) = value.get("blob").and_then(|b| b.as_str()) {
         hashes.insert(hash.to_string());
     }
 }
@@ -4173,23 +4173,29 @@ impl Daemon {
         // 1. In-memory: active rooms (RuntimeStateDoc + notebook doc).
         for batch in rooms.chunks(ROOM_BATCH_SIZE) {
             for (_id, room) in batch {
-                let mut outputs = Vec::new();
+                let mut arrow_manifest_blob_hashes = Vec::new();
                 let _ = room.state.read(|sd| {
                     let state = sd.read_state();
                     for exec in state.executions.values() {
                         for output in &exec.outputs {
-                            outputs.push(output.clone());
+                            collect_blob_hashes(output, &mut referenced_hashes);
+                            if let Some(hash) = arrow_manifest_blob_hash(output) {
+                                arrow_manifest_blob_hashes.push(hash);
+                            }
                         }
                     }
                     for comm in state.comms.values() {
                         for output in &comm.outputs {
-                            outputs.push(output.clone());
+                            collect_blob_hashes(output, &mut referenced_hashes);
+                            if let Some(hash) = arrow_manifest_blob_hash(output) {
+                                arrow_manifest_blob_hashes.push(hash);
+                            }
                         }
                         collect_blob_hashes_recursive(&comm.state, &mut referenced_hashes);
                     }
                 });
-                for output in outputs {
-                    collect_blob_hashes_with_store(&output, &mut referenced_hashes, blob_store)
+                for hash in arrow_manifest_blob_hashes {
+                    collect_arrow_manifest_blob_hashes(&hash, &mut referenced_hashes, blob_store)
                         .await;
                 }
                 {
@@ -6374,6 +6380,45 @@ mod tests {
         assert_eq!(hashes.len(), 4);
     }
 
+    #[test]
+    fn test_collect_blob_hashes_arrow_stream_manifest_durable_refs() {
+        let arrow_manifest = serde_json::json!({
+            "version": 1,
+            "chunks": [
+                {"blob": "chunk_a", "size": 10, "row_count": 5},
+                {"blob": "chunk_b", "size": 11, "row_count": 5}
+            ],
+            "coalesced": {
+                "kind": "segment_manifest",
+                "segments": [
+                    {"blob": "segment_a", "offset": 0, "size": 10},
+                    {"blob": "segment_b", "offset": 10, "size": 11}
+                ]
+            },
+            "schema": {"hash": "schema-fingerprint-only"}
+        });
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                "application/vnd.nteract.arrow-stream-manifest+json": {
+                    "inline": arrow_manifest.to_string()
+                }
+            }
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes(&output, &mut hashes);
+
+        assert!(hashes.contains("chunk_a"));
+        assert!(hashes.contains("chunk_b"));
+        assert!(hashes.contains("segment_a"));
+        assert!(hashes.contains("segment_b"));
+        assert!(
+            !hashes.contains("schema-fingerprint-only"),
+            "schema.hash remains a fingerprint even when chunk refs are durable-form"
+        );
+        assert_eq!(hashes.len(), 4);
+    }
+
     #[tokio::test]
     async fn test_collect_blob_hashes_arrow_stream_manifest_blob_ref() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -6410,7 +6455,10 @@ mod tests {
             }
         });
         let mut hashes = std::collections::HashSet::new();
-        collect_blob_hashes_with_store(&output, &mut hashes, &blob_store).await;
+        collect_blob_hashes(&output, &mut hashes);
+        if let Some(hash) = arrow_manifest_blob_hash(&output) {
+            collect_arrow_manifest_blob_hashes(&hash, &mut hashes, &blob_store).await;
+        }
 
         assert!(hashes.contains(&manifest_hash));
         assert!(hashes.contains("chunk_a"));
