@@ -83,12 +83,19 @@ use automerge::{
 };
 use automerge_recovery::{catch_automerge_panic, AutomergeOperationError, AutomergeRebuildError};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
 use crate::{
     KernelActivity, KernelErrorReason, ProjectContext, ProjectFile, ProjectFileExtras,
     ProjectFileKind, ProjectFileParsed, RuntimeLifecycle, StreamOutputState,
 };
+
+#[cfg(test)]
+thread_local! {
+    static PATCH_LOG_MISMATCH_ON_NEXT_RECEIVE_SYNC_CALLS: Cell<usize> = const { Cell::new(0) };
+}
 
 // ── Snapshot types for reading/comparing state ──────────────────────
 
@@ -396,6 +403,23 @@ impl RuntimeStateDoc {
 
     pub fn new_empty() -> Self {
         Self::try_new_empty().unwrap_or_else(|err| panic!("seed runtime state schema: {err}"))
+    }
+
+    #[cfg(test)]
+    fn __patch_log_mismatch_on_next_receive_sync_calls_for_test(count: usize) {
+        PATCH_LOG_MISMATCH_ON_NEXT_RECEIVE_SYNC_CALLS.with(|calls| calls.set(count));
+    }
+
+    #[cfg(test)]
+    fn patch_log_mismatch_if_receive_sync_requested_for_test() -> Result<(), AutomergeError> {
+        PATCH_LOG_MISMATCH_ON_NEXT_RECEIVE_SYNC_CALLS.with(|calls| {
+            let count = calls.get();
+            if count == 0 {
+                return Ok(());
+            }
+            calls.set(count - 1);
+            Err(AutomergeError::PatchLogMismatch)
+        })
     }
 
     fn schema_seed_doc() -> Result<AutoCommit, RuntimeStateError> {
@@ -2719,6 +2743,9 @@ impl RuntimeStateDoc {
         peer_state: &mut sync::State,
         message: sync::Message,
     ) -> Result<(), AutomergeError> {
+        #[cfg(test)]
+        Self::patch_log_mismatch_if_receive_sync_requested_for_test()?;
+
         if !message.changes.is_empty() {
             tracing::debug!(
                 "[runtime-state] Stripped {} change(s) from client RuntimeStateDoc sync message",
@@ -2746,15 +2773,40 @@ impl RuntimeStateDoc {
         message: sync::Message,
         label: &str,
     ) -> Result<(), AutomergeOperationError> {
+        let retry_message = message.clone();
         match catch_automerge_panic(label, || self.receive_sync_message(peer_state, message)) {
             Ok(Ok(())) => Ok(()),
+            Ok(Err(source)) if is_recoverable_sync_error(&source) => {
+                *peer_state = sync::State::new();
+                if let Err(rebuild_source) = self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(
+                        label,
+                        rebuild_source,
+                    ));
+                }
+                match catch_automerge_panic(label, || {
+                    self.receive_sync_message(peer_state, retry_message)
+                }) {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(retry_source)) => {
+                        Err(AutomergeOperationError::automerge(label, retry_source))
+                    }
+                    Err(err) => Err(AutomergeOperationError::Panic(err)),
+                }
+            }
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
             Err(err) => {
                 *peer_state = sync::State::new();
                 if let Err(source) = self.rebuild_from_save() {
                     return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
-                Err(AutomergeOperationError::Panic(err))
+                match catch_automerge_panic(label, || {
+                    self.receive_sync_message(peer_state, retry_message)
+                }) {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+                    Err(_) => Err(AutomergeOperationError::Panic(err)),
+                }
             }
         }
     }
@@ -2772,6 +2824,9 @@ impl RuntimeStateDoc {
         peer_state: &mut sync::State,
         message: sync::Message,
     ) -> Result<bool, AutomergeError> {
+        #[cfg(test)]
+        Self::patch_log_mismatch_if_receive_sync_requested_for_test()?;
+
         let heads_before = self.doc.get_heads();
         self.doc.sync().receive_sync_message(peer_state, message)?;
         let heads_after = self.doc.get_heads();
@@ -2786,17 +2841,42 @@ impl RuntimeStateDoc {
         message: sync::Message,
         label: &str,
     ) -> Result<bool, AutomergeOperationError> {
+        let retry_message = message.clone();
         match catch_automerge_panic(label, || {
             self.receive_sync_message_with_changes(peer_state, message)
         }) {
             Ok(Ok(changed)) => Ok(changed),
+            Ok(Err(source)) if is_recoverable_sync_error(&source) => {
+                *peer_state = sync::State::new();
+                if let Err(rebuild_source) = self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(
+                        label,
+                        rebuild_source,
+                    ));
+                }
+                match catch_automerge_panic(label, || {
+                    self.receive_sync_message_with_changes(peer_state, retry_message)
+                }) {
+                    Ok(Ok(changed)) => Ok(changed),
+                    Ok(Err(retry_source)) => {
+                        Err(AutomergeOperationError::automerge(label, retry_source))
+                    }
+                    Err(err) => Err(AutomergeOperationError::Panic(err)),
+                }
+            }
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
             Err(err) => {
                 *peer_state = sync::State::new();
                 if let Err(source) = self.rebuild_from_save() {
                     return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
-                Err(AutomergeOperationError::Panic(err))
+                match catch_automerge_panic(label, || {
+                    self.receive_sync_message_with_changes(peer_state, retry_message)
+                }) {
+                    Ok(Ok(changed)) => Ok(changed),
+                    Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+                    Err(_) => Err(AutomergeOperationError::Panic(err)),
+                }
             }
         }
     }
@@ -2830,6 +2910,9 @@ impl RuntimeStateDoc {
     where
         F: Fn(&ActorId) -> bool,
     {
+        #[cfg(test)]
+        Self::patch_log_mismatch_if_receive_sync_requested_for_test()?;
+
         let heads_before = self.doc.get_heads();
         self.doc.sync().receive_sync_message(peer_state, message)?;
 
@@ -2924,20 +3007,49 @@ impl RuntimeStateDoc {
     where
         F: Fn(&ActorId) -> bool,
     {
+        let retry_message = message.clone();
         match catch_automerge_panic(label, || {
-            self.receive_sync_and_foreign_comms(peer_state, message, is_foreign)
+            self.receive_sync_and_foreign_comms(peer_state, message, &is_foreign)
         }) {
             Ok(Ok(view)) => Ok(view),
+            Ok(Err(source)) if is_recoverable_sync_error(&source) => {
+                *peer_state = sync::State::new();
+                if let Err(rebuild_source) = self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(
+                        label,
+                        rebuild_source,
+                    ));
+                }
+                match catch_automerge_panic(label, || {
+                    self.receive_sync_and_foreign_comms(peer_state, retry_message, is_foreign)
+                }) {
+                    Ok(Ok(view)) => Ok(view),
+                    Ok(Err(retry_source)) => {
+                        Err(AutomergeOperationError::automerge(label, retry_source))
+                    }
+                    Err(err) => Err(AutomergeOperationError::Panic(err)),
+                }
+            }
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
             Err(err) => {
                 *peer_state = sync::State::new();
                 if let Err(source) = self.rebuild_from_save() {
                     return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
-                Err(AutomergeOperationError::Panic(err))
+                match catch_automerge_panic(label, || {
+                    self.receive_sync_and_foreign_comms(peer_state, retry_message, is_foreign)
+                }) {
+                    Ok(Ok(view)) => Ok(view),
+                    Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+                    Err(_) => Err(AutomergeOperationError::Panic(err)),
+                }
             }
         }
     }
+}
+
+fn is_recoverable_sync_error(source: &AutomergeError) -> bool {
+    matches!(source, AutomergeError::PatchLogMismatch)
 }
 
 /// Scaffold the `project_context` map in a fresh doc.
@@ -5236,6 +5348,97 @@ mod tests {
         // Object values are always written (no deep comparison)
         let delta = serde_json::json!({"nested": {"a": 1}});
         doc.merge_comm_state_delta("w1", &delta).unwrap();
+    }
+
+    #[test]
+    fn receive_sync_with_changes_retries_original_message_after_patch_log_mismatch() {
+        let mut receiver = RuntimeStateDoc::new_empty();
+        let mut receiver_sync = sync::State::new();
+
+        let mut donor = RuntimeStateDoc::new();
+        donor
+            .create_execution_with_source("exec-retry", "cell-retry", "x = 1", 1)
+            .unwrap();
+        let mut donor_sync = sync::State::new();
+        if let Some(handshake) = receiver.generate_sync_message(&mut receiver_sync) {
+            donor
+                .doc
+                .sync()
+                .receive_sync_message(&mut donor_sync, handshake)
+                .expect("donor receives receiver handshake");
+        }
+        let message = donor
+            .generate_sync_message(&mut donor_sync)
+            .expect("donor should advertise execution");
+
+        RuntimeStateDoc::__patch_log_mismatch_on_next_receive_sync_calls_for_test(1);
+        let changed = receiver
+            .receive_sync_message_with_changes_recovering(
+                &mut receiver_sync,
+                message,
+                "receive-sync-patch-log-mismatch-test",
+            )
+            .expect("recoverable sync error should reset state and retry the original message");
+
+        assert!(changed, "retried message should apply donor changes");
+        assert!(
+            receiver.read_state().executions.contains_key("exec-retry"),
+            "execution from the failed receive frame should not be dropped"
+        );
+    }
+
+    #[test]
+    fn receive_sync_and_foreign_comms_retries_original_message_after_patch_log_mismatch() {
+        let mut receiver = RuntimeStateDoc::new();
+        receiver.set_actor("rt:kernel:deadbeef");
+        let mut receiver_sync = sync::State::new();
+
+        let mut donor = receiver.fork();
+        donor.fork_and_merge(|f| {
+            f.set_actor("human:peer");
+            f.put_comm(
+                "human-widget",
+                "j.w",
+                "",
+                "",
+                &serde_json::json!({"value": 2}),
+                0,
+            )
+            .unwrap();
+        });
+        let mut donor_sync = sync::State::new();
+        if let Some(handshake) = receiver.generate_sync_message(&mut receiver_sync) {
+            donor
+                .doc
+                .sync()
+                .receive_sync_message(&mut donor_sync, handshake)
+                .expect("donor receives receiver handshake");
+        }
+        let message = donor
+            .generate_sync_message(&mut donor_sync)
+            .expect("donor should advertise comm change");
+
+        RuntimeStateDoc::__patch_log_mismatch_on_next_receive_sync_calls_for_test(1);
+        let view = receiver
+            .receive_sync_and_foreign_comms_recovering(
+                &mut receiver_sync,
+                message,
+                |actor| !actor.to_bytes().starts_with(b"rt:kernel:"),
+                "receive-sync-foreign-patch-log-mismatch-test",
+            )
+            .expect("recoverable sync error should reset state and retry the original message");
+
+        assert!(
+            view.applied_actors
+                .iter()
+                .any(|actor| actor.to_bytes().starts_with(b"human:")),
+            "retried message should report the applied frontend actor"
+        );
+        let foreign_comms = view.foreign_comms.expect("foreign comm view");
+        assert!(
+            foreign_comms.contains_key("human-widget"),
+            "foreign comm from the failed receive frame should not be dropped"
+        );
     }
 
     #[test]

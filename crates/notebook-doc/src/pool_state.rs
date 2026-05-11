@@ -336,24 +336,49 @@ impl PoolDoc {
             .map(|_| ())
     }
 
-    /// Receive a sync message, recovering from Automerge panics by rebuilding
-    /// this doc and resetting peer sync state. A recovered panic is reported as
-    /// an error so callers do not treat the incoming message as applied.
+    /// Receive a sync message, recovering from recoverable Automerge failures
+    /// by rebuilding this doc, resetting peer sync state, and retrying the
+    /// original frame once.
     pub fn receive_sync_message_recovering(
         &mut self,
         peer_state: &mut sync::State,
         message: sync::Message,
         label: &str,
     ) -> Result<(), AutomergeOperationError> {
+        let retry_message = message.clone();
         match catch_automerge_panic(label, || self.receive_sync_message(peer_state, message)) {
             Ok(Ok(())) => Ok(()),
+            Ok(Err(source)) if is_recoverable_sync_error(&source) => {
+                *peer_state = sync::State::new();
+                if let Err(rebuild_source) = self.rebuild_from_save() {
+                    return Err(AutomergeOperationError::rebuild_failed(
+                        label,
+                        rebuild_source,
+                    ));
+                }
+                match catch_automerge_panic(label, || {
+                    self.receive_sync_message(peer_state, retry_message)
+                }) {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(retry_source)) => {
+                        Err(AutomergeOperationError::automerge(label, retry_source))
+                    }
+                    Err(err) => Err(AutomergeOperationError::Panic(err)),
+                }
+            }
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
             Err(err) => {
                 *peer_state = sync::State::new();
                 if let Err(source) = self.rebuild_from_save() {
                     return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
-                Err(AutomergeOperationError::Panic(err))
+                match catch_automerge_panic(label, || {
+                    self.receive_sync_message(peer_state, retry_message)
+                }) {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+                    Err(_) => Err(AutomergeOperationError::Panic(err)),
+                }
             }
         }
     }
@@ -373,6 +398,10 @@ impl PoolDoc {
             }
         })?
     }
+}
+
+fn is_recoverable_sync_error(source: &automerge::AutomergeError) -> bool {
+    matches!(source, automerge::AutomergeError::PatchLogMismatch)
 }
 
 #[cfg(test)]

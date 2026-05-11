@@ -108,14 +108,34 @@ impl SharedDocState {
         message: sync::Message,
         label: &str,
     ) -> Result<(), AutomergeOperationError> {
+        let retry_message = message.clone();
         match catch_automerge_panic(label, || self.receive_sync_message(message)) {
             Ok(Ok(())) => Ok(()),
+            Ok(Err(source)) if is_recoverable_sync_error(&source) => {
+                if let Err(rebuild_source) = self.rebuild_doc() {
+                    return Err(AutomergeOperationError::rebuild_failed(
+                        label,
+                        rebuild_source,
+                    ));
+                }
+                match catch_automerge_panic(label, || self.receive_sync_message(retry_message)) {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(retry_source)) => {
+                        Err(AutomergeOperationError::automerge(label, retry_source))
+                    }
+                    Err(err) => Err(AutomergeOperationError::Panic(err)),
+                }
+            }
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
             Err(err) => {
                 if let Err(source) = self.rebuild_doc() {
                     return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
-                Err(AutomergeOperationError::Panic(err))
+                match catch_automerge_panic(label, || self.receive_sync_message(retry_message)) {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+                    Err(_) => Err(AutomergeOperationError::Panic(err)),
+                }
             }
         }
     }
@@ -161,14 +181,38 @@ impl SharedDocState {
         message: sync::Message,
         label: &str,
     ) -> Result<(), AutomergeOperationError> {
+        let retry_message = message.clone();
         match catch_automerge_panic(label, || self.receive_state_sync_message(message)) {
             Ok(Ok(())) => Ok(()),
+            Ok(Err(source)) if is_recoverable_sync_error(&source) => {
+                if let Err(rebuild_source) = self.rebuild_state_doc() {
+                    return Err(AutomergeOperationError::rebuild_failed(
+                        label,
+                        rebuild_source,
+                    ));
+                }
+                match catch_automerge_panic(label, || {
+                    self.receive_state_sync_message(retry_message)
+                }) {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(retry_source)) => {
+                        Err(AutomergeOperationError::automerge(label, retry_source))
+                    }
+                    Err(err) => Err(AutomergeOperationError::Panic(err)),
+                }
+            }
             Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
             Err(err) => {
                 if let Err(source) = self.rebuild_state_doc() {
                     return Err(AutomergeOperationError::rebuild_failed(label, source));
                 }
-                Err(AutomergeOperationError::Panic(err))
+                match catch_automerge_panic(label, || {
+                    self.receive_state_sync_message(retry_message)
+                }) {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
+                    Err(_) => Err(AutomergeOperationError::Panic(err)),
+                }
             }
         }
     }
@@ -240,6 +284,10 @@ impl SharedDocState {
     pub(crate) fn panic_on_next_state_sync_for_test(&mut self) {
         self.panic_on_next_state_sync = true;
     }
+}
+
+fn is_recoverable_sync_error(source: &automerge::AutomergeError) -> bool {
+    matches!(source, automerge::AutomergeError::PatchLogMismatch)
 }
 
 #[cfg(test)]
