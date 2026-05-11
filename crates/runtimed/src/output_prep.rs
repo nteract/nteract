@@ -472,6 +472,8 @@ pub enum QueueCommand {
         cell_id: String,
         execution_id: String,
     },
+    /// The kernel reported idle. Used to release execution after interrupt.
+    KernelIdle { execution_id: Option<String> },
     /// A cell produced an error (for stop-on-error behavior)
     CellError {
         cell_id: String,

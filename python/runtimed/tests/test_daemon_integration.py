@@ -2034,10 +2034,6 @@ class TestKernelLifecycle:
         assert await session.kernel_started()
         assert await session.env_source() is not None
 
-    @pytest.mark.xfail(
-        reason="Flaky on CI: daemon relay 30s timeout can expire on slow runners",
-        strict=False,
-    )
     async def test_interrupt_clears_queue_and_unblocks(self, session):
         """Interrupt clears the CRDT queue and allows new cells to execute (#1583)."""
         await async_start_kernel_with_retry(session)
@@ -2048,9 +2044,9 @@ class TestKernelLifecycle:
         queued_id = await session.create_cell("queued = True")
 
         # Execute both — blocking cell runs first, queued cell waits
-        blocking_task = asyncio.create_task(session.execute_cell(blocking_id))
+        blocking_task = asyncio.ensure_future(session.execute_cell(blocking_id))
         await asyncio.sleep(0.5)  # Let blocking cell start
-        queued_task = asyncio.create_task(session.execute_cell(queued_id))
+        queued_task = asyncio.ensure_future(session.execute_cell(queued_id))
         await asyncio.sleep(0.5)  # Let queue settle
 
         # Interrupt — should clear the queue and send SIGINT
@@ -2068,6 +2064,51 @@ class TestKernelLifecycle:
         verify_id = await session.create_cell("1 + 1")
         verify_result = await asyncio.wait_for(session.execute_cell(verify_id), timeout=10)
         assert verify_result.success, f"Post-interrupt cell should succeed: {verify_result}"
+
+    async def test_interrupt_large_streaming_output_unblocks(self, session):
+        """Interrupting heavy stdout streaming clears state and allows more execution."""
+        await async_start_kernel_with_retry(session)
+
+        streaming_id = await session.create_cell(
+            "\n".join(
+                [
+                    "import sys",
+                    "import time",
+                    "",
+                    "for i in range(10_000):",
+                    "    print(i)",
+                    "    if i % 10 == 0:",
+                    "        sys.stdout.flush()",
+                    "    time.sleep(0.0005)",
+                ]
+            )
+        )
+
+        execution_id = await session.queue_cell(streaming_id)
+
+        async def streaming_started():
+            state = await session.get_runtime_state()
+            execution = state.executions.get(execution_id)
+            return execution is not None and execution.status == "running"
+
+        await async_wait_for_sync(
+            streaming_started,
+            timeout=10.0,
+            description="streaming execution to start",
+        )
+
+        await session.interrupt()
+
+        streaming_result = await asyncio.wait_for(
+            session.wait_for_execution(streaming_id, execution_id, timeout_secs=10),
+            timeout=15,
+        )
+        assert not streaming_result.success, "Interrupted streaming cell should report failure"
+
+        verify_id = await session.create_cell("print(21 * 2)")
+        verify_result = await asyncio.wait_for(session.execute_cell(verify_id), timeout=10)
+        assert verify_result.success, f"Post-interrupt cell should succeed: {verify_result}"
+        assert "42" in verify_result.stdout
 
     async def test_async_shutdown_kernel(self, session):
         """Can shutdown the kernel."""
