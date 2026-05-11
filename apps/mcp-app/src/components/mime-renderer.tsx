@@ -9,6 +9,8 @@ import { ImageOutput } from "./image-output";
 import { JsonOutput } from "./json-output";
 import type { CellOutput } from "../types";
 
+const ARROW_STREAM_MANIFEST_MIME = "application/vnd.nteract.arrow-stream-manifest+json";
+
 interface MimeRendererProps {
   data: Record<string, string>;
   /** Base URL for daemon HTTP server (for fetching blob data and plugins) */
@@ -72,7 +74,7 @@ function PluginRenderer({
     const pluginPromise = loadPluginForMime(mime, blobBaseUrl) ?? Promise.resolve();
 
     // Binary plugins (Sift table payloads) expect a URL and fetch data themselves.
-    // Text/JSON plugins (plotly, vega, markdown) need fetched + parsed content.
+    // Manifest/plugin JSON needs fetched + parsed content before rendering.
     const isBinaryPlugin =
       mime === "application/vnd.apache.parquet" || mime === "application/vnd.apache.arrow.stream";
     const parseData = (text: string) => {
@@ -92,7 +94,11 @@ function PluginRenderer({
       .then(([, parsedData]) => {
         if (cancelled) return;
         setPluginReady(true);
-        setData(parsedData);
+        setData(
+          mime === ARROW_STREAM_MANIFEST_MIME
+            ? attachArrowManifestChunkUrls(parsedData, blobBaseUrl)
+            : parsedData,
+        );
       })
       .catch(() => {
         if (!cancelled) setFailed(true);
@@ -117,6 +123,29 @@ function PluginRenderer({
   }
 
   return <RendererComponent data={data} mimeType={mime} />;
+}
+
+function attachArrowManifestChunkUrls(value: unknown, blobBaseUrl: string | undefined): unknown {
+  if (!blobBaseUrl || typeof value !== "object" || value === null) return value;
+  const manifest = value as Record<string, unknown>;
+  if (!Array.isArray(manifest.chunks)) return value;
+
+  const baseUrl = blobBaseUrl.replace(/\/$/, "");
+  let changed = false;
+  const chunks = manifest.chunks.map((chunk) => {
+    if (typeof chunk !== "object" || chunk === null) return chunk;
+    const chunkRecord = chunk as Record<string, unknown>;
+    if (typeof chunkRecord.url === "string") return chunk;
+    if (typeof chunkRecord.hash !== "string") return chunk;
+    changed = true;
+    return {
+      ...chunkRecord,
+      url: `${baseUrl}/blob/${chunkRecord.hash}`,
+    };
+  });
+
+  if (!changed) return value;
+  return { ...manifest, chunks };
 }
 
 function FetchAndRender({

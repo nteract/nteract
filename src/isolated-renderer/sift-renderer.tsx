@@ -9,11 +9,20 @@
  * parquet or Arrow IPC from blob URL → WASM decodes → table renders.
  */
 
-import { setWasmUrl, SiftFocusStatus, SiftTable, type TableEngineState } from "@nteract/sift";
+import {
+  setWasmUrl,
+  SiftFocusStatus,
+  SiftTable,
+  type ArrowStreamManifest,
+  type SiftSource,
+  type TableEngineState,
+} from "@nteract/sift";
 import "@nteract/sift/style.css";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 declare const __SIFT_WASM_CACHE_KEY__: string | undefined;
+
+const ARROW_STREAM_MANIFEST_MIME = "application/vnd.nteract.arrow-stream-manifest+json";
 
 // --- Types ---
 
@@ -22,6 +31,15 @@ interface RendererProps {
   metadata?: Record<string, unknown>;
   mimeType: string;
   interactionActive?: boolean;
+}
+
+interface RendererArrowStreamManifestChunk {
+  url?: unknown;
+  row_count?: unknown;
+}
+
+interface RendererArrowStreamManifest {
+  chunks?: unknown;
 }
 
 // --- WASM configuration ---
@@ -87,9 +105,56 @@ function fitHeightForRowCount(rowCount: number): number {
 
 // --- SiftRenderer component ---
 
-function SiftRenderer({ data, interactionActive = false }: RendererProps) {
-  const url = String(data);
-  configureWasm(url);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function tableUrlFromManifest(data: unknown): string | undefined {
+  if (!isRecord(data)) return undefined;
+  const manifest = data as RendererArrowStreamManifest;
+  if (!Array.isArray(manifest.chunks)) return undefined;
+  const [firstChunk] = manifest.chunks as RendererArrowStreamManifestChunk[];
+  return typeof firstChunk?.url === "string" ? firstChunk.url : undefined;
+}
+
+function tableManifestForData(data: unknown): ArrowStreamManifest | undefined {
+  if (!isRecord(data)) return undefined;
+  const manifest = data as RendererArrowStreamManifest;
+  if (!Array.isArray(manifest.chunks)) return undefined;
+  const chunks = [];
+  for (const chunk of manifest.chunks) {
+    if (!isRecord(chunk) || typeof chunk.url !== "string") return undefined;
+    chunks.push({
+      url: chunk.url,
+      row_count: typeof chunk.row_count === "number" ? chunk.row_count : undefined,
+    });
+  }
+  if (chunks.length === 0) return undefined;
+  return {
+    chunks,
+    complete: typeof data.complete === "boolean" ? data.complete : undefined,
+  };
+}
+
+function tableSourceForData(data: unknown, mimeType: string): SiftSource | undefined {
+  if (mimeType === ARROW_STREAM_MANIFEST_MIME) {
+    const manifest = tableManifestForData(data);
+    return manifest ? { kind: "arrow-stream-manifest", manifest } : undefined;
+  }
+  const url = typeof data === "string" ? data : String(data);
+  return { kind: "url", url };
+}
+
+function tableUrlForData(data: unknown, mimeType: string): string | undefined {
+  if (mimeType === ARROW_STREAM_MANIFEST_MIME) {
+    return tableUrlFromManifest(data);
+  }
+  return typeof data === "string" ? data : String(data);
+}
+
+function SiftRenderer({ data, mimeType, interactionActive = false }: RendererProps) {
+  const url = tableUrlForData(data, mimeType);
+  const source = useMemo(() => tableSourceForData(data, mimeType), [data, mimeType]);
 
   // Default to the cap so the table is visible while sift's WASM loads
   // and reports its first state. Once we see a totalCount we settle on
@@ -115,10 +180,17 @@ function SiftRenderer({ data, interactionActive = false }: RendererProps) {
     setTableHeight(fitHeightForRowCount(state.totalCount));
   }, []);
 
+  if (!url || !source) {
+    console.warn("[sift-renderer] missing table URL", { mimeType, data });
+    return <pre style={{ whiteSpace: "pre-wrap" }}>Unable to load Arrow stream manifest</pre>;
+  }
+  console.debug("[sift-renderer] render", { mimeType, url: url.slice(0, 120) });
+  configureWasm(url);
+
   return (
     <div style={{ height: tableHeight, width: "100%" }}>
       <SiftTable
-        url={url}
+        source={source}
         onChange={handleChange}
         footerControl={
           <div className="sift-footer-control">{interactionActive && <SiftFocusStatus />}</div>
@@ -134,7 +206,11 @@ export function install(ctx: {
   register: (mimeTypes: string[], component: React.ComponentType<RendererProps>) => void;
 }) {
   ctx.register(
-    ["application/vnd.apache.parquet", "application/vnd.apache.arrow.stream"],
+    [
+      "application/vnd.apache.parquet",
+      "application/vnd.apache.arrow.stream",
+      ARROW_STREAM_MANIFEST_MIME,
+    ],
     SiftRenderer,
   );
 }

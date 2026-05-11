@@ -24,6 +24,9 @@ export type ViewportCells = {
 type PredicateModule = {
   // Data store
   load_ipc(ipc_bytes: Uint8Array): number;
+  create_arrow_stream_store(): number;
+  append_arrow_stream_chunk(handle: number, ipc_bytes: Uint8Array): void;
+  finish_arrow_stream_store(handle: number): void;
   load_parquet(parquet_bytes: Uint8Array): number;
   parquet_metadata(parquet_bytes: Uint8Array): Uint32Array;
   parquet_column_hints(parquet_bytes: Uint8Array): ParquetColumnHint[];

@@ -69,6 +69,7 @@ export const DEFAULT_PRIORITY = [
   // DataFrames — sift renders Arrow IPC/parquet as an interactive table. Must
   // outrank text/html so pandas's HTML fallback doesn't win when both
   // are present (dx emits table bytes + text/html for rich table outputs).
+  "application/vnd.nteract.arrow-stream-manifest+json",
   "application/vnd.apache.arrow.stream",
   "application/vnd.apache.parquet",
   // HTML, PDF, markdown, and LaTeX

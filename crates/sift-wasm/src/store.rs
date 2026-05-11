@@ -21,11 +21,12 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use wasm_bindgen::prelude::*;
 
 /// A loaded dataset stored in WASM memory.
 struct DataStore {
+    schema: Option<Arc<arrow::datatypes::Schema>>,
     batches: Vec<RecordBatch>,
     /// Prefix sum of batch row counts for O(log n) row→batch lookup
     batch_offsets: Vec<usize>,
@@ -37,6 +38,7 @@ struct DataStore {
     /// Original column arrays saved before casting, keyed by column index.
     /// Used to restore original data when casting back to the original type.
     original_columns: HashMap<usize, (Vec<arrow::array::ArrayRef>, String)>,
+    streaming_complete: bool,
 }
 
 #[derive(Serialize)]
@@ -121,8 +123,9 @@ where
     })
 }
 
-/// Store a vec of RecordBatches, returning a handle.
-fn store_batches(batches: Vec<RecordBatch>, schema: &arrow::datatypes::Schema) -> u32 {
+fn schema_metadata(
+    schema: &arrow::datatypes::Schema,
+) -> (usize, Vec<String>, Vec<String>, Vec<Option<String>>) {
     let num_cols = schema.fields().len();
     let col_names: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
     let col_types: Vec<String> = schema
@@ -136,12 +139,78 @@ fn store_batches(batches: Vec<RecordBatch>, schema: &arrow::datatypes::Schema) -
         .map(|f| DataStore::extract_timezone(f.data_type()))
         .collect();
 
-    let mut batch_offsets = Vec::new();
-    let mut total_rows = 0;
-    for batch in &batches {
-        batch_offsets.push(total_rows);
-        total_rows += batch.num_rows();
+    (num_cols, col_names, col_types, col_timezones)
+}
+
+fn empty_streaming_store() -> DataStore {
+    DataStore {
+        schema: None,
+        batches: Vec::new(),
+        batch_offsets: Vec::new(),
+        total_rows: 0,
+        num_cols: 0,
+        col_names: Vec::new(),
+        col_types: Vec::new(),
+        col_timezones: Vec::new(),
+        original_columns: HashMap::new(),
+        streaming_complete: false,
     }
+}
+
+fn set_store_schema(store: &mut DataStore, schema: Arc<arrow::datatypes::Schema>) {
+    let (num_cols, col_names, col_types, col_timezones) = schema_metadata(&schema);
+    store.schema = Some(schema);
+    store.num_cols = num_cols;
+    store.col_names = col_names;
+    store.col_types = col_types;
+    store.col_timezones = col_timezones;
+}
+
+fn append_batches_to_store(
+    store: &mut DataStore,
+    schema: Arc<arrow::datatypes::Schema>,
+    batches: Vec<RecordBatch>,
+) -> Result<(), String> {
+    if store.streaming_complete {
+        return Err("Arrow stream store is already finished".to_string());
+    }
+
+    if let Some(existing) = &store.schema {
+        if existing.as_ref() != schema.as_ref() {
+            return Err("Arrow stream chunk schema mismatch".to_string());
+        }
+    } else {
+        set_store_schema(store, schema);
+    }
+
+    for batch in batches {
+        store.batch_offsets.push(store.total_rows);
+        store.total_rows += batch.num_rows();
+        store.batches.push(batch);
+    }
+
+    Ok(())
+}
+
+fn arrow_stream_batches(
+    ipc_bytes: &[u8],
+) -> Result<(Arc<arrow::datatypes::Schema>, Vec<RecordBatch>), String> {
+    let cursor = Cursor::new(ipc_bytes);
+    let reader = StreamReader::try_new(cursor, None).map_err(|e| e.to_string())?;
+    let schema = reader.schema();
+    let mut batches = Vec::new();
+    for batch in reader {
+        batches.push(batch.map_err(|e| e.to_string())?);
+    }
+    Ok((schema, batches))
+}
+
+/// Store a vec of RecordBatches, returning a handle.
+fn store_batches(batches: Vec<RecordBatch>, schema: Arc<arrow::datatypes::Schema>) -> u32 {
+    let mut store = empty_streaming_store();
+    append_batches_to_store(&mut store, schema, batches)
+        .expect("new store should accept its initial batches");
+    store.streaming_complete = true;
 
     let handle = {
         let mut h = NEXT_HANDLE.lock().unwrap_or_else(|e| e.into_inner());
@@ -151,19 +220,7 @@ fn store_batches(batches: Vec<RecordBatch>, schema: &arrow::datatypes::Schema) -
     };
 
     with_stores(|stores| {
-        stores.insert(
-            handle,
-            DataStore {
-                batches,
-                batch_offsets,
-                total_rows,
-                num_cols,
-                col_names,
-                col_types,
-                col_timezones,
-                original_columns: HashMap::new(),
-            },
-        );
+        stores.insert(handle, store);
     });
 
     handle
@@ -182,7 +239,7 @@ pub fn load_ipc(ipc_bytes: &[u8]) -> Result<u32, JsValue> {
         batches.push(batch.map_err(|e| JsValue::from_str(&e.to_string()))?);
     }
 
-    Ok(store_batches(batches, &schema))
+    Ok(store_batches(batches, schema))
 }
 
 /// Load Parquet bytes into WASM memory. Returns a handle for subsequent operations.
@@ -202,7 +259,51 @@ pub fn load_parquet(parquet_bytes: &[u8]) -> Result<u32, JsValue> {
         batches.push(batch.map_err(|e| JsValue::from_str(&e.to_string()))?);
     }
 
-    Ok(store_batches(batches, &schema))
+    Ok(store_batches(batches, schema))
+}
+
+/// Create an empty Arrow stream store. Append self-contained Arrow IPC stream
+/// chunks with `append_arrow_stream_chunk`, then call `finish_arrow_stream_store`
+/// when the manifest is complete.
+#[wasm_bindgen]
+pub fn create_arrow_stream_store() -> u32 {
+    let handle = {
+        let mut h = NEXT_HANDLE.lock().unwrap_or_else(|e| e.into_inner());
+        let id = *h;
+        *h += 1;
+        id
+    };
+
+    with_stores(|stores| {
+        stores.insert(handle, empty_streaming_store());
+    });
+
+    handle
+}
+
+/// Append one self-contained Arrow IPC stream chunk into an existing store.
+/// The first chunk initializes the store schema; later chunks must match it.
+#[wasm_bindgen]
+pub fn append_arrow_stream_chunk(handle: u32, ipc_bytes: &[u8]) -> Result<(), JsValue> {
+    let (schema, batches) = arrow_stream_batches(ipc_bytes).map_err(|e| JsValue::from_str(&e))?;
+    with_stores(|stores| {
+        let store = stores
+            .get_mut(&handle)
+            .ok_or_else(|| JsValue::from_str(&format!("Invalid handle: {}", handle)))?;
+        append_batches_to_store(store, schema, batches).map_err(|e| JsValue::from_str(&e))
+    })
+}
+
+/// Mark an Arrow stream store as complete. Further chunk appends are rejected.
+#[wasm_bindgen]
+pub fn finish_arrow_stream_store(handle: u32) -> Result<(), JsValue> {
+    with_stores(|stores| {
+        let store = stores
+            .get_mut(&handle)
+            .ok_or_else(|| JsValue::from_str(&format!("Invalid handle: {}", handle)))?;
+        store.streaming_complete = true;
+        Ok(())
+    })
 }
 
 /// Free a loaded dataset from WASM memory.
@@ -1495,7 +1596,7 @@ pub fn load_parquet_row_group(
 
     if handle == 0 {
         // Create new store
-        Ok(store_batches(batches, &schema))
+        Ok(store_batches(batches, schema))
     } else {
         // Append to existing store
         with_stores(|stores| {
@@ -2129,6 +2230,99 @@ mod tests {
         );
     }
 
+    fn ipc_stream(schema: Arc<Schema>, columns: Vec<ArrayRef>) -> Vec<u8> {
+        let batch = RecordBatch::try_new(schema.clone(), columns).expect("record batch");
+        let mut buf = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut buf, &schema).expect("stream writer");
+            writer.write(&batch).expect("write batch");
+            writer.finish().expect("finish stream");
+        }
+        buf
+    }
+
+    fn append_ipc_chunk(store: &mut DataStore, ipc_bytes: &[u8]) -> Result<(), String> {
+        let (schema, batches) = arrow_stream_batches(ipc_bytes)?;
+        append_batches_to_store(store, schema, batches)
+    }
+
+    #[test]
+    fn arrow_stream_chunks_append_to_empty_store() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+        let first = ipc_stream(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["alpha", "beta"])) as ArrayRef,
+            ],
+        );
+        let second = ipc_stream(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(vec![3])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["gamma"])) as ArrayRef,
+            ],
+        );
+        let mut store = empty_streaming_store();
+
+        append_ipc_chunk(&mut store, &first).expect("first chunk");
+        append_ipc_chunk(&mut store, &second).expect("second chunk");
+
+        assert_eq!(store.total_rows, 3);
+        assert_eq!(store.batch_offsets, vec![0, 2]);
+        assert_eq!(store.col_names, vec!["id", "name"]);
+        assert_eq!(store.col_types, vec!["numeric", "categorical"]);
+        assert_eq!(
+            cell_string_for(&store, 1, store.batches[0].column(1).as_ref(), 1),
+            "beta"
+        );
+        assert_eq!(
+            cell_string_for(&store, 1, store.batches[1].column(1).as_ref(), 0),
+            "gamma"
+        );
+    }
+
+    #[test]
+    fn arrow_stream_chunks_reject_schema_mismatch() {
+        let first_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let second_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Utf8, false)]));
+        let first = ipc_stream(
+            first_schema,
+            vec![Arc::new(Int32Array::from(vec![1])) as ArrayRef],
+        );
+        let second = ipc_stream(
+            second_schema,
+            vec![Arc::new(StringArray::from(vec!["bad"])) as ArrayRef],
+        );
+        let mut store = empty_streaming_store();
+
+        append_ipc_chunk(&mut store, &first).expect("first chunk");
+        let err = append_ipc_chunk(&mut store, &second).expect_err("schema mismatch");
+
+        assert!(err.contains("schema mismatch"));
+        assert_eq!(store.total_rows, 1);
+    }
+
+    #[test]
+    fn arrow_stream_chunks_reject_appends_after_finish() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let chunk = ipc_stream(
+            schema,
+            vec![Arc::new(Int32Array::from(vec![1])) as ArrayRef],
+        );
+        let mut store = empty_streaming_store();
+
+        append_ipc_chunk(&mut store, &chunk).expect("first chunk");
+        store.streaming_complete = true;
+        let err = append_ipc_chunk(&mut store, &chunk).expect_err("finished store");
+
+        assert!(err.contains("already finished"));
+        assert_eq!(store.total_rows, 1);
+    }
+
     #[test]
     fn store_filter_rows_matches_struct_value_count_labels() {
         let schema = Arc::new(Schema::new(vec![Field::new(
@@ -2165,10 +2359,13 @@ mod tests {
         let first_batch =
             RecordBatch::try_new(schema.clone(), vec![Arc::new(first_metrics) as ArrayRef])
                 .expect("record batch");
-        let second_batch =
-            RecordBatch::try_new(schema, vec![Arc::new(second_metrics.clone()) as ArrayRef])
-                .expect("record batch");
+        let second_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(second_metrics.clone()) as ArrayRef],
+        )
+        .expect("record batch");
         let store = DataStore {
+            schema: Some(schema),
             batches: vec![first_batch, second_batch],
             batch_offsets: vec![0, 1],
             total_rows: 2,
@@ -2177,6 +2374,7 @@ mod tests {
             col_types: vec!["categorical".to_string()],
             col_timezones: vec![None],
             original_columns: HashMap::new(),
+            streaming_complete: true,
         };
         let formatter = ArrayFormatter::try_new(&second_metrics, &Default::default()).unwrap();
         let selected = formatter.value(0).to_string();
@@ -2211,6 +2409,7 @@ mod tests {
         )
         .expect("record batch");
         let store = DataStore {
+            schema: Some(schema),
             batches: vec![batch],
             batch_offsets: vec![0],
             total_rows: 2,
@@ -2229,6 +2428,7 @@ mod tests {
             ],
             col_timezones: vec![None, None, None, None],
             original_columns: HashMap::new(),
+            streaming_complete: true,
         };
 
         let out = viewport_cells_for(&store, &[1, 0]);
@@ -2263,6 +2463,7 @@ mod tests {
         let batch = RecordBatch::try_new(schema, vec![Arc::new(NullArray::new(3)) as ArrayRef])
             .expect("record batch");
         let store = DataStore {
+            schema: Some(batch.schema()),
             batches: vec![batch],
             batch_offsets: vec![0],
             total_rows: 3,
@@ -2271,6 +2472,7 @@ mod tests {
             col_types: vec!["categorical".to_string()],
             col_timezones: vec![None],
             original_columns: HashMap::new(),
+            streaming_complete: true,
         };
 
         let out = viewport_cells_for(&store, &[0, 2]);
@@ -2320,6 +2522,7 @@ mod tests {
         let batch =
             RecordBatch::try_new(schema, vec![Arc::new(arr) as ArrayRef]).expect("record batch");
         DataStore {
+            schema: Some(batch.schema()),
             batches: vec![batch],
             batch_offsets: vec![0],
             total_rows,
@@ -2328,6 +2531,7 @@ mod tests {
             col_types: vec!["categorical".to_string()],
             col_timezones: vec![None],
             original_columns: HashMap::new(),
+            streaming_complete: true,
         }
     }
 
@@ -2448,6 +2652,7 @@ mod tests {
         let batch =
             RecordBatch::try_new(schema, vec![Arc::new(arr) as ArrayRef]).expect("record batch");
         DataStore {
+            schema: Some(batch.schema()),
             batches: vec![batch],
             batch_offsets: vec![0],
             total_rows,
@@ -2456,6 +2661,7 @@ mod tests {
             col_types: vec!["categorical".to_string()],
             col_timezones: vec![None],
             original_columns: HashMap::new(),
+            streaming_complete: true,
         }
     }
 

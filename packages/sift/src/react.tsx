@@ -8,6 +8,9 @@
  *   <SiftTable url="/data.arrow" onChange={handleState} />
  *   <SiftTable url="/data.parquet" onChange={handleState} />
  *
+ * Or with a normalized source:
+ *   <SiftTable source={{ kind: "arrow-stream-manifest", manifest }} onChange={handleState} />
+ *
  * The component manages the imperative TableEngine lifecycle —
  * mounting on first render, updating on data changes, and
  * cleaning up on unmount.
@@ -35,7 +38,24 @@ import { createWasmTableData } from "./wasm-table-data";
 
 // --- Props ---
 
+export type ArrowStreamManifestChunk = {
+  url: string;
+  row_count?: number;
+};
+
+export type ArrowStreamManifest = {
+  chunks: ArrowStreamManifestChunk[];
+  complete?: boolean;
+};
+
+export type SiftSource =
+  | { kind: "table-data"; data: TableData }
+  | { kind: "url"; url: string }
+  | { kind: "arrow-stream-manifest"; manifest: ArrowStreamManifest };
+
 export type SiftTableProps = {
+  /** Normalized table source. Prefer this for new source types. */
+  source?: SiftSource;
   /** Pre-built TableData object. Mutually exclusive with `url`. */
   data?: TableData;
   /** URL to load data from (Arrow IPC or Parquet, auto-detected). Mutually exclusive with `data`. */
@@ -53,6 +73,15 @@ export type SiftTableProps = {
   /** Inline styles for the container div. */
   style?: React.CSSProperties;
 };
+
+function arrowStreamManifestKey(manifest: ArrowStreamManifest | undefined): string | null {
+  if (!manifest) return null;
+  const complete = manifest.complete === false ? "open" : "complete";
+  const chunks = manifest.chunks
+    .map((chunk) => `${chunk.url}\u0001${chunk.row_count ?? ""}`)
+    .join("\u0000");
+  return `${complete}\u0002${chunks}`;
+}
 
 // --- Format detection ---
 
@@ -237,6 +266,7 @@ function updateWasmSummaries(
 // --- Component ---
 
 export function SiftTable({
+  source,
   data,
   url,
   typeOverrides,
@@ -286,9 +316,14 @@ export function SiftTable({
     };
   }, []);
 
+  const dataSource = source?.kind === "table-data" ? source.data : data;
+  const urlSource = source?.kind === "url" ? source.url : url;
+  const manifestSource = source?.kind === "arrow-stream-manifest" ? source.manifest : undefined;
+  const manifestKey = arrowStreamManifestKey(manifestSource);
+
   // Mount engine when `data` prop is provided directly
   useEffect(() => {
-    if (!data || !containerRef.current) return;
+    if (!dataSource || !containerRef.current) return;
 
     // Clean up previous engine
     if (engineRef.current) {
@@ -301,7 +336,7 @@ export function SiftTable({
     engineDiv.style.height = "100%";
     containerRef.current.appendChild(engineDiv);
 
-    engineRef.current = createTable(engineDiv, data, {
+    engineRef.current = createTable(engineDiv, dataSource, {
       onChange: stableOnChange,
       footerControl: getFooterControlElement(),
     });
@@ -312,14 +347,131 @@ export function SiftTable({
       engineRef.current = null;
       engineDiv.remove();
     };
-  }, [data, stableOnChange, getFooterControlElement]);
+  }, [dataSource, stableOnChange, getFooterControlElement]);
+
+  // Load Arrow stream manifest chunks through the appendable WASM store.
+  useEffect(() => {
+    if (!manifestSource || !containerRef.current) return;
+
+    let cancelled = false;
+    const container = containerRef.current;
+    let wasmHandle: number | null = null;
+    let engineDiv: HTMLDivElement | null = null;
+
+    function mountEngine(tableData: TableData) {
+      if (engineRef.current) {
+        engineRef.current.destroy();
+        engineRef.current = null;
+      }
+      engineDiv?.remove();
+      engineDiv = document.createElement("div");
+      engineDiv.style.height = "100%";
+      container.appendChild(engineDiv);
+      engineRef.current = createTable(engineDiv, tableData, {
+        onChange: stableOnChange,
+        footerControl: getFooterControlElement(),
+      });
+    }
+
+    async function fetchChunkBytes(chunk: ArrowStreamManifestChunk, index: number) {
+      if (!chunk.url) {
+        throw new Error(`Arrow stream manifest chunk ${index} is missing a URL`);
+      }
+      const response = await fetch(chunk.url);
+      if (!response.ok) {
+        throw new Error(
+          `Failed to fetch Arrow stream chunk ${index}: ${response.status} ${response.statusText}`,
+        );
+      }
+      return new Uint8Array(await response.arrayBuffer());
+    }
+
+    async function loadFromManifest() {
+      setStatus("loading");
+      setError(null);
+
+      const chunks = manifestSource.chunks;
+      if (chunks.length === 0) {
+        throw new Error("Arrow stream manifest has no chunks");
+      }
+
+      await ensureModule();
+      if (cancelled) return;
+
+      const mod = getModuleSync();
+      const handle = mod.create_arrow_stream_store();
+      wasmHandle = handle;
+
+      const firstBytes = await fetchChunkBytes(chunks[0], 0);
+      if (cancelled) return;
+      mod.append_arrow_stream_chunk(handle, firstBytes);
+
+      const columnHints = mod.arrow_ipc_column_hints_with_row_count(
+        firstBytes,
+        mod.num_rows(handle),
+      );
+      const pandasIndexCols = pandasIndexColumnsFromHints(columnHints);
+      const { tableData, columns, prefetchViewport } = createWasmTableData(handle);
+      tableData.prefetchViewport = prefetchViewport;
+      tableData.recomputeSummaries = () =>
+        updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
+
+      applyParquetColumnHints(columns, columnHints);
+      applyColumnOverrides(columns, columnOverrides);
+
+      updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
+
+      if (cancelled) return;
+      mountEngine(tableData);
+      setStatus("ready");
+
+      for (let i = 1; i < chunks.length; i++) {
+        if (cancelled) return;
+        await new Promise((r) => setTimeout(r, 0));
+        if (cancelled) return;
+        const bytes = await fetchChunkBytes(chunks[i], i);
+        if (cancelled) return;
+        mod.append_arrow_stream_chunk(handle, bytes);
+        tableData.rowCount = mod.num_rows(handle);
+        updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
+        engineRef.current?.onBatchAppended();
+      }
+
+      if (manifestSource.complete !== false) {
+        mod.finish_arrow_stream_store(handle);
+        engineRef.current?.setStreamingDone();
+      }
+    }
+
+    loadFromManifest().catch((err) => {
+      if (!cancelled) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        setStatus("error");
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      if (wasmHandle !== null) {
+        try {
+          getModuleSync().free(wasmHandle);
+        } catch {
+          /* module may not be loaded */
+        }
+      }
+      engineRef.current?.destroy();
+      engineRef.current = null;
+      engineDiv?.remove();
+    };
+  }, [manifestKey, columnOverrides, stableOnChange, getFooterControlElement]);
 
   // Load from URL when `url` prop is provided.
   // Detects format via Content-Type header + magic byte fallback:
   // - Parquet: buffer fully, load via WASM with progressive row groups
   // - Arrow IPC: stream batches (existing behavior)
   useEffect(() => {
-    if (!url || !containerRef.current) return;
+    if (!urlSource || !containerRef.current) return;
 
     let cancelled = false;
     const container = containerRef.current;
@@ -444,7 +596,7 @@ export function SiftTable({
       setStatus("loading");
       setError(null);
 
-      const response = await fetch(url!);
+      const response = await fetch(urlSource);
       if (!response.ok) {
         throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`);
       }
@@ -480,7 +632,7 @@ export function SiftTable({
       engineRef.current = null;
       engineDiv?.remove();
     };
-  }, [url, typeOverrides, columnOverrides, stableOnChange, getFooterControlElement]);
+  }, [urlSource, typeOverrides, columnOverrides, stableOnChange, getFooterControlElement]);
 
   return (
     <div ref={containerRef} className={className} style={{ height: "100%", ...style }}>

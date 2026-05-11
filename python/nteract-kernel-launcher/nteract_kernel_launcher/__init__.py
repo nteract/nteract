@@ -13,6 +13,7 @@ The daemon invokes this module in place of ``ipykernel_launcher`` when the
 on. See ``docs/superpowers/specs/2026-04-24-launcher-hosted-display-bootstrap.md``.
 """
 
+from nteract_kernel_launcher._progressive import display_arrow_stream
 from nteract_kernel_launcher.app import (
     NteractKernel,
     NteractKernelApp,
@@ -31,5 +32,6 @@ __all__ = [
     "NteractKernelApp",
     "NteractShell",
     "NteractShellDisplayHook",
+    "display_arrow_stream",
     "main",
 ]

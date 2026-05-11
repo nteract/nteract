@@ -170,6 +170,17 @@ describe("getSelectedMimeType", () => {
       expect(getSelectedMimeType(data)).toBe("application/geo+json");
     });
 
+    it("selects Arrow stream manifest over direct Arrow IPC and HTML fallback", () => {
+      const data = {
+        "text/html": "<table><tr><td>fallback</td></tr></table>",
+        "application/vnd.apache.arrow.stream": "http://127.0.0.1:9999/blob/arrow",
+        "application/vnd.nteract.arrow-stream-manifest+json": {
+          chunks: [{ url: "http://127.0.0.1:9999/blob/arrow" }],
+        },
+      };
+      expect(getSelectedMimeType(data)).toBe("application/vnd.nteract.arrow-stream-manifest+json");
+    });
+
     it("handles image/gif", () => {
       const data = {
         "text/plain": "<animation>",
@@ -222,6 +233,12 @@ describe("getSelectedMimeType", () => {
       expect(DEFAULT_PRIORITY).toContain("application/vnd.plotly.v1+json");
       expect(DEFAULT_PRIORITY).toContain("application/vnd.vegalite.v5+json");
       expect(DEFAULT_PRIORITY).toContain("application/vnd.vega.v5+json");
+    });
+
+    it("orders Arrow stream manifests before direct Arrow IPC", () => {
+      expect(DEFAULT_PRIORITY.indexOf("application/vnd.nteract.arrow-stream-manifest+json")).toBe(
+        DEFAULT_PRIORITY.indexOf("application/vnd.apache.arrow.stream") - 1,
+      );
     });
   });
 });

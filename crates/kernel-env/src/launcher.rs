@@ -60,6 +60,12 @@ pub const LAUNCHER_FILES: &[(&str, &str)] = &[
         include_str!("../../../python/nteract-kernel-launcher/nteract_kernel_launcher/_format.py"),
     ),
     (
+        "_progressive.py",
+        include_str!(
+            "../../../python/nteract-kernel-launcher/nteract_kernel_launcher/_progressive.py"
+        ),
+    ),
+    (
         "_refs.py",
         include_str!("../../../python/nteract-kernel-launcher/nteract_kernel_launcher/_refs.py"),
     ),

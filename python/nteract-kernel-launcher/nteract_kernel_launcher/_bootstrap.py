@@ -43,8 +43,22 @@ from traitlets import ObjectName, Unicode
 
 from nteract_kernel_launcher import _buffer_hook, _traceback
 from nteract_kernel_launcher._buffer_hook import pending_buffers
-from nteract_kernel_launcher._format import serialize_arrow_table, serialize_dataframe
-from nteract_kernel_launcher._refs import BLOB_REF_MIME, BlobRef, build_ref_bundle
+from nteract_kernel_launcher._format import (
+    ARROW_STREAM_MANIFEST_MIME,
+    ARROW_STREAM_MIME,
+    DEFAULT_ARROW_CHUNK_BYTES,
+    build_arrow_stream_manifest,
+    build_arrow_stream_manifest_from_chunks,
+    iter_arrow_table_chunks,
+    serialize_arrow_table,
+    serialize_dataframe,
+)
+from nteract_kernel_launcher._refs import (
+    BLOB_REF_MIME,
+    BlobRef,
+    build_multi_ref_bundle,
+    build_ref_bundle,
+)
 from nteract_kernel_launcher._summary import summarize_dataframe, summarize_dataset
 
 log = logging.getLogger("nteract_kernel_launcher")
@@ -160,7 +174,7 @@ def _unwrap_narwhals(nw_df: Any) -> tuple[Any, int] | tuple[None, int]:
 def _emit_dataframe(df: Any, *, total_rows: int) -> dict | None:
     """Serialize → stash bytes keyed by sha256 → return ref-mime bundle.
 
-    When parquet serialization fails (e.g. pyarrow missing), fall back to
+    When Arrow IPC serialization fails (e.g. pyarrow missing), fall back to
     a summary-only ``text/llm+plain`` bundle so agents still get column
     stats instead of a raw repr. IPython's default formatter chain merges
     pandas' ``text/html`` / ``text/plain`` on top for host-side fallback.
@@ -197,9 +211,8 @@ def _emit_arrow_table(
     """Serialize a ``pa.Table`` to Arrow IPC, preserving schema KV metadata.
 
     Distinct from :func:`_emit_dataframe` because the dataframe path runs
-    bytes through ``pa.Table.from_pandas`` / ``pl.write_parquet``, which drop
-    arbitrary schema KV metadata. The table path writes Arrow IPC directly, so
-    the ``huggingface`` key survives for Sift's rich-type detection.
+    bytes through the Arrow PyCapsule stream protocol or a ``pa.Table`` fallback,
+    so the ``huggingface`` key survives for Sift's rich-type detection.
 
     ``summary_fn`` lets callers (notably ``_dataset_mimebundle``) provide
     a richer per-domain summary (HF features) instead of the generic
@@ -225,6 +238,16 @@ def _emit_arrow_table(
             table, total_rows=total_rows, included_rows=included, sampled=sampled
         )
 
+    if content_type == ARROW_STREAM_MIME and included_rows != total_rows:
+        try:
+            return _emit_arrow_table_chunks(
+                table,
+                total_rows=total_rows,
+                summary_fn=_summary,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("arrow chunked emit failed: %s — keeping sampled bundle", exc)
+
     return _emit_table_bytes(
         data,
         content_type=content_type,
@@ -232,6 +255,52 @@ def _emit_arrow_table(
         included_rows=included_rows,
         summary_fn=_summary,
     )
+
+
+def _emit_arrow_table_chunks(
+    table: Any,
+    *,
+    total_rows: int,
+    summary_fn: Callable[[int, bool], str],
+) -> dict:
+    """Emit a complete multi-chunk Arrow stream manifest for a pyarrow Table."""
+    chunks = list(
+        iter_arrow_table_chunks(
+            table,
+            max_chunk_bytes=min(DEFAULT_ARROW_CHUNK_BYTES, _MAX_PAYLOAD_BYTES),
+        )
+    )
+    included_rows = sum(chunk.row_count for chunk in chunks)
+    sampled = included_rows != total_rows
+    summary_hints = {
+        "total_rows": total_rows,
+        "included_rows": included_rows,
+        "sampled": sampled,
+        "sample_strategy": "head" if sampled else "none",
+    }
+    refs = [BlobRef(hash=chunk.content_hash, size=chunk.size) for chunk in chunks]
+    bundle: dict[str, Any] = {
+        BLOB_REF_MIME: build_multi_ref_bundle(
+            refs,
+            content_type=ARROW_STREAM_MIME,
+            summary=summary_hints,
+        ),
+        ARROW_STREAM_MANIFEST_MIME: build_arrow_stream_manifest_from_chunks(
+            chunks,
+            complete=True,
+            summary=summary_hints,
+            schema=table.schema,
+        ),
+    }
+    try:
+        bundle["text/llm+plain"] = summary_fn(included_rows, sampled)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("summary build failed: %s", exc)
+
+    pending = pending_buffers()
+    for chunk in chunks:
+        pending[chunk.content_hash] = chunk.data
+    return bundle
 
 
 def _summarize_arrow_table(
@@ -276,6 +345,17 @@ def _emit_table_bytes(
     ref_bundle["buffer_index"] = 0
 
     bundle: dict[str, Any] = {BLOB_REF_MIME: ref_bundle}
+    if content_type == ARROW_STREAM_MIME:
+        try:
+            bundle[ARROW_STREAM_MANIFEST_MIME] = build_arrow_stream_manifest(
+                data,
+                content_hash=h,
+                content_size=len(data),
+                row_count=included_rows,
+                summary=summary_hints,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("arrow manifest build failed: %s", exc)
     try:
         bundle["text/llm+plain"] = summary_fn(included_rows, sampled)
     except Exception as exc:  # noqa: BLE001
