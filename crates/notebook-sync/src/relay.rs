@@ -173,9 +173,8 @@ impl RelayHandle {
             })
             .await
             .map_err(|_| SyncError::Disconnected)?;
-        match tokio::time::timeout(timeout, reply_rx).await {
-            Ok(Ok(inner)) => inner,
-            Ok(Err(_)) => Err(SyncError::Disconnected),
+        match tokio::time::timeout(timeout, crate::reply::recv(reply_rx)).await {
+            Ok(reply) => reply,
             Err(_) => {
                 // Fire-and-forget eviction. If the relay has already shut
                 // down (cmd_tx closed), there's nothing to clean up.
@@ -200,6 +199,6 @@ impl RelayHandle {
             })
             .await
             .map_err(|_| SyncError::Disconnected)?;
-        reply_rx.await.map_err(|_| SyncError::Disconnected)?
+        crate::reply::recv(reply_rx).await
     }
 }
