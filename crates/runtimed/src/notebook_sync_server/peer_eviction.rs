@@ -4,6 +4,7 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
+use crate::async_outcome::{recv_oneshot_with_timeout, TimedOneShot};
 use crate::task_supervisor::spawn_best_effort;
 
 use super::{
@@ -97,13 +98,13 @@ pub(super) async fn handle_peer_disconnect(
                 if let Some(ref d) = room_for_eviction.persistence.debouncer {
                     let (ack_tx, ack_rx) = oneshot::channel::<bool>();
                     if d.flush_request_tx.send(ack_tx).is_ok() {
-                        match tokio::time::timeout(FLUSH_TIMEOUT, ack_rx).await {
-                            Ok(Ok(true)) => {}
-                            Ok(Ok(false)) => {
+                        match recv_oneshot_with_timeout(ack_rx, FLUSH_TIMEOUT).await {
+                            TimedOneShot::Received(true) => {}
+                            TimedOneShot::Received(false) => {
                                 flush_ok = false;
                                 flush_failure_kind = Some("write error");
                             }
-                            Ok(Err(_)) => {
+                            TimedOneShot::SenderDropped => {
                                 // Debouncer dropped the ack sender without
                                 // replying — task already exited (e.g. a
                                 // previous eviction flushed and closed). Any
@@ -113,7 +114,7 @@ pub(super) async fn handle_peer_disconnect(
                                     notebook_id_for_eviction
                                 );
                             }
-                            Err(_) => {
+                            TimedOneShot::TimedOut => {
                                 flush_ok = false;
                                 flush_failure_kind = Some("timeout");
                             }

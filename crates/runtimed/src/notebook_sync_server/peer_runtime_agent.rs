@@ -5,6 +5,8 @@ use notebook_protocol::connection::{send_typed_frame, FramedReader, NotebookFram
 use notebook_protocol::protocol::RuntimeAgentResponse;
 use tracing::{debug, info, warn};
 
+use crate::async_outcome::{flatten_joined_result, JoinedResult};
+
 use super::peer_runtime_sync::{persist_terminal_execution_records, runtime_file_save_fingerprint};
 use super::peer_writer::spawn_peer_writer;
 use super::{NotebookRoom, RuntimeAgentMessage, STATE_SYNC_COMPACT_THRESHOLD};
@@ -166,14 +168,14 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
             biased;
 
             writer_result = &mut writer_task.handle => {
-                match writer_result {
-                    Ok(Ok(())) => {
+                match flatten_joined_result(writer_result) {
+                    JoinedResult::Completed(()) => {
                         info!("[notebook-sync] Runtime agent writer closed cleanly: {}", runtime_agent_id);
                     }
-                    Ok(Err(e)) => {
+                    JoinedResult::Failed(e) => {
                         warn!("[notebook-sync] Runtime agent writer failed for {}: {}", runtime_agent_id, e);
                     }
-                    Err(e) => {
+                    JoinedResult::JoinFailed(e) => {
                         warn!("[notebook-sync] Runtime agent writer task stopped for {}: {}", runtime_agent_id, e);
                     }
                 }

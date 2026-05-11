@@ -24,6 +24,7 @@ pub use runtimed_settings_sync as sync_client;
 // Server-only modules (not in runtimed-client)
 // ============================================================================
 
+pub(crate) mod async_outcome;
 pub mod blob_server;
 pub mod blob_store;
 pub mod daemon;
