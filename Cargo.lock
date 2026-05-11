@@ -603,7 +603,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 [[package]]
 name = "automerge"
 version = "0.9.0"
-source = "git+https://github.com/nteract/automerge?rev=b0e1c1ab567a8b12263ef45f4574ee16bcd039a5#b0e1c1ab567a8b12263ef45f4574ee16bcd039a5"
+source = "git+https://github.com/nteract/automerge?rev=9c62368813d91c143377953d3edb8f1b34eaefc1#9c62368813d91c143377953d3edb8f1b34eaefc1"
 dependencies = [
  "cfg-if",
  "flate2",
@@ -3062,7 +3062,7 @@ dependencies = [
 [[package]]
 name = "hexane"
 version = "0.2.1"
-source = "git+https://github.com/nteract/automerge?rev=b0e1c1ab567a8b12263ef45f4574ee16bcd039a5#b0e1c1ab567a8b12263ef45f4574ee16bcd039a5"
+source = "git+https://github.com/nteract/automerge?rev=9c62368813d91c143377953d3edb8f1b34eaefc1#9c62368813d91c143377953d3edb8f1b34eaefc1"
 dependencies = [
  "leb128",
  "thiserror 2.0.18",
