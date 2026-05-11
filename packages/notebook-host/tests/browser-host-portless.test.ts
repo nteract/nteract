@@ -42,10 +42,10 @@ const config = {
   },
 };
 
-function fetchConfig() {
+function fetchConfig(websocket_url = config.websocket_url) {
   return vi.fn(async () => ({
     ok: true,
-    json: async () => config,
+    json: async () => ({ ...config, websocket_url }),
   })) as unknown as typeof fetch;
 }
 
@@ -55,6 +55,19 @@ describe("createBrowserHost() with Portless", () => {
 
     await createBrowserHost({
       fetchImpl: fetchConfig(),
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+    });
+
+    const ws = FakeWebSocket.instances[0];
+    expect(ws.url).toContain("wss://nteract-notebook.localhost:8443/__nteract_dev_relay/ws");
+    expect(ws.url).toContain("token=dev-token");
+  });
+
+  it("normalizes IPv6 loopback relay WebSockets", async () => {
+    FakeWebSocket.instances = [];
+
+    await createBrowserHost({
+      fetchImpl: fetchConfig("ws://[::1]:5174/__nteract_dev_relay/ws"),
       WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
     });
 

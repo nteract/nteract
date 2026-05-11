@@ -108,7 +108,8 @@ function addToken(url: string, token: string): string {
 }
 
 function isLoopbackHost(hostname: string): boolean {
-  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  const normalized = hostname.replace(/^\[(.*)\]$/, "$1");
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
 }
 
 function normalizeRelayWebSocketUrl(url: URL): URL {
