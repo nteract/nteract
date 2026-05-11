@@ -35,7 +35,11 @@ class ReviewerConfig:
             model=model
             if model is not None
             else os.environ.get("PR_REVIEWER_MODEL", DEFAULT_MODEL),
-            aws_region=aws_region or os.environ.get("AWS_REGION", DEFAULT_AWS_REGION),
+            aws_region=(
+                aws_region
+                if aws_region is not None
+                else os.environ.get("AWS_REGION", DEFAULT_AWS_REGION)
+            ),
             max_turns=max_turns if max_turns is not None else DEFAULT_REVIEW_MIN_TURNS,
         )
 

@@ -102,7 +102,11 @@ def test_cleanup_keeps_workspace_when_report_write_fails(monkeypatch, tmp_path: 
     install_review_command_fakes(monkeypatch, tmp_path, removed)
 
     async def pass_review(*args, **kwargs):
-        return ReviewReport(verdict="clear", summary="ok")
+        return ReviewReport(
+            verdict="clear",
+            terminal_reason="review_complete",
+            summary="ok",
+        )
 
     monkeypatch.setattr(cli, "run_review", pass_review)
 

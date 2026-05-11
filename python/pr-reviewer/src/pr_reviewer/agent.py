@@ -66,9 +66,12 @@ async def run_review(
     if final.structured_output is None:
         raise RuntimeError(f"review did not return structured output: {final.result!r}")
 
-    verdict, summary, findings = normalize_structured_output(final.structured_output)
+    verdict, terminal_reason, summary, findings = normalize_structured_output(
+        final.structured_output
+    )
     return ReviewReport(
         verdict=verdict,
+        terminal_reason=terminal_reason,
         summary=summary,
         findings=findings,
         reviewed_diff=workspace.reviewed_diff,
@@ -96,7 +99,7 @@ async def run_doctor(config: ReviewerConfig) -> str:
         mcp_servers={},
     )
     final: ResultMessage | None = None
-    async for message in query(prompt="Reply exactly OK.", options=options):
+    async for message in query(prompt=_single_prompt_stream("Reply exactly OK."), options=options):
         if isinstance(message, ResultMessage):
             final = message
     if final is None:

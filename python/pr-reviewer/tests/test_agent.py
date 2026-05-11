@@ -3,7 +3,7 @@ import sys
 import types
 from pathlib import Path
 
-from pr_reviewer.agent import run_review
+from pr_reviewer.agent import run_doctor, run_review
 from pr_reviewer.config import ReviewerConfig
 from pr_reviewer.git import PullRequestInfo
 from pr_reviewer.schema import ReviewedDiff
@@ -20,12 +20,14 @@ class FakeResultMessage:
     def __init__(self) -> None:
         self.structured_output = {
             "verdict": "clear",
+            "terminal_reason": "review_complete",
             "summary": "Looks good.",
             "findings": [],
         }
         self.session_id = "result-session"
         self.total_cost_usd = 1.25
         self.result = '{"verdict":"clear"}'
+        self.is_error = False
 
 
 class FakeClaudeAgentOptions:
@@ -90,6 +92,7 @@ def test_run_review_constructs_sdk_options_and_report(monkeypatch, tmp_path: Pat
     report = asyncio.run(run_review(make_workspace(tmp_path), config=config))
 
     assert report.verdict == "clear"
+    assert report.terminal_reason == "review_complete"
     assert report.summary == "Looks good."
     assert report.session_id == "session-1"
     assert report.model == "model-from-sdk"
@@ -116,3 +119,18 @@ def test_run_review_constructs_sdk_options_and_report(monkeypatch, tmp_path: Pat
         }
     ]
     assert "diff --git a/src/a.py b/src/a.py" in fake_query.chunks[0]["message"]["content"]
+
+
+def test_run_doctor_uses_streaming_prompt(monkeypatch) -> None:
+    install_fake_sdk(monkeypatch)
+    config = ReviewerConfig(model="model", aws_region="us-west-2", max_turns=1)
+
+    result = asyncio.run(run_doctor(config))
+
+    assert result == '{"verdict":"clear"}'
+    assert fake_query.chunks == [
+        {
+            "type": "user",
+            "message": {"role": "user", "content": "Reply exactly OK."},
+        }
+    ]

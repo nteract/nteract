@@ -4,6 +4,13 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, cast
 
 Verdict = Literal["clear", "findings", "needs_human", "infra_uncertain"]
+TerminalReason = Literal[
+    "review_complete",
+    "actionable_findings",
+    "needs_human",
+    "budget_exhausted",
+    "infra_uncertain",
+]
 Severity = Literal["blocker", "high", "medium", "low"]
 Confidence = Literal["high", "medium", "low"]
 
@@ -11,11 +18,21 @@ Confidence = Literal["high", "medium", "low"]
 REVIEW_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["verdict", "findings", "summary"],
+    "required": ["verdict", "terminal_reason", "findings", "summary"],
     "properties": {
         "verdict": {
             "type": "string",
             "enum": ["clear", "findings", "needs_human", "infra_uncertain"],
+        },
+        "terminal_reason": {
+            "type": "string",
+            "enum": [
+                "review_complete",
+                "actionable_findings",
+                "needs_human",
+                "budget_exhausted",
+                "infra_uncertain",
+            ],
         },
         "summary": {"type": "string"},
         "findings": {
@@ -73,6 +90,7 @@ class ReviewedDiff:
 @dataclass(frozen=True)
 class ReviewReport:
     verdict: Verdict
+    terminal_reason: TerminalReason
     summary: str
     findings: list[Finding] = field(default_factory=list)
     reviewed_diff: ReviewedDiff | None = None
@@ -86,13 +104,23 @@ class ReviewReport:
         return asdict(self)
 
 
-def normalize_structured_output(data: Any) -> tuple[Verdict, str, list[Finding]]:
+def normalize_structured_output(data: Any) -> tuple[Verdict, TerminalReason, str, list[Finding]]:
     if not isinstance(data, dict):
         raise ValueError("structured output was not an object")
 
     verdict = data.get("verdict")
     if verdict not in {"clear", "findings", "needs_human", "infra_uncertain"}:
         raise ValueError(f"invalid review verdict: {verdict!r}")
+
+    terminal_reason = data.get("terminal_reason")
+    if terminal_reason not in {
+        "review_complete",
+        "actionable_findings",
+        "needs_human",
+        "budget_exhausted",
+        "infra_uncertain",
+    }:
+        raise ValueError(f"invalid terminal reason: {terminal_reason!r}")
 
     summary = data.get("summary")
     if not isinstance(summary, str):
@@ -145,4 +173,9 @@ def normalize_structured_output(data: Any) -> tuple[Verdict, str, list[Finding]]
             )
         )
 
-    return verdict, summary, findings
+    return (
+        cast(Verdict, verdict),
+        cast(TerminalReason, terminal_reason),
+        summary,
+        findings,
+    )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+import warnings
 from pathlib import Path
 
 from pr_reviewer import git
@@ -118,7 +119,13 @@ def run_review_command(args: argparse.Namespace) -> int:
         report_written = True
     finally:
         if args.cleanup and (report_written or not review_finished):
-            remove_review_workspace(workspace.path, repo_root=repo_root)
+            try:
+                remove_review_workspace(workspace.path, repo_root=repo_root)
+            except Exception as exc:
+                warnings.warn(
+                    f"failed to remove review workspace {workspace.path}: {exc}",
+                    stacklevel=2,
+                )
 
     print(f"review written: {output_path}")
     if report.verdict == "clear":

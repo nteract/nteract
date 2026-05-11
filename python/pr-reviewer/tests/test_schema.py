@@ -4,9 +4,10 @@ from pr_reviewer.schema import Finding, normalize_structured_output
 
 
 def test_normalize_structured_output_returns_findings() -> None:
-    verdict, summary, findings = normalize_structured_output(
+    verdict, terminal_reason, summary, findings = normalize_structured_output(
         {
             "verdict": "findings",
+            "terminal_reason": "actionable_findings",
             "summary": "One issue.",
             "findings": [
                 {
@@ -23,6 +24,7 @@ def test_normalize_structured_output_returns_findings() -> None:
     )
 
     assert verdict == "findings"
+    assert terminal_reason == "actionable_findings"
     assert summary == "One issue."
     assert findings == [
         Finding(
@@ -39,7 +41,26 @@ def test_normalize_structured_output_returns_findings() -> None:
 
 def test_normalize_structured_output_rejects_invalid_verdict() -> None:
     with pytest.raises(ValueError, match="invalid review verdict"):
-        normalize_structured_output({"verdict": "maybe", "summary": "", "findings": []})
+        normalize_structured_output(
+            {
+                "verdict": "maybe",
+                "terminal_reason": "review_complete",
+                "summary": "",
+                "findings": [],
+            }
+        )
+
+
+def test_normalize_structured_output_rejects_invalid_terminal_reason() -> None:
+    with pytest.raises(ValueError, match="invalid terminal reason"):
+        normalize_structured_output(
+            {
+                "verdict": "clear",
+                "terminal_reason": "stopped",
+                "summary": "",
+                "findings": [],
+            }
+        )
 
 
 def test_normalize_structured_output_wraps_missing_finding_field() -> None:
@@ -47,6 +68,7 @@ def test_normalize_structured_output_wraps_missing_finding_field() -> None:
         normalize_structured_output(
             {
                 "verdict": "findings",
+                "terminal_reason": "actionable_findings",
                 "summary": "Bad finding.",
                 "findings": [{"file": "src/lib.rs"}],
             }
