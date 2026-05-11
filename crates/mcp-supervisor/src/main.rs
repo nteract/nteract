@@ -666,10 +666,9 @@ fn run_maturin_develop_force(project_root: &Path) -> MaturinDevelopStatus {
     // our stderr (which is the supervisor's log stream).
     //
     // We run maturin from python/runtimed (where it's a dev dependency),
-    // but set VIRTUAL_ENV to .venv (the workspace root venv) so the .so
-    // is installed where the MCP server actually runs from. Without this,
-    // maturin installs into python/runtimed/.venv (the test-only venv)
-    // and the MCP server never sees the updated bindings.
+    // but activate .venv (the workspace root venv) so the .so is installed
+    // where the MCP server actually runs from. Without --active, newer uv
+    // ignores VIRTUAL_ENV when it does not match the selected project env.
     // Use a separate target directory so maturin's cdylib build doesn't
     // invalidate fingerprints in the main target/ dir. Without this,
     // concurrent or subsequent cargo builds see stale timestamps from
@@ -678,6 +677,7 @@ fn run_maturin_develop_force(project_root: &Path) -> MaturinDevelopStatus {
     let status = std::process::Command::new("uv")
         .args([
             "run",
+            "--active",
             "--directory",
             &project_root.join("python/runtimed").to_string_lossy(),
             "maturin",

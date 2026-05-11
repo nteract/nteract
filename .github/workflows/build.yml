@@ -837,13 +837,14 @@ jobs:
       - name: Build runtimed-py into the workspace venv
         # `uv sync` at repo root populates .venv with the workspace
         # members (runtimed, dx, nteract, gremlin) plus their deps
-        # (pandas, polars, pyarrow). VIRTUAL_ENV pins maturin to that
-        # same .venv so the bindings land where pytest will look.
+        # (pandas, polars, pyarrow). VIRTUAL_ENV plus `uv run --active`
+        # pins maturin to that same .venv so the bindings land where
+        # pytest will look.
         run: |
           uv sync
           cd crates/runtimed-py && \
             VIRTUAL_ENV="${GITHUB_WORKSPACE}/.venv" \
-            uv run --directory ../../python/runtimed maturin develop
+            uv run --active --directory ../../python/runtimed maturin develop
 
       - name: Run runtimed-py Rust unit tests
         run: |

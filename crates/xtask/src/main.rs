@@ -780,6 +780,7 @@ fn ensure_maturin_develop() {
     let status = Command::new("uv")
         .args([
             "run",
+            "--active",
             "--directory",
             "python/runtimed",
             "maturin",
