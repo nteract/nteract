@@ -13,6 +13,11 @@ const port = Number(
   process.env.RUNTIMED_VITE_PORT ?? process.env.CONDUCTOR_PORT ?? worktreeVitePort(),
 );
 const baseURL = process.env.NTERACT_BROWSER_E2E_BASE_URL ?? `http://localhost:${port}`;
+const ignoreHTTPSErrors =
+  process.env.NTERACT_BROWSER_E2E_IGNORE_HTTPS_ERRORS === "1" ||
+  (baseURL.startsWith("https://") &&
+    process.env.NTERACT_BROWSER_E2E_PORTLESS === "1" &&
+    process.env.NTERACT_BROWSER_E2E_IGNORE_HTTPS_ERRORS !== "0");
 
 export default defineConfig({
   testDir: "./e2e",
@@ -20,6 +25,7 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   use: {
     baseURL,
+    ignoreHTTPSErrors,
     headless: true,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",

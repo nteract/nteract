@@ -91,7 +91,7 @@ function createHttpBlobResolver(port: number, fetchImpl: typeof fetch): HostBlob
 }
 
 function addToken(url: string, token: string): string {
-  const resolved = new URL(url, window.location.href);
+  const resolved = normalizeRelayWebSocketUrl(new URL(url, window.location.href));
   resolved.searchParams.set("token", token);
 
   // Convenience for manual local debugging:
@@ -105,6 +105,21 @@ function addToken(url: string, token: string): string {
   }
 
   return resolved.toString();
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
+function normalizeRelayWebSocketUrl(url: URL): URL {
+  if (!url.pathname.startsWith("/__nteract_dev_relay/")) return url;
+  if (url.protocol !== "ws:" && url.protocol !== "wss:") return url;
+  if (!isLoopbackHost(url.hostname)) return url;
+  if (isLoopbackHost(window.location.hostname)) return url;
+
+  const normalized = new URL(url.pathname + url.search + url.hash, window.location.href);
+  normalized.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return normalized;
 }
 
 async function loadConfig(configUrl: string, fetchImpl: typeof fetch): Promise<BrowserRelayConfig> {

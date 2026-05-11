@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+// @vitest-environment-options {"url":"https://nteract-notebook.localhost:8443/"}
 import { describe, expect, it, vi } from "vite-plus/test";
 import { createBrowserHost } from "../src/browser";
 
@@ -69,6 +70,19 @@ function textFrame(value: unknown): Uint8Array {
 }
 
 describe("createBrowserHost()", () => {
+  it("uses the current HTTPS origin for loopback relay WebSockets", async () => {
+    FakeWebSocket.instances = [];
+
+    await createBrowserHost({
+      fetchImpl: fetchConfig(),
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+    });
+
+    const ws = FakeWebSocket.instances[0];
+    expect(ws.url).toContain("wss://nteract-notebook.localhost:8443/__nteract_dev_relay/ws");
+    expect(ws.url).toContain("token=dev-token");
+  });
+
   it("connects to the dev relay with a token and emits ready", async () => {
     FakeWebSocket.instances = [];
     const host = await createBrowserHost({
