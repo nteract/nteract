@@ -206,10 +206,12 @@ fn arrow_stream_batches(
 }
 
 /// Store a vec of RecordBatches, returning a handle.
-fn store_batches(batches: Vec<RecordBatch>, schema: Arc<arrow::datatypes::Schema>) -> u32 {
+fn store_batches(
+    batches: Vec<RecordBatch>,
+    schema: Arc<arrow::datatypes::Schema>,
+) -> Result<u32, String> {
     let mut store = empty_streaming_store();
-    append_batches_to_store(&mut store, schema, batches)
-        .expect("new store should accept its initial batches");
+    append_batches_to_store(&mut store, schema, batches)?;
     store.streaming_complete = true;
 
     let handle = {
@@ -223,7 +225,7 @@ fn store_batches(batches: Vec<RecordBatch>, schema: Arc<arrow::datatypes::Schema
         stores.insert(handle, store);
     });
 
-    handle
+    Ok(handle)
 }
 
 /// Load Arrow IPC bytes into WASM memory. Returns a handle for subsequent operations.
@@ -239,7 +241,7 @@ pub fn load_ipc(ipc_bytes: &[u8]) -> Result<u32, JsValue> {
         batches.push(batch.map_err(|e| JsValue::from_str(&e.to_string()))?);
     }
 
-    Ok(store_batches(batches, schema))
+    store_batches(batches, schema).map_err(|e| JsValue::from_str(&e))
 }
 
 /// Load Parquet bytes into WASM memory. Returns a handle for subsequent operations.
@@ -259,7 +261,7 @@ pub fn load_parquet(parquet_bytes: &[u8]) -> Result<u32, JsValue> {
         batches.push(batch.map_err(|e| JsValue::from_str(&e.to_string()))?);
     }
 
-    Ok(store_batches(batches, schema))
+    store_batches(batches, schema).map_err(|e| JsValue::from_str(&e))
 }
 
 /// Create an empty Arrow stream store. Append self-contained Arrow IPC stream
@@ -1596,7 +1598,7 @@ pub fn load_parquet_row_group(
 
     if handle == 0 {
         // Create new store
-        Ok(store_batches(batches, schema))
+        store_batches(batches, schema).map_err(|e| JsValue::from_str(&e))
     } else {
         // Append to existing store
         with_stores(|stores| {
