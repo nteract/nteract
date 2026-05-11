@@ -168,6 +168,39 @@ def test_buffer_hook_routes_display_data_via_display_pub(monkeypatch):
     assert sent[0]["buffers"] == [data]
 
 
+def test_buffer_hook_attaches_multiple_ref_buffers(monkeypatch):
+    from nteract_kernel_launcher import _buffer_hook
+    from nteract_kernel_launcher._refs import BLOB_REF_MIME
+
+    ip, sent, pub, dh = _fake_ip_with_pubs()
+    monkeypatch.setattr(_buffer_hook, "_get_ipython", lambda: ip)
+
+    chunks = [b"chunk-one", b"chunk-two"]
+    refs = []
+    for chunk in chunks:
+        h = hashlib.sha256(chunk).hexdigest()
+        _buffer_hook.pending_buffers()[h] = chunk
+        refs.append(
+            {
+                "hash": h,
+                "size": len(chunk),
+                "content_type": "application/vnd.apache.arrow.stream",
+            }
+        )
+
+    msg = {
+        "header": {"msg_type": "display_data"},
+        "content": {"data": {BLOB_REF_MIME: {"refs": refs}}},
+    }
+    result = _buffer_hook.buffer_hook(msg)
+
+    assert result is None
+    assert sent[0]["socket"] == "PUB"
+    assert sent[0]["buffers"] == chunks
+    assert refs[0]["buffer_index"] == 0
+    assert refs[1]["buffer_index"] == 1
+
+
 def test_buffer_hook_passthrough_when_no_pending_bytes(monkeypatch):
     from nteract_kernel_launcher import _buffer_hook
     from nteract_kernel_launcher._refs import BLOB_REF_MIME
@@ -413,6 +446,36 @@ def test_emit_pyarrow_table_preserves_huggingface_kv_metadata():
     md = pa.ipc.open_stream(io.BytesIO(data)).read_all().schema.metadata or {}
     assert b"huggingface" in md, f"missing huggingface KV; got keys: {[k.decode() for k in md]}"
     assert b'"_type": "Image"' in md[b"huggingface"]
+
+
+def test_emit_pyarrow_table_chunks_when_full_stream_exceeds_limit(monkeypatch):
+    pytest.importorskip("pyarrow")
+
+    from nteract_kernel_launcher import _bootstrap, _buffer_hook
+    from nteract_kernel_launcher._format import ARROW_STREAM_MANIFEST_MIME
+    from nteract_kernel_launcher._refs import BLOB_REF_MIME
+
+    _buffer_hook.pending_buffers().clear()
+    monkeypatch.setattr(_bootstrap, "_MAX_PAYLOAD_BYTES", 1)
+    table = _pa_table_with_hf_metadata()
+
+    bundle = _bootstrap._pyarrow_table_mimebundle(table)
+
+    assert bundle is not None
+    manifest = bundle[ARROW_STREAM_MANIFEST_MIME]
+    assert manifest["complete"] is True
+    assert manifest["summary"] == {
+        "total_rows": table.num_rows,
+        "included_rows": table.num_rows,
+        "sampled": False,
+        "sample_strategy": "none",
+    }
+    assert len(manifest["chunks"]) > 1
+    refs = bundle[BLOB_REF_MIME]["refs"]
+    assert len(refs) == len(manifest["chunks"])
+    assert [ref["hash"] for ref in refs] == [chunk["hash"] for chunk in manifest["chunks"]]
+    for ref in refs:
+        assert ref["hash"] in _buffer_hook.pending_buffers()
 
 
 def test_emit_pyarrow_record_batch_promotes_to_table():

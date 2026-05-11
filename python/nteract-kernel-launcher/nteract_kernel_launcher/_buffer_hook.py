@@ -61,6 +61,15 @@ def _pub_for_msg_type(msg_type: str) -> Any | None:
     return ip.display_pub
 
 
+def _ref_entries(ref: dict) -> list[dict]:
+    refs = ref.get("refs")
+    if isinstance(refs, list):
+        return [entry for entry in refs if isinstance(entry, dict)]
+    if isinstance(ref.get("hash"), str):
+        return [ref]
+    return []
+
+
 def buffer_hook(msg: dict) -> dict | None:
     """Attach ``buffers=[bytes]`` to outgoing messages that reference a
     blob we previously stashed. Return ``None`` if we sent it ourselves.
@@ -90,17 +99,24 @@ def buffer_hook(msg: dict) -> dict | None:
         if not isinstance(ref, dict):
             return msg
 
-        h = ref.get("hash")
-        if not isinstance(h, str):
+        entries = _ref_entries(ref)
+        if not entries:
             return msg
 
-        buffers = pending_buffers().pop(h, None)
-        if buffers is None:
+        hashes = [entry.get("hash") for entry in entries]
+        if not all(isinstance(h, str) for h in hashes):
+            return msg
+
+        pending = pending_buffers()
+        if not all(h in pending for h in hashes):
             # No stashed payload for this hash — maybe a re-publish of a
             # historical message, or a ref emitted outside our formatter.
             # Pass through unchanged; the daemon can still resolve via the
             # blob store if it already has the hash.
             return msg
+        buffers = [pending.pop(h) for h in hashes if isinstance(h, str)]
+        for index, entry in enumerate(entries):
+            entry["buffer_index"] = index
 
         pub = _pub_for_msg_type(msg_type)
         if pub is None:
@@ -110,7 +126,7 @@ def buffer_hook(msg: dict) -> dict | None:
             pub.pub_socket,
             msg,
             ident=pub.topic,
-            buffers=[buffers],
+            buffers=buffers,
         )
         return None
     except Exception as exc:  # noqa: BLE001

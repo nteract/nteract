@@ -198,6 +198,30 @@ def iter_arrow_stream_chunks(
         )
 
 
+def iter_arrow_table_chunks(
+    table: Any,
+    *,
+    max_chunk_bytes: int = DEFAULT_ARROW_CHUNK_BYTES,
+) -> Iterator[ArrowStreamChunk]:
+    """Yield bounded Arrow IPC stream chunks from a pyarrow Table."""
+    if max_chunk_bytes <= 0:
+        raise ValueError("max_chunk_bytes must be positive")
+    if table.num_rows == 0:
+        yield from iter_arrow_stream_chunks(table, max_chunk_bytes=max_chunk_bytes)
+        return
+
+    table_bytes = getattr(table, "nbytes", 0)
+    bytes_per_row = max(1, table_bytes // table.num_rows)
+    rows_per_chunk = max(1, max_chunk_bytes // bytes_per_row)
+    for index, batch in enumerate(table.to_batches(max_chunksize=rows_per_chunk)):
+        yield _make_arrow_stream_chunk(
+            index=index,
+            schema=table.schema,
+            batches=[batch],
+            row_count=batch.num_rows,
+        )
+
+
 def _serialize_arrow_stream_exportable(source: Any, rows: int | None = None) -> bytes:
     if rows is not None:
         source = _limit_rows(source, rows)

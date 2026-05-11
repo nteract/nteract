@@ -645,6 +645,21 @@ for the staged implementation.
   - confirmed-fix: completion-only manifest updates do not resend chunk bytes,
     and progressive manifest construction reuses the first chunk schema instead
     of reparsing it for every revision.
+- Manual QA on `66829fd` found two stacked large-table truncations.
+  Disposition:
+  - confirmed-fix: automatic `pyarrow.Table` outputs that exceed the one-shot
+    payload cap now emit a complete multi-chunk Arrow stream manifest over the
+    original table instead of silently keeping only `head(n)`. The manifest
+    summary carries `total_rows`, `included_rows`, and `sampled: false`.
+  - confirmed-fix: the launcher/daemon attached-buffer path now accepts a
+    multi-ref blob envelope so every manifest chunk can be sent with the same
+    display message and preflighted into CAS before render resolution.
+  - confirmed-fix: `_progressive.py` is included in the vendored launcher file
+    list so `import nteract_kernel_launcher` succeeds after vendoring.
+  - confirmed-defer: Sift's scroll spacer can still hit browser element-height
+    limits for million-row tables. That is independent of the Arrow producer
+    fix and should land as a Sift virtual-scroller follow-up before marketing
+    arrow-native tables as production-ready for very large local data.
 - Next: decide whether automatic large dataframe reprs should opt into the
   helper by publishing their own display output, or stay one-shot while direct
   daemon blob upload and save/load manifest externalization are completed.

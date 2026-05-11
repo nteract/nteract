@@ -774,41 +774,49 @@ pub async fn preflight_ref_buffers(
         if mime != notebook_doc::mime::BLOB_REF_MIME {
             continue;
         }
-        let declared_hash = body.get("hash").and_then(|v| v.as_str()).unwrap_or("");
-        let target_ct = body
-            .get("content_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let buf_idx = body
-            .get("buffer_index")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
-        if target_ct.is_empty() || declared_hash.is_empty() {
-            tracing::warn!(
-                "[dx] blob-ref MIME missing hash or content_type (skipping buffer preflight)"
-            );
-            continue;
+        let mut entries = Vec::new();
+        if let Some(refs) = body.get("refs").and_then(|v| v.as_array()) {
+            entries.extend(refs.iter());
+        } else {
+            entries.push(body);
         }
-        let Some(buf) = buffers.get(buf_idx) else {
-            tracing::warn!(
-                "[dx] blob-ref buffer_index {} out of range ({} buffers); skipping",
-                buf_idx,
-                buffers.len()
-            );
-            continue;
-        };
-        match blob_store.put(buf, target_ct).await {
-            Ok(computed) => {
-                if computed != declared_hash {
-                    tracing::warn!(
-                        "[dx] blob-ref hash mismatch: declared={} computed={} — ContentRef will drop",
-                        declared_hash,
-                        computed
-                    );
-                }
+        for entry in entries {
+            let declared_hash = entry.get("hash").and_then(|v| v.as_str()).unwrap_or("");
+            let target_ct = entry
+                .get("content_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let buf_idx = entry
+                .get("buffer_index")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            if target_ct.is_empty() || declared_hash.is_empty() {
+                tracing::warn!(
+                    "[dx] blob-ref MIME missing hash or content_type (skipping buffer preflight)"
+                );
+                continue;
             }
-            Err(err) => {
-                tracing::warn!("[dx] blob-ref buffer put failed: {}", err);
+            let Some(buf) = buffers.get(buf_idx) else {
+                tracing::warn!(
+                    "[dx] blob-ref buffer_index {} out of range ({} buffers); skipping",
+                    buf_idx,
+                    buffers.len()
+                );
+                continue;
+            };
+            match blob_store.put(buf, target_ct).await {
+                Ok(computed) => {
+                    if computed != declared_hash {
+                        tracing::warn!(
+                            "[dx] blob-ref hash mismatch: declared={} computed={} — ContentRef will drop",
+                            declared_hash,
+                            computed
+                        );
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!("[dx] blob-ref buffer put failed: {}", err);
+                }
             }
         }
     }
@@ -1052,7 +1060,9 @@ async fn convert_data_bundle(
                 }
             }
             _ => {
-                tracing::warn!("[dx] blob-ref MIME missing hash or content_type (dropping)");
+                if !ref_value.get("refs").is_some_and(|value| value.is_array()) {
+                    tracing::warn!("[dx] blob-ref MIME missing hash or content_type (dropping)");
+                }
             }
         }
     }
@@ -1717,6 +1727,60 @@ mod tests {
             other => panic!("expected blob ref, got {other:?}"),
         }
         assert!(!data.contains_key(notebook_doc::mime::BLOB_REF_MIME));
+    }
+
+    #[tokio::test]
+    async fn preflight_ref_buffers_writes_multiple_refs() {
+        use sha2::Digest;
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = test_store(&dir);
+
+        let first = b"ARROW-chunk-one";
+        let second = b"ARROW-chunk-two";
+        let first_hash = hex::encode(sha2::Sha256::digest(first));
+        let second_hash = hex::encode(sha2::Sha256::digest(second));
+
+        let nbformat = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                notebook_doc::mime::BLOB_REF_MIME: {
+                    "refs": [
+                        {
+                            "hash": first_hash.clone(),
+                            "content_type": "application/vnd.apache.arrow.stream",
+                            "size": first.len(),
+                            "buffer_index": 0,
+                        },
+                        {
+                            "hash": second_hash.clone(),
+                            "content_type": "application/vnd.apache.arrow.stream",
+                            "size": second.len(),
+                            "buffer_index": 1,
+                        },
+                    ],
+                },
+                "application/vnd.nteract.arrow-stream-manifest+json": {
+                    "chunks": [
+                        {"hash": first_hash.clone()},
+                        {"hash": second_hash.clone()},
+                    ],
+                    "complete": true,
+                },
+            },
+        });
+
+        preflight_ref_buffers(&nbformat, &[first.to_vec(), second.to_vec()], &blob_store).await;
+
+        assert!(blob_store.exists(&first_hash));
+        assert!(blob_store.exists(&second_hash));
+
+        let manifest = create_manifest(&nbformat, &blob_store, 1024).await.unwrap();
+        let data = match manifest {
+            OutputManifest::DisplayData { data, .. } => data,
+            other => panic!("expected DisplayData, got {other:?}"),
+        };
+        assert!(!data.contains_key(notebook_doc::mime::BLOB_REF_MIME));
+        assert!(data.contains_key("application/vnd.nteract.arrow-stream-manifest+json"));
     }
 
     #[tokio::test]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 BLOB_REF_MIME = "application/vnd.nteract.blob-ref+json"
 
@@ -48,6 +49,33 @@ def build_ref_bundle(
         "content_type": content_type,
         "size": ref.size,
         "query": query,
+    }
+    if summary is not None:
+        bundle["summary"] = summary
+    return bundle
+
+
+def build_multi_ref_bundle(
+    refs: list[BlobRef],
+    *,
+    content_type: str,
+    summary: dict | None = None,
+    query: dict | None = None,
+) -> dict[str, Any]:
+    """Build a transport envelope for multiple attached blob buffers."""
+    bundle: dict[str, Any] = {
+        "content_type": content_type,
+        "refs": [
+            {
+                "hash": ref.hash,
+                "content_type": content_type,
+                "size": ref.size,
+                "buffer_index": index,
+            }
+            for index, ref in enumerate(refs)
+        ],
+        "query": query,
+        "size": sum(ref.size for ref in refs),
     }
     if summary is not None:
         bundle["summary"] = summary
