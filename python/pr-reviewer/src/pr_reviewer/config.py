@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Literal
 
 DEFAULT_MODEL = "global.anthropic.claude-opus-4-6-v1"
@@ -22,7 +21,6 @@ class ReviewerConfig:
     aws_region: str = DEFAULT_AWS_REGION
     max_turns: int = DEFAULT_REVIEW_MIN_TURNS
     effort: Effort = DEFAULT_EFFORT
-    output_path: Path | None = None
     setting_sources: list[SettingSource] = field(default_factory=lambda: ["project"])
 
     @classmethod
@@ -32,7 +30,6 @@ class ReviewerConfig:
         model: str | None = None,
         aws_region: str | None = None,
         max_turns: int | None = DEFAULT_REVIEW_MIN_TURNS,
-        output_path: Path | None = None,
     ) -> ReviewerConfig:
         return cls(
             model=model
@@ -40,7 +37,6 @@ class ReviewerConfig:
             else os.environ.get("PR_REVIEWER_MODEL", DEFAULT_MODEL),
             aws_region=aws_region or os.environ.get("AWS_REGION", DEFAULT_AWS_REGION),
             max_turns=max_turns if max_turns is not None else DEFAULT_REVIEW_MIN_TURNS,
-            output_path=output_path,
         )
 
     def sdk_env(self) -> dict[str, str]:

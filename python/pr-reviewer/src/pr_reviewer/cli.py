@@ -69,7 +69,6 @@ def config_from_args(args: argparse.Namespace, *, max_turns: int | None = None) 
         model=args.model,
         aws_region=args.aws_region,
         max_turns=max_turns if max_turns is not None else args.max_turns,
-        output_path=getattr(args, "out", None),
     )
 
 
@@ -95,7 +94,8 @@ def run_review_command(args: argparse.Namespace) -> int:
         )
     )
 
-    cleanup_after_success = False
+    review_finished = False
+    report_written = False
     try:
         report = asyncio.run(
             run_review(
@@ -104,6 +104,7 @@ def run_review_command(args: argparse.Namespace) -> int:
                 extra_prompt=args.extra_prompt,
             )
         )
+        review_finished = True
         write_report(
             output_path,
             report,
@@ -114,9 +115,9 @@ def run_review_command(args: argparse.Namespace) -> int:
                 "max_turns": max_turns,
             },
         )
-        cleanup_after_success = True
+        report_written = True
     finally:
-        if args.cleanup and cleanup_after_success:
+        if args.cleanup and (report_written or not review_finished):
             remove_review_workspace(workspace.path, repo_root=repo_root)
 
     print(f"review written: {output_path}")
@@ -134,7 +135,7 @@ def run_review_command(args: argparse.Namespace) -> int:
 def run_doctor_command(args: argparse.Namespace) -> int:
     config = config_from_args(args)
     result = asyncio.run(run_doctor(config))
-    if result.strip() != "OK":
+    if result.strip().rstrip(".") != "OK":
         print(f"doctor returned unexpected response: {result!r}", file=sys.stderr)
         return INFRA_ERROR
     print(f"Bedrock SDK smoke test OK: model={config.model} region={config.aws_region}")

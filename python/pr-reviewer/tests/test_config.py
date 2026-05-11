@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from pr_reviewer.config import DEFAULT_MODEL, ReviewerConfig, estimate_review_turns
 
 
@@ -19,12 +17,10 @@ def test_config_from_env_prefers_explicit_values(monkeypatch) -> None:
     config = ReviewerConfig.from_env(
         model="explicit-model",
         aws_region="us-west-2",
-        output_path=Path("out.json"),
     )
 
     assert config.model == "explicit-model"
     assert config.aws_region == "us-west-2"
-    assert config.output_path == Path("out.json")
 
 
 def test_config_from_env_preserves_explicit_zero_turns() -> None:
