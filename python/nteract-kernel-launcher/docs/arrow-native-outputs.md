@@ -571,8 +571,16 @@ for the staged implementation.
     sidecar while keeping direct Arrow IPC selected for rendering.
   - this commit should not change the UI path yet; Sift manifest routing comes
     in a later Phase 2 commit.
-- Next: run the repo-local `pr-reviewer` for this commit, then add manifest
-  routing/rendering only after accepted findings are resolved or deferred here.
+- Review: `pr-reviewer` found two sidecar-stage issues. Disposition:
+  - confirmed-fix: polars must keep its native IPC writer path so polars-only
+    environments do not require pyarrow just because modern polars exposes
+    `__arrow_c_stream__()`.
+  - confirmed-fix: one-chunk manifest construction must not re-read the whole
+    IPC blob just to count record batches; omit `record_batch_count` unless the
+    writer already knows it.
+- Next: rerun the repo-local `pr-reviewer` after the review-fix commit, then
+  add manifest routing/rendering only after accepted findings are resolved or
+  deferred here.
 
 ### Phase 1: Canonical Arrow For DataFrames
 

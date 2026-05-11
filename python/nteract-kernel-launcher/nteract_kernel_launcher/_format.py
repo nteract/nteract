@@ -132,9 +132,16 @@ def build_arrow_stream_manifest(
     reader = pa.ipc.open_stream(pa.BufferReader(data))
     schema = reader.schema
     schema_bytes = schema.serialize().to_pybytes()
-    if record_batch_count is None:
-        record_batch_count = sum(1 for _ in reader)
     metadata = schema.metadata or {}
+    chunk: dict[str, Any] = {
+        "index": 0,
+        "hash": content_hash,
+        "size": content_size,
+        "row_count": row_count,
+        "encoding": "arrow-ipc-stream",
+    }
+    if record_batch_count is not None:
+        chunk["record_batch_count"] = record_batch_count
 
     return {
         "version": 1,
@@ -148,16 +155,7 @@ def build_arrow_stream_manifest(
                 "huggingface": b"huggingface" in metadata,
             },
         },
-        "chunks": [
-            {
-                "index": 0,
-                "hash": content_hash,
-                "size": content_size,
-                "row_count": row_count,
-                "record_batch_count": record_batch_count,
-                "encoding": "arrow-ipc-stream",
-            }
-        ],
+        "chunks": [chunk],
         "complete": True,
         "summary": summary or {},
     }
@@ -194,15 +192,15 @@ def serialize_dataframe(df: Any, *, max_bytes: int) -> tuple[bytes, str, int]:
     unsupported DataFrame types.
     """
     flavor = _detect_flavor(df)
-    if hasattr(df, "__arrow_c_stream__"):
-        encoder = _serialize_arrow_stream_exportable
-        n = _row_count(df)
+    if flavor == "polars":
+        encoder = _serialize_polars
+        n = df.height
     elif flavor == "pandas":
         encoder = _serialize_pandas
         n = len(df)
-    elif flavor == "polars":
-        encoder = _serialize_polars
-        n = df.height
+    elif hasattr(df, "__arrow_c_stream__"):
+        encoder = _serialize_arrow_stream_exportable
+        n = _row_count(df)
     else:
         raise ValueError(f"unsupported DataFrame type: {type(df).__module__}.{type(df).__name__}")
 

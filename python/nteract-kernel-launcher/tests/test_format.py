@@ -94,6 +94,25 @@ def test_serialize_dataframe_polars_emits_arrow_stream():
     assert table.num_rows == 3
 
 
+def test_serialize_dataframe_polars_uses_native_writer(monkeypatch):
+    pl = pytest.importorskip("polars")
+    import nteract_kernel_launcher._format as fmt
+
+    def fail_pycapsule_path(*_args, **_kwargs):
+        raise AssertionError("polars should use its native IPC writer")
+
+    monkeypatch.setattr(fmt, "_serialize_arrow_stream_exportable", fail_pycapsule_path)
+
+    data, ct, included_rows = fmt.serialize_dataframe(
+        pl.DataFrame({"a": [1, 2, 3]}),
+        max_bytes=10_000_000,
+    )
+
+    assert ct == fmt.ARROW_STREAM_MIME
+    assert included_rows == 3
+    assert data
+
+
 def test_serialize_dataframe_accepts_arrow_pycapsule_stream_protocol():
     pa = pytest.importorskip("pyarrow")
     from nteract_kernel_launcher._format import ARROW_STREAM_MIME, serialize_dataframe
@@ -140,6 +159,7 @@ def test_build_arrow_stream_manifest_describes_one_chunk():
         content_hash="abc123",
         content_size=len(data),
         row_count=3,
+        record_batch_count=1,
         summary={"total_rows": 3, "included_rows": 3},
     )
 
