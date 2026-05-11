@@ -336,22 +336,19 @@ mod tests {
     fn bundled_nightly_mcp_accepts_tauri_unsuffixed_runt_sidecar() {
         let exe = PathBuf::from("/tmp/.mount_nteract/usr/bin/nteract-mcp");
         let candidates = bundled_runt_candidates(&exe, "nightly");
+        let exe_dir = exe.parent().unwrap();
 
-        assert!(candidates.contains(&PathBuf::from("/tmp/.mount_nteract/usr/bin/runt-nightly")));
-        assert!(candidates.contains(&PathBuf::from("/tmp/.mount_nteract/usr/bin/runt")));
+        assert!(candidates.contains(&exe_dir.join(executable_name("runt-nightly"))));
+        assert!(candidates.contains(&exe_dir.join(executable_name("runt"))));
     }
 
     #[test]
     fn bundled_stable_mcp_uses_unsuffixed_runt_sidecar() {
         let exe = PathBuf::from("/Applications/nteract.app/Contents/MacOS/nteract-mcp");
         let candidates = bundled_runt_candidates(&exe, "stable");
+        let exe_dir = exe.parent().unwrap();
 
-        assert_eq!(
-            candidates,
-            vec![PathBuf::from(
-                "/Applications/nteract.app/Contents/MacOS/runt"
-            )]
-        );
+        assert_eq!(candidates, vec![exe_dir.join(executable_name("runt"))]);
     }
 
     /// `child_env_for_channel` returns the additive env map only. It does not
