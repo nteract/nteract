@@ -965,23 +965,7 @@ impl Session {
             notebook_sync::presence::emit_focus(&handle, &cell_id, Some(&peer_label)).await;
         }
 
-        let result = tokio::time::timeout(timeout, async {
-            collect_outputs(&self.state, &cell_id, &execution_id).await
-        })
-        .await;
-
-        match result {
-            Ok(Ok(cell_result)) => Ok(cell_result),
-            Ok(Err(e)) => Err(e),
-            Err(_) => Ok(CellResult {
-                cell_id,
-                execution_id,
-                execution_count: None,
-                status: "timeout".to_string(),
-                success: false,
-                outputs: vec![],
-            }),
-        }
+        collect_outputs_with_timeout(&self.state, cell_id, execution_id, timeout).await
     }
 
     /// Execute a source string as a new cell. Starts the kernel on demand.
@@ -1006,23 +990,7 @@ impl Session {
         // results still carry an execution ID that can be recovered later.
         let execution_id = queue_existing_cell(&self.state, &cell_id).await?;
 
-        let result = tokio::time::timeout(timeout, async {
-            collect_outputs(&self.state, &cell_id, &execution_id).await
-        })
-        .await;
-
-        match result {
-            Ok(Ok(cell_result)) => Ok(cell_result),
-            Ok(Err(e)) => Err(e),
-            Err(_) => Ok(CellResult {
-                cell_id,
-                execution_id,
-                execution_count: None,
-                status: "timeout".to_string(),
-                success: false,
-                outputs: vec![],
-            }),
-        }
+        collect_outputs_with_timeout(&self.state, cell_id, execution_id, timeout).await
     }
 
     /// Queue a source string as a new cell without waiting for execution.
@@ -1147,23 +1115,7 @@ impl Session {
         let timeout = Duration::from_millis(opts.timeout_ms.unwrap_or(120_000) as u64);
         let fallback_cell_id = opts.cell_id.unwrap_or_default();
 
-        let result = tokio::time::timeout(timeout, async {
-            collect_outputs(&self.state, &fallback_cell_id, &execution_id).await
-        })
-        .await;
-
-        match result {
-            Ok(Ok(cell_result)) => Ok(cell_result),
-            Ok(Err(e)) => Err(e),
-            Err(_) => Ok(CellResult {
-                cell_id: fallback_cell_id,
-                execution_id,
-                execution_count: None,
-                status: "timeout".to_string(),
-                success: false,
-                outputs: vec![],
-            }),
-        }
+        collect_outputs_with_timeout(&self.state, fallback_cell_id, execution_id, timeout).await
     }
 }
 
@@ -1933,6 +1885,29 @@ async fn collect_outputs(
     }
 }
 
+async fn collect_outputs_with_timeout(
+    state: &Arc<Mutex<SessionState>>,
+    cell_id: String,
+    execution_id: String,
+    timeout: Duration,
+) -> Result<CellResult> {
+    match tokio::time::timeout(timeout, collect_outputs(state, &cell_id, &execution_id)).await {
+        Ok(result) => result,
+        Err(_) => Ok(timeout_cell_result(cell_id, execution_id)),
+    }
+}
+
+fn timeout_cell_result(cell_id: String, execution_id: String) -> CellResult {
+    CellResult {
+        cell_id,
+        execution_id,
+        execution_count: None,
+        status: "timeout".to_string(),
+        success: false,
+        outputs: vec![],
+    }
+}
+
 async fn cell_result_from_record(
     socket_path: &std::path::Path,
     record: runtimed_client::execution_store::ExecutionRecord,
@@ -2254,6 +2229,18 @@ mod tests {
         assert_eq!(result.status, "done");
         assert_eq!(result.execution_count, Some(3));
         assert!(result.success);
+        assert!(result.outputs.is_empty());
+    }
+
+    #[test]
+    fn timeout_cell_result_preserves_ids_and_terminal_shape() {
+        let result = timeout_cell_result("cell-timeout".to_string(), "exec-timeout".to_string());
+
+        assert_eq!(result.cell_id, "cell-timeout");
+        assert_eq!(result.execution_id, "exec-timeout");
+        assert_eq!(result.execution_count, None);
+        assert_eq!(result.status, "timeout");
+        assert!(!result.success);
         assert!(result.outputs.is_empty());
     }
 

@@ -629,7 +629,7 @@ impl DocHandle {
             })
             .await
             .map_err(|_| SyncError::Disconnected)?;
-        reply_rx.await.map_err(|_| SyncError::Disconnected)?
+        crate::reply::recv(reply_rx).await
     }
 
     /// Send a request with a broadcast channel for real-time progress updates.
@@ -654,7 +654,7 @@ impl DocHandle {
             })
             .await
             .map_err(|_| SyncError::Disconnected)?;
-        reply_rx.await.map_err(|_| SyncError::Disconnected)?
+        crate::reply::recv(reply_rx).await
     }
 
     /// Get the current document heads as protocol hex strings.
@@ -698,7 +698,7 @@ impl DocHandle {
             })
             .await
             .map_err(|_| SyncError::Disconnected)?;
-        reply_rx.await.map_err(|_| SyncError::Disconnected)?
+        crate::reply::recv(reply_rx).await
     }
 
     /// Flush pending RuntimeStateDoc sync frames from the daemon.
@@ -711,7 +711,7 @@ impl DocHandle {
             .send(SyncCommand::ConfirmStateSync { reply: reply_tx })
             .await
             .map_err(|_| SyncError::Disconnected)?;
-        reply_rx.await.map_err(|_| SyncError::Disconnected)?
+        crate::reply::recv(reply_rx).await
     }
 
     fn readiness_error(status: &SyncStatus) -> Option<SyncError> {
@@ -888,7 +888,7 @@ impl DocHandle {
             })
             .await
             .map_err(|_| SyncError::Disconnected)?;
-        reply_rx.await.map_err(|_| SyncError::Disconnected)?
+        crate::reply::recv(reply_rx).await
     }
 
     // =====================================================================
