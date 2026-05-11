@@ -1277,6 +1277,17 @@ impl KernelConnection for JupyterKernel {
                                     if status.execution_state
                                         == jupyter_protocol::ExecutionState::Idle
                                     {
+                                        if let Err(e) =
+                                            iopub_cmd_tx.try_send(QueueCommand::KernelIdle {
+                                                execution_id: execution_id.clone(),
+                                            })
+                                        {
+                                            warn!(
+                                                "[jupyter-kernel] KernelIdle dropped: {} — queued work after interrupt may stall",
+                                                e
+                                            );
+                                        }
+
                                         if let (Some(cid), Some(eid)) =
                                             (cell_id.clone(), execution_id.clone())
                                         {

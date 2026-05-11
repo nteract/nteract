@@ -55,6 +55,8 @@ pub struct KernelState {
     /// Whether the current execution produced an error output.
     /// Read by `execution_done` to record success/failure in the state doc.
     execution_had_error: bool,
+    /// Interrupted execution id awaiting a final kernel idle.
+    interrupt_pending: Option<String>,
     /// Kernel lifecycle status.
     status: KernelStatus,
 
@@ -70,6 +72,7 @@ impl KernelState {
             queue: VecDeque::new(),
             executing: None,
             execution_had_error: false,
+            interrupt_pending: None,
             status: KernelStatus::Starting,
             state,
         }
@@ -82,11 +85,13 @@ impl KernelState {
         self.queue.clear();
         self.executing = None;
         self.execution_had_error = false;
+        self.interrupt_pending = None;
         self.status = KernelStatus::Starting;
     }
 
     /// Transition to idle after kernel launch completes.
     pub fn set_idle(&mut self) {
+        self.interrupt_pending = None;
         self.status = KernelStatus::Idle;
     }
 
@@ -167,7 +172,7 @@ impl KernelState {
         let matches = self
             .executing
             .as_ref()
-            .is_some_and(|(cid, _)| cid == cell_id);
+            .is_some_and(|(cid, eid)| cid == cell_id && eid == execution_id);
         if matches {
             let success = !self.execution_had_error;
             self.executing = None;
@@ -234,8 +239,9 @@ impl KernelState {
     /// Clear local execution state after an interrupt request is accepted.
     ///
     /// The Jupyter kernel may still deliver late IOPub for the interrupted
-    /// request. Clearing `executing` here lets new executions proceed and makes
-    /// those late messages harmless stale events.
+    /// request. Clearing `executing` here makes those late messages harmless
+    /// stale events, while `interrupt_pending` prevents sending new execute
+    /// requests until the kernel reports a real idle state.
     pub fn interrupt(&mut self) -> (Option<QueueEntry>, Vec<QueueEntry>) {
         let interrupted = self
             .executing
@@ -244,10 +250,33 @@ impl KernelState {
                 cell_id,
                 execution_id,
             });
+        self.interrupt_pending = interrupted.as_ref().map(|entry| entry.execution_id.clone());
         let cleared = self.clear_queue();
         self.execution_had_error = false;
-        self.status = KernelStatus::Idle;
+        self.status = if self.interrupt_pending.is_some() {
+            KernelStatus::Busy
+        } else {
+            KernelStatus::Idle
+        };
         (interrupted, cleared)
+    }
+
+    /// Release the interrupt gate when the interrupted execution reports idle.
+    pub async fn kernel_idle(
+        &mut self,
+        execution_id: Option<&str>,
+        conn: &mut impl KernelConnection,
+    ) -> Result<()> {
+        let should_release = self
+            .interrupt_pending
+            .as_deref()
+            .is_some_and(|pending| Some(pending) == execution_id);
+        if should_release {
+            self.interrupt_pending = None;
+            self.status = KernelStatus::Idle;
+            self.process_next(conn).await?;
+        }
+        Ok(())
     }
 
     /// Drain the execution queue.
@@ -317,6 +346,9 @@ impl KernelState {
     async fn process_next(&mut self, conn: &mut impl KernelConnection) -> Result<()> {
         // Already executing?
         if self.executing.is_some() {
+            return Ok(());
+        }
+        if self.interrupt_pending.is_some() {
             return Ok(());
         }
 

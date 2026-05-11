@@ -2084,12 +2084,25 @@ class TestKernelLifecycle:
             )
         )
 
-        streaming_task = asyncio.ensure_future(session.execute_cell(streaming_id, timeout_secs=30))
-        await asyncio.sleep(1.0)
+        execution_id = await session.queue_cell(streaming_id)
+
+        async def streaming_started():
+            state = await session.get_runtime_state()
+            execution = state.executions.get(execution_id)
+            return execution is not None and execution.status == "running"
+
+        await async_wait_for_sync(
+            streaming_started,
+            timeout=10.0,
+            description="streaming execution to start",
+        )
 
         await session.interrupt()
 
-        streaming_result = await asyncio.wait_for(streaming_task, timeout=10)
+        streaming_result = await asyncio.wait_for(
+            session.wait_for_execution(streaming_id, execution_id, timeout_secs=10),
+            timeout=15,
+        )
         assert not streaming_result.success, "Interrupted streaming cell should report failure"
 
         verify_id = await session.create_cell("print(21 * 2)")

@@ -1248,6 +1248,14 @@ async fn handle_queue_command(
             }
         }
 
+        QueueCommand::KernelIdle { execution_id } => {
+            if let Some(ref mut k) = kernel {
+                if let Err(e) = state.kernel_idle(execution_id.as_deref(), k).await {
+                    warn!("[runtime-agent] kernel_idle error: {}", e);
+                }
+            }
+        }
+
         QueueCommand::CellError {
             cell_id,
             execution_id,
@@ -1647,6 +1655,9 @@ mod tests {
             .queue_cell("cC".into(), "eC".into(), "1 + 1".into(), &mut mock)
             .await
             .unwrap();
+        assert!(state.executing_cell().is_none());
+        assert_eq!(state.queued_entries().len(), 1);
+        state.kernel_idle(Some("eA"), &mut mock).await.unwrap();
         state.execution_done("cC", "eC", &mut mock).await.unwrap();
         let ec = handle.read(|sd| sd.get_execution("eC").unwrap()).unwrap();
         assert_eq!(ec.status, "done");
