@@ -81,7 +81,10 @@ use automerge::{
     sync, sync::SyncDoc, transaction::Transactable, ActorId, AutoCommit, AutomergeError, ObjId,
     ObjType, ReadDoc, ScalarValue, Value, ROOT,
 };
-use automerge_recovery::{catch_automerge_panic, AutomergeOperationError, AutomergeRebuildError};
+use automerge_recovery::{
+    catch_automerge_panic, recoverable_automerge_operation, AutomergeOperationError,
+    AutomergeRebuildError,
+};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::cell::Cell;
@@ -2657,17 +2660,20 @@ impl RuntimeStateDoc {
         peer_state: &mut sync::State,
         label: &str,
     ) -> Result<Option<sync::Message>, AutomergeOperationError> {
-        match catch_automerge_panic(label, || self.generate_sync_message(peer_state)) {
-            Ok(message) => Ok(message),
-            Err(_err) => {
-                *peer_state = sync::State::new();
-                if let Err(source) = self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(label, source));
-                }
-                catch_automerge_panic(label, || self.generate_sync_message(peer_state))
-                    .map_err(AutomergeOperationError::Panic)
-            }
-        }
+        let mut context = RuntimeSyncRecoveryContext {
+            doc: self,
+            peer_state,
+        };
+        recoverable_automerge_operation(
+            label,
+            &mut context,
+            |context| Ok(context.doc.generate_sync_message(context.peer_state)),
+            |_| false,
+            |context| {
+                *context.peer_state = sync::State::new();
+                context.doc.rebuild_from_save()
+            },
+        )
     }
 
     /// Generate a sync message, compacting the doc if the encoded message
@@ -2716,21 +2722,26 @@ impl RuntimeStateDoc {
         max_encoded_bytes: usize,
         label: &str,
     ) -> Result<Option<Vec<u8>>, AutomergeOperationError> {
-        match catch_automerge_panic(label, || {
-            self.generate_sync_message_bounded_encoded(peer_state, max_encoded_bytes)
-        }) {
-            Ok(message) => Ok(message),
-            Err(_err) => {
-                *peer_state = sync::State::new();
-                if let Err(source) = self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(label, source));
-                }
-                catch_automerge_panic(label, || {
-                    self.generate_sync_message_bounded_encoded(peer_state, max_encoded_bytes)
-                })
-                .map_err(AutomergeOperationError::Panic)
-            }
-        }
+        let mut context = RuntimeBoundedSyncRecoveryContext {
+            doc: self,
+            peer_state,
+            max_encoded_bytes,
+        };
+        recoverable_automerge_operation(
+            label,
+            &mut context,
+            |context| {
+                Ok(context.doc.generate_sync_message_bounded_encoded(
+                    context.peer_state,
+                    context.max_encoded_bytes,
+                ))
+            },
+            |_| false,
+            |context| {
+                *context.peer_state = sync::State::new();
+                context.doc.rebuild_from_save()
+            },
+        )
     }
 
     /// Receive a sync message with change stripping (read-only enforcement).
@@ -2773,42 +2784,30 @@ impl RuntimeStateDoc {
         message: sync::Message,
         label: &str,
     ) -> Result<(), AutomergeOperationError> {
-        let retry_message = message.clone();
-        match catch_automerge_panic(label, || self.receive_sync_message(peer_state, message)) {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(source)) if is_recoverable_sync_error(&source) => {
-                *peer_state = sync::State::new();
-                if let Err(rebuild_source) = self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(
-                        label,
-                        rebuild_source,
-                    ));
-                }
-                match catch_automerge_panic(label, || {
-                    self.receive_sync_message(peer_state, retry_message)
-                }) {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(retry_source)) => {
-                        Err(AutomergeOperationError::automerge(label, retry_source))
-                    }
-                    Err(err) => Err(AutomergeOperationError::Panic(err)),
-                }
-            }
-            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
-            Err(err) => {
-                *peer_state = sync::State::new();
-                if let Err(source) = self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(label, source));
-                }
-                match catch_automerge_panic(label, || {
-                    self.receive_sync_message(peer_state, retry_message)
-                }) {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
-                    Err(_) => Err(AutomergeOperationError::Panic(err)),
-                }
-            }
-        }
+        let mut context = RuntimeSyncReceiveRecoveryContext {
+            doc: self,
+            peer_state,
+            next_message: Some(message.clone()),
+            retry_message: message,
+        };
+        recoverable_automerge_operation(
+            label,
+            &mut context,
+            |context| {
+                let message = context
+                    .next_message
+                    .take()
+                    .unwrap_or_else(|| context.retry_message.clone());
+                context
+                    .doc
+                    .receive_sync_message(context.peer_state, message)
+            },
+            is_recoverable_sync_error,
+            |context| {
+                *context.peer_state = sync::State::new();
+                context.doc.rebuild_from_save()
+            },
+        )
     }
 
     /// Receive a sync message accepting client writes.
@@ -2841,44 +2840,30 @@ impl RuntimeStateDoc {
         message: sync::Message,
         label: &str,
     ) -> Result<bool, AutomergeOperationError> {
-        let retry_message = message.clone();
-        match catch_automerge_panic(label, || {
-            self.receive_sync_message_with_changes(peer_state, message)
-        }) {
-            Ok(Ok(changed)) => Ok(changed),
-            Ok(Err(source)) if is_recoverable_sync_error(&source) => {
-                *peer_state = sync::State::new();
-                if let Err(rebuild_source) = self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(
-                        label,
-                        rebuild_source,
-                    ));
-                }
-                match catch_automerge_panic(label, || {
-                    self.receive_sync_message_with_changes(peer_state, retry_message)
-                }) {
-                    Ok(Ok(changed)) => Ok(changed),
-                    Ok(Err(retry_source)) => {
-                        Err(AutomergeOperationError::automerge(label, retry_source))
-                    }
-                    Err(err) => Err(AutomergeOperationError::Panic(err)),
-                }
-            }
-            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
-            Err(err) => {
-                *peer_state = sync::State::new();
-                if let Err(source) = self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(label, source));
-                }
-                match catch_automerge_panic(label, || {
-                    self.receive_sync_message_with_changes(peer_state, retry_message)
-                }) {
-                    Ok(Ok(changed)) => Ok(changed),
-                    Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
-                    Err(_) => Err(AutomergeOperationError::Panic(err)),
-                }
-            }
-        }
+        let mut context = RuntimeSyncReceiveRecoveryContext {
+            doc: self,
+            peer_state,
+            next_message: Some(message.clone()),
+            retry_message: message,
+        };
+        recoverable_automerge_operation(
+            label,
+            &mut context,
+            |context| {
+                let message = context
+                    .next_message
+                    .take()
+                    .unwrap_or_else(|| context.retry_message.clone());
+                context
+                    .doc
+                    .receive_sync_message_with_changes(context.peer_state, message)
+            },
+            is_recoverable_sync_error,
+            |context| {
+                *context.peer_state = sync::State::new();
+                context.doc.rebuild_from_save()
+            },
+        )
     }
 
     /// Apply a sync message and return both the list of applied-change
@@ -3007,49 +2992,64 @@ impl RuntimeStateDoc {
     where
         F: Fn(&ActorId) -> bool,
     {
-        let retry_message = message.clone();
-        match catch_automerge_panic(label, || {
-            self.receive_sync_and_foreign_comms(peer_state, message, &is_foreign)
-        }) {
-            Ok(Ok(view)) => Ok(view),
-            Ok(Err(source)) if is_recoverable_sync_error(&source) => {
-                *peer_state = sync::State::new();
-                if let Err(rebuild_source) = self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(
-                        label,
-                        rebuild_source,
-                    ));
-                }
-                match catch_automerge_panic(label, || {
-                    self.receive_sync_and_foreign_comms(peer_state, retry_message, is_foreign)
-                }) {
-                    Ok(Ok(view)) => Ok(view),
-                    Ok(Err(retry_source)) => {
-                        Err(AutomergeOperationError::automerge(label, retry_source))
-                    }
-                    Err(err) => Err(AutomergeOperationError::Panic(err)),
-                }
-            }
-            Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
-            Err(err) => {
-                *peer_state = sync::State::new();
-                if let Err(source) = self.rebuild_from_save() {
-                    return Err(AutomergeOperationError::rebuild_failed(label, source));
-                }
-                match catch_automerge_panic(label, || {
-                    self.receive_sync_and_foreign_comms(peer_state, retry_message, is_foreign)
-                }) {
-                    Ok(Ok(view)) => Ok(view),
-                    Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
-                    Err(_) => Err(AutomergeOperationError::Panic(err)),
-                }
-            }
-        }
+        let mut context = RuntimeForeignSyncReceiveRecoveryContext {
+            doc: self,
+            peer_state,
+            next_message: Some(message.clone()),
+            retry_message: message,
+            is_foreign,
+        };
+        recoverable_automerge_operation(
+            label,
+            &mut context,
+            |context| {
+                let message = context
+                    .next_message
+                    .take()
+                    .unwrap_or_else(|| context.retry_message.clone());
+                context.doc.receive_sync_and_foreign_comms(
+                    context.peer_state,
+                    message,
+                    &context.is_foreign,
+                )
+            },
+            is_recoverable_sync_error,
+            |context| {
+                *context.peer_state = sync::State::new();
+                context.doc.rebuild_from_save()
+            },
+        )
     }
 }
 
 fn is_recoverable_sync_error(source: &AutomergeError) -> bool {
     matches!(source, AutomergeError::PatchLogMismatch)
+}
+
+struct RuntimeSyncRecoveryContext<'a> {
+    doc: &'a mut RuntimeStateDoc,
+    peer_state: &'a mut sync::State,
+}
+
+struct RuntimeBoundedSyncRecoveryContext<'a> {
+    doc: &'a mut RuntimeStateDoc,
+    peer_state: &'a mut sync::State,
+    max_encoded_bytes: usize,
+}
+
+struct RuntimeSyncReceiveRecoveryContext<'a> {
+    doc: &'a mut RuntimeStateDoc,
+    peer_state: &'a mut sync::State,
+    next_message: Option<sync::Message>,
+    retry_message: sync::Message,
+}
+
+struct RuntimeForeignSyncReceiveRecoveryContext<'a, F> {
+    doc: &'a mut RuntimeStateDoc,
+    peer_state: &'a mut sync::State,
+    next_message: Option<sync::Message>,
+    retry_message: sync::Message,
+    is_foreign: F,
 }
 
 /// Scaffold the `project_context` map in a fresh doc.
