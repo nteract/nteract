@@ -5,7 +5,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const READY_TIMEOUT_MS = 120_000;
+const READY_TIMEOUT_MS = positiveNumberEnv("NTERACT_BROWSER_E2E_READY_TIMEOUT_MS") ?? 120_000;
 const POLL_MS = 250;
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -15,6 +15,11 @@ const port = Number(
 );
 const baseURL = process.env.NTERACT_BROWSER_E2E_BASE_URL ?? `http://localhost:${port}`;
 const healthURL = `${baseURL}/__nteract_dev_relay/health`;
+
+function positiveNumberEnv(name) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
 
 function cacheDir() {
   if (process.env.XDG_CACHE_HOME) return process.env.XDG_CACHE_HOME;

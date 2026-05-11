@@ -257,6 +257,48 @@ jobs:
       - name: Run JS benchmarks
         run: vp test bench --run apps/notebook/src/lib/__tests__/
 
+  browser-e2e:
+    name: Browser E2E (Vite)
+    needs: [changes]
+    if: needs.changes.outputs.source_changed == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Install rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ubuntu-browser-e2e
+
+      # Build wasm + renderer plugins (gitignored; Vite imports them).
+      - uses: ./.github/actions/build-runtime-artifacts
+
+      - name: Install Playwright Chromium
+        run: pnpm --filter notebook-ui exec playwright install --with-deps chromium
+
+      - name: Run browser E2E
+        run: pnpm --filter notebook-ui test:e2e:browser -- --project=chromium
+        env:
+          NTERACT_BROWSER_E2E_READY_TIMEOUT_MS: 300000
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-e2e-playwright-report
+          path: |
+            apps/notebook/playwright-report/
+            apps/notebook/test-results/
+          retention-days: 7
+
   build-linux:
     name: Linux (release artifacts)
     needs: [changes, build-ui]
