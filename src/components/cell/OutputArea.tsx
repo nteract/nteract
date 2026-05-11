@@ -398,8 +398,6 @@ export function OutputArea({
   const bridgeRef = useRef<CommBridgeManager | null>(null);
   const inDomOutputRef = useRef<HTMLDivElement>(null);
   const staticFrameInteractionRef = useRef<HTMLDivElement>(null);
-  const ignoreScrollDeactivationRef = useRef(false);
-  const ignoreScrollDeactivationTimerRef = useRef<number | null>(null);
   const injectedLibsRef = useRef(new Set<string>());
   const renderGenRef = useRef(0);
   const searchQueryRef = useRef(searchQuery);
@@ -485,26 +483,6 @@ export function OutputArea({
   }, [hasSiftOutputs, staticFrameInteractionActive]);
 
   useEffect(() => {
-    return () => {
-      if (ignoreScrollDeactivationTimerRef.current != null) {
-        window.clearTimeout(ignoreScrollDeactivationTimerRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!staticFrameInteractionActive) return;
-
-    const handleScroll = () => {
-      if (ignoreScrollDeactivationRef.current) return;
-      setStaticFrameInteractionActive(false);
-    };
-
-    window.addEventListener("scroll", handleScroll, true);
-    return () => window.removeEventListener("scroll", handleScroll, true);
-  }, [staticFrameInteractionActive]);
-
-  useEffect(() => {
     if (!staticFrameInteractionActive) return;
 
     const handlePointerDown = (event: globalThis.PointerEvent) => {
@@ -522,16 +500,7 @@ export function OutputArea({
   const activateStaticFrameInteraction = useCallback(() => {
     if (shouldUseScrollPassthroughFrame) {
       if (!staticFrameInteractionActive && hasSiftOutputs) {
-        ignoreScrollDeactivationRef.current = scrollElementIntoComfortableView(
-          staticFrameInteractionRef.current,
-        );
-        if (ignoreScrollDeactivationTimerRef.current != null) {
-          window.clearTimeout(ignoreScrollDeactivationTimerRef.current);
-        }
-        ignoreScrollDeactivationTimerRef.current = window.setTimeout(() => {
-          ignoreScrollDeactivationRef.current = false;
-          ignoreScrollDeactivationTimerRef.current = null;
-        }, 250);
+        scrollElementIntoComfortableView(staticFrameInteractionRef.current);
       }
       setStaticFrameInteractionActive(true);
       // Move DOM focus off CodeMirror without scrolling; this wrapper owns
