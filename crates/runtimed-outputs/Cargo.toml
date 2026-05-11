@@ -14,7 +14,6 @@ notebook-doc = { path = "../notebook-doc" }
 runtime-doc = { path = "../runtime-doc" }
 repr-llm = { path = "../repr-llm" }
 base64 = { workspace = true }
-regex = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

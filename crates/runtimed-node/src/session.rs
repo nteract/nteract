@@ -871,40 +871,6 @@ impl Session {
         Ok(handle.get_cell(&cell_id).map(js_cell_from_snapshot))
     }
 
-    /// Return LLM-facing output text for one cell without resolving full blobs.
-    #[napi]
-    pub async fn get_cell_output_text(&self, cell_id: String) -> Result<Option<Vec<String>>> {
-        let (raw_outputs, comms, blob_base_url, blob_store_path) = {
-            let st = self.state.lock().await;
-            let handle = st
-                .handle
-                .as_ref()
-                .ok_or_else(|| Error::from_reason("Not connected"))?;
-            let Some(raw_outputs) = handle.get_cell_outputs(&cell_id) else {
-                return Ok(None);
-            };
-            let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
-            (
-                raw_outputs,
-                comms,
-                st.blob_base_url.clone(),
-                st.blob_store_path.clone(),
-            )
-        };
-
-        Ok(Some(
-            cell_output_texts_from_manifests(
-                &raw_outputs,
-                OutputResolutionContext {
-                    comms: comms.as_ref(),
-                    blob_base_url: &blob_base_url,
-                    blob_store_path: &blob_store_path,
-                },
-            )
-            .await,
-        ))
-    }
-
     /// Create a cell without executing it. Returns the new cell ID.
     #[napi]
     pub async fn create_cell(
@@ -2036,22 +2002,6 @@ async fn cell_result_from_output_manifests(
     })
 }
 
-async fn cell_output_texts_from_manifests(
-    output_manifests: &[serde_json::Value],
-    context: OutputResolutionContext<'_>,
-) -> Vec<String> {
-    shared_resolver::resolve_cell_output_texts_for_llm(
-        output_manifests,
-        shared_resolver::ResolveCtx {
-            blob_base_url: context.blob_base_url.as_deref(),
-            blob_store_path: context.blob_store_path.as_deref(),
-            comms: context.comms,
-            length: shared_resolver::OutputLength::Preview,
-        },
-    )
-    .await
-}
-
 #[derive(Serialize)]
 #[serde(tag = "type", content = "value", rename_all = "lowercase")]
 enum DataValueJson {
@@ -2295,51 +2245,6 @@ mod tests {
         assert_eq!(result.execution_id, "exec-from-store");
         assert_eq!(result.execution_count, Some(5));
         assert!(result.success);
-    }
-
-    #[tokio::test]
-    async fn output_text_helper_uses_precomputed_arrow_summary() {
-        let manifest_text = serde_json::json!({
-            "version": 1,
-            "content_type": "application/vnd.apache.arrow.stream",
-            "summary": {
-                "total_rows": 20,
-                "included_rows": 20,
-                "sampled": false
-            },
-            "schema": {
-                "fields": 1,
-                "columns": [
-                    {"name": "value", "type": "int64", "nullable": true}
-                ]
-            },
-            "chunks": [
-                {"hash": "chunk_hash_should_not_be_fetched", "size": 8192, "row_count": 20}
-            ],
-            "llm": {
-                "content_type": "text/llm+plain",
-                "text": "TABLE_REPR v1\nshape: 20 rows x 1 columns"
-            }
-        })
-        .to_string();
-        let raw_outputs = vec![json!({
-            "output_type": "display_data",
-            "data": {
-                "application/vnd.nteract.arrow-stream-manifest+json": {"inline": manifest_text}
-            }
-        })];
-
-        let texts = cell_output_texts_from_manifests(
-            &raw_outputs,
-            OutputResolutionContext {
-                comms: None,
-                blob_base_url: &None,
-                blob_store_path: &None,
-            },
-        )
-        .await;
-
-        assert_eq!(texts, vec!["TABLE_REPR v1\nshape: 20 rows x 1 columns"]);
     }
 
     #[test]

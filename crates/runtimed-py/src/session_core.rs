@@ -1161,40 +1161,6 @@ pub(crate) async fn get_cell_outputs(
     }))
 }
 
-/// Get a cell's LLM-facing output text without resolving full output blobs.
-pub(crate) async fn get_cell_output_text(
-    state: &Arc<Mutex<SessionState>>,
-    cell_id: &str,
-) -> PyResult<Option<Vec<String>>> {
-    let (raw_outputs, blob_base_url, blob_store_path, comms) = {
-        let st = state.lock().await;
-        let handle = st
-            .handle
-            .as_ref()
-            .ok_or_else(|| to_py_err("Not connected"))?;
-
-        let Some(raw_outputs) = handle.get_cell_outputs(cell_id) else {
-            return Ok(None);
-        };
-
-        let blob_base_url = st.blob_base_url.clone();
-        let blob_store_path = st.blob_store_path.clone();
-        let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
-
-        (raw_outputs, blob_base_url, blob_store_path, comms)
-    };
-
-    Ok(Some(
-        output_resolver::resolve_cell_output_texts_for_llm(
-            &raw_outputs,
-            &blob_base_url,
-            &blob_store_path,
-            comms.as_ref(),
-        )
-        .await,
-    ))
-}
-
 /// Get a cell's execution count without materializing all cells.
 pub(crate) async fn get_cell_execution_count(
     state: &Arc<Mutex<SessionState>>,

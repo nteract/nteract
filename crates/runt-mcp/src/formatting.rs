@@ -1,11 +1,118 @@
 //! Output formatting for MCP tool results.
 //!
-//! Converts notebook outputs to text for LLM consumption and MCP content items.
+//! Converts notebook outputs to text for LLM consumption, with ANSI stripping
+//! and MIME type priority. Matches the Python MCP server's formatting behavior.
 
-pub use runtimed_outputs::output_text::{
-    best_text_from_data, format_output_text, format_outputs_text, strip_ansi,
-};
-use runtimed_outputs::resolved_output::Output;
+use regex::Regex;
+use std::sync::LazyLock;
+
+use runtimed_outputs::resolved_output::{DataValue, Output};
+
+/// ANSI escape code regex — matches color codes, cursor movement, OSC sequences.
+#[allow(clippy::expect_used)] // Static regex, always valid
+static ANSI_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\].*?\x07|\x1b\(B").expect("valid ANSI regex")
+});
+
+/// MIME types to try for text output, in priority order.
+/// Matches the `CONTENT_PRIORITY` order in `output_resolver.rs` with
+/// `application/json` appended as a formatting-layer fallback.
+const TEXT_MIME_PRIORITY: &[&str] = &[
+    "text/llm+plain",
+    "text/latex",
+    "text/markdown",
+    "text/plain",
+    "application/json",
+];
+
+/// Maximum text size (bytes) before truncation in `best_text_from_data`.
+/// Acts as a safety net for heavy types that don't have `text/llm+plain` synthesis.
+const MAX_TEXT_BYTES: usize = 8 * 1024;
+
+/// Strip ANSI escape codes from text.
+pub fn strip_ansi(text: &str) -> String {
+    ANSI_RE.replace_all(text, "").to_string()
+}
+
+/// Extract the best text representation from an output's data dictionary.
+/// Returns None if no suitable text MIME type is found.
+///
+/// Text exceeding 8 KB is truncated with a size note appended.
+pub fn best_text_from_data(data: &std::collections::HashMap<String, DataValue>) -> Option<String> {
+    for mime in TEXT_MIME_PRIORITY {
+        if let Some(value) = data.get(*mime) {
+            let text = match value {
+                DataValue::Text(s) => Some(s.clone()),
+                DataValue::Json(v) => Some(serde_json::to_string_pretty(v).unwrap_or_default()),
+                DataValue::Binary(_) => None,
+            };
+            return text.map(|s| truncate_text(&s));
+        }
+    }
+    None
+}
+
+/// Truncate text to `MAX_TEXT_BYTES`, appending a size note if truncated.
+fn truncate_text(s: &str) -> String {
+    if s.len() <= MAX_TEXT_BYTES {
+        return s.to_string();
+    }
+    // Find a char boundary at or before MAX_TEXT_BYTES
+    let mut end = MAX_TEXT_BYTES;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let total_kb = s.len() / 1024;
+    format!("{}\n... [truncated, {} KB total]", &s[..end], total_kb)
+}
+
+/// Format a single output as text for LLM consumption.
+pub fn format_output_text(output: &Output) -> Option<String> {
+    match output.output_type.as_str() {
+        "stream" => {
+            let text = output.text.as_deref().unwrap_or("");
+            let stripped = strip_ansi(text);
+            if stripped.is_empty() {
+                None
+            } else {
+                Some(stripped)
+            }
+        }
+        "error" => {
+            let mut parts = Vec::new();
+            if let Some(ename) = &output.ename {
+                let evalue = output.evalue.as_deref().unwrap_or("");
+                parts.push(format!("{ename}: {evalue}"));
+            }
+            if let Some(traceback) = &output.traceback {
+                let stripped: Vec<String> = traceback.iter().map(|t| strip_ansi(t)).collect();
+                parts.push(stripped.join("\n"));
+            }
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("\n\n"))
+            }
+        }
+        "display_data" | "execute_result" => {
+            if let Some(data) = &output.data {
+                best_text_from_data(data)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Format all outputs as a single text string (double-newline separated).
+pub fn format_outputs_text(outputs: &[Output]) -> String {
+    outputs
+        .iter()
+        .filter_map(format_output_text)
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
 
 /// Convert outputs to separate Content items (one per output).
 /// This gives MCP clients richer structure than a single concatenated string.

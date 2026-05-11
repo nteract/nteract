@@ -277,72 +277,6 @@ a structured `llm.columns[].stats` object derived from the existing Python-side
 dataframe stat extractors and/or `nteract-predicate`, so consumers can avoid
 parsing summary prose.
 
-Follow-up after PR #2715: MCP already uses the LLM-selective resolver for cell
-reads and execution results. Runtime bindings should expose the same cheap path
-explicitly rather than asking consumers to call `get_cell()` / `getCell()` and
-materialize every full output blob. The shared contract is:
-
-- `runtimed-outputs::resolve_cell_output_texts_for_llm(raw_outputs, ctx)`
-  resolves only LLM-facing text items.
-- `runtimed-py` exposes `get_cell_output_text(cell_id)` and
-  `get_cell_output_text_sync(cell_id)`.
-- `@runtimed/node` exposes `getCellOutputText(cellId)`.
-
-Those helpers return text items, not full MIME bundles. For Arrow manifest
-tables, they read only the manifest JSON and use `llm.text` or the manifest
-schema/summary fallback. Full-output APIs remain unchanged for UI clients and
-users that need binary/image/table payloads.
-
-### TABLE_REPR v1 Direction
-
-The first richer LLM representation should still be cheap by default. Treat the
-PyCapsule stream as the producer capture boundary, not as something to expose to
-browser or agent clients. The wire artifact remains an Arrow stream manifest
-plus derived text/JSON hints.
-
-Proposed manifest shape:
-
-```json
-{
-  "llm": {
-    "repr_version": 1,
-    "content_type": "text/llm+plain",
-    "text": "TABLE_REPR v1\nshape: 2000000 rows x 10 columns\n...",
-    "columns": [
-      {
-        "name": "row_id",
-        "arrow_type": "int64",
-        "nullable": false,
-        "chunk_count": 16,
-        "null_count": 0,
-        "stats_quality": "cached"
-      }
-    ],
-    "sample": {
-      "strategy": "head+tail",
-      "row_ranges": [[0, 4], [1999995, 1999999]]
-    }
-  }
-}
-```
-
-Tier the work so maintenance stays reasonable:
-
-- Tier 0: shape, schema, chunk count, byte sizes, included rows, total rows,
-  sample policy, and stable row ranges. This is metadata-only and should always
-  be available.
-- Tier 1: cached Arrow facts such as known `null_count`, dictionary length, and
-  pandas/Hugging Face schema metadata. Do not force scans to produce them.
-- Tier 2: bounded sample rows. Make sample policy explicit; do not imply the
-  sample is representative unless the producer actually sampled that way.
-- Tier 3: exact min/max/distinct or richer sketches only for small data, cached
-  producer stats, or explicit opt-in analysis.
-
-The chunked aspect matters for both correctness and cost. A manifest summary can
-describe all chunks without fetching them, while optional per-chunk summaries can
-support later retrieval/ranking by row range. Consumers should never need to
-decode all Arrow chunks just to decide what text to show an LLM.
-
 ## Chunked Arrow Over CAS
 
 The right streaming unit is not "chunked parquet." It is an ordered Arrow stream
@@ -760,7 +694,10 @@ for the staged implementation.
     limits for million-row tables. That is independent of the Arrow producer
     fix and should land as a Sift virtual-scroller follow-up before marketing
     arrow-native tables as production-ready for very large local data.
-- Done in PR #2715: durable manifest save/load and GC collection follow-up.
+- Next: decide whether automatic large dataframe reprs should opt into the
+  helper by publishing their own display output, or stay one-shot while direct
+  daemon blob upload and save/load manifest externalization are completed.
+- In progress: durable manifest save/load and GC collection follow-up
   - runtime save rewrites `chunks[].hash`, `coalesced.hash`, and
     `coalesced.segments[].hash` to nested `{blob, size, content_type}` refs
     while preserving the manifest MIME and fallback siblings.
@@ -769,13 +706,6 @@ for the staged implementation.
   - active-room blob GC now marks Arrow manifest chunk/coalesced hashes.
   - `schema.hash` intentionally remains a plain fingerprint until schema bytes
     become their own stored artifact.
-- In progress: runtime consumer audit follow-up.
-  - shared output resolution now has a direct
-    `resolve_cell_output_texts_for_llm` helper.
-  - runtimed Python and Node bindings expose explicit output-text helpers for
-    agent/runtime consumers that need compact LLM text instead of full blobs.
-  - keep richer `TABLE_REPR v1` stats as a tiered manifest-design follow-up
-    rather than scanning large tables inside runtime consumers.
 
 ### Phase 1: Canonical Arrow For DataFrames
 

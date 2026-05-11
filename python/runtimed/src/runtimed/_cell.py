@@ -75,17 +75,6 @@ class CellHandle:
             return _HintList([], "outputs")
 
     @property
-    def output_text(self) -> list[str]:
-        """LLM-facing output text from the local replica without resolving full blobs."""
-        try:
-            return _HintList(
-                self._session.get_cell_output_text_sync(self._id) or [],
-                "output_text",
-            )
-        except _RuntimedError:
-            return _HintList([], "output_text")
-
-    @property
     def execution_count(self) -> int | None:
         """Execution count from the local replica, or ``None`` if never executed."""
         raw = self._session.get_cell_execution_count_sync(self._id)
@@ -210,10 +199,6 @@ class CellHandle:
         await self._session.clear_outputs(self._id)
         return self
 
-    async def get_output_text(self) -> list[str]:
-        """LLM-facing output text without resolving full output blobs."""
-        return await self._session.get_cell_output_text(self._id) or []
-
     async def set_tags(self, tags: list[str]) -> CellHandle:
         """Set the cell's tags."""
         await self._session.set_cell_tags(self._id, tags)
@@ -242,8 +227,7 @@ class CellHandle:
             "|-|-|\n"
             "| `source` | `set_source()` `append()` `splice()` |\n"
             "| `cell_type` | `set_type()` |\n"
-            "| `outputs` `output_text` | "
-            "`execute()` `run()` `queue()` `clear_outputs()` `get_output_text()` |\n"
+            "| `outputs` | `execute()` `run()` `queue()` `clear_outputs()` |\n"
             "| `execution_count` | `delete()` `move_after()` |\n"
             "| `metadata` `tags` | `set_tags()` |\n"
             "| `source_hidden` `outputs_hidden` | "

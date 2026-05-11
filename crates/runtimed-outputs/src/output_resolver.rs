@@ -601,23 +601,6 @@ pub async fn resolve_cell_outputs_for_llm(
     outputs
 }
 
-/// Resolve all outputs for a cell and format only the LLM-facing text items.
-///
-/// This is the cheap consumer path for agents and runtimes that do not need
-/// full output blobs. It uses [`resolve_cell_outputs_for_llm`] before text
-/// formatting, so table manifests produce their precomputed `text/llm+plain`
-/// summaries without loading Arrow or Parquet payload chunks.
-pub async fn resolve_cell_output_texts_for_llm(
-    raw_outputs: &[serde_json::Value],
-    ctx: ResolveCtx<'_>,
-) -> Vec<String> {
-    resolve_cell_outputs_for_llm(raw_outputs, ctx)
-        .await
-        .iter()
-        .filter_map(crate::output_text::format_output_text)
-        .collect()
-}
-
 /// Resolve a single output manifest for LLM consumption.
 ///
 /// Streams and errors pass through the normal resolver (text-only, cheap).
@@ -2345,52 +2328,6 @@ mod tests {
         };
         assert!(data.contains_key("text/plain"));
         assert!(!data.contains_key("image/png"));
-    }
-
-    #[tokio::test]
-    async fn llm_cell_output_texts_use_precomputed_arrow_summary() {
-        let manifest_text = serde_json::json!({
-            "version": 1,
-            "content_type": "application/vnd.apache.arrow.stream",
-            "summary": {
-                "total_rows": 2_000_000,
-                "included_rows": 2_000_000,
-                "sampled": false
-            },
-            "schema": {
-                "fields": 2,
-                "columns": [
-                    {"name": "row_id", "type": "int64", "nullable": true},
-                    {"name": "event", "type": "string", "nullable": true}
-                ]
-            },
-            "chunks": [
-                {"hash": "chunk_hash_should_not_be_fetched", "size": 123456, "row_count": 2_000_000}
-            ],
-            "llm": {
-                "content_type": "text/llm+plain",
-                "text": "TABLE_REPR v1\nshape: 2,000,000 rows x 2 columns\ncolumns: row_id int64, event string"
-            }
-        })
-        .to_string();
-        let manifests = vec![
-            json!({
-                "output_type": "stream",
-                "name": "stdout",
-                "text": inline_ref("building table\n"),
-            }),
-            make_display_manifest(json!({
-                "application/vnd.nteract.arrow-stream-manifest+json": inline_ref(&manifest_text),
-            })),
-        ];
-
-        let texts = resolve_cell_output_texts_for_llm(&manifests, ResolveCtx::default()).await;
-
-        assert_eq!(texts.len(), 2);
-        assert_eq!(texts[0], "building table\n");
-        assert!(texts[1].starts_with("TABLE_REPR v1"));
-        assert!(texts[1].contains("2,000,000 rows x 2 columns"));
-        assert!(!texts[1].contains("chunk_hash_should_not_be_fetched"));
     }
 
     // ── llm_preview rendering ───────────────────────────────────
