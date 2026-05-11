@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use automerge::sync::{self, SyncDoc};
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjType, ReadDoc};
+use automerge::{AutoCommit, ChangeHash, ObjType, ReadDoc};
 use log::info;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -47,6 +47,27 @@ pub struct SyncClient<S> {
     stream: S,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InitialSyncMode {
+    /// Drain all immediately available sync rounds before returning.
+    ///
+    /// This is the right mode for long-lived subscribers because the client is
+    /// about to wait for future changes on the same connection.
+    Watch,
+    /// Return once the client has the daemon's advertised settings heads.
+    ///
+    /// This is the right mode for one-shot command paths. Automerge may need a
+    /// short heads/need exchange before sending changes, but once the advertised
+    /// heads are present locally, waiting for receive quiescence only adds a
+    /// fixed latency tax.
+    Snapshot { deadline: tokio::time::Instant },
+}
+
+enum TimedSyncFrame {
+    Received(Vec<ChangeHash>),
+    TimedOut,
+}
+
 #[cfg(unix)]
 impl SyncClient<tokio::net::UnixStream> {
     /// Connect to the daemon's unified socket and perform initial sync.
@@ -66,7 +87,36 @@ impl SyncClient<tokio::net::UnixStream> {
 
         info!("[sync-client] Connected to {:?}", socket_path);
 
-        Self::init(stream).await
+        Self::init(stream, InitialSyncMode::Watch).await
+    }
+
+    /// Connect to the daemon and read the current settings snapshot.
+    ///
+    /// Unlike [`connect`](Self::connect), this does not wait for an initial
+    /// receive timeout to infer that the live sync stream is quiet. Use it for
+    /// one-shot reads/writes; use `connect` for long-lived watchers.
+    pub async fn connect_snapshot(socket_path: PathBuf) -> Result<Self, SyncClientError> {
+        Self::connect_snapshot_with_timeout(socket_path, Duration::from_secs(2)).await
+    }
+
+    /// Connect to the daemon and read the current settings snapshot with a
+    /// custom socket-connect and snapshot-sync timeout.
+    pub async fn connect_snapshot_with_timeout(
+        socket_path: PathBuf,
+        timeout: Duration,
+    ) -> Result<Self, SyncClientError> {
+        let deadline = snapshot_deadline(timeout);
+        let stream = tokio::time::timeout(
+            remaining_snapshot_timeout(deadline)?,
+            tokio::net::UnixStream::connect(&socket_path),
+        )
+        .await
+        .map_err(|_| SyncClientError::Timeout)?
+        .map_err(SyncClientError::ConnectionFailed)?;
+
+        info!("[sync-client] Connected to {:?}", socket_path);
+
+        Self::init(stream, InitialSyncMode::Snapshot { deadline }).await
     }
 }
 
@@ -104,7 +154,47 @@ impl SyncClient<tokio::net::windows::named_pipe::NamedPipeClient> {
 
         info!("[sync-client] Connected to {}", pipe_name);
 
-        Self::init(client).await
+        Self::init(client, InitialSyncMode::Watch).await
+    }
+
+    /// Connect to the daemon and read the current settings snapshot.
+    ///
+    /// Unlike [`connect`](Self::connect), this does not wait for an initial
+    /// receive timeout to infer that the live sync stream is quiet. Use it for
+    /// one-shot reads/writes; use `connect` for long-lived watchers.
+    pub async fn connect_snapshot(socket_path: PathBuf) -> Result<Self, SyncClientError> {
+        Self::connect_snapshot_with_timeout(socket_path, Duration::from_secs(2)).await
+    }
+
+    /// Connect to the daemon and read the current settings snapshot with a
+    /// custom socket-connect and snapshot-sync timeout.
+    pub async fn connect_snapshot_with_timeout(
+        socket_path: PathBuf,
+        timeout: Duration,
+    ) -> Result<Self, SyncClientError> {
+        let deadline = snapshot_deadline(timeout);
+        let pipe_name = socket_path.to_string_lossy().to_string();
+        const ERROR_PIPE_BUSY: i32 = 231;
+        let client = tokio::time::timeout(remaining_snapshot_timeout(deadline)?, async {
+            let mut attempts = 0;
+            loop {
+                match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name) {
+                    Ok(client) => return Ok(client),
+                    Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && attempts < 5 => {
+                        attempts += 1;
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        })
+        .await
+        .map_err(|_| SyncClientError::Timeout)?
+        .map_err(SyncClientError::ConnectionFailed)?;
+
+        info!("[sync-client] Connected to {}", pipe_name);
+
+        Self::init(client, InitialSyncMode::Snapshot { deadline }).await
     }
 }
 
@@ -114,7 +204,7 @@ where
 {
     /// Initialize the client by sending the handshake and performing
     /// the initial sync exchange.
-    async fn init(mut stream: S) -> Result<Self, SyncClientError> {
+    async fn init(mut stream: S, mode: InitialSyncMode) -> Result<Self, SyncClientError> {
         // Send preamble (magic bytes + protocol version)
         connection::send_preamble(&mut stream)
             .await
@@ -128,57 +218,96 @@ where
         let mut doc = AutoCommit::new();
         let mut peer_state = sync::State::new();
 
-        // The server sends first -- receive and apply
-        match connection::recv_frame(&mut stream).await? {
-            Some(data) => {
-                let message = sync::Message::decode(&data)
-                    .map_err(|e| SyncClientError::SyncError(format!("decode: {}", e)))?;
-                doc.sync()
-                    .receive_sync_message(&mut peer_state, message)
-                    .map_err(|e| SyncClientError::SyncError(format!("receive: {}", e)))?;
-            }
-            None => return Err(SyncClientError::Disconnected),
-        }
+        match mode {
+            InitialSyncMode::Snapshot { deadline } => {
+                let mut server_heads = Self::receive_sync_frame_before(
+                    &mut stream,
+                    &mut doc,
+                    &mut peer_state,
+                    remaining_snapshot_timeout(deadline)?,
+                )
+                .await?
+                .ok_or_timeout()?;
 
-        // Send our sync message back (to complete the handshake)
-        if let Some(msg) = doc.sync().generate_sync_message(&mut peer_state) {
-            connection::send_frame(&mut stream, &msg.encode()).await?;
-        }
-
-        // There might be more rounds needed -- keep going until no more messages
-        loop {
-            // Try to receive with a short timeout (the server may not have more to say)
-            match tokio::time::timeout(
-                Duration::from_millis(100),
-                connection::recv_frame(&mut stream),
-            )
-            .await
-            {
-                Ok(Ok(Some(data))) => {
-                    let message = sync::Message::decode(&data)
-                        .map_err(|e| SyncClientError::SyncError(format!("decode: {}", e)))?;
-                    doc.sync()
-                        .receive_sync_message(&mut peer_state, message)
-                        .map_err(|e| SyncClientError::SyncError(format!("receive: {}", e)))?;
-
-                    if let Some(msg) = doc.sync().generate_sync_message(&mut peer_state) {
-                        connection::send_frame(&mut stream, &msg.encode()).await?;
-                    }
+                while !has_heads(&mut doc, &server_heads) {
+                    server_heads = Self::receive_sync_frame_before(
+                        &mut stream,
+                        &mut doc,
+                        &mut peer_state,
+                        remaining_snapshot_timeout(deadline)?,
+                    )
+                    .await?
+                    .ok_or_timeout()?;
                 }
-                Ok(Ok(None)) => return Err(SyncClientError::Disconnected),
-                Ok(Err(e)) => return Err(SyncClientError::ConnectionFailed(e)),
-                Err(_) => break, // Timeout -- initial sync is done
+            }
+            InitialSyncMode::Watch => {
+                // The server sends first -- receive and apply.
+                Self::receive_sync_frame(&mut stream, &mut doc, &mut peer_state).await?;
+
+                // There might be more rounds needed -- keep going until no more messages.
+                // Try to receive with a short timeout (the server may not have more to say).
+                while let TimedSyncFrame::Received(_) = Self::receive_sync_frame_before(
+                    &mut stream,
+                    &mut doc,
+                    &mut peer_state,
+                    Duration::from_millis(100),
+                )
+                .await?
+                {
+                    // Drain initial sync frames until the short receive timeout
+                    // indicates quiescence. Protocol errors still return above.
+                }
             }
         }
 
         let settings = get_all_from_doc(&doc);
-        info!("[sync-client] Initial sync complete: {:?}", settings);
+        info!(
+            "[sync-client] Initial sync complete ({:?}): {:?}",
+            mode, settings
+        );
 
         Ok(Self {
             doc,
             peer_state,
             stream,
         })
+    }
+
+    async fn receive_sync_frame(
+        stream: &mut S,
+        doc: &mut AutoCommit,
+        peer_state: &mut sync::State,
+    ) -> Result<Vec<ChangeHash>, SyncClientError> {
+        match connection::recv_frame(stream).await? {
+            Some(data) => {
+                let message = sync::Message::decode(&data)
+                    .map_err(|e| SyncClientError::SyncError(format!("decode: {}", e)))?;
+                let server_heads = message.heads.clone();
+                doc.sync()
+                    .receive_sync_message(peer_state, message)
+                    .map_err(|e| SyncClientError::SyncError(format!("receive: {}", e)))?;
+
+                if let Some(msg) = doc.sync().generate_sync_message(peer_state) {
+                    connection::send_frame(stream, &msg.encode()).await?;
+                }
+
+                Ok(server_heads)
+            }
+            None => Err(SyncClientError::Disconnected),
+        }
+    }
+
+    async fn receive_sync_frame_before(
+        stream: &mut S,
+        doc: &mut AutoCommit,
+        peer_state: &mut sync::State,
+        timeout: Duration,
+    ) -> Result<TimedSyncFrame, SyncClientError> {
+        match tokio::time::timeout(timeout, Self::receive_sync_frame(stream, doc, peer_state)).await
+        {
+            Ok(frame) => frame.map(TimedSyncFrame::Received),
+            Err(_) => Ok(TimedSyncFrame::TimedOut),
+        }
     }
 
     /// Get a snapshot of all settings from the local replica.
@@ -355,6 +484,35 @@ where
     }
 }
 
+impl TimedSyncFrame {
+    fn ok_or_timeout(self) -> Result<Vec<ChangeHash>, SyncClientError> {
+        match self {
+            TimedSyncFrame::Received(heads) => Ok(heads),
+            TimedSyncFrame::TimedOut => Err(SyncClientError::Timeout),
+        }
+    }
+}
+
+fn has_heads(doc: &mut AutoCommit, heads: &[ChangeHash]) -> bool {
+    if heads.is_empty() {
+        return false;
+    }
+    heads
+        .iter()
+        .all(|head| doc.get_change_by_hash(head).is_some())
+}
+
+fn snapshot_deadline(timeout: Duration) -> tokio::time::Instant {
+    tokio::time::Instant::now() + timeout
+}
+
+fn remaining_snapshot_timeout(deadline: tokio::time::Instant) -> Result<Duration, SyncClientError> {
+    deadline
+        .checked_duration_since(tokio::time::Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or(SyncClientError::Timeout)
+}
+
 /// Extract all settings from an Automerge document.
 ///
 /// Reads nested maps/lists first, falling back to old flat keys for
@@ -476,7 +634,7 @@ pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
 pub async fn try_get_synced_settings() -> Result<SyncedSettings, SyncClientError> {
     #[cfg(unix)]
     {
-        let client = SyncClient::connect(runt_workspace::default_socket_path()).await?;
+        let client = SyncClient::connect_snapshot(runt_workspace::default_socket_path()).await?;
         let settings = client.get_all();
         info!("[sync-client] Got settings from daemon: {:?}", settings);
         Ok(settings)
@@ -484,7 +642,7 @@ pub async fn try_get_synced_settings() -> Result<SyncedSettings, SyncClientError
 
     #[cfg(windows)]
     {
-        let client = SyncClient::connect(runt_workspace::default_socket_path()).await?;
+        let client = SyncClient::connect_snapshot(runt_workspace::default_socket_path()).await?;
         let settings = client.get_all();
         info!("[sync-client] Got settings from daemon: {:?}", settings);
         Ok(settings)
@@ -495,8 +653,151 @@ pub async fn try_get_synced_settings() -> Result<SyncedSettings, SyncClientError
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
+    use notebook_protocol::connection::{self, Handshake};
     use runtimed_client::runtime::Runtime;
-    use runtimed_client::settings_doc::{PythonEnvType, ThemeMode};
+    use runtimed_client::settings_doc::{PythonEnvType, SettingsDoc, ThemeMode};
+
+    async fn accept_settings_handshake(stream: &mut tokio::io::DuplexStream) {
+        connection::recv_preamble(stream)
+            .await
+            .expect("client preamble");
+        let handshake: Handshake = connection::recv_json_frame(stream)
+            .await
+            .expect("handshake frame")
+            .expect("handshake should not eof");
+        assert!(matches!(handshake, Handshake::SettingsSync));
+    }
+
+    async fn apply_next_client_frame(
+        stream: &mut tokio::io::DuplexStream,
+        doc: &mut SettingsDoc,
+        peer_state: &mut sync::State,
+    ) {
+        let data = connection::recv_frame(stream)
+            .await
+            .expect("client response frame")
+            .expect("client response should not eof");
+        let message = sync::Message::decode(&data).expect("decode client response");
+        doc.receive_sync_message(peer_state, message)
+            .expect("apply client response");
+    }
+
+    async fn send_next_server_frame(
+        stream: &mut tokio::io::DuplexStream,
+        doc: &mut SettingsDoc,
+        peer_state: &mut sync::State,
+    ) {
+        let msg = doc
+            .generate_sync_message(peer_state)
+            .expect("server should generate settings sync frame");
+        connection::send_frame(stream, &msg.encode())
+            .await
+            .expect("send settings sync frame");
+    }
+
+    async fn serve_initial_settings_snapshot(
+        mut stream: tokio::io::DuplexStream,
+        settings: SyncedSettings,
+        keep_open_for: Duration,
+    ) {
+        accept_settings_handshake(&mut stream).await;
+
+        let mut doc = SettingsDoc::from_synced_settings(&settings);
+        let mut peer_state = sync::State::new();
+        send_next_server_frame(&mut stream, &mut doc, &mut peer_state).await;
+        apply_next_client_frame(&mut stream, &mut doc, &mut peer_state).await;
+        if let Some(reply) = doc.generate_sync_message(&mut peer_state) {
+            connection::send_frame(&mut stream, &reply.encode())
+                .await
+                .expect("send requested settings changes");
+        }
+
+        // Keep the stream open without sending more frames. Snapshot clients
+        // should return immediately; watch clients infer quiescence by waiting.
+        tokio::time::sleep(keep_open_for).await;
+    }
+
+    async fn serve_stalled_settings_connection(mut stream: tokio::io::DuplexStream) {
+        accept_settings_handshake(&mut stream).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    #[tokio::test]
+    async fn snapshot_initial_sync_returns_without_quiescence_wait() {
+        let (client_stream, server_stream) = tokio::io::duplex(16 * 1024);
+        let expected = SyncedSettings {
+            theme: ThemeMode::Dark,
+            ..SyncedSettings::default()
+        };
+        let server = tokio::spawn(serve_initial_settings_snapshot(
+            server_stream,
+            expected.clone(),
+            Duration::from_millis(200),
+        ));
+
+        let client = tokio::time::timeout(
+            Duration::from_millis(50),
+            SyncClient::init(
+                client_stream,
+                InitialSyncMode::Snapshot {
+                    deadline: snapshot_deadline(Duration::from_secs(1)),
+                },
+            ),
+        )
+        .await
+        .expect("snapshot sync should not wait for receive quiescence")
+        .expect("snapshot sync should succeed");
+
+        assert_eq!(client.get_all().theme, expected.theme);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn snapshot_initial_sync_times_out_when_server_stalls() {
+        let (client_stream, server_stream) = tokio::io::duplex(16 * 1024);
+        let server = tokio::spawn(serve_stalled_settings_connection(server_stream));
+
+        let error = SyncClient::init(
+            client_stream,
+            InitialSyncMode::Snapshot {
+                deadline: snapshot_deadline(Duration::from_millis(25)),
+            },
+        )
+        .await
+        .err()
+        .expect("stalled snapshot sync should time out");
+
+        assert!(matches!(error, SyncClientError::Timeout));
+        server.abort();
+    }
+
+    #[test]
+    fn empty_advertised_heads_do_not_complete_snapshot_sync() {
+        let mut doc = AutoCommit::new();
+        assert!(!has_heads(&mut doc, &[]));
+    }
+
+    #[tokio::test]
+    async fn watch_initial_sync_waits_for_quiescence() {
+        let (client_stream, server_stream) = tokio::io::duplex(16 * 1024);
+        let server = tokio::spawn(serve_initial_settings_snapshot(
+            server_stream,
+            SyncedSettings::default(),
+            Duration::from_millis(200),
+        ));
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(50),
+            SyncClient::init(client_stream, InitialSyncMode::Watch),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "watch sync should keep waiting for possible initial sync frames"
+        );
+        server.abort();
+    }
 
     #[test]
     fn test_get_all_from_empty_doc() {

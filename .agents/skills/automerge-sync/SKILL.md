@@ -178,6 +178,24 @@ Principle: **reset transport state, preserve document truth.**
 
 **nteract's `required_heads` is novel:** request-scoped causal gating where the daemon defers one request until preconditions are met while sync continues unblocked. Neither automerge-repo nor samod gates actions on causal preconditions this way.
 
+### Settings Sync
+
+Settings have two distinct client shapes:
+
+- **Long-lived watchers** use `SyncClient::connect` and keep the initial
+  quiescence loop because they are about to wait on the same stream for future
+  daemon fanout.
+- **One-shot command paths** use `SyncClient::connect_snapshot` /
+  `connect_snapshot_with_timeout`. They still perform as many Automerge rounds
+  as needed to satisfy the daemon's advertised heads, but they do not pay the
+  final blind 100ms receive timeout once the snapshot is causally present. The
+  snapshot exchange must remain bounded by a protocol timeout.
+
+Do not route connected-window settings UX through the JSON watcher. The daemon
+persists `settings.json` for durability and imports external edits through a
+debounced file watcher; ordinary window-to-window propagation should use the
+settings sync stream plus Tauri `settings:changed` events.
+
 ### Connection Lifecycle
 
 | System | On Disconnect | On Reconnect | Preserved |

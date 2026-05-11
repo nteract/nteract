@@ -2836,7 +2836,7 @@ async fn get_synced_settings() -> Result<runtimed::settings_doc::SyncedSettings,
 #[tauri::command]
 async fn set_synced_setting(key: String, value: serde_json::Value) -> Result<(), String> {
     let socket_path = runt_workspace::default_socket_path();
-    let mut client = runtimed_settings_sync::SyncClient::connect_with_timeout(
+    let mut client = runtimed_settings_sync::SyncClient::connect_snapshot_with_timeout(
         socket_path,
         std::time::Duration::from_millis(500),
     )
@@ -2862,7 +2862,7 @@ async fn set_synced_setting(key: String, value: serde_json::Value) -> Result<(),
 #[tauri::command]
 async fn rotate_install_id() -> Result<String, String> {
     let socket_path = runt_workspace::default_socket_path();
-    let mut client = runtimed_settings_sync::SyncClient::connect_with_timeout(
+    let mut client = runtimed_settings_sync::SyncClient::connect_snapshot_with_timeout(
         socket_path,
         std::time::Duration::from_millis(500),
     )
