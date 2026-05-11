@@ -9,8 +9,8 @@ use automerge::sync;
 use automerge::sync::SyncDoc;
 use automerge::AutoCommit;
 use automerge_recovery::{
-    catch_automerge_panic, recoverable_automerge_operation, AutomergeOperationError,
-    AutomergeRebuildError,
+    catch_automerge_panic, is_recoverable_sync_error, recoverable_automerge_operation,
+    AutomergeOperationError, AutomergeRebuildError,
 };
 use log::warn;
 use notebook_doc::presence::PresenceState;
@@ -262,10 +262,6 @@ struct SharedDocReceiveRecoveryContext<'a> {
     state: &'a mut SharedDocState,
     next_message: Option<sync::Message>,
     retry_message: sync::Message,
-}
-
-fn is_recoverable_sync_error(source: &automerge::AutomergeError) -> bool {
-    matches!(source, automerge::AutomergeError::PatchLogMismatch)
 }
 
 #[cfg(test)]

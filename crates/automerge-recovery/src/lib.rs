@@ -154,6 +154,12 @@ pub fn catch_automerge_result<T, E>(
     AutomergeAttempt::from_caught_result(catch_automerge_panic(label, f))
 }
 
+/// Returns true when a sync-path Automerge error is safe to contain by
+/// rebuilding the local document and resetting the peer's `sync::State`.
+pub fn is_recoverable_sync_error(source: &automerge::AutomergeError) -> bool {
+    matches!(source, automerge::AutomergeError::PatchLogMismatch)
+}
+
 /// Run an Automerge operation and, when it panics or returns a caller-marked
 /// recoverable error, rebuild caller-owned state and retry once.
 ///
@@ -310,7 +316,7 @@ mod tests {
                     Ok("retried")
                 }
             },
-            |source| matches!(source, automerge::AutomergeError::PatchLogMismatch),
+            is_recoverable_sync_error,
             |_| Ok(()),
         );
         let value = match result {
@@ -320,6 +326,34 @@ mod tests {
 
         assert_eq!(value, "retried");
         assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn only_patch_log_mismatch_is_recoverable_sync_error() {
+        assert!(is_recoverable_sync_error(
+            &automerge::AutomergeError::PatchLogMismatch
+        ));
+
+        let actor = ActorId::from(b"policy-actor" as &[u8]);
+        let sources = [
+            automerge::AutomergeError::DuplicateSeqNumber(1, actor.clone()),
+            automerge::AutomergeError::DuplicateActorId(actor),
+            automerge::AutomergeError::Fail,
+            automerge::AutomergeError::InvalidActorId("not-hex".into()),
+            automerge::AutomergeError::InvalidActorIndex(99),
+            automerge::AutomergeError::InvalidObjId("1@missing".into()),
+            automerge::AutomergeError::InvalidObjIdFormat("bad".into()),
+            automerge::AutomergeError::InvalidOp(ObjType::Map),
+            automerge::AutomergeError::InvalidSeq(7),
+            automerge::AutomergeError::MissingDeps,
+        ];
+
+        for source in sources {
+            assert!(
+                !is_recoverable_sync_error(&source),
+                "{source} must not trigger save/load sync recovery"
+            );
+        }
     }
 
     #[test]

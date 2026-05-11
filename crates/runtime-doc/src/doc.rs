@@ -82,8 +82,9 @@ use automerge::{
     ObjType, ReadDoc, ScalarValue, Value, ROOT,
 };
 use automerge_recovery::{
-    catch_automerge_panic, catch_automerge_result, recoverable_automerge_operation,
-    AutomergeAttempt, AutomergeOperationError, AutomergeRebuildError,
+    catch_automerge_panic, catch_automerge_result, is_recoverable_sync_error,
+    recoverable_automerge_operation, AutomergeAttempt, AutomergeOperationError,
+    AutomergeRebuildError,
 };
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -3022,10 +3023,6 @@ impl RuntimeStateDoc {
             },
         )
     }
-}
-
-fn is_recoverable_sync_error(source: &AutomergeError) -> bool {
-    matches!(source, AutomergeError::PatchLogMismatch)
 }
 
 struct RuntimeSyncRecoveryContext<'a> {

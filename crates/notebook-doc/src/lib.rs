@@ -89,8 +89,9 @@ use automerge::transaction::CommitOptions;
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, AutomergeError, LoadOptions, ObjId, ObjType, ReadDoc};
 use automerge_recovery::{
-    catch_automerge_panic, catch_automerge_result, recoverable_automerge_operation,
-    AutomergeAttempt, AutomergeOperationError, AutomergeRebuildError,
+    catch_automerge_panic, catch_automerge_result, is_recoverable_sync_error,
+    recoverable_automerge_operation, AutomergeAttempt, AutomergeOperationError,
+    AutomergeRebuildError,
 };
 
 /// Re-export so downstream crates (runtimed-wasm) can set text encoding
@@ -2500,10 +2501,6 @@ impl NotebookDoc {
             attachments: HashMap::new(),
         })
     }
-}
-
-fn is_recoverable_sync_error(source: &automerge::AutomergeError) -> bool {
-    matches!(source, automerge::AutomergeError::PatchLogMismatch)
 }
 
 struct SyncRecoveryContext<'a> {
