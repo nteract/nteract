@@ -1562,6 +1562,7 @@ pub(crate) async fn handle(
             runtime_agent_id.clone(),
             room.blob_store.root().to_path_buf(),
             socket_path,
+            daemon.config.runtime_agent_exe.clone(),
         )
         .await
         {
