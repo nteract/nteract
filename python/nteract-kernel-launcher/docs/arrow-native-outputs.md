@@ -548,6 +548,32 @@ Frontend responsibilities:
 Each phase below should land as an individual commit in this PR so the work can
 be reviewed and tested incrementally.
 
+## Implementation Progress
+
+Keep this section current as the PR evolves. It is the durable working memory
+for the staged implementation.
+
+- Done: `6166a6a8 feat(outputs): emit dataframe arrow streams`
+  - pandas, polars, pyarrow tables, record batches, and PyCapsule-compatible
+    dataframe objects now emit `application/vnd.apache.arrow.stream` through the
+    launcher.
+  - `serialize_dataframe` prefers `__arrow_c_stream__()` and falls back to
+    pandas/polars-specific Arrow IPC writers for older library versions.
+  - Tests cover pandas IPC output, pandas index metadata, polars IPC output, and
+    a protocol-only PyCapsule stream object.
+- Done: `f039cd2b docs(outputs): clarify arrow stream chunking`
+  - researched current PyCapsule producers/consumers and documented the
+    `RecordBatchReader` chunking model.
+  - chunking must happen at record-batch boundaries by writing self-contained
+    IPC mini-streams; do not split already-serialized IPC bytes.
+- Done: `feat(outputs): emit arrow stream manifest sidecars`
+  - add `application/vnd.nteract.arrow-stream-manifest+json` as an emitted
+    sidecar while keeping direct Arrow IPC selected for rendering.
+  - this commit should not change the UI path yet; Sift manifest routing comes
+    in a later Phase 2 commit.
+- Next: run the repo-local `pr-reviewer` for this commit, then add manifest
+  routing/rendering only after accepted findings are resolved or deferred here.
+
 ### Phase 1: Canonical Arrow For DataFrames
 
 Goal: all new dataframe display outputs use Arrow IPC stream by default.

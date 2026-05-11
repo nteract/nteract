@@ -43,7 +43,13 @@ from traitlets import ObjectName, Unicode
 
 from nteract_kernel_launcher import _buffer_hook, _traceback
 from nteract_kernel_launcher._buffer_hook import pending_buffers
-from nteract_kernel_launcher._format import serialize_arrow_table, serialize_dataframe
+from nteract_kernel_launcher._format import (
+    ARROW_STREAM_MANIFEST_MIME,
+    ARROW_STREAM_MIME,
+    build_arrow_stream_manifest,
+    serialize_arrow_table,
+    serialize_dataframe,
+)
 from nteract_kernel_launcher._refs import BLOB_REF_MIME, BlobRef, build_ref_bundle
 from nteract_kernel_launcher._summary import summarize_dataframe, summarize_dataset
 
@@ -275,6 +281,17 @@ def _emit_table_bytes(
     ref_bundle["buffer_index"] = 0
 
     bundle: dict[str, Any] = {BLOB_REF_MIME: ref_bundle}
+    if content_type == ARROW_STREAM_MIME:
+        try:
+            bundle[ARROW_STREAM_MANIFEST_MIME] = build_arrow_stream_manifest(
+                data,
+                content_hash=h,
+                content_size=len(data),
+                row_count=included_rows,
+                summary=summary_hints,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("arrow manifest build failed: %s", exc)
     try:
         bundle["text/llm+plain"] = summary_fn(included_rows, sampled)
     except Exception as exc:  # noqa: BLE001

@@ -337,6 +337,7 @@ def test_emit_dataframe_stashes_bytes_and_returns_bundle():
     pytest.importorskip("pyarrow")
 
     from nteract_kernel_launcher import _bootstrap, _buffer_hook
+    from nteract_kernel_launcher._format import ARROW_STREAM_MANIFEST_MIME
     from nteract_kernel_launcher._refs import BLOB_REF_MIME
 
     _buffer_hook.pending_buffers().clear()
@@ -349,6 +350,8 @@ def test_emit_dataframe_stashes_bytes_and_returns_bundle():
     h = bundle[BLOB_REF_MIME]["hash"]
     assert h in _buffer_hook.pending_buffers()
     assert isinstance(_buffer_hook.pending_buffers()[h], bytes)
+    assert bundle[ARROW_STREAM_MANIFEST_MIME]["chunks"][0]["hash"] == h
+    assert bundle[ARROW_STREAM_MANIFEST_MIME]["summary"]["included_rows"] == 3
 
 
 # ─── pyarrow.Table path — preserves schema KV metadata ───────────────────
@@ -391,6 +394,7 @@ def test_emit_pyarrow_table_preserves_huggingface_kv_metadata():
     pa = pytest.importorskip("pyarrow")
 
     from nteract_kernel_launcher import _bootstrap, _buffer_hook
+    from nteract_kernel_launcher._format import ARROW_STREAM_MANIFEST_MIME
     from nteract_kernel_launcher._refs import BLOB_REF_MIME
 
     _buffer_hook.pending_buffers().clear()
@@ -404,6 +408,7 @@ def test_emit_pyarrow_table_preserves_huggingface_kv_metadata():
 
     h = bundle[BLOB_REF_MIME]["hash"]
     assert bundle[BLOB_REF_MIME]["content_type"] == "application/vnd.apache.arrow.stream"
+    assert bundle[ARROW_STREAM_MANIFEST_MIME]["schema"]["metadata"]["huggingface"] is True
     data = _buffer_hook.pending_buffers()[h]
     md = pa.ipc.open_stream(io.BytesIO(data)).read_all().schema.metadata or {}
     assert b"huggingface" in md, f"missing huggingface KV; got keys: {[k.decode() for k in md]}"

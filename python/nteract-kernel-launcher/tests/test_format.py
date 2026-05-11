@@ -119,3 +119,42 @@ def test_serialize_dataframe_accepts_arrow_pycapsule_stream_protocol():
     assert included_rows == 10
     assert table.column_names == ["a"]
     assert table.num_rows == 10
+
+
+def test_build_arrow_stream_manifest_describes_one_chunk():
+    pa = pytest.importorskip("pyarrow")
+    from nteract_kernel_launcher._format import (
+        ARROW_STREAM_MANIFEST_MIME,
+        ARROW_STREAM_MIME,
+        build_arrow_stream_manifest,
+    )
+
+    table = pa.table({"a": [1, 2, 3]})
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, table.schema) as writer:
+        writer.write_table(table)
+    data = sink.getvalue().to_pybytes()
+
+    manifest = build_arrow_stream_manifest(
+        data,
+        content_hash="abc123",
+        content_size=len(data),
+        row_count=3,
+        summary={"total_rows": 3, "included_rows": 3},
+    )
+
+    assert ARROW_STREAM_MANIFEST_MIME == "application/vnd.nteract.arrow-stream-manifest+json"
+    assert manifest["content_type"] == ARROW_STREAM_MIME
+    assert manifest["complete"] is True
+    assert manifest["schema"]["fields"] == 1
+    assert manifest["schema"]["content_type"] == "application/vnd.apache.arrow.schema"
+    assert manifest["chunks"] == [
+        {
+            "index": 0,
+            "hash": "abc123",
+            "size": len(data),
+            "row_count": 3,
+            "record_batch_count": 1,
+            "encoding": "arrow-ipc-stream",
+        }
+    ]

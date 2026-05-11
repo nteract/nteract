@@ -10,12 +10,14 @@ state in the ``text/llm+plain`` summary and the ref-MIME ``summary`` hints.
 
 from __future__ import annotations
 
+import hashlib
 import io
 from collections.abc import Callable
 from typing import Any
 
 PARQUET_MIME = "application/vnd.apache.parquet"
 ARROW_STREAM_MIME = "application/vnd.apache.arrow.stream"
+ARROW_STREAM_MANIFEST_MIME = "application/vnd.nteract.arrow-stream-manifest+json"
 
 
 def _detect_flavor(df: Any) -> str:
@@ -107,6 +109,58 @@ def _serialize_arrow_stream_table(table: Any, rows: int | None = None) -> bytes:
     if rows is not None:
         table = table.slice(0, rows)
     return _serialize_arrow_stream_exportable(table)
+
+
+def build_arrow_stream_manifest(
+    data: bytes,
+    *,
+    content_hash: str,
+    content_size: int,
+    row_count: int,
+    record_batch_count: int | None = None,
+    summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a one-chunk Arrow stream manifest for ``data``.
+
+    Phase 2 keeps the direct Arrow IPC stream MIME in the bundle for existing
+    renderers. The manifest is a structured sidecar describing that same blob
+    so runtime/frontends can learn the durable shape before progressive chunks
+    become the selected render path.
+    """
+    import pyarrow as pa
+
+    reader = pa.ipc.open_stream(pa.BufferReader(data))
+    schema = reader.schema
+    schema_bytes = schema.serialize().to_pybytes()
+    if record_batch_count is None:
+        record_batch_count = sum(1 for _ in reader)
+    metadata = schema.metadata or {}
+
+    return {
+        "version": 1,
+        "content_type": ARROW_STREAM_MIME,
+        "schema": {
+            "hash": hashlib.sha256(schema_bytes).hexdigest(),
+            "content_type": "application/vnd.apache.arrow.schema",
+            "fields": len(schema),
+            "metadata": {
+                "pandas": b"pandas" in metadata,
+                "huggingface": b"huggingface" in metadata,
+            },
+        },
+        "chunks": [
+            {
+                "index": 0,
+                "hash": content_hash,
+                "size": content_size,
+                "row_count": row_count,
+                "record_batch_count": record_batch_count,
+                "encoding": "arrow-ipc-stream",
+            }
+        ],
+        "complete": True,
+        "summary": summary or {},
+    }
 
 
 def _downsample_loop(
