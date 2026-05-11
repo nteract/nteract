@@ -1,4 +1,4 @@
-from pr_reviewer.cli import build_doctor_parser, build_parser, config_from_args
+from pr_reviewer.cli import INFRA_UNCERTAIN, build_doctor_parser, build_parser, config_from_args
 
 
 def test_review_parser_accepts_pr_url_without_subcommand() -> None:
@@ -27,3 +27,7 @@ def test_config_from_args_preserves_explicit_zero_turns() -> None:
     args = build_parser().parse_args(["2508", "--max-turns", "0"])
 
     assert config_from_args(args).max_turns == 0
+
+
+def test_infra_uncertain_exit_code_is_distinct_from_infra_error() -> None:
+    assert INFRA_UNCERTAIN == 30

@@ -14,6 +14,7 @@ from pr_reviewer.workspace import prepare_review_workspace, remove_review_worksp
 CLEAR = 0
 FINDINGS = 20
 NEEDS_HUMAN = 25
+INFRA_UNCERTAIN = 30
 INFRA_ERROR = 2
 
 
@@ -94,6 +95,7 @@ def run_review_command(args: argparse.Namespace) -> int:
         )
     )
 
+    cleanup_after_success = False
     try:
         report = asyncio.run(
             run_review(
@@ -112,8 +114,9 @@ def run_review_command(args: argparse.Namespace) -> int:
                 "max_turns": max_turns,
             },
         )
+        cleanup_after_success = True
     finally:
-        if args.cleanup:
+        if args.cleanup and cleanup_after_success:
             remove_review_workspace(workspace.path, repo_root=repo_root)
 
     print(f"review written: {output_path}")
@@ -123,6 +126,8 @@ def run_review_command(args: argparse.Namespace) -> int:
         return FINDINGS
     if report.verdict == "needs_human":
         return NEEDS_HUMAN
+    if report.verdict == "infra_uncertain":
+        return INFRA_UNCERTAIN
     return INFRA_ERROR
 
 

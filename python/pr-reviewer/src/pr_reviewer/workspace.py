@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import shutil
-import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from pr_reviewer import git
@@ -20,7 +20,7 @@ class ReviewWorkspace:
 
 
 def default_workspace_dir(repo_root: Path, pr_number: int) -> Path:
-    suffix = time.strftime("%Y%m%d-%H%M%S")
+    suffix = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     return repo_root / ".context" / "pr-review-workspaces" / f"pr-{pr_number}-{suffix}"
 
 

@@ -49,6 +49,15 @@ def test_prepare_review_workspace_builds_isolated_worktree(tmp_path: Path) -> No
     ) in calls
 
 
+def test_default_workspace_dir_uses_subsecond_suffix(tmp_path: Path) -> None:
+    from pr_reviewer.workspace import default_workspace_dir
+
+    first = default_workspace_dir(tmp_path, 12)
+    second = default_workspace_dir(tmp_path, 12)
+
+    assert first != second
+
+
 def test_prepare_review_workspace_removes_worktree_when_diff_collection_fails(
     tmp_path: Path,
 ) -> None:
