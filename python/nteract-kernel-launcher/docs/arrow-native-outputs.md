@@ -591,9 +591,15 @@ for the staged implementation.
     complete stream exceeds `max_bytes`, the formatter rejects rich output for
     now and relies on summary fallback. Progressive chunking is the intended
     rich path for large single-pass sources.
-- Next: rerun the repo-local `pr-reviewer` after the third review-fix commit,
-  then add manifest routing/rendering only after accepted findings are resolved
-  or deferred here.
+- Review rerun: `pr-reviewer` reported `verdict: clear` for `68750098`.
+- Done: `feat(outputs): render arrow stream manifests`
+  - notebook and MCP MIME priority now prefer
+    `application/vnd.nteract.arrow-stream-manifest+json` over the direct Arrow
+    stream sidecar.
+  - manifest resolution attaches blob URLs to `chunks[].hash`, and the Sift
+    renderer loads the first complete chunk through its existing Arrow IPC path.
+- Next: run repo-local `pr-reviewer` for the manifest rendering commit and
+  resolve or record all findings before starting progressive chunk append work.
 
 ### Phase 1: Canonical Arrow For DataFrames
 

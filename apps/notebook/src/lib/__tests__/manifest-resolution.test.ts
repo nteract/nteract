@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
+  ARROW_STREAM_MANIFEST_MIME,
   type ContentRef,
   isOutputManifest,
   type OutputManifest,
@@ -307,6 +308,37 @@ describe("resolveManifestSync", () => {
       expect(output.data["text/plain"]).toBe("{'key': 'value'}");
     }
   });
+
+  it("adds blob URLs to Arrow stream manifest chunks in sync resolution", () => {
+    const manifest: OutputManifest = {
+      output_type: "display_data",
+      data: {
+        [ARROW_STREAM_MANIFEST_MIME]: {
+          inline: JSON.stringify({
+            version: 1,
+            content_type: "application/vnd.apache.arrow.stream",
+            chunks: [{ index: 0, hash: "arrowhash", size: 128, row_count: 3 }],
+            complete: true,
+          }),
+        },
+        "application/vnd.apache.arrow.stream": {
+          url: `http://127.0.0.1:${blobPort}/blob/arrowhash`,
+        },
+      },
+    };
+    const output = resolveManifestSync(manifest, blobPort);
+    expect(output).not.toBeNull();
+    if (output && output.output_type === "display_data") {
+      expect(output.data[ARROW_STREAM_MANIFEST_MIME]).toMatchObject({
+        chunks: [
+          {
+            hash: "arrowhash",
+            url: `http://127.0.0.1:${blobPort}/blob/arrowhash`,
+          },
+        ],
+      });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -423,6 +455,29 @@ describe("resolveDataBundle", () => {
 
     const result = await resolveDataBundle(data, blobPort);
     expect(result["application/vnd.vegalite.v5+json"]).toEqual(vegaSpec);
+  });
+
+  it("adds blob URLs to Arrow stream manifest chunks", async () => {
+    const data: Record<string, ContentRef> = {
+      [ARROW_STREAM_MANIFEST_MIME]: {
+        inline: JSON.stringify({
+          version: 1,
+          content_type: "application/vnd.apache.arrow.stream",
+          chunks: [{ index: 0, hash: "chunkhash", size: 256, row_count: 4 }],
+          complete: true,
+        }),
+      },
+    };
+
+    const result = await resolveDataBundle(data, blobPort);
+    expect(result[ARROW_STREAM_MANIFEST_MIME]).toMatchObject({
+      chunks: [
+        {
+          hash: "chunkhash",
+          url: `http://127.0.0.1:${blobPort}/blob/chunkhash`,
+        },
+      ],
+    });
   });
 
   it("falls back to raw string for invalid JSON in json MIME type", async () => {

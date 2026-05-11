@@ -15,6 +15,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 declare const __SIFT_WASM_CACHE_KEY__: string | undefined;
 
+const ARROW_STREAM_MANIFEST_MIME = "application/vnd.nteract.arrow-stream-manifest+json";
+
 // --- Types ---
 
 interface RendererProps {
@@ -22,6 +24,14 @@ interface RendererProps {
   metadata?: Record<string, unknown>;
   mimeType: string;
   interactionActive?: boolean;
+}
+
+interface ArrowStreamManifestChunk {
+  url?: unknown;
+}
+
+interface ArrowStreamManifest {
+  chunks?: unknown;
 }
 
 // --- WASM configuration ---
@@ -87,8 +97,32 @@ function fitHeightForRowCount(rowCount: number): number {
 
 // --- SiftRenderer component ---
 
-function SiftRenderer({ data, interactionActive = false }: RendererProps) {
-  const url = String(data);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function tableUrlFromManifest(data: unknown): string | undefined {
+  if (!isRecord(data)) return undefined;
+  const manifest = data as ArrowStreamManifest;
+  if (!Array.isArray(manifest.chunks)) return undefined;
+  const [firstChunk] = manifest.chunks as ArrowStreamManifestChunk[];
+  return typeof firstChunk?.url === "string" ? firstChunk.url : undefined;
+}
+
+function tableUrlForData(data: unknown, mimeType: string): string | undefined {
+  if (mimeType === ARROW_STREAM_MANIFEST_MIME) {
+    return tableUrlFromManifest(data);
+  }
+  return typeof data === "string" ? data : String(data);
+}
+
+function SiftRenderer({ data, mimeType, interactionActive = false }: RendererProps) {
+  const url = tableUrlForData(data, mimeType);
+  if (!url) {
+    console.warn("[sift-renderer] missing table URL", { mimeType, data });
+    return <pre style={{ whiteSpace: "pre-wrap" }}>Unable to load Arrow stream manifest</pre>;
+  }
+  console.debug("[sift-renderer] render", { mimeType, url: url.slice(0, 120) });
   configureWasm(url);
 
   // Default to the cap so the table is visible while sift's WASM loads
@@ -134,7 +168,11 @@ export function install(ctx: {
   register: (mimeTypes: string[], component: React.ComponentType<RendererProps>) => void;
 }) {
   ctx.register(
-    ["application/vnd.apache.parquet", "application/vnd.apache.arrow.stream"],
+    [
+      "application/vnd.apache.parquet",
+      "application/vnd.apache.arrow.stream",
+      ARROW_STREAM_MANIFEST_MIME,
+    ],
     SiftRenderer,
   );
 }

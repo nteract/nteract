@@ -28,6 +28,7 @@ const MIME_TO_PLUGIN: Record<string, PluginInfo> = {
   "application/geo+json": { name: "leaflet", hasCss: true },
   "application/vnd.apache.parquet": { name: "sift", hasCss: true },
   "application/vnd.apache.arrow.stream": { name: "sift", hasCss: true },
+  "application/vnd.nteract.arrow-stream-manifest+json": { name: "sift", hasCss: true },
 };
 
 const VEGA_PLUGIN: PluginInfo = { name: "vega", hasCss: false };

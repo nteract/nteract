@@ -1,6 +1,9 @@
 import type { HostBlobResolver } from "@nteract/notebook-host";
 import type { JupyterOutput } from "../types";
 
+export const ARROW_STREAM_MANIFEST_MIME =
+  "application/vnd.nteract.arrow-stream-manifest+json";
+
 export type BlobResolverInput = HostBlobResolver | number;
 
 function normalizeBlobResolver(input: BlobResolverInput): HostBlobResolver {
@@ -221,7 +224,11 @@ export async function resolveDataBundle(
     const content = contents[i];
     if (mimeType.includes("json")) {
       try {
-        resolved[mimeType] = JSON.parse(content);
+        const parsed = JSON.parse(content);
+        resolved[mimeType] =
+          mimeType === ARROW_STREAM_MANIFEST_MIME
+            ? attachArrowManifestChunkUrls(parsed, blobResolver)
+            : parsed;
       } catch {
         resolved[mimeType] = content;
       }
@@ -246,7 +253,11 @@ function resolveDataBundleSync(
     if (content === null) return null;
     if (mimeType.includes("json")) {
       try {
-        resolved[mimeType] = JSON.parse(content);
+        const parsed = JSON.parse(content);
+        resolved[mimeType] =
+          mimeType === ARROW_STREAM_MANIFEST_MIME
+            ? attachArrowManifestChunkUrls(parsed, blobResolver)
+            : parsed;
       } catch {
         resolved[mimeType] = content;
       }
@@ -255,6 +266,32 @@ function resolveDataBundleSync(
     }
   }
   return resolved;
+}
+
+function attachArrowManifestChunkUrls(
+  value: unknown,
+  blobResolverInput: BlobResolverInput,
+): unknown {
+  if (typeof value !== "object" || value === null) return value;
+  const manifest = value as Record<string, unknown>;
+  if (!Array.isArray(manifest.chunks)) return value;
+
+  const blobResolver = normalizeBlobResolver(blobResolverInput);
+  let changed = false;
+  const chunks = manifest.chunks.map((chunk) => {
+    if (typeof chunk !== "object" || chunk === null) return chunk;
+    const chunkRecord = chunk as Record<string, unknown>;
+    if (typeof chunkRecord.url === "string") return chunk;
+    if (typeof chunkRecord.hash !== "string") return chunk;
+    changed = true;
+    return {
+      ...chunkRecord,
+      url: blobResolver.url({ blob: chunkRecord.hash }),
+    };
+  });
+
+  if (!changed) return value;
+  return { ...manifest, chunks };
 }
 
 /**
