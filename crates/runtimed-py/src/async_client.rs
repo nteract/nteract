@@ -148,18 +148,10 @@ impl AsyncClient {
         let socket_path = self.socket_path.clone();
         let execution_id = execution_id.to_string();
         future_into_py(py, async move {
-            let info = runtimed::singleton::query_daemon_info(socket_path.clone()).await;
-            let execution_store_dir = info
-                .as_ref()
-                .and_then(|info| info.execution_store_dir.as_ref())
-                .map(PathBuf::from)
-                .unwrap_or_else(runtimed::default_execution_store_dir);
-            let store = runtimed::execution_store::ExecutionStore::new(execution_store_dir);
-            let record = store.read_record(&execution_id).await.ok_or_else(|| {
-                to_py_err(format!(
-                    "Execution not found in durable store: {execution_id}"
-                ))
-            })?;
+            let record = runtimed::client::PoolClient::new(socket_path.clone())
+                .get_execution_record(&execution_id)
+                .await
+                .map_err(to_py_err)?;
 
             let (blob_base_url, blob_store_path) =
                 crate::daemon_paths::get_blob_paths_async(&socket_path).await;

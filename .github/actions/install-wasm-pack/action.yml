@@ -1,0 +1,54 @@
+name: Install wasm-pack
+description: Install wasm-pack from the official rustwasm release artifacts.
+
+inputs:
+  version:
+    description: wasm-pack version to install.
+    required: false
+    default: "0.14.0"
+
+runs:
+  using: composite
+  steps:
+    - name: Download wasm-pack
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        version="${{ inputs.version }}"
+        case "$RUNNER_OS" in
+          Linux) os="unknown-linux-musl" ;;
+          macOS) os="apple-darwin" ;;
+          Windows) os="pc-windows-msvc" ;;
+          *) echo "Unsupported runner OS: $RUNNER_OS" >&2; exit 1 ;;
+        esac
+
+        case "$RUNNER_ARCH" in
+          X64) arch="x86_64" ;;
+          ARM64) arch="aarch64" ;;
+          *) echo "Unsupported runner arch: $RUNNER_ARCH" >&2; exit 1 ;;
+        esac
+
+        asset="wasm-pack-v${version}-${arch}-${os}.tar.gz"
+        url="https://github.com/rustwasm/wasm-pack/releases/download/v${version}/${asset}"
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+
+        curl --fail --location --show-error --retry 5 --retry-delay 2 \
+          --output "$tmp/$asset" \
+          "$url"
+        tar -xzf "$tmp/$asset" -C "$tmp"
+
+        bin="$(find "$tmp" -type f \( -name wasm-pack -o -name wasm-pack.exe \) -print -quit)"
+        if [ -z "$bin" ]; then
+          echo "wasm-pack binary not found in $asset" >&2
+          exit 1
+        fi
+
+        install_dir="$HOME/.cargo/bin"
+        mkdir -p "$install_dir"
+        cp "$bin" "$install_dir/"
+        chmod +x "$install_dir/$(basename "$bin")"
+        echo "$install_dir" >> "$GITHUB_PATH"
+
+        "$install_dir/$(basename "$bin")" --version

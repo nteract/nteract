@@ -72,6 +72,9 @@ pub enum Request {
     /// fall back to `Ping` if they only need the version.
     GetDaemonInfo,
 
+    /// Read a terminal execution result by durable execution ID.
+    GetExecutionResult { execution_id: String },
+
     /// Get tokio runtime metrics (worker utilization, task counts, queue
     /// depths). Used by `runt daemon status --json` and diagnostic tools
     /// to measure whether the daemon's async runtime is spreading work
@@ -152,6 +155,11 @@ pub enum Response {
 
     /// Generic success acknowledgment.
     Ok,
+
+    /// Durable execution record found by execution ID.
+    ExecutionResult {
+        record: crate::execution_store::ExecutionRecord,
+    },
 
     /// An error occurred.
     Error { message: String },

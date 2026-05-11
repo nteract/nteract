@@ -1085,6 +1085,8 @@ pub struct Daemon {
     pool_ready_pixi: Notify,
     /// Content-addressed blob store.
     pub(crate) blob_store: Arc<BlobStore>,
+    /// Durable terminal execution-result records.
+    execution_store: runtimed_client::execution_store::ExecutionStore,
     /// Local package allowlist used to auto-approve familiar dependencies.
     pub(crate) trusted_packages: TrustedPackageStore,
     /// HTTP port for the blob server (set after startup).
@@ -1349,6 +1351,9 @@ impl Daemon {
         let pool_doc = Arc::new(RwLock::new(notebook_doc::pool_state::PoolDoc::new()));
 
         let blob_store = Arc::new(BlobStore::new(config.blob_store_dir.clone()));
+        let execution_store = runtimed_client::execution_store::ExecutionStore::new(
+            config.execution_store_dir.clone(),
+        );
         let trusted_packages = match TrustedPackageStore::open(
             config.trusted_packages_db_path.clone(),
         ) {
@@ -1383,6 +1388,7 @@ impl Daemon {
             pool_doc,
             pool_doc_changed,
             blob_store,
+            execution_store,
             trusted_packages,
             blob_port: Mutex::new(None),
             started_at: chrono::Utc::now(),
@@ -1437,6 +1443,65 @@ impl Daemon {
             ),
             worktree_path,
             workspace_description,
+        }
+    }
+
+    async fn build_execution_result(&self, execution_id: String) -> Response {
+        if let Some(record) = self.execution_store.read_record(&execution_id).await {
+            return Response::ExecutionResult { record };
+        }
+
+        let rooms = {
+            let rooms_guard = self.notebook_rooms.lock().await;
+            rooms_guard.values().cloned().collect::<Vec<_>>()
+        };
+
+        for room in rooms {
+            let Some(exec) = room
+                .state
+                .read(|state_doc| {
+                    state_doc
+                        .read_state()
+                        .executions
+                        .get(&execution_id)
+                        .cloned()
+                })
+                .unwrap_or_default()
+            else {
+                continue;
+            };
+            if !matches!(exec.status.as_str(), "done" | "error") {
+                continue;
+            }
+
+            let notebook_path = room
+                .file_binding
+                .path()
+                .await
+                .map(|path| path.to_string_lossy().to_string());
+            let context_id = crate::notebook_sync_server::notebook_execution_context_id(
+                &room,
+                notebook_path.as_deref(),
+            );
+            let record = runtimed_client::execution_store::ExecutionRecord::from_execution_state(
+                &execution_id,
+                "notebook",
+                context_id,
+                notebook_path,
+                &exec,
+            );
+
+            if let Err(e) = self.execution_store.write_record(record.clone()).await {
+                warn!(
+                    "[execution-store] Failed to persist live execution record {}: {}",
+                    execution_id, e
+                );
+            }
+            return Response::ExecutionResult { record };
+        }
+
+        Response::Error {
+            message: format!("Execution not found in durable store: {execution_id}"),
         }
     }
 
@@ -3383,6 +3448,10 @@ impl Daemon {
             },
 
             Request::GetDaemonInfo => self.build_daemon_info().await,
+
+            Request::GetExecutionResult { execution_id } => {
+                self.build_execution_result(execution_id).await
+            }
 
             Request::GetRuntimeMetrics => self.build_runtime_metrics(),
 
