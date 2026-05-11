@@ -48,10 +48,12 @@ runs:
       run: pnpm install
 
     - name: Install wasm-pack
+      # Build from crates.io rather than via a binary action so we don't
+      # break on transient release-asset 404s; the caller's Swatinem
+      # rust-cache covers ~/.cargo/bin between runs.
       if: inputs.skip-wasm != 'true'
-      uses: taiki-e/install-action@v2
-      with:
-        tool: wasm-pack@${{ inputs.wasm-pack-version }}
+      shell: bash
+      run: cargo install --locked --version ${{ inputs.wasm-pack-version }} wasm-pack
 
     # Apple's system clang can't target wasm32-unknown-unknown.
     # Prepend Homebrew LLVM to PATH so cc-rs finds a wasm-capable clang.

@@ -39,10 +39,10 @@ jobs:
 
       - name: Install wasm-pack
         # Pin to 0.14.0+ for `--profile <NAME>` support; see comment in
-        # `.github/workflows/build.yml`.
-        uses: taiki-e/install-action@v2
-        with:
-          tool: wasm-pack@0.14.0
+        # `.github/workflows/build.yml`. Build from crates.io rather than
+        # via a binary action so we don't break on transient release-asset
+        # 404s; Swatinem/rust-cache covers ~/.cargo/bin between runs.
+        run: cargo install --locked --version 0.14.0 wasm-pack
 
       - name: Build sift-wasm
         run: wasm-pack build crates/sift-wasm --target web --release
