@@ -604,8 +604,17 @@ for the staged implementation.
     stream chunks, reject schema mismatches, and mark the store complete.
   - this is only the WASM/store seam; React still uses the existing one-shot
     Arrow IPC load path until the next commit wires manifest chunk appends.
-- Next: run repo-local `pr-reviewer` for the chunk-store seam and resolve or
-  record findings before wiring Sift React to append manifest chunks.
+- Review rerun: `pr-reviewer` reported `verdict: clear` for `dac07571`.
+- Done: `feat(sift): append arrow manifest chunks`
+  - Sift React accepts a normalized `source` union, including Arrow stream
+    manifests, while keeping `data` and `url` as compatibility props.
+  - Manifest sources fetch complete chunk URLs in order, append them through the
+    WASM stream store, and mark the table complete when the manifest is
+    complete.
+  - the isolated renderer now passes manifest objects to Sift instead of
+    collapsing them back to a direct URL.
+- Next: run repo-local `pr-reviewer` for the React manifest append commit and
+  resolve or record findings before moving to producer-side progressive chunks.
 
 ### Phase 1: Canonical Arrow For DataFrames
 

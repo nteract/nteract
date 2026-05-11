@@ -9,7 +9,14 @@
  * parquet or Arrow IPC from blob URL → WASM decodes → table renders.
  */
 
-import { setWasmUrl, SiftFocusStatus, SiftTable, type TableEngineState } from "@nteract/sift";
+import {
+  setWasmUrl,
+  SiftFocusStatus,
+  SiftTable,
+  type ArrowStreamManifest,
+  type SiftSource,
+  type TableEngineState,
+} from "@nteract/sift";
 import "@nteract/sift/style.css";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -26,11 +33,12 @@ interface RendererProps {
   interactionActive?: boolean;
 }
 
-interface ArrowStreamManifestChunk {
+interface RendererArrowStreamManifestChunk {
   url?: unknown;
+  row_count?: unknown;
 }
 
-interface ArrowStreamManifest {
+interface RendererArrowStreamManifest {
   chunks?: unknown;
 }
 
@@ -103,10 +111,38 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function tableUrlFromManifest(data: unknown): string | undefined {
   if (!isRecord(data)) return undefined;
-  const manifest = data as ArrowStreamManifest;
+  const manifest = data as RendererArrowStreamManifest;
   if (!Array.isArray(manifest.chunks)) return undefined;
-  const [firstChunk] = manifest.chunks as ArrowStreamManifestChunk[];
+  const [firstChunk] = manifest.chunks as RendererArrowStreamManifestChunk[];
   return typeof firstChunk?.url === "string" ? firstChunk.url : undefined;
+}
+
+function tableManifestForData(data: unknown): ArrowStreamManifest | undefined {
+  if (!isRecord(data)) return undefined;
+  const manifest = data as RendererArrowStreamManifest;
+  if (!Array.isArray(manifest.chunks)) return undefined;
+  const chunks = [];
+  for (const chunk of manifest.chunks) {
+    if (!isRecord(chunk) || typeof chunk.url !== "string") return undefined;
+    chunks.push({
+      url: chunk.url,
+      row_count: typeof chunk.row_count === "number" ? chunk.row_count : undefined,
+    });
+  }
+  if (chunks.length === 0) return undefined;
+  return {
+    chunks,
+    complete: typeof data.complete === "boolean" ? data.complete : undefined,
+  };
+}
+
+function tableSourceForData(data: unknown, mimeType: string): SiftSource | undefined {
+  if (mimeType === ARROW_STREAM_MANIFEST_MIME) {
+    const manifest = tableManifestForData(data);
+    return manifest ? { kind: "arrow-stream-manifest", manifest } : undefined;
+  }
+  const url = typeof data === "string" ? data : String(data);
+  return { kind: "url", url };
 }
 
 function tableUrlForData(data: unknown, mimeType: string): string | undefined {
@@ -118,7 +154,8 @@ function tableUrlForData(data: unknown, mimeType: string): string | undefined {
 
 function SiftRenderer({ data, mimeType, interactionActive = false }: RendererProps) {
   const url = tableUrlForData(data, mimeType);
-  if (!url) {
+  const source = tableSourceForData(data, mimeType);
+  if (!url || !source) {
     console.warn("[sift-renderer] missing table URL", { mimeType, data });
     return <pre style={{ whiteSpace: "pre-wrap" }}>Unable to load Arrow stream manifest</pre>;
   }
@@ -152,7 +189,7 @@ function SiftRenderer({ data, mimeType, interactionActive = false }: RendererPro
   return (
     <div style={{ height: tableHeight, width: "100%" }}>
       <SiftTable
-        url={url}
+        source={source}
         onChange={handleChange}
         footerControl={
           <div className="sift-footer-control">{interactionActive && <SiftFocusStatus />}</div>

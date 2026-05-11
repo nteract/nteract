@@ -1,8 +1,42 @@
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { SiftFocusStatus, SiftScrollHandoffCue } from "./handoff";
 import { SiftTable } from "./react";
 import type { Column, TableData } from "./table";
+
+const predicateModule = vi.hoisted(() => ({
+  create_arrow_stream_store: vi.fn(() => 9),
+  append_arrow_stream_chunk: vi.fn(),
+  finish_arrow_stream_store: vi.fn(),
+  arrow_ipc_column_hints_with_row_count: vi.fn(() => []),
+  num_rows: vi.fn(() => 2),
+  num_cols: vi.fn(() => 2),
+  col_names: vi.fn(() => ["id", "name"]),
+  col_type: vi.fn((_handle: number, col: number) => (col === 0 ? "numeric" : "categorical")),
+  col_timezone: vi.fn(() => null),
+  store_histogram: vi.fn(() => []),
+  store_temporal_histogram: vi.fn(() => []),
+  store_value_counts: vi.fn(() => []),
+  store_bool_counts: vi.fn(() => [0, 0, 0]),
+  store_viewport_cells: vi.fn(() => ({
+    rows: [],
+    strings: [],
+    numeric_values: [],
+    nulls: [],
+  })),
+  is_null: vi.fn(() => false),
+  get_cell_string: vi.fn((_handle: number, row: number, col: number) =>
+    col === 0 ? String(row + 1) : `row ${row + 1}`,
+  ),
+  get_cell_f64: vi.fn((_handle: number, row: number) => row + 1),
+  free: vi.fn(),
+}));
+
+vi.mock("./predicate", () => ({
+  ensureModule: vi.fn(async () => predicateModule),
+  getModuleSync: () => predicateModule,
+  loadIpc: vi.fn(async () => 9),
+}));
 
 function makeColumns(): Column[] {
   return [
@@ -46,6 +80,7 @@ function makeTableData(rows: unknown[][]): TableData {
 
 describe("SiftTable", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     vi.useFakeTimers();
   });
 
@@ -149,6 +184,44 @@ describe("SiftTable", () => {
 
     const loading = container.querySelector(".sift-loading");
     expect(loading?.textContent).toContain("404");
+
+    vi.unstubAllGlobals();
+    vi.useFakeTimers();
+  });
+
+  it("loads Arrow stream manifest chunks through the appendable WASM store", async () => {
+    vi.useRealTimers();
+    const chunkBytes = new Uint8Array([1, 2, 3, 4]);
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve({
+        ok: true,
+        arrayBuffer: async () => chunkBytes.buffer,
+      }),
+    );
+
+    const { container } = render(
+      <SiftTable
+        source={{
+          kind: "arrow-stream-manifest",
+          manifest: {
+            chunks: [{ url: "http://127.0.0.1:9000/blob/chunk" }],
+            complete: true,
+          },
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(predicateModule.append_arrow_stream_chunk).toHaveBeenCalledTimes(1);
+      expect(predicateModule.finish_arrow_stream_store).toHaveBeenCalledWith(9);
+      expect(container.querySelector(".sift-table-container")).not.toBeNull();
+    });
+
+    expect(predicateModule.create_arrow_stream_store).toHaveBeenCalledTimes(1);
+    expect(predicateModule.append_arrow_stream_chunk.mock.calls[0][0]).toBe(9);
+    expect(Array.from(predicateModule.append_arrow_stream_chunk.mock.calls[0][1])).toEqual([
+      1, 2, 3, 4,
+    ]);
 
     vi.unstubAllGlobals();
     vi.useFakeTimers();
