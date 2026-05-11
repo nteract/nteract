@@ -623,9 +623,17 @@ for the staged implementation.
   - the existing dataframe/table display formatter still emits one complete
     chunk; the chunk writer is the Phase 4 producer seam before display-id
     updates are wired into the formatter path.
-- Next: wire a Jupyter-compatible `display_id` / `update_display_data` path
-  that can publish the first chunk and then manifest revisions without changing
-  the existing one-shot fallback.
+- Review rerun: `pr-reviewer` reported `verdict: clear` for `f8a02ed8`.
+- Done: `feat(outputs): add progressive arrow display helper`
+  - `nteract_kernel_launcher.display_arrow_stream(...)` uses the chunk writer
+    to publish an initial raw MIME bundle with a Jupyter `display_id`, then
+    emits full manifest revisions with `DisplayHandle.update(...)`.
+  - the helper is explicit; automatic dataframe reprs remain one-shot until the
+    formatter/displayhook boundary can own display ids without surprising bare
+    expression output.
+- Next: decide whether automatic large dataframe reprs should opt into the
+  helper by publishing their own display output, or stay one-shot while direct
+  daemon blob upload and save/load manifest externalization are completed.
 
 ### Phase 1: Canonical Arrow For DataFrames
 

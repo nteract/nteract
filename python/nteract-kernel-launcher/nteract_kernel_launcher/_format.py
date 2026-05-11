@@ -253,21 +253,40 @@ def build_arrow_stream_manifest(
     so runtime/frontends can learn the durable shape before progressive chunks
     become the selected render path.
     """
+    chunk = ArrowStreamChunk(
+        index=0,
+        data=data,
+        content_hash=content_hash,
+        size=content_size,
+        row_count=row_count,
+        record_batch_count=record_batch_count or 0,
+    )
+    manifest = build_arrow_stream_manifest_from_chunks(
+        [chunk],
+        complete=True,
+        summary=summary,
+    )
+    if record_batch_count is None:
+        manifest["chunks"][0].pop("record_batch_count", None)
+    return manifest
+
+
+def build_arrow_stream_manifest_from_chunks(
+    chunks: list[ArrowStreamChunk],
+    *,
+    complete: bool,
+    summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build an Arrow stream manifest for ordered IPC mini-stream chunks."""
     import pyarrow as pa
 
-    reader = pa.ipc.open_stream(pa.BufferReader(data))
+    if not chunks:
+        raise ValueError("at least one Arrow stream chunk is required")
+
+    reader = pa.ipc.open_stream(pa.BufferReader(chunks[0].data))
     schema = reader.schema
     schema_bytes = schema.serialize().to_pybytes()
     metadata = schema.metadata or {}
-    chunk: dict[str, Any] = {
-        "index": 0,
-        "hash": content_hash,
-        "size": content_size,
-        "row_count": row_count,
-        "encoding": "arrow-ipc-stream",
-    }
-    if record_batch_count is not None:
-        chunk["record_batch_count"] = record_batch_count
 
     return {
         "version": 1,
@@ -281,8 +300,8 @@ def build_arrow_stream_manifest(
                 "huggingface": b"huggingface" in metadata,
             },
         },
-        "chunks": [chunk],
-        "complete": True,
+        "chunks": [chunk.manifest_entry() for chunk in chunks],
+        "complete": complete,
         "summary": summary or {},
     }
 
