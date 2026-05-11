@@ -631,6 +631,7 @@ for the staged implementation.
   - the helper is explicit; automatic dataframe reprs remain one-shot until the
     formatter/displayhook boundary can own display ids without surprising bare
     expression output.
+- Review rerun: `pr-reviewer` reported `verdict: clear` for `1bb09116`.
 - Next: decide whether automatic large dataframe reprs should opt into the
   helper by publishing their own display output, or stay one-shot while direct
   daemon blob upload and save/load manifest externalization are completed.
