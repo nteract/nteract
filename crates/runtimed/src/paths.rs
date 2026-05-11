@@ -163,14 +163,22 @@ mod tests {
 
     #[test]
     fn normalize_save_target_appends_extension() {
-        let result = normalize_save_target("/tmp/foo").unwrap();
-        assert_eq!(result, PathBuf::from("/tmp/foo.ipynb"));
+        let path = std::env::temp_dir().join("foo");
+        let target = path.to_string_lossy();
+
+        let result = normalize_save_target(&target).unwrap();
+
+        assert_eq!(result, PathBuf::from(format!("{target}.ipynb")));
     }
 
     #[test]
     fn normalize_save_target_preserves_extension() {
-        let result = normalize_save_target("/tmp/foo.ipynb").unwrap();
-        assert_eq!(result, PathBuf::from("/tmp/foo.ipynb"));
+        let path = std::env::temp_dir().join("foo.ipynb");
+        let target = path.to_string_lossy();
+
+        let result = normalize_save_target(&target).unwrap();
+
+        assert_eq!(result, path);
     }
 
     #[test]
