@@ -37,7 +37,7 @@ class ReviewerConfig:
         return cls(
             model=model or os.environ.get("PR_REVIEWER_MODEL", DEFAULT_MODEL),
             aws_region=aws_region or os.environ.get("AWS_REGION", DEFAULT_AWS_REGION),
-            max_turns=max_turns or DEFAULT_REVIEW_MIN_TURNS,
+            max_turns=max_turns if max_turns is not None else DEFAULT_REVIEW_MIN_TURNS,
             output_path=output_path,
         )
 

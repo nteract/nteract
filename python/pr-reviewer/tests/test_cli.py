@@ -21,3 +21,9 @@ def test_config_from_args_respects_model_env(monkeypatch) -> None:
     args = build_parser().parse_args(["2508"])
 
     assert config_from_args(args).model == "env-model"
+
+
+def test_config_from_args_preserves_explicit_zero_turns() -> None:
+    args = build_parser().parse_args(["2508", "--max-turns", "0"])
+
+    assert config_from_args(args).max_turns == 0

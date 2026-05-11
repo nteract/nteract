@@ -85,9 +85,13 @@ def run_review_command(args: argparse.Namespace) -> int:
         base_ref=args.base,
         workspace_dir=args.workspace,
     )
-    max_turns = args.max_turns or estimate_review_turns(
-        diff_patch=workspace.diff_patch,
-        changed_files=workspace.reviewed_diff.changed_files,
+    max_turns = (
+        args.max_turns
+        if args.max_turns is not None
+        else estimate_review_turns(
+            diff_patch=workspace.diff_patch,
+            changed_files=workspace.reviewed_diff.changed_files,
+        )
     )
 
     try:

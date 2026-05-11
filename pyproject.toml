@@ -8,7 +8,7 @@ dependencies = [
     "gremlin ; sys_platform == 'darwin'",
     "dx",
     "nteract-kernel-launcher",
-    "pr-reviewer",
+    "pr-reviewer ; sys_platform == 'darwin'",
     "safari-timeline",
     "pandas",
     "polars",

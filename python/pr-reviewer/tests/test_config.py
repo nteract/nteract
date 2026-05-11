@@ -27,6 +27,12 @@ def test_config_from_env_prefers_explicit_values(monkeypatch) -> None:
     assert config.output_path == Path("out.json")
 
 
+def test_config_from_env_preserves_explicit_zero_turns() -> None:
+    config = ReviewerConfig.from_env(max_turns=0)
+
+    assert config.max_turns == 0
+
+
 def test_estimate_review_turns_scales_with_diff_size() -> None:
     small = estimate_review_turns(diff_patch="one\nline\n", changed_files=["a.py"])
     larger = estimate_review_turns(
