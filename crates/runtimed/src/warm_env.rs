@@ -11,6 +11,7 @@ use std::process::Stdio;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
+use crate::async_outcome::{await_result_with_timeout, TimedResult};
 use crate::EnvType;
 
 // -- IPC protocol --------------------------------------------------------
@@ -205,10 +206,10 @@ async fn run_uv_pip_install(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    match tokio::time::timeout(timeout, command.output()).await {
-        Ok(Ok(output)) => UvInstallAttempt::Completed(output),
-        Ok(Err(e)) => UvInstallAttempt::SpawnError(e),
-        Err(_) => UvInstallAttempt::Timeout,
+    match await_result_with_timeout(command.output(), timeout).await {
+        TimedResult::Completed(output) => UvInstallAttempt::Completed(output),
+        TimedResult::Failed(e) => UvInstallAttempt::SpawnError(e),
+        TimedResult::TimedOut => UvInstallAttempt::Timeout,
     }
 }
 
@@ -278,8 +279,7 @@ async fn create_uv(env_dir: &Path, packages: &[String]) {
 
     // Create venv
     progress("venv", "creating virtual environment");
-    let venv_result = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
+    let venv_result = await_result_with_timeout(
         tokio::process::Command::new(&uv_path)
             .arg("venv")
             .arg(env_dir)
@@ -288,12 +288,13 @@ async fn create_uv(env_dir: &Path, packages: &[String]) {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output(),
+        std::time::Duration::from_secs(60),
     )
     .await;
 
     match venv_result {
-        Ok(Ok(output)) if output.status.success() => {}
-        Ok(Ok(output)) => {
+        TimedResult::Completed(output) if output.status.success() => {}
+        TimedResult::Completed(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             emit_failure(
                 format!("Failed to create venv: {stderr}"),
@@ -302,11 +303,11 @@ async fn create_uv(env_dir: &Path, packages: &[String]) {
             );
             return;
         }
-        Ok(Err(e)) => {
+        TimedResult::Failed(e) => {
             emit_failure(format!("Failed to create venv: {e}"), "setup_failed", None);
             return;
         }
-        Err(_) => {
+        TimedResult::TimedOut => {
             emit_failure(
                 "Timeout creating venv after 60 seconds".into(),
                 "timeout",
@@ -373,21 +374,21 @@ async fn create_uv(env_dir: &Path, packages: &[String]) {
     let warmup_script =
         kernel_env::warmup::build_warmup_command(packages, false, site_packages.as_deref());
 
-    let warmup_result = tokio::time::timeout(
-        std::time::Duration::from_secs(180),
+    let warmup_result = await_result_with_timeout(
         tokio::process::Command::new(&python_path)
             .args(["-c", &warmup_script])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output(),
+        std::time::Duration::from_secs(180),
     )
     .await;
 
     match warmup_result {
-        Ok(Ok(output)) if output.status.success() => {
+        TimedResult::Completed(output) if output.status.success() => {
             tokio::fs::write(env_dir.join(".warmed"), "").await.ok();
         }
-        Ok(Ok(output)) => {
+        TimedResult::Completed(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             cleanup_and_fail(
                 env_dir,
@@ -401,7 +402,7 @@ async fn create_uv(env_dir: &Path, packages: &[String]) {
             .await;
             return;
         }
-        Ok(Err(e)) => {
+        TimedResult::Failed(e) => {
             cleanup_and_fail(
                 env_dir,
                 format!("UV warmup failed: {e}"),
@@ -411,7 +412,7 @@ async fn create_uv(env_dir: &Path, packages: &[String]) {
             .await;
             return;
         }
-        Err(_) => {
+        TimedResult::TimedOut => {
             cleanup_and_fail(env_dir, "UV warmup timed out".into(), "timeout", None).await;
             return;
         }
@@ -648,21 +649,21 @@ async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) 
     let warmup_script =
         kernel_env::warmup::build_warmup_command(packages, true, site_packages.as_deref());
 
-    let warmup_result = tokio::time::timeout(
-        std::time::Duration::from_secs(180),
+    let warmup_result = await_result_with_timeout(
         tokio::process::Command::new(&python_path)
             .args(["-c", &warmup_script])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output(),
+        std::time::Duration::from_secs(180),
     )
     .await;
 
     match warmup_result {
-        Ok(Ok(output)) if output.status.success() => {
+        TimedResult::Completed(output) if output.status.success() => {
             tokio::fs::write(env_dir.join(".warmed"), "").await.ok();
         }
-        Ok(Ok(output)) => {
+        TimedResult::Completed(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             cleanup_and_fail(
                 env_dir,
@@ -676,7 +677,7 @@ async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) 
             .await;
             return;
         }
-        Ok(Err(e)) => {
+        TimedResult::Failed(e) => {
             cleanup_and_fail(
                 env_dir,
                 format!("Conda warmup failed: {e}"),
@@ -686,7 +687,7 @@ async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) 
             .await;
             return;
         }
-        Err(_) => {
+        TimedResult::TimedOut => {
             cleanup_and_fail(env_dir, "Conda warmup timed out".into(), "timeout", None).await;
             return;
         }

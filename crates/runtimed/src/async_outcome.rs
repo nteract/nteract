@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
 use tokio::{sync::oneshot, task::JoinError};
 
@@ -22,6 +22,32 @@ pub(crate) async fn recv_oneshot_with_timeout<T>(
         Ok(Ok(value)) => TimedOneShot::Received(value),
         Ok(Err(_)) => TimedOneShot::SenderDropped,
         Err(_) => TimedOneShot::TimedOut,
+    }
+}
+
+/// Outcome of waiting for a fallible future with a timeout.
+///
+/// This flattens `timeout(duration, future_returning_result).await` from
+/// `Result<Result<T, E>, Elapsed>` into the three states callers actually
+/// care about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TimedResult<T, E> {
+    Completed(T),
+    Failed(E),
+    TimedOut,
+}
+
+pub(crate) async fn await_result_with_timeout<T, E, F>(
+    future: F,
+    timeout: Duration,
+) -> TimedResult<T, E>
+where
+    F: Future<Output = Result<T, E>>,
+{
+    match tokio::time::timeout(timeout, future).await {
+        Ok(Ok(value)) => TimedResult::Completed(value),
+        Ok(Err(error)) => TimedResult::Failed(error),
+        Err(_) => TimedResult::TimedOut,
     }
 }
 
@@ -74,6 +100,38 @@ mod tests {
         let outcome = recv_oneshot_with_timeout(rx, Duration::from_secs(5)).await;
 
         assert_eq!(outcome, TimedOneShot::TimedOut);
+    }
+
+    #[tokio::test]
+    async fn awaits_fallible_future_success() {
+        let outcome =
+            await_result_with_timeout(async { Ok::<_, &'static str>(7) }, Duration::from_secs(1))
+                .await;
+
+        assert_eq!(outcome, TimedResult::Completed(7));
+    }
+
+    #[tokio::test]
+    async fn awaits_fallible_future_error() {
+        let outcome =
+            await_result_with_timeout(async { Err::<(), _>("failed") }, Duration::from_secs(1))
+                .await;
+
+        assert_eq!(outcome, TimedResult::Failed("failed"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn awaits_fallible_future_timeout() {
+        let outcome = await_result_with_timeout(
+            async {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                Ok::<_, &'static str>(())
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+
+        assert_eq!(outcome, TimedResult::TimedOut);
     }
 
     #[test]
