@@ -29,6 +29,12 @@ The phases below are intended as targeted commits in this PR, not separate PRs.
   notebook output format.
   <https://docs.pola.rs/api/python/stable/reference/api/polars.DataFrame.write_ipc_stream.html>
   <https://docs.pola.rs/api/python/stable/reference/api/polars.read_ipc_stream.html>
+- The Arrow PyCapsule interface standardizes Python export methods such as
+  `__arrow_c_stream__()` and the `arrow_array_stream` capsule name. This gives
+  the launcher a producer-neutral path for pandas, polars, pyarrow, DuckDB,
+  cuDF, narwhals, and other Arrow-compatible DataFrames without depending on
+  producer-specific `_export_to_c` or PyArrow-only object types.
+  <https://arrow.apache.org/docs/format/CDataInterface/PyCapsuleInterface.html>
 - Jupyter-compatible incremental replacement is `display_id` plus
   `update_display_data`. It can carry the same MIME-bundle shape as
   `display_data`, so it is the compatibility bridge for progressive updates
@@ -127,7 +133,22 @@ streaming behavior harder to reason about.
 
 ### Python Serialization Policy
 
-pandas should convert through PyArrow and write Arrow IPC stream bytes:
+The primary producer contract should be the Arrow PyCapsule stream protocol:
+
+```python
+reader = pa.RecordBatchReader.from_stream(obj)  # consumes __arrow_c_stream__()
+with pa.ipc.new_stream(sink, reader.schema) as writer:
+    for batch in reader:
+        writer.write_batch(batch)
+```
+
+This matches the DataFrame binding model used by Jupyter Scatter: pandas,
+polars, and any DataFrame implementing the Arrow PyCapsule interface can be
+handled through the same stream import path. Producer-specific logic should be
+fallback or row-limiting glue, not the default serialization model.
+
+For older pandas versions that do not expose `__arrow_c_stream__`, convert
+through PyArrow and write Arrow IPC stream bytes:
 
 ```python
 table = pa.Table.from_pandas(df)  # keep pandas schema metadata
@@ -139,7 +160,8 @@ Do not use `preserve_index=False` for the canonical path. It removes index
 metadata that Arrow can preserve for us. Let the default preserve policy keep
 RangeIndex metadata-only and materialize non-range indexes as tracked columns.
 
-polars should write Arrow IPC stream bytes directly:
+For older polars versions that do not expose `__arrow_c_stream__`, write Arrow
+IPC stream bytes directly:
 
 ```python
 df.write_ipc_stream(buf)
@@ -150,8 +172,9 @@ the fallback should be text/HTML summary first, not silent metadata loss.
 Parquet fallback is acceptable only as an explicit compatibility fallback with a
 different `content_type`.
 
-narwhals should prefer a backend-native Arrow path before converting to pandas.
-Only fall back to pandas conversion if the backend lacks a stable Arrow export.
+narwhals should prefer its native object when the native object implements
+`__arrow_c_stream__`. Only fall back to pandas conversion if the backend lacks
+a stable Arrow export.
 
 ### Metadata Ownership
 
@@ -494,6 +517,9 @@ unless noted):
   `preserve_index=False`) plus `pa.ipc.new_stream` writing into a
   `pa.BufferOutputStream`.
 - `_serialize_polars` switches to `df.write_ipc_stream(buf)`.
+- `serialize_dataframe` first checks for `__arrow_c_stream__()` and imports via
+  `pa.RecordBatchReader.from_stream(obj)` / PyCapsule fallback. The pandas and
+  polars helpers remain compatibility fallbacks for older library versions.
 - `serialize_dataframe` returns `ARROW_STREAM_MIME` instead of `PARQUET_MIME`.
   Drop `PARQUET_MIME` from the dataframe return path; keep the constant for
   parsing old fixtures only.
@@ -503,9 +529,9 @@ unless noted):
 - Rename helpers from parquet-specific names to Arrow/table names where the
   behavior is now generic. A single `serialize_table` codepath shared by
   pandas/polars/pyarrow is fine.
-- For narwhals, dispatch on backend: prefer `nw.to_native().to_arrow()` (or
-  the backend's native Arrow export), fall back to pandas conversion only if
-  no Arrow export is available.
+- For narwhals, dispatch on backend: prefer the native object's
+  `__arrow_c_stream__()` protocol, fall back to pandas conversion only if no
+  Arrow export is available.
 - Hugging Face: keep the Arrow-table-backed path. `IterableDataset` and other
   streaming HF objects materialize a head sample then fall through to
   `text/llm+plain`; do not silently consume the stream.

@@ -160,7 +160,7 @@ def _unwrap_narwhals(nw_df: Any) -> tuple[Any, int] | tuple[None, int]:
 def _emit_dataframe(df: Any, *, total_rows: int) -> dict | None:
     """Serialize → stash bytes keyed by sha256 → return ref-mime bundle.
 
-    When parquet serialization fails (e.g. pyarrow missing), fall back to
+    When Arrow IPC serialization fails (e.g. pyarrow missing), fall back to
     a summary-only ``text/llm+plain`` bundle so agents still get column
     stats instead of a raw repr. IPython's default formatter chain merges
     pandas' ``text/html`` / ``text/plain`` on top for host-side fallback.
@@ -197,9 +197,8 @@ def _emit_arrow_table(
     """Serialize a ``pa.Table`` to Arrow IPC, preserving schema KV metadata.
 
     Distinct from :func:`_emit_dataframe` because the dataframe path runs
-    bytes through ``pa.Table.from_pandas`` / ``pl.write_parquet``, which drop
-    arbitrary schema KV metadata. The table path writes Arrow IPC directly, so
-    the ``huggingface`` key survives for Sift's rich-type detection.
+    bytes through the Arrow PyCapsule stream protocol or a ``pa.Table`` fallback,
+    so the ``huggingface`` key survives for Sift's rich-type detection.
 
     ``summary_fn`` lets callers (notably ``_dataset_mimebundle``) provide
     a richer per-domain summary (HF features) instead of the generic

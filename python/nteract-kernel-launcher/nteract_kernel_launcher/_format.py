@@ -1,10 +1,9 @@
 """DataFrame / Arrow serialization (best-available encoder).
 
-Pandas uses pyarrow. Polars uses its native parquet writer.
-``pyarrow.Table`` and ``pyarrow.RecordBatch`` emit Arrow IPC
-streams, which preserve schema KV metadata (the ``huggingface`` key Sift uses
-for rich-type detection is the load-bearing case). If the serialized payload
-would exceed ``max_bytes``, the serializer downsamples via ``head(n)`` /
+Arrow IPC stream is the canonical rich table payload. Producers that implement
+the Arrow PyCapsule stream protocol are imported through ``__arrow_c_stream__``;
+pandas and polars keep direct fallbacks for older versions. If the serialized
+payload would exceed ``max_bytes``, the serializer downsamples via ``head(n)`` /
 ``slice(0, n)`` with a halving loop and the caller advertises the partial-data
 state in the ``text/llm+plain`` summary and the ref-MIME ``summary`` hints.
 """
@@ -24,35 +23,90 @@ def _detect_flavor(df: Any) -> str:
     return mod if mod in ("pandas", "polars") else "unknown"
 
 
+def _row_count(obj: Any) -> int | None:
+    for attr in ("num_rows", "height"):
+        value = getattr(obj, attr, None)
+        if isinstance(value, int):
+            return value
+
+    shape = getattr(obj, "shape", None)
+    if isinstance(shape, tuple) and shape and isinstance(shape[0], int):
+        return shape[0]
+
+    try:
+        return len(obj)
+    except TypeError:
+        return None
+
+
+def _limit_rows(obj: Any, rows: int) -> Any:
+    head = getattr(obj, "head", None)
+    if callable(head):
+        return head(rows)
+
+    slice_ = getattr(obj, "slice", None)
+    if callable(slice_):
+        return slice_(0, rows)
+
+    limit = getattr(obj, "limit", None)
+    if callable(limit):
+        return limit(rows)
+
+    raise TypeError(f"{type(obj).__module__}.{type(obj).__name__} cannot be row-limited")
+
+
+def _record_batch_reader_from_stream(source: Any) -> Any:
+    import pyarrow as pa
+
+    from_stream = getattr(pa.RecordBatchReader, "from_stream", None)
+    if callable(from_stream):
+        return from_stream(source)
+
+    import_capsule = getattr(pa.RecordBatchReader, "_import_from_c_capsule", None)
+    if callable(import_capsule) and hasattr(source, "__arrow_c_stream__"):
+        return import_capsule(source.__arrow_c_stream__())
+
+    raise TypeError("pyarrow does not support Arrow PyCapsule stream import")
+
+
+def _serialize_record_batch_reader(reader: Any) -> bytes:
+    import pyarrow as pa
+
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, reader.schema) as writer:
+        for batch in reader:
+            writer.write_batch(batch)
+    return sink.getvalue().to_pybytes()
+
+
+def _serialize_arrow_stream_exportable(source: Any, rows: int | None = None) -> bytes:
+    if rows is not None:
+        source = _limit_rows(source, rows)
+    reader = _record_batch_reader_from_stream(source)
+    return _serialize_record_batch_reader(reader)
+
+
 def _serialize_pandas(df: Any, rows: int | None = None) -> bytes:
     import pyarrow as pa
-    import pyarrow.parquet as pq
 
     if rows is not None:
         df = df.head(rows)
-    table = pa.Table.from_pandas(df, preserve_index=False)
-    buf = io.BytesIO()
-    pq.write_table(table, buf, compression="snappy")
-    return buf.getvalue()
+    table = pa.Table.from_pandas(df)
+    return _serialize_arrow_stream_exportable(table)
 
 
 def _serialize_polars(df: Any, rows: int | None = None) -> bytes:
     if rows is not None:
         df = df.head(rows)
     buf = io.BytesIO()
-    df.write_parquet(buf, compression="snappy")
+    df.write_ipc_stream(buf)
     return buf.getvalue()
 
 
 def _serialize_arrow_stream_table(table: Any, rows: int | None = None) -> bytes:
-    import pyarrow as pa
-
     if rows is not None:
         table = table.slice(0, rows)
-    sink = pa.BufferOutputStream()
-    with pa.ipc.new_stream(sink, table.schema) as writer:
-        writer.write_table(table)
-    return sink.getvalue().to_pybytes()
+    return _serialize_arrow_stream_exportable(table)
 
 
 def _downsample_loop(
@@ -80,13 +134,16 @@ def _downsample_loop(
 
 
 def serialize_dataframe(df: Any, *, max_bytes: int) -> tuple[bytes, str, int]:
-    """Serialize ``df`` to parquet; downsample if it would exceed ``max_bytes``.
+    """Serialize ``df`` to Arrow IPC; downsample if it would exceed ``max_bytes``.
 
     Returns ``(bytes, content_type, included_rows)``. Raises ``ValueError`` for
     unsupported DataFrame types.
     """
     flavor = _detect_flavor(df)
-    if flavor == "pandas":
+    if hasattr(df, "__arrow_c_stream__"):
+        encoder = _serialize_arrow_stream_exportable
+        n = _row_count(df)
+    elif flavor == "pandas":
         encoder = _serialize_pandas
         n = len(df)
     elif flavor == "polars":
@@ -95,10 +152,13 @@ def serialize_dataframe(df: Any, *, max_bytes: int) -> tuple[bytes, str, int]:
     else:
         raise ValueError(f"unsupported DataFrame type: {type(df).__module__}.{type(df).__name__}")
 
+    if n is None:
+        raise ValueError(f"unsupported row count for: {type(df).__module__}.{type(df).__name__}")
+
     data, included_rows = _downsample_loop(
         lambda rows=None: encoder(df, rows=rows), n, max_bytes=max_bytes
     )
-    return data, PARQUET_MIME, included_rows
+    return data, ARROW_STREAM_MIME, included_rows
 
 
 def serialize_arrow_table(table: Any, *, max_bytes: int) -> tuple[bytes, str, int]:
