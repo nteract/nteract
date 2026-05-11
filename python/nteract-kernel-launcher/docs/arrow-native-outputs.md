@@ -248,6 +248,35 @@ consumers do not need to fetch chunk blobs. Manifest metadata is the source of
 truth for row counts and shape; `text/llm+plain` is human-readable text derived
 from those facts.
 
+Follow-up after PR #2712: Arrow stream manifests now carry the first bounded
+LLM hint directly on the manifest:
+
+```json
+{
+  "schema": {
+    "fields": 2,
+    "columns": [
+      { "name": "row_id", "type": "int64", "nullable": true },
+      { "name": "event", "type": "large_string", "nullable": true }
+    ]
+  },
+  "summary": { "total_rows": 2000000, "included_rows": 2000000 },
+  "llm": {
+    "content_type": "text/llm+plain",
+    "text": "DataFrame (pyarrow): 2,000,000 rows × 2 columns\n..."
+  }
+}
+```
+
+This is intentionally small. It lets MCP / runtime bindings recover a useful
+LLM table summary by reading only the manifest JSON if the sibling
+`text/llm+plain` MIME is absent, without touching Arrow chunk blobs. If
+`llm.text` is missing, the resolver can still synthesize a basic row/column/type
+summary from `summary` and `schema.columns`. The richer future research path is
+a structured `llm.columns[].stats` object derived from the existing Python-side
+dataframe stat extractors and/or `nteract-predicate`, so consumers can avoid
+parsing summary prose.
+
 ## Chunked Arrow Over CAS
 
 The right streaming unit is not "chunked parquet." It is an ordered Arrow stream
@@ -878,6 +907,8 @@ Python:
 - polars output emits Arrow IPC stream.
 - downsampled outputs carry consistent `included_rows` and `sampled` hints.
 - fallback still produces `text/llm+plain` when Arrow serialization fails.
+- Arrow stream manifests carry schema column descriptors and precomputed
+  `llm.text` when the launcher generated a table summary.
 
 Rust:
 
@@ -885,6 +916,9 @@ Rust:
   Face hints.
 - output store save/load externalizes direct Arrow IPC, parquet, and manifest
   chunks.
+- LLM-selective output resolution uses manifest-level `llm.text` before any
+  Arrow chunk fetch if the sibling `text/llm+plain` MIME is missing, then falls
+  back to a manifest-derived row/column/type summary.
 - update-display-data preserves metadata hints for manifest revisions.
 - blob upload rejects hash mismatches and missing chunks.
 - coalesced artifact generation chooses a single blob below
