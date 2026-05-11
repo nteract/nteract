@@ -214,8 +214,40 @@ impl KernelState {
     /// Record that the current execution produced an error output.
     ///
     /// Called before `execution_done` so it can determine success/failure.
-    pub fn mark_execution_error(&mut self) {
-        self.execution_had_error = true;
+    /// Returns `false` for stale errors from an already-interrupted execution.
+    pub fn mark_execution_error(&mut self, cell_id: &str, execution_id: &str) -> bool {
+        let is_current = self
+            .executing
+            .as_ref()
+            .is_some_and(|(cid, eid)| cid == cell_id && eid == execution_id);
+        if is_current {
+            self.execution_had_error = true;
+        } else {
+            debug!(
+                "[kernel-state] Ignoring stale CellError for cell={} execution={}",
+                cell_id, execution_id
+            );
+        }
+        is_current
+    }
+
+    /// Clear local execution state after an interrupt request is accepted.
+    ///
+    /// The Jupyter kernel may still deliver late IOPub for the interrupted
+    /// request. Clearing `executing` here lets new executions proceed and makes
+    /// those late messages harmless stale events.
+    pub fn interrupt(&mut self) -> (Option<QueueEntry>, Vec<QueueEntry>) {
+        let interrupted = self
+            .executing
+            .take()
+            .map(|(cell_id, execution_id)| QueueEntry {
+                cell_id,
+                execution_id,
+            });
+        let cleared = self.clear_queue();
+        self.execution_had_error = false;
+        self.status = KernelStatus::Idle;
+        (interrupted, cleared)
     }
 
     /// Drain the execution queue.
