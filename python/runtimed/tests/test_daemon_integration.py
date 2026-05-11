@@ -2110,6 +2110,54 @@ class TestKernelLifecycle:
         assert verify_result.success, f"Post-interrupt cell should succeed: {verify_result}"
         assert "42" in verify_result.stdout
 
+    async def test_interrupt_after_stdout_progress_unblocks(self, session):
+        """Interrupt remains responsive after streamed stdout is visible."""
+        await async_start_kernel_with_retry(session)
+
+        streaming_id = await session.create_cell(
+            "\n".join(
+                [
+                    "import sys",
+                    "import time",
+                    "",
+                    "for i in range(50_000):",
+                    "    print(f'line {i}')",
+                    "    sys.stdout.flush()",
+                    "    time.sleep(0.0002)",
+                ]
+            )
+        )
+
+        execution_id = await session.queue_cell(streaming_id)
+        stdout_visible = asyncio.Event()
+
+        async def watch_until_terminal():
+            last_progress = None
+            async for progress in session.watch_execution(
+                streaming_id, execution_id, timeout_secs=20
+            ):
+                last_progress = progress
+                if "line 25" in progress.stdout:
+                    stdout_visible.set()
+                if progress.terminal:
+                    return progress
+            return last_progress
+
+        watch_task = asyncio.create_task(watch_until_terminal())
+        await asyncio.wait_for(stdout_visible.wait(), timeout=10)
+
+        await session.interrupt()
+
+        streaming_progress = await asyncio.wait_for(watch_task, timeout=15)
+        assert streaming_progress is not None
+        assert streaming_progress.terminal is True
+        assert not streaming_progress.success, "Interrupted streaming cell should fail"
+
+        verify_id = await session.create_cell("print('after interrupt')")
+        verify_result = await asyncio.wait_for(session.execute_cell(verify_id), timeout=10)
+        assert verify_result.success, f"Post-interrupt cell should succeed: {verify_result}"
+        assert "after interrupt" in verify_result.stdout
+
     async def test_async_shutdown_kernel(self, session):
         """Can shutdown the kernel."""
         await async_start_kernel_with_retry(session)
