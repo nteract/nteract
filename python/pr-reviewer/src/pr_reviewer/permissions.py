@@ -24,8 +24,9 @@ _SAFE_GIT_SUBCOMMANDS = {
     "show",
     "status",
 }
-_SAFE_COMMANDS = {"cat", "find", "git", "nl", "rg", "sed", "wc"}
+_SAFE_COMMANDS = {"cat", "git", "nl", "rg", "wc"}
 _SHELL_METACHARS = {"|", ">", "<", "&", ";", "$(", "`", "\n", "\r"}
+_GIT_WRITE_FLAGS = {"-o", "--output"}
 
 
 def is_safe_bash_command(command: str) -> bool:
@@ -47,16 +48,10 @@ def is_safe_bash_command(command: str) -> bool:
     if executable == "git":
         if len(parts) < 2:
             return False
-        return parts[1] in _SAFE_GIT_SUBCOMMANDS
-
-    if executable == "find":
-        blocked = {"-delete", "-exec", "-execdir", "-ok", "-okdir"}
-        return not any(part in blocked for part in parts[1:])
-
-    if executable == "sed":
+        if parts[1] not in _SAFE_GIT_SUBCOMMANDS:
+            return False
         return not any(
-            part == "-i" or part.startswith("-i.") or part.startswith("--in-place")
-            for part in parts[1:]
+            part in _GIT_WRITE_FLAGS or part.startswith("--output=") for part in parts[2:]
         )
 
     return True
