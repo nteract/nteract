@@ -202,14 +202,16 @@ function isScrollPassthroughMimeType(mimeType: string): boolean {
     mimeType === "text/html" ||
     mimeType === "image/svg+xml" ||
     mimeType === "application/vnd.apache.parquet" ||
-    mimeType === "application/vnd.apache.arrow.stream"
+    mimeType === "application/vnd.apache.arrow.stream" ||
+    mimeType === "application/vnd.nteract.arrow-stream-manifest+json"
   );
 }
 
 function isSiftMimeType(mimeType: string): boolean {
   return (
     mimeType === "application/vnd.apache.parquet" ||
-    mimeType === "application/vnd.apache.arrow.stream"
+    mimeType === "application/vnd.apache.arrow.stream" ||
+    mimeType === "application/vnd.nteract.arrow-stream-manifest+json"
   );
 }
 
