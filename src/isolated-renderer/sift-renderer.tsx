@@ -155,12 +155,6 @@ function tableUrlForData(data: unknown, mimeType: string): string | undefined {
 function SiftRenderer({ data, mimeType, interactionActive = false }: RendererProps) {
   const url = tableUrlForData(data, mimeType);
   const source = useMemo(() => tableSourceForData(data, mimeType), [data, mimeType]);
-  if (!url || !source) {
-    console.warn("[sift-renderer] missing table URL", { mimeType, data });
-    return <pre style={{ whiteSpace: "pre-wrap" }}>Unable to load Arrow stream manifest</pre>;
-  }
-  console.debug("[sift-renderer] render", { mimeType, url: url.slice(0, 120) });
-  configureWasm(url);
 
   // Default to the cap so the table is visible while sift's WASM loads
   // and reports its first state. Once we see a totalCount we settle on
@@ -185,6 +179,13 @@ function SiftRenderer({ data, mimeType, interactionActive = false }: RendererPro
     lastTotalRef.current = state.totalCount;
     setTableHeight(fitHeightForRowCount(state.totalCount));
   }, []);
+
+  if (!url || !source) {
+    console.warn("[sift-renderer] missing table URL", { mimeType, data });
+    return <pre style={{ whiteSpace: "pre-wrap" }}>Unable to load Arrow stream manifest</pre>;
+  }
+  console.debug("[sift-renderer] render", { mimeType, url: url.slice(0, 120) });
+  configureWasm(url);
 
   return (
     <div style={{ height: tableHeight, width: "100%" }}>
