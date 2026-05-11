@@ -64,6 +64,10 @@ def _record_batch_reader_from_stream(source: Any) -> Any:
     if callable(from_stream):
         return from_stream(source)
 
+    # PyArrow 14/15 expose producer-side `__arrow_c_stream__()` before the
+    # public `RecordBatchReader.from_stream()` consumer. Keep this fallback
+    # narrowly scoped to generic PyCapsule sources; known pyarrow.Table paths
+    # write IPC directly and do not depend on this private bridge.
     import_capsule = getattr(pa.RecordBatchReader, "_import_from_c_capsule", None)
     if callable(import_capsule) and hasattr(source, "__arrow_c_stream__"):
         return import_capsule(source.__arrow_c_stream__())
@@ -88,13 +92,22 @@ def _serialize_arrow_stream_exportable(source: Any, rows: int | None = None) -> 
     return _serialize_record_batch_reader(reader)
 
 
+def _serialize_arrow_table_direct(table: Any) -> bytes:
+    import pyarrow as pa
+
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, table.schema) as writer:
+        writer.write_table(table)
+    return sink.getvalue().to_pybytes()
+
+
 def _serialize_pandas(df: Any, rows: int | None = None) -> bytes:
     import pyarrow as pa
 
     if rows is not None:
         df = df.head(rows)
     table = pa.Table.from_pandas(df)
-    return _serialize_arrow_stream_exportable(table)
+    return _serialize_arrow_table_direct(table)
 
 
 def _serialize_polars(df: Any, rows: int | None = None) -> bytes:
@@ -108,7 +121,7 @@ def _serialize_polars(df: Any, rows: int | None = None) -> bytes:
 def _serialize_arrow_stream_table(table: Any, rows: int | None = None) -> bytes:
     if rows is not None:
         table = table.slice(0, rows)
-    return _serialize_arrow_stream_exportable(table)
+    return _serialize_arrow_table_direct(table)
 
 
 def build_arrow_stream_manifest(

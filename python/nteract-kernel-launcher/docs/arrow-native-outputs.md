@@ -578,9 +578,16 @@ for the staged implementation.
   - confirmed-fix: one-chunk manifest construction must not re-read the whole
     IPC blob just to count record batches; omit `record_batch_count` unless the
     writer already knows it.
-- Next: rerun the repo-local `pr-reviewer` after the review-fix commit, then
-  add manifest routing/rendering only after accepted findings are resolved or
-  deferred here.
+- Review rerun: `pr-reviewer` found the known pyarrow table paths should not
+  depend on PyCapsule import support. Disposition:
+  - confirmed-fix: pandas and `pyarrow.Table` paths write Arrow IPC directly
+    through `pa.ipc.new_stream` / `writer.write_table` again.
+  - confirmed-fix: the private `_import_from_c_capsule` fallback is documented
+    as a compatibility bridge only for generic PyCapsule sources on PyArrow
+    14/15; known table paths bypass it.
+- Next: rerun the repo-local `pr-reviewer` after the second review-fix commit,
+  then add manifest routing/rendering only after accepted findings are resolved
+  or deferred here.
 
 ### Phase 1: Canonical Arrow For DataFrames
 

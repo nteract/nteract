@@ -68,15 +68,34 @@ def test_serialize_dataframe_pandas_round_trips_data():
 def test_serialize_dataframe_pandas_preserves_index_metadata():
     pd = pytest.importorskip("pandas")
     pa = pytest.importorskip("pyarrow")
-    from nteract_kernel_launcher._format import serialize_dataframe
+    import nteract_kernel_launcher._format as fmt
 
     df = pd.DataFrame({"value": [1, 2]}, index=pd.Index(["x", "y"], name="label"))
-    data, _, _ = serialize_dataframe(df, max_bytes=10_000_000)
+    data, _, _ = fmt.serialize_dataframe(df, max_bytes=10_000_000)
 
     table = pa.ipc.open_stream(io.BytesIO(data)).read_all()
     md = table.schema.metadata or {}
     assert b"pandas" in md
     assert "label" in table.column_names
+
+
+def test_serialize_dataframe_pandas_uses_direct_table_writer(monkeypatch):
+    pd = pytest.importorskip("pandas")
+    import nteract_kernel_launcher._format as fmt
+
+    def fail_pycapsule_path(*_args, **_kwargs):
+        raise AssertionError("pandas should write its pa.Table directly")
+
+    monkeypatch.setattr(fmt, "_record_batch_reader_from_stream", fail_pycapsule_path)
+
+    data, ct, included_rows = fmt.serialize_dataframe(
+        pd.DataFrame({"a": [1, 2, 3]}),
+        max_bytes=10_000_000,
+    )
+
+    assert ct == fmt.ARROW_STREAM_MIME
+    assert included_rows == 3
+    assert data
 
 
 def test_serialize_dataframe_polars_emits_arrow_stream():
@@ -138,6 +157,26 @@ def test_serialize_dataframe_accepts_arrow_pycapsule_stream_protocol():
     assert included_rows == 10
     assert table.column_names == ["a"]
     assert table.num_rows == 10
+
+
+def test_serialize_arrow_table_uses_direct_writer(monkeypatch):
+    pa = pytest.importorskip("pyarrow")
+    import nteract_kernel_launcher._format as fmt
+
+    def fail_pycapsule_path(*_args, **_kwargs):
+        raise AssertionError("pyarrow.Table should use direct IPC writer")
+
+    monkeypatch.setattr(fmt, "_record_batch_reader_from_stream", fail_pycapsule_path)
+
+    data, ct, included_rows = fmt.serialize_arrow_table(
+        pa.table({"a": [1, 2, 3]}),
+        max_bytes=10_000_000,
+    )
+
+    table = pa.ipc.open_stream(io.BytesIO(data)).read_all()
+    assert ct == fmt.ARROW_STREAM_MIME
+    assert included_rows == 3
+    assert table.num_rows == 3
 
 
 def test_build_arrow_stream_manifest_describes_one_chunk():
