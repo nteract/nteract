@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use automerge::sync;
-use automerge_recovery::{AutomergeOperationError, AutomergeRecoveryError};
+use automerge_recovery::AutomergeOperationError;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, RwLock};
 use tracing::{info, warn};
@@ -191,8 +191,31 @@ fn apply_incoming_settings_sync_frame(
                 broadcast_changed: false,
             })
         }
+        Err(AutomergeOperationError::Automerge { source, .. })
+            if is_recoverable_settings_sync_error(&source) =>
+        {
+            // Treat patch-log skew like the panic path: the durable JSON file
+            // remains authoritative, and the inbound frame must not be assumed
+            // to have applied.
+            let reply = recover_settings_doc_reset_peer_and_retry_generate(
+                doc,
+                peer_state,
+                json_path,
+                &fallback,
+                "settings-sync-receive-recovery-generate",
+                source,
+            )?;
+            Ok(IncomingSettingsSyncOutcome {
+                reply,
+                broadcast_changed: false,
+            })
+        }
         Err(error) => Err(error.into()),
     }
+}
+
+fn is_recoverable_settings_sync_error(source: &automerge::AutomergeError) -> bool {
+    matches!(source, automerge::AutomergeError::PatchLogMismatch)
 }
 
 fn recover_settings_doc_reset_peer_and_retry_generate(
@@ -201,10 +224,10 @@ fn recover_settings_doc_reset_peer_and_retry_generate(
     json_path: &Path,
     fallback: &SyncedSettings,
     retry_label: &'static str,
-    error: AutomergeRecoveryError,
+    error: impl std::fmt::Display,
 ) -> anyhow::Result<Option<Vec<u8>>> {
     warn!(
-        "[sync] Rebuilding settings doc from JSON after Automerge panic: {}",
+        "[sync] Rebuilding settings doc from JSON after Automerge sync failure: {}",
         error
     );
     recover_settings_doc_from_json_or_snapshot(doc, json_path, fallback);
@@ -214,7 +237,7 @@ fn recover_settings_doc_reset_peer_and_retry_generate(
         .map(|message| message.map(|msg| msg.encode()))
         .map_err(|retry_error| {
             anyhow::anyhow!(
-                "[sync] settings sync recovery retry failed after Automerge panic: {}",
+                "[sync] settings sync recovery retry failed after Automerge sync failure: {}",
                 retry_error
             )
         })
@@ -319,6 +342,42 @@ mod tests {
             &json_path,
         )
         .expect("receive panic should recover to canonical settings");
+
+        assert!(outcome.reply.is_some());
+        assert!(!outcome.broadcast_changed);
+        assert_eq!(server.get_all(), canonical);
+
+        let saved = std::fs::read_to_string(&json_path).expect("settings read");
+        let saved: SyncedSettings = serde_json::from_str(&saved).expect("settings parse");
+        assert_eq!(saved.theme, ThemeMode::System);
+    }
+
+    #[test]
+    #[serial(settings_sync_panic_hooks)]
+    fn receive_patch_log_mismatch_does_not_persist_or_broadcast_client_edit() {
+        let tmp = TempDir::new().expect("temp dir");
+        let json_path = tmp.path().join("settings.json");
+        let canonical = SyncedSettings::default();
+        write_settings_json(&json_path, &canonical);
+
+        let mut server = SettingsDoc::from_synced_settings(&canonical);
+        let mut server_peer_state = sync::State::new();
+
+        let mut client = SettingsDoc::new();
+        client.put("theme", "dark");
+        let mut client_state = sync::State::new();
+        let message = client
+            .generate_sync_message(&mut client_state)
+            .expect("client should generate settings edit");
+
+        SettingsDoc::__patch_log_mismatch_on_next_receive_sync_calls_for_test(1);
+        let outcome = apply_incoming_settings_sync_frame(
+            &mut server,
+            &mut server_peer_state,
+            message,
+            &json_path,
+        )
+        .expect("patch-log mismatch should recover to canonical settings");
 
         assert!(outcome.reply.is_some());
         assert!(!outcome.broadcast_changed);

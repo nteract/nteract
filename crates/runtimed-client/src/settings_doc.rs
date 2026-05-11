@@ -506,6 +506,8 @@ pub struct SettingsDoc {
 static PANIC_ON_NEXT_GENERATE_SYNC_CALLS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(debug_assertions)]
 static PANIC_ON_NEXT_RECEIVE_SYNC_CALLS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(debug_assertions)]
+static PATCH_LOG_MISMATCH_ON_NEXT_RECEIVE_SYNC_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 impl SettingsDoc {
     /// Create a new empty settings document with defaults.
@@ -1154,6 +1156,9 @@ impl SettingsDoc {
         peer_state: &mut sync::State,
         message: sync::Message,
     ) -> Result<(), AutomergeError> {
+        #[cfg(debug_assertions)]
+        Self::patch_log_mismatch_if_requested(&PATCH_LOG_MISMATCH_ON_NEXT_RECEIVE_SYNC_CALLS)?;
+
         self.doc.sync().receive_sync_message(peer_state, message)
     }
 
@@ -1386,6 +1391,12 @@ impl SettingsDoc {
     }
 
     #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn __patch_log_mismatch_on_next_receive_sync_calls_for_test(count: usize) {
+        PATCH_LOG_MISMATCH_ON_NEXT_RECEIVE_SYNC_CALLS.store(count, Ordering::SeqCst);
+    }
+
+    #[cfg(debug_assertions)]
     fn panic_if_requested(counter: &AtomicUsize, operation: &str) {
         if counter
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
@@ -1395,6 +1406,19 @@ impl SettingsDoc {
         {
             panic!("injected settings {operation} panic");
         }
+    }
+
+    #[cfg(debug_assertions)]
+    fn patch_log_mismatch_if_requested(counter: &AtomicUsize) -> Result<(), AutomergeError> {
+        if counter
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                count.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(AutomergeError::PatchLogMismatch);
+        }
+        Ok(())
     }
 }
 
