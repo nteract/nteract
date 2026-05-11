@@ -7,10 +7,10 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "../src/components/icons";
+import { isOnboardingPoolReady, type OnboardingPoolState, type PythonEnv } from "./pool-readiness";
 import type { DaemonStatus } from "./types";
 
 type Runtime = "python" | "deno";
-type PythonEnv = "uv" | "conda" | "pixi";
 
 type SetupStep = {
   id: string;
@@ -177,6 +177,8 @@ export default function App() {
   ]);
   const [daemonReady, setDaemonReady] = useState(false);
   const [daemonFailed, setDaemonFailed] = useState(false);
+  const [selectedPoolReady, setSelectedPoolReady] = useState(false);
+  const [poolWaitTimedOut, setPoolWaitTimedOut] = useState(false);
   const [setupComplete, setSetupComplete] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -237,14 +239,15 @@ export default function App() {
     };
   }, []);
 
-  // Poll for readiness of the environment the user selected. The pool is useful
-  // progress detail, but first-run onboarding should not block on prewarming:
-  // a ready daemon can create notebooks and launch kernels while environments
-  // continue warming in the background.
+  // Poll for readiness of the environment the user selected. First-launch
+  // onboarding must not finish while the selected pool is still warming, or the
+  // first notebook opens into a slow "initializing" kernel path.
   useEffect(() => {
     if (!daemonReady || !pythonEnv) return;
 
     const envLabel = PYTHON_ENV_LABELS[pythonEnv];
+    setSelectedPoolReady(false);
+    setPoolWaitTimedOut(false);
     setSteps((prev) =>
       prev.map((s) =>
         s.id === "tools"
@@ -259,23 +262,13 @@ export default function App() {
       while (!cancelled) {
         attempts += 1;
         try {
-          const state = await invoke<
-            Partial<
-              Record<
-                PythonEnv,
-                {
-                  available: number;
-                  warming: number;
-                }
-              >
-            >
-          >("get_pool_status");
+          const state = await invoke<OnboardingPoolState>("get_pool_status");
 
           const selected = state[pythonEnv] ?? { available: 0, warming: 0 };
-          const available = selected.available;
-          const warming = selected.warming;
+          const warming = selected.warming ?? 0;
 
-          if (available > 0) {
+          if (isOnboardingPoolReady(pythonEnv, state)) {
+            setSelectedPoolReady(true);
             setSteps((prev) =>
               prev.map((s) =>
                 s.id === "tools"
@@ -295,26 +288,35 @@ export default function App() {
               ),
             );
             if (attempts >= WARMING_POOL_POLL_ATTEMPTS) {
+              setPoolWaitTimedOut(true);
               setSteps((prev) =>
                 prev.map((s) =>
-                  s.id === "tools" ? { ...s, label: "Runtime ready", status: "completed" } : s,
+                  s.id === "tools"
+                    ? { ...s, label: `Still warming ${envLabel} runtime`, status: "failed" }
+                    : s,
                 ),
               );
               return;
             }
           } else if (attempts >= IDLE_POOL_POLL_ATTEMPTS) {
+            setPoolWaitTimedOut(true);
             setSteps((prev) =>
               prev.map((s) =>
-                s.id === "tools" ? { ...s, label: "Runtime ready", status: "completed" } : s,
+                s.id === "tools"
+                  ? { ...s, label: `Waiting for ${envLabel} runtime`, status: "failed" }
+                  : s,
               ),
             );
             return;
           }
         } catch {
           if (attempts >= IDLE_POOL_POLL_ATTEMPTS) {
+            setPoolWaitTimedOut(true);
             setSteps((prev) =>
               prev.map((s) =>
-                s.id === "tools" ? { ...s, label: "Runtime ready", status: "completed" } : s,
+                s.id === "tools"
+                  ? { ...s, label: `Waiting for ${envLabel} runtime`, status: "failed" }
+                  : s,
               ),
             );
             return;
@@ -345,6 +347,8 @@ export default function App() {
   // Handle Python env selection with auto-advance to ready state
   const handlePythonEnvSelect = useCallback((selected: PythonEnv) => {
     setPythonEnv(selected);
+    setSelectedPoolReady(false);
+    setPoolWaitTimedOut(false);
     setSteps((prev) =>
       prev.map((s) =>
         s.id === "tools"
@@ -383,6 +387,7 @@ export default function App() {
     async (telemetryEnabled: boolean) => {
       if (!runtime || !pythonEnv) return;
       if (!daemonReady) return;
+      if (!selectedPoolReady && !poolWaitTimedOut) return;
       if (isSubmitting) return;
       setIsSubmitting(true);
 
@@ -428,7 +433,7 @@ export default function App() {
         setErrorMessage("Failed to save settings. Please try again.");
       }
     },
-    [daemonReady, runtime, pythonEnv, isSubmitting],
+    [daemonReady, runtime, pythonEnv, selectedPoolReady, poolWaitTimedOut, isSubmitting],
   );
 
   // Fallback path when the daemon failed to install. Still records the
@@ -460,7 +465,12 @@ export default function App() {
 
   const canContinueToTelemetry = page === 2 && pythonEnv !== null;
   const canProceed =
-    page === 3 && runtime !== null && pythonEnv !== null && daemonReady && !setupComplete;
+    page === 3 &&
+    runtime !== null &&
+    pythonEnv !== null &&
+    daemonReady &&
+    (selectedPoolReady || poolWaitTimedOut) &&
+    !setupComplete;
 
   // Page titles based on selections
   const page2Title = runtime === "deno" ? "Ok but if you did use Python..." : "Python Environment";
