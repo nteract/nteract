@@ -615,8 +615,9 @@ for the staged implementation.
     recreating an equivalent `source` object does not reload the table.
   - the isolated renderer now passes manifest objects to Sift instead of
     collapsing them back to a direct URL.
-- Next: run repo-local `pr-reviewer` for the React manifest append commit and
-  resolve or record findings before moving to producer-side progressive chunks.
+- Review rerun: `pr-reviewer` reported `verdict: clear` for `f62da4f6`.
+- Next: start producer-side progressive chunks with a narrow Python manifest
+  update path; preserve one-shot behavior until chunk publication is verified.
 
 ### Phase 1: Canonical Arrow For DataFrames
 
