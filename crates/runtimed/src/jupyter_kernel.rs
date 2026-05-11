@@ -39,6 +39,7 @@ use crate::output_prep::{
 };
 use crate::output_store::{self, ContentRef, OutputManifest, DEFAULT_INLINE_THRESHOLD};
 use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast};
+use crate::stream_flush::{PendingStreamFlush, StreamFlushBuffer};
 use crate::stream_terminal::{StreamOutputState, StreamTerminals};
 use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 use crate::terminal_size::{TERMINAL_COLUMNS_STR, TERMINAL_LINES_STR};
@@ -187,6 +188,82 @@ fn history_cache_value_satisfies_limit(value: &HistoryCacheValue, limit: i32) ->
 enum IoPubStateUpdate {
     Activity(KernelActivity),
     Lifecycle(RuntimeLifecycle),
+}
+
+async fn flush_stream_output(
+    state: &runtime_doc::RuntimeStateHandle,
+    blob_store: &crate::blob_store::BlobStore,
+    stream_terminals: &Arc<tokio::sync::Mutex<StreamTerminals>>,
+    kernel_actor_id: &str,
+    flush: PendingStreamFlush,
+) {
+    let known_state = {
+        let terminals = stream_terminals.lock().await;
+        terminals
+            .get_output_state(&flush.execution_id, &flush.stream_name)
+            .cloned()
+    };
+
+    let nbformat_value = serde_json::json!({
+        "output_type": "stream",
+        "name": flush.stream_name,
+        "text": flush.rendered_text,
+    });
+
+    let manifest =
+        match output_store::create_manifest(&nbformat_value, blob_store, DEFAULT_INLINE_THRESHOLD)
+            .await
+        {
+            Ok(manifest) => manifest,
+            Err(e) => {
+                warn!("[jupyter-kernel] Failed to create stream manifest: {}", e);
+                return;
+            }
+        };
+    let manifest_json = manifest.to_json();
+
+    let blob_hash = if let OutputManifest::Stream { ref text, .. } = manifest {
+        match text {
+            ContentRef::Blob { blob, .. } => blob.clone(),
+            ContentRef::Inline { inline } => inline.clone(),
+        }
+    } else {
+        String::new()
+    };
+
+    let upsert_result = match state.transact_at_current_heads(
+        Some(kernel_actor_id),
+        "runtime-state-iopub-stream-transaction",
+        |sd| match sd.upsert_stream_output(
+            &flush.execution_id,
+            &flush.stream_name,
+            &manifest_json,
+            known_state.as_ref(),
+        ) {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                warn!("[jupyter-kernel] Failed to upsert stream output: {}", e);
+                Err(e)
+            }
+        },
+    ) {
+        Ok(result) => result,
+        Err(e) => {
+            warn!("[runtime-state] {}", e);
+            return;
+        }
+    };
+
+    let (_updated, output_id) = upsert_result;
+    let mut terminals = stream_terminals.lock().await;
+    terminals.set_output_state(
+        &flush.execution_id,
+        &flush.stream_name,
+        StreamOutputState {
+            output_id,
+            blob_hash,
+        },
+    );
 }
 
 /// Created at kernel launch time, captures connection_info and session_id.
@@ -1203,6 +1280,7 @@ impl KernelConnection for JupyterKernel {
                     std::collections::HashMap::new();
 
                 let comm_coalesce_tx = comm_coalesce_tx_for_iopub;
+                let mut stream_flushes = StreamFlushBuffer::default();
 
                 loop {
                     match iopub.read().await {
@@ -1280,6 +1358,22 @@ impl KernelConnection for JupyterKernel {
                                     if status.execution_state
                                         == jupyter_protocol::ExecutionState::Idle
                                     {
+                                        if let Some(eid) = execution_id.as_ref() {
+                                            for flush in stream_flushes
+                                                .flush_execution(eid, std::time::Instant::now())
+                                            {
+                                                flush_stream_output(
+                                                    &state_for_iopub,
+                                                    &blob_store,
+                                                    &iopub_stream_terminals,
+                                                    &iopub_kernel_actor_id,
+                                                    flush,
+                                                )
+                                                .await;
+                                            }
+                                            stream_flushes.clear_execution(eid);
+                                        }
+
                                         if let Err(e) =
                                             iopub_cmd_tx.try_send(QueueCommand::KernelIdle {
                                                 execution_id: execution_id.clone(),
@@ -1443,91 +1537,27 @@ impl KernelConnection for JupyterKernel {
                                         };
                                         let eid = execution_id.clone().unwrap_or_default();
 
-                                        let (rendered_text, known_state) = {
+                                        let rendered_text = {
                                             let mut terminals = iopub_stream_terminals.lock().await;
-                                            let text =
-                                                terminals.feed(&eid, stream_name, &stream.text);
-                                            let state = terminals
-                                                .get_output_state(&eid, stream_name)
-                                                .cloned();
-                                            (text, state)
+                                            terminals.feed(&eid, stream_name, &stream.text)
                                         };
 
-                                        let nbformat_value = serde_json::json!({
-                                            "output_type": "stream",
-                                            "name": stream_name,
-                                            "text": rendered_text
-                                        });
-
-                                        let manifest = match output_store::create_manifest(
-                                            &nbformat_value,
-                                            &blob_store,
-                                            DEFAULT_INLINE_THRESHOLD,
-                                        )
-                                        .await
-                                        {
-                                            Ok(m) => m,
-                                            Err(e) => {
-                                                warn!(
-                                                "[jupyter-kernel] Failed to create stream manifest: {}",
-                                                e
-                                            );
-                                                continue;
-                                            }
-                                        };
-                                        let manifest_json = manifest.to_json();
-
-                                        let blob_hash =
-                                            if let OutputManifest::Stream { ref text, .. } =
-                                                manifest
-                                            {
-                                                match text {
-                                                    ContentRef::Blob { blob, .. } => blob.clone(),
-                                                    ContentRef::Inline { inline } => inline.clone(),
-                                                }
-                                            } else {
-                                                String::new()
-                                            };
-
-                                        let upsert_result = match state_for_iopub
-                                            .transact_at_current_heads(
-                                                Some(&iopub_kernel_actor_id),
-                                                "runtime-state-iopub-stream-transaction",
-                                                |sd| {
-                                                    match sd.upsert_stream_output(
-                                                        &eid,
-                                                        stream_name,
-                                                        &manifest_json,
-                                                        known_state.as_ref(),
-                                                    ) {
-                                                        Ok(result) => Ok(result),
-                                                        Err(e) => {
-                                                            warn!(
-                                                                "[jupyter-kernel] Failed to upsert stream output: {}",
-                                                                e
-                                                            );
-                                                            Err(e)
-                                                        }
-                                                    }
-                                                },
-                                            ) {
-                                            Ok(result) => result,
-                                            Err(e) => {
-                                                warn!("[runtime-state] {}", e);
-                                                continue;
-                                            }
-                                        };
-
-                                        let (_updated, output_id) = upsert_result;
-                                        let mut terminals = iopub_stream_terminals.lock().await;
-                                        terminals.set_output_state(
+                                        if let Some(flush) = stream_flushes.record_chunk(
                                             &eid,
                                             stream_name,
-                                            StreamOutputState {
-                                                output_id,
-                                                blob_hash: blob_hash.clone(),
-                                            },
-                                        );
+                                            rendered_text,
+                                            stream.text.len(),
+                                            std::time::Instant::now(),
+                                        ) {
+                                            flush_stream_output(
+                                                &state_for_iopub,
+                                                &blob_store,
+                                                &iopub_stream_terminals,
+                                                &iopub_kernel_actor_id,
+                                                flush,
+                                            )
+                                            .await;
+                                        }
                                     }
                                 }
 
@@ -1654,6 +1684,20 @@ impl KernelConnection for JupyterKernel {
                                             _ => "unknown",
                                         };
                                         let eid = execution_id.clone().unwrap_or_default();
+
+                                        for flush in stream_flushes
+                                            .flush_execution(&eid, std::time::Instant::now())
+                                        {
+                                            flush_stream_output(
+                                                &state_for_iopub,
+                                                &blob_store,
+                                                &iopub_stream_terminals,
+                                                &iopub_kernel_actor_id,
+                                                flush,
+                                            )
+                                            .await;
+                                        }
+                                        stream_flushes.clear_execution(&eid);
 
                                         {
                                             let mut terminals = iopub_stream_terminals.lock().await;
@@ -1922,6 +1966,20 @@ impl KernelConnection for JupyterKernel {
 
                                     if let Some(ref cid) = cell_id {
                                         let eid = execution_id.clone().unwrap_or_default();
+
+                                        for flush in stream_flushes
+                                            .flush_execution(&eid, std::time::Instant::now())
+                                        {
+                                            flush_stream_output(
+                                                &state_for_iopub,
+                                                &blob_store,
+                                                &iopub_stream_terminals,
+                                                &iopub_kernel_actor_id,
+                                                flush,
+                                            )
+                                            .await;
+                                        }
+                                        stream_flushes.clear_execution(&eid);
 
                                         {
                                             let mut terminals = iopub_stream_terminals.lock().await;
