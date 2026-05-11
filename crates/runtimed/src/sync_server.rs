@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use automerge::sync;
-use automerge_recovery::AutomergeOperationError;
+use automerge_recovery::{is_recoverable_sync_error, AutomergeOperationError};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, RwLock};
 use tracing::{info, warn};
@@ -191,9 +191,13 @@ fn apply_incoming_settings_sync_frame(
                 broadcast_changed: false,
             })
         }
-        Err(AutomergeOperationError::Automerge { source, .. })
-            if is_recoverable_settings_sync_error(&source) =>
-        {
+        Err(AutomergeOperationError::Automerge { label, source }) => {
+            let recoverable = is_recoverable_sync_error(source.as_ref());
+            let error = AutomergeOperationError::Automerge { label, source };
+            if !recoverable {
+                return Err(error.into());
+            }
+
             // Treat patch-log skew like the panic path: the durable JSON file
             // remains authoritative, and the inbound frame must not be assumed
             // to have applied.
@@ -203,7 +207,7 @@ fn apply_incoming_settings_sync_frame(
                 json_path,
                 &fallback,
                 "settings-sync-receive-recovery-generate",
-                source,
+                error,
             )?;
             Ok(IncomingSettingsSyncOutcome {
                 reply,
@@ -212,10 +216,6 @@ fn apply_incoming_settings_sync_frame(
         }
         Err(error) => Err(error.into()),
     }
-}
-
-fn is_recoverable_settings_sync_error(source: &automerge::AutomergeError) -> bool {
-    matches!(source, automerge::AutomergeError::PatchLogMismatch)
 }
 
 fn recover_settings_doc_reset_peer_and_retry_generate(
@@ -227,7 +227,7 @@ fn recover_settings_doc_reset_peer_and_retry_generate(
     error: impl std::fmt::Display,
 ) -> anyhow::Result<Option<Vec<u8>>> {
     warn!(
-        "[sync] Rebuilding settings doc from JSON after Automerge sync failure: {}",
+        "[sync] Rebuilding settings doc from JSON after recoverable Automerge failure: {}",
         error
     );
     recover_settings_doc_from_json_or_snapshot(doc, json_path, fallback);
@@ -237,7 +237,7 @@ fn recover_settings_doc_reset_peer_and_retry_generate(
         .map(|message| message.map(|msg| msg.encode()))
         .map_err(|retry_error| {
             anyhow::anyhow!(
-                "[sync] settings sync recovery retry failed after Automerge sync failure: {}",
+                "[sync] settings sync recovery retry failed after recoverable Automerge failure: {}",
                 retry_error
             )
         })
@@ -377,7 +377,7 @@ mod tests {
             message,
             &json_path,
         )
-        .expect("patch-log mismatch should recover to canonical settings");
+        .expect("receive PatchLogMismatch should recover to canonical settings");
 
         assert!(outcome.reply.is_some());
         assert!(!outcome.broadcast_changed);

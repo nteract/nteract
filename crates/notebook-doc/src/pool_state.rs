@@ -31,8 +31,8 @@ use automerge::{
     ReadDoc, Value, ROOT,
 };
 use automerge_recovery::{
-    catch_automerge_panic, recoverable_automerge_operation, AutomergeOperationError,
-    AutomergeRebuildError,
+    catch_automerge_panic, is_recoverable_sync_error, recoverable_automerge_operation,
+    AutomergeOperationError, AutomergeRebuildError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -392,10 +392,6 @@ impl PoolDoc {
             }
         })?
     }
-}
-
-fn is_recoverable_sync_error(source: &automerge::AutomergeError) -> bool {
-    matches!(source, automerge::AutomergeError::PatchLogMismatch)
 }
 
 struct PoolSyncRecoveryContext<'a> {
