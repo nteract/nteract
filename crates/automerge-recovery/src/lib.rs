@@ -120,6 +120,17 @@ pub enum AutomergeAttempt<T, E = automerge::AutomergeError> {
     Panic(AutomergeRecoveryError),
 }
 
+impl<T, E> AutomergeAttempt<T, E> {
+    fn from_caught_result(
+        caught: Result<Result<T, E>, AutomergeRecoveryError>,
+    ) -> AutomergeAttempt<T, E> {
+        match caught {
+            Ok(result) => result.map_or_else(Self::OperationError, Self::Success),
+            Err(error) => Self::Panic(error),
+        }
+    }
+}
+
 impl<T> AutomergeAttempt<T, automerge::AutomergeError> {
     pub fn into_operation_result(
         self,
@@ -140,11 +151,7 @@ pub fn catch_automerge_result<T, E>(
     label: impl Into<String>,
     f: impl FnOnce() -> Result<T, E>,
 ) -> AutomergeAttempt<T, E> {
-    match catch_automerge_panic(label, f) {
-        Ok(Ok(value)) => AutomergeAttempt::Success(value),
-        Ok(Err(source)) => AutomergeAttempt::OperationError(source),
-        Err(error) => AutomergeAttempt::Panic(error),
-    }
+    AutomergeAttempt::from_caught_result(catch_automerge_panic(label, f))
 }
 
 /// Run an Automerge operation and, when it panics or returns a caller-marked
@@ -236,6 +243,35 @@ mod tests {
 
         assert_eq!(error.label, "unknown");
         assert_eq!(error.panic_message, "unknown panic");
+    }
+
+    #[test]
+    fn catch_result_flattens_success() {
+        match catch_automerge_result("success", || Ok::<_, &'static str>(7)) {
+            AutomergeAttempt::Success(value) => assert_eq!(value, 7),
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn catch_result_flattens_operation_error() {
+        match catch_automerge_result("operation-error", || Err::<(), _>("bad op")) {
+            AutomergeAttempt::OperationError(error) => assert_eq!(error, "bad op"),
+            other => panic!("expected operation error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn catch_result_flattens_panic() {
+        match catch_automerge_result("panic", || -> Result<(), &'static str> {
+            panic!("bad panic")
+        }) {
+            AutomergeAttempt::Panic(error) => {
+                assert_eq!(error.label, "panic");
+                assert_eq!(error.panic_message, "bad panic");
+            }
+            other => panic!("expected panic, got {other:?}"),
+        }
     }
 
     #[test]
