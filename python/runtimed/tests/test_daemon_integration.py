@@ -31,6 +31,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.log_guards import assert_no_automerge_recovery_logs
+
 # Skip all tests if runtimed module not available
 pytest.importorskip("runtimed")
 
@@ -651,9 +653,10 @@ def daemon_process(request):
 
             # Print daemon logs for debugging
             if log_file.exists():
-                logs = log_file.read_text()
+                logs = log_file.read_text(encoding="utf-8")
                 if logs:
                     print(f"[test] Daemon logs:\n{logs}", file=sys.stderr)
+                    assert_no_automerge_recovery_logs(logs)
 
 
 @pytest.fixture(scope="module")
