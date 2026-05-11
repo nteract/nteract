@@ -171,11 +171,50 @@ const MAX_COLLAPSED_LINES = 3;
 const FOCUS_TOGGLE_MAX_DRAG_PX = 4;
 const MIN_COL_WIDTH = 60;
 const OVERSCAN = 40; // buffer rows above and below viewport
-// Chrome caps a single element's height at 16,777,214 px (2^24 - 2);
-// Firefox at ~17,895,696. Stay below the lowest with headroom. When the
-// table's true height exceeds this, the scrollbar represents a compressed
-// range and scrollTop maps non-trivially to virtual row position.
-const SCROLL_SPACER_CAP_PX = 16_000_000;
+// Conservative fallback when the engine's max element height can't be
+// measured (jsdom, SSR, pre-body). Below Chrome's known 16,777,214 (2^24 - 2)
+// cap with headroom. The real cap is discovered per-engine at mount time.
+const SCROLL_SPACER_CAP_FALLBACK_PX = 16_000_000;
+// Safety margin subtracted from the measured cap so we never set
+// scrollContent.style.height exactly at the boundary.
+const SCROLL_SPACER_SAFETY_PX = 1024;
+// Above this, assume we're in a no-layout environment (jsdom, headless test)
+// where offsetHeight doesn't enforce a cap. Fall back to the conservative value.
+const NO_LAYOUT_HEIGHT_THRESHOLD_PX = 64_000_000;
+
+let cachedHeightCap: number | null = null;
+
+/**
+ * Binary-search the engine's max element height. Chrome (V8) caps near
+ * 16,777,214 px (2^24 - 2); WKWebView near 33,181,580. The measured value
+ * is cached for the lifetime of the page since the engine's cap doesn't
+ * change at runtime.
+ */
+function measureMaxElementHeight(): number {
+  if (cachedHeightCap !== null) return cachedHeightCap;
+  if (typeof document === "undefined" || !document.body) {
+    cachedHeightCap = SCROLL_SPACER_CAP_FALLBACK_PX;
+    return cachedHeightCap;
+  }
+  const probe = document.createElement("div");
+  probe.style.cssText = "width:1px; position:absolute; visibility:hidden; left:0; top:0;";
+  document.body.appendChild(probe);
+  let lo = 1;
+  let hi = 200_000_000;
+  for (let i = 0; i < 32 && hi - lo > 1; i++) {
+    const mid = Math.floor((lo + hi) / 2);
+    probe.style.height = mid + "px";
+    if (probe.offsetHeight >= mid) lo = mid;
+    else hi = mid;
+  }
+  document.body.removeChild(probe);
+  if (lo > NO_LAYOUT_HEIGHT_THRESHOLD_PX) {
+    cachedHeightCap = SCROLL_SPACER_CAP_FALLBACK_PX;
+  } else {
+    cachedHeightCap = Math.max(1_000_000, lo - SCROLL_SPACER_SAFETY_PX);
+  }
+  return cachedHeightCap;
+}
 
 // --- Table Engine ---
 
@@ -417,11 +456,12 @@ export function createTable(
     const headerH = headerEl.offsetHeight;
     const viewportH = viewport.clientHeight;
     const virtualTotal = totalHeight + headerH;
-    if (virtualTotal <= SCROLL_SPACER_CAP_PX) {
+    const cap = measureMaxElementHeight();
+    if (virtualTotal <= cap) {
       spacerHeight = virtualTotal;
       scrollScale = 1;
     } else {
-      spacerHeight = SCROLL_SPACER_CAP_PX;
+      spacerHeight = cap;
       // Affine map: scrollTop ∈ [0, spacerHeight - viewportH] → virtual ∈ [0, virtualTotal - viewportH]
       const renderedRange = Math.max(1, spacerHeight - viewportH);
       const virtualRange = Math.max(1, virtualTotal - viewportH);
