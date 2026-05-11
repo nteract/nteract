@@ -92,8 +92,14 @@ function isLaunchErrorHandledByRuntimeBanner(error: string): boolean {
 /**
  * Update the daemon comm sender reference.
  * Called by AppContent when daemon kernel is initialized.
+ *
+ * Kept module-private (not exported). Exporting a non-component, non-hook
+ * function from this file would break Vite's react-plugin Fast Refresh
+ * boundary and force a full page reload on every HMR update, which strands
+ * any in-memory closures holding the previous daemon comm sender (visible
+ * in Tauri's webview as "Run does nothing" until ⌘Q + relaunch).
  */
-export function setDaemonCommSender(sender: ((message: unknown) => Promise<void>) | null): void {
+function setDaemonCommSender(sender: ((message: unknown) => Promise<void>) | null): void {
   daemonCommSender = sender;
 }
 
