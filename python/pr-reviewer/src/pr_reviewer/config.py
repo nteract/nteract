@@ -7,7 +7,7 @@ from typing import Literal
 
 DEFAULT_MODEL = "global.anthropic.claude-opus-4-6-v1"
 DEFAULT_AWS_REGION = "us-east-1"
-DEFAULT_MAX_TURNS = 12
+DEFAULT_MAX_TURNS = 24
 DEFAULT_EFFORT = "xhigh"
 
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
