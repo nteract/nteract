@@ -43,6 +43,7 @@ async def run_review(
         effort=config.effort,
         max_turns=config.max_turns,
         env=config.sdk_env(),
+        permission_mode="bypassPermissions",
         allowed_tools=ALLOWED_TOOLS,
         disallowed_tools=DISALLOWED_TOOLS,
         output_format={"type": "json_schema", "schema": REVIEW_SCHEMA},

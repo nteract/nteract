@@ -33,6 +33,12 @@ def test_config_from_env_preserves_explicit_zero_turns() -> None:
     assert config.max_turns == 0
 
 
+def test_config_from_env_preserves_empty_model() -> None:
+    config = ReviewerConfig.from_env(model="")
+
+    assert config.model == ""
+
+
 def test_estimate_review_turns_scales_with_diff_size() -> None:
     small = estimate_review_turns(diff_patch="one\nline\n", changed_files=["a.py"])
     larger = estimate_review_turns(
