@@ -62,7 +62,6 @@ where
             generate_settings_sync_frame(
                 &mut doc,
                 &mut peer_state,
-                &json_path,
                 "settings-sync-initial-generate",
             )?
         };
@@ -113,7 +112,6 @@ where
                     generate_settings_sync_frame(
                         &mut doc,
                         &mut peer_state,
-                        &json_path,
                         "settings-sync-broadcast-generate",
                     )?
                 };
@@ -133,7 +131,6 @@ struct IncomingSettingsSyncOutcome {
 fn generate_settings_sync_frame(
     doc: &mut SettingsDoc,
     peer_state: &mut sync::State,
-    _json_path: &Path,
     label: &'static str,
 ) -> anyhow::Result<Option<Vec<u8>>> {
     match doc.generate_sync_message_recovering(label, peer_state) {
@@ -167,8 +164,7 @@ fn apply_incoming_settings_sync_frame(
                 persist_settings(doc, json_path);
             }
 
-            let reply =
-                generate_settings_sync_frame(doc, peer_state, json_path, "settings-sync-reply")?;
+            let reply = generate_settings_sync_frame(doc, peer_state, "settings-sync-reply")?;
             Ok(IncomingSettingsSyncOutcome {
                 reply,
                 broadcast_changed: doc_changed,
@@ -185,9 +181,9 @@ fn apply_incoming_settings_sync_frame(
                 return Err(error.into());
             }
 
-            // Treat patch-log skew like the panic path: the durable JSON file
-            // remains authoritative, and the inbound frame must not be assumed
-            // to have applied.
+            // Treat patch-log skew as a recoverable document-boundary failure:
+            // the durable JSON file remains authoritative, and the inbound
+            // frame must not be assumed to have applied.
             let reply = recover_settings_doc_reset_peer_and_retry_generate(
                 doc,
                 peer_state,
@@ -291,13 +287,9 @@ mod tests {
         let mut peer_state = sync::State::new();
 
         SettingsDoc::__panic_on_next_generate_sync_calls_for_test(1);
-        let error = generate_settings_sync_frame(
-            &mut doc,
-            &mut peer_state,
-            &json_path,
-            "settings-test-generate",
-        )
-        .expect_err("generate panic should close settings sync path");
+        let error =
+            generate_settings_sync_frame(&mut doc, &mut peer_state, "settings-test-generate")
+                .expect_err("generate panic should close settings sync path");
 
         assert!(error.to_string().contains("settings sync generate failed"));
         assert_eq!(doc.get_all().theme, ThemeMode::Light);
@@ -426,7 +418,6 @@ mod tests {
         let error = generate_settings_sync_frame(
             &mut doc,
             &mut peer_state,
-            &json_path,
             "settings-test-repeated-generate",
         )
         .expect_err("generate panic should close this sync path");

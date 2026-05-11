@@ -1410,6 +1410,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn automerge_sync_panic_closes_sync_task_without_recovery() {
+        let mut reactor = test_reactor();
+        {
+            let mut state = reactor.io.doc.lock().unwrap();
+            state.panic_on_next_doc_sync_for_test();
+        }
+
+        let mut daemon_state = SharedDocState::new(
+            notebook_doc::NotebookDoc::new("test-notebook").into_inner(),
+            "test-notebook".into(),
+        );
+        let daemon_msg = daemon_state
+            .generate_sync_message()
+            .expect("daemon should generate notebook sync message");
+        let (client_reply_writer, daemon_reply_reader) = tokio::io::duplex(4096);
+        let mut writer = client_reply_writer;
+        let mut reply_reader =
+            connection::FramedReader::spawn(BufReader::new(daemon_reply_reader), 16);
+        let frame = connection::TypedNotebookFrame {
+            frame_type: NotebookFrameType::AutomergeSync,
+            payload: daemon_msg.encode(),
+        };
+
+        let error = reactor
+            .handle_incoming_frame(&frame, &mut writer)
+            .await
+            .expect_err("notebook doc panic should close sync path");
+
+        assert!(
+            error.to_string().contains("automerge sync failure"),
+            "expected automerge sync failure, got {error}"
+        );
+        assert!(
+            timeout(Duration::from_millis(10), reply_reader.recv())
+                .await
+                .is_err(),
+            "panic path should not send a notebook sync reply"
+        );
+    }
+
+    #[tokio::test]
     async fn runtime_state_sync_panic_closes_sync_task_without_recovery() {
         let mut reactor = test_reactor();
         {

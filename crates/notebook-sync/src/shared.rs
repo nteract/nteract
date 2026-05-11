@@ -41,6 +41,8 @@ pub struct SharedDocState {
     pub(crate) state_peer_state: sync::State,
 
     #[cfg(test)]
+    panic_on_next_doc_sync: bool,
+    #[cfg(test)]
     panic_on_next_state_sync: bool,
 }
 
@@ -57,6 +59,8 @@ impl SharedDocState {
             presence: PresenceState::new(),
             state_doc: RuntimeStateDoc::try_new_empty()?,
             state_peer_state: sync::State::new(),
+            #[cfg(test)]
+            panic_on_next_doc_sync: false,
             #[cfg(test)]
             panic_on_next_state_sync: false,
         })
@@ -85,6 +89,12 @@ impl SharedDocState {
         &mut self,
         message: sync::Message,
     ) -> Result<(), automerge::AutomergeError> {
+        #[cfg(test)]
+        if self.panic_on_next_doc_sync {
+            self.panic_on_next_doc_sync = false;
+            panic!("injected AutomergeSync panic");
+        }
+
         self.doc
             .sync()
             .receive_sync_message(&mut self.peer_state, message)
@@ -250,6 +260,11 @@ impl SharedDocState {
                 Err(e.into())
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn panic_on_next_doc_sync_for_test(&mut self) {
+        self.panic_on_next_doc_sync = true;
     }
 
     #[cfg(test)]
