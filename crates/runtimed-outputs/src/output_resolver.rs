@@ -954,10 +954,10 @@ fn synthesize_basic_arrow_manifest_summary(manifest: &Value) -> Option<String> {
         format_count(included_rows),
         format_count(field_count)
     )];
-    if total_rows.is_some_and(|total| total != included_rows) {
+    if let Some(total_rows) = total_rows.filter(|total| *total != included_rows) {
         lines[0].push_str(&format!(
             " (sampled from {} total rows)",
-            format_count(total_rows.unwrap())
+            format_count(total_rows)
         ));
     }
 
