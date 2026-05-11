@@ -141,7 +141,7 @@ pub(crate) fn restart_env_source_for(prev: Option<&str>) -> String {
 pub(crate) async fn sync_settings(
     socket_path: PathBuf,
 ) -> Option<runtimed::settings_doc::SyncedSettings> {
-    match runtimed_settings_sync::SyncClient::connect(socket_path).await {
+    match runtimed_settings_sync::SyncClient::connect_snapshot(socket_path).await {
         Ok(client) => Some(client.get_all()),
         Err(e) => {
             log::warn!("[session-core] Settings sync failed: {}", e);
