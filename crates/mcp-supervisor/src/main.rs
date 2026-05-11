@@ -2541,7 +2541,11 @@ const VITE_POST_CONNECT_STABILIZE: Duration = Duration::from_millis(1500);
 /// risk of adopting a non-Vite server on a project-specific port
 /// `vite_port_for_workspace(&root)` is low in dev contexts.
 async fn vite_port_is_live(port: u16) -> bool {
-    let addr = format!("127.0.0.1:{port}");
+    // Use "localhost" so tokio resolves both ::1 and 127.0.0.1 and tries each
+    // in order. Vite-Plus binds to whichever the OS resolver returns first
+    // for "localhost", which on macOS is the IPv6 entry — probing only
+    // 127.0.0.1 here would miss the running server.
+    let addr = format!("localhost:{port}");
     tokio::time::timeout(
         Duration::from_millis(400),
         tokio::net::TcpStream::connect(&addr),
@@ -2563,7 +2567,12 @@ async fn vite_port_is_live(port: u16) -> bool {
 /// process is still alive after the stabilize window.
 async fn await_vite_ready(child: &mut std::process::Child, port: u16) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + VITE_READY_TIMEOUT;
-    let addr = format!("127.0.0.1:{port}");
+    // "localhost" resolves to ::1 and 127.0.0.1 on most systems; tokio tries
+    // each in order so this probe succeeds whether Vite-Plus bound IPv4 or
+    // IPv6. Vite-Plus's default on macOS is the IPv6 entry, so probing only
+    // 127.0.0.1 here would time out for the full VITE_READY_TIMEOUT even
+    // though the server came up cleanly.
+    let addr = format!("localhost:{port}");
 
     loop {
         match child.try_wait() {
