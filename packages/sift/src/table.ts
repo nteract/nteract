@@ -467,6 +467,11 @@ export function createTable(
       const virtualRange = Math.max(1, virtualTotal - viewportH);
       scrollScale = virtualRange / renderedRange;
     }
+    // Sole writer of scrollContent.style.height. Anyone who recomputes
+    // geometry (rebuildPositions on filter / sort / row focus, the viewport
+    // ResizeObserver, the window resize handler) gets a synced spacer for
+    // free instead of each caller having to remember the DOM update.
+    scrollContent.style.height = spacerHeight + "px";
     updateVirtualOffset();
   }
 
@@ -1582,7 +1587,6 @@ export function createTable(
       // Account for header height — row pool is absolute inside scroll-content
       const headerH = headerEl.offsetHeight;
       rowPool.style.top = headerH + "px";
-      scrollContent.style.height = spacerHeight + "px";
       restoreScrollAnchor(headerH);
     }
 
@@ -1641,7 +1645,6 @@ export function createTable(
     // some rows use measured heights and others still use estimated offsets.
     if (lazyPrepared) {
       rebuildPositions();
-      scrollContent.style.height = spacerHeight + "px";
     }
 
     for (let r = first; r <= last; r++) {
@@ -2109,8 +2112,13 @@ export function createTable(
 
     // Keep the last column sized to fill the viewport as the container resizes
     // (e.g. the user maximizes the notebook window or resizes a split pane).
+    // Also recompute scroll geometry: scrollScale = virtualRange / renderedRange,
+    // and renderedRange depends on viewport.clientHeight, so a viewport resize
+    // shifts the affine map under our feet when virtualTotal > cap.
     viewportResizeObserver = new ResizeObserver(() => {
       fitLastColumnToViewport();
+      recomputeScrollGeometry();
+      scheduleRender();
     });
     viewportResizeObserver.observe(viewport);
   }
@@ -2124,8 +2132,13 @@ export function createTable(
   container.style.outline = "none";
 
   function onKeyDown(e: KeyboardEvent) {
-    const oneRow = LINE_HEIGHT + CELL_PAD_V;
-    const pageH = viewport.clientHeight;
+    // When the table exceeds the browser's max element height the spacer is
+    // clamped and `scrollScale > 1`, so each DOM pixel of scroll covers
+    // `scrollScale` virtual pixels of visible content. Divide by scrollScale
+    // here so one ArrowDown still advances the visible content by one row
+    // instead of `scrollScale` rows.
+    const oneRow = (LINE_HEIGHT + CELL_PAD_V) / scrollScale;
+    const pageH = viewport.clientHeight / scrollScale;
 
     switch (e.key) {
       case "ArrowDown":

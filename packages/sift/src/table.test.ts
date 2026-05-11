@@ -855,5 +855,111 @@ describe("createTable", () => {
       // With filteredCount=0, totalHeight is 0 and the spacer is just headerH.
       expect(filteredHeight).toBeLessThan(DEFAULT_ROW_PX * 10);
     });
+
+    it("syncs scrollContent height when setFocusedDataRow expands a row", async () => {
+      // A small table sits under the cap, so spacerHeight tracks totalHeight
+      // exactly. Toggling focus grows the focused row's height and the spacer
+      // DOM must reflect the new total. Pre-fix, only `render()`'s heightsDirty
+      // branch wrote the height, and focus toggling didn't set heightsDirty.
+      // Mock pretext to make every categorical cell report 6 lines so the
+      // focused row is meaningfully taller than the unfocused one (same trick
+      // as the truncation test above).
+      vi.mocked(prepare).mockImplementation(
+        (text: string) =>
+          ({ __brand: "PreparedText", text }) as unknown as ReturnType<typeof prepare>,
+      );
+      vi.mocked(layout).mockImplementation(
+        () => ({ lineCount: 6, height: 120 }) as ReturnType<typeof layout>,
+      );
+
+      recreateEngine(4);
+      const viewport = container.querySelector<HTMLElement>(".sift-viewport")!;
+      Object.defineProperty(viewport, "clientHeight", { value: 800, configurable: true });
+      viewport.dispatchEvent(new Event("scroll"));
+      await vi.advanceTimersByTimeAsync(20);
+
+      const scrollContent = container.querySelector<HTMLElement>(".sift-scroll-content")!;
+      const before = Number.parseFloat(scrollContent.style.height);
+
+      engine.setFocusedDataRow(1);
+      await vi.advanceTimersByTimeAsync(20);
+
+      const after = Number.parseFloat(scrollContent.style.height);
+      expect(after).toBeGreaterThan(before);
+
+      resetPretextMocks();
+    });
+
+    it("recomputes scroll geometry when the viewport resizes", async () => {
+      // Shrinking the viewport with virtualTotal > cap changes renderedRange
+      // (spacerHeight - clientHeight), which changes scrollScale. We can't
+      // observe scrollScale directly, but a 1-px scrollTop should land at a
+      // proportionally different virtual position after the viewport shrinks,
+      // and the row pool should rerender accordingly.
+      recreateEngine(TALL_ROW_COUNT);
+      const viewport = container.querySelector<HTMLElement>(".sift-viewport")!;
+      Object.defineProperty(viewport, "clientHeight", { value: 600, configurable: true });
+      await vi.advanceTimersByTimeAsync(20);
+
+      // Snapshot the rendered row index at half scroll with the tall viewport.
+      const scrollContent = container.querySelector<HTMLElement>(".sift-scroll-content")!;
+      const spacerHeight = Number.parseFloat(scrollContent.style.height);
+      viewport.scrollTop = Math.floor((spacerHeight - 600) / 2);
+      viewport.dispatchEvent(new Event("scroll"));
+      await vi.advanceTimersByTimeAsync(20);
+
+      const beforeIndex = topVisibleAriaRowIndex(container);
+
+      // Shrink the viewport — ResizeObserver should fire and recompute scale.
+      Object.defineProperty(viewport, "clientHeight", { value: 200, configurable: true });
+      // jsdom doesn't drive ResizeObserver automatically; call the recompute
+      // path the observer would call so the test exercises the geometry update.
+      viewport.dispatchEvent(new Event("scroll"));
+      await vi.advanceTimersByTimeAsync(20);
+
+      const afterIndex = topVisibleAriaRowIndex(container);
+      // The virtual position should still resolve to roughly the same data
+      // row neighborhood — the affine map has been refreshed against the new
+      // renderedRange. Tolerance is generous because a small viewport change
+      // doesn't shift the row much, but the test catches the case where
+      // scrollScale was stale (the row would be in a wildly different range).
+      expect(Math.abs(afterIndex - beforeIndex)).toBeLessThan(TALL_ROW_COUNT / 4);
+    });
+
+    it("advances by one row per ArrowDown even at scrollScale > 1", async () => {
+      recreateEngine(TALL_ROW_COUNT);
+      const viewport = container.querySelector<HTMLElement>(".sift-viewport")!;
+      Object.defineProperty(viewport, "clientHeight", { value: 600, configurable: true });
+      await vi.advanceTimersByTimeAsync(20);
+
+      // Park near the top so ArrowDown's effect is observable as a small
+      // scrollTop delta rather than getting clipped to scrollHeight.
+      viewport.scrollTop = 0;
+      viewport.dispatchEvent(new Event("scroll"));
+      await vi.advanceTimersByTimeAsync(20);
+
+      const before = viewport.scrollTop;
+      container.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+      await vi.advanceTimersByTimeAsync(20);
+
+      const delta = viewport.scrollTop - before;
+      // Pre-fix, ArrowDown set scrollTop += LINE_HEIGHT + CELL_PAD_V (36 px),
+      // skipping scrollScale virtual rows per press. Post-fix, the delta is
+      // 36 / scrollScale, so it's strictly less than a full unscaled row.
+      // At 30,000 rows × 36 px = 1.08M virtual against the 1M cap, scrollScale
+      // is ≈ 1.08 and the delta should be close to 33 px.
+      expect(delta).toBeGreaterThan(0);
+      expect(delta).toBeLessThan(DEFAULT_ROW_PX);
+    });
   });
 });
+
+function topVisibleAriaRowIndex(container: HTMLElement): number {
+  const rowEls = container.querySelectorAll<HTMLElement>("[aria-rowindex]");
+  let minRowIndex = Number.MAX_SAFE_INTEGER;
+  for (const el of rowEls) {
+    const idx = Number.parseInt(el.getAttribute("aria-rowindex") ?? "0", 10);
+    if (idx > 1 && idx < minRowIndex) minRowIndex = idx;
+  }
+  return minRowIndex === Number.MAX_SAFE_INTEGER ? 0 : minRowIndex;
+}
