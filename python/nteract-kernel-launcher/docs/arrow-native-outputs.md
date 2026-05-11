@@ -598,8 +598,14 @@ for the staged implementation.
     stream sidecar.
   - manifest resolution attaches blob URLs to `chunks[].hash`, and the Sift
     renderer loads the first complete chunk through its existing Arrow IPC path.
-- Next: run repo-local `pr-reviewer` for the manifest rendering commit and
-  resolve or record all findings before starting progressive chunk append work.
+- Review rerun: `pr-reviewer` reported `verdict: clear` for `a95e61db`.
+- Done: `feat(sift): add arrow stream chunk store`
+  - sift-wasm can create an empty Arrow stream store, append self-contained IPC
+    stream chunks, reject schema mismatches, and mark the store complete.
+  - this is only the WASM/store seam; React still uses the existing one-shot
+    Arrow IPC load path until the next commit wires manifest chunk appends.
+- Next: run repo-local `pr-reviewer` for the chunk-store seam and resolve or
+  record findings before wiring Sift React to append manifest chunks.
 
 ### Phase 1: Canonical Arrow For DataFrames
 
