@@ -51,6 +51,25 @@ pub async fn resolve_cell_outputs(
         .collect()
 }
 
+/// Resolve a cell's outputs into LLM-facing text without materializing full blobs.
+pub async fn resolve_cell_output_texts_for_llm(
+    raw_outputs: &[serde_json::Value],
+    blob_base_url: &Option<String>,
+    blob_store_path: &Option<PathBuf>,
+    comms: Option<&HashMap<String, CommDocEntry>>,
+) -> Vec<String> {
+    shared::resolve_cell_output_texts_for_llm(
+        raw_outputs,
+        shared::ResolveCtx {
+            blob_base_url: blob_base_url.as_deref(),
+            blob_store_path: blob_store_path.as_deref(),
+            comms,
+            length: shared::OutputLength::Preview,
+        },
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -121,5 +140,42 @@ mod tests {
             panic!("application/json should convert to JSON");
         };
         assert_eq!(value["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn resolves_llm_output_texts_without_full_blob_resolution() {
+        let manifest_text = serde_json::json!({
+            "version": 1,
+            "content_type": "application/vnd.apache.arrow.stream",
+            "summary": {
+                "total_rows": 20,
+                "included_rows": 20,
+                "sampled": false
+            },
+            "schema": {
+                "fields": 1,
+                "columns": [
+                    {"name": "value", "type": "int64", "nullable": true}
+                ]
+            },
+            "chunks": [
+                {"hash": "chunk_hash_should_not_be_fetched", "size": 8192, "row_count": 20}
+            ],
+            "llm": {
+                "content_type": "text/llm+plain",
+                "text": "TABLE_REPR v1\nshape: 20 rows x 1 columns"
+            }
+        })
+        .to_string();
+        let raw_outputs = vec![json!({
+            "output_type": "display_data",
+            "data": {
+                "application/vnd.nteract.arrow-stream-manifest+json": {"inline": manifest_text}
+            }
+        })];
+
+        let texts = resolve_cell_output_texts_for_llm(&raw_outputs, &None, &None, None).await;
+
+        assert_eq!(texts, vec!["TABLE_REPR v1\nshape: 20 rows x 1 columns"]);
     }
 }

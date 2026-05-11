@@ -184,6 +184,7 @@ export class Session {
   saveNotebook(path?: string): Promise<void>;
   listCells(): Promise<CellSnapshot[]>;
   getCell(cellId: string): Promise<CellSnapshot | null>;
+  getCellOutputText(cellId: string): Promise<string[] | null>;
   createCell(source: string, options?: CreateCellOptions): Promise<string>;
   setCell(cellId: string, options: SetCellOptions): Promise<boolean>;
   deleteCell(cellId: string): Promise<boolean>;

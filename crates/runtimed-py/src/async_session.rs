@@ -540,6 +540,19 @@ impl AsyncSession {
         })
     }
 
+    /// Get a cell's LLM-facing output text without resolving full blobs.
+    fn get_cell_output_text<'py>(
+        &self,
+        py: Python<'py>,
+        cell_id: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let cell_id = cell_id.to_string();
+        future_into_py(py, async move {
+            session_core::get_cell_output_text(&state, &cell_id).await
+        })
+    }
+
     /// Get a cell's execution count without materializing all cells.
     fn get_cell_execution_count<'py>(
         &self,
@@ -1440,6 +1453,14 @@ impl AsyncSession {
         let state = Arc::clone(&self.state);
         let rt = tokio::runtime::Runtime::new().map_err(to_py_err)?;
         rt.block_on(session_core::get_cells(&state))
+    }
+
+    /// Get LLM-facing output text (sync — uses a temporary runtime for output resolution).
+    fn get_cell_output_text_sync(&self, cell_id: &str) -> PyResult<Option<Vec<String>>> {
+        let state = Arc::clone(&self.state);
+        let cell_id = cell_id.to_string();
+        let rt = tokio::runtime::Runtime::new().map_err(to_py_err)?;
+        rt.block_on(session_core::get_cell_output_text(&state, &cell_id))
     }
 
     /// Get cell metadata as JSON string (sync read from local doc).

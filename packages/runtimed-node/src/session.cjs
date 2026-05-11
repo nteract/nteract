@@ -103,6 +103,10 @@ class Session {
     return this._native.getCell(cellId);
   }
 
+  getCellOutputText(cellId) {
+    return this._native.getCellOutputText(cellId);
+  }
+
   createCell(source, options) {
     return this._native.createCell(source, options);
   }

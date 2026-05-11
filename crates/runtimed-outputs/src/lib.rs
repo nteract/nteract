@@ -7,4 +7,5 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod output_resolver;
+pub mod output_text;
 pub mod resolved_output;
