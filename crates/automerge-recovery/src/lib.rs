@@ -35,7 +35,7 @@ pub enum AutomergeOperationError {
     },
     #[error(transparent)]
     Panic(#[from] AutomergeRecoveryError),
-    #[error("[{label}] failed to rebuild document after Automerge panic: {source}")]
+    #[error("[{label}] failed to rebuild document after recoverable Automerge failure: {source}")]
     RebuildFailed {
         label: String,
         #[source]
@@ -160,8 +160,12 @@ pub fn is_recoverable_sync_error(source: &automerge::AutomergeError) -> bool {
     matches!(source, automerge::AutomergeError::PatchLogMismatch)
 }
 
-/// Run an Automerge operation and, when it panics or returns a caller-marked
-/// recoverable error, rebuild caller-owned state and retry once.
+/// Run an Automerge operation and, when it returns a caller-marked recoverable
+/// error, rebuild caller-owned state and retry once.
+///
+/// Panics are diagnostic signals, not steady-state recovery inputs. They are
+/// caught so callers can close the current boundary without poisoning shared
+/// locks, but they are returned immediately without save/load rebuild or retry.
 ///
 /// The `context` is intentionally opaque to this crate. Document owners use it
 /// to keep their document, per-peer `sync::State`, and any retry frame together
@@ -175,13 +179,13 @@ pub fn recoverable_automerge_operation<C, T>(
 ) -> Result<T, AutomergeOperationError> {
     let label = label.into();
 
-    let first_panic = match catch_automerge_result(label.clone(), || operation(context)) {
+    match catch_automerge_result(label.clone(), || operation(context)) {
         AutomergeAttempt::Success(value) => return Ok(value),
-        AutomergeAttempt::OperationError(source) if should_rebuild(&source) => None,
+        AutomergeAttempt::OperationError(source) if should_rebuild(&source) => {}
         AutomergeAttempt::OperationError(source) => {
             return Err(AutomergeOperationError::automerge(label, source));
         }
-        AutomergeAttempt::Panic(error) => Some(error),
+        AutomergeAttempt::Panic(error) => return Err(AutomergeOperationError::Panic(error)),
     };
 
     if let Err(source) = rebuild(context) {
@@ -193,9 +197,7 @@ pub fn recoverable_automerge_operation<C, T>(
         AutomergeAttempt::OperationError(source) => {
             Err(AutomergeOperationError::automerge(label, source))
         }
-        AutomergeAttempt::Panic(error) => {
-            Err(AutomergeOperationError::Panic(first_panic.unwrap_or(error)))
-        }
+        AutomergeAttempt::Panic(error) => Err(AutomergeOperationError::Panic(error)),
     }
 }
 
@@ -379,34 +381,36 @@ mod tests {
     }
 
     #[test]
-    fn recoverable_operation_rebuilds_after_panic_and_preserves_first_repeated_panic() {
+    fn recoverable_operation_returns_panic_without_rebuild_or_retry() {
         let mut calls = 0;
+        let mut rebuilt = false;
         let result = recoverable_automerge_operation::<_, ()>(
-            "repeated-panic",
+            "panic-is-diagnostic",
             &mut calls,
             |calls| {
                 *calls += 1;
-                if *calls == 1 {
-                    panic!("first panic");
-                }
-                panic!("second panic");
+                panic!("diagnostic panic");
             },
-            |_| false,
-            |_| Ok(()),
+            is_recoverable_sync_error,
+            |_| {
+                rebuilt = true;
+                Ok(())
+            },
         );
         let error = match result {
-            Ok(()) => panic!("repeated panic should fail"),
+            Ok(()) => panic!("panic should be returned"),
             Err(error) => error,
         };
 
         match error {
             AutomergeOperationError::Panic(error) => {
-                assert_eq!(error.label, "repeated-panic");
-                assert_eq!(error.panic_message, "first panic");
+                assert_eq!(error.label, "panic-is-diagnostic");
+                assert_eq!(error.panic_message, "diagnostic panic");
             }
             other => panic!("expected panic error, got {other:?}"),
         }
-        assert_eq!(calls, 2);
+        assert_eq!(calls, 1);
+        assert!(!rebuilt);
     }
 
     #[test]

@@ -77,41 +77,29 @@ pub(super) async fn handle_runtime_state_frame(
         sync::Message::decode(payload).map_err(|e| anyhow::anyhow!("decode state sync: {}", e))?;
     let mut runtime_file_dirty = false;
 
-    let reply_encoded: Option<Option<Vec<u8>>> = room
-        .state
-        .with_doc(|state_doc| {
-            let before = runtime_file_save_fingerprint(state_doc);
-            let had_changes = match state_doc.receive_sync_message_with_changes_recovering(
-                state_peer_state,
-                message,
-                "state-receive-sync",
-            ) {
-                Ok(changed) => changed,
-                Err(e) => {
-                    warn!("[notebook-sync] state receive_sync_message error: {}", e);
-                    return Ok(None);
-                }
-            };
-
-            // If the client sent changes, notification is automatic via the
-            // heads comparison in RuntimeStateDoc::with_doc.
-            if had_changes && runtime_file_save_fingerprint(state_doc) != before {
-                runtime_file_dirty = true;
+    let reply_encoded = room.state.with_doc(|state_doc| {
+        let before = runtime_file_save_fingerprint(state_doc);
+        let had_changes = match state_doc.receive_sync_message_with_changes_recovering(
+            state_peer_state,
+            message,
+            "state-receive-sync",
+        ) {
+            Ok(changed) => changed,
+            Err(e) => {
+                warn!("[notebook-sync] state receive_sync_message error: {}", e);
+                return Err(e.into());
             }
+        };
 
-            Ok(Some(generate_runtime_state_sync_message(
-                state_doc,
-                state_peer_state,
-                "state-sync-reply",
-            )))
-        })
-        .ok()
-        .flatten();
+        // If the client sent changes, notification is automatic via the
+        // heads comparison in RuntimeStateDoc::with_doc.
+        if had_changes && runtime_file_save_fingerprint(state_doc) != before {
+            runtime_file_dirty = true;
+        }
 
-    let reply_encoded = match reply_encoded {
-        Some(encoded) => encoded,
-        None => return Ok(false),
-    };
+        generate_runtime_state_sync_message(state_doc, state_peer_state, "state-sync-reply")
+    })?;
+
     if let Some(encoded) = reply_encoded {
         writer.send_frame(NotebookFrameType::RuntimeStateSync, encoded)?;
     }
@@ -160,17 +148,9 @@ fn send_runtime_state_sync_update(
     writer: &PeerWriter,
     label: &str,
 ) -> anyhow::Result<()> {
-    let encoded = room
-        .state
-        .with_doc(|state_doc| {
-            Ok(generate_runtime_state_sync_message(
-                state_doc,
-                state_peer_state,
-                label,
-            ))
-        })
-        .ok()
-        .flatten();
+    let encoded = room.state.with_doc(|state_doc| {
+        generate_runtime_state_sync_message(state_doc, state_peer_state, label)
+    })?;
     if let Some(encoded) = encoded {
         writer.send_frame(NotebookFrameType::RuntimeStateSync, encoded)?;
     }
@@ -181,15 +161,15 @@ fn generate_runtime_state_sync_message(
     state_doc: &mut runtime_doc::RuntimeStateDoc,
     state_peer_state: &mut sync::State,
     label: &str,
-) -> Option<Vec<u8>> {
+) -> Result<Option<Vec<u8>>, runtime_doc::RuntimeStateError> {
     match state_doc.generate_sync_message_recovering(state_peer_state, label) {
-        Ok(message) => message.map(|msg| msg.encode()),
+        Ok(message) => Ok(message.map(|msg| msg.encode())),
         Err(e) => {
             warn!(
                 "[notebook-sync] runtime state sync generation failed: {}",
                 e
             );
-            None
+            Err(e.into())
         }
     }
 }

@@ -77,7 +77,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                     "[notebook-sync] runtime-agent initial doc sync failed: {}",
                     e
                 );
-                None
+                return;
             }
         }
     };
@@ -93,15 +93,20 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     // ── 2. Initial RuntimeStateDoc sync ──────────────────────────────
     // Uses bounded generation to compact if oversized (same 80 MiB threshold).
     let mut state_sync_state = automerge::sync::State::new();
-    let state_sync_msg = room
-        .state
-        .generate_sync_message_bounded_encoded_recovering(
-            &mut state_sync_state,
-            STATE_SYNC_COMPACT_THRESHOLD,
-            "peer-runtime-agent-state-init",
-        )
-        .ok()
-        .flatten();
+    let state_sync_msg = match room.state.generate_sync_message_bounded_encoded_recovering(
+        &mut state_sync_state,
+        STATE_SYNC_COMPACT_THRESHOLD,
+        "peer-runtime-agent-state-init",
+    ) {
+        Ok(message) => message,
+        Err(e) => {
+            warn!(
+                "[notebook-sync] runtime-agent initial state sync failed: {}",
+                e
+            );
+            return;
+        }
+    };
     if let Some(encoded) = state_sync_msg {
         if let Err(e) =
             send_typed_frame(&mut writer, NotebookFrameType::RuntimeStateSync, &encoded).await
@@ -202,6 +207,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                                 }
                                 Err(e) => {
                                     warn!("[notebook-sync] Agent doc sync receive failed: {}", e);
+                                    break;
                                 }
                             }
                             // Send sync reply
@@ -222,6 +228,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                                 Ok(None) => {}
                                 Err(e) => {
                                     warn!("[notebook-sync] Agent doc sync reply failed: {}", e);
+                                    break;
                                 }
                             }
                         }
@@ -248,18 +255,23 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                                     }
                                     Err(e) => {
                                         warn!("[notebook-sync] Agent state sync receive failed: {}", e);
-                                        return Ok(None);
+                                        return Err(e.into());
                                     }
                                 }
-                                Ok(sd
-                                    .generate_sync_message_recovering(
+                                sd.generate_sync_message_recovering(
                                         &mut state_sync_state,
                                         "peer-runtime-agent-state-reply",
                                     )
-                                    .ok()
-                                    .flatten()
-                                    .map(|reply| reply.encode()))
-                            }).ok().flatten();
+                                    .map(|message| message.map(|reply| reply.encode()))
+                                    .map_err(Into::into)
+                            });
+                            let reply_encoded = match reply_encoded {
+                                Ok(encoded) => encoded,
+                                Err(e) => {
+                                    warn!("[notebook-sync] Agent state sync failed: {}", e);
+                                    break;
+                                }
+                            };
                             if let Some(encoded) = reply_encoded {
                                 if let Err(e) = agent_writer.send_frame(
                                     NotebookFrameType::RuntimeStateSync,
@@ -319,6 +331,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                     Ok(None) => {}
                     Err(e) => {
                         warn!("[notebook-sync] Agent outbound doc sync failed: {}", e);
+                        break;
                     }
                 }
             }
@@ -326,15 +339,18 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
             // RuntimeStateDoc changes → sync to runtime agent
             _ = state_changed_rx.recv() => {
                 while state_changed_rx.try_recv().is_ok() {}
-                let encoded = room
+                let encoded = match room
                     .state
                     .generate_sync_message_recovering(
                         &mut state_sync_state,
                         "peer-runtime-agent-state-outbound",
-                    )
-                    .ok()
-                    .flatten()
-                    .map(|msg| msg.encode());
+                    ) {
+                        Ok(message) => message.map(|msg| msg.encode()),
+                        Err(e) => {
+                            warn!("[notebook-sync] Agent outbound state sync failed: {}", e);
+                            break;
+                        }
+                    };
                 if let Some(encoded) = encoded {
                     if let Err(e) = agent_writer.send_frame(
                         NotebookFrameType::RuntimeStateSync,

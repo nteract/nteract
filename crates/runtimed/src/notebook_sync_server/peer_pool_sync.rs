@@ -19,13 +19,7 @@ where
 {
     let initial_pool_encoded = {
         let mut pool_doc = daemon.pool_doc.write().await;
-        match pool_doc.generate_sync_message_recovering(pool_peer_state, "initial-pool-sync") {
-            Ok(message) => message.map(|msg| msg.encode()),
-            Err(e) => {
-                warn!("[notebook-sync] initial pool sync failed: {}", e);
-                None
-            }
-        }
+        generate_pool_sync_message(&mut pool_doc, pool_peer_state, "initial-pool-sync")?
     };
     if let Some(encoded) = initial_pool_encoded {
         connection::send_typed_frame(writer, NotebookFrameType::PoolStateSync, &encoded).await?;
@@ -52,11 +46,11 @@ pub(super) async fn handle_pool_state_frame(
             Ok(()) => {}
             Err(e) => {
                 warn!("[notebook-sync] pool receive_sync_message error: {}", e);
-                return Ok(false);
+                return Err(anyhow::anyhow!("pool receive_sync_message error: {e}"));
             }
         }
 
-        generate_pool_sync_message(&mut pool_doc, pool_peer_state, "pool-sync-reply")
+        generate_pool_sync_message(&mut pool_doc, pool_peer_state, "pool-sync-reply")?
     };
     if let Some(encoded) = reply_encoded {
         writer.send_frame(NotebookFrameType::PoolStateSync, encoded)?;
@@ -98,7 +92,7 @@ async fn send_pool_sync_update(
 ) -> anyhow::Result<()> {
     let encoded = {
         let mut pool_doc = daemon.pool_doc.write().await;
-        generate_pool_sync_message(&mut pool_doc, pool_peer_state, label)
+        generate_pool_sync_message(&mut pool_doc, pool_peer_state, label)?
     };
     if let Some(encoded) = encoded {
         writer.send_frame(NotebookFrameType::PoolStateSync, encoded)?;
@@ -110,12 +104,12 @@ fn generate_pool_sync_message(
     pool_doc: &mut notebook_doc::pool_state::PoolDoc,
     pool_peer_state: &mut sync::State,
     label: &str,
-) -> Option<Vec<u8>> {
+) -> anyhow::Result<Option<Vec<u8>>> {
     match pool_doc.generate_sync_message_recovering(pool_peer_state, label) {
-        Ok(message) => message.map(|msg| msg.encode()),
+        Ok(message) => Ok(message.map(|msg| msg.encode())),
         Err(e) => {
             warn!("[notebook-sync] pool sync generation failed: {}", e);
-            None
+            Err(anyhow::anyhow!("pool sync generation failed: {e}"))
         }
     }
 }

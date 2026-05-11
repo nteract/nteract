@@ -229,7 +229,6 @@ where
                                 .await?
                                 {
                                     NotebookDocFrameOutcome::Applied(effects) => effects,
-                                    NotebookDocFrameOutcome::Skipped => continue,
                                 };
 
                                 if notebook_doc_phase

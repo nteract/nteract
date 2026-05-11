@@ -14,12 +14,15 @@ def test_find_automerge_recovery_logs_matches_direct_recovery_lines():
             "WARN [notebook-sync] Failed to rebuild after sync panic for receive: label: nope",
             "WARN [notebook-sync] Recovered from RuntimeStateSync panic for outbound: nope",
             "ERROR [sync] settings sync recovery retry failed after Automerge panic: nope",
+            "WARN [notebook-sync] Closing sync task after Automerge sync failure for nb: nope",
+            "WARN [notebook-sync] Closing sync task after RuntimeStateSync failure for nb: nope",
+            "ERROR [sync] settings sync generate failed after Automerge panic: nope",
         ]
     )
 
     matches = find_automerge_recovery_logs(log_text)
 
-    assert len(matches) == 5
+    assert len(matches) == 8
     assert all("daemon started" not in match for match in matches)
 
 

@@ -371,63 +371,76 @@ pub async fn run_runtime_agent(
                                                     "[runtime-agent] Failed to apply RuntimeStateSync: {}",
                                                     e
                                                 );
-                                                Ok(None)
+                                                Err(e.into())
                                             }
                                         }
                                     });
 
                                     // Async work outside the lock
-                                    if let Ok(Some((queued, comm_updates))) = sync_result {
-                                        if !comm_updates.is_empty() {
-                                            if let Some(ref mut k) = kernel {
-                                                for (comm_id, delta) in &comm_updates {
-                                                    if let Err(e) = k.send_comm_update(comm_id, delta.clone()).await {
-                                                        warn!("[runtime-agent] Failed to forward comm state to kernel: {}", e);
+                                    match sync_result {
+                                        Ok(Some((queued, comm_updates))) => {
+                                            if !comm_updates.is_empty() {
+                                                if let Some(ref mut k) = kernel {
+                                                    for (comm_id, delta) in &comm_updates {
+                                                        if let Err(e) = k.send_comm_update(comm_id, delta.clone()).await {
+                                                            warn!("[runtime-agent] Failed to forward comm state to kernel: {}", e);
+                                                        }
                                                     }
                                                 }
                                             }
-                                        }
 
-                                        // Check for new queued executions
-                                        for (eid, exec) in queued {
-                                            if seen_execution_ids.insert(eid.clone()) {
-                                                if let Some(ref source) = exec.source {
-                                                    if let Some(ref mut k) = kernel {
-                                                        match kernel_state.queue_cell(
-                                                            exec.cell_id.clone(),
-                                                            eid.clone(),
-                                                            source.clone(),
-                                                            k,
-                                                        ).await {
-                                                            Ok(_) => {
-                                                                info!(
-                                                                    "[runtime-agent] Queued cell {} (execution {})",
-                                                                    exec.cell_id, eid
-                                                                );
-                                                            }
-                                                            Err(e) => {
-                                                                warn!(
-                                                                    "[runtime-agent] Failed to queue cell {}: {}",
-                                                                    exec.cell_id, e
-                                                                );
+                                            // Check for new queued executions
+                                            for (eid, exec) in queued {
+                                                if seen_execution_ids.insert(eid.clone()) {
+                                                    if let Some(ref source) = exec.source {
+                                                        if let Some(ref mut k) = kernel {
+                                                            match kernel_state.queue_cell(
+                                                                exec.cell_id.clone(),
+                                                                eid.clone(),
+                                                                source.clone(),
+                                                                k,
+                                                            ).await {
+                                                                Ok(_) => {
+                                                                    info!(
+                                                                        "[runtime-agent] Queued cell {} (execution {})",
+                                                                        exec.cell_id, eid
+                                                                    );
+                                                                }
+                                                                Err(e) => {
+                                                                    warn!(
+                                                                        "[runtime-agent] Failed to queue cell {}: {}",
+                                                                        exec.cell_id, e
+                                                                    );
+                                                                }
                                                             }
                                                         }
                                                     }
                                                 }
                                             }
                                         }
+                                        Ok(None) => {}
+                                        Err(e) => {
+                                            warn!("[runtime-agent] Closing after RuntimeStateSync failure: {}", e);
+                                            break;
+                                        }
                                     }
 
                                     // Send sync reply
-                                    let reply_encoded = ctx
+                                    let reply_encoded = match ctx
                                         .state
                                         .generate_sync_message_recovering(
                                             &mut coordinator_sync_state,
                                             "runtime-agent-state-reply",
-                                        )
-                                        .ok()
-                                        .flatten()
-                                        .map(|reply| reply.encode());
+                                        ) {
+                                            Ok(message) => message.map(|reply| reply.encode()),
+                                            Err(e) => {
+                                                warn!(
+                                                    "[runtime-agent] Closing after RuntimeStateSync reply failure: {}",
+                                                    e
+                                                );
+                                                break;
+                                            }
+                                        };
                                     if let Some(encoded) = reply_encoded {
                                         let _ = send_typed_frame(
                                             &mut writer,
@@ -531,15 +544,21 @@ pub async fn run_runtime_agent(
             _ = state_changed_rx.recv() => {
                 while state_changed_rx.try_recv().is_ok() {}
 
-                let encoded = ctx
+                let encoded = match ctx
                     .state
                     .generate_sync_message_recovering(
                         &mut coordinator_sync_state,
                         "runtime-agent-state-outbound",
-                    )
-                    .ok()
-                    .flatten()
-                    .map(|msg| msg.encode());
+                    ) {
+                        Ok(message) => message.map(|msg| msg.encode()),
+                        Err(e) => {
+                            warn!(
+                                "[runtime-agent] Closing after outbound RuntimeStateSync failure: {}",
+                                e
+                            );
+                            break;
+                        }
+                    };
                 if let Some(encoded) = encoded {
                     if let Err(e) = send_typed_frame(
                         &mut writer,

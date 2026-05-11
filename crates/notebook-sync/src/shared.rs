@@ -191,14 +191,14 @@ impl SharedDocState {
 
     /// Rebuild the RuntimeStateDoc via save→load and reset its sync state.
     ///
-    /// Used after catching an automerge panic during `RuntimeStateSync`
-    /// processing — the same recovery pattern as `rebuild_doc` for the
-    /// notebook doc, but targeting the state doc.
+    /// Used after a caller-marked recoverable Automerge failure during
+    /// `RuntimeStateSync` processing — the same recovery pattern as
+    /// `rebuild_doc` for the notebook doc, but targeting the state doc.
     pub fn rebuild_state_doc(&mut self) -> Result<(), AutomergeRebuildError> {
         let rebuilt = self.state_doc.rebuild_from_save();
         if let Err(err) = &rebuilt {
             warn!(
-                "[notebook-sync] Failed to rebuild RuntimeStateDoc after panic: {}; \
+                "[notebook-sync] Failed to rebuild RuntimeStateDoc after recoverable Automerge failure: {}; \
                  resetting state sync protocol only",
                 err
             );
@@ -231,7 +231,7 @@ impl SharedDocState {
                 }
                 Err(e) => {
                     warn!(
-                        "[notebook-sync] failed to rebuild doc after panic: {}; resetting sync state only",
+                        "[notebook-sync] failed to rebuild doc after recoverable Automerge failure: {}; resetting sync state only",
                         e
                     );
                     Err(AutomergeRebuildError::load(e))
@@ -244,7 +244,7 @@ impl SharedDocState {
             Ok(rebuilt) => rebuilt,
             Err(e) => {
                 warn!(
-                    "[notebook-sync] panic while rebuilding doc after panic: {}; resetting sync state only",
+                    "[notebook-sync] panic while rebuilding doc after recoverable Automerge failure: {}; resetting sync state only",
                     e
                 );
                 Err(e.into())

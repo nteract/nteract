@@ -133,15 +133,15 @@ struct IncomingSettingsSyncOutcome {
 fn generate_settings_sync_frame(
     doc: &mut SettingsDoc,
     peer_state: &mut sync::State,
-    json_path: &Path,
+    _json_path: &Path,
     label: &'static str,
 ) -> anyhow::Result<Option<Vec<u8>>> {
-    let fallback = doc.get_all();
     match doc.generate_sync_message_recovering(label, peer_state) {
         Ok(message) => Ok(message.map(|msg| msg.encode())),
-        Err(error) => recover_settings_doc_reset_peer_and_retry_generate(
-            doc, peer_state, json_path, &fallback, label, error,
-        ),
+        Err(error) => Err(anyhow::anyhow!(
+            "[sync] settings sync generate failed after Automerge panic: {}",
+            error
+        )),
     }
 }
 
@@ -174,23 +174,10 @@ fn apply_incoming_settings_sync_frame(
                 broadcast_changed: doc_changed,
             })
         }
-        Err(AutomergeOperationError::Panic(error)) => {
-            // We cannot prove the inbound client edit applied cleanly after a
-            // receive-side panic. Rebuild from durable JSON truth and resync
-            // instead of replaying the same message into a recovered document.
-            let reply = recover_settings_doc_reset_peer_and_retry_generate(
-                doc,
-                peer_state,
-                json_path,
-                &fallback,
-                "settings-sync-receive-recovery-generate",
-                error,
-            )?;
-            Ok(IncomingSettingsSyncOutcome {
-                reply,
-                broadcast_changed: false,
-            })
-        }
+        Err(AutomergeOperationError::Panic(error)) => Err(anyhow::anyhow!(
+            "[sync] settings sync receive failed after Automerge panic: {}",
+            error
+        )),
         Err(AutomergeOperationError::Automerge { label, source }) => {
             let recoverable = is_recoverable_sync_error(source.as_ref());
             let error = AutomergeOperationError::Automerge { label, source };
@@ -237,7 +224,7 @@ fn recover_settings_doc_reset_peer_and_retry_generate(
         .map(|message| message.map(|msg| msg.encode()))
         .map_err(|retry_error| {
             anyhow::anyhow!(
-                "[sync] settings sync recovery retry failed after recoverable Automerge failure: {}",
+                "[sync] settings sync recoverable retry failed after recoverable Automerge failure: {}",
                 retry_error
             )
         })
@@ -289,7 +276,7 @@ mod tests {
 
     #[test]
     #[serial(settings_sync_panic_hooks)]
-    fn generate_panic_rebuilds_from_canonical_json_and_retries() {
+    fn generate_panic_returns_error_without_rebuild_or_retry() {
         let tmp = TempDir::new().expect("temp dir");
         let json_path = tmp.path().join("settings.json");
         let canonical = SyncedSettings {
@@ -304,21 +291,21 @@ mod tests {
         let mut peer_state = sync::State::new();
 
         SettingsDoc::__panic_on_next_generate_sync_calls_for_test(1);
-        let frame = generate_settings_sync_frame(
+        let error = generate_settings_sync_frame(
             &mut doc,
             &mut peer_state,
             &json_path,
             "settings-test-generate",
         )
-        .expect("recovery should retry generate");
+        .expect_err("generate panic should close settings sync path");
 
-        assert!(frame.is_some());
-        assert_eq!(doc.get_all(), canonical);
+        assert!(error.to_string().contains("settings sync generate failed"));
+        assert_eq!(doc.get_all().theme, ThemeMode::Light);
     }
 
     #[test]
     #[serial(settings_sync_panic_hooks)]
-    fn receive_panic_does_not_persist_or_broadcast_client_edit() {
+    fn receive_panic_returns_error_without_persisting_or_broadcasting() {
         let tmp = TempDir::new().expect("temp dir");
         let json_path = tmp.path().join("settings.json");
         let canonical = SyncedSettings::default();
@@ -335,16 +322,17 @@ mod tests {
             .expect("client should generate settings edit");
 
         SettingsDoc::__panic_on_next_receive_sync_calls_for_test(1);
-        let outcome = apply_incoming_settings_sync_frame(
+        let error = match apply_incoming_settings_sync_frame(
             &mut server,
             &mut server_peer_state,
             message,
             &json_path,
-        )
-        .expect("receive panic should recover to canonical settings");
+        ) {
+            Ok(_) => panic!("receive panic should close settings sync path"),
+            Err(error) => error,
+        };
 
-        assert!(outcome.reply.is_some());
-        assert!(!outcome.broadcast_changed);
+        assert!(error.to_string().contains("settings sync receive failed"));
         assert_eq!(server.get_all(), canonical);
 
         let saved = std::fs::read_to_string(&json_path).expect("settings read");
@@ -403,16 +391,20 @@ mod tests {
         let mut doc = SettingsDoc::from_synced_settings(&snapshot);
         let mut peer_state = sync::State::new();
 
-        SettingsDoc::__panic_on_next_generate_sync_calls_for_test(1);
-        let frame = generate_settings_sync_frame(
-            &mut doc,
-            &mut peer_state,
-            &json_path,
-            "settings-test-generate-invalid-json",
-        )
-        .expect("invalid JSON should fall back to last-known-good snapshot");
+        let mut client = SettingsDoc::new();
+        client.put("theme", "light");
+        let mut client_state = sync::State::new();
+        let message = client
+            .generate_sync_message(&mut client_state)
+            .expect("client should generate settings edit");
 
-        assert!(frame.is_some());
+        SettingsDoc::__patch_log_mismatch_on_next_receive_sync_calls_for_test(1);
+        let outcome =
+            apply_incoming_settings_sync_frame(&mut doc, &mut peer_state, message, &json_path)
+                .expect("invalid JSON should fall back to last-known-good snapshot");
+
+        assert!(outcome.reply.is_some());
+        assert!(!outcome.broadcast_changed);
         assert_eq!(doc.get_all(), snapshot);
         assert_eq!(
             std::fs::read_to_string(&json_path).expect("settings read"),
@@ -422,7 +414,7 @@ mod tests {
 
     #[test]
     #[serial(settings_sync_panic_hooks)]
-    fn repeated_generate_panic_after_recovery_returns_error() {
+    fn repeated_generate_panic_returns_first_error_without_retry() {
         let tmp = TempDir::new().expect("temp dir");
         let json_path = tmp.path().join("settings.json");
         write_settings_json(&json_path, &SyncedSettings::default());
@@ -437,8 +429,8 @@ mod tests {
             &json_path,
             "settings-test-repeated-generate",
         )
-        .expect_err("second generate panic should close this sync path");
+        .expect_err("generate panic should close this sync path");
 
-        assert!(error.to_string().contains("recovery retry failed"));
+        assert!(error.to_string().contains("settings sync generate failed"));
     }
 }
