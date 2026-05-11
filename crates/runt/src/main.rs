@@ -5581,7 +5581,7 @@ mod tests {
 
     #[test]
     fn open_notebook_absolute_path_stays_absolute() {
-        let path = PathBuf::from("/tmp/notebook.ipynb");
+        let path = std::env::temp_dir().join("notebook.ipynb");
 
         let args = open_notebook_launch_args(Some(path.clone()), None);
 
