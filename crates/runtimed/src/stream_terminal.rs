@@ -90,11 +90,7 @@ impl StreamTerminals {
     }
 
     /// Feed text to the terminal for (execution_id, stream_name).
-    ///
-    /// Returns the rendered ANSI text representation of the terminal content.
-    /// This handles escape sequences like `\r` (carriage return) and cursor
-    /// movement, so progress bars will show only their final state.
-    pub fn feed(&mut self, execution_id: &str, stream_name: &str, text: &str) -> String {
+    pub fn feed_chunk(&mut self, execution_id: &str, stream_name: &str, text: &str) {
         let key = (execution_id.to_string(), stream_name.to_string());
 
         // Get or create terminal and processor for this stream
@@ -119,9 +115,22 @@ impl StreamTerminals {
                 processor.advance(term, std::slice::from_ref(byte));
             }
         }
+    }
 
-        // Serialize terminal content back to ANSI text
-        serialize_to_ansi(term)
+    /// Render the terminal content for (execution_id, stream_name).
+    pub fn render(&self, execution_id: &str, stream_name: &str) -> Option<String> {
+        let key = (execution_id.to_string(), stream_name.to_string());
+        self.terminals.get(&key).map(serialize_to_ansi)
+    }
+
+    /// Feed text to the terminal for (execution_id, stream_name).
+    ///
+    /// Returns the rendered ANSI text representation of the terminal content.
+    /// This handles escape sequences like `\r` (carriage return) and cursor
+    /// movement, so progress bars will show only their final state.
+    pub fn feed(&mut self, execution_id: &str, stream_name: &str, text: &str) -> String {
+        self.feed_chunk(execution_id, stream_name, text);
+        self.render(execution_id, stream_name).unwrap_or_default()
     }
 
     /// Clear terminal(s) for an execution.
@@ -488,6 +497,18 @@ mod tests {
         let result = terminals.feed("cell-1", "stdout", "World!");
 
         assert!(result.contains("Hello World!"));
+    }
+
+    #[test]
+    fn test_feed_chunk_renders_later() {
+        let mut terminals = StreamTerminals::new();
+
+        terminals.feed_chunk("cell-1", "stdout", "Progress: 50%");
+        terminals.feed_chunk("cell-1", "stdout", "\rProgress: 100%");
+
+        let result = terminals.render("cell-1", "stdout").unwrap();
+        assert!(result.contains("Progress: 100%"));
+        assert!(!result.contains("Progress: 50%"));
     }
 
     #[test]
