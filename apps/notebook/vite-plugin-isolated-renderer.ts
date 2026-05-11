@@ -76,9 +76,17 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
   let devBuildPromise: Promise<void> | null = null;
   let isDevMode = false;
 
-  // Directories to watch for changes that should trigger rebuild
+  // Directories to watch for changes that should trigger rebuild. The first
+  // two are part of Vite's normal module graph (the main app imports them
+  // transitively). The last two — packages/sift/src and the sift-wasm pkg
+  // output — are bundled into virtual:renderer-plugin/sift opaquely by the
+  // renderer-plugin builder, so Vite has no idea they're dependencies. The
+  // configureServer hook below explicitly adds them to chokidar so
+  // handleHotUpdate fires on edits + WASM rebuilds.
   const isolatedRendererDir = path.resolve(__dirname, "../../src/isolated-renderer");
   const componentsDir = path.resolve(__dirname, "../../src/components");
+  const siftPackageSrcDir = path.resolve(__dirname, "../../packages/sift/src");
+  const siftWasmPkgDir = path.resolve(__dirname, "../../crates/sift-wasm/pkg");
 
   function invalidateDevCache() {
     devBuildPromise = null;
@@ -260,6 +268,15 @@ export const css = ${JSON.stringify(css)};
     // Dev server: build from source for live development
     configureServer(devServer) {
       isDevMode = true;
+      // Workspace packages bundled into virtual:renderer-plugin/* are invisible
+      // to Vite's module graph (the plugin builder runs as a separate Rolldown
+      // pass and returns opaque code strings). Watch them explicitly so edits
+      // and WASM rebuilds reach handleHotUpdate. Also watch the on-disk
+      // pre-built output dir so external rebuilds (cargo xtask renderer-plugins)
+      // invalidate the in-memory dev cache too.
+      devServer.watcher.add(siftPackageSrcDir);
+      devServer.watcher.add(siftWasmPkgDir);
+      devServer.watcher.add(PREBUILT_DIR);
       devServer.middlewares.use(async (_req, _res, next) => {
         if (!devBuildPromise) {
           devBuildPromise = buildRendererFromSource();
@@ -289,7 +306,10 @@ export const css = ${JSON.stringify(css)};
         (file.startsWith(componentsDir) &&
           (file.includes("/outputs/") ||
             file.includes("/isolated/") ||
-            file.includes("/widgets/")));
+            file.includes("/widgets/"))) ||
+        file.startsWith(siftPackageSrcDir) ||
+        file.startsWith(siftWasmPkgDir) ||
+        file.startsWith(PREBUILT_DIR);
 
       if (!isIsolatedRendererFile) return;
 
