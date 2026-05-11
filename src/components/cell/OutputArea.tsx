@@ -82,6 +82,12 @@ interface OutputAreaProps {
    */
   cellId?: string;
   /**
+   * Execution count for the cell. Used to label the isolated iframe with
+   * `code-Out[N]-{cellId}` so the dev-tools frame picker shows something
+   * meaningful instead of a stack of identical `localhost` rows.
+   */
+  executionCount?: number | null;
+  /**
    * Whether the output area is collapsed.
    */
   collapsed?: boolean;
@@ -377,6 +383,7 @@ function renderOutput(
 export function OutputArea({
   outputs,
   cellId,
+  executionCount,
   collapsed = false,
   onToggleCollapse,
   maxHeight,
@@ -439,6 +446,14 @@ export function OutputArea({
   // When preloading, we render the iframe even with no outputs (hidden)
   // This allows it to bootstrap ahead of time for instant rendering
   const showPreloadedIframe = preloadIframe && !collapsed;
+
+  // Frame name for dev-tools picker. `code-Out[N]-{cellId}` mirrors the
+  // Jupyter `Out[N]` convention with the cell ID appended so the picker can
+  // distinguish reruns and concurrent cells. `*` matches Jupyter's queued /
+  // never-run indicator.
+  const frameName = cellId
+    ? `code-Out[${executionCount == null ? "*" : executionCount}]-${cellId}`
+    : undefined;
 
   // Check if we have widgets and should set up comm bridge
   const hasWidgets = hasWidgetOutputs(outputs, priority);
@@ -817,6 +832,7 @@ export function OutputArea({
             >
               <IsolatedFrame
                 ref={frameRef}
+                name={frameName}
                 darkMode={darkMode}
                 colorTheme={colorTheme}
                 minHeight={24}

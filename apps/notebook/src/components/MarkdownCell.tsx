@@ -551,6 +551,7 @@ export const MarkdownCell = memo(function MarkdownCell({
             >
               <IsolatedFrame
                 ref={frameRef}
+                name={`md-${cell.id}`}
                 darkMode={darkMode}
                 colorTheme={colorTheme}
                 minHeight={24}
