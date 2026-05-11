@@ -269,7 +269,6 @@ def build_arrow_stream_manifest(
     row_count: int,
     record_batch_count: int | None = None,
     summary: dict[str, Any] | None = None,
-    llm: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a one-chunk Arrow stream manifest for ``data``.
 
@@ -290,7 +289,6 @@ def build_arrow_stream_manifest(
         [chunk],
         complete=True,
         summary=summary,
-        llm=llm,
     )
     if record_batch_count is None:
         manifest["chunks"][0].pop("record_batch_count", None)
@@ -303,7 +301,6 @@ def build_arrow_stream_manifest_from_chunks(
     complete: bool,
     summary: dict[str, Any] | None = None,
     schema: Any | None = None,
-    llm: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build an Arrow stream manifest for ordered IPC mini-stream chunks."""
     import pyarrow as pa
@@ -340,23 +337,7 @@ def build_arrow_stream_manifest_from_chunks(
         "complete": complete,
         "summary": summary or {},
     }
-    llm_entry = _normalize_manifest_llm(llm)
-    if llm_entry is not None:
-        manifest["llm"] = llm_entry
     return manifest
-
-
-def _normalize_manifest_llm(llm: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Return the bounded LLM hint object stored on Arrow manifests."""
-    if llm is None:
-        return None
-    text = llm.get("text")
-    if not isinstance(text, str) or not text:
-        return None
-    return {
-        "content_type": str(llm.get("content_type") or "text/llm+plain"),
-        "text": text,
-    }
 
 
 def _downsample_loop(
