@@ -212,8 +212,17 @@ def serialize_dataframe(df: Any, *, max_bytes: int) -> tuple[bytes, str, int]:
         encoder = _serialize_pandas
         n = len(df)
     elif hasattr(df, "__arrow_c_stream__"):
-        encoder = _serialize_arrow_stream_exportable
         n = _row_count(df)
+        if n is None:
+            raise ValueError(
+                f"unsupported row count for: {type(df).__module__}.{type(df).__name__}"
+            )
+        data = _serialize_arrow_stream_exportable(df)
+        if len(data) > max_bytes:
+            raise ValueError(
+                "generic Arrow PyCapsule stream exceeds max_bytes; progressive chunking is required"
+            )
+        return data, ARROW_STREAM_MIME, n
     else:
         raise ValueError(f"unsupported DataFrame type: {type(df).__module__}.{type(df).__name__}")
 

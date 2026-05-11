@@ -585,7 +585,13 @@ for the staged implementation.
   - confirmed-fix: the private `_import_from_c_capsule` fallback is documented
     as a compatibility bridge only for generic PyCapsule sources on PyArrow
     14/15; known table paths bypass it.
-- Next: rerun the repo-local `pr-reviewer` after the second review-fix commit,
+- Review rerun: `pr-reviewer` found the generic PyCapsule path should not
+  replay a potentially single-pass stream during downsampling. Disposition:
+  - confirmed-fix: generic PyCapsule objects serialize once only; if the
+    complete stream exceeds `max_bytes`, the formatter rejects rich output for
+    now and relies on summary fallback. Progressive chunking is the intended
+    rich path for large single-pass sources.
+- Next: rerun the repo-local `pr-reviewer` after the third review-fix commit,
   then add manifest routing/rendering only after accepted findings are resolved
   or deferred here.
 

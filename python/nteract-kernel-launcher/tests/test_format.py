@@ -159,6 +159,28 @@ def test_serialize_dataframe_accepts_arrow_pycapsule_stream_protocol():
     assert table.num_rows == 10
 
 
+def test_serialize_dataframe_rejects_oversized_generic_pycapsule_stream():
+    pa = pytest.importorskip("pyarrow")
+    from nteract_kernel_launcher._format import serialize_dataframe
+
+    class SinglePassStream:
+        def __init__(self):
+            self._used = False
+            self._table = pa.table({"a": list(range(100))})
+
+        def __arrow_c_stream__(self, requested_schema=None):
+            if self._used:
+                raise RuntimeError("stream already consumed")
+            self._used = True
+            return self._table.__arrow_c_stream__(requested_schema)
+
+        def __len__(self):
+            return self._table.num_rows
+
+    with pytest.raises(ValueError, match="progressive chunking is required"):
+        serialize_dataframe(SinglePassStream(), max_bytes=1)
+
+
 def test_serialize_arrow_table_uses_direct_writer(monkeypatch):
     pa = pytest.importorskip("pyarrow")
     import nteract_kernel_launcher._format as fmt
