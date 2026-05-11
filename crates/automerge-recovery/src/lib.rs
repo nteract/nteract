@@ -111,6 +111,23 @@ pub fn catch_automerge_panic<T>(
     }
 }
 
+enum AutomergeAttempt<T> {
+    Success(T),
+    AutomergeError(automerge::AutomergeError),
+    Panic(AutomergeRecoveryError),
+}
+
+fn catch_automerge_result<T>(
+    label: impl Into<String>,
+    f: impl FnOnce() -> Result<T, automerge::AutomergeError>,
+) -> AutomergeAttempt<T> {
+    match catch_automerge_panic(label, f) {
+        Ok(Ok(value)) => AutomergeAttempt::Success(value),
+        Ok(Err(source)) => AutomergeAttempt::AutomergeError(source),
+        Err(error) => AutomergeAttempt::Panic(error),
+    }
+}
+
 /// Run an Automerge operation and, when it panics or returns a caller-marked
 /// recoverable error, rebuild caller-owned state and retry once.
 ///
@@ -126,21 +143,27 @@ pub fn recoverable_automerge_operation<C, T>(
 ) -> Result<T, AutomergeOperationError> {
     let label = label.into();
 
-    let first_panic = match catch_automerge_panic(label.clone(), || operation(context)) {
-        Ok(Ok(value)) => return Ok(value),
-        Ok(Err(source)) if should_rebuild(&source) => None,
-        Ok(Err(source)) => return Err(AutomergeOperationError::automerge(label, source)),
-        Err(error) => Some(error),
+    let first_panic = match catch_automerge_result(label.clone(), || operation(context)) {
+        AutomergeAttempt::Success(value) => return Ok(value),
+        AutomergeAttempt::AutomergeError(source) if should_rebuild(&source) => None,
+        AutomergeAttempt::AutomergeError(source) => {
+            return Err(AutomergeOperationError::automerge(label, source));
+        }
+        AutomergeAttempt::Panic(error) => Some(error),
     };
 
     if let Err(source) = rebuild(context) {
         return Err(AutomergeOperationError::rebuild_failed(label, source));
     }
 
-    match catch_automerge_panic(label.clone(), || operation(context)) {
-        Ok(Ok(value)) => Ok(value),
-        Ok(Err(source)) => Err(AutomergeOperationError::automerge(label, source)),
-        Err(error) => Err(AutomergeOperationError::Panic(first_panic.unwrap_or(error))),
+    match catch_automerge_result(label.clone(), || operation(context)) {
+        AutomergeAttempt::Success(value) => Ok(value),
+        AutomergeAttempt::AutomergeError(source) => {
+            Err(AutomergeOperationError::automerge(label, source))
+        }
+        AutomergeAttempt::Panic(error) => {
+            Err(AutomergeOperationError::Panic(first_panic.unwrap_or(error)))
+        }
     }
 }
 
