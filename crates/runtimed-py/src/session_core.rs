@@ -34,6 +34,24 @@ const DEFAULT_ACTOR_LABEL: &str = "runtimed-py";
 /// Remote cursor info: (peer_id, peer_label, cell_id, line, column).
 pub(crate) type RemoteCursor = (String, String, String, u32, u32);
 
+#[derive(Debug)]
+enum TimedExecution<T> {
+    Completed(T),
+    Failed(PyErr),
+    TimedOut,
+}
+
+async fn execute_with_timeout<T, F>(future: F, timeout: std::time::Duration) -> TimedExecution<T>
+where
+    F: std::future::Future<Output = PyResult<T>>,
+{
+    match tokio::time::timeout(timeout, future).await {
+        Ok(Ok(value)) => TimedExecution::Completed(value),
+        Ok(Err(error)) => TimedExecution::Failed(error),
+        Err(_) => TimedExecution::TimedOut,
+    }
+}
+
 // =========================================================================
 // Shared state
 // =========================================================================
@@ -1300,19 +1318,22 @@ pub(crate) async fn execute_cell(
     timeout_secs: f64,
 ) -> PyResult<ExecutionResult> {
     let timeout = std::time::Duration::from_secs_f64(timeout_secs);
-    let result = tokio::time::timeout(timeout, async {
-        // queue_cell is the single primitive: auto-starts kernel, confirms
-        // sync, sends ExecuteCell request, emits focus presence.
-        let execution_id = queue_cell(state, notebook_id, cell_id).await?;
+    let execution = execute_with_timeout(
+        async {
+            // queue_cell is the single primitive: auto-starts kernel, confirms
+            // sync, sends ExecuteCell request, emits focus presence.
+            let execution_id = queue_cell(state, notebook_id, cell_id).await?;
 
-        wait_for_execution(state, cell_id, &execution_id, timeout_secs).await
-    })
+            wait_for_execution(state, cell_id, &execution_id, timeout_secs).await
+        },
+        timeout,
+    )
     .await;
 
-    match result {
-        Ok(Ok(exec_result)) => Ok(exec_result),
-        Ok(Err(e)) => Err(e),
-        Err(_) => Err(to_py_err(format!(
+    match execution {
+        TimedExecution::Completed(exec_result) => Ok(exec_result),
+        TimedExecution::Failed(e) => Err(e),
+        TimedExecution::TimedOut => Err(to_py_err(format!(
             "Execution timed out after {} seconds",
             timeout_secs
         ))),
@@ -2401,6 +2422,52 @@ mod tests {
         let a = make_actor_label("Claude");
         let b = make_actor_label("Claude");
         assert_ne!(a, b, "each call should produce a unique session suffix");
+    }
+
+    #[tokio::test]
+    async fn execute_with_timeout_reports_success() {
+        let result = execute_with_timeout(
+            async { Ok::<_, PyErr>(7) },
+            std::time::Duration::from_secs(1),
+        )
+        .await;
+
+        match result {
+            TimedExecution::Completed(value) => assert_eq!(value, 7),
+            other => panic!("expected completed execution, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_with_timeout_reports_error() {
+        Python::initialize();
+
+        let result = execute_with_timeout(
+            async { Err::<(), _>(to_py_err("execution failed")) },
+            std::time::Duration::from_secs(1),
+        )
+        .await;
+
+        match result {
+            TimedExecution::Failed(error) => {
+                assert!(error.to_string().contains("execution failed"));
+            }
+            other => panic!("expected failed execution, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_with_timeout_reports_timeout() {
+        let result = execute_with_timeout(
+            std::future::pending::<PyResult<()>>(),
+            std::time::Duration::ZERO,
+        )
+        .await;
+
+        match result {
+            TimedExecution::TimedOut => {}
+            other => panic!("expected timed out execution, got {other:?}"),
+        }
     }
 
     #[test]

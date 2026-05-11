@@ -24,6 +24,7 @@ use tokio::net::windows::named_pipe::ServerOptions;
 
 use tokio::sync::RwLock;
 
+use crate::async_outcome::{await_result_with_timeout, TimedResult};
 use crate::blob_server;
 use crate::blob_store::BlobStore;
 use crate::notebook_sync_server::{NotebookRooms, PathIndex};
@@ -530,7 +531,7 @@ async fn absorb_rapid_settings_signals(
     rx: &mut tokio::sync::broadcast::Receiver<()>,
     quiet: std::time::Duration,
 ) {
-    while let Ok(Ok(())) = tokio::time::timeout(quiet, rx.recv()).await {}
+    while let TimedResult::Completed(()) = await_result_with_timeout(rx.recv(), quiet).await {}
 }
 
 impl Pool {

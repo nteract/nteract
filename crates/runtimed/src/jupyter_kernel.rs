@@ -28,6 +28,9 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+use crate::async_outcome::{
+    await_result_with_timeout, recv_oneshot_with_timeout, TimedOneShot, TimedResult,
+};
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
 use crate::output_prep::{
     apply_display_manifest_updates, blob_store_large_state_values, build_display_manifest_updates,
@@ -208,14 +211,14 @@ impl InterruptHandle {
 
         info!("[jupyter-kernel] Sent interrupt_request (via handle)");
 
-        match tokio::time::timeout(std::time::Duration::from_secs(5), control.read()).await {
-            Ok(Ok(_reply)) => {
+        match await_result_with_timeout(control.read(), std::time::Duration::from_secs(5)).await {
+            TimedResult::Completed(_reply) => {
                 info!("[jupyter-kernel] Received interrupt_reply");
             }
-            Ok(Err(e)) => {
+            TimedResult::Failed(e) => {
                 warn!("[jupyter-kernel] Error receiving interrupt_reply: {}", e);
             }
-            Err(_) => {
+            TimedResult::TimedOut => {
                 warn!("[jupyter-kernel] Timed out waiting for interrupt_reply (5s)");
             }
         }
@@ -2369,11 +2372,11 @@ impl KernelConnection for JupyterKernel {
         }
 
         let reply = tokio::select! {
-            result = tokio::time::timeout(std::time::Duration::from_secs(30), shell.read()) => {
+            result = await_result_with_timeout(shell.read(), std::time::Duration::from_secs(30)) => {
                 match result {
-                    Ok(Ok(msg)) => Ok(msg),
-                    Ok(Err(e)) => Err(anyhow::anyhow!("Kernel did not respond: {}", e)),
-                    Err(_) => Err(anyhow::anyhow!("Kernel did not respond within 30s")),
+                    TimedResult::Completed(msg) => Ok(msg),
+                    TimedResult::Failed(e) => Err(anyhow::anyhow!("Kernel did not respond: {}", e)),
+                    TimedResult::TimedOut => Err(anyhow::anyhow!("Kernel did not respond within 30s")),
                 }
             }
             died_msg = died_rx => {
@@ -2619,8 +2622,8 @@ impl KernelConnection for JupyterKernel {
                         hb.single_heartbeat().await
                     };
 
-                    let failure = match tokio::time::timeout(HEARTBEAT_TIMEOUT, check).await {
-                        Ok(Ok(())) => {
+                    let failure = match await_result_with_timeout(check, HEARTBEAT_TIMEOUT).await {
+                        TimedResult::Completed(()) => {
                             if consecutive_failures > 0 {
                                 info!(
                                     "[jupyter-kernel] Heartbeat recovered: kernel_id={} kernel_type={} env_source={} pid={:?} previous_failures={} launch_elapsed_ms={}",
@@ -2635,10 +2638,10 @@ impl KernelConnection for JupyterKernel {
                             consecutive_failures = 0;
                             continue;
                         }
-                        Ok(Err(e)) => {
+                        TimedResult::Failed(e) => {
                             format!("connection error: {e}")
                         }
-                        Err(_) => {
+                        TimedResult::TimedOut => {
                             format!("timeout after {}ms", HEARTBEAT_TIMEOUT.as_millis())
                         }
                     };
@@ -2864,14 +2867,14 @@ impl KernelConnection for JupyterKernel {
         info!("[jupyter-kernel] Sent interrupt_request");
 
         // Wait for acknowledgement with timeout
-        match tokio::time::timeout(std::time::Duration::from_secs(5), control.read()).await {
-            Ok(Ok(_reply)) => {
+        match await_result_with_timeout(control.read(), std::time::Duration::from_secs(5)).await {
+            TimedResult::Completed(_reply) => {
                 info!("[jupyter-kernel] Received interrupt_reply");
             }
-            Ok(Err(e)) => {
+            TimedResult::Failed(e) => {
                 warn!("[jupyter-kernel] Error receiving interrupt_reply: {}", e);
             }
-            Err(_) => {
+            TimedResult::TimedOut => {
                 warn!("[jupyter-kernel] Timed out waiting for interrupt_reply (5s)");
             }
         }
@@ -3106,10 +3109,10 @@ impl KernelConnection for JupyterKernel {
         debug!("[jupyter-kernel] Sent complete_request: msg_id={}", msg_id);
 
         // Wait for response with timeout (shell reader task will resolve via pending_completions)
-        match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
-            Ok(Ok(result)) => Ok(result),
-            Ok(Err(_)) => Err(anyhow::anyhow!("Completion request cancelled")),
-            Err(_) => {
+        match recv_oneshot_with_timeout(rx, std::time::Duration::from_secs(5)).await {
+            TimedOneShot::Received(result) => Ok(result),
+            TimedOneShot::SenderDropped => Err(anyhow::anyhow!("Completion request cancelled")),
+            TimedOneShot::TimedOut => {
                 if let Ok(mut guard) = pending.lock() {
                     guard.remove(&msg_id);
                 }
@@ -3171,13 +3174,13 @@ impl KernelConnection for JupyterKernel {
         shell.send(message).await?;
         debug!("[jupyter-kernel] Sent history_request: msg_id={}", msg_id);
 
-        match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
-            Ok(Ok(entries)) => {
+        match recv_oneshot_with_timeout(rx, std::time::Duration::from_secs(5)).await {
+            TimedOneShot::Received(entries) => {
                 self.history_cache.insert(cache_key, n, entries.clone());
                 Ok(entries)
             }
-            Ok(Err(_)) => Err(anyhow::anyhow!("History request cancelled")),
-            Err(_) => {
+            TimedOneShot::SenderDropped => Err(anyhow::anyhow!("History request cancelled")),
+            TimedOneShot::TimedOut => {
                 if let Ok(mut guard) = pending.lock() {
                     guard.remove(&msg_id);
                 }
