@@ -18,7 +18,7 @@ import {
   type TableEngineState,
 } from "@nteract/sift";
 import "@nteract/sift/style.css";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 declare const __SIFT_WASM_CACHE_KEY__: string | undefined;
 
@@ -154,7 +154,7 @@ function tableUrlForData(data: unknown, mimeType: string): string | undefined {
 
 function SiftRenderer({ data, mimeType, interactionActive = false }: RendererProps) {
   const url = tableUrlForData(data, mimeType);
-  const source = tableSourceForData(data, mimeType);
+  const source = useMemo(() => tableSourceForData(data, mimeType), [data, mimeType]);
   if (!url || !source) {
     console.warn("[sift-renderer] missing table URL", { mimeType, data });
     return <pre style={{ whiteSpace: "pre-wrap" }}>Unable to load Arrow stream manifest</pre>;

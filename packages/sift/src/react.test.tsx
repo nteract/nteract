@@ -2,6 +2,7 @@ import { cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { SiftFocusStatus, SiftScrollHandoffCue } from "./handoff";
 import { SiftTable } from "./react";
+import type { SiftSource } from "./react";
 import type { Column, TableData } from "./table";
 
 const predicateModule = vi.hoisted(() => ({
@@ -222,6 +223,40 @@ describe("SiftTable", () => {
     expect(Array.from(predicateModule.append_arrow_stream_chunk.mock.calls[0][1])).toEqual([
       1, 2, 3, 4,
     ]);
+
+    vi.unstubAllGlobals();
+    vi.useFakeTimers();
+  });
+
+  it("does not reload a manifest source when only object identity changes", async () => {
+    vi.useRealTimers();
+    const chunkBytes = new Uint8Array([1, 2, 3, 4]);
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve({
+        ok: true,
+        arrayBuffer: async () => chunkBytes.buffer,
+      }),
+    );
+
+    const source = (): SiftSource => ({
+      kind: "arrow-stream-manifest",
+      manifest: {
+        chunks: [{ url: "http://127.0.0.1:9000/blob/chunk" }],
+        complete: true,
+      },
+    });
+
+    const { rerender } = render(<SiftTable source={source()} />);
+
+    await waitFor(() => {
+      expect(predicateModule.append_arrow_stream_chunk).toHaveBeenCalledTimes(1);
+    });
+
+    rerender(<SiftTable source={source()} />);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(predicateModule.append_arrow_stream_chunk).toHaveBeenCalledTimes(1);
+    expect(predicateModule.finish_arrow_stream_store).toHaveBeenCalledTimes(1);
 
     vi.unstubAllGlobals();
     vi.useFakeTimers();

@@ -611,6 +611,8 @@ for the staged implementation.
   - Manifest sources fetch complete chunk URLs in order, append them through the
     WASM stream store, and mark the table complete when the manifest is
     complete.
+  - Manifest loading is keyed by completion state and chunk URLs/row counts, so
+    recreating an equivalent `source` object does not reload the table.
   - the isolated renderer now passes manifest objects to Sift instead of
     collapsing them back to a direct URL.
 - Next: run repo-local `pr-reviewer` for the React manifest append commit and

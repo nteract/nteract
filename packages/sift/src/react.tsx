@@ -74,6 +74,15 @@ export type SiftTableProps = {
   style?: React.CSSProperties;
 };
 
+function arrowStreamManifestKey(manifest: ArrowStreamManifest | undefined): string | null {
+  if (!manifest) return null;
+  const complete = manifest.complete === false ? "open" : "complete";
+  const chunks = manifest.chunks
+    .map((chunk) => `${chunk.url}\u0001${chunk.row_count ?? ""}`)
+    .join("\u0000");
+  return `${complete}\u0002${chunks}`;
+}
+
 // --- Format detection ---
 
 /** Parquet magic bytes: PAR1 */
@@ -310,6 +319,7 @@ export function SiftTable({
   const dataSource = source?.kind === "table-data" ? source.data : data;
   const urlSource = source?.kind === "url" ? source.url : url;
   const manifestSource = source?.kind === "arrow-stream-manifest" ? source.manifest : undefined;
+  const manifestKey = arrowStreamManifestKey(manifestSource);
 
   // Mount engine when `data` prop is provided directly
   useEffect(() => {
@@ -454,7 +464,7 @@ export function SiftTable({
       engineRef.current = null;
       engineDiv?.remove();
     };
-  }, [manifestSource, columnOverrides, stableOnChange, getFooterControlElement]);
+  }, [manifestKey, columnOverrides, stableOnChange, getFooterControlElement]);
 
   // Load from URL when `url` prop is provided.
   // Detects format via Content-Type header + magic byte fallback:
