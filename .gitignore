@@ -102,6 +102,8 @@ crates/notebook/fixtures/**/uv.lock
 
 # E2E test screenshots
 e2e-screenshots/
+playwright-report/
+test-results/
 
 # E2E daemon PID file
 .e2e-daemon.pid

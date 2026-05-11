@@ -9,6 +9,7 @@
     "notebook:dev": "pnpm --dir apps/notebook dev",
     "test": "vp test",
     "test:run": "vp test run",
+    "test:e2e:browser": "pnpm --filter notebook-ui test:e2e:browser",
     "test:e2e": "wdio run e2e/wdio.conf.js",
     "test:e2e:native": "wdio run e2e/wdio.conf.js"
   },
