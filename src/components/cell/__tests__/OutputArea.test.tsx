@@ -192,7 +192,7 @@ describe("OutputArea iframe theme sync", () => {
     );
   });
 
-  it("activates static iframe outputs for pointer interaction until the pointer leaves", () => {
+  it("activates static iframe outputs on pointer down and keeps them active when the pointer leaves", () => {
     const onIframeMouseDown = vi.fn();
     const { getByTestId } = render(
       <OutputArea outputs={makeMarkdownOutput()} isolated onIframeMouseDown={onIframeMouseDown} />,
@@ -209,6 +209,8 @@ describe("OutputArea iframe theme sync", () => {
       "true",
     );
 
+    // Pointer out while a button is held used to be a no-op and remains so —
+    // active drags keep the frame focused.
     pointerOutWithButtons(activationWell, 1);
 
     expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("false");
@@ -216,11 +218,14 @@ describe("OutputArea iframe theme sync", () => {
       "true",
     );
 
+    // Pointer out without buttons no longer drops focus; the user has to
+    // click elsewhere, scroll, or press Escape. See the dedicated
+    // outside-pointer-down and Escape tests below.
     pointerOutWithButtons(activationWell, 0);
 
-    expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("true");
+    expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("false");
     expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
-      "false",
+      "true",
     );
   });
 

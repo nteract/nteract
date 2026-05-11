@@ -3,7 +3,6 @@ import "@nteract/sift/handoff.css";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import {
   type KeyboardEvent,
-  type PointerEvent,
   type ReactNode,
   useCallback,
   useEffect,
@@ -547,21 +546,6 @@ export function OutputArea({
     onIframeMouseDown,
   ]);
 
-  const deactivateStaticFrameInteractionWhenIdle = useCallback(
-    (event: PointerEvent<HTMLDivElement>) => {
-      if (
-        event.relatedTarget instanceof Node &&
-        event.currentTarget.contains(event.relatedTarget)
-      ) {
-        return;
-      }
-      if (!(event.buttons > 0)) {
-        setStaticFrameInteractionActive(false);
-      }
-    },
-    [],
-  );
-
   const handleStaticFrameKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
       setStaticFrameInteractionActive(false);
@@ -859,11 +843,6 @@ export function OutputArea({
               tabIndex={shouldUseScrollPassthroughFrame ? -1 : undefined}
               onPointerDown={
                 shouldUseScrollPassthroughFrame ? activateStaticFrameInteraction : undefined
-              }
-              onPointerOut={
-                shouldUseScrollPassthroughFrame
-                  ? deactivateStaticFrameInteractionWhenIdle
-                  : undefined
               }
               onKeyDown={shouldUseScrollPassthroughFrame ? handleStaticFrameKeyDown : undefined}
             >
