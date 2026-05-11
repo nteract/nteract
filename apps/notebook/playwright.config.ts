@@ -9,14 +9,19 @@ function worktreeVitePort() {
   return 5100 + (Number.parseInt(hash.slice(0, 4), 16) % 4900);
 }
 
+function truthyEnv(name: string) {
+  const value = String(process.env[name] ?? "").toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
 const port = Number(
   process.env.RUNTIMED_VITE_PORT ?? process.env.CONDUCTOR_PORT ?? worktreeVitePort(),
 );
 const baseURL = process.env.NTERACT_BROWSER_E2E_BASE_URL ?? `http://localhost:${port}`;
 const ignoreHTTPSErrors =
-  process.env.NTERACT_BROWSER_E2E_IGNORE_HTTPS_ERRORS === "1" ||
+  truthyEnv("NTERACT_BROWSER_E2E_IGNORE_HTTPS_ERRORS") ||
   (baseURL.startsWith("https://") &&
-    process.env.NTERACT_BROWSER_E2E_PORTLESS === "1" &&
+    truthyEnv("NTERACT_BROWSER_E2E_PORTLESS") &&
     process.env.NTERACT_BROWSER_E2E_IGNORE_HTTPS_ERRORS !== "0");
 
 export default defineConfig({
