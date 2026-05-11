@@ -219,8 +219,8 @@ describe("OutputArea iframe theme sync", () => {
     );
 
     // Pointer out without buttons no longer drops focus; the user has to
-    // click elsewhere, scroll, or press Escape. See the dedicated
-    // outside-pointer-down and Escape tests below.
+    // click elsewhere or press Escape. See the dedicated outside-pointer-down
+    // and Escape tests below.
     pointerOutWithButtons(activationWell, 0);
 
     expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("false");
