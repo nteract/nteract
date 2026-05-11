@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 Verdict = Literal["clear", "findings", "needs_human", "infra_uncertain"]
 Severity = Literal["blocker", "high", "medium", "low"]
@@ -103,18 +103,45 @@ def normalize_structured_output(data: Any) -> tuple[Verdict, str, list[Finding]]
         raise ValueError("review findings was not a list")
 
     findings: list[Finding] = []
-    for item in findings_data:
+    for index, item in enumerate(findings_data):
         if not isinstance(item, dict):
             raise ValueError("finding was not an object")
+        finding_data = cast(dict[str, Any], item)
+        try:
+            severity = finding_data["severity"]
+            file = finding_data["file"]
+            line = finding_data["line"]
+            title = finding_data["title"]
+            evidence = finding_data["evidence"]
+            suggested_fix = finding_data["suggested_fix"]
+            confidence = finding_data["confidence"]
+        except KeyError as exc:
+            raise ValueError(f"finding {index} is missing required field {exc.args[0]!r}") from exc
+
+        if severity not in {"blocker", "high", "medium", "low"}:
+            raise ValueError(f"finding {index} has invalid severity {severity!r}")
+        if not isinstance(file, str):
+            raise ValueError(f"finding {index} file was not a string")
+        if line is not None and not isinstance(line, int):
+            raise ValueError(f"finding {index} line was not an integer or null")
+        if not isinstance(title, str):
+            raise ValueError(f"finding {index} title was not a string")
+        if not isinstance(evidence, str):
+            raise ValueError(f"finding {index} evidence was not a string")
+        if suggested_fix is not None and not isinstance(suggested_fix, str):
+            raise ValueError(f"finding {index} suggested_fix was not a string or null")
+        if confidence not in {"high", "medium", "low"}:
+            raise ValueError(f"finding {index} has invalid confidence {confidence!r}")
+
         findings.append(
             Finding(
-                severity=item["severity"],
-                file=item["file"],
-                line=item["line"],
-                title=item["title"],
-                evidence=item["evidence"],
-                suggested_fix=item["suggested_fix"],
-                confidence=item["confidence"],
+                severity=cast(Severity, severity),
+                file=file,
+                line=line,
+                title=title,
+                evidence=evidence,
+                suggested_fix=suggested_fix,
+                confidence=cast(Confidence, confidence),
             )
         )
 

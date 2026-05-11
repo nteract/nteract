@@ -41,10 +41,14 @@ def prepare_review_workspace(
         raise FileExistsError(f"review workspace already exists: {path}")
 
     runner(["git", "worktree", "add", "--detach", str(path), pr_remote], cwd=repo_root)
-    merge_base = git.merge_base(base_remote, "HEAD", cwd=path, runner=runner)
-    files = git.changed_files(base_remote, "HEAD", cwd=path, runner=runner)
-    stat = git.diff_stat(base_remote, "HEAD", cwd=path, runner=runner)
-    patch = git.diff_patch(base_remote, "HEAD", cwd=path, runner=runner)
+    try:
+        merge_base = git.merge_base(base_remote, "HEAD", cwd=path, runner=runner)
+        files = git.changed_files(base_remote, "HEAD", cwd=path, runner=runner)
+        stat = git.diff_stat(base_remote, "HEAD", cwd=path, runner=runner)
+        patch = git.diff_patch(base_remote, "HEAD", cwd=path, runner=runner)
+    except Exception:
+        remove_review_workspace(path, repo_root=repo_root, runner=runner)
+        raise
 
     return ReviewWorkspace(
         path=path,

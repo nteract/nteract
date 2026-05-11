@@ -40,3 +40,14 @@ def test_normalize_structured_output_returns_findings() -> None:
 def test_normalize_structured_output_rejects_invalid_verdict() -> None:
     with pytest.raises(ValueError, match="invalid review verdict"):
         normalize_structured_output({"verdict": "maybe", "summary": "", "findings": []})
+
+
+def test_normalize_structured_output_wraps_missing_finding_field() -> None:
+    with pytest.raises(ValueError, match="finding 0 is missing required field 'severity'"):
+        normalize_structured_output(
+            {
+                "verdict": "findings",
+                "summary": "Bad finding.",
+                "findings": [{"file": "src/lib.rs"}],
+            }
+        )
