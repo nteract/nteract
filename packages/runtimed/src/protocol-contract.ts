@@ -59,6 +59,8 @@ export const NOTEBOOK_RESPONSE_RESULTS = [
   "sync_environment_complete",
   "sync_environment_failed",
   "doc_bytes",
+  "blob_stored",
+  "blob_upload_error",
 ] as const satisfies readonly NotebookResponse["result"][];
 
 export const NOTEBOOK_RESPONSE_RESULTS_EXHAUSTIVE: MissingUnionMember<

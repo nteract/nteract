@@ -33,6 +33,7 @@ describe("FrameType constants", () => {
     expect(FrameType.RUNTIME_STATE_SYNC).toBe(0x05);
     expect(FrameType.POOL_STATE_SYNC).toBe(0x06);
     expect(FrameType.SESSION_CONTROL).toBe(0x07);
+    expect(FrameType.PUT_BLOB).toBe(0x08);
   });
 });
 

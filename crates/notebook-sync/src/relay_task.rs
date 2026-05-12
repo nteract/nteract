@@ -294,7 +294,7 @@ fn route_incoming_frame(
 /// response (`0x02`) frames. Frontend requests rely on `0x02` reaching the
 /// JS side so the frontend's pending map can correlate the response.
 ///
-/// Request frames (`0x01`) are never piped outbound to the frontend — the
+/// Request and PutBlob frames are never piped outbound to the frontend — the
 /// frontend sends them; the daemon never emits them to a client.
 fn pipe_frame(frame_tx: &mpsc::UnboundedSender<Vec<u8>>, frame: &connection::TypedNotebookFrame) {
     match frame.frame_type {
@@ -309,9 +309,10 @@ fn pipe_frame(frame_tx: &mpsc::UnboundedSender<Vec<u8>>, frame: &connection::Typ
             bytes.extend_from_slice(&frame.payload);
             let _ = frame_tx.send(bytes);
         }
-        NotebookFrameType::Request => {
+        NotebookFrameType::Request | NotebookFrameType::PutBlob => {
             debug!(
-                "[relay] Not piping Request frame (outbound only) — {} bytes",
+                "[relay] Not piping {:?} frame (outbound only) — {} bytes",
+                frame.frame_type,
                 frame.payload.len()
             );
         }

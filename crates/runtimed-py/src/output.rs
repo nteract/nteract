@@ -746,9 +746,9 @@ impl NotebookConnectionInfo {
     /// Create from the Rust NotebookConnectionInfo type.
     pub fn from_protocol(info: notebook_protocol::connection::NotebookConnectionInfo) -> Self {
         Self {
-            protocol: info.protocol,
-            protocol_version: info.protocol_version,
-            daemon_version: info.daemon_version,
+            protocol: info.capabilities.protocol,
+            protocol_version: info.capabilities.protocol_version,
+            daemon_version: info.capabilities.daemon_version,
             notebook_id: info.notebook_id,
             cell_count: info.cell_count,
             needs_trust_approval: info.needs_trust_approval,

@@ -32,6 +32,9 @@ pub mod frame_types {
 
     /// Session-control message (JSON).
     pub const SESSION_CONTROL: u8 = 0x07;
+
+    /// Blob upload payload (`u32 header_len | JSON header | raw bytes`).
+    pub const PUT_BLOB: u8 = 0x08;
 }
 
 const KIB: usize = 1024;
@@ -87,6 +90,10 @@ pub fn frame_size_limits(type_byte: u8) -> FrameSizeLimits {
             cap: MIB,
             warn: 256 * KIB,
         },
+        frame_types::PUT_BLOB => FrameSizeLimits {
+            cap: 32 * MIB,
+            warn: 8 * MIB,
+        },
         _ => FrameSizeLimits {
             cap: MAX_FRAME_SIZE,
             warn: MAX_FRAME_SIZE / 2,
@@ -123,6 +130,8 @@ pub enum NotebookFrameType {
     PoolStateSync = frame_types::POOL_STATE_SYNC,
     /// Session-control message (JSON, server-originated connection status).
     SessionControl = frame_types::SESSION_CONTROL,
+    /// Blob upload payload (`u32 header_len | JSON header | raw bytes`).
+    PutBlob = frame_types::PUT_BLOB,
 }
 
 impl TryFrom<u8> for NotebookFrameType {
@@ -138,6 +147,7 @@ impl TryFrom<u8> for NotebookFrameType {
             frame_types::RUNTIME_STATE_SYNC => Ok(Self::RuntimeStateSync),
             frame_types::POOL_STATE_SYNC => Ok(Self::PoolStateSync),
             frame_types::SESSION_CONTROL => Ok(Self::SessionControl),
+            frame_types::PUT_BLOB => Ok(Self::PutBlob),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("unknown notebook frame type: 0x{:02x}", value),

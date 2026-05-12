@@ -17,7 +17,8 @@ pub use framing::{
 };
 
 pub use handshake::{
-    Handshake, NotebookConnectionInfo, ProtocolCapabilities, PROTOCOL_V4, PROTOCOL_VERSION,
+    Handshake, NotebookConnectionInfo, ProtocolCapabilities, PutBlobCapability, PROTOCOL_V4,
+    PROTOCOL_VERSION,
 };
 
 #[cfg(windows)]
@@ -270,11 +271,21 @@ mod tests {
 
     #[test]
     fn test_notebook_connection_info_serialization() {
+        fn capabilities(
+            protocol_version: Option<u32>,
+            daemon_version: Option<String>,
+        ) -> ProtocolCapabilities {
+            ProtocolCapabilities {
+                protocol: PROTOCOL_V4.into(),
+                protocol_version,
+                daemon_version,
+                put_blob: None,
+            }
+        }
+
         // Success case (minimal - no optional fields)
         let info = NotebookConnectionInfo {
-            protocol: PROTOCOL_V4.into(),
-            protocol_version: None,
-            daemon_version: None,
+            capabilities: capabilities(None, None),
             notebook_id: "/home/user/notebook.ipynb".into(),
             cell_count: 5,
             needs_trust_approval: false,
@@ -290,9 +301,7 @@ mod tests {
 
         // With version info
         let info = NotebookConnectionInfo {
-            protocol: PROTOCOL_V4.into(),
-            protocol_version: Some(PROTOCOL_VERSION),
-            daemon_version: Some("0.1.0+abc123".into()),
+            capabilities: capabilities(Some(PROTOCOL_VERSION), Some("0.1.0+abc123".into())),
             notebook_id: "/home/user/notebook.ipynb".into(),
             cell_count: 5,
             needs_trust_approval: false,
@@ -306,9 +315,7 @@ mod tests {
 
         // With trust approval needed
         let info = NotebookConnectionInfo {
-            protocol: PROTOCOL_V4.into(),
-            protocol_version: None,
-            daemon_version: None,
+            capabilities: capabilities(None, None),
             notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
             cell_count: 1,
             needs_trust_approval: true,
@@ -321,9 +328,7 @@ mod tests {
 
         // Error case
         let info = NotebookConnectionInfo {
-            protocol: PROTOCOL_V4.into(),
-            protocol_version: None,
-            daemon_version: None,
+            capabilities: capabilities(None, None),
             notebook_id: String::new(),
             cell_count: 0,
             needs_trust_approval: false,
@@ -336,9 +341,7 @@ mod tests {
 
         // With notebook_path
         let info = NotebookConnectionInfo {
-            protocol: PROTOCOL_V4.into(),
-            protocol_version: None,
-            daemon_version: None,
+            capabilities: capabilities(None, None),
             notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
             cell_count: 5,
             needs_trust_approval: false,
@@ -353,6 +356,18 @@ mod tests {
         let old_json = r#"{"protocol":"v2","notebook_id":"abc","cell_count":1,"needs_trust_approval":false,"ephemeral":false}"#;
         let info: NotebookConnectionInfo = serde_json::from_str(old_json).unwrap();
         assert!(info.notebook_path.is_none());
+    }
+
+    #[test]
+    fn protocol_capabilities_advertise_put_blob_frame_limit() {
+        let caps = ProtocolCapabilities::v4(Some("0.1.0+abc123".into()));
+        let put_blob = caps.put_blob.expect("PutBlob is advertised");
+        assert_eq!(put_blob.version, 1);
+        assert_eq!(
+            put_blob.single_frame_max,
+            frame_size_limits(notebook_wire::frame_types::PUT_BLOB).cap as u64
+        );
+        assert!(!put_blob.multipart);
     }
 
     #[tokio::test]
@@ -445,6 +460,34 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn typed_frame_rejects_oversized_put_blob() {
+        let cap = frame_size_limits(notebook_wire::frame_types::PUT_BLOB).cap;
+        let body_len: u32 = (cap as u32) + 1;
+        let total_len: u32 = body_len + 1;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&total_len.to_be_bytes());
+        buf.push(notebook_wire::frame_types::PUT_BLOB);
+        let mut cursor = std::io::Cursor::new(buf);
+        let err = recv_typed_frame(&mut cursor).await.unwrap_err();
+        assert!(err.to_string().contains("too large for type 0x08"));
+    }
+
+    #[tokio::test]
+    async fn typed_frame_sends_put_blob_under_cap() {
+        let cap = frame_size_limits(notebook_wire::frame_types::PUT_BLOB).cap;
+        let payload = vec![0x42u8; cap];
+        let mut buf = Vec::new();
+        send_typed_frame(&mut buf, NotebookFrameType::PutBlob, &payload)
+            .await
+            .unwrap();
+
+        let mut cursor = std::io::Cursor::new(buf);
+        let frame = recv_typed_frame(&mut cursor).await.unwrap().unwrap();
+        assert_eq!(frame.frame_type, NotebookFrameType::PutBlob);
+        assert_eq!(frame.payload.len(), payload.len());
+    }
+
     #[test]
     fn frame_size_limits_cover_every_known_frame_type() {
         // Pin the per-type cap table so a new frame type can't slip in
@@ -461,6 +504,7 @@ mod tests {
             ft::RUNTIME_STATE_SYNC,
             ft::POOL_STATE_SYNC,
             ft::SESSION_CONTROL,
+            ft::PUT_BLOB,
         ] {
             let limits = frame_size_limits(ty);
             assert!(
@@ -537,6 +581,10 @@ mod tests {
         assert_eq!(
             NotebookFrameType::try_from(0x03).unwrap(),
             NotebookFrameType::Broadcast
+        );
+        assert_eq!(
+            NotebookFrameType::try_from(0x08).unwrap(),
+            NotebookFrameType::PutBlob
         );
         assert!(NotebookFrameType::try_from(0xFF).is_err());
     }

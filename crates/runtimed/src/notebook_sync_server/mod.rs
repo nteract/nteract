@@ -48,6 +48,7 @@ use notebook_protocol::connection::{self, NotebookFrameType};
 use runtime_doc::RuntimeStateDoc;
 
 mod attachments;
+mod blob_upload;
 mod catalog;
 mod load;
 mod metadata;

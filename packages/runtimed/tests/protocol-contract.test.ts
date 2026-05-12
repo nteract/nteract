@@ -57,6 +57,8 @@ describe("protocol contract discriminants", () => {
       "sync_environment_complete",
       "sync_environment_failed",
       "doc_bytes",
+      "blob_stored",
+      "blob_upload_error",
     ]);
   });
 

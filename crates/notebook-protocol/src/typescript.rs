@@ -47,6 +47,8 @@ pub const NOTEBOOK_RESPONSE_RESULTS: &[&str] = &[
     "sync_environment_complete",
     "sync_environment_failed",
     "doc_bytes",
+    "blob_stored",
+    "blob_upload_error",
 ];
 
 pub const SESSION_CONTROL_TYPES: &[&str] = &["sync_status"];
@@ -210,7 +212,9 @@ export type NotebookResponse =
     }}
   | {{ result: "sync_environment_complete"; synced_packages: string[] }}
   | {{ result: "sync_environment_failed"; error: string; needs_restart: boolean }}
-  | {{ result: "doc_bytes"; bytes: number[] }};
+  | {{ result: "doc_bytes"; bytes: number[] }}
+  | {{ result: "blob_stored"; hash: string; size: number; media_type: string }}
+  | {{ result: "blob_upload_error"; reason: BlobUploadErrorKind }};
 
 /**
  * Structured save failures returned in `NotebookResponse::SaveError`.
@@ -225,6 +229,14 @@ export type SaveErrorKind =
       path: string;
     }}
   | {{ type: "io"; message: string }};
+
+export type BlobUploadErrorKind =
+  | {{ kind: "size_mismatch" }}
+  | {{ kind: "hash_mismatch" }}
+  | {{ kind: "over_cap" }}
+  | {{ kind: "too_many_in_flight" }}
+  | {{ kind: "invalid_header" }}
+  | {{ kind: "io"; message: string }};
 "#
     )
 }
