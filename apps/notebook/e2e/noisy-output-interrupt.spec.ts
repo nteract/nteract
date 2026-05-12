@@ -2,16 +2,31 @@ import { expect, test } from "@playwright/test";
 import {
   ensureCodeCell,
   executeCell,
+  openNotebookRoom,
   setCellSource,
+  waitForCellSourceContaining,
   waitForKernelStatus,
-  waitForNotebookReady,
   waitForOutputContaining,
 } from "./helpers";
+import { McpPeer } from "./mcp-peer";
 
 test.describe("noisy output interrupt", () => {
-  test("interrupts a stdout flood and keeps the kernel usable", async ({ page }) => {
-    await waitForNotebookReady(page);
+  let mcp: McpPeer | null = null;
+
+  test.afterEach(async () => {
+    await mcp?.close();
+    mcp = null;
+  });
+
+  test("interrupts a stdout flood and keeps the kernel usable from an MCP peer", async ({
+    page,
+  }) => {
+    const notebookId = crypto.randomUUID();
+    await openNotebookRoom(page, notebookId);
     await waitForKernelStatus(page, "idle", 120_000);
+
+    mcp = await McpPeer.start();
+    await mcp.connectNotebook(notebookId);
 
     const cell = await ensureCodeCell(page);
     await setCellSource(
@@ -35,10 +50,18 @@ test.describe("noisy output interrupt", () => {
     await page.getByTestId("interrupt-kernel-button").click();
     await waitForKernelStatus(page, "idle", 60_000);
 
-    await setCellSource(cell, "print('after noisy interrupt e2e')");
+    const cellId = await cell.getAttribute("data-cell-id");
+    if (cellId === null) throw new Error("Interrupted cell is missing data-cell-id");
+
+    await mcp.setCell(cellId, "print('after noisy interrupt from MCP peer')");
+    await waitForCellSourceContaining(cell, "after noisy interrupt from MCP peer");
     await executeCell(cell);
 
-    const output = await waitForOutputContaining(cell, "after noisy interrupt e2e", 60_000);
-    await expect(output).toContainText("after noisy interrupt e2e");
+    const output = await waitForOutputContaining(
+      cell,
+      "after noisy interrupt from MCP peer",
+      60_000,
+    );
+    await expect(output).toContainText("after noisy interrupt from MCP peer");
   });
 });
