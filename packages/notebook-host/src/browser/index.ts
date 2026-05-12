@@ -98,8 +98,9 @@ function addToken(url: string, token: string): string {
   //   /?path=/tmp/foo.ipynb
   //   /?notebook_id=<uuid>
   //   /?runtime=deno
+  //   /?environment_mode=notebook
   const pageParams = new URLSearchParams(window.location.search);
-  for (const key of ["path", "notebook_id", "runtime", "working_dir"]) {
+  for (const key of ["path", "notebook_id", "runtime", "working_dir", "environment_mode"]) {
     const value = pageParams.get(key);
     if (value) resolved.searchParams.set(key, value);
   }

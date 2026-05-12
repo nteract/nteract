@@ -2,7 +2,7 @@
 name = "nteract-workspace"
 version = "0.0.0"
 description = "Development workspace for nteract Python packages"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.14"
 dependencies = [
     "nteract",
     "gremlin ; sys_platform == 'darwin'",
@@ -27,6 +27,12 @@ packages = []
 
 [tool.uv.workspace]
 members = ["python/runtimed", "python/nteract", "python/gremlin", "python/prewarm", "python/dx", "python/nteract-kernel-launcher", "python/pr-reviewer", "python/safari-timeline"]
+
+[tool.uv]
+environments = [
+    "sys_platform == 'darwin'",
+    "sys_platform == 'linux'",
+]
 
 [tool.uv.sources]
 runtimed = { workspace = true }

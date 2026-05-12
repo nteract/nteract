@@ -186,10 +186,12 @@ function relayHandshake(url: URL, repoRoot: string): Record<string, unknown> {
   const notebookId = url.searchParams.get("notebook_id");
   const runtime = url.searchParams.get("runtime") ?? "python";
   const workingDir = url.searchParams.get("working_dir") ?? repoRoot;
+  const environmentMode = url.searchParams.get("environment_mode");
   return {
     channel: "create_notebook",
     runtime,
     working_dir: workingDir,
+    ...(environmentMode ? { environment_mode: environmentMode } : {}),
     ...(notebookId ? { notebook_id: notebookId } : {}),
     ephemeral: true,
   };

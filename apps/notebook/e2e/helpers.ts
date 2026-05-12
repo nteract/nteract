@@ -1,7 +1,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
-export async function waitForNotebookReady(page: Page) {
-  await page.goto("/");
+export async function waitForNotebookReady(page: Page, path = "/") {
+  await page.goto(path);
   await expect(page.getByTestId("notebook-toolbar")).toBeVisible({ timeout: 30_000 });
   await expect(page.locator("[data-notebook-synced]")).toHaveAttribute(
     "data-notebook-synced",
@@ -13,10 +13,22 @@ export async function waitForNotebookReady(page: Page) {
   });
 }
 
+export async function openNotebookRoom(page: Page, notebookId: string) {
+  const params = new URLSearchParams({
+    notebook_id: notebookId,
+    environment_mode: "notebook",
+  });
+  await waitForNotebookReady(page, `/?${params.toString()}`);
+}
+
 export async function waitForKernelStatus(page: Page, status: string, timeout = 60_000) {
   await expect(page.getByTestId("kernel-status")).toHaveAttribute("data-kernel-status", status, {
     timeout,
   });
+}
+
+export async function waitForCellCount(page: Page, count: number, timeout = 30_000) {
+  await expect(page.locator("[data-cell-type]")).toHaveCount(count, { timeout });
 }
 
 export async function ensureCodeCell(page: Page): Promise<Locator> {
@@ -48,6 +60,42 @@ export async function setCellSource(cell: Locator, source: string) {
       },
     });
   }, source);
+}
+
+export async function getCellSource(cell: Locator): Promise<string> {
+  return await cell.locator('.cm-content[contenteditable="true"]').evaluate((node) => {
+    const content = node as HTMLElement & {
+      cmTile?: {
+        view?: {
+          state: { doc: { toString: () => string } };
+        };
+      };
+    };
+    const editor = content.cmTile?.view;
+    if (!editor) throw new Error("No CodeMirror view found");
+    return editor.state.doc.toString();
+  });
+}
+
+export async function waitForCellSourceContaining(cell: Locator, text: string, timeout = 30_000) {
+  await expect.poll(() => getCellSource(cell), { timeout }).toContain(text);
+}
+
+export async function waitForCodeCellContaining(page: Page, text: string, timeout = 30_000) {
+  const cells = page.locator('[data-cell-type="code"]');
+  const findIndex = async () => {
+    const count = await cells.count();
+    for (let i = 0; i < count; i += 1) {
+      const source = await getCellSource(cells.nth(i));
+      if (source.includes(text)) return i;
+    }
+    return -1;
+  };
+
+  await expect.poll(findIndex, { timeout }).not.toBe(-1);
+  const index = await findIndex();
+  if (index < 0) throw new Error(`No code cell contains: ${text}`);
+  return cells.nth(index);
 }
 
 export async function executeCell(cell: Locator) {
