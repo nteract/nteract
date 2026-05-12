@@ -90,6 +90,12 @@ best-effort output work on a bounded queue. IOPub output arms must use
 non-blocking enqueue/drop semantics for replay and must not `.await` a bounded
 work-channel send before they can observe later status messages.
 
+**Display updates:** `update_display_data` messages with `display_id` are
+transient display churn. Coalesce them by `display_id` and commit only the
+latest pending update off the IOPub hot path. Flush pending display updates
+after `KernelIdle` and before `ExecutionDone` so terminal runtime state still
+means durable output state is available.
+
 **Stream-output committer:** stdout/stderr chunks may be coalesced and
 periodic flushes may be dropped when pressure is high. The terminal buffer
 holds the latest rendered state. Ordering-sensitive boundaries, such as

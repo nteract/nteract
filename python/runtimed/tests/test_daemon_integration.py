@@ -1272,6 +1272,28 @@ class TestOutputHandling:
         # The display_data should contain the displayed value
         # Exact structure depends on Python bindings, but data should be present
 
+    async def test_display_handle_update_reconciles_latest_output(self, session):
+        """DisplayHandle.update should resolve to the latest display value."""
+        await async_start_kernel_with_retry(session)
+
+        cell_id = await async_create_cell_and_wait_for_sync(
+            session,
+            "\n".join(
+                [
+                    "from IPython.display import display",
+                    "handle = display('old', display_id=True)",
+                    "handle.update('latest')",
+                ]
+            ),
+        )
+        result = await session.execute_cell(cell_id)
+
+        assert result.success, result.error
+        assert len(result.display_data) == 1
+        text = str(result.display_data[0].data.get("text/plain", ""))
+        assert "latest" in text
+        assert "old" not in text
+
     async def test_error_traceback_captured(self, session):
         """Test that full traceback is captured on error."""
         await async_start_kernel_with_retry(session)

@@ -74,6 +74,8 @@ Stream output may use bounded, lossy periodic flushes, but ordering boundaries c
 
 Output widget replay is not the durable record; RuntimeStateDoc is. Kernel-facing `SendCommUpdate` replay from IOPub must be non-blocking and best-effort so a full bounded work queue cannot delay later lifecycle status.
 
+`update_display_data` is transient display churn. Coalesce it by `display_id` off the IOPub hot path, but flush pending display updates after `KernelIdle` and before `ExecutionDone` so terminal runtime state still follows durable output state.
+
 ## Notebook files
 
 Use MCP tools (`create_notebook`, `manage_dependencies`) for notebooks with dependency metadata — the schema is internal. Test fixtures that need deps put them at `metadata.runt.uv.dependencies`.
