@@ -34,7 +34,11 @@ import {
 interface WidgetStoreContextValue {
   store: WidgetStore;
   /** Send a state update to the kernel. Routed through WidgetUpdateManager. */
-  sendUpdate: (commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
+  sendUpdate: (
+    commId: string,
+    state: Record<string, unknown>,
+    buffers?: ArrayBuffer[],
+  ) => Promise<void>;
   /** Send a custom message (method: "custom") via the daemon shell channel. */
   sendCustom: (commId: string, content: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
   /** Close a comm channel via the daemon shell channel. */

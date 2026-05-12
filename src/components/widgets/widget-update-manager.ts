@@ -12,12 +12,17 @@
  * 3. Stale CRDT echoes overwriting optimistic state
  */
 
+import { extractCommBuffers } from "./comm-buffer-extraction";
 import type { WidgetStore } from "./widget-store";
 
 type CrdtCommWriter = (commId: string, patch: Record<string, unknown>) => void;
+export type ContentRef = { blob: string; size: number; media_type: string };
+export type BlobUploader = (bytes: Uint8Array, mediaType: string) => Promise<ContentRef>;
 
 /** Debounce interval for CRDT writes (ms). */
 const DEBOUNCE_MS = 50;
+const BLOB_RETRY_DELAYS_MS = [100, 300, 900] as const;
+const BLOB_MEDIA_TYPE = "application/octet-stream";
 
 /**
  * Grace period after CRDT flush before clearing optimistic keys (ms).
@@ -67,11 +72,13 @@ function structuralEqual(a: unknown, b: unknown): boolean {
 export interface WidgetUpdateManagerOptions {
   getStore: () => WidgetStore | null;
   getCrdtWriter: () => CrdtCommWriter | null;
+  getBlobUploader?: () => BlobUploader | null;
 }
 
 export class WidgetUpdateManager {
   private readonly getStore: () => WidgetStore | null;
   private readonly getCrdtWriter: () => CrdtCommWriter | null;
+  private readonly getBlobUploader: () => BlobUploader | null;
 
   /** Accumulated patches waiting for debounced flush, per comm. */
   private pendingState = new Map<string, Record<string, unknown>>();
@@ -99,6 +106,7 @@ export class WidgetUpdateManager {
   constructor(opts: WidgetUpdateManagerOptions) {
     this.getStore = opts.getStore;
     this.getCrdtWriter = opts.getCrdtWriter;
+    this.getBlobUploader = opts.getBlobUploader ?? (() => null);
   }
 
   /**
@@ -108,11 +116,23 @@ export class WidgetUpdateManager {
    * text input, etc.). The store update fires subscriptions instantly for
    * responsive UI. The CRDT write is batched per-comm at 50ms.
    *
-   * Binary buffers bypass debouncing and flush immediately. They're outbound
-   * (headed to the kernel) and don't shape the inbound bufferPaths manifest,
-   * so the optimistic store update doesn't carry them.
+   * Binary leaves bypass debouncing and flush immediately after their bytes
+   * are uploaded to blob storage. The optimistic store update keeps the
+   * original DataView/typed-array values so active widgets don't flicker.
    */
-  updateAndPersist(commId: string, patch: Record<string, unknown>, buffers?: ArrayBuffer[]): void {
+  async updateAndPersist(
+    commId: string,
+    patch: Record<string, unknown>,
+    buffers?: ArrayBuffer[],
+  ): Promise<void> {
+    const extracted = extractCommBuffers(patch);
+
+    if (buffers?.length && extracted.buffers.length) {
+      console.warn(
+        "[widgets] update supplied both extracted binary leaves and legacy buffers; using extracted leaves",
+      );
+    }
+
     // 1. Instant store update — UI reflects change immediately
     this.getStore()?.updateModel(commId, patch);
 
@@ -131,11 +151,16 @@ export class WidgetUpdateManager {
       trail.push(value);
     }
 
-    // 3. Accumulate patch
-    const existing = this.pendingState.get(commId);
-    this.pendingState.set(commId, existing ? { ...existing, ...patch } : { ...patch });
+    if (extracted.buffers.length > 0) {
+      const persistedPatch = await this.uploadExtractedBuffers(extracted);
+      this.flushImmediate(commId, persistedPatch);
+      return;
+    }
 
-    // 4. Binary buffers — flush immediately (can't merge ArrayBuffers)
+    // 3. Accumulate JSON-only patch
+    this.enqueuePending(commId, extracted.jsonPatch);
+
+    // 4. Legacy binary buffers — preserve the old immediate-flush behavior.
     if (buffers?.length) {
       this.flushComm(commId);
       return;
@@ -235,11 +260,27 @@ export class WidgetUpdateManager {
 
     const patch = this.pendingState.get(commId);
     if (!patch) return;
+    this.writeOrRetry(commId, patch);
+  }
 
+  private flushImmediate(commId: string, patch: Record<string, unknown>): void {
+    const timer = this.flushTimers.get(commId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.flushTimers.delete(commId);
+    }
+
+    const existing = this.pendingState.get(commId);
+    this.pendingState.delete(commId);
+    this.writeOrRetry(commId, existing ? { ...existing, ...patch } : patch);
+  }
+
+  private writeOrRetry(commId: string, patch: Record<string, unknown>): void {
     // If the CRDT writer isn't available yet (early startup), keep the
     // patch queued and retry after the next debounce interval.
     const writer = this.getCrdtWriter();
     if (!writer) {
+      this.pendingState.set(commId, patch);
       this.flushTimers.set(
         commId,
         setTimeout(() => this.flushComm(commId), DEBOUNCE_MS),
@@ -249,7 +290,61 @@ export class WidgetUpdateManager {
 
     this.pendingState.delete(commId);
     writer(commId, patch);
+    this.startEchoGrace(commId);
+  }
 
+  private enqueuePending(commId: string, patch: Record<string, unknown>): void {
+    const existing = this.pendingState.get(commId);
+    this.pendingState.set(commId, existing ? { ...existing, ...patch } : { ...patch });
+  }
+
+  private async uploadExtractedBuffers({
+    jsonPatch,
+    bufferPaths,
+    buffers,
+  }: {
+    jsonPatch: Record<string, unknown>;
+    bufferPaths: string[][];
+    buffers: ArrayBuffer[];
+  }): Promise<Record<string, unknown>> {
+    const uploader = this.getBlobUploader();
+    if (!uploader) {
+      throw new Error("Cannot persist binary widget update without a blob uploader");
+    }
+
+    const contentRefs = await Promise.all(
+      buffers.map((buffer) =>
+        this.uploadWithRetry(uploader, new Uint8Array(buffer), BLOB_MEDIA_TYPE),
+      ),
+    );
+
+    const persistedPatch = structuredClone(jsonPatch) as Record<string, unknown>;
+    for (let i = 0; i < contentRefs.length; i++) {
+      setValueAtPath(persistedPatch, bufferPaths[i], contentRefs[i]);
+    }
+    return persistedPatch;
+  }
+
+  private async uploadWithRetry(
+    uploader: BlobUploader,
+    bytes: Uint8Array,
+    mediaType: string,
+  ): Promise<ContentRef> {
+    let attempt = 0;
+    while (true) {
+      try {
+        return await uploader(bytes, mediaType);
+      } catch (error) {
+        if (!isTooManyInFlight(error) || attempt >= BLOB_RETRY_DELAYS_MS.length) {
+          throw error;
+        }
+        await delay(BLOB_RETRY_DELAYS_MS[attempt]);
+        attempt += 1;
+      }
+    }
+  }
+
+  private startEchoGrace(commId: string): void {
     // Keep optimistic keys alive for a grace period after flush.
     // The CRDT write triggers a sync chain (frontend → daemon →
     // kernel → IOPub echo → CRDT → frontend) that can take 200-500ms.
@@ -267,4 +362,35 @@ export class WidgetUpdateManager {
       }, ECHO_GRACE_MS),
     );
   }
+}
+
+function setValueAtPath(root: Record<string, unknown>, path: string[], value: unknown): void {
+  if (path.length === 0) {
+    throw new Error("Cannot place ContentRef at the root of a comm patch");
+  }
+
+  let current: unknown = root;
+  for (let i = 0; i < path.length - 1; i++) {
+    if (typeof current !== "object" || current === null) {
+      throw new Error(`Cannot place ContentRef at invalid path ${path.join(".")}`);
+    }
+    current = (current as Record<string, unknown>)[path[i]];
+  }
+
+  if (typeof current !== "object" || current === null) {
+    throw new Error(`Cannot place ContentRef at invalid path ${path.join(".")}`);
+  }
+  (current as Record<string, unknown>)[path[path.length - 1]] = value;
+}
+
+function isTooManyInFlight(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("reason" in error)) {
+    return false;
+  }
+  const reason = (error as { reason?: { kind?: unknown } }).reason;
+  return reason?.kind === "too_many_in_flight";
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

@@ -4,11 +4,11 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { createWidgetStore } from "../widget-store";
-import { WidgetUpdateManager } from "../widget-update-manager";
+import { type BlobUploader, type ContentRef, WidgetUpdateManager } from "../widget-update-manager";
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-function setup(opts?: { writerAvailable?: boolean }) {
+function setup(opts?: { writerAvailable?: boolean; blobUploader?: BlobUploader }) {
   const store = createWidgetStore();
   const writerCalls: Array<{ commId: string; patch: Record<string, unknown> }> = [];
   const writer = (commId: string, patch: Record<string, unknown>) => {
@@ -19,6 +19,7 @@ function setup(opts?: { writerAvailable?: boolean }) {
   const manager = new WidgetUpdateManager({
     getStore: () => store,
     getCrdtWriter: () => (writerAvailable ? writer : null),
+    getBlobUploader: () => opts?.blobUploader ?? null,
   });
 
   // Pre-create a model so updateModel works
@@ -135,6 +136,98 @@ describe("WidgetUpdateManager", () => {
       manager.updateAndPersist("comm-1", { value: 42 }, [buffer]);
 
       // Flushed immediately, no debounce
+      expect(writerCalls).toHaveLength(1);
+      expect(writerCalls[0].patch).toEqual({ value: 42 });
+    });
+
+    it("uploads extracted binary leaves before writing ContentRefs to CRDT", async () => {
+      const uploadCalls: Array<{ bytes: number[]; mediaType: string }> = [];
+      const contentRef: ContentRef = {
+        blob: "sha256:abc",
+        size: 4,
+        media_type: "application/octet-stream",
+      };
+      const { manager, writerCalls } = setup({
+        blobUploader: async (bytes, mediaType) => {
+          uploadCalls.push({ bytes: Array.from(bytes), mediaType });
+          return contentRef;
+        },
+      });
+
+      await manager.updateAndPersist("comm-1", {
+        selection: {
+          view: new DataView(new Uint8Array([1, 2, 3, 4]).buffer),
+          dtype: "uint32",
+          shape: [1],
+        },
+      });
+
+      expect(uploadCalls).toEqual([{ bytes: [1, 2, 3, 4], mediaType: "application/octet-stream" }]);
+      expect(writerCalls).toHaveLength(1);
+      expect(writerCalls[0].patch).toEqual({
+        selection: {
+          view: contentRef,
+          dtype: "uint32",
+          shape: [1],
+        },
+      });
+    });
+
+    it("retries too_many_in_flight blob uploads", async () => {
+      const contentRef: ContentRef = {
+        blob: "sha256:retry",
+        size: 1,
+        media_type: "application/octet-stream",
+      };
+      let attempts = 0;
+      const { manager, writerCalls } = setup({
+        blobUploader: async () => {
+          attempts += 1;
+          if (attempts === 1) {
+            throw { reason: { kind: "too_many_in_flight" } };
+          }
+          return contentRef;
+        },
+      });
+
+      const pending = manager.updateAndPersist("comm-1", {
+        selection: new Uint8Array([1]),
+      });
+      await vi.advanceTimersByTimeAsync(100);
+      await pending;
+
+      expect(attempts).toBe(2);
+      expect(writerCalls).toHaveLength(1);
+      expect(writerCalls[0].patch).toEqual({ selection: contentRef });
+    });
+
+    it("aborts CRDT writes when blob upload fails permanently", async () => {
+      const error = new Error("blob store unavailable");
+      const { manager, writerCalls } = setup({
+        blobUploader: async () => {
+          throw error;
+        },
+      });
+
+      await expect(
+        manager.updateAndPersist("comm-1", { selection: new Uint8Array([1]) }),
+      ).rejects.toThrow("blob store unavailable");
+
+      expect(writerCalls).toHaveLength(0);
+    });
+
+    it("does not upload pure JSON patches", () => {
+      const blobUploader = vi.fn<BlobUploader>(async () => ({
+        blob: "unused",
+        size: 0,
+        media_type: "application/octet-stream",
+      }));
+      const { manager, writerCalls } = setup({ blobUploader });
+
+      manager.updateAndPersist("comm-1", { value: 42 });
+      vi.advanceTimersByTime(50);
+
+      expect(blobUploader).not.toHaveBeenCalled();
       expect(writerCalls).toHaveLength(1);
       expect(writerCalls[0].patch).toEqual({ value: 42 });
     });

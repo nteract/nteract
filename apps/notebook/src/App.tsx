@@ -5,6 +5,7 @@ import {
   type DependencyGuard,
   type GuardedNotebookProvenance,
   NotebookClient,
+  putBlob,
   type SessionStatus,
 } from "runtimed";
 import { IsolationTest } from "@/components/isolated";
@@ -14,7 +15,7 @@ import {
   useWidgetStoreRequired,
   WidgetStoreProvider,
 } from "@/components/widgets/widget-store-context";
-import { WidgetUpdateManager } from "@/components/widgets/widget-update-manager";
+import { type BlobUploader, WidgetUpdateManager } from "@/components/widgets/widget-update-manager";
 import { WidgetView } from "@/components/widgets/widget-view";
 import { useSyncedTheme } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
@@ -154,6 +155,19 @@ function resolveCommOutputs(
 
 function AppContent() {
   const host = useNotebookHost();
+  const blobUploader = useMemo<BlobUploader>(
+    () => (bytes, mediaType) => putBlob(host.transport, bytes, mediaType),
+    [host],
+  );
+  _blobUploaderRef = blobUploader;
+  useEffect(
+    () => () => {
+      if (_blobUploaderRef === blobUploader) {
+        _blobUploaderRef = null;
+      }
+    },
+    [blobUploader],
+  );
   const gitInfo = useGitInfo();
   const daemonInfo = useDaemonInfo();
 
@@ -1824,10 +1838,12 @@ function AppErrorFallback(_error: Error, resetErrorBoundary: () => void) {
 // Module-level ref for the widget store (set by AppContent, read by updateManager).
 // This avoids a chicken-and-egg: the manager is created before the store exists.
 let _widgetStoreRef: import("@/components/widgets/widget-store").WidgetStore | null = null;
+let _blobUploaderRef: BlobUploader | null = null;
 
 const updateManager = new WidgetUpdateManager({
   getStore: () => _widgetStoreRef,
   getCrdtWriter: getCrdtCommWriter,
+  getBlobUploader: () => _blobUploaderRef,
 });
 
 function WidgetViewRenderer({ data }: { data: unknown }) {
