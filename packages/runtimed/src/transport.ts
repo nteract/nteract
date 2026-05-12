@@ -8,6 +8,8 @@
  *   - WebSocketTransport (future web app)
  */
 
+import type { NotebookResponse } from "./request-types";
+
 // ── Frame type constants ─────────────────────────────────────────────
 
 /**
@@ -78,6 +80,20 @@ export interface NotebookTransport {
    * resulting bytes via the underlying connection.
    */
   sendFrame(frameType: number, payload: Uint8Array): Promise<void>;
+
+  /**
+   * Send a typed request-like frame and await a NotebookResponse.
+   *
+   * This is the generic correlation path for outbound frames that receive a
+   * `FrameType.RESPONSE` envelope by id. `sendRequest` is the JSON request
+   * wrapper over this path; PutBlob uses it with `FrameType.PUT_BLOB`.
+   */
+  sendTypedRequest(
+    frameType: FrameTypeValue,
+    payload: Uint8Array,
+    id: string,
+    timeoutMs: number,
+  ): Promise<NotebookResponse>;
 
   /**
    * Register a callback for inbound frames from the daemon.

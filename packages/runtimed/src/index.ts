@@ -185,6 +185,7 @@ export {
 // Notebook client
 export { NotebookClient, type NotebookClientOptions, SaveNotebookError } from "./notebook-client";
 export type {
+  BlobUploadErrorKind,
   CommRequestMessage,
   CompletionItem,
   DependencyGuard,
@@ -199,6 +200,9 @@ export type {
   PackageManager,
   SaveErrorKind,
 } from "./request-types";
+
+// Blob upload
+export { BlobUploadError, PUT_BLOB_TIMEOUT_MS, putBlob, type PutBlobResult } from "./blob-upload";
 
 // MIME priority
 export { DEFAULT_MIME_PRIORITY } from "./mime-priority";
