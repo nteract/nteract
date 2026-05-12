@@ -1,3 +1,4 @@
+use super::blob_upload::{enqueue_put_blob, spawn_put_blob_worker};
 use super::peer_notebook_sync::{
     finish_notebook_doc_frame, forward_notebook_doc_broadcast, handle_notebook_doc_frame,
     queue_doc_sync, NotebookDocFrameOutcome,
@@ -146,6 +147,12 @@ where
         notebook_id.clone(),
         peer_id.to_string(),
     );
+    let mut put_blob_worker = spawn_put_blob_worker(
+        room.blob_store.clone(),
+        peer_writer.clone(),
+        notebook_id.clone(),
+        peer_id.to_string(),
+    );
 
     // Hand the reader off to a dedicated FramedReader actor before
     // entering the busy `select!` below. `recv_typed_frame`'s internal
@@ -188,6 +195,17 @@ where
                 };
             }
 
+            put_blob_worker_result = &mut put_blob_worker.handle => {
+                return match put_blob_worker_result {
+                    Ok(result) => result,
+                    Err(e) => Err(anyhow::anyhow!(
+                        "PutBlob worker stopped for {}: {}",
+                        notebook_id,
+                        e
+                    )),
+                };
+            }
+
             // Idle peer timeout: no inbound frames within the deadline.
             // Fires when the remote peer is an orphan (process exited without
             // closing the socket) or genuinely idle beyond the configured limit.
@@ -214,7 +232,7 @@ where
                 // responses indefinitely.
                 if matches!(
                     frame.frame_type,
-                    NotebookFrameType::Request | NotebookFrameType::Presence
+                    NotebookFrameType::Request | NotebookFrameType::Presence | NotebookFrameType::PutBlob
                 ) {
                     idle_deadline.as_mut().reset(tokio::time::Instant::now() + idle_peer_timeout);
                 }
@@ -318,9 +336,13 @@ where
                             }
 
                             NotebookFrameType::PutBlob => {
-                                warn!(
-                                    "[notebook-sync] PutBlob frame received before handler is enabled"
-                                );
+                                enqueue_put_blob(
+                                    &put_blob_worker,
+                                    frame.payload,
+                                    &notebook_id,
+                                    peer_id,
+                                )
+                                .await?;
                             }
                         }
             }

@@ -125,11 +125,18 @@ pub struct ProtocolCapabilities {
 
 impl ProtocolCapabilities {
     pub fn v4(daemon_version: Option<String>) -> Self {
+        let put_blob_limits =
+            notebook_wire::frame_size_limits(notebook_wire::frame_types::PUT_BLOB);
+
         Self {
             protocol: PROTOCOL_V4.to_string(),
             protocol_version: Some(PROTOCOL_VERSION),
             daemon_version,
-            put_blob: None,
+            put_blob: Some(PutBlobCapability {
+                version: 1,
+                single_frame_max: put_blob_limits.cap as u64,
+                multipart: false,
+            }),
         }
     }
 }

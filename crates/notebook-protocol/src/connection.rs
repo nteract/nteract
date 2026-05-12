@@ -358,6 +358,18 @@ mod tests {
         assert!(info.notebook_path.is_none());
     }
 
+    #[test]
+    fn protocol_capabilities_advertise_put_blob_frame_limit() {
+        let caps = ProtocolCapabilities::v4(Some("0.1.0+abc123".into()));
+        let put_blob = caps.put_blob.expect("PutBlob is advertised");
+        assert_eq!(put_blob.version, 1);
+        assert_eq!(
+            put_blob.single_frame_max,
+            frame_size_limits(notebook_wire::frame_types::PUT_BLOB).cap as u64
+        );
+        assert!(!put_blob.multipart);
+    }
+
     #[tokio::test]
     async fn typed_frame_rejects_oversized_presence() {
         // Presence frames cap at 1 MiB. A desync that happens to land

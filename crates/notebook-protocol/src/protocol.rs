@@ -252,6 +252,79 @@ pub enum BlobUploadErrorKind {
     Io { message: String },
 }
 
+/// Header carried at the start of a binary PutBlob frame.
+///
+/// The frame payload is `u32 header_len_be | JSON header | raw blob bytes`.
+/// Phase 1 supports one-shot uploads only.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum PutBlobHeader {
+    Put {
+        id: String,
+        media_type: String,
+        size: u64,
+        sha256: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        purpose: Option<String>,
+    },
+}
+
+/// Structured parse failure for a PutBlob frame payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PutBlobPayloadError {
+    pub id: Option<String>,
+    pub reason: BlobUploadErrorKind,
+}
+
+impl PutBlobHeader {
+    pub fn try_parse(payload: &[u8]) -> Result<(Self, &[u8]), PutBlobPayloadError> {
+        if payload.len() < 4 {
+            return Err(PutBlobPayloadError {
+                id: None,
+                reason: BlobUploadErrorKind::InvalidHeader,
+            });
+        }
+
+        let header_len =
+            u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
+        let Some(header_end) = 4usize.checked_add(header_len) else {
+            return Err(PutBlobPayloadError {
+                id: None,
+                reason: BlobUploadErrorKind::InvalidHeader,
+            });
+        };
+
+        if header_end > payload.len() {
+            return Err(PutBlobPayloadError {
+                id: None,
+                reason: BlobUploadErrorKind::InvalidHeader,
+            });
+        }
+
+        let header_bytes = &payload[4..header_end];
+        let id = serde_json::from_slice::<serde_json::Value>(header_bytes)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("id")
+                    .and_then(|id| id.as_str())
+                    .map(str::to_owned)
+            });
+        let header = serde_json::from_slice(header_bytes).map_err(|_| PutBlobPayloadError {
+            id,
+            reason: BlobUploadErrorKind::InvalidHeader,
+        })?;
+
+        Ok((header, &payload[header_end..]))
+    }
+
+    pub fn id(&self) -> &str {
+        match self {
+            PutBlobHeader::Put { id, .. } => id,
+        }
+    }
+}
+
 /// Envelope around a `NotebookRequest` carrying a correlation id.
 ///
 /// The id is echoed on the matching `NotebookResponseEnvelope` so the relay
@@ -952,6 +1025,53 @@ mod tests {
                 json
             );
         }
+    }
+
+    #[test]
+    fn put_blob_header_parses_length_prefixed_payload() {
+        let header = serde_json::json!({
+            "op": "put",
+            "id": "blob-request-1",
+            "media_type": "application/octet-stream",
+            "size": 3,
+            "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "purpose": "widget-state",
+        });
+        let header_bytes = serde_json::to_vec(&header).unwrap();
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&(header_bytes.len() as u32).to_be_bytes());
+        payload.extend_from_slice(&header_bytes);
+        payload.extend_from_slice(b"abc");
+
+        let (parsed, body) = PutBlobHeader::try_parse(&payload).unwrap();
+
+        assert_eq!(body, b"abc");
+        assert_eq!(
+            parsed,
+            PutBlobHeader::Put {
+                id: "blob-request-1".to_string(),
+                media_type: "application/octet-stream".to_string(),
+                size: 3,
+                sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+                    .to_string(),
+                purpose: Some("widget-state".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn put_blob_header_reports_invalid_payloads() {
+        let too_short = PutBlobHeader::try_parse(&[0, 0, 0]).unwrap_err();
+        assert_eq!(too_short.id, None);
+        assert_eq!(too_short.reason, BlobUploadErrorKind::InvalidHeader);
+
+        let mut truncated_header = Vec::new();
+        truncated_header.extend_from_slice(&64_u32.to_be_bytes());
+        truncated_header.extend_from_slice(b"{\"op\":\"put\"");
+
+        let truncated = PutBlobHeader::try_parse(&truncated_header).unwrap_err();
+        assert_eq!(truncated.id, None);
+        assert_eq!(truncated.reason, BlobUploadErrorKind::InvalidHeader);
     }
 
     /// Locks in the exact JSON wire shape that the TypeScript frontend
