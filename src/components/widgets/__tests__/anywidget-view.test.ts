@@ -9,7 +9,11 @@
  */
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
-import { injectCSS } from "../anywidget-view";
+import {
+  applyAnyWidgetDisplayDefaults,
+  injectCSS,
+  NTERACT_JUPYTER_SCATTER_DEFAULT_HEIGHT,
+} from "../anywidget-view";
 
 describe("injectCSS", () => {
   afterEach(() => {
@@ -81,5 +85,39 @@ describe("injectCSS", () => {
     expect(document.head.querySelector('[data-widget-id="m4"]')).toBeNull();
     expect(document.head.querySelector('link[data-widget-id="m5"]')).not.toBeNull();
     c2.cleanup();
+  });
+});
+
+describe("applyAnyWidgetDisplayDefaults", () => {
+  it("raises jupyter-scatter's library default height for nteract output display", () => {
+    const state = {
+      _anywidget_id: "jscatter.widget.JupyterScatter",
+      width: "auto",
+      height: 240,
+    };
+
+    expect(applyAnyWidgetDisplayDefaults(state)).toEqual({
+      ...state,
+      height: NTERACT_JUPYTER_SCATTER_DEFAULT_HEIGHT,
+    });
+  });
+
+  it("honors non-default explicit jupyter-scatter heights", () => {
+    const state = {
+      _anywidget_id: "jscatter.widget.JupyterScatter",
+      width: "auto",
+      height: 520,
+    };
+
+    expect(applyAnyWidgetDisplayDefaults(state)).toBe(state);
+  });
+
+  it("does not change unrelated anywidgets", () => {
+    const state = {
+      _anywidget_id: "example.Widget",
+      height: 240,
+    };
+
+    expect(applyAnyWidgetDisplayDefaults(state)).toBe(state);
   });
 });

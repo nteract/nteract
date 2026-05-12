@@ -125,6 +125,26 @@ export interface InjectedCSS {
   cleanup: () => void;
 }
 
+const JUPYTER_SCATTER_ANYWIDGET_ID = "jscatter.widget.JupyterScatter";
+const JUPYTER_SCATTER_LIBRARY_DEFAULT_HEIGHT = 240;
+export const NTERACT_JUPYTER_SCATTER_DEFAULT_HEIGHT = 480;
+
+export function applyAnyWidgetDisplayDefaults(
+  state: Record<string, unknown>,
+): Record<string, unknown> {
+  if (
+    state._anywidget_id === JUPYTER_SCATTER_ANYWIDGET_ID &&
+    state.height === JUPYTER_SCATTER_LIBRARY_DEFAULT_HEIGHT
+  ) {
+    return {
+      ...state,
+      height: NTERACT_JUPYTER_SCATTER_DEFAULT_HEIGHT,
+    };
+  }
+
+  return state;
+}
+
 /**
  * How long to wait for a `<link rel="stylesheet">` to load before
  * letting the widget render anyway. 5s is long enough for slow
@@ -445,7 +465,7 @@ export function AnyWidgetView({ modelId, className }: AnyWidgetViewProps) {
 
   // Get current state for the proxy - use ref to always get fresh store
   const getCurrentState = useCallback(
-    () => storeRef.current.getModel(modelId)?.state ?? {},
+    () => applyAnyWidgetDisplayDefaults(storeRef.current.getModel(modelId)?.state ?? {}),
     [modelId],
   );
 
