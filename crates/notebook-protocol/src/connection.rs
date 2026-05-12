@@ -281,6 +281,7 @@ mod tests {
             error: None,
             ephemeral: false,
             notebook_path: None,
+            put_blob: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert_eq!(
@@ -299,6 +300,7 @@ mod tests {
             error: None,
             ephemeral: false,
             notebook_path: None,
+            put_blob: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(&format!(r#""protocol_version":{}"#, PROTOCOL_VERSION)));
@@ -315,6 +317,7 @@ mod tests {
             error: None,
             ephemeral: false,
             notebook_path: None,
+            put_blob: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(r#""needs_trust_approval":true"#));
@@ -330,6 +333,7 @@ mod tests {
             error: Some("File not found".into()),
             ephemeral: false,
             notebook_path: None,
+            put_blob: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(r#""error":"File not found""#));
@@ -345,6 +349,7 @@ mod tests {
             error: None,
             ephemeral: false,
             notebook_path: Some("/home/user/notebook.ipynb".into()),
+            put_blob: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(r#""notebook_path":"/home/user/notebook.ipynb""#));
@@ -445,6 +450,34 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn typed_frame_rejects_oversized_put_blob() {
+        let cap = frame_size_limits(notebook_wire::frame_types::PUT_BLOB).cap;
+        let body_len: u32 = (cap as u32) + 1;
+        let total_len: u32 = body_len + 1;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&total_len.to_be_bytes());
+        buf.push(notebook_wire::frame_types::PUT_BLOB);
+        let mut cursor = std::io::Cursor::new(buf);
+        let err = recv_typed_frame(&mut cursor).await.unwrap_err();
+        assert!(err.to_string().contains("too large for type 0x08"));
+    }
+
+    #[tokio::test]
+    async fn typed_frame_sends_put_blob_under_cap() {
+        let cap = frame_size_limits(notebook_wire::frame_types::PUT_BLOB).cap;
+        let payload = vec![0x42u8; cap];
+        let mut buf = Vec::new();
+        send_typed_frame(&mut buf, NotebookFrameType::PutBlob, &payload)
+            .await
+            .unwrap();
+
+        let mut cursor = std::io::Cursor::new(buf);
+        let frame = recv_typed_frame(&mut cursor).await.unwrap().unwrap();
+        assert_eq!(frame.frame_type, NotebookFrameType::PutBlob);
+        assert_eq!(frame.payload.len(), payload.len());
+    }
+
     #[test]
     fn frame_size_limits_cover_every_known_frame_type() {
         // Pin the per-type cap table so a new frame type can't slip in
@@ -461,6 +494,7 @@ mod tests {
             ft::RUNTIME_STATE_SYNC,
             ft::POOL_STATE_SYNC,
             ft::SESSION_CONTROL,
+            ft::PUT_BLOB,
         ] {
             let limits = frame_size_limits(ty);
             assert!(
@@ -537,6 +571,10 @@ mod tests {
         assert_eq!(
             NotebookFrameType::try_from(0x03).unwrap(),
             NotebookFrameType::Broadcast
+        );
+        assert_eq!(
+            NotebookFrameType::try_from(0x08).unwrap(),
+            NotebookFrameType::PutBlob
         );
         assert!(NotebookFrameType::try_from(0xFF).is_err());
     }

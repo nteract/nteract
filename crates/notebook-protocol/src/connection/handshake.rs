@@ -118,6 +118,20 @@ pub struct ProtocolCapabilities {
     /// Useful for debugging version mismatches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daemon_version: Option<String>,
+    /// Blob upload support advertised by the daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub put_blob: Option<PutBlobCapability>,
+}
+
+/// PutBlob transport capability advertised during notebook connection setup.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PutBlobCapability {
+    /// Capability schema version.
+    pub version: u32,
+    /// Maximum body size accepted for a single PutBlob frame.
+    pub single_frame_max: usize,
+    /// Whether multipart uploads are supported.
+    pub multipart: bool,
 }
 
 /// Server response for `OpenNotebook` and `CreateNotebook` handshakes.
@@ -152,4 +166,7 @@ pub struct NotebookConnectionInfo {
     /// when `notebook_id_hint` resolves to a room that already has a path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notebook_path: Option<String>,
+    /// Blob upload support advertised by the daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub put_blob: Option<PutBlobCapability>,
 }

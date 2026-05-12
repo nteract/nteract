@@ -2619,6 +2619,7 @@ impl Daemon {
                 error: Some(error),
                 ephemeral: false,
                 notebook_path: None,
+                put_blob: None,
             };
             send_json_frame(writer, &response).await?;
             Ok(())
@@ -2873,6 +2874,7 @@ impl Daemon {
             error: None,
             ephemeral: false,
             notebook_path: Some(notebook_id.clone()),
+            put_blob: None,
         };
         send_json_frame(&mut writer, &response).await?;
 
@@ -3016,6 +3018,7 @@ impl Daemon {
                 error: Some(format!("Failed to create notebook: {}", e)),
                 ephemeral: false,
                 notebook_path: None,
+                put_blob: None,
             };
             send_json_frame(&mut writer, &response).await?;
             let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
@@ -3048,6 +3051,7 @@ impl Daemon {
             error: None,
             ephemeral,
             notebook_path,
+            put_blob: None,
         };
         send_json_frame(&mut writer, &response).await?;
 

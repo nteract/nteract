@@ -669,6 +669,14 @@ impl SyncReactor {
                 Ok(())
             }
 
+            NotebookFrameType::PutBlob => {
+                warn!(
+                    "[notebook-sync] Unexpected PutBlob frame from daemon for {}",
+                    self.io.notebook_id
+                );
+                Ok(())
+            }
+
             NotebookFrameType::RuntimeStateSync => {
                 let msg = match sync::Message::decode(&frame.payload) {
                     Ok(msg) => msg,

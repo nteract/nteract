@@ -33,6 +33,8 @@ export const FrameType = {
   POOL_STATE_SYNC: 0x06,
   /** SessionControl message (JSON, server-originated connection status). */
   SESSION_CONTROL: 0x07,
+  /** PutBlob payload (header JSON plus raw bytes). */
+  PUT_BLOB: 0x08,
 } as const;
 
 export type FrameTypeValue = (typeof FrameType)[keyof typeof FrameType];

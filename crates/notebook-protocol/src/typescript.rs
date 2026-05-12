@@ -26,6 +26,9 @@ pub const NOTEBOOK_REQUEST_TYPES: &[&str] = &[
     "approve_trust",
     "approve_project_environment",
     "get_doc_bytes",
+    "create_blob_upload",
+    "complete_blob_upload",
+    "abort_blob_upload",
 ];
 
 pub const NOTEBOOK_RESPONSE_RESULTS: &[&str] = &[
@@ -47,6 +50,10 @@ pub const NOTEBOOK_RESPONSE_RESULTS: &[&str] = &[
     "sync_environment_complete",
     "sync_environment_failed",
     "doc_bytes",
+    "blob_stored",
+    "blob_upload_created",
+    "blob_upload_part_ack",
+    "blob_upload_error",
 ];
 
 pub const SESSION_CONTROL_TYPES: &[&str] = &["sync_status"];
@@ -125,6 +132,12 @@ export interface CommRequestMessage {{
   channel: string;
 }}
 
+export interface BlobUploadPart {{
+  part_number: number;
+  sha256: string;
+  size: number;
+}}
+
 export type NotebookRequest =
   | {{
       type: "launch_kernel";
@@ -160,7 +173,17 @@ export type NotebookRequest =
   | {{ type: "sync_environment"; guard?: DependencyGuard | null }}
   | {{ type: "approve_trust"; observed_heads?: string[] | null }}
   | {{ type: "approve_project_environment"; project_file_path?: string | null }}
-  | {{ type: "get_doc_bytes" }};
+  | {{ type: "get_doc_bytes" }}
+  | {{
+      type: "create_blob_upload";
+      media_type: string;
+      size: number;
+      sha256?: string | null;
+      part_size?: number | null;
+      purpose?: string | null;
+    }}
+  | {{ type: "complete_blob_upload"; upload_id: string; parts: BlobUploadPart[] }}
+  | {{ type: "abort_blob_upload"; upload_id: string }};
 
 /** One entry returned by `get_history`. */
 export interface HistoryEntry {{
@@ -210,7 +233,11 @@ export type NotebookResponse =
     }}
   | {{ result: "sync_environment_complete"; synced_packages: string[] }}
   | {{ result: "sync_environment_failed"; error: string; needs_restart: boolean }}
-  | {{ result: "doc_bytes"; bytes: number[] }};
+  | {{ result: "doc_bytes"; bytes: number[] }}
+  | {{ result: "blob_stored"; hash: string; size: number; media_type: string }}
+  | {{ result: "blob_upload_created"; upload_id: string; part_size: number; expires_at: string }}
+  | {{ result: "blob_upload_part_ack"; upload_id: string; part_number: number; sha256: string }}
+  | {{ result: "blob_upload_error"; reason: BlobUploadErrorKind }};
 
 /**
  * Structured save failures returned in `NotebookResponse::SaveError`.
@@ -225,6 +252,15 @@ export type SaveErrorKind =
       path: string;
     }}
   | {{ type: "io"; message: string }};
+
+export type BlobUploadErrorKind =
+  | {{ kind: "size_mismatch" }}
+  | {{ kind: "hash_mismatch" }}
+  | {{ kind: "over_cap" }}
+  | {{ kind: "unknown_upload" }}
+  | {{ kind: "invalid_header" }}
+  | {{ kind: "unsupported" }}
+  | {{ kind: "io"; message: string }};
 "#
     )
 }

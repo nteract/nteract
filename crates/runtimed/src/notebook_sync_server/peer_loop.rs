@@ -309,7 +309,8 @@ where
 
                             NotebookFrameType::Response
                             | NotebookFrameType::Broadcast
-                            | NotebookFrameType::SessionControl => {
+                            | NotebookFrameType::SessionControl
+                            | NotebookFrameType::PutBlob => {
                                 // Clients shouldn't send these
                                 warn!(
                                     "[notebook-sync] Unexpected frame type from client: {:?}",

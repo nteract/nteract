@@ -146,6 +146,14 @@ pub struct DependencyGuard {
     pub observed_heads: Vec<String>,
 }
 
+/// Metadata for one multipart blob upload part.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BlobUploadPart {
+    pub part_number: u32,
+    pub sha256: String,
+    pub size: u64,
+}
+
 /// Typed environment kind for sync operations.
 ///
 /// Replaces string-based env_type ("uv", "conda") with a discriminated union
@@ -238,6 +246,19 @@ pub enum SaveErrorKind {
         path: String,
     },
     /// I/O or serialization failure. Message is human-readable.
+    Io { message: String },
+}
+
+/// Structured blob-upload error reasons.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BlobUploadErrorKind {
+    SizeMismatch,
+    HashMismatch,
+    OverCap,
+    UnknownUpload,
+    InvalidHeader,
+    Unsupported,
     Io { message: String },
 }
 
@@ -415,6 +436,27 @@ pub enum NotebookRequest {
     /// Get the full Automerge document bytes from the daemon's canonical doc.
     /// Used by the frontend to bootstrap its WASM Automerge peer.
     GetDocBytes {},
+
+    /// Create a multipart blob upload session.
+    CreateBlobUpload {
+        media_type: String,
+        size: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sha256: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        part_size: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        purpose: Option<String>,
+    },
+
+    /// Complete a multipart blob upload session.
+    CompleteBlobUpload {
+        upload_id: String,
+        parts: Vec<BlobUploadPart>,
+    },
+
+    /// Abort a multipart blob upload session.
+    AbortBlobUpload { upload_id: String },
 }
 
 /// Responses from daemon to notebook app.
@@ -515,6 +557,30 @@ pub enum NotebookResponse {
         /// Raw Automerge document bytes, encoded as a Vec for JSON transport.
         bytes: Vec<u8>,
     },
+
+    /// Blob bytes were stored in the content-addressed blob store.
+    BlobStored {
+        hash: String,
+        size: u64,
+        media_type: String,
+    },
+
+    /// Multipart blob upload session created.
+    BlobUploadCreated {
+        upload_id: String,
+        part_size: u64,
+        expires_at: String,
+    },
+
+    /// Multipart blob upload part accepted.
+    BlobUploadPartAck {
+        upload_id: String,
+        part_number: u32,
+        sha256: String,
+    },
+
+    /// Blob upload failed before publishing bytes.
+    BlobUploadError { reason: BlobUploadErrorKind },
 }
 
 /// Broadcast messages from daemon to all peers in a room.
@@ -899,6 +965,90 @@ mod tests {
         );
     }
 
+    #[test]
+    fn blob_upload_requests_round_trip() {
+        let cases = vec![
+            serde_json::json!({
+                "action": "create_blob_upload",
+                "media_type": "image/png",
+                "size": 1024,
+                "sha256": "a".repeat(64),
+                "part_size": 8192,
+                "purpose": "widget-buffer"
+            }),
+            serde_json::json!({
+                "action": "complete_blob_upload",
+                "upload_id": "upload-1",
+                "parts": [
+                    {
+                        "part_number": 1,
+                        "sha256": "b".repeat(64),
+                        "size": 512
+                    }
+                ]
+            }),
+            serde_json::json!({
+                "action": "abort_blob_upload",
+                "upload_id": "upload-1"
+            }),
+        ];
+
+        for json in cases {
+            let parsed: NotebookRequest =
+                serde_json::from_value(json.clone()).expect("deserialize blob upload request");
+            assert_eq!(
+                serde_json::to_value(parsed).expect("serialize blob upload request"),
+                json
+            );
+        }
+    }
+
+    #[test]
+    fn blob_upload_responses_round_trip() {
+        let cases = vec![
+            serde_json::json!({
+                "result": "blob_stored",
+                "hash": "c".repeat(64),
+                "size": 1024,
+                "media_type": "image/png"
+            }),
+            serde_json::json!({
+                "result": "blob_upload_created",
+                "upload_id": "upload-1",
+                "part_size": 8192,
+                "expires_at": "2026-05-12T00:00:00Z"
+            }),
+            serde_json::json!({
+                "result": "blob_upload_part_ack",
+                "upload_id": "upload-1",
+                "part_number": 1,
+                "sha256": "d".repeat(64)
+            }),
+            serde_json::json!({
+                "result": "blob_upload_error",
+                "reason": {
+                    "kind": "hash_mismatch"
+                }
+            }),
+            serde_json::json!({
+                "result": "blob_upload_error",
+                "reason": {
+                    "kind": "io",
+                    "message": "disk full"
+                }
+            }),
+        ];
+
+        for json in cases {
+            let parsed: NotebookResponse =
+                serde_json::from_value(json.clone()).expect("deserialize blob upload response");
+            assert_eq!(
+                serde_json::to_value(parsed).expect("serialize blob upload response"),
+                json
+            );
+        }
+    }
+
     /// Locks in the exact JSON wire shape that the TypeScript frontend
     /// emits for each `NotebookRequest` variant. The TS `NotebookRequest`
     /// union's discriminator field names must match the Rust variant's
@@ -1025,6 +1175,29 @@ mod tests {
                         "buffers": [],
                         "channel": "shell",
                     },
+                }),
+            ),
+            (
+                "create_blob_upload",
+                serde_json::json!({
+                    "action": "create_blob_upload",
+                    "media_type": "image/png",
+                    "size": 1024,
+                }),
+            ),
+            (
+                "complete_blob_upload",
+                serde_json::json!({
+                    "action": "complete_blob_upload",
+                    "upload_id": "upload-1",
+                    "parts": [],
+                }),
+            ),
+            (
+                "abort_blob_upload",
+                serde_json::json!({
+                    "action": "abort_blob_upload",
+                    "upload_id": "upload-1",
                 }),
             ),
         ];
@@ -1174,6 +1347,7 @@ mod tests {
                     "SESSION_CONTROL".to_string(),
                     notebook_wire::frame_types::SESSION_CONTROL
                 ),
+                ("PUT_BLOB".to_string(), notebook_wire::frame_types::PUT_BLOB),
             ])
         );
     }

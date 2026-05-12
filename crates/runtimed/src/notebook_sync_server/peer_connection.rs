@@ -206,6 +206,7 @@ where
             protocol: proto_str.to_string(),
             protocol_version: Some(proto_ver),
             daemon_version: Some(crate::daemon_version().to_string()),
+            put_blob: None,
         };
         connection::send_json_frame(&mut writer, &caps).await?;
     }
