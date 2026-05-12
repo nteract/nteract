@@ -10,6 +10,7 @@
 
 use anyhow::Result;
 use serde::Serialize;
+use tokio::sync::mpsc;
 
 use crate::blob_store::BlobStore;
 use crate::output_store::{self, OutputManifest, DEFAULT_INLINE_THRESHOLD};
@@ -490,6 +491,40 @@ pub enum QueueCommand {
     },
 }
 
+impl QueueCommand {
+    pub fn is_lifecycle(&self) -> bool {
+        !matches!(self, QueueCommand::SendCommUpdate { .. })
+    }
+}
+
+/// Receivers for kernel task commands.
+///
+/// Lifecycle events are control-plane signals: they must not share bounded
+/// output/work transport with potentially noisy widget output replay.
+pub struct QueueCommandReceivers {
+    pub lifecycle_rx: mpsc::UnboundedReceiver<QueueCommand>,
+    pub work_rx: mpsc::Receiver<QueueCommand>,
+}
+
+pub fn queue_command_channels(
+    work_capacity: usize,
+) -> (
+    mpsc::UnboundedSender<QueueCommand>,
+    mpsc::Sender<QueueCommand>,
+    QueueCommandReceivers,
+) {
+    let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
+    let (work_tx, work_rx) = mpsc::channel(work_capacity);
+    (
+        lifecycle_tx,
+        work_tx,
+        QueueCommandReceivers {
+            lifecycle_rx,
+            work_rx,
+        },
+    )
+}
+
 /// Escape a search pattern for IPython's fnmatch-based history search.
 ///
 /// IPython's history search uses fnmatch (glob) matching, so we need to:
@@ -567,6 +602,43 @@ mod tests {
     fn test_escape_glob_pattern_mixed() {
         // Complex pattern with multiple metacharacters
         assert_eq!(escape_glob_pattern(Some("a*b?c[d]")), "*a[*]b[?]c[[]d[]]*");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_channel_is_not_backpressured_by_full_work_channel() {
+        let (lifecycle_tx, work_tx, mut receivers) = queue_command_channels(1);
+
+        work_tx
+            .try_send(QueueCommand::SendCommUpdate {
+                comm_id: "comm-a".to_string(),
+                state: serde_json::json!({}),
+            })
+            .expect("first work item should fit");
+        assert!(work_tx
+            .try_send(QueueCommand::SendCommUpdate {
+                comm_id: "comm-b".to_string(),
+                state: serde_json::json!({}),
+            })
+            .is_err());
+
+        lifecycle_tx
+            .send(QueueCommand::KernelIdle {
+                execution_id: Some("exec-1".to_string()),
+            })
+            .expect("lifecycle signal should not share work channel capacity");
+
+        let command = receivers
+            .lifecycle_rx
+            .recv()
+            .await
+            .expect("lifecycle command should be delivered");
+        assert!(command.is_lifecycle());
+        assert!(matches!(
+            command,
+            QueueCommand::KernelIdle {
+                execution_id: Some(ref execution_id)
+            } if execution_id == "exec-1"
+        ));
     }
 
     // ── update_output_by_display_id_with_manifests tests ──────────────

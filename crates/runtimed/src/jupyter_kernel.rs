@@ -35,7 +35,8 @@ use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelShare
 use crate::output_prep::{
     apply_display_manifest_updates, blob_store_large_state_values, build_display_manifest_updates,
     collect_display_update_targets, escape_glob_pattern, extract_buffer_paths,
-    media_to_display_data, message_content_to_nbformat, store_widget_buffers, QueueCommand,
+    media_to_display_data, message_content_to_nbformat, queue_command_channels,
+    store_widget_buffers, QueueCommand, QueueCommandReceivers,
 };
 use crate::output_store::{self, ContentRef, OutputManifest, DEFAULT_INLINE_THRESHOLD};
 use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast};
@@ -359,8 +360,10 @@ pub struct JupyterKernel {
     /// Mapping from execution_id -> cell_id for routing iopub messages.
     /// With msg_id = execution_id, parent_header.msg_id IS the execution_id.
     cell_id_map: Arc<StdMutex<HashMap<String, String>>>,
-    /// Command sender for iopub/shell tasks.
-    cmd_tx: Option<mpsc::Sender<QueueCommand>>,
+    /// Work command sender for iopub/shell tasks.
+    work_cmd_tx: Option<mpsc::Sender<QueueCommand>>,
+    /// Lifecycle command sender for iopub/shell tasks.
+    lifecycle_cmd_tx: Option<mpsc::UnboundedSender<QueueCommand>>,
     /// Monotonic counter for comm insertion order (written to RuntimeStateDoc).
     comm_seq: Arc<AtomicU64>,
     /// Pending history requests: msg_id -> response channel.
@@ -379,7 +382,7 @@ impl KernelConnection for JupyterKernel {
     async fn launch(
         config: KernelLaunchConfig,
         shared: KernelSharedRefs,
-    ) -> Result<(Self, mpsc::Receiver<QueueCommand>)> {
+    ) -> Result<(Self, QueueCommandReceivers)> {
         let kernel_type = config.kernel_type;
         let env_source = config.env_source;
         let notebook_path = config.notebook_path;
@@ -1210,8 +1213,10 @@ impl KernelConnection for JupyterKernel {
             }
         };
 
-        // Create command channel for queue processing
-        let (cmd_tx, cmd_rx) = mpsc::channel::<QueueCommand>(100);
+        // Create command channels for queue processing. Lifecycle commands are
+        // control-plane signals and must not be backpressured by bounded output
+        // work such as captured Output widget updates.
+        let (lifecycle_cmd_tx, work_cmd_tx, command_receivers) = queue_command_channels(100);
 
         // Shared state refs for spawned tasks
         let cell_id_map: Arc<StdMutex<HashMap<String, String>>> =
@@ -1223,8 +1228,8 @@ impl KernelConnection for JupyterKernel {
         let stream_terminals = Arc::new(tokio::sync::Mutex::new(StreamTerminals::new()));
 
         // Spawn process watcher — detects process exit and signals via oneshot
-        let process_cmd_tx = cmd_tx.clone();
-        let panic_cmd_tx = cmd_tx.clone();
+        let process_cmd_tx = lifecycle_cmd_tx.clone();
+        let panic_cmd_tx = lifecycle_cmd_tx.clone();
         let (died_tx, died_rx) = tokio::sync::oneshot::channel::<String>();
         let process_watcher_task = spawn_supervised(
             "process-watcher",
@@ -1241,10 +1246,10 @@ impl KernelConnection for JupyterKernel {
                     }
                 };
                 let _ = died_tx.send(msg);
-                let _ = process_cmd_tx.try_send(QueueCommand::KernelDied);
+                let _ = process_cmd_tx.send(QueueCommand::KernelDied);
             },
             move |_| {
-                let _ = panic_cmd_tx.try_send(QueueCommand::KernelDied);
+                let _ = panic_cmd_tx.send(QueueCommand::KernelDied);
             },
         );
 
@@ -1252,7 +1257,8 @@ impl KernelConnection for JupyterKernel {
 
         let broadcast_tx = shared.broadcast_tx.clone();
         let iopub_cell_id_map = cell_id_map.clone();
-        let iopub_cmd_tx = cmd_tx.clone();
+        let iopub_lifecycle_tx = lifecycle_cmd_tx.clone();
+        let iopub_work_tx = work_cmd_tx.clone();
         let blob_store = shared.blob_store.clone();
         let iopub_comm_seq = comm_seq.clone();
         let iopub_stream_terminals = stream_terminals.clone();
@@ -1265,7 +1271,7 @@ impl KernelConnection for JupyterKernel {
         let (coalesce_tx, coalesce_rx) = mpsc::unbounded_channel::<(String, serde_json::Value)>();
         let comm_coalesce_tx_for_iopub = Some(coalesce_tx.clone());
 
-        let iopub_panic_cmd_tx = cmd_tx.clone();
+        let iopub_panic_cmd_tx = lifecycle_cmd_tx.clone();
         let iopub_task = spawn_supervised(
             "iopub",
             async move {
@@ -1380,12 +1386,12 @@ impl KernelConnection for JupyterKernel {
                                         }
 
                                         if let Err(e) =
-                                            iopub_cmd_tx.try_send(QueueCommand::KernelIdle {
+                                            iopub_lifecycle_tx.send(QueueCommand::KernelIdle {
                                                 execution_id: execution_id.clone(),
                                             })
                                         {
                                             warn!(
-                                                "[jupyter-kernel] KernelIdle dropped: {} — queued work after interrupt may stall",
+                                                "[jupyter-kernel] KernelIdle signal lost because runtime agent receiver closed: {}",
                                                 e
                                             );
                                         }
@@ -1393,14 +1399,14 @@ impl KernelConnection for JupyterKernel {
                                         if let (Some(cid), Some(eid)) =
                                             (cell_id.clone(), execution_id.clone())
                                         {
-                                            if let Err(e) =
-                                                iopub_cmd_tx.try_send(QueueCommand::ExecutionDone {
+                                            if let Err(e) = iopub_lifecycle_tx.send(
+                                                QueueCommand::ExecutionDone {
                                                     cell_id: cid.clone(),
                                                     execution_id: eid.clone(),
-                                                })
-                                            {
+                                                },
+                                            ) {
                                                 warn!(
-                                                    "[jupyter-kernel] ExecutionDone dropped for cell={} execution={}: {} — client may hang",
+                                                    "[jupyter-kernel] ExecutionDone signal lost for cell={} execution={} because runtime agent receiver closed: {}",
                                                     cid, eid, e
                                                 );
                                             }
@@ -1522,7 +1528,7 @@ impl KernelConnection for JupyterKernel {
                                                         }
                                                     }
                                                 }
-                                                let _ = iopub_cmd_tx
+                                                let _ = iopub_work_tx
                                                     .send(QueueCommand::SendCommUpdate {
                                                         comm_id: widget_comm_id.clone(),
                                                         state: serde_json::json!({
@@ -1665,7 +1671,7 @@ impl KernelConnection for JupyterKernel {
                                                             }
                                                         }
                                                     }
-                                                    let _ = iopub_cmd_tx
+                                                    let _ = iopub_work_tx
                                                         .send(QueueCommand::SendCommUpdate {
                                                             comm_id: widget_comm_id.clone(),
                                                             state: serde_json::json!({
@@ -1775,13 +1781,13 @@ impl KernelConnection for JupyterKernel {
                                             Some(crate::user_error::UserErrorOutput::Rich(_))
                                         ) {
                                             if let Err(e) =
-                                                iopub_cmd_tx.try_send(QueueCommand::CellError {
+                                                iopub_lifecycle_tx.send(QueueCommand::CellError {
                                                     cell_id: cid.clone(),
                                                     execution_id: eid.clone(),
                                                 })
                                             {
                                                 warn!(
-                                                    "[jupyter-kernel] CellError (rich traceback) dropped for cell={} execution={}: {}",
+                                                    "[jupyter-kernel] CellError (rich traceback) signal lost for cell={} execution={} because runtime agent receiver closed: {}",
                                                     cid, eid, e
                                                 );
                                             }
@@ -1954,7 +1960,7 @@ impl KernelConnection for JupyterKernel {
                                                             }
                                                         }
                                                     }
-                                                    let _ = iopub_cmd_tx
+                                                    let _ = iopub_work_tx
                                                         .send(QueueCommand::SendCommUpdate {
                                                             comm_id: widget_comm_id.clone(),
                                                             state: serde_json::json!({
@@ -2036,13 +2042,13 @@ impl KernelConnection for JupyterKernel {
                                         }
 
                                         if let Err(e) =
-                                            iopub_cmd_tx.try_send(QueueCommand::CellError {
+                                            iopub_lifecycle_tx.send(QueueCommand::CellError {
                                                 cell_id: cid.clone(),
                                                 execution_id: eid.clone(),
                                             })
                                         {
                                             warn!(
-                                                "[jupyter-kernel] CellError dropped for cell={} execution={}: {} — client may hang",
+                                                "[jupyter-kernel] CellError signal lost for cell={} execution={} because runtime agent receiver closed: {}",
                                                 cid, eid, e
                                             );
                                         }
@@ -2073,7 +2079,7 @@ impl KernelConnection for JupyterKernel {
                                             }) {
                                                 warn!("[runtime-state] {}", e);
                                             }
-                                            let _ = iopub_cmd_tx
+                                            let _ = iopub_work_tx
                                                 .send(QueueCommand::SendCommUpdate {
                                                     comm_id: widget_comm_id.clone(),
                                                     state: serde_json::json!({ "outputs": [] }),
@@ -2360,16 +2366,16 @@ impl KernelConnection for JupyterKernel {
                     }
                 }
                 warn!("[jupyter-kernel] iopub loop exited, signaling KernelDied");
-                if let Err(e) = iopub_cmd_tx.try_send(QueueCommand::KernelDied) {
+                if let Err(e) = iopub_lifecycle_tx.send(QueueCommand::KernelDied) {
                     warn!(
-                        "[jupyter-kernel] KernelDied signal dropped from iopub exit: {}",
+                        "[jupyter-kernel] KernelDied signal lost from iopub exit because runtime agent receiver closed: {}",
                         e
                     );
                 }
             },
             move |_| {
                 // Best-effort in panic handler — can't log, just try to signal
-                let _ = iopub_panic_cmd_tx.try_send(QueueCommand::KernelDied);
+                let _ = iopub_panic_cmd_tx.send(QueueCommand::KernelDied);
             },
         );
 
@@ -2484,7 +2490,7 @@ impl KernelConnection for JupyterKernel {
         let shell_blob_store = shared.blob_store.clone();
         let shell_kernel_actor_id = kernel_actor_id.clone();
 
-        let shell_panic_cmd_tx = cmd_tx.clone();
+        let shell_panic_cmd_tx = lifecycle_cmd_tx.clone();
         let shell_reader_task = spawn_supervised(
             "shell-reader",
             async move {
@@ -2644,14 +2650,14 @@ impl KernelConnection for JupyterKernel {
                 }
             },
             move |_| {
-                let _ = shell_panic_cmd_tx.try_send(QueueCommand::KernelDied);
+                let _ = shell_panic_cmd_tx.send(QueueCommand::KernelDied);
             },
         );
 
         // ── Heartbeat monitor ────────────────────────────────────────────
 
-        let hb_cmd_tx = cmd_tx.clone();
-        let hb_panic_cmd_tx = cmd_tx.clone();
+        let hb_cmd_tx = lifecycle_cmd_tx.clone();
+        let hb_panic_cmd_tx = lifecycle_cmd_tx.clone();
         let hb_conn_info = connection_info.clone();
         let hb_kernel_id = kernel_id.clone();
         let hb_kernel_type = kernel_type.clone();
@@ -2722,7 +2728,7 @@ impl KernelConnection for JupyterKernel {
                                 failure,
                                 hb_launch_elapsed.elapsed().as_millis()
                             );
-                            let _ = hb_cmd_tx.try_send(QueueCommand::KernelDied);
+                            let _ = hb_cmd_tx.send(QueueCommand::KernelDied);
                             break;
                         }
                     }
@@ -2752,12 +2758,12 @@ impl KernelConnection for JupyterKernel {
                         consecutive_failures,
                         hb_launch_elapsed.elapsed().as_millis()
                     );
-                    let _ = hb_cmd_tx.try_send(QueueCommand::KernelDied);
+                    let _ = hb_cmd_tx.send(QueueCommand::KernelDied);
                     break;
                 }
             },
             move |_| {
-                let _ = hb_panic_cmd_tx.try_send(QueueCommand::KernelDied);
+                let _ = hb_panic_cmd_tx.send(QueueCommand::KernelDied);
             },
         );
 
@@ -2772,7 +2778,7 @@ impl KernelConnection for JupyterKernel {
         // transaction on the live doc, so it can use the base kernel actor
         // instead of minting a coalesce sub-actor.
         let coalesce_kernel_actor_id = kernel_actor_id.clone();
-        let coalesce_panic_cmd_tx = cmd_tx.clone();
+        let coalesce_panic_cmd_tx = lifecycle_cmd_tx.clone();
         let comm_coalesce_task = spawn_supervised(
             "comm-coalesce",
             async move {
@@ -2832,7 +2838,7 @@ impl KernelConnection for JupyterKernel {
                 }
             },
             move |_| {
-                let _ = coalesce_panic_cmd_tx.try_send(QueueCommand::KernelDied);
+                let _ = coalesce_panic_cmd_tx.send(QueueCommand::KernelDied);
             },
         );
 
@@ -2866,7 +2872,8 @@ impl KernelConnection for JupyterKernel {
             comm_coalesce_tx: Some(coalesce_tx),
             comm_coalesce_task: Some(comm_coalesce_task),
             cell_id_map,
-            cmd_tx: Some(cmd_tx),
+            work_cmd_tx: Some(work_cmd_tx),
+            lifecycle_cmd_tx: Some(lifecycle_cmd_tx),
             comm_seq,
             pending_history,
             pending_completions,
@@ -2875,7 +2882,7 @@ impl KernelConnection for JupyterKernel {
         };
 
         info!("[jupyter-kernel] Kernel started: {}", kernel_id);
-        Ok((kernel, cmd_rx))
+        Ok((kernel, command_receivers))
     }
 
     // ── Execute ──────────────────────────────────────────────────────────
@@ -3026,7 +3033,8 @@ impl KernelConnection for JupyterKernel {
         self.connection_info = None;
         self.connection_file = None;
         self.cell_id_map.lock().unwrap().clear();
-        self.cmd_tx = None;
+        self.work_cmd_tx = None;
+        self.lifecycle_cmd_tx = None;
 
         info!("[jupyter-kernel] Kernel shutdown complete");
         Ok(())

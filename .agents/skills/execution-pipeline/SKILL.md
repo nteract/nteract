@@ -78,6 +78,12 @@ to RuntimeStateDoc ONLY AFTER all output manifests for that execution
 are committed. This ordering guarantee is what makes RuntimeStateDoc
 polling reliable.
 
+**Control-plane invariant:** Kernel lifecycle signals (`KernelIdle`,
+`ExecutionDone`, `CellError`, `KernelDied`) are not output transport.
+They must not share bounded queues with stdout floods, display churn, or
+Output widget replay. If output work is pending, drain lifecycle/control
+signals first so interrupts and queue release remain responsive.
+
 ### Stage 4: Terminal Wait (RuntimeStateDoc Polling)
 
 The client polls RuntimeStateDoc for execution completion:
