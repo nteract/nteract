@@ -134,7 +134,7 @@ pub fn detect_project_file(notebook_path: &Path) -> Option<DetectedProjectFile> 
 }
 
 /// Check if a pyproject.toml contains a `[tool.pixi]` section.
-fn pyproject_has_pixi_section(path: &Path) -> bool {
+pub(crate) fn pyproject_has_pixi_section(path: &Path) -> bool {
     std::fs::read_to_string(path)
         .map(|c| c.contains("[tool.pixi]") || c.contains("[tool.pixi."))
         .unwrap_or(false)

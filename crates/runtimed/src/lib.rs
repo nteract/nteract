@@ -44,6 +44,7 @@ pub mod notebook_sync_server;
 pub mod output_prep;
 pub mod output_store;
 pub mod paths;
+pub(crate) mod pixi_project;
 pub mod process_groups;
 pub mod project_file;
 pub(crate) mod requests;

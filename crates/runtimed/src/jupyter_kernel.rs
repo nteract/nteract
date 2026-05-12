@@ -545,8 +545,22 @@ impl KernelConnection for JupyterKernel {
                         } else {
                             "ipykernel_launcher"
                         };
+                        // Forward launch-config env vars (e.g. PIXI_FROZEN=1
+                        // when the daemon-side prepare needed frozen mode)
+                        // to the shell-hook subprocess. The bottom of this
+                        // function also applies them to the final kernel
+                        // command, but shell-hook runs first and would
+                        // otherwise hit the network without them.
+                        let shell_hook_env: std::collections::HashMap<String, String> =
+                            config.env_vars.iter().cloned().collect();
                         if let Some(ref manifest) = manifest_path {
-                            match kernel_launch::tools::pixi_shell_hook(manifest, None).await {
+                            match kernel_launch::tools::pixi_shell_hook(
+                                manifest,
+                                None,
+                                &shell_hook_env,
+                            )
+                            .await
+                            {
                                 Ok(env_vars) => {
                                     let python = env_vars
                                         .get("CONDA_PREFIX")
