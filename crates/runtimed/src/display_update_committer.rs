@@ -75,6 +75,9 @@ impl DisplayUpdateCommitterHandle {
             },
         );
         drop(updates);
+        // Notify is a wake hint, not the queue. The pending map above is the
+        // source of truth and intentionally coalesces to the latest update per
+        // display_id, so bursts do not need one stored permit per update.
         self.pending.notify.notify_one();
     }
 
@@ -178,6 +181,9 @@ async fn run_display_update_committer(
         tokio::select! {
             biased;
 
+            // Priority flushes drain the same pending map as normal wakes. If
+            // a notify permit is also ready, this arm still commits every
+            // pending update before acknowledging the ordering boundary.
             request = priority_rx.recv() => {
                 match request {
                     Some(request) => {
@@ -191,6 +197,8 @@ async fn run_display_update_committer(
                 }
             }
 
+            // Individual notifications are not individual updates; each wake
+            // drains all currently pending display_ids.
             _ = pending.notify.notified() => {
                 commit_pending_updates(&pending, &state, &blob_store, &kernel_actor_id).await;
             }
