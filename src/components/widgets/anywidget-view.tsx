@@ -282,7 +282,7 @@ export function createAFMModelProxy(
       // store update + echo suppression. In the iframe it posts a bridge
       // notification to the parent which then takes the same path. Either
       // way, no hand-built comm_msg frame and no shell-channel fallback.
-      void outbound.sendUpdate(model.id, patch).catch((error: unknown) => {
+      void Promise.resolve(outbound.sendUpdate(model.id, patch)).catch((error: unknown) => {
         console.error("[widgets] failed to persist widget state update:", error);
       });
 
