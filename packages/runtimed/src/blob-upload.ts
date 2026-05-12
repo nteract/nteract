@@ -45,6 +45,7 @@ export async function putBlob(
     frame,
     id,
     PUT_BLOB_TIMEOUT_MS,
+    "put_blob",
   );
 
   return handlePutBlobResponse(response);

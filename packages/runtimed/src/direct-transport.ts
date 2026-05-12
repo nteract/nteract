@@ -148,6 +148,7 @@ export class DirectTransport implements NotebookTransport {
     payload: Uint8Array,
     id: string,
     timeoutMs: number,
+    _timeoutLabel?: string,
   ): Promise<NotebookResponse> {
     if (!this._connected) {
       throw new Error("DirectTransport: not connected");

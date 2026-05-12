@@ -239,8 +239,9 @@ class BrowserDevTransport implements NotebookTransport {
     payload: Uint8Array,
     id: string,
     timeoutMs: number,
+    timeoutLabel?: string,
   ): Promise<NotebookResponse> {
-    const promise = this.awaitResponse(id, timeoutMs);
+    const promise = this.awaitResponse(id, timeoutMs, timeoutLabel);
     void this.sendFrame(frameType, payload).catch((err) => this.failPending(id, err));
     return promise;
   }
@@ -265,7 +266,7 @@ class BrowserDevTransport implements NotebookTransport {
     const payload = new TextEncoder().encode(JSON.stringify(envelope));
     const timeoutMs = requestTimeoutMs(req);
 
-    return this.sendTypedRequest(FRAME_TYPE_REQUEST, payload, id, timeoutMs);
+    return this.sendTypedRequest(FRAME_TYPE_REQUEST, payload, id, timeoutMs, type);
   }
 
   disconnect(): void {
@@ -329,11 +330,16 @@ class BrowserDevTransport implements NotebookTransport {
     entry.resolve(response as NotebookResponse);
   }
 
-  private awaitResponse(id: string, timeoutMs: number): Promise<NotebookResponse> {
+  private awaitResponse(
+    id: string,
+    timeoutMs: number,
+    timeoutLabel?: string,
+  ): Promise<NotebookResponse> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pending.delete(id)) {
-          reject(new Error(`Request timeout after ${timeoutMs}ms`));
+          const suffix = timeoutLabel ? `: ${timeoutLabel}` : "";
+          reject(new Error(`Request timeout after ${timeoutMs}ms${suffix}`));
         }
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });

@@ -93,6 +93,7 @@ export interface NotebookTransport {
     payload: Uint8Array,
     id: string,
     timeoutMs: number,
+    timeoutLabel?: string,
   ): Promise<NotebookResponse>;
 
   /**
