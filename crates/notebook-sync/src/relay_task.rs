@@ -137,6 +137,10 @@ where
                     .await;
                 }
 
+                RelayCommand::SendPutBlob { id, frame, reply } => {
+                    handle_send_put_blob(&mut writer, &mut pending, id, frame, reply).await;
+                }
+
                 RelayCommand::CancelRequest { id } => {
                     // Caller gave up (timeout). Drop the pending entry so
                     // the map doesn't accumulate abandoned senders.
@@ -188,6 +192,31 @@ where
     }
 
     info!("[relay] Stopped for {}", notebook_id);
+}
+
+/// Register a Rust-side PutBlob request in the pending map and write the binary
+/// frame to the daemon. If the write fails, the entry is evicted and the error
+/// is delivered on the caller's oneshot.
+async fn handle_send_put_blob<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    pending: &mut HashMap<String, PendingEntry>,
+    id: String,
+    frame: Vec<u8>,
+    reply: oneshot::Sender<Result<NotebookResponse, SyncError>>,
+) {
+    pending.insert(
+        id.clone(),
+        PendingEntry {
+            reply,
+            broadcast_tx: None,
+        },
+    );
+
+    if let Err(e) = connection::send_typed_frame(writer, NotebookFrameType::PutBlob, &frame).await {
+        if let Some(entry) = pending.remove(&id) {
+            let _ = entry.reply.send(Err(SyncError::Io(e)));
+        }
+    }
 }
 
 /// Register a Rust-side request in the pending map and write the envelope
@@ -332,4 +361,126 @@ pub fn request_timeout(request: &NotebookRequest) -> Duration {
         _ => 30,
     };
     Duration::from_secs(secs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use notebook_protocol::protocol::{BlobUploadErrorKind, PutBlobHeader, PutBlobResult};
+
+    async fn spawn_relay_for_test() -> (
+        crate::relay::RelayHandle,
+        tokio::io::ReadHalf<tokio::io::DuplexStream>,
+        tokio::io::WriteHalf<tokio::io::DuplexStream>,
+    ) {
+        let (client, daemon) = tokio::io::duplex(64 * 1024);
+        let (client_read, client_write) = tokio::io::split(client);
+        let (daemon_read, daemon_write) = tokio::io::split(daemon);
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (frame_tx, _frame_rx) = mpsc::unbounded_channel();
+        let handle = crate::relay::RelayHandle::new(cmd_tx, "notebook-test".to_string());
+
+        tokio::spawn(run(
+            RelayTaskConfig {
+                cmd_rx,
+                frame_tx,
+                notebook_id: "notebook-test".to_string(),
+            },
+            client_read,
+            client_write,
+        ));
+
+        (handle, daemon_read, daemon_write)
+    }
+
+    #[tokio::test]
+    async fn relay_handle_put_blob_one_shot_routes_response_by_id() {
+        let (handle, mut daemon_read, mut daemon_write) = spawn_relay_for_test().await;
+        let upload = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.put_blob_one_shot(b"abc", "text/plain").await }
+        });
+
+        let frame = connection::recv_typed_frame(&mut daemon_read)
+            .await
+            .expect("read PutBlob frame")
+            .expect("PutBlob frame");
+        assert_eq!(frame.frame_type, NotebookFrameType::PutBlob);
+        let (header, body) = PutBlobHeader::try_parse(&frame.payload).expect("parse PutBlob");
+        assert_eq!(body, b"abc");
+        let id = header.id().to_string();
+
+        match header {
+            PutBlobHeader::Put {
+                media_type,
+                size,
+                sha256,
+                ..
+            } => {
+                assert_eq!(media_type, "text/plain");
+                assert_eq!(size, 3);
+                assert_eq!(
+                    sha256,
+                    "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+                );
+            }
+        }
+
+        let response = NotebookResponseEnvelope {
+            id: Some(id),
+            response: NotebookResponse::BlobStored {
+                hash: "hash123".to_string(),
+                size: 3,
+                media_type: "text/plain".to_string(),
+            },
+        };
+        let payload = serde_json::to_vec(&response).expect("serialize response");
+        connection::send_typed_frame(&mut daemon_write, NotebookFrameType::Response, &payload)
+            .await
+            .expect("send response");
+
+        let result = upload.await.expect("join upload").expect("upload succeeds");
+        assert_eq!(
+            result,
+            PutBlobResult {
+                blob: "hash123".to_string(),
+                size: 3,
+                media_type: "text/plain".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_handle_put_blob_one_shot_surfaces_blob_upload_error() {
+        let (handle, mut daemon_read, mut daemon_write) = spawn_relay_for_test().await;
+        let upload = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.put_blob_one_shot(b"abc", "text/plain").await }
+        });
+
+        let frame = connection::recv_typed_frame(&mut daemon_read)
+            .await
+            .expect("read PutBlob frame")
+            .expect("PutBlob frame");
+        let (header, _) = PutBlobHeader::try_parse(&frame.payload).expect("parse PutBlob");
+        let response = NotebookResponseEnvelope {
+            id: Some(header.id().to_string()),
+            response: NotebookResponse::BlobUploadError {
+                reason: BlobUploadErrorKind::TooManyInFlight,
+            },
+        };
+        let payload = serde_json::to_vec(&response).expect("serialize response");
+        connection::send_typed_frame(&mut daemon_write, NotebookFrameType::Response, &payload)
+            .await
+            .expect("send response");
+
+        let error = upload
+            .await
+            .expect("join upload")
+            .expect_err("upload returns error");
+        match error {
+            SyncError::BlobUpload(BlobUploadErrorKind::TooManyInFlight) => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
 }

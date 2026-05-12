@@ -73,6 +73,7 @@ pub use execution_wait::{
 };
 pub use execution_watch::{ExecutionProgressState, ExecutionTerminalReason, ExecutionWatcher};
 pub use handle::DocHandle;
+pub use notebook_protocol::protocol::PutBlobResult;
 pub use relay::RelayHandle;
 pub use shared::SharedDocState;
 pub use snapshot::NotebookSnapshot;

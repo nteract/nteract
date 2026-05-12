@@ -9,6 +9,7 @@
 import {
   FrameType,
   type FrameListener,
+  type FrameTypeValue,
   type NotebookRequest,
   type NotebookRequestOptions,
   type NotebookResponse,
@@ -233,6 +234,18 @@ class BrowserDevTransport implements NotebookTransport {
     this.ws.send(frame);
   }
 
+  async sendTypedRequest(
+    frameType: FrameTypeValue,
+    payload: Uint8Array,
+    id: string,
+    timeoutMs: number,
+    timeoutLabel?: string,
+  ): Promise<NotebookResponse> {
+    const promise = this.awaitResponse(id, timeoutMs, timeoutLabel);
+    void this.sendFrame(frameType, payload).catch((err) => this.failPending(id, err));
+    return promise;
+  }
+
   onFrame(callback: FrameListener): () => void {
     this.subscribers.add(callback);
     return () => {
@@ -253,21 +266,7 @@ class BrowserDevTransport implements NotebookTransport {
     const payload = new TextEncoder().encode(JSON.stringify(envelope));
     const timeoutMs = requestTimeoutMs(req);
 
-    return new Promise<NotebookResponse>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        if (this.pending.delete(id)) {
-          reject(new Error(`Request timeout after ${timeoutMs}ms: ${type}`));
-        }
-      }, timeoutMs);
-
-      this.pending.set(id, { resolve, reject, timer });
-      void this.sendFrame(FRAME_TYPE_REQUEST, payload).catch((err) => {
-        if (this.pending.delete(id)) {
-          clearTimeout(timer);
-          reject(err instanceof Error ? err : new Error(String(err)));
-        }
-      });
-    });
+    return this.sendTypedRequest(FRAME_TYPE_REQUEST, payload, id, timeoutMs, type);
   }
 
   disconnect(): void {
@@ -329,6 +328,30 @@ class BrowserDevTransport implements NotebookTransport {
     clearTimeout(entry.timer);
     const { id: _id, ...response } = envelope;
     entry.resolve(response as NotebookResponse);
+  }
+
+  private awaitResponse(
+    id: string,
+    timeoutMs: number,
+    timeoutLabel?: string,
+  ): Promise<NotebookResponse> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (this.pending.delete(id)) {
+          const suffix = timeoutLabel ? `: ${timeoutLabel}` : "";
+          reject(new Error(`Request timeout after ${timeoutMs}ms${suffix}`));
+        }
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+    });
+  }
+
+  private failPending(id: string, err: unknown): void {
+    const entry = this.pending.get(id);
+    if (!entry) return;
+    this.pending.delete(id);
+    clearTimeout(entry.timer);
+    entry.reject(err instanceof Error ? err : new Error(String(err)));
   }
 
   private rejectPending(err: Error): void {

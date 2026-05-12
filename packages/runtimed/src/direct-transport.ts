@@ -22,7 +22,13 @@
  */
 
 import { FrameType } from "./transport";
-import type { FrameListener, NotebookRequestOptions, NotebookTransport } from "./transport";
+import type {
+  FrameListener,
+  FrameTypeValue,
+  NotebookRequestOptions,
+  NotebookTransport,
+} from "./transport";
+import type { NotebookResponse } from "./request-types";
 import type { SessionStatus } from "./handle";
 
 // ── Server handle interface ──────────────────────────────────────────
@@ -78,6 +84,18 @@ export class DirectTransport implements NotebookTransport {
   requestHandler: (request: unknown, options?: NotebookRequestOptions) => Promise<unknown> = () =>
     Promise.resolve({ result: "ok" });
 
+  /**
+   * Handler for generic typed request frames. Tests can override this to
+   * simulate request-like frames that are not NotebookRequest JSON, such as
+   * PutBlob.
+   */
+  typedRequestHandler?: (
+    frameType: FrameTypeValue,
+    payload: Uint8Array,
+    id: string,
+    timeoutMs: number,
+  ) => Promise<NotebookResponse>;
+
   constructor(server: ServerHandle) {
     this.server = server;
   }
@@ -123,6 +141,43 @@ export class DirectTransport implements NotebookTransport {
       throw new Error("DirectTransport: not connected");
     }
     return this.requestHandler(request, options);
+  }
+
+  async sendTypedRequest(
+    frameType: FrameTypeValue,
+    payload: Uint8Array,
+    id: string,
+    timeoutMs: number,
+    _timeoutLabel?: string,
+  ): Promise<NotebookResponse> {
+    if (!this._connected) {
+      throw new Error("DirectTransport: not connected");
+    }
+
+    await this.sendFrame(frameType, payload);
+
+    if (frameType === FrameType.REQUEST) {
+      const envelope = JSON.parse(new TextDecoder().decode(payload)) as {
+        id?: string;
+        action?: string;
+        required_heads?: string[];
+        [key: string]: unknown;
+      };
+      const { action, required_heads: requiredHeads, id: _id, ...rest } = envelope;
+      const response = await this.requestHandler(
+        { type: action, ...rest },
+        requiredHeads?.length ? { required_heads: requiredHeads } : undefined,
+      );
+      return response as NotebookResponse;
+    }
+
+    if (!this.typedRequestHandler) {
+      throw new Error(
+        `DirectTransport: no typedRequestHandler for frame type 0x${frameType.toString(16)}`,
+      );
+    }
+
+    return this.typedRequestHandler(frameType, payload, id, timeoutMs);
   }
 
   disconnect(): void {

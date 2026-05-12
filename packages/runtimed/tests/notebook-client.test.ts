@@ -7,6 +7,7 @@ function stubClient() {
     sendFrame: async () => {},
     onFrame: () => () => {},
     sendRequest,
+    sendTypedRequest: vi.fn(),
     connected: true,
     disconnect: () => {},
   } satisfies NotebookTransport;
@@ -21,6 +22,7 @@ function stubClientWithHeads(heads: string[]) {
     sendFrame: async () => {},
     onFrame: () => () => {},
     sendRequest,
+    sendTypedRequest: vi.fn(),
     connected: true,
     disconnect: () => {},
   } satisfies NotebookTransport;

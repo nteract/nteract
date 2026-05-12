@@ -137,6 +137,7 @@ const stubTransport: NotebookTransport = {
   sendFrame: vi.fn(),
   onFrame: vi.fn(() => () => {}),
   sendRequest: vi.fn(),
+  sendTypedRequest: vi.fn(),
   disconnect: vi.fn(),
 };
 

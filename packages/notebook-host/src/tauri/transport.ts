@@ -17,6 +17,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   FrameType,
+  type FrameTypeValue,
   type FrameListener,
   type NotebookRequest,
   type NotebookRequestOptions,
@@ -68,6 +69,18 @@ export class TauriTransport implements NotebookTransport {
     frame[0] = frameType;
     frame.set(payload, 1);
     return invoke("send_frame", frame);
+  }
+
+  async sendTypedRequest(
+    frameType: FrameTypeValue,
+    payload: Uint8Array,
+    id: string,
+    timeoutMs: number,
+    timeoutLabel?: string,
+  ): Promise<NotebookResponse> {
+    const promise = this.awaitResponse(id, timeoutMs, timeoutLabel);
+    void this.sendFrame(frameType, payload).catch((err) => this.failPending(id, err));
+    return promise;
   }
 
   onFrame(callback: FrameListener): () => void {
@@ -134,25 +147,7 @@ export class TauriTransport implements NotebookTransport {
 
     const timeoutMs = requestTimeoutMs(req);
 
-    return new Promise<NotebookResponse>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        if (this.pending.delete(id)) {
-          reject(new Error(`Request timeout after ${timeoutMs}ms: ${type}`));
-        }
-      }, timeoutMs);
-
-      this.pending.set(id, { resolve, reject, timer });
-
-      // Fire the 0x01 frame. If `sendFrame` itself fails (rare — only if
-      // the Tauri relay rejects the frame type), fail fast instead of
-      // waiting out the timeout.
-      void this.sendFrame(FRAME_TYPE_REQUEST, payload).catch((err) => {
-        if (this.pending.delete(id)) {
-          clearTimeout(timer);
-          reject(err instanceof Error ? err : new Error(String(err)));
-        }
-      });
-    });
+    return this.sendTypedRequest(FRAME_TYPE_REQUEST, payload, id, timeoutMs, type);
   }
 
   disconnect(): void {
@@ -210,6 +205,30 @@ export class TauriTransport implements NotebookTransport {
         unlistenFn = null;
       }
     });
+  }
+
+  private awaitResponse(
+    id: string,
+    timeoutMs: number,
+    timeoutLabel?: string,
+  ): Promise<NotebookResponse> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (this.pending.delete(id)) {
+          const suffix = timeoutLabel ? `: ${timeoutLabel}` : "";
+          reject(new Error(`Request timeout after ${timeoutMs}ms${suffix}`));
+        }
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+    });
+  }
+
+  private failPending(id: string, err: unknown): void {
+    const entry = this.pending.get(id);
+    if (!entry) return;
+    this.pending.delete(id);
+    clearTimeout(entry.timer);
+    entry.reject(err instanceof Error ? err : new Error(String(err)));
   }
 
   private dispatchResponseFrame(bytes: number[] | Uint8Array): void {

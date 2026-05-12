@@ -20,9 +20,14 @@
 
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use notebook_protocol::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
+use notebook_protocol::protocol::{
+    NotebookBroadcast, NotebookRequest, NotebookResponse, PutBlobHeader, PutBlobResult,
+};
+use sha2::{Digest, Sha256};
 
 use crate::error::SyncError;
+
+const PUT_BLOB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Commands for the relay task — only socket I/O operations.
 ///
@@ -42,6 +47,13 @@ pub enum RelayCommand {
         /// Optional broadcast sender for delivering broadcasts during long-running
         /// requests (e.g., LaunchKernel with environment progress updates).
         broadcast_tx: Option<broadcast::Sender<NotebookBroadcast>>,
+    },
+
+    /// Send a one-shot PutBlob frame to the daemon and wait for a response.
+    SendPutBlob {
+        id: String,
+        frame: Vec<u8>,
+        reply: oneshot::Sender<Result<NotebookResponse, SyncError>>,
     },
 
     /// Evict a pending request whose caller has given up (e.g., timed
@@ -181,6 +193,58 @@ impl RelayHandle {
                 let _ = self.cmd_tx.send(RelayCommand::CancelRequest { id }).await;
                 Err(SyncError::Timeout)
             }
+        }
+    }
+
+    /// Upload bytes to the daemon blob store using a one-shot PutBlob frame.
+    pub async fn put_blob_one_shot(
+        &self,
+        bytes: &[u8],
+        media_type: &str,
+    ) -> Result<PutBlobResult, SyncError> {
+        let sha256 = hex::encode(Sha256::digest(bytes));
+        let id = uuid::Uuid::new_v4().to_string();
+        let header = PutBlobHeader::Put {
+            id: id.clone(),
+            media_type: media_type.to_string(),
+            size: bytes.len() as u64,
+            sha256,
+            purpose: None,
+        };
+        let frame = header.encode_frame(bytes)?;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.cmd_tx
+            .send(RelayCommand::SendPutBlob {
+                id: id.clone(),
+                frame,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SyncError::Disconnected)?;
+
+        let response =
+            match tokio::time::timeout(PUT_BLOB_TIMEOUT, crate::reply::recv(reply_rx)).await {
+                Ok(reply) => reply?,
+                Err(_) => {
+                    let _ = self.cmd_tx.send(RelayCommand::CancelRequest { id }).await;
+                    return Err(SyncError::Timeout);
+                }
+            };
+
+        match response {
+            NotebookResponse::BlobStored {
+                hash,
+                size,
+                media_type,
+            } => Ok(PutBlobResult {
+                blob: hash,
+                size,
+                media_type,
+            }),
+            NotebookResponse::BlobUploadError { reason } => Err(SyncError::BlobUpload(reason)),
+            other => Err(SyncError::Protocol(format!(
+                "Unexpected response for PutBlob: {other:?}"
+            ))),
         }
     }
 
