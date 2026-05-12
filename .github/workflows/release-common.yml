@@ -347,6 +347,7 @@ jobs:
           sed -i '' "s#https://github.com/nteract/desktop/releases/download/stable-latest/latest.json#https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runtimed/Cargo.toml
+          sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/notebook/Cargo.toml
 
       - name: Generate Icons
         run: |
@@ -528,6 +529,7 @@ jobs:
           sed -i '' "s#https://github.com/nteract/desktop/releases/download/stable-latest/latest.json#https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runtimed/Cargo.toml
+          sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/notebook/Cargo.toml
 
       - name: Generate Icons
         run: |
@@ -693,6 +695,9 @@ jobs:
           $runtCargo = Get-Content crates/runt/Cargo.toml -Raw
           $runtCargo = $runtCargo -replace '(?m)^version = ".*"$', "version = `"$version`""
           Set-Content crates/runt/Cargo.toml $runtCargo
+          $notebookCargo = Get-Content crates/notebook/Cargo.toml -Raw
+          $notebookCargo = $notebookCargo -replace '(?m)^version = ".*"$', "version = `"$version`""
+          Set-Content crates/notebook/Cargo.toml $notebookCargo
 
       - name: Generate Icons
         shell: pwsh
@@ -856,6 +861,7 @@ jobs:
           sed -i "s#https://github.com/nteract/desktop/releases/download/stable-latest/latest.json#https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
           sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
           sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/runtimed/Cargo.toml
+          sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/notebook/Cargo.toml
 
       - name: Generate Icons
         run: |
