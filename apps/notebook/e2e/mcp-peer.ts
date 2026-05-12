@@ -92,6 +92,14 @@ export class McpPeer {
     });
   }
 
+  async manageDependencies(dependencies: string[]): Promise<unknown> {
+    return await this.callToolJson("manage_dependencies", {
+      add: dependencies,
+      trust: true,
+      apply: "sync",
+    });
+  }
+
   async close(): Promise<void> {
     for (const [, pending] of this.pending) {
       clearTimeout(pending.timer);

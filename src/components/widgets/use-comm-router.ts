@@ -163,7 +163,7 @@ export function useCommRouter({
 
   const sendUpdate = useCallback(
     (commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) => {
-      managerRef.current.updateAndPersist(commId, state, buffers);
+      return managerRef.current.updateAndPersist(commId, state, buffers);
     },
     [],
   );

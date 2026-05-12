@@ -28,7 +28,7 @@ type SendUpdate = (
   commId: string,
   state: Record<string, unknown>,
   buffers?: ArrayBuffer[],
-) => Promise<void>;
+) => void | Promise<void>;
 
 type SendCustom = (
   commId: string,
@@ -310,9 +310,11 @@ export class CommBridgeManager {
         const current = this.previousState.get(commId) ?? {};
         this.previousState.set(commId, this.cloneStateSnapshot({ ...current, ...data }));
         // Then forward to kernel
-        void this.sendUpdateToKernel(commId, data, buffers).catch((error: unknown) => {
-          console.error("[widgets] failed to persist iframe widget state update:", error);
-        });
+        void Promise.resolve(this.sendUpdateToKernel(commId, data, buffers)).catch(
+          (error: unknown) => {
+            console.error("[widgets] failed to persist iframe widget state update:", error);
+          },
+        );
       } finally {
         this.isProcessingIframeUpdate = false;
       }
