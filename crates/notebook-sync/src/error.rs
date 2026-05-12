@@ -1,5 +1,7 @@
 //! Error types for notebook-sync operations.
 
+use notebook_protocol::protocol::BlobUploadErrorKind;
+
 /// Errors that can occur during notebook sync operations.
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
@@ -30,6 +32,10 @@ pub enum SyncError {
     /// A daemon protocol error.
     #[error("Protocol error: {0}")]
     Protocol(String),
+
+    /// A blob upload failed before bytes were published.
+    #[error("Blob upload failed: {0:?}")]
+    BlobUpload(BlobUploadErrorKind),
 
     /// Connection timed out.
     #[error("Connection timed out")]

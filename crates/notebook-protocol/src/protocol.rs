@@ -253,6 +253,17 @@ pub enum BlobUploadErrorKind {
     Io { message: String },
 }
 
+/// Successful one-shot PutBlob upload result returned to callers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PutBlobResult {
+    /// Content-addressed blob hash.
+    pub blob: String,
+    /// Stored byte length.
+    pub size: u64,
+    /// Stored media type.
+    pub media_type: String,
+}
+
 /// Header carried at the start of a binary PutBlob frame.
 ///
 /// The frame payload is `u32 header_len_be | JSON header | raw blob bytes`.
@@ -278,6 +289,15 @@ pub struct PutBlobPayloadError {
 }
 
 impl PutBlobHeader {
+    pub fn encode_frame(&self, body: &[u8]) -> Result<Vec<u8>, serde_json::Error> {
+        let header = serde_json::to_vec(self)?;
+        let mut frame = Vec::with_capacity(4 + header.len() + body.len());
+        frame.extend_from_slice(&(header.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&header);
+        frame.extend_from_slice(body);
+        Ok(frame)
+    }
+
     pub fn try_parse(payload: &[u8]) -> Result<(Self, &[u8]), PutBlobPayloadError> {
         if payload.len() < 4 {
             return Err(PutBlobPayloadError {
@@ -1064,6 +1084,33 @@ mod tests {
                 purpose: Some("widget-state".to_string()),
             }
         );
+    }
+
+    #[test]
+    fn put_blob_header_encode_frame_roundtrips_via_try_parse() {
+        let header = PutBlobHeader::Put {
+            id: "blob-request-encode".to_string(),
+            media_type: "application/octet-stream".to_string(),
+            size: 3,
+            sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".to_string(),
+            purpose: Some("widget-state".to_string()),
+        };
+
+        let frame = header.encode_frame(b"abc").expect("encode PutBlob frame");
+        let header_len = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
+        let header_bytes = &frame[4..4 + header_len];
+        let header_json: serde_json::Value =
+            serde_json::from_slice(header_bytes).expect("parse encoded PutBlob header");
+
+        assert_eq!(header_json["op"], "put");
+        assert_eq!(header_json["id"], "blob-request-encode");
+        assert_eq!(header_json["media_type"], "application/octet-stream");
+        assert_eq!(header_json["size"], 3);
+        assert_eq!(header_json["purpose"], "widget-state");
+
+        let (parsed, body) = PutBlobHeader::try_parse(&frame).unwrap();
+        assert_eq!(parsed, header);
+        assert_eq!(body, b"abc");
     }
 
     #[test]
