@@ -84,6 +84,14 @@ They must not share bounded queues with stdout floods, display churn, or
 Output widget replay. If output work is pending, drain lifecycle/control
 signals first so interrupts and queue release remain responsive.
 
+**Stream-output committer:** stdout/stderr chunks may be coalesced and
+periodic flushes may be dropped when pressure is high. The terminal buffer
+holds the latest rendered state. Ordering-sensitive boundaries, such as
+display/error output after a stream, use the stream committer's priority path
+and wait for the stream flush before clearing terminal state. `ExecutionDone`
+also uses the priority path so the final stream manifest is durable before the
+runtime state becomes terminal.
+
 ### Stage 4: Terminal Wait (RuntimeStateDoc Polling)
 
 The client polls RuntimeStateDoc for execution completion:
