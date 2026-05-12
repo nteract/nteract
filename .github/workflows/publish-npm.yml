@@ -51,7 +51,10 @@ jobs:
           - target: linux-x64-gnu
             runner: ubuntu-latest
           - target: win32-x64-msvc
-            runner: blacksmith-4vcpu-windows-2025
+            # npm provenance / sigstore requires GitHub-hosted runners.
+            # Publishing from a self-hosted (Blacksmith) Windows runner fails
+            # with: "Unsupported GitHub Actions runner environment: self-hosted".
+            runner: windows-latest
     steps:
       - uses: actions/checkout@v6
         with:
