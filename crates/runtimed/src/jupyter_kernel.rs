@@ -191,6 +191,31 @@ enum IoPubStateUpdate {
     Lifecycle(RuntimeLifecycle),
 }
 
+fn try_send_comm_update(
+    work_tx: &mpsc::Sender<QueueCommand>,
+    comm_id: String,
+    state: serde_json::Value,
+) {
+    match work_tx.try_send(QueueCommand::SendCommUpdate { comm_id, state }) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(QueueCommand::SendCommUpdate { comm_id, .. })) => {
+            debug!(
+                "[jupyter-kernel] Dropping comm output replay for comm_id={} because work queue is full",
+                comm_id
+            );
+        }
+        Err(mpsc::error::TrySendError::Closed(QueueCommand::SendCommUpdate {
+            comm_id, ..
+        })) => {
+            warn!(
+                "[jupyter-kernel] Dropping comm output replay for comm_id={} because work queue is closed",
+                comm_id
+            );
+        }
+        Err(_) => unreachable!("try_send_comm_update only sends SendCommUpdate"),
+    }
+}
+
 /// Created at kernel launch time, captures connection_info and session_id.
 /// Can be used concurrently with other kernel operations since interrupt
 /// creates its own ZMQ control connection.
@@ -1448,14 +1473,13 @@ impl KernelConnection for JupyterKernel {
                                                         }
                                                     }
                                                 }
-                                                let _ = iopub_work_tx
-                                                    .send(QueueCommand::SendCommUpdate {
-                                                        comm_id: widget_comm_id.clone(),
-                                                        state: serde_json::json!({
-                                                            "outputs": resolved_outputs,
-                                                        }),
-                                                    })
-                                                    .await;
+                                                try_send_comm_update(
+                                                    &iopub_work_tx,
+                                                    widget_comm_id.clone(),
+                                                    serde_json::json!({
+                                                        "outputs": resolved_outputs,
+                                                    }),
+                                                );
                                             }
                                         }
                                         continue;
@@ -1584,14 +1608,13 @@ impl KernelConnection for JupyterKernel {
                                                             }
                                                         }
                                                     }
-                                                    let _ = iopub_work_tx
-                                                        .send(QueueCommand::SendCommUpdate {
-                                                            comm_id: widget_comm_id.clone(),
-                                                            state: serde_json::json!({
-                                                                "outputs": resolved_outputs
-                                                            }),
-                                                        })
-                                                        .await;
+                                                    try_send_comm_update(
+                                                        &iopub_work_tx,
+                                                        widget_comm_id.clone(),
+                                                        serde_json::json!({
+                                                            "outputs": resolved_outputs
+                                                        }),
+                                                    );
                                                 }
                                             }
                                         }
@@ -1864,14 +1887,13 @@ impl KernelConnection for JupyterKernel {
                                                             }
                                                         }
                                                     }
-                                                    let _ = iopub_work_tx
-                                                        .send(QueueCommand::SendCommUpdate {
-                                                            comm_id: widget_comm_id.clone(),
-                                                            state: serde_json::json!({
-                                                                "outputs": resolved_outputs
-                                                            }),
-                                                        })
-                                                        .await;
+                                                    try_send_comm_update(
+                                                        &iopub_work_tx,
+                                                        widget_comm_id.clone(),
+                                                        serde_json::json!({
+                                                            "outputs": resolved_outputs
+                                                        }),
+                                                    );
                                                 }
                                             }
                                         }
@@ -1974,12 +1996,11 @@ impl KernelConnection for JupyterKernel {
                                             }) {
                                                 warn!("[runtime-state] {}", e);
                                             }
-                                            let _ = iopub_work_tx
-                                                .send(QueueCommand::SendCommUpdate {
-                                                    comm_id: widget_comm_id.clone(),
-                                                    state: serde_json::json!({ "outputs": [] }),
-                                                })
-                                                .await;
+                                            try_send_comm_update(
+                                                &iopub_work_tx,
+                                                widget_comm_id.clone(),
+                                                serde_json::json!({ "outputs": [] }),
+                                            );
                                         }
                                     }
                                 }
@@ -3274,6 +3295,32 @@ mod tests {
             line,
             source: source.to_string(),
         }
+    }
+
+    #[test]
+    fn comm_update_replay_is_best_effort_when_work_queue_is_full() {
+        let (tx, mut rx) = mpsc::channel(1);
+
+        try_send_comm_update(
+            &tx,
+            "comm-a".to_string(),
+            serde_json::json!({ "outputs": ["first"] }),
+        );
+        try_send_comm_update(
+            &tx,
+            "comm-b".to_string(),
+            serde_json::json!({ "outputs": ["dropped"] }),
+        );
+
+        let queued = rx.try_recv().expect("first comm update should be queued");
+        assert!(matches!(
+            queued,
+            QueueCommand::SendCommUpdate { comm_id, .. } if comm_id == "comm-a"
+        ));
+        assert!(
+            rx.try_recv().is_err(),
+            "full work queue should drop comm output replay"
+        );
     }
 
     #[tokio::test]
