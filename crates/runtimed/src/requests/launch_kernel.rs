@@ -1298,6 +1298,7 @@ pub(crate) async fn handle(
         (pooled_env, None)
     };
 
+    let mut uv_pyproject_offline = false;
     if matches!(parsed_resolved, EnvSource::Pyproject) {
         match crate::uv_project::prepare_uv_pyproject_environment(
             notebook_path.as_deref(),
@@ -1306,7 +1307,8 @@ pub(crate) async fn handle(
         )
         .await
         {
-            Ok(()) => {
+            Ok(offline) => {
+                uv_pyproject_offline = offline;
                 if let Err(e) = room.state.with_doc(|sd| sd.clear_env_progress()) {
                     warn!("[runtime-state] {}", e);
                 }
@@ -1458,6 +1460,7 @@ pub(crate) async fn handle(
         let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
         if has_runtime_agent {
             info!("[notebook-sync] Agent connected — sending RestartKernel");
+            let restart_env_vars = crate::uv_project::uv_offline_env_vars(uv_pyproject_offline);
             match send_runtime_agent_request_with_kernel_ports(room, |kernel_ports| {
                 notebook_protocol::protocol::RuntimeAgentRequest::RestartKernel {
                     kernel_type: resolved_kernel_type.clone(),
@@ -1467,7 +1470,7 @@ pub(crate) async fn handle(
                         .map(|p| p.to_str().unwrap_or("").to_string()),
                     launched_config: launched_config.clone(),
                     kernel_ports,
-                    env_vars: Default::default(),
+                    env_vars: restart_env_vars.clone(),
                 }
             })
             .await
@@ -1605,6 +1608,7 @@ pub(crate) async fn handle(
                 }
 
                 // Send LaunchKernel RPC
+                let launch_env_vars = crate::uv_project::uv_offline_env_vars(uv_pyproject_offline);
                 match send_runtime_agent_request_with_kernel_ports(room, |kernel_ports| {
                     notebook_protocol::protocol::RuntimeAgentRequest::LaunchKernel {
                         kernel_type: resolved_kernel_type.clone(),
@@ -1614,7 +1618,7 @@ pub(crate) async fn handle(
                             .map(|p| p.to_str().unwrap_or("").to_string()),
                         launched_config: launched_config.clone(),
                         kernel_ports,
-                        env_vars: Default::default(),
+                        env_vars: launch_env_vars.clone(),
                     }
                 })
                 .await

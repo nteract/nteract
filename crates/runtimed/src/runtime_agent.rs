@@ -747,7 +747,7 @@ async fn handle_runtime_agent_request(
             notebook_path,
             launched_config,
             kernel_ports,
-            env_vars: _,
+            env_vars,
         } => {
             info!(
                 "[runtime-agent] LaunchKernel: type={} source={}",
@@ -785,7 +785,7 @@ async fn handle_runtime_agent_request(
                 notebook_path: notebook_path.as_deref().map(PathBuf::from),
                 launched_config,
                 kernel_ports,
-                env_vars: vec![],
+                env_vars: env_vars.into_iter().collect(),
                 pooled_env,
             };
 
@@ -833,7 +833,7 @@ async fn handle_runtime_agent_request(
             notebook_path,
             launched_config,
             kernel_ports,
-            env_vars: _,
+            env_vars,
         } => {
             info!(
                 "[runtime-agent] RestartKernel: type={} source={}",
@@ -889,7 +889,7 @@ async fn handle_runtime_agent_request(
                 notebook_path: notebook_path.as_deref().map(PathBuf::from),
                 launched_config,
                 kernel_ports,
-                env_vars: vec![],
+                env_vars: env_vars.into_iter().collect(),
                 pooled_env,
             };
 

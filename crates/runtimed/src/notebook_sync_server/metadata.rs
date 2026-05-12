@@ -3680,6 +3680,7 @@ pub(crate) async fn auto_launch_kernel(
         (pooled_env, None)
     };
 
+    let mut uv_pyproject_offline = false;
     if matches!(env_source, EnvSource::Pyproject) {
         match crate::uv_project::prepare_uv_pyproject_environment(
             notebook_path_opt.as_deref(),
@@ -3688,7 +3689,8 @@ pub(crate) async fn auto_launch_kernel(
         )
         .await
         {
-            Ok(()) => {
+            Ok(offline) => {
+                uv_pyproject_offline = offline;
                 if let Err(e) = room.state.with_doc(|sd| sd.clear_env_progress()) {
                     warn!("[runtime-state] {}", e);
                 }
@@ -3912,6 +3914,7 @@ pub(crate) async fn auto_launch_kernel(
                 }
 
                 // Send LaunchKernel RPC via the runtime agent's sync connection
+                let launch_env_vars = crate::uv_project::uv_offline_env_vars(uv_pyproject_offline);
                 match send_runtime_agent_request_with_kernel_ports(room, |kernel_ports| {
                     notebook_protocol::protocol::RuntimeAgentRequest::LaunchKernel {
                         kernel_type: kernel_type.to_string(),
@@ -3921,7 +3924,7 @@ pub(crate) async fn auto_launch_kernel(
                             .map(|p| p.to_str().unwrap_or("").to_string()),
                         launched_config: launched_config.clone(),
                         kernel_ports,
-                        env_vars: Default::default(),
+                        env_vars: launch_env_vars.clone(),
                     }
                 })
                 .await
