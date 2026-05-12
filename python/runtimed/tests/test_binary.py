@@ -45,6 +45,7 @@ def test_find_binary_not_found(tmp_path):
             return_value=str(tmp_path / "no_scripts"),
         ),
         patch("shutil.which", return_value=None),
+        patch("runtimed._binary._well_known_paths", return_value=[]),
     ):
         with pytest.raises(BinaryNotFoundError, match="runt"):
             find_binary("runt")
