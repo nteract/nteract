@@ -1,8 +1,10 @@
 // Allow `expect()` and `unwrap()` in tests
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{exit, Child, Command, ExitStatus, Stdio};
@@ -2649,13 +2651,19 @@ fn run_wasm_pack(needs_c_toolchain: bool, cmd: &str, args: &[&str]) {
 ///   `leaflet.*`, `isolated-renderer.*`) change rarely and are LFS-tracked, so
 ///   a fresh checkout already has them on disk. We rebuild if they're missing
 ///   (e.g. a checkout without LFS hydration) or if `sift.js` / `sift.css` are
-///   missing or were built against a different wasm-bindgen glue than the one
-///   just produced. Sift outputs stay gitignored because they re-embed
-///   sift-wasm's `__wbg_*` hashes and must move in lockstep with it.
+///   missing or stale relative to sift-wasm source. Sift outputs stay
+///   gitignored because they re-embed sift-wasm's `__wbg_*` hashes and must
+///   move in lockstep with it.
+///
+/// Staleness gate: hash sift-wasm source (`crates/sift-wasm/src/**/*.rs`
+/// plus `Cargo.toml`) and compare against the previous run's fingerprint
+/// stored under `target/xtask/`. The earlier "did the glue bytes change?"
+/// check was a false positive each time wasm-pack regenerated the glue
+/// with the same source but slightly different internal metadata, which
+/// constantly re-emitted the LFS-tracked `isolated-renderer.{js,css}`
+/// and surfaced as phantom git dirt.
 fn ensure_build_artifacts() {
-    let glue_before = fs::read("crates/sift-wasm/pkg/sift_wasm.js").ok();
     ensure_volatile_wasm_built();
-    let glue_after = fs::read("crates/sift-wasm/pkg/sift_wasm.js").ok();
 
     let notebook_plugin_dir = Path::new("apps/notebook/src/renderer-plugins");
     let stable_probes = [
@@ -2675,12 +2683,21 @@ fn ensure_build_artifacts() {
         .collect();
     let sift_missing = !notebook_plugin_dir.join("sift.js").exists()
         || !notebook_plugin_dir.join("sift.css").exists();
-    let glue_changed = match (&glue_before, &glue_after) {
-        (Some(a), Some(b)) => a != b,
-        _ => true,
+
+    let sift_source_fingerprint = sift_wasm_source_fingerprint();
+    let stored_fingerprint = read_renderer_plugins_fingerprint();
+    let sift_source_changed = match (&sift_source_fingerprint, &stored_fingerprint) {
+        (Some(current), Some(prev)) => current != prev,
+        // Missing the cached fingerprint means we haven't recorded a
+        // successful build under this checkout yet. Don't rebuild on that
+        // alone — the LFS-tracked bundles are already on disk for fresh
+        // checkouts. Persist the current fingerprint below so future runs
+        // have a baseline.
+        (Some(_), None) => false,
+        _ => false,
     };
 
-    if !missing_stable.is_empty() || sift_missing || glue_changed {
+    if !missing_stable.is_empty() || sift_missing || sift_source_changed {
         if !missing_stable.is_empty() {
             println!("Stable renderer plugin bundles missing; rebuilding:");
             for p in &missing_stable {
@@ -2691,13 +2708,76 @@ fn ensure_build_artifacts() {
             );
         } else if sift_missing {
             println!("[xtask] sift renderer bundle missing; rebuilding renderer plugins");
-        } else if glue_changed {
+        } else if sift_source_changed {
             println!(
-                "[xtask] sift-wasm glue changed; rebuilding renderer plugins so sift.js re-embeds the fresh __wbg_* names"
+                "[xtask] sift-wasm source changed; rebuilding renderer plugins so sift.js re-embeds the fresh __wbg_* names"
             );
         }
         cmd_renderer_plugins();
     }
+
+    if let Some(fp) = sift_source_fingerprint {
+        write_renderer_plugins_fingerprint(&fp);
+    }
+}
+
+/// Hash every `.rs` file under `crates/sift-wasm/src/` plus its `Cargo.toml`
+/// into a single u64. Returns `None` if the directory is missing (fresh
+/// pre-clone state — let the missing-files probe handle it).
+fn sift_wasm_source_fingerprint() -> Option<String> {
+    let root = Path::new("crates/sift-wasm");
+    if !root.exists() {
+        return None;
+    }
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_rust_sources(&root.join("src"), &mut files);
+    files.push(root.join("Cargo.toml"));
+    files.sort();
+
+    let mut hasher = DefaultHasher::new();
+    for path in &files {
+        match fs::read(path) {
+            Ok(bytes) => {
+                path.to_string_lossy().hash(&mut hasher);
+                bytes.hash(&mut hasher);
+            }
+            Err(_) => return None,
+        }
+    }
+    Some(format!("{:016x}", hasher.finish()))
+}
+
+fn collect_rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rust_sources(&path, out);
+        } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+}
+
+fn renderer_plugins_fingerprint_path() -> PathBuf {
+    Path::new("target/xtask").join("renderer-plugins.fingerprint")
+}
+
+fn read_renderer_plugins_fingerprint() -> Option<String> {
+    fs::read_to_string(renderer_plugins_fingerprint_path())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn write_renderer_plugins_fingerprint(fingerprint: &str) {
+    let path = renderer_plugins_fingerprint_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(&path, fingerprint);
 }
 
 /// Always (re)build runtimed-wasm and sift-wasm before the build pulls in
