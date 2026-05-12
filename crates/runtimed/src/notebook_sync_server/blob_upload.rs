@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use notebook_protocol::connection::NotebookFrameType;
@@ -15,6 +16,7 @@ const PUT_BLOB_QUEUE_CAPACITY: usize = 1;
 
 pub(super) struct PutBlobWorker {
     tx: mpsc::Sender<Vec<u8>>,
+    in_flight: Arc<AtomicBool>,
     pub(super) handle: tokio::task::JoinHandle<anyhow::Result<()>>,
 }
 
@@ -31,6 +33,8 @@ pub(super) fn spawn_put_blob_worker(
     peer_id: String,
 ) -> PutBlobWorker {
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(PUT_BLOB_QUEUE_CAPACITY);
+    let in_flight = Arc::new(AtomicBool::new(false));
+    let worker_in_flight = in_flight.clone();
     let handle = tokio::spawn(async move {
         while let Some(payload) = rx.recv().await {
             debug!(
@@ -39,26 +43,54 @@ pub(super) fn spawn_put_blob_worker(
                 notebook_id,
                 payload.len()
             );
-            handle_put_blob_frame(&payload, &blob_store, &peer_writer).await?;
+            let result = handle_put_blob_frame(&payload, &blob_store, &peer_writer).await;
+            worker_in_flight.store(false, Ordering::Release);
+            result?;
         }
         Ok(())
     });
-    PutBlobWorker { tx, handle }
+    PutBlobWorker {
+        tx,
+        in_flight,
+        handle,
+    }
 }
 
-pub(super) async fn enqueue_put_blob(
+pub(super) fn enqueue_put_blob(
     worker: &PutBlobWorker,
+    peer_writer: &PeerWriter,
     payload: Vec<u8>,
     notebook_id: &str,
     peer_id: &str,
 ) -> anyhow::Result<()> {
-    worker.tx.send(payload).await.map_err(|_| {
-        anyhow::anyhow!(
-            "PutBlob worker stopped for notebook {} peer {}",
-            notebook_id,
-            peer_id
-        )
-    })
+    if worker.in_flight.swap(true, Ordering::AcqRel) {
+        send_blob_upload_error(
+            peer_writer,
+            put_blob_request_id(&payload),
+            BlobUploadErrorKind::TooManyInFlight,
+        )?;
+        return Ok(());
+    }
+
+    match worker.tx.try_send(payload) {
+        Ok(()) => Ok(()),
+        Err(mpsc::error::TrySendError::Full(payload)) => {
+            worker.in_flight.store(false, Ordering::Release);
+            send_blob_upload_error(
+                peer_writer,
+                put_blob_request_id(&payload),
+                BlobUploadErrorKind::TooManyInFlight,
+            )
+        }
+        Err(mpsc::error::TrySendError::Closed(_payload)) => {
+            worker.in_flight.store(false, Ordering::Release);
+            anyhow::bail!(
+                "PutBlob worker stopped for notebook {} peer {}",
+                notebook_id,
+                peer_id
+            )
+        }
+    }
 }
 
 pub(crate) async fn handle_put_blob_frame(
@@ -80,8 +112,12 @@ pub(crate) async fn handle_put_blob_frame(
             media_type,
             size,
             sha256,
-            purpose: _,
+            purpose,
         } => {
+            debug!(
+                "[notebook-sync] PutBlob id={} media_type={} size={} purpose={:?}",
+                id, media_type, size, purpose
+            );
             if body.len() as u64 != size {
                 send_blob_upload_error(peer_writer, Some(id), BlobUploadErrorKind::SizeMismatch)?;
                 return Ok(());
@@ -132,6 +168,24 @@ fn send_blob_upload_error(
         id,
         NotebookResponse::BlobUploadError { reason },
     )
+}
+
+fn put_blob_request_id(payload: &[u8]) -> Option<String> {
+    match PutBlobHeader::try_parse(payload) {
+        Ok((header, _body)) => Some(header.id().to_string()),
+        Err(error) => error.id,
+    }
+}
+
+#[cfg(test)]
+impl PutBlobWorker {
+    fn for_test_busy(tx: mpsc::Sender<Vec<u8>>) -> Self {
+        Self {
+            tx,
+            in_flight: Arc::new(AtomicBool::new(true)),
+            handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
+        }
+    }
 }
 
 fn send_blob_response(
@@ -370,35 +424,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn put_blob_backpressure_is_per_peer() {
-        let (tx_a, _rx_a) = mpsc::channel(PUT_BLOB_QUEUE_CAPACITY);
-        tx_a.send(vec![1]).await.unwrap();
-        let worker_a = PutBlobWorker {
-            tx: tx_a,
-            handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
-        };
+    async fn put_blob_busy_worker_replies_without_blocking_peer_loop() {
+        let (worker_tx, _worker_rx) = mpsc::channel(PUT_BLOB_QUEUE_CAPACITY);
+        let worker = PutBlobWorker::for_test_busy(worker_tx);
+        let (mut reader, writer) = tokio::io::duplex(1024 * 1024);
+        let (peer_writer, _writer_task) =
+            super::super::peer_writer::spawn_peer_writer(writer, "notebook".into(), "peer".into());
+        let body = b"abc";
+        let sha256 = hex::encode(Sha256::digest(body));
+        let request_payload = payload("blob-busy", "text/plain", body.len() as u64, &sha256, body);
 
-        let (tx_b, mut rx_b) = mpsc::channel(PUT_BLOB_QUEUE_CAPACITY);
-        let worker_b = PutBlobWorker {
-            tx: tx_b,
-            handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
-        };
-
-        let full_peer_send = tokio::time::timeout(
-            std::time::Duration::from_millis(10),
-            worker_a.tx.send(vec![2]),
-        )
-        .await;
+        let start = std::time::Instant::now();
+        enqueue_put_blob(&worker, &peer_writer, request_payload, "notebook", "peer")
+            .expect("busy worker should report a structured response");
         assert!(
-            full_peer_send.is_err(),
-            "peer A PutBlob queue should apply backpressure when full"
+            start.elapsed() < std::time::Duration::from_millis(50),
+            "busy worker should not block the peer loop"
         );
 
-        worker_b
-            .tx
-            .send(vec![3])
+        let frame = connection::recv_typed_frame(&mut reader)
             .await
-            .expect("peer B PutBlob queue should remain independent");
-        assert_eq!(rx_b.try_recv().unwrap(), vec![3]);
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame.frame_type, NotebookFrameType::Response);
+        let envelope: NotebookResponseEnvelope = serde_json::from_slice(&frame.payload).unwrap();
+        assert_eq!(envelope.id.as_deref(), Some("blob-busy"));
+        assert!(matches!(
+            envelope.response,
+            NotebookResponse::BlobUploadError {
+                reason: BlobUploadErrorKind::TooManyInFlight
+            }
+        ));
     }
 }

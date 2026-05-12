@@ -248,6 +248,7 @@ pub enum BlobUploadErrorKind {
     SizeMismatch,
     HashMismatch,
     OverCap,
+    TooManyInFlight,
     InvalidHeader,
     Io { message: String },
 }
@@ -301,16 +302,16 @@ impl PutBlobHeader {
             });
         }
 
-        let header_bytes = &payload[4..header_end];
-        let id = serde_json::from_slice::<serde_json::Value>(header_bytes)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("id")
-                    .and_then(|id| id.as_str())
-                    .map(str::to_owned)
-            });
-        let header = serde_json::from_slice(header_bytes).map_err(|_| PutBlobPayloadError {
+        let header_value: serde_json::Value = serde_json::from_slice(&payload[4..header_end])
+            .map_err(|_| PutBlobPayloadError {
+                id: None,
+                reason: BlobUploadErrorKind::InvalidHeader,
+            })?;
+        let id = header_value
+            .get("id")
+            .and_then(|id| id.as_str())
+            .map(str::to_owned);
+        let header = serde_json::from_value(header_value).map_err(|_| PutBlobPayloadError {
             id,
             reason: BlobUploadErrorKind::InvalidHeader,
         })?;
@@ -1015,6 +1016,12 @@ mod tests {
                     "message": "disk full"
                 }
             }),
+            serde_json::json!({
+                "result": "blob_upload_error",
+                "reason": {
+                    "kind": "too_many_in_flight"
+                }
+            }),
         ];
 
         for json in cases {
@@ -1072,6 +1079,22 @@ mod tests {
         let truncated = PutBlobHeader::try_parse(&truncated_header).unwrap_err();
         assert_eq!(truncated.id, None);
         assert_eq!(truncated.reason, BlobUploadErrorKind::InvalidHeader);
+
+        let missing_op = serde_json::json!({
+            "id": "blob-request-2",
+            "media_type": "application/octet-stream",
+            "size": 3,
+            "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        });
+        let missing_op_bytes = serde_json::to_vec(&missing_op).unwrap();
+        let mut missing_op_payload = Vec::new();
+        missing_op_payload.extend_from_slice(&(missing_op_bytes.len() as u32).to_be_bytes());
+        missing_op_payload.extend_from_slice(&missing_op_bytes);
+        missing_op_payload.extend_from_slice(b"abc");
+
+        let missing_op = PutBlobHeader::try_parse(&missing_op_payload).unwrap_err();
+        assert_eq!(missing_op.id.as_deref(), Some("blob-request-2"));
+        assert_eq!(missing_op.reason, BlobUploadErrorKind::InvalidHeader);
     }
 
     /// Locks in the exact JSON wire shape that the TypeScript frontend

@@ -338,11 +338,11 @@ where
                             NotebookFrameType::PutBlob => {
                                 enqueue_put_blob(
                                     &put_blob_worker,
+                                    &peer_writer,
                                     frame.payload,
                                     &notebook_id,
                                     peer_id,
-                                )
-                                .await?;
+                                )?;
                             }
                         }
             }

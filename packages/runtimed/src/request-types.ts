@@ -169,5 +169,6 @@ export type BlobUploadErrorKind =
   | { kind: "size_mismatch" }
   | { kind: "hash_mismatch" }
   | { kind: "over_cap" }
+  | { kind: "too_many_in_flight" }
   | { kind: "invalid_header" }
   | { kind: "io"; message: string };
