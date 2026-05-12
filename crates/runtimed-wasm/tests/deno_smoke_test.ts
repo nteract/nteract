@@ -163,6 +163,18 @@ Deno.test("RuntimeState: committed WASM emits the shape TS consumers expect", ()
   handle.free();
 });
 
+Deno.test("RuntimeState: committed WASM preserves JSON null values", () => {
+  const handle = new NotebookHandle("null-shape-test");
+  const state = handle.get_runtime_state();
+
+  assertEquals(state.queue.executing, null);
+  assertEquals(state.env.progress, null);
+  assertEquals(state.last_saved, null);
+  assertEquals(state.path, null);
+
+  handle.free();
+});
+
 Deno.test("NotebookHandle: add cell and read back", () => {
   const handle = new NotebookHandle("test-nb");
   handle.add_cell(0, "cell-1", "code");

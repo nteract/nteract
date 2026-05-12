@@ -44,7 +44,9 @@ pub fn __wasm_start() {
 /// JS Objects, matching what `JSON.parse()` would produce. The returned
 /// `JsValue` can be any JS type (object, array, scalar) depending on input.
 fn serialize_to_js<T: Serialize>(value: &T) -> Result<JsValue, serde_wasm_bindgen::Error> {
-    let serializer = serde_wasm_bindgen::Serializer::new().serialize_maps_as_objects(true);
+    let serializer = serde_wasm_bindgen::Serializer::new()
+        .serialize_maps_as_objects(true)
+        .serialize_missing_as_null(true);
     value.serialize(&serializer)
 }
 
