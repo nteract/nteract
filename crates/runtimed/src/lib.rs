@@ -50,6 +50,7 @@ pub mod runtime_agent;
 pub mod runtime_agent_handle;
 pub(crate) mod runtime_agent_manifest;
 pub mod singleton;
+pub(crate) mod stream_committer;
 pub(crate) mod stream_flush;
 pub mod stream_terminal;
 pub mod sync_server;

@@ -16,10 +16,10 @@ use std::sync::Arc;
 use anyhow::Result;
 use notebook_doc::presence::PresenceState;
 use runtime_doc::RuntimeStateHandle;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, RwLock};
 
 use crate::blob_store::BlobStore;
-use crate::output_prep::QueueCommand;
+use crate::output_prep::QueueCommandReceivers;
 use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast};
 use crate::PooledEnv;
 use notebook_protocol::protocol::{KernelPorts, LaunchedEnvConfig};
@@ -76,15 +76,15 @@ pub struct KernelSharedRefs {
 /// uses `async_trait`-free manual desugaring isn't worth it here — the trait
 /// is internal and has exactly one real impl.
 pub trait KernelConnection: Send {
-    /// Launch a kernel process and return a command receiver.
+    /// Launch a kernel process and return command receivers.
     ///
-    /// The command receiver carries `QueueCommand`s from spawned IO tasks
-    /// (iopub listener, shell reader, heartbeat monitor) back to the agent's
-    /// select loop.
+    /// The command receivers carry control-plane lifecycle signals and
+    /// bounded output/work commands from spawned IO tasks (iopub listener,
+    /// shell reader, heartbeat monitor) back to the agent's select loop.
     fn launch(
         config: KernelLaunchConfig,
         shared: KernelSharedRefs,
-    ) -> impl std::future::Future<Output = Result<(Self, mpsc::Receiver<QueueCommand>)>> + Send
+    ) -> impl std::future::Future<Output = Result<(Self, QueueCommandReceivers)>> + Send
     where
         Self: Sized;
 

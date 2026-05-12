@@ -48,7 +48,7 @@ use crate::blob_store::BlobStore;
 use crate::jupyter_kernel::JupyterKernel;
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
 use crate::kernel_state::KernelState;
-use crate::output_prep::QueueCommand;
+use crate::output_prep::{QueueCommand, QueueCommandReceivers};
 use crate::protocol::QueueEntry;
 
 /// Shared context for the runtime agent (no kernel -- kernel is owned locally).
@@ -121,7 +121,8 @@ pub async fn run_runtime_agent(
     let mut interrupt_handle: Option<crate::jupyter_kernel::InterruptHandle> = None;
     let mut kernel_state = KernelState::new(state.clone());
     let mut seen_execution_ids = HashSet::new();
-    let mut cmd_rx: Option<mpsc::Receiver<QueueCommand>> = None;
+    let mut lifecycle_rx: Option<mpsc::UnboundedReceiver<QueueCommand>> = None;
+    let mut work_rx: Option<mpsc::Receiver<QueueCommand>> = None;
 
     // Async responses from spawned tasks (currently: SyncEnvironment).
     // Keeping these off the request handler's await frees the main loop to
@@ -314,7 +315,8 @@ pub async fn run_runtime_agent(
                                     ).await;
 
                                     if let Some(rx) = new_cmd_rx {
-                                        cmd_rx = Some(rx);
+                                        lifecycle_rx = Some(rx.lifecycle_rx);
+                                        work_rx = Some(rx.work_rx);
                                     }
                                     // Update interrupt handle after any request that may change kernel state
                                     interrupt_handle = kernel.as_ref().and_then(|k| k.interrupt_handle());
@@ -519,9 +521,11 @@ pub async fn run_runtime_agent(
                 }
             }
 
-            // Process QueueCommands from kernel tasks
+            // Process lifecycle commands from kernel tasks. These are
+            // control-plane signals and intentionally do not share the
+            // bounded output/work queue.
             Some(command) = async {
-                match cmd_rx.as_mut() {
+                match lifecycle_rx.as_mut() {
                     Some(rx) => rx.recv().await,
                     None => std::future::pending().await,
                 }
@@ -533,6 +537,36 @@ pub async fn run_runtime_agent(
                     &mut kernel_state,
                 ).await {
                     warn!("[runtime-agent] Error handling queue command: {}", e);
+                }
+            }
+
+            // Process bounded output/work commands from kernel tasks.
+            Some(command) = async {
+                match work_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                // If output work was selected while lifecycle signals were
+                // also pending, drain lifecycle first so output transport
+                // cannot sit ahead of idle/done/error/death processing.
+                if let Some(rx) = lifecycle_rx.as_mut() {
+                    if let Err(e) = drain_lifecycle_commands(
+                        rx,
+                        &ctx,
+                        &mut kernel,
+                        &mut kernel_state,
+                    ).await {
+                        warn!("[runtime-agent] Error draining lifecycle commands: {}", e);
+                    }
+                }
+                if let Err(e) = handle_queue_command(
+                    command,
+                    &ctx,
+                    &mut kernel,
+                    &mut kernel_state,
+                ).await {
+                    warn!("[runtime-agent] Error handling work command: {}", e);
                 }
             }
 
@@ -693,8 +727,8 @@ async fn reconnect_with_backoff(
 
 /// Handle a `RuntimeAgentRequest` and return a `RuntimeAgentResponse`.
 ///
-/// Also returns an optional `cmd_rx` when a kernel is launched/restarted
-/// (the caller needs to install it in the select! loop).
+/// Also returns optional command receivers when a kernel is launched/restarted
+/// (the caller needs to install them in the select! loop).
 ///
 /// Note: ExecuteCell is NOT handled here -- execution is CRDT-driven.
 /// The coordinator writes execution entries to RuntimeStateDoc, and the
@@ -705,7 +739,7 @@ async fn handle_runtime_agent_request(
     kernel: &mut Option<JupyterKernel>,
     state: &mut KernelState,
     seen_execution_ids: &mut HashSet<String>,
-) -> (RuntimeAgentResponse, Option<mpsc::Receiver<QueueCommand>>) {
+) -> (RuntimeAgentResponse, Option<QueueCommandReceivers>) {
     match request {
         RuntimeAgentRequest::LaunchKernel {
             kernel_type,
@@ -1312,6 +1346,24 @@ async fn handle_queue_command(
     Ok(())
 }
 
+async fn drain_lifecycle_commands(
+    rx: &mut mpsc::UnboundedReceiver<QueueCommand>,
+    ctx: &RuntimeAgentContext,
+    kernel: &mut Option<JupyterKernel>,
+    state: &mut KernelState,
+) -> anyhow::Result<usize> {
+    let mut drained = 0;
+    while let Ok(command) = rx.try_recv() {
+        debug_assert!(
+            command.is_lifecycle(),
+            "lifecycle channel received non-lifecycle work"
+        );
+        handle_queue_command(command, ctx, kernel, state).await?;
+        drained += 1;
+    }
+    Ok(drained)
+}
+
 fn mark_interrupted_executions_failed(
     state: &RuntimeStateHandle,
     interrupted: Option<&QueueEntry>,
@@ -1371,6 +1423,7 @@ fn diff_comm_state(
 mod tests {
     use super::*;
     use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
+    use crate::output_prep::queue_command_channels;
     use crate::protocol::CompletionItem;
     use anyhow::Result;
     use notebook_protocol::protocol::LaunchedEnvConfig;
@@ -1383,7 +1436,7 @@ mod tests {
         async fn launch(
             _config: KernelLaunchConfig,
             _shared: KernelSharedRefs,
-        ) -> Result<(Self, mpsc::Receiver<QueueCommand>)> {
+        ) -> Result<(Self, QueueCommandReceivers)> {
             unimplemented!()
         }
         async fn execute(&mut self, _: &str, _: &str, _: &str) -> Result<()> {
@@ -1525,6 +1578,37 @@ mod tests {
         assert_eq!(rs.kernel.lifecycle, RuntimeLifecycle::Error);
         assert!(rs.queue.executing.is_none());
         assert!(rs.queue.queued.is_empty());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_drain_runs_before_queued_work() {
+        let (ctx, mut state, handle) = test_fixtures();
+        state.set_idle();
+        let (lifecycle_tx, work_tx, mut receivers) = queue_command_channels(1);
+
+        work_tx
+            .try_send(QueueCommand::SendCommUpdate {
+                comm_id: "comm-a".to_string(),
+                state: serde_json::json!({ "outputs": [] }),
+            })
+            .expect("work queue should accept one item");
+        lifecycle_tx
+            .send(QueueCommand::KernelDied)
+            .expect("lifecycle channel should be open");
+
+        let drained = drain_lifecycle_commands(
+            &mut receivers.lifecycle_rx,
+            &ctx,
+            &mut None::<JupyterKernel>,
+            &mut state,
+        )
+        .await
+        .expect("lifecycle drain should succeed");
+
+        assert_eq!(drained, 1);
+        let rs = handle.read(|sd| sd.read_state()).unwrap();
+        assert_eq!(rs.kernel.lifecycle, RuntimeLifecycle::Error);
+        assert!(receivers.work_rx.try_recv().is_ok());
     }
 
     /// Simulate the interrupt+execute race: a concurrent execute_cell creates

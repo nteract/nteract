@@ -441,7 +441,7 @@ impl KernelState {
 mod tests {
     use super::*;
     use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
-    use crate::output_prep::QueueCommand;
+    use crate::output_prep::QueueCommandReceivers;
     use crate::protocol::CompletionItem;
     use anyhow::Result;
     use notebook_protocol::protocol::LaunchedEnvConfig;
@@ -464,7 +464,7 @@ mod tests {
         async fn launch(
             _config: KernelLaunchConfig,
             _shared: KernelSharedRefs,
-        ) -> Result<(Self, tokio::sync::mpsc::Receiver<QueueCommand>)> {
+        ) -> Result<(Self, QueueCommandReceivers)> {
             unimplemented!("tests create MockKernel directly")
         }
 

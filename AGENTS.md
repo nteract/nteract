@@ -66,6 +66,14 @@ Hold a `tokio::sync::Mutex` or `RwLock` guard only within a synchronous block �
 
 `apps/notebook/src/components/NotebookView.tsx` renders cells in stable DOM order (sorted by cell ID) and uses CSS `order` for visual positioning. Iterating `cellIds` directly causes React's `insertBefore` on reorder, destroying iframes — visible as white flashes, lost widget state, re-rendered outputs. Iterate `stableDomOrder`; the parent is `display: flex; flex-direction: column` and each child sets `order`.
 
+### Runtime control-plane signals are not output transport
+
+Kernel lifecycle signals (`KernelIdle`, `ExecutionDone`, `CellError`, `KernelDied`) must never share bounded output/work transport with stdout floods, display churn, or widget output replay. Route them through a separate reliable control path and drain them before bounded output work so interrupts and queue release cannot be backpressured by manifests, blob writes, or Automerge output mutations.
+
+Stream output may use bounded, lossy periodic flushes, but ordering boundaries cannot. Flush stdout/stderr through the stream committer priority path before clearing terminal state for display/error outputs, and route `ExecutionDone` through that same priority path so terminal runtime state remains causally after the final stream manifest.
+
+Output widget replay is not the durable record; RuntimeStateDoc is. Kernel-facing `SendCommUpdate` replay from IOPub must be non-blocking and best-effort so a full bounded work queue cannot delay later lifecycle status.
+
 ## Notebook files
 
 Use MCP tools (`create_notebook`, `manage_dependencies`) for notebooks with dependency metadata — the schema is internal. Test fixtures that need deps put them at `metadata.runt.uv.dependencies`.

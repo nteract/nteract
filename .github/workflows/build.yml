@@ -880,13 +880,18 @@ jobs:
         run: cargo build --release -p runtimed
 
       - name: Build runtimed-py into the workspace venv
-        # `uv sync` at repo root populates .venv with the workspace
-        # members (runtimed, dx, nteract, gremlin) plus their deps
-        # (pandas, polars, pyarrow). VIRTUAL_ENV plus `uv run --active`
-        # pins maturin to that same .venv so the bindings land where
-        # pytest will look.
+        # Sync only the Python packages exercised by these tests. The root
+        # workspace dev group includes agent/model tooling that is irrelevant
+        # here and can fail resolution on Linux when upstream extras churn.
+        # VIRTUAL_ENV plus `uv run --active` pins maturin to this same .venv
+        # so the bindings land where pytest will look.
         run: |
-          uv sync
+          uv sync --no-default-groups \
+            --package runtimed \
+            --package dx \
+            --package nteract \
+            --package nteract-kernel-launcher \
+            --group dev
           cd crates/runtimed-py && \
             VIRTUAL_ENV="${GITHUB_WORKSPACE}/.venv" \
             uv run --active --directory ../../python/runtimed maturin develop
@@ -987,22 +992,26 @@ jobs:
           cp target/debug/runtimed python/runtimed/src/runtimed/_bin/
 
       - name: Sync workspace
-        run: uv sync
+        run: |
+          uv sync --no-default-groups \
+            --package runtimed \
+            --package dx \
+            --package prewarm \
+            --package nteract \
+            --group dev
 
       - name: Run runtimed-py unit tests
         working-directory: python/runtimed
-        run: uv run pytest tests/test_session_unit.py tests/test_binary.py tests/test_ipython_bridge.py -v --tb=short
+        run: uv run --no-sync pytest tests/test_session_unit.py tests/test_binary.py tests/test_ipython_bridge.py -v --tb=short
 
       - name: Run dx unit tests
-        run: uv run pytest python/dx/tests/ -v --tb=short
+        run: uv run --no-sync pytest python/dx/tests/ -v --tb=short
 
       - name: Install and run prewarm unit tests
         run: |
           uv pip install -e python/prewarm
-          uv run pytest python/prewarm/tests/ -v --tb=short
+          uv run --no-sync pytest python/prewarm/tests/ -v --tb=short
 
       - name: Run nteract smoke tests
         working-directory: python/nteract
-        run: |
-          uv sync --dev --no-sources
-          uv run pytest -v
+        run: uv run --no-sync pytest -v

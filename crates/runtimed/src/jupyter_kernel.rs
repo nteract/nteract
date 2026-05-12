@@ -35,12 +35,13 @@ use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelShare
 use crate::output_prep::{
     apply_display_manifest_updates, blob_store_large_state_values, build_display_manifest_updates,
     collect_display_update_targets, escape_glob_pattern, extract_buffer_paths,
-    media_to_display_data, message_content_to_nbformat, store_widget_buffers, QueueCommand,
+    media_to_display_data, message_content_to_nbformat, queue_command_channels,
+    store_widget_buffers, QueueCommand, QueueCommandReceivers,
 };
-use crate::output_store::{self, ContentRef, OutputManifest, DEFAULT_INLINE_THRESHOLD};
+use crate::output_store::{self, OutputManifest, DEFAULT_INLINE_THRESHOLD};
 use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast};
-use crate::stream_flush::{PendingStreamFlush, StreamFlushBuffer};
-use crate::stream_terminal::{StreamOutputState, StreamTerminals};
+use crate::stream_flush::StreamFlushBuffer;
+use crate::stream_terminal::StreamTerminals;
 use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 use crate::terminal_size::{TERMINAL_COLUMNS_STR, TERMINAL_LINES_STR};
 use crate::EnvType;
@@ -190,85 +191,29 @@ enum IoPubStateUpdate {
     Lifecycle(RuntimeLifecycle),
 }
 
-async fn flush_stream_output(
-    state: &runtime_doc::RuntimeStateHandle,
-    blob_store: &crate::blob_store::BlobStore,
-    stream_terminals: &Arc<tokio::sync::Mutex<StreamTerminals>>,
-    kernel_actor_id: &str,
-    flush: PendingStreamFlush,
+fn try_send_comm_update(
+    work_tx: &mpsc::Sender<QueueCommand>,
+    comm_id: String,
+    state: serde_json::Value,
 ) {
-    let (known_state, rendered_text) = {
-        let terminals = stream_terminals.lock().await;
-        (
-            terminals
-                .get_output_state(&flush.execution_id, &flush.stream_name)
-                .cloned(),
-            terminals
-                .render(&flush.execution_id, &flush.stream_name)
-                .unwrap_or_default(),
-        )
-    };
-
-    let nbformat_value = serde_json::json!({
-        "output_type": "stream",
-        "name": flush.stream_name,
-        "text": rendered_text,
-    });
-
-    let manifest =
-        match output_store::create_manifest(&nbformat_value, blob_store, DEFAULT_INLINE_THRESHOLD)
-            .await
-        {
-            Ok(manifest) => manifest,
-            Err(e) => {
-                warn!("[jupyter-kernel] Failed to create stream manifest: {}", e);
-                return;
-            }
-        };
-    let manifest_json = manifest.to_json();
-
-    let blob_hash = if let OutputManifest::Stream { ref text, .. } = manifest {
-        match text {
-            ContentRef::Blob { blob, .. } => blob.clone(),
-            ContentRef::Inline { inline } => inline.clone(),
+    match work_tx.try_send(QueueCommand::SendCommUpdate { comm_id, state }) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(QueueCommand::SendCommUpdate { comm_id, .. })) => {
+            debug!(
+                "[jupyter-kernel] Dropping comm output replay for comm_id={} because work queue is full",
+                comm_id
+            );
         }
-    } else {
-        String::new()
-    };
-
-    let upsert_result = match state.transact_at_current_heads(
-        Some(kernel_actor_id),
-        "runtime-state-iopub-stream-transaction",
-        |sd| match sd.upsert_stream_output(
-            &flush.execution_id,
-            &flush.stream_name,
-            &manifest_json,
-            known_state.as_ref(),
-        ) {
-            Ok(result) => Ok(result),
-            Err(e) => {
-                warn!("[jupyter-kernel] Failed to upsert stream output: {}", e);
-                Err(e)
-            }
-        },
-    ) {
-        Ok(result) => result,
-        Err(e) => {
-            warn!("[runtime-state] {}", e);
-            return;
+        Err(mpsc::error::TrySendError::Closed(QueueCommand::SendCommUpdate {
+            comm_id, ..
+        })) => {
+            warn!(
+                "[jupyter-kernel] Dropping comm output replay for comm_id={} because work queue is closed",
+                comm_id
+            );
         }
-    };
-
-    let (_updated, output_id) = upsert_result;
-    let mut terminals = stream_terminals.lock().await;
-    terminals.set_output_state(
-        &flush.execution_id,
-        &flush.stream_name,
-        StreamOutputState {
-            output_id,
-            blob_hash,
-        },
-    );
+        Err(_) => unreachable!("try_send_comm_update only sends SendCommUpdate"),
+    }
 }
 
 /// Created at kernel launch time, captures connection_info and session_id.
@@ -359,8 +304,10 @@ pub struct JupyterKernel {
     /// Mapping from execution_id -> cell_id for routing iopub messages.
     /// With msg_id = execution_id, parent_header.msg_id IS the execution_id.
     cell_id_map: Arc<StdMutex<HashMap<String, String>>>,
-    /// Command sender for iopub/shell tasks.
-    cmd_tx: Option<mpsc::Sender<QueueCommand>>,
+    /// Work command sender for iopub/shell tasks.
+    work_cmd_tx: Option<mpsc::Sender<QueueCommand>>,
+    /// Lifecycle command sender for iopub/shell tasks.
+    lifecycle_cmd_tx: Option<mpsc::UnboundedSender<QueueCommand>>,
     /// Monotonic counter for comm insertion order (written to RuntimeStateDoc).
     comm_seq: Arc<AtomicU64>,
     /// Pending history requests: msg_id -> response channel.
@@ -379,7 +326,7 @@ impl KernelConnection for JupyterKernel {
     async fn launch(
         config: KernelLaunchConfig,
         shared: KernelSharedRefs,
-    ) -> Result<(Self, mpsc::Receiver<QueueCommand>)> {
+    ) -> Result<(Self, QueueCommandReceivers)> {
         let kernel_type = config.kernel_type;
         let env_source = config.env_source;
         let notebook_path = config.notebook_path;
@@ -1210,8 +1157,10 @@ impl KernelConnection for JupyterKernel {
             }
         };
 
-        // Create command channel for queue processing
-        let (cmd_tx, cmd_rx) = mpsc::channel::<QueueCommand>(100);
+        // Create command channels for queue processing. Lifecycle commands are
+        // control-plane signals and must not be backpressured by bounded output
+        // work such as captured Output widget updates.
+        let (lifecycle_cmd_tx, work_cmd_tx, command_receivers) = queue_command_channels(100);
 
         // Shared state refs for spawned tasks
         let cell_id_map: Arc<StdMutex<HashMap<String, String>>> =
@@ -1223,8 +1172,8 @@ impl KernelConnection for JupyterKernel {
         let stream_terminals = Arc::new(tokio::sync::Mutex::new(StreamTerminals::new()));
 
         // Spawn process watcher — detects process exit and signals via oneshot
-        let process_cmd_tx = cmd_tx.clone();
-        let panic_cmd_tx = cmd_tx.clone();
+        let process_cmd_tx = lifecycle_cmd_tx.clone();
+        let panic_cmd_tx = lifecycle_cmd_tx.clone();
         let (died_tx, died_rx) = tokio::sync::oneshot::channel::<String>();
         let process_watcher_task = spawn_supervised(
             "process-watcher",
@@ -1241,10 +1190,10 @@ impl KernelConnection for JupyterKernel {
                     }
                 };
                 let _ = died_tx.send(msg);
-                let _ = process_cmd_tx.try_send(QueueCommand::KernelDied);
+                let _ = process_cmd_tx.send(QueueCommand::KernelDied);
             },
             move |_| {
-                let _ = panic_cmd_tx.try_send(QueueCommand::KernelDied);
+                let _ = panic_cmd_tx.send(QueueCommand::KernelDied);
             },
         );
 
@@ -1252,7 +1201,8 @@ impl KernelConnection for JupyterKernel {
 
         let broadcast_tx = shared.broadcast_tx.clone();
         let iopub_cell_id_map = cell_id_map.clone();
-        let iopub_cmd_tx = cmd_tx.clone();
+        let iopub_lifecycle_tx = lifecycle_cmd_tx.clone();
+        let iopub_work_tx = work_cmd_tx.clone();
         let blob_store = shared.blob_store.clone();
         let iopub_comm_seq = comm_seq.clone();
         let iopub_stream_terminals = stream_terminals.clone();
@@ -1260,12 +1210,19 @@ impl KernelConnection for JupyterKernel {
         // IOPub writes use transactions with the base kernel actor. Async
         // blob/manifest work is completed before the document transaction.
         let iopub_kernel_actor_id = kernel_actor_id.clone();
+        let stream_committer = crate::stream_committer::start_stream_committer(
+            state_for_iopub.clone(),
+            blob_store.clone(),
+            iopub_stream_terminals.clone(),
+            iopub_kernel_actor_id.clone(),
+            iopub_lifecycle_tx.clone(),
+        );
 
         // Create coalescing channel early so the IOPub task can capture the sender.
         let (coalesce_tx, coalesce_rx) = mpsc::unbounded_channel::<(String, serde_json::Value)>();
         let comm_coalesce_tx_for_iopub = Some(coalesce_tx.clone());
 
-        let iopub_panic_cmd_tx = cmd_tx.clone();
+        let iopub_panic_cmd_tx = lifecycle_cmd_tx.clone();
         let iopub_task = spawn_supervised(
             "iopub",
             async move {
@@ -1363,29 +1320,24 @@ impl KernelConnection for JupyterKernel {
                                     if status.execution_state
                                         == jupyter_protocol::ExecutionState::Idle
                                     {
-                                        if let Some(eid) = execution_id.as_ref() {
-                                            for flush in stream_flushes
-                                                .flush_execution(eid, std::time::Instant::now())
-                                            {
-                                                flush_stream_output(
-                                                    &state_for_iopub,
-                                                    &blob_store,
-                                                    &iopub_stream_terminals,
-                                                    &iopub_kernel_actor_id,
-                                                    flush,
-                                                )
-                                                .await;
-                                            }
+                                        let final_stream_flushes = if let Some(eid) =
+                                            execution_id.as_ref()
+                                        {
+                                            let flushes = stream_flushes
+                                                .flush_execution(eid, std::time::Instant::now());
                                             stream_flushes.clear_execution(eid);
-                                        }
+                                            flushes
+                                        } else {
+                                            Vec::new()
+                                        };
 
                                         if let Err(e) =
-                                            iopub_cmd_tx.try_send(QueueCommand::KernelIdle {
+                                            iopub_lifecycle_tx.send(QueueCommand::KernelIdle {
                                                 execution_id: execution_id.clone(),
                                             })
                                         {
                                             warn!(
-                                                "[jupyter-kernel] KernelIdle dropped: {} — queued work after interrupt may stall",
+                                                "[jupyter-kernel] KernelIdle signal lost because runtime agent receiver closed: {}",
                                                 e
                                             );
                                         }
@@ -1393,18 +1345,17 @@ impl KernelConnection for JupyterKernel {
                                         if let (Some(cid), Some(eid)) =
                                             (cell_id.clone(), execution_id.clone())
                                         {
-                                            if let Err(e) =
-                                                iopub_cmd_tx.try_send(QueueCommand::ExecutionDone {
-                                                    cell_id: cid.clone(),
-                                                    execution_id: eid.clone(),
-                                                })
-                                            {
-                                                warn!(
-                                                    "[jupyter-kernel] ExecutionDone dropped for cell={} execution={}: {} — client may hang",
-                                                    cid, eid, e
-                                                );
-                                            }
-                                        } else if execution_id.is_some() && cell_id.is_none() {
+                                            stream_committer.flush_then_signal(
+                                                final_stream_flushes,
+                                                QueueCommand::ExecutionDone {
+                                                    cell_id: cid,
+                                                    execution_id: eid,
+                                                },
+                                            );
+                                        } else {
+                                            stream_committer.request_flushes(final_stream_flushes);
+                                        }
+                                        if execution_id.is_some() && cell_id.is_none() {
                                             // Status=Idle with a parent execution_id but no
                                             // cell_id means the cell_id_map lookup failed —
                                             // either the map is poisoned or the execution_id
@@ -1522,14 +1473,13 @@ impl KernelConnection for JupyterKernel {
                                                         }
                                                     }
                                                 }
-                                                let _ = iopub_cmd_tx
-                                                    .send(QueueCommand::SendCommUpdate {
-                                                        comm_id: widget_comm_id.clone(),
-                                                        state: serde_json::json!({
-                                                            "outputs": resolved_outputs,
-                                                        }),
-                                                    })
-                                                    .await;
+                                                try_send_comm_update(
+                                                    &iopub_work_tx,
+                                                    widget_comm_id.clone(),
+                                                    serde_json::json!({
+                                                        "outputs": resolved_outputs,
+                                                    }),
+                                                );
                                             }
                                         }
                                         continue;
@@ -1553,14 +1503,7 @@ impl KernelConnection for JupyterKernel {
                                             stream.text.len(),
                                             std::time::Instant::now(),
                                         ) {
-                                            flush_stream_output(
-                                                &state_for_iopub,
-                                                &blob_store,
-                                                &iopub_stream_terminals,
-                                                &iopub_kernel_actor_id,
-                                                flush,
-                                            )
-                                            .await;
+                                            stream_committer.request_flush(flush);
                                         }
                                     }
                                 }
@@ -1665,14 +1608,13 @@ impl KernelConnection for JupyterKernel {
                                                             }
                                                         }
                                                     }
-                                                    let _ = iopub_cmd_tx
-                                                        .send(QueueCommand::SendCommUpdate {
-                                                            comm_id: widget_comm_id.clone(),
-                                                            state: serde_json::json!({
-                                                                "outputs": resolved_outputs
-                                                            }),
-                                                        })
-                                                        .await;
+                                                    try_send_comm_update(
+                                                        &iopub_work_tx,
+                                                        widget_comm_id.clone(),
+                                                        serde_json::json!({
+                                                            "outputs": resolved_outputs
+                                                        }),
+                                                    );
                                                 }
                                             }
                                         }
@@ -1689,19 +1631,10 @@ impl KernelConnection for JupyterKernel {
                                         };
                                         let eid = execution_id.clone().unwrap_or_default();
 
-                                        for flush in stream_flushes
-                                            .flush_execution(&eid, std::time::Instant::now())
-                                        {
-                                            flush_stream_output(
-                                                &state_for_iopub,
-                                                &blob_store,
-                                                &iopub_stream_terminals,
-                                                &iopub_kernel_actor_id,
-                                                flush,
-                                            )
-                                            .await;
-                                        }
+                                        let boundary_flushes = stream_flushes
+                                            .flush_execution(&eid, std::time::Instant::now());
                                         stream_flushes.clear_execution(&eid);
+                                        stream_committer.flush_for_ordering(boundary_flushes).await;
 
                                         {
                                             let mut terminals = iopub_stream_terminals.lock().await;
@@ -1775,13 +1708,13 @@ impl KernelConnection for JupyterKernel {
                                             Some(crate::user_error::UserErrorOutput::Rich(_))
                                         ) {
                                             if let Err(e) =
-                                                iopub_cmd_tx.try_send(QueueCommand::CellError {
+                                                iopub_lifecycle_tx.send(QueueCommand::CellError {
                                                     cell_id: cid.clone(),
                                                     execution_id: eid.clone(),
                                                 })
                                             {
                                                 warn!(
-                                                    "[jupyter-kernel] CellError (rich traceback) dropped for cell={} execution={}: {}",
+                                                    "[jupyter-kernel] CellError (rich traceback) signal lost for cell={} execution={} because runtime agent receiver closed: {}",
                                                     cid, eid, e
                                                 );
                                             }
@@ -1954,14 +1887,13 @@ impl KernelConnection for JupyterKernel {
                                                             }
                                                         }
                                                     }
-                                                    let _ = iopub_cmd_tx
-                                                        .send(QueueCommand::SendCommUpdate {
-                                                            comm_id: widget_comm_id.clone(),
-                                                            state: serde_json::json!({
-                                                                "outputs": resolved_outputs
-                                                            }),
-                                                        })
-                                                        .await;
+                                                    try_send_comm_update(
+                                                        &iopub_work_tx,
+                                                        widget_comm_id.clone(),
+                                                        serde_json::json!({
+                                                            "outputs": resolved_outputs
+                                                        }),
+                                                    );
                                                 }
                                             }
                                         }
@@ -1971,19 +1903,10 @@ impl KernelConnection for JupyterKernel {
                                     if let Some(ref cid) = cell_id {
                                         let eid = execution_id.clone().unwrap_or_default();
 
-                                        for flush in stream_flushes
-                                            .flush_execution(&eid, std::time::Instant::now())
-                                        {
-                                            flush_stream_output(
-                                                &state_for_iopub,
-                                                &blob_store,
-                                                &iopub_stream_terminals,
-                                                &iopub_kernel_actor_id,
-                                                flush,
-                                            )
-                                            .await;
-                                        }
+                                        let boundary_flushes = stream_flushes
+                                            .flush_execution(&eid, std::time::Instant::now());
                                         stream_flushes.clear_execution(&eid);
+                                        stream_committer.flush_for_ordering(boundary_flushes).await;
 
                                         {
                                             let mut terminals = iopub_stream_terminals.lock().await;
@@ -2036,13 +1959,13 @@ impl KernelConnection for JupyterKernel {
                                         }
 
                                         if let Err(e) =
-                                            iopub_cmd_tx.try_send(QueueCommand::CellError {
+                                            iopub_lifecycle_tx.send(QueueCommand::CellError {
                                                 cell_id: cid.clone(),
                                                 execution_id: eid.clone(),
                                             })
                                         {
                                             warn!(
-                                                "[jupyter-kernel] CellError dropped for cell={} execution={}: {} — client may hang",
+                                                "[jupyter-kernel] CellError signal lost for cell={} execution={} because runtime agent receiver closed: {}",
                                                 cid, eid, e
                                             );
                                         }
@@ -2073,12 +1996,11 @@ impl KernelConnection for JupyterKernel {
                                             }) {
                                                 warn!("[runtime-state] {}", e);
                                             }
-                                            let _ = iopub_cmd_tx
-                                                .send(QueueCommand::SendCommUpdate {
-                                                    comm_id: widget_comm_id.clone(),
-                                                    state: serde_json::json!({ "outputs": [] }),
-                                                })
-                                                .await;
+                                            try_send_comm_update(
+                                                &iopub_work_tx,
+                                                widget_comm_id.clone(),
+                                                serde_json::json!({ "outputs": [] }),
+                                            );
                                         }
                                     }
                                 }
@@ -2360,16 +2282,16 @@ impl KernelConnection for JupyterKernel {
                     }
                 }
                 warn!("[jupyter-kernel] iopub loop exited, signaling KernelDied");
-                if let Err(e) = iopub_cmd_tx.try_send(QueueCommand::KernelDied) {
+                if let Err(e) = iopub_lifecycle_tx.send(QueueCommand::KernelDied) {
                     warn!(
-                        "[jupyter-kernel] KernelDied signal dropped from iopub exit: {}",
+                        "[jupyter-kernel] KernelDied signal lost from iopub exit because runtime agent receiver closed: {}",
                         e
                     );
                 }
             },
             move |_| {
                 // Best-effort in panic handler — can't log, just try to signal
-                let _ = iopub_panic_cmd_tx.try_send(QueueCommand::KernelDied);
+                let _ = iopub_panic_cmd_tx.send(QueueCommand::KernelDied);
             },
         );
 
@@ -2484,7 +2406,7 @@ impl KernelConnection for JupyterKernel {
         let shell_blob_store = shared.blob_store.clone();
         let shell_kernel_actor_id = kernel_actor_id.clone();
 
-        let shell_panic_cmd_tx = cmd_tx.clone();
+        let shell_panic_cmd_tx = lifecycle_cmd_tx.clone();
         let shell_reader_task = spawn_supervised(
             "shell-reader",
             async move {
@@ -2644,14 +2566,14 @@ impl KernelConnection for JupyterKernel {
                 }
             },
             move |_| {
-                let _ = shell_panic_cmd_tx.try_send(QueueCommand::KernelDied);
+                let _ = shell_panic_cmd_tx.send(QueueCommand::KernelDied);
             },
         );
 
         // ── Heartbeat monitor ────────────────────────────────────────────
 
-        let hb_cmd_tx = cmd_tx.clone();
-        let hb_panic_cmd_tx = cmd_tx.clone();
+        let hb_cmd_tx = lifecycle_cmd_tx.clone();
+        let hb_panic_cmd_tx = lifecycle_cmd_tx.clone();
         let hb_conn_info = connection_info.clone();
         let hb_kernel_id = kernel_id.clone();
         let hb_kernel_type = kernel_type.clone();
@@ -2722,7 +2644,7 @@ impl KernelConnection for JupyterKernel {
                                 failure,
                                 hb_launch_elapsed.elapsed().as_millis()
                             );
-                            let _ = hb_cmd_tx.try_send(QueueCommand::KernelDied);
+                            let _ = hb_cmd_tx.send(QueueCommand::KernelDied);
                             break;
                         }
                     }
@@ -2752,12 +2674,12 @@ impl KernelConnection for JupyterKernel {
                         consecutive_failures,
                         hb_launch_elapsed.elapsed().as_millis()
                     );
-                    let _ = hb_cmd_tx.try_send(QueueCommand::KernelDied);
+                    let _ = hb_cmd_tx.send(QueueCommand::KernelDied);
                     break;
                 }
             },
             move |_| {
-                let _ = hb_panic_cmd_tx.try_send(QueueCommand::KernelDied);
+                let _ = hb_panic_cmd_tx.send(QueueCommand::KernelDied);
             },
         );
 
@@ -2772,7 +2694,7 @@ impl KernelConnection for JupyterKernel {
         // transaction on the live doc, so it can use the base kernel actor
         // instead of minting a coalesce sub-actor.
         let coalesce_kernel_actor_id = kernel_actor_id.clone();
-        let coalesce_panic_cmd_tx = cmd_tx.clone();
+        let coalesce_panic_cmd_tx = lifecycle_cmd_tx.clone();
         let comm_coalesce_task = spawn_supervised(
             "comm-coalesce",
             async move {
@@ -2832,7 +2754,7 @@ impl KernelConnection for JupyterKernel {
                 }
             },
             move |_| {
-                let _ = coalesce_panic_cmd_tx.try_send(QueueCommand::KernelDied);
+                let _ = coalesce_panic_cmd_tx.send(QueueCommand::KernelDied);
             },
         );
 
@@ -2866,7 +2788,8 @@ impl KernelConnection for JupyterKernel {
             comm_coalesce_tx: Some(coalesce_tx),
             comm_coalesce_task: Some(comm_coalesce_task),
             cell_id_map,
-            cmd_tx: Some(cmd_tx),
+            work_cmd_tx: Some(work_cmd_tx),
+            lifecycle_cmd_tx: Some(lifecycle_cmd_tx),
             comm_seq,
             pending_history,
             pending_completions,
@@ -2875,7 +2798,7 @@ impl KernelConnection for JupyterKernel {
         };
 
         info!("[jupyter-kernel] Kernel started: {}", kernel_id);
-        Ok((kernel, cmd_rx))
+        Ok((kernel, command_receivers))
     }
 
     // ── Execute ──────────────────────────────────────────────────────────
@@ -3026,7 +2949,8 @@ impl KernelConnection for JupyterKernel {
         self.connection_info = None;
         self.connection_file = None;
         self.cell_id_map.lock().unwrap().clear();
-        self.cmd_tx = None;
+        self.work_cmd_tx = None;
+        self.lifecycle_cmd_tx = None;
 
         info!("[jupyter-kernel] Kernel shutdown complete");
         Ok(())
@@ -3371,6 +3295,32 @@ mod tests {
             line,
             source: source.to_string(),
         }
+    }
+
+    #[test]
+    fn comm_update_replay_is_best_effort_when_work_queue_is_full() {
+        let (tx, mut rx) = mpsc::channel(1);
+
+        try_send_comm_update(
+            &tx,
+            "comm-a".to_string(),
+            serde_json::json!({ "outputs": ["first"] }),
+        );
+        try_send_comm_update(
+            &tx,
+            "comm-b".to_string(),
+            serde_json::json!({ "outputs": ["dropped"] }),
+        );
+
+        let queued = rx.try_recv().expect("first comm update should be queued");
+        assert!(matches!(
+            queued,
+            QueueCommand::SendCommUpdate { comm_id, .. } if comm_id == "comm-a"
+        ));
+        assert!(
+            rx.try_recv().is_err(),
+            "full work queue should drop comm output replay"
+        );
     }
 
     #[tokio::test]
