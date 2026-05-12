@@ -66,6 +66,34 @@ describe("DirectTransport sendTypedRequest", () => {
     reset_sync_state: () => {},
   };
 
+  it("routes request frames through the normal request handler shape", async () => {
+    const transport = new DirectTransport(server);
+    const payload = new TextEncoder().encode(
+      JSON.stringify({
+        id: "request-1",
+        required_heads: ["head-1"],
+        action: "execute_cell",
+        cell_id: "cell-1",
+      }),
+    );
+    transport.requestHandler = vi.fn().mockResolvedValue({ result: "ok" });
+
+    const response = await transport.sendTypedRequest(
+      FrameType.REQUEST,
+      payload,
+      "request-1",
+      30_000,
+      "execute_cell",
+    );
+
+    expect(transport.sentFrames).toEqual([{ frameType: FrameType.REQUEST, payload }]);
+    expect(transport.requestHandler).toHaveBeenCalledWith(
+      { type: "execute_cell", cell_id: "cell-1" },
+      { required_heads: ["head-1"] },
+    );
+    expect(response).toEqual({ result: "ok" });
+  });
+
   it("routes non-request typed frames through typedRequestHandler", async () => {
     const transport = new DirectTransport(server);
     const payload = new Uint8Array([1, 2, 3]);

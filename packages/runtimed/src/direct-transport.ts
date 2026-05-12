@@ -157,7 +157,17 @@ export class DirectTransport implements NotebookTransport {
     await this.sendFrame(frameType, payload);
 
     if (frameType === FrameType.REQUEST) {
-      const response = await this.requestHandler({ id, payload, timeoutMs });
+      const envelope = JSON.parse(new TextDecoder().decode(payload)) as {
+        id?: string;
+        action?: string;
+        required_heads?: string[];
+        [key: string]: unknown;
+      };
+      const { action, required_heads: requiredHeads, id: _id, ...rest } = envelope;
+      const response = await this.requestHandler(
+        { type: action, ...rest },
+        requiredHeads?.length ? { required_heads: requiredHeads } : undefined,
+      );
       return response as NotebookResponse;
     }
 
