@@ -1,0 +1,3 @@
+{"ts":"2026-05-12T20:43:40Z","actor":"codex","kind":"commit","commit":"d0313ca8","summary":"Added the Phase 2 PutBlob one-shot clients task brief."}
+{"ts":"2026-05-12T20:43:40Z","actor":"codex","kind":"commit","commit":"1eeb145b","summary":"Added Rust PutBlob frame encoding, relay command plumbing, RelayHandle one-shot upload API, and focused Rust tests."}
+{"ts":"2026-05-12T20:43:40Z","actor":"codex","kind":"commit","commit":"e80a7f60","summary":"Added TypeScript sendTypedRequest transport seam, putBlob helper, exports, and focused TypeScript tests."}
