@@ -164,6 +164,23 @@ Principle: **reset transport state, preserve document truth.**
 | Client-initiated save | `confirm_sync` before `SaveNotebook` request |
 | Daemon-internal autosave | Neither — daemon reads its own doc directly |
 
+### RuntimeStateDoc Output Pressure
+
+RuntimeStateDoc is the durable state boundary, not the hot transport for every
+transient kernel event. Control-plane signals must stay independent of output
+work:
+
+- `KernelIdle`, `ExecutionDone`, `CellError`, and `KernelDied` use reliable
+  lifecycle/control paths, not bounded output queues.
+- stdout/stderr stream chunks may be periodically flushed through bounded,
+  droppable work, but ordering boundaries use the stream committer priority
+  path so terminal state follows the final durable stream manifest.
+- Output widget replay back to the kernel is best-effort; widget state in
+  RuntimeStateDoc is the durable truth.
+- `update_display_data` with a `display_id` is transient display churn. Coalesce
+  to the latest pending value per `display_id` off the IOPub path, then flush
+  before `ExecutionDone`.
+
 ## Protocol Design Patterns
 
 ### Architecture Comparison

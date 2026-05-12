@@ -33,8 +33,7 @@ use crate::async_outcome::{
 };
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
 use crate::output_prep::{
-    apply_display_manifest_updates, blob_store_large_state_values, build_display_manifest_updates,
-    collect_display_update_targets, escape_glob_pattern, extract_buffer_paths,
+    blob_store_large_state_values, escape_glob_pattern, extract_buffer_paths,
     media_to_display_data, message_content_to_nbformat, queue_command_channels,
     store_widget_buffers, QueueCommand, QueueCommandReceivers,
 };
@@ -1217,6 +1216,13 @@ impl KernelConnection for JupyterKernel {
             iopub_kernel_actor_id.clone(),
             iopub_lifecycle_tx.clone(),
         );
+        let display_update_committer =
+            crate::display_update_committer::start_display_update_committer(
+                state_for_iopub.clone(),
+                blob_store.clone(),
+                iopub_kernel_actor_id.clone(),
+                iopub_lifecycle_tx.clone(),
+            );
 
         // Create coalescing channel early so the IOPub task can capture the sender.
         let (coalesce_tx, coalesce_rx) = mpsc::unbounded_channel::<(String, serde_json::Value)>();
@@ -1341,6 +1347,8 @@ impl KernelConnection for JupyterKernel {
                                                 e
                                             );
                                         }
+
+                                        display_update_committer.flush_for_ordering().await;
 
                                         if let (Some(cid), Some(eid)) =
                                             (cell_id.clone(), execution_id.clone())
@@ -1726,80 +1734,14 @@ impl KernelConnection for JupyterKernel {
                                     if let Some(ref display_id) = update.transient.display_id {
                                         let data_value =
                                             serde_json::to_value(&update.data).unwrap_or_default();
-
-                                        // Preflight ZMQ buffers keyed by blob-ref MIME into
-                                        // the blob store — mirror the initial-display path.
-                                        // Without this, `DisplayHandle.update(df2)` carries
-                                        // buffers the kernel still holds but the daemon never
-                                        // persists, and the blob-ref promotion downstream
-                                        // would drop the entry on `BlobStore::exists` miss.
                                         let iopub_buffers: Vec<Vec<u8>> =
                                             message.buffers.iter().map(|b| b.to_vec()).collect();
-                                        let preflight_wrapper =
-                                            serde_json::json!({ "data": data_value });
-                                        crate::output_store::preflight_ref_buffers(
-                                            &preflight_wrapper,
-                                            &iopub_buffers,
-                                            &blob_store,
-                                        )
-                                        .await;
-
-                                        let targets = match state_for_iopub.read(|sd| {
-                                            collect_display_update_targets(sd, display_id)
-                                        }) {
-                                            Ok(targets) => targets,
-                                            Err(e) => {
-                                                warn!("[runtime-state] {}", e);
-                                                continue;
-                                            }
-                                        };
-
-                                        let updates = build_display_manifest_updates(
-                                            targets,
-                                            display_id,
-                                            &data_value,
-                                            &update.metadata,
-                                            &blob_store,
-                                        )
-                                        .await;
-
-                                        match updates {
-                                            Ok(updates) => {
-                                                let updated = state_for_iopub
-                                                    .transact_at_current_heads(
-                                                        Some(&iopub_kernel_actor_id),
-                                                        "runtime-state-iopub-display-update-transaction",
-                                                        |sd| {
-                                                            apply_display_manifest_updates(
-                                                                sd, &updates,
-                                                            )
-                                                        },
-                                                    );
-                                                match updated {
-                                                    Ok(true) => {
-                                                        debug!(
-                                                            "[jupyter-kernel] Updated display_id={}",
-                                                            display_id
-                                                        );
-                                                    }
-                                                    Ok(false) => {
-                                                        error!(
-                                                            "[jupyter-kernel] No output found for display_id={}",
-                                                            display_id
-                                                        );
-                                                    }
-                                                    Err(e) => {
-                                                        warn!("[runtime-state] {}", e);
-                                                    }
-                                                }
-                                            }
-                                            Err(e) => {
-                                                error!(
-                                                    "[jupyter-kernel] Failed to update display: {}",
-                                                    e
-                                                );
-                                            }
-                                        }
+                                        display_update_committer.request_update(
+                                            display_id.clone(),
+                                            data_value,
+                                            update.metadata.clone(),
+                                            iopub_buffers,
+                                        );
                                     }
                                 }
 
