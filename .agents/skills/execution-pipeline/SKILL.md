@@ -84,6 +84,12 @@ They must not share bounded queues with stdout floods, display churn, or
 Output widget replay. If output work is pending, drain lifecycle/control
 signals first so interrupts and queue release remain responsive.
 
+**Output-widget replay:** RuntimeStateDoc is the durable source of truth for
+captured Output widget outputs. The kernel-facing `SendCommUpdate` replay is
+best-effort output work on a bounded queue. IOPub output arms must use
+non-blocking enqueue/drop semantics for replay and must not `.await` a bounded
+work-channel send before they can observe later status messages.
+
 **Stream-output committer:** stdout/stderr chunks may be coalesced and
 periodic flushes may be dropped when pressure is high. The terminal buffer
 holds the latest rendered state. Ordering-sensitive boundaries, such as
