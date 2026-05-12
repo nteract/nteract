@@ -94,7 +94,9 @@ work-channel send before they can observe later status messages.
 transient display churn. Coalesce them by `display_id` and commit only the
 latest pending update off the IOPub hot path. Flush pending display updates
 after `KernelIdle` and before `ExecutionDone` so terminal runtime state still
-means durable output state is available.
+means durable output state is available. The display-update committer's
+`Notify` is only a wake hint; the pending map is the source of truth, and each
+wake or priority flush drains all currently pending display IDs.
 
 **Stream-output committer:** stdout/stderr chunks may be coalesced and
 periodic flushes may be dropped when pressure is high. The terminal buffer
