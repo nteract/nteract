@@ -195,7 +195,12 @@ fn try_send_comm_update(
     comm_id: String,
     state: serde_json::Value,
 ) {
-    match work_tx.try_send(QueueCommand::SendCommUpdate { comm_id, state }) {
+    match work_tx.try_send(QueueCommand::SendCommUpdate {
+        comm_id,
+        state,
+        buffer_paths: vec![],
+        buffers: vec![],
+    }) {
         Ok(()) => {}
         Err(mpsc::error::TrySendError::Full(QueueCommand::SendCommUpdate { comm_id, .. })) => {
             debug!(
@@ -2974,7 +2979,13 @@ impl KernelConnection for JupyterKernel {
         Ok(())
     }
 
-    async fn send_comm_update(&mut self, comm_id: &str, state: serde_json::Value) -> Result<()> {
+    async fn send_comm_update(
+        &mut self,
+        comm_id: &str,
+        state: serde_json::Value,
+        buffer_paths: Vec<Vec<String>>,
+        buffers: Vec<Vec<u8>>,
+    ) -> Result<()> {
         let shell = self
             .shell_writer
             .as_mut()
@@ -2986,11 +2997,12 @@ impl KernelConnection for JupyterKernel {
                 let mut map = serde_json::Map::new();
                 map.insert("method".to_string(), serde_json::json!("update"));
                 map.insert("state".to_string(), state);
-                map.insert("buffer_paths".to_string(), serde_json::json!([]));
+                map.insert("buffer_paths".to_string(), serde_json::json!(buffer_paths));
                 map
             },
         };
-        let message: jupyter_protocol::JupyterMessage = comm_msg.into();
+        let mut message: jupyter_protocol::JupyterMessage = comm_msg.into();
+        message.buffers = buffers.into_iter().map(Bytes::from).collect();
         shell.send(message).await?;
         debug!(
             "[jupyter-kernel] Sent comm_msg(update) to kernel: comm_id={}",

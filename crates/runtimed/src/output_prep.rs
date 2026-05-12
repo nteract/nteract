@@ -488,6 +488,8 @@ pub enum QueueCommand {
     SendCommUpdate {
         comm_id: String,
         state: serde_json::Value,
+        buffer_paths: Vec<Vec<String>>,
+        buffers: Vec<Vec<u8>>,
     },
 }
 
@@ -612,12 +614,16 @@ mod tests {
             .try_send(QueueCommand::SendCommUpdate {
                 comm_id: "comm-a".to_string(),
                 state: serde_json::json!({}),
+                buffer_paths: vec![],
+                buffers: vec![],
             })
             .expect("first work item should fit");
         assert!(work_tx
             .try_send(QueueCommand::SendCommUpdate {
                 comm_id: "comm-b".to_string(),
                 state: serde_json::json!({}),
+                buffer_paths: vec![],
+                buffers: vec![],
             })
             .is_err());
 

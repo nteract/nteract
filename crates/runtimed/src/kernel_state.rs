@@ -488,7 +488,13 @@ mod tests {
         async fn send_comm_message(&mut self, _: serde_json::Value) -> Result<()> {
             Ok(())
         }
-        async fn send_comm_update(&mut self, _: &str, _: serde_json::Value) -> Result<()> {
+        async fn send_comm_update(
+            &mut self,
+            _: &str,
+            _: serde_json::Value,
+            _: Vec<Vec<String>>,
+            _: Vec<Vec<u8>>,
+        ) -> Result<()> {
             Ok(())
         }
         async fn complete(
