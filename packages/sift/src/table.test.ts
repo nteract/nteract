@@ -82,6 +82,42 @@ function pointerEvent(type: string, clientX: number): PointerEvent {
   return event;
 }
 
+function installResizeObserverMock() {
+  const observers: { callback: ResizeObserverCallback; targets: Element[] }[] = [];
+  class ResizeObserverMock implements ResizeObserver {
+    private readonly targets: Element[] = [];
+
+    constructor(callback: ResizeObserverCallback) {
+      observers.push({ callback, targets: this.targets });
+    }
+
+    observe(target: Element) {
+      this.targets.push(target);
+    }
+
+    unobserve(target: Element) {
+      const index = this.targets.indexOf(target);
+      if (index !== -1) this.targets.splice(index, 1);
+    }
+
+    disconnect() {
+      this.targets.length = 0;
+    }
+  }
+
+  vi.stubGlobal("ResizeObserver", ResizeObserverMock);
+
+  return {
+    trigger(target: Element) {
+      for (const observer of observers) {
+        if (observer.targets.includes(target)) {
+          observer.callback([], {} as ResizeObserver);
+        }
+      }
+    },
+  };
+}
+
 function rect(top: number, height: number): DOMRect {
   return {
     top,
@@ -117,6 +153,7 @@ describe("createTable", () => {
   afterEach(() => {
     engine.destroy();
     container.remove();
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
@@ -890,40 +927,30 @@ describe("createTable", () => {
       resetPretextMocks();
     });
 
-    it("recomputes scroll geometry when the viewport resizes", async () => {
-      // Shrinking the viewport with virtualTotal > cap changes renderedRange
-      // (spacerHeight - clientHeight), which changes scrollScale. We can't
-      // observe scrollScale directly, but a 1-px scrollTop should land at a
-      // proportionally different virtual position after the viewport shrinks,
-      // and the row pool should rerender accordingly.
+    it("recomputes scroll geometry from the viewport ResizeObserver", async () => {
+      const resizeObserver = installResizeObserverMock();
       recreateEngine(TALL_ROW_COUNT);
       const viewport = container.querySelector<HTMLElement>(".sift-viewport")!;
       Object.defineProperty(viewport, "clientHeight", { value: 600, configurable: true });
       await vi.advanceTimersByTimeAsync(20);
 
-      // Snapshot the rendered row index at half scroll with the tall viewport.
-      const scrollContent = container.querySelector<HTMLElement>(".sift-scroll-content")!;
-      const spacerHeight = Number.parseFloat(scrollContent.style.height);
-      viewport.scrollTop = Math.floor((spacerHeight - 600) / 2);
-      viewport.dispatchEvent(new Event("scroll"));
-      await vi.advanceTimersByTimeAsync(20);
+      viewport.scrollTop = 0;
+      container.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+      const beforeResizeDelta = viewport.scrollTop;
 
-      const beforeIndex = topVisibleAriaRowIndex(container);
+      viewport.scrollTop = 0;
+      Object.defineProperty(viewport, "clientHeight", {
+        value: JSDOM_CAP_PX - 1_000,
+        configurable: true,
+      });
+      resizeObserver.trigger(viewport);
 
-      // Shrink the viewport — ResizeObserver should fire and recompute scale.
-      Object.defineProperty(viewport, "clientHeight", { value: 200, configurable: true });
-      // jsdom doesn't drive ResizeObserver automatically; call the recompute
-      // path the observer would call so the test exercises the geometry update.
-      viewport.dispatchEvent(new Event("scroll"));
-      await vi.advanceTimersByTimeAsync(20);
+      container.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+      const afterResizeDelta = viewport.scrollTop;
 
-      const afterIndex = topVisibleAriaRowIndex(container);
-      // The virtual position should still resolve to roughly the same data
-      // row neighborhood — the affine map has been refreshed against the new
-      // renderedRange. Tolerance is generous because a small viewport change
-      // doesn't shift the row much, but the test catches the case where
-      // scrollScale was stale (the row would be in a wildly different range).
-      expect(Math.abs(afterIndex - beforeIndex)).toBeLessThan(TALL_ROW_COUNT / 4);
+      expect(beforeResizeDelta).toBeGreaterThan(DEFAULT_ROW_PX / 2);
+      expect(afterResizeDelta).toBeGreaterThan(0);
+      expect(afterResizeDelta).toBeLessThan(beforeResizeDelta / 10);
     });
 
     it("advances by one row per ArrowDown even at scrollScale > 1", async () => {
@@ -953,13 +980,3 @@ describe("createTable", () => {
     });
   });
 });
-
-function topVisibleAriaRowIndex(container: HTMLElement): number {
-  const rowEls = container.querySelectorAll<HTMLElement>("[aria-rowindex]");
-  let minRowIndex = Number.MAX_SAFE_INTEGER;
-  for (const el of rowEls) {
-    const idx = Number.parseInt(el.getAttribute("aria-rowindex") ?? "0", 10);
-    if (idx > 1 && idx < minRowIndex) minRowIndex = idx;
-  }
-  return minRowIndex === Number.MAX_SAFE_INTEGER ? 0 : minRowIndex;
-}
