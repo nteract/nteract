@@ -17,7 +17,8 @@ pub use framing::{
 };
 
 pub use handshake::{
-    Handshake, NotebookConnectionInfo, ProtocolCapabilities, PROTOCOL_V4, PROTOCOL_VERSION,
+    Handshake, NotebookConnectionInfo, ProtocolCapabilities, PutBlobCapability, PROTOCOL_V4,
+    PROTOCOL_VERSION,
 };
 
 #[cfg(windows)]
@@ -270,18 +271,27 @@ mod tests {
 
     #[test]
     fn test_notebook_connection_info_serialization() {
+        fn capabilities(
+            protocol_version: Option<u32>,
+            daemon_version: Option<String>,
+        ) -> ProtocolCapabilities {
+            ProtocolCapabilities {
+                protocol: PROTOCOL_V4.into(),
+                protocol_version,
+                daemon_version,
+                put_blob: None,
+            }
+        }
+
         // Success case (minimal - no optional fields)
         let info = NotebookConnectionInfo {
-            protocol: PROTOCOL_V4.into(),
-            protocol_version: None,
-            daemon_version: None,
+            capabilities: capabilities(None, None),
             notebook_id: "/home/user/notebook.ipynb".into(),
             cell_count: 5,
             needs_trust_approval: false,
             error: None,
             ephemeral: false,
             notebook_path: None,
-            put_blob: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert_eq!(
@@ -291,16 +301,13 @@ mod tests {
 
         // With version info
         let info = NotebookConnectionInfo {
-            protocol: PROTOCOL_V4.into(),
-            protocol_version: Some(PROTOCOL_VERSION),
-            daemon_version: Some("0.1.0+abc123".into()),
+            capabilities: capabilities(Some(PROTOCOL_VERSION), Some("0.1.0+abc123".into())),
             notebook_id: "/home/user/notebook.ipynb".into(),
             cell_count: 5,
             needs_trust_approval: false,
             error: None,
             ephemeral: false,
             notebook_path: None,
-            put_blob: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(&format!(r#""protocol_version":{}"#, PROTOCOL_VERSION)));
@@ -308,48 +315,39 @@ mod tests {
 
         // With trust approval needed
         let info = NotebookConnectionInfo {
-            protocol: PROTOCOL_V4.into(),
-            protocol_version: None,
-            daemon_version: None,
+            capabilities: capabilities(None, None),
             notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
             cell_count: 1,
             needs_trust_approval: true,
             error: None,
             ephemeral: false,
             notebook_path: None,
-            put_blob: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(r#""needs_trust_approval":true"#));
 
         // Error case
         let info = NotebookConnectionInfo {
-            protocol: PROTOCOL_V4.into(),
-            protocol_version: None,
-            daemon_version: None,
+            capabilities: capabilities(None, None),
             notebook_id: String::new(),
             cell_count: 0,
             needs_trust_approval: false,
             error: Some("File not found".into()),
             ephemeral: false,
             notebook_path: None,
-            put_blob: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(r#""error":"File not found""#));
 
         // With notebook_path
         let info = NotebookConnectionInfo {
-            protocol: PROTOCOL_V4.into(),
-            protocol_version: None,
-            daemon_version: None,
+            capabilities: capabilities(None, None),
             notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
             cell_count: 5,
             needs_trust_approval: false,
             error: None,
             ephemeral: false,
             notebook_path: Some("/home/user/notebook.ipynb".into()),
-            put_blob: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(r#""notebook_path":"/home/user/notebook.ipynb""#));

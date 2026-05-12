@@ -106,7 +106,7 @@ pub const PROTOCOL_VERSION: u32 = 4;
 ///
 /// Sent immediately after handshake, before starting sync.
 /// Used by the `NotebookSync` handshake variant.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProtocolCapabilities {
     /// Protocol version string (currently always "v4").
     pub protocol: String,
@@ -123,13 +123,24 @@ pub struct ProtocolCapabilities {
     pub put_blob: Option<PutBlobCapability>,
 }
 
+impl ProtocolCapabilities {
+    pub fn v4(daemon_version: Option<String>) -> Self {
+        Self {
+            protocol: PROTOCOL_V4.to_string(),
+            protocol_version: Some(PROTOCOL_VERSION),
+            daemon_version,
+            put_blob: None,
+        }
+    }
+}
+
 /// PutBlob transport capability advertised during notebook connection setup.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PutBlobCapability {
     /// Capability schema version.
     pub version: u32,
     /// Maximum body size accepted for a single PutBlob frame.
-    pub single_frame_max: usize,
+    pub single_frame_max: u64,
     /// Whether multipart uploads are supported.
     pub multipart: bool,
 }
@@ -140,14 +151,9 @@ pub struct PutBlobCapability {
 /// Contains notebook_id derived by the daemon (from path or generated env_id).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotebookConnectionInfo {
-    /// Protocol version string (currently always "v4").
-    pub protocol: String,
-    /// Numeric protocol version for explicit version checking.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub protocol_version: Option<u32>,
-    /// Daemon version string (e.g., "2.0.0+abc123").
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub daemon_version: Option<String>,
+    /// Shared protocol and capability metadata.
+    #[serde(flatten)]
+    pub capabilities: ProtocolCapabilities,
     /// Notebook identifier derived by the daemon.
     /// For existing files: canonical path.
     /// For new notebooks: generated UUID (env_id).
@@ -166,7 +172,4 @@ pub struct NotebookConnectionInfo {
     /// when `notebook_id_hint` resolves to a room that already has a path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notebook_path: Option<String>,
-    /// Blob upload support advertised by the daemon.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub put_blob: Option<PutBlobCapability>,
 }

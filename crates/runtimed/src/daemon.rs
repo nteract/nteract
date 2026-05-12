@@ -2578,7 +2578,7 @@ impl Daemon {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         use notebook_protocol::connection::{
-            send_json_frame, NotebookConnectionInfo, PROTOCOL_V4, PROTOCOL_VERSION,
+            send_json_frame, NotebookConnectionInfo, ProtocolCapabilities,
         };
 
         info!("[runtimed] OpenNotebook requested for {}", path);
@@ -2608,18 +2608,14 @@ impl Daemon {
             writer: &mut W,
             error: String,
         ) -> anyhow::Result<()> {
-            let (proto_str, proto_ver) = (PROTOCOL_V4, PROTOCOL_VERSION);
             let response = NotebookConnectionInfo {
-                protocol: proto_str.to_string(),
-                protocol_version: Some(proto_ver),
-                daemon_version: Some(crate::daemon_version().to_string()),
+                capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string())),
                 notebook_id: String::new(),
                 cell_count: 0,
                 needs_trust_approval: false,
                 error: Some(error),
                 ephemeral: false,
                 notebook_path: None,
-                put_blob: None,
             };
             send_json_frame(writer, &response).await?;
             Ok(())
@@ -2863,18 +2859,14 @@ impl Daemon {
         // `notebook_id` variable in this handler is the canonical path string
         // used for logging and file-watcher wiring below.
         let (reader, mut writer) = tokio::io::split(stream);
-        let (proto_str, proto_ver) = (PROTOCOL_V4, PROTOCOL_VERSION);
         let response = NotebookConnectionInfo {
-            protocol: proto_str.to_string(),
-            protocol_version: Some(proto_ver),
-            daemon_version: Some(crate::daemon_version().to_string()),
+            capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string())),
             notebook_id: room.id.to_string(),
             cell_count,
             needs_trust_approval,
             error: None,
             ephemeral: false,
             notebook_path: Some(notebook_id.clone()),
-            put_blob: None,
         };
         send_json_frame(&mut writer, &response).await?;
 
@@ -2924,7 +2916,7 @@ impl Daemon {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         use notebook_protocol::connection::{
-            send_json_frame, NotebookConnectionInfo, PROTOCOL_V4, PROTOCOL_VERSION,
+            send_json_frame, NotebookConnectionInfo, ProtocolCapabilities,
         };
 
         info!(
@@ -3007,18 +2999,14 @@ impl Daemon {
                 );
             }
             let (mut reader, mut writer) = tokio::io::split(stream);
-            let (proto_str, proto_ver) = (PROTOCOL_V4, PROTOCOL_VERSION);
             let response = NotebookConnectionInfo {
-                protocol: proto_str.to_string(),
-                protocol_version: Some(proto_ver),
-                daemon_version: Some(crate::daemon_version().to_string()),
+                capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string())),
                 notebook_id: String::new(),
                 cell_count: 0,
                 needs_trust_approval: false,
                 error: Some(format!("Failed to create notebook: {}", e)),
                 ephemeral: false,
                 notebook_path: None,
-                put_blob: None,
             };
             send_json_frame(&mut writer, &response).await?;
             let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
@@ -3035,23 +3023,19 @@ impl Daemon {
         // Always send the room's UUID on the wire, even when the caller
         // provided a notebook_id_hint — room.id is the canonical source.
         let (reader, mut writer) = tokio::io::split(stream);
-        let (proto_str, proto_ver) = (PROTOCOL_V4, PROTOCOL_VERSION);
         let notebook_path = room
             .file_binding
             .path()
             .await
             .map(|p| p.to_string_lossy().to_string());
         let response = NotebookConnectionInfo {
-            protocol: proto_str.to_string(),
-            protocol_version: Some(proto_ver),
-            daemon_version: Some(crate::daemon_version().to_string()),
+            capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string())),
             notebook_id: room.id.to_string(),
             cell_count,
             needs_trust_approval: false,
             error: None,
             ephemeral,
             notebook_path,
-            put_blob: None,
         };
         send_json_frame(&mut writer, &response).await?;
 

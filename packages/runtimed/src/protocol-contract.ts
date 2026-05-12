@@ -31,9 +31,6 @@ export const NOTEBOOK_REQUEST_TYPES = [
   "approve_trust",
   "approve_project_environment",
   "get_doc_bytes",
-  "create_blob_upload",
-  "complete_blob_upload",
-  "abort_blob_upload",
 ] as const satisfies readonly NotebookRequest["type"][];
 
 export const NOTEBOOK_REQUEST_TYPES_EXHAUSTIVE: MissingUnionMember<
@@ -63,8 +60,6 @@ export const NOTEBOOK_RESPONSE_RESULTS = [
   "sync_environment_failed",
   "doc_bytes",
   "blob_stored",
-  "blob_upload_created",
-  "blob_upload_part_ack",
   "blob_upload_error",
 ] as const satisfies readonly NotebookResponse["result"][];
 
