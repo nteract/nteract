@@ -389,6 +389,17 @@ struct Pool {
 
 const MIN_WARM_BASES: usize = 2;
 const POOL_PACKAGE_HASH_FILE: &str = ".runt-pool-packages.sha256";
+/// How long a peer-less, kernel-less room may sit before the reaper
+/// removes it. Set to 24h so a user who returns within the same day
+/// reattaches to the same in-memory doc + outputs.
+const RESIDENT_ROOM_TTL_SECS: u64 = 24 * 3600;
+/// How often the reaper wakes up. Cheap sweep — not on a hot path.
+const REAPER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+/// Soft cap on the number of resident peer-less rooms. When exceeded,
+/// the reaper picks the oldest peer-less rooms (by
+/// `last_kernel_torn_down_at`) and reaps them regardless of TTL.
+/// Active rooms (peers > 0 or kernel still running) are exempt.
+const MAX_RESIDENT_PEERLESS_ROOMS: usize = 32;
 const POOL_PACKAGE_HASH_VERSION: &str = "v1";
 const DEFAULT_DATA_PACKAGES: &[&str] = &["pandas", "polars", "matplotlib", "plotly", "altair"];
 const BASE_RUNTIME_PACKAGES: &[&str] = &[
@@ -3855,35 +3866,30 @@ impl Daemon {
         }
     }
 
-    /// Background reaper for "ghost" notebook rooms.
+    /// Background reaper for peer-less notebook rooms.
     ///
     /// After `handle_peer_disconnect` runs kernel teardown, the room
-    /// stays in `notebook_rooms` (and its path stays in `path_index`)
-    /// so a reconnecting peer finds the same doc, outputs, and file
-    /// binding. The room becomes "ghost" once it has been kernel-less
-    /// and peer-less for longer than `GHOST_ROOM_TTL`. The reaper then
-    /// removes it from both maps and shuts down its file watcher,
-    /// project-file watcher, and autosave debouncer.
+    /// stays in the registry so a reconnecting peer finds the same
+    /// doc, outputs, and file binding. A room becomes a reap
+    /// candidate once it has been kernel-less and peer-less for longer
+    /// than `RESIDENT_ROOM_TTL_SECS`, or once the count of peer-less
+    /// rooms exceeds `MAX_RESIDENT_PEERLESS_ROOMS` (oldest first).
+    /// The reaper then removes the room from both maps and shuts down
+    /// its file watcher, project-file watcher, autosave debouncer,
+    /// and persist debouncer.
     ///
     /// Reconnect safety: `peer_connection::handle_join` zeroes the
     /// teardown timestamp the moment it bumps `active_peers`, and the
-    /// reaper re-checks `active_peers == 0 && !has_kernel` under the
-    /// rooms lock before removing. A peer that reconnects between the
-    /// snapshot pass and the remove pass keeps its room.
+    /// reaper re-checks `active_peers == 0 && reservations == 0`
+    /// under the registry lock before removing. A peer that
+    /// reconnects between the snapshot pass and the remove pass keeps
+    /// its room.
     async fn ghost_room_reaper_loop(self: Arc<Self>) {
-        /// How long a room may sit kernel-less and peer-less before the
-        /// reaper sweeps it. The `.ipynb` was saved at kernel-teardown
-        /// time, so removal is non-destructive — a future open reads
-        /// the same content back off disk.
-        const GHOST_ROOM_TTL_SECS: u64 = 24 * 3600;
-        /// How often the reaper wakes up to look for ghost rooms.
-        const REAPER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
-
         let mut tick = tokio::time::interval(REAPER_INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tick.tick().await;
-            self.ghost_room_reaper_sweep(GHOST_ROOM_TTL_SECS).await;
+            self.ghost_room_reaper_sweep(RESIDENT_ROOM_TTL_SECS).await;
         }
     }
 
@@ -3910,25 +3916,31 @@ impl Daemon {
         self.notebook_rooms.len().await
     }
 
-    /// One sweep of the ghost-room reaper. Extracted so tests can drive
-    /// the reaper synchronously without waiting on `REAPER_INTERVAL`.
-    /// Public so integration tests (separate crate) can drive a sweep.
+    /// One sweep of the resident-room reaper. Extracted so tests can
+    /// drive the reaper synchronously without waiting on
+    /// `REAPER_INTERVAL`. Public so integration tests (separate crate)
+    /// can drive a sweep.
+    ///
+    /// Selection has two layers:
+    ///   1. **TTL**: every peer-less room older than `ttl_secs`.
+    ///   2. **Count cap**: if peer-less rooms outnumber
+    ///      `MAX_RESIDENT_PEERLESS_ROOMS`, the oldest overflow rooms
+    ///      are reaped regardless of TTL.
     pub async fn ghost_room_reaper_sweep(self: &Arc<Self>, ttl_secs: u64) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        // Snapshot candidate (uuid, room, generation) tuples. Filter
-        // on the timestamp first to keep the list small; the
-        // active_peers / has_kernel checks happen below without the
-        // rooms lock held (has_kernel takes the runtime_agent lock).
-        // The generation snapshot lets the remove pass detect a fast
-        // reconnect/disconnect cycle that would otherwise look idle by
-        // peer count alone.
-        let candidates: Vec<(
+        // Snapshot peer-less rooms (timestamp > 0 means kernel
+        // teardown ran; reconnect zeroes it back to None). Live rooms
+        // (kernel still running or peers > 0) never make this list.
+        // has_kernel is cheap to skip here because we re-check it
+        // outside the rooms lock per candidate below.
+        let peerless: Vec<(
             uuid::Uuid,
             Arc<crate::notebook_sync_server::NotebookRoom>,
+            u64,
             u64,
         )> = self
             .notebook_rooms
@@ -3937,9 +3949,6 @@ impl Daemon {
             .into_iter()
             .filter_map(|(uuid, room)| {
                 let ts = room.connections.last_kernel_torn_down_at()?;
-                if now.saturating_sub(ts) < ttl_secs {
-                    return None;
-                }
                 if room
                     .connections
                     .active_peers
@@ -3949,8 +3958,43 @@ impl Daemon {
                     return None;
                 }
                 let gen_at_sample = room.connections.connection_generation();
-                Some((uuid, room, gen_at_sample))
+                Some((uuid, room, ts, gen_at_sample))
             })
+            .collect();
+
+        // TTL layer: aged-out rooms.
+        let aged_out: std::collections::HashSet<uuid::Uuid> = peerless
+            .iter()
+            .filter(|(_, _, ts, _)| now.saturating_sub(*ts) >= ttl_secs)
+            .map(|(uuid, _, _, _)| *uuid)
+            .collect();
+
+        // Count-cap layer: oldest-first overflow rooms.
+        let overflow: std::collections::HashSet<uuid::Uuid> =
+            if peerless.len() > MAX_RESIDENT_PEERLESS_ROOMS {
+                let mut by_age: Vec<&uuid::Uuid> =
+                    peerless.iter().map(|(uuid, _, _, _)| uuid).collect();
+                by_age.sort_by_key(|uuid| {
+                    peerless
+                        .iter()
+                        .find(|(u, _, _, _)| u == *uuid)
+                        .map(|(_, _, ts, _)| *ts)
+                        .unwrap_or(u64::MAX)
+                });
+                let cull = peerless.len() - MAX_RESIDENT_PEERLESS_ROOMS;
+                by_age.into_iter().take(cull).copied().collect()
+            } else {
+                std::collections::HashSet::new()
+            };
+
+        let candidates: Vec<(
+            uuid::Uuid,
+            Arc<crate::notebook_sync_server::NotebookRoom>,
+            u64,
+        )> = peerless
+            .into_iter()
+            .filter(|(uuid, _, _, _)| aged_out.contains(uuid) || overflow.contains(uuid))
+            .map(|(uuid, room, _, gen_at_sample)| (uuid, room, gen_at_sample))
             .collect();
 
         for (uuid, room, gen_at_sample) in candidates {
@@ -3993,17 +4037,12 @@ impl Daemon {
                         == 0;
                     let no_reservations = r.connections.reservations() == 0;
                     let same_gen = r.connections.connection_generation() == gen_at_sample;
-                    // A reconnect zeroed the timestamp on join. If a
-                    // subsequent disconnect ran, peer_eviction re-stamps
-                    // it; either way, requiring "stamped AND aged out"
-                    // filters the second case through the candidate pass
-                    // on a later cycle rather than reaping it eagerly
-                    // here.
-                    let still_stamped = r
-                        .connections
-                        .last_kernel_torn_down_at()
-                        .map(|ts| now.saturating_sub(ts) >= ttl_secs)
-                        .unwrap_or(false);
+                    // A reconnect zeroed the timestamp on join. The
+                    // selection pass already enforced TTL or LRU
+                    // overflow; under the registry lock we just verify
+                    // the room hasn't transitioned out of "kernel torn
+                    // down" between sample and commit.
+                    let still_stamped = r.connections.last_kernel_torn_down_at().is_some();
                     no_peers && no_reservations && same_gen && still_stamped
                 })
                 .await;
