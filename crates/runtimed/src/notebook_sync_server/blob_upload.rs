@@ -302,7 +302,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn put_blob_ephemeral_success_keeps_blob_out_of_disk_store() {
+    async fn put_blob_ephemeral_success_keeps_blob_visible_to_other_store_instances() {
         let body = b"abc";
         let sha256 = hex::encode(Sha256::digest(body));
         let request_payload = payload_with_durability(
@@ -325,7 +325,13 @@ mod tests {
             blob_store.get(&sha256).await.unwrap().as_deref(),
             Some(&body[..])
         );
-        assert!(!disk_blob_exists(&blob_store, &sha256));
+        assert!(disk_blob_exists(&blob_store, &sha256));
+
+        let other_store = BlobStore::new(_tmp.path().join("blobs"));
+        assert_eq!(
+            other_store.get(&sha256).await.unwrap().as_deref(),
+            Some(&body[..])
+        );
     }
 
     #[tokio::test]

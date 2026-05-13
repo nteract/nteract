@@ -37,6 +37,20 @@ pub struct BlobMeta {
     pub media_type: String,
     pub size: u64,
     pub created_at: DateTime<Utc>,
+    #[serde(default = "default_blob_durability")]
+    pub durability: BlobDurability,
+}
+
+fn default_blob_durability() -> BlobDurability {
+    BlobDurability::Durable
+}
+
+fn merged_durability(existing: BlobDurability, incoming: BlobDurability) -> BlobDurability {
+    if existing == BlobDurability::Durable || incoming == BlobDurability::Durable {
+        BlobDurability::Durable
+    } else {
+        BlobDurability::Ephemeral
+    }
 }
 
 #[derive(Debug)]
@@ -70,6 +84,7 @@ impl MemoryEntry {
             media_type: self.media_type.clone(),
             size: self.data.len() as u64,
             created_at: self.created_at,
+            durability: self.durability,
         }
     }
 }
@@ -97,9 +112,19 @@ impl MemoryLayer {
             return;
         }
 
-        if let Some(existing) = self.entries.remove(&hash) {
-            self.total_bytes = self.total_bytes.saturating_sub(existing.data.len());
-        }
+        let durability = match self.entries.remove(&hash) {
+            Some(existing) => {
+                self.total_bytes = self.total_bytes.saturating_sub(existing.data.len());
+                if existing.durability == BlobDurability::Durable
+                    || durability == BlobDurability::Durable
+                {
+                    BlobDurability::Durable
+                } else {
+                    BlobDurability::Ephemeral
+                }
+            }
+            None => durability,
+        };
 
         // Re-putting the same content leaves a stale order entry behind. The
         // sequence check in eviction skips those stale entries without scanning.
@@ -208,8 +233,10 @@ impl BlobStore {
     /// Store `data` with an explicit durability hint.
     ///
     /// `Durable` writes through to disk and primes the in-memory layer.
-    /// `Ephemeral` prefers memory-only storage and falls back to disk when one
-    /// blob is larger than the memory cap.
+    /// `Ephemeral` is also written to disk because runtime agents run in a
+    /// separate process and must be able to rehydrate frontend-uploaded comm
+    /// buffers by hash. The durability metadata keeps those disk records
+    /// eligible for `delete_if_ephemeral` once superseded.
     pub async fn put_with_durability(
         &self,
         data: &[u8],
@@ -232,34 +259,45 @@ impl BlobStore {
 
         match durability {
             BlobDurability::Durable => {
-                self.put_disk(&hash, data, media_type, created_at).await?;
+                let effective_durability = self
+                    .put_disk(&hash, data, media_type, created_at, BlobDurability::Durable)
+                    .await?;
                 self.insert_memory(
                     &hash,
                     Bytes::copy_from_slice(data),
                     media_type,
                     created_at,
-                    BlobDurability::Durable,
+                    effective_durability,
                 );
                 Ok(hash)
             }
             BlobDurability::Ephemeral => {
+                let effective_durability = self
+                    .put_disk(
+                        &hash,
+                        data,
+                        media_type,
+                        created_at,
+                        BlobDurability::Ephemeral,
+                    )
+                    .await?;
                 if data.len() > self.memory_cap() {
                     // A single entry larger than the cap can never be cached
-                    // without violating the budget, so keep it durable-only.
+                    // without violating the budget, so leave it as disk-only
+                    // ephemeral content until supersession or sweep cleanup.
                     debug!(
                         blob = %hash,
                         bytes = data.len(),
                         cap = self.memory_cap(),
-                        "ephemeral blob exceeds memory cap; writing to disk"
+                        "ephemeral blob exceeds memory cap; keeping disk-only"
                     );
-                    self.put_disk(&hash, data, media_type, created_at).await?;
                 } else {
                     self.insert_memory(
                         &hash,
                         Bytes::copy_from_slice(data),
                         media_type,
                         created_at,
-                        BlobDurability::Ephemeral,
+                        effective_durability,
                     );
                 }
                 Ok(hash)
@@ -273,7 +311,8 @@ impl BlobStore {
         data: &[u8],
         media_type: &str,
         created_at: DateTime<Utc>,
-    ) -> io::Result<()> {
+        durability: BlobDurability,
+    ) -> io::Result<BlobDurability> {
         let (shard_dir, blob_path, meta_path) = self.paths(hash);
 
         // Fast path: both files already present.
@@ -283,18 +322,24 @@ impl BlobStore {
         if blob_path.exists() && meta_path.exists() {
             if let Ok(existing_meta_json) = tokio::fs::read_to_string(&meta_path).await {
                 if let Ok(existing_meta) = serde_json::from_str::<BlobMeta>(&existing_meta_json) {
-                    if existing_meta.media_type != media_type {
+                    let updated_durability =
+                        merged_durability(existing_meta.durability, durability);
+                    if existing_meta.media_type != media_type
+                        || existing_meta.durability != updated_durability
+                    {
                         let updated = BlobMeta {
                             media_type: media_type.to_string(),
+                            durability: updated_durability,
                             ..existing_meta
                         };
                         if let Ok(json) = serde_json::to_string(&updated) {
                             tokio::fs::write(&meta_path, json).await.ok();
                         }
                     }
+                    return Ok(updated_durability);
                 }
             }
-            return Ok(());
+            return Ok(durability);
         }
 
         tokio::fs::create_dir_all(&shard_dir).await?;
@@ -332,6 +377,7 @@ impl BlobStore {
             media_type: media_type.to_string(),
             size: data.len() as u64,
             created_at,
+            durability,
         };
         let meta_json = serde_json::to_string(&meta).map_err(io::Error::other)?;
 
@@ -347,7 +393,7 @@ impl BlobStore {
                 tokio::fs::remove_file(&tmp_meta).await.ok();
                 if meta_path.exists() {
                     // Concurrent writer placed metadata — done.
-                    return Ok(());
+                    return Ok(durability);
                 }
                 // Metadata write truly failed. If *we* created the blob (not a
                 // concurrent writer), remove it to avoid leaving orphaned data.
@@ -358,7 +404,7 @@ impl BlobStore {
             }
         }
 
-        Ok(())
+        Ok(durability)
     }
 
     fn insert_memory(
@@ -465,7 +511,7 @@ impl BlobStore {
         Ok(existed || existed_in_memory)
     }
 
-    /// Delete a blob only when the in-memory entry is known ephemeral.
+    /// Delete a blob only when it is known ephemeral.
     ///
     /// Durable entries are left intact because they may be referenced by
     /// outputs, attachments, or another durable path with the same hash.
@@ -474,19 +520,34 @@ impl BlobStore {
             return Ok(false);
         }
 
-        let removed = {
+        let (memory_was_ephemeral, memory_was_durable) = {
             let mut memory = self.memory_layer();
-            if memory
-                .get(hash)
-                .is_some_and(|entry| entry.durability == BlobDurability::Ephemeral)
-            {
-                memory.remove(hash)
-            } else {
-                false
+            match memory.get(hash).map(|entry| entry.durability) {
+                Some(BlobDurability::Ephemeral) => (memory.remove(hash), false),
+                Some(BlobDurability::Durable) => (false, true),
+                None => (false, false),
             }
         };
 
-        Ok(removed)
+        if memory_was_durable {
+            return Ok(false);
+        }
+
+        let (_, blob_path, meta_path) = self.paths(hash);
+        let disk_was_ephemeral = match tokio::fs::read_to_string(&meta_path).await {
+            Ok(json) => serde_json::from_str::<BlobMeta>(&json)
+                .map(|meta| meta.durability == BlobDurability::Ephemeral)
+                .unwrap_or(false),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+            Err(e) => return Err(e),
+        };
+
+        if disk_was_ephemeral {
+            tokio::fs::remove_file(&blob_path).await.ok();
+            tokio::fs::remove_file(&meta_path).await.ok();
+        }
+
+        Ok(memory_was_ephemeral || disk_was_ephemeral)
     }
 
     /// List all blob hashes in the store.
@@ -564,6 +625,14 @@ mod tests {
     fn disk_blob_exists(store: &BlobStore, hash: &str) -> bool {
         let (_, blob_path, meta_path) = store.paths(hash);
         blob_path.exists() && meta_path.exists()
+    }
+
+    async fn disk_blob_durability(store: &BlobStore, hash: &str) -> Option<BlobDurability> {
+        let (_, _, meta_path) = store.paths(hash);
+        let json = tokio::fs::read_to_string(meta_path).await.ok()?;
+        serde_json::from_str::<BlobMeta>(&json)
+            .ok()
+            .map(|meta| meta.durability)
     }
 
     #[tokio::test]
@@ -734,7 +803,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn put_ephemeral_lives_in_memory_not_disk() {
+    async fn put_ephemeral_is_disk_backed_for_runtime_agent() {
         let dir = TempDir::new().unwrap();
         let store = test_store(&dir);
 
@@ -748,8 +817,18 @@ mod tests {
             .unwrap();
 
         assert!(store.memory_contains_for_test(&hash));
-        assert!(!disk_blob_exists(&store, &hash));
+        assert!(disk_blob_exists(&store, &hash));
+        assert_eq!(
+            disk_blob_durability(&store, &hash).await,
+            Some(BlobDurability::Ephemeral)
+        );
         assert_eq!(store.get(&hash).await.unwrap().unwrap(), b"ephemeral");
+
+        let runtime_agent_store = test_store(&dir);
+        assert_eq!(
+            runtime_agent_store.get(&hash).await.unwrap().unwrap(),
+            b"ephemeral"
+        );
     }
 
     #[tokio::test]
@@ -767,7 +846,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_ephemeral_after_eviction_returns_none() {
+    async fn get_ephemeral_after_memory_eviction_falls_back_to_disk() {
         let dir = TempDir::new().unwrap();
         let store = test_store_with_cap(&dir, 2);
 
@@ -785,8 +864,8 @@ mod tests {
             .unwrap();
 
         assert!(!store.memory_contains_for_test(&evicted));
-        assert!(!disk_blob_exists(&store, &evicted));
-        assert!(store.get(&evicted).await.unwrap().is_none());
+        assert!(disk_blob_exists(&store, &evicted));
+        assert_eq!(store.get(&evicted).await.unwrap().unwrap(), b"a");
     }
 
     #[tokio::test]
@@ -844,6 +923,12 @@ mod tests {
         assert_eq!(hash, hash2);
         assert!(store.memory_contains_for_test(&hash));
         assert!(disk_blob_exists(&store, &hash));
+        assert_eq!(
+            disk_blob_durability(&store, &hash).await,
+            Some(BlobDurability::Durable)
+        );
+        assert!(!store.delete_if_ephemeral(&hash).await.unwrap());
+        assert!(disk_blob_exists(&store, &hash));
     }
 
     #[tokio::test]
@@ -855,7 +940,11 @@ mod tests {
             .put_with_durability(b"same", "text/plain", BlobDurability::Ephemeral)
             .await
             .unwrap();
-        assert!(!disk_blob_exists(&store, &hash));
+        assert!(disk_blob_exists(&store, &hash));
+        assert_eq!(
+            disk_blob_durability(&store, &hash).await,
+            Some(BlobDurability::Ephemeral)
+        );
 
         let hash2 = store
             .put_with_durability(b"same", "text/plain", BlobDurability::Durable)
@@ -865,6 +954,10 @@ mod tests {
         assert_eq!(hash, hash2);
         assert!(store.memory_contains_for_test(&hash));
         assert!(disk_blob_exists(&store, &hash));
+        assert_eq!(
+            disk_blob_durability(&store, &hash).await,
+            Some(BlobDurability::Durable)
+        );
     }
 
     #[tokio::test]
@@ -901,6 +994,24 @@ mod tests {
 
         assert!(store.delete_if_ephemeral(&hash).await.unwrap());
         assert!(!store.memory_contains_for_test(&hash));
+        assert!(!disk_blob_exists(&store, &hash));
+        assert!(store.get(&hash).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_if_ephemeral_removes_disk_only_ephemeral() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store_with_cap(&dir, 2);
+        let hash = store
+            .put_with_durability(b"oversize", "text/plain", BlobDurability::Ephemeral)
+            .await
+            .unwrap();
+
+        assert!(!store.memory_contains_for_test(&hash));
+        assert!(disk_blob_exists(&store, &hash));
+
+        assert!(store.delete_if_ephemeral(&hash).await.unwrap());
+        assert!(!disk_blob_exists(&store, &hash));
         assert!(store.get(&hash).await.unwrap().is_none());
     }
 
