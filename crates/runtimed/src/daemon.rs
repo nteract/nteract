@@ -3951,11 +3951,18 @@ impl Daemon {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        // Snapshot candidate (uuid, room) pairs under the rooms lock.
-        // Filter on the timestamp first to keep the snapshot small; the
-        // active_peers / has_kernel checks happen below without the
-        // rooms lock held (has_kernel takes the runtime_agent lock).
-        let candidates: Vec<(uuid::Uuid, Arc<crate::notebook_sync_server::NotebookRoom>)> = {
+        // Snapshot candidate (uuid, room, generation) tuples under the
+        // rooms lock. Filter on the timestamp first to keep the snapshot
+        // small; the active_peers / has_kernel checks happen below
+        // without the rooms lock held (has_kernel takes the
+        // runtime_agent lock). The generation snapshot lets the remove
+        // pass detect a fast reconnect/disconnect cycle that would
+        // otherwise look idle by peer count alone.
+        let candidates: Vec<(
+            uuid::Uuid,
+            Arc<crate::notebook_sync_server::NotebookRoom>,
+            u64,
+        )> = {
             let rooms_guard = self.notebook_rooms.lock().await;
             rooms_guard
                 .iter()
@@ -3972,31 +3979,54 @@ impl Daemon {
                     {
                         return None;
                     }
-                    Some((*uuid, room.clone()))
+                    // Snapshot the generation so the remove pass can
+                    // detect a reconnect-then-disconnect cycle that
+                    // would otherwise look idle by peer count alone.
+                    let gen_at_sample = room.connections.connection_generation();
+                    Some((*uuid, room.clone(), gen_at_sample))
                 })
                 .collect()
         };
 
-        for (uuid, room) in candidates {
+        for (uuid, room, gen_at_sample) in candidates {
             // Re-verify outside the lock. `has_kernel` touches the
             // runtime-agent mutex; do it before re-acquiring rooms.
             if room.has_kernel().await {
                 continue;
             }
 
-            // Atomic remove pass: re-check active_peers under the rooms
-            // lock so a peer that reconnected between the snapshot and
-            // now keeps its room. Drop the rooms lock before any further
-            // .await to honour the no-await-with-rooms-lock convention.
+            // Atomic remove pass: re-check active_peers AND the
+            // connection generation AND the teardown timestamp under
+            // the rooms lock so a peer that reconnected between the
+            // snapshot and now keeps its room. A brief peer-touch
+            // (connect, then disconnect again) leaves active_peers == 0
+            // but bumps the generation and may have zeroed the
+            // teardown timestamp; treat all three as "still idle"
+            // signals. Drop the rooms lock before any further .await
+            // to honour the no-await-with-rooms-lock convention.
             let removed = {
                 let mut rooms_guard = self.notebook_rooms.lock().await;
                 let still_idle = rooms_guard
                     .get(&uuid)
                     .map(|r| {
-                        r.connections
+                        let no_peers = r
+                            .connections
                             .active_peers
                             .load(std::sync::atomic::Ordering::Relaxed)
-                            == 0
+                            == 0;
+                        let same_gen = r.connections.connection_generation() == gen_at_sample;
+                        // A reconnect zeroed the timestamp on join. If
+                        // a subsequent disconnect ran, peer_eviction
+                        // re-stamps it; either way, requiring "stamped
+                        // AND aged out" filters the second case
+                        // through the candidate pass on a later cycle
+                        // rather than reaping it eagerly here.
+                        let still_stamped = r
+                            .connections
+                            .last_kernel_torn_down_at()
+                            .map(|ts| now.saturating_sub(ts) >= ttl_secs)
+                            .unwrap_or(false);
+                        no_peers && same_gen && still_stamped
                     })
                     .unwrap_or(false);
                 if still_idle {

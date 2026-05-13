@@ -429,10 +429,18 @@ impl RoomPersistence {
 ///   ghost-room reaper uses this to remove rooms that have been kernel-less
 ///   and peer-less for longer than `GHOST_ROOM_TTL`. Cleared back to `0`
 ///   when a peer reconnects so the reaper won't fire on a live room.
+/// - `connection_generation`: monotonic counter bumped every time a peer
+///   connects. Kernel teardown snapshots it at start and re-checks before
+///   every destructive step; a higher value means a peer reconnected
+///   mid-teardown and the teardown task aborts before killing the kernel.
+///   Also re-checked by the ghost reaper at remove time so a fast
+///   disconnect/reconnect/disconnect cycle cannot land the reaper on a
+///   room that was just touched.
 pub struct RoomConnections {
     pub active_peers: AtomicUsize,
     pub had_peers: AtomicBool,
     pub last_kernel_torn_down_at: AtomicU64,
+    pub connection_generation: AtomicU64,
 }
 
 impl Default for RoomConnections {
@@ -441,6 +449,7 @@ impl Default for RoomConnections {
             active_peers: AtomicUsize::new(0),
             had_peers: AtomicBool::new(false),
             last_kernel_torn_down_at: AtomicU64::new(0),
+            connection_generation: AtomicU64::new(0),
         }
     }
 }
@@ -469,6 +478,20 @@ impl RoomConnections {
     /// ghost-room reaper does not race with an active room.
     pub fn clear_kernel_torn_down(&self) {
         self.last_kernel_torn_down_at.store(0, Ordering::Relaxed);
+    }
+
+    /// Bump the connection generation. Peer connect calls this so any
+    /// in-flight kernel teardown or ghost-reaper sweep that snapshotted
+    /// the previous value can detect "a peer happened" and abort.
+    pub fn bump_connection_generation(&self) -> u64 {
+        self.connection_generation.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Snapshot the current connection generation. Kernel teardown and
+    /// the ghost reaper take this at start and re-compare under the
+    /// rooms lock before destructive ops.
+    pub fn connection_generation(&self) -> u64 {
+        self.connection_generation.load(Ordering::Relaxed)
     }
 }
 

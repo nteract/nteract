@@ -98,9 +98,15 @@ where
         .fetch_add(1, Ordering::Relaxed);
     room.connections.had_peers.store(true, Ordering::Relaxed);
     // Resuming a room that the ghost-room reaper might otherwise sweep:
-    // clear the inactive-since timestamp so the reaper can't pick this room
-    // off between now and the next kernel teardown.
+    // clear the inactive-since timestamp so the reaper can't pick this
+    // room off between now and the next kernel teardown.
     room.connections.clear_kernel_torn_down();
+    // Bump the connection generation so any in-flight kernel-teardown
+    // task that snapshotted the previous value aborts before destroying
+    // a kernel this peer might still want, and so the ghost reaper
+    // notices the touch even if `active_peers` ping-pongs back to zero
+    // before the reaper's remove pass.
+    room.connections.bump_connection_generation();
     let peers = room.connections.active_peers.load(Ordering::Relaxed);
     info!(
         "[notebook-sync] Client connected to room {} ({} peer{})",

@@ -1814,6 +1814,88 @@ async fn test_ghost_reaper_skips_reconnected_room() {
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
 
+/// PR 1 codex P1: the connection-generation bump on peer connect must
+/// preempt an in-flight teardown that snapshotted the previous value.
+/// Stage a teardown task with a delay, reconnect a peer before the
+/// teardown fires, and assert the generation moves so the teardown
+/// would abort. (We can't easily synchronize on "teardown is at the
+/// destructive step" from outside the daemon, so the check is
+/// structural: generation moved.)
+#[tokio::test]
+async fn test_peer_reconnect_bumps_generation() {
+    use std::sync::atomic::Ordering;
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut config = test_config(&temp_dir);
+    // Long enough that we can sneak a reconnect in before teardown
+    // even gets past its sleep.
+    config.room_eviction_delay_ms = Some(5_000);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_for_inspect = daemon.clone();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let notebook_id;
+    let gen_before_disconnect;
+    {
+        let result = connect::connect_create(
+            socket_path.clone(),
+            "python",
+            None,
+            "test",
+            false,
+            None,
+            vec![],
+        )
+        .await
+        .unwrap();
+        notebook_id = result.info.notebook_id.clone();
+        let client = result.handle;
+        assert!(wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await);
+        let uuid = uuid::Uuid::parse_str(&notebook_id).unwrap();
+        let room = daemon_for_inspect.test_get_room(uuid).await.unwrap();
+        gen_before_disconnect = room.connections.connection_generation();
+    }
+
+    // Tiny gap so the disconnect handler runs and schedules teardown.
+    sleep(Duration::from_millis(50)).await;
+
+    // Reconnect well before the 5s teardown delay elapses.
+    let uuid = uuid::Uuid::parse_str(&notebook_id).unwrap();
+    let client = connect::connect(socket_path.clone(), notebook_id.clone(), "test")
+        .await
+        .expect("reconnect should succeed")
+        .handle;
+    assert!(wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await);
+
+    let room = daemon_for_inspect.test_get_room(uuid).await.unwrap();
+    let gen_after_reconnect = room.connections.connection_generation();
+    assert!(
+        gen_after_reconnect > gen_before_disconnect,
+        "reconnect must bump connection_generation (before={}, after={})",
+        gen_before_disconnect,
+        gen_after_reconnect
+    );
+    // Teardown timestamp must also be cleared so the reaper can't fire.
+    assert_eq!(
+        room.connections
+            .last_kernel_torn_down_at
+            .load(Ordering::Relaxed),
+        0,
+        "reconnect must clear last_kernel_torn_down_at"
+    );
+
+    drop(client);
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
 #[tokio::test]
 async fn test_notebook_cell_delete_propagation() {
     let temp_dir = TempDir::new().unwrap();

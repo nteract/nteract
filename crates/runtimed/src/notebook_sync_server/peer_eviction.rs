@@ -57,6 +57,15 @@ pub(super) async fn handle_peer_disconnect(
         let rooms_for_teardown = rooms.clone();
         let room_for_teardown = room.clone();
         let notebook_id_for_teardown = notebook_id.to_string();
+        // Snapshot the connection generation at scheduling time. Any
+        // peer that reconnects between now and the destructive shutdown
+        // RPC bumps this counter; the teardown task re-checks it under
+        // the rooms lock just before killing the kernel and aborts if a
+        // reconnect happened. Without this guard, the kernel-shutdown
+        // RPC can race a fast reconnect and tear down the kernel for a
+        // peer that has already joined and seen `has_kernel=true`
+        // (skipping auto-launch).
+        let teardown_generation = room.connections.connection_generation();
 
         info!(
             "[notebook-sync] All peers disconnected from room {} (uuid={}, peer_id={}), scheduling kernel teardown in {:?}",
@@ -151,16 +160,25 @@ pub(super) async fn handle_peer_disconnect(
                 break;
             }
 
-            // Re-check the peer count under the rooms lock to serialize with
-            // reconnects. The room is kept in the map either way — we only
-            // gate the kernel-side teardown on "still no peers."
+            // Re-check the peer count AND the connection generation under
+            // the rooms lock. A peer that reconnected since we scheduled
+            // this teardown bumps the generation; even if it disconnected
+            // again before this check, the generation move tells us the
+            // room was touched and we should re-verify intent rather than
+            // killing a kernel an in-flight or recent peer expected. The
+            // room stays in the map either way; we only gate the
+            // kernel-side teardown on "no peers AND no reconnect since
+            // scheduling."
             let should_teardown = {
                 let _rooms_guard = rooms_for_teardown.lock().await;
-                room_for_teardown
+                let no_peers = room_for_teardown
                     .connections
                     .active_peers
                     .load(Ordering::Relaxed)
-                    == 0
+                    == 0;
+                let same_generation =
+                    room_for_teardown.connections.connection_generation() == teardown_generation;
+                no_peers && same_generation
             }; // rooms lock dropped here
 
             if !should_teardown {
@@ -179,6 +197,32 @@ pub(super) async fn handle_peer_disconnect(
             // Shut down runtime agent subprocess if running. RuntimeAgentHandle::spawn
             // moves Child into a background task, so kill_on_drop doesn't
             // trigger on room drop — we need explicit shutdown via RPC.
+            //
+            // Right before each destructive step that reaches into the
+            // runtime agent we revalidate the connection generation: a
+            // peer that reconnected between the flush-success check
+            // above and now invalidates the teardown decision. Without
+            // this, the ShutdownKernel RPC can fire for a kernel a
+            // newly-joined peer is already using (and which they
+            // skipped auto-launch for because they saw has_kernel=true).
+            let still_valid = {
+                let _rooms_guard = rooms_for_teardown.lock().await;
+                let no_peers = room_for_teardown
+                    .connections
+                    .active_peers
+                    .load(Ordering::Relaxed)
+                    == 0;
+                let same_generation =
+                    room_for_teardown.connections.connection_generation() == teardown_generation;
+                no_peers && same_generation
+            };
+            if !still_valid {
+                debug!(
+                    "[notebook-sync] Kernel teardown aborted for {} (peer reconnected just before shutdown RPC)",
+                    notebook_id_for_teardown
+                );
+                return;
+            }
             {
                 let has_runtime_agent = room_for_teardown
                     .runtime_agent_request_tx
