@@ -3999,34 +3999,68 @@ impl Daemon {
 
         for (uuid, room, gen_at_sample) in candidates {
             // Re-verify outside the lock. `has_kernel` touches the
-            // runtime-agent mutex; do it before re-acquiring rooms.
+            // runtime-agent mutex; do it before any further work.
             if room.has_kernel().await {
                 continue;
             }
 
-            // Read the bound path BEFORE removing from notebook_rooms.
-            // The path_index must be cleared first: if we cleared
-            // rooms first, an open-by-path lookup that lands in the
-            // window between the rooms-remove and the path_index-remove
-            // would find a stale UUID in `path_index`, fail to find
-            // the room in `notebook_rooms`, and then create a new
-            // room — whose `path_index.insert` would fail because the
-            // stale entry is still there. The room would end up in
-            // `notebook_rooms` but not in `path_index`, and a
-            // subsequent open-by-path could create a duplicate room
-            // for the same file.
-            let path_for_index = room.file_binding.path().await;
+            let path = room.file_binding.path().await;
+            let notebook_id_label = path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| uuid.to_string());
 
-            // Atomic remove pass: re-check active_peers AND the
-            // connection generation AND the teardown timestamp under
-            // the registry lock so a peer that reconnected between the
-            // snapshot and now keeps its room. The registry pops the
-            // room out of the UUID map and the path index together, so
-            // a concurrent open-by-path can't observe a half-removed
-            // state. A brief peer-touch (connect, then disconnect
-            // again) leaves active_peers == 0 but bumps the generation
-            // and may have zeroed the teardown timestamp; treat all
-            // three as "still idle" signals.
+            // Step 1: force-flush the persist debouncer so the
+            // `.automerge` mirror is current before we touch
+            // anything. Skipped for ephemeral rooms (no debouncer).
+            // Flush failure leaves the room resident; the next sweep
+            // retries.
+            const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+            if let Some(ack_rx) = room.persistence.request_flush() {
+                use crate::async_outcome::{recv_oneshot_with_timeout, TimedOneShot};
+                match recv_oneshot_with_timeout(ack_rx, FLUSH_TIMEOUT).await {
+                    TimedOneShot::Received(true) | TimedOneShot::SenderDropped => {}
+                    TimedOneShot::Received(false) | TimedOneShot::TimedOut => {
+                        warn!(
+                            "[runtimed] Resident-room reaper: persist flush failed for {} - keeping resident, retrying next sweep",
+                            notebook_id_label
+                        );
+                        continue;
+                    }
+                }
+            }
+
+            // Step 2: shut down the autosave debouncer. If the task
+            // doesn't ack within the timeout we abandon — it's
+            // pinning the room Arc and the next sweep will retry.
+            const AUTOSAVE_SHUTDOWN_TIMEOUT: std::time::Duration =
+                std::time::Duration::from_secs(5);
+            let autosave_shutdown_ok = crate::notebook_sync_server::shutdown_autosave_debouncer(
+                &room,
+                &notebook_id_label,
+                AUTOSAVE_SHUTDOWN_TIMEOUT,
+            )
+            .await;
+            if !autosave_shutdown_ok {
+                warn!(
+                    "[runtimed] Resident-room reaper: autosave shutdown stalled for {} - keeping resident, retrying next sweep",
+                    notebook_id_label
+                );
+                continue;
+            }
+
+            // Step 3: fire-and-forget watcher shutdowns. Both tasks
+            // own an `Arc<NotebookRoom>` and release it on receipt of
+            // the oneshot signal.
+            room.file_binding.shutdown_notebook_watcher().await;
+            room.file_binding.shutdown_project_file_watcher().await;
+
+            // Step 4: atomic commit. Re-check active_peers,
+            // reservations, generation, and still-torn-down under the
+            // registry lock. The registry removes the room from the
+            // UUID map and the path index together; a concurrent
+            // open-by-path either sees the live room or hits the new-
+            // room path cleanly.
             let removed = self
                 .notebook_rooms
                 .remove_if(uuid, |r| {
@@ -4037,48 +4071,38 @@ impl Daemon {
                         == 0;
                     let no_reservations = r.connections.reservations() == 0;
                     let same_gen = r.connections.connection_generation() == gen_at_sample;
-                    // A reconnect zeroed the timestamp on join. The
-                    // selection pass already enforced TTL or LRU
-                    // overflow; under the registry lock we just verify
-                    // the room hasn't transitioned out of "kernel torn
-                    // down" between sample and commit.
                     let still_stamped = r.connections.last_kernel_torn_down_at().is_some();
                     no_peers && no_reservations && same_gen && still_stamped
                 })
                 .await;
 
             let Some(room) = removed else {
+                // Abort path: a peer reconnected between cleanup and
+                // commit. Autosave and watchers were torn down above;
+                // re-arm them so the reconnect inherits a working room.
+                // The persist debouncer was only flushed, not torn
+                // down, so it's still running.
+                if let Some(ref p) = path {
+                    crate::notebook_sync_server::NotebookFileBinding::bind_existing(&room, p).await;
+                }
+                debug!(
+                    "[runtimed] Resident-room reaper: peer reconnected for {} mid-cleanup; watchers re-armed",
+                    notebook_id_label
+                );
                 continue;
             };
-            let path = path_for_index;
 
-            // Shut down the watchers and autosave debouncer that were
-            // left armed across kernel teardown. The .ipynb has been
-            // saved (kernel teardown wrote a final save) and no peers
-            // are around to make further edits, so this is just freeing
-            // file-descriptors and the autosave task.
-            room.file_binding.shutdown_notebook_watcher().await;
-            room.file_binding.shutdown_project_file_watcher().await;
-            const AUTOSAVE_SHUTDOWN_TIMEOUT: std::time::Duration =
-                std::time::Duration::from_secs(5);
-            let notebook_id_label = path
-                .as_ref()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|| uuid.to_string());
-            let _ = crate::notebook_sync_server::shutdown_autosave_debouncer(
-                &room,
-                &notebook_id_label,
-                AUTOSAVE_SHUTDOWN_TIMEOUT,
-            )
-            .await;
+            // Commit point. Step 5: take the persist debouncer out so
+            // its senders drop and the task exits via its shutdown arm
+            // with one final flush. Dropping the room Arc next is no
+            // longer enough on its own because nothing else holds an
+            // Arc to gate the persist task on.
+            let _ = room.persistence.take_debouncer();
 
             info!(
-                "[runtimed] Ghost-room reaper removed room {} (path={:?})",
+                "[runtimed] Resident-room reaper removed room {} (path={:?})",
                 uuid, path
             );
-            // Dropping `room` here also drops the persist debouncer's
-            // sender half; the debouncer task exits via its shutdown arm
-            // and gets one final flush in.
             drop(room);
         }
     }
