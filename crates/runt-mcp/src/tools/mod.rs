@@ -86,7 +86,11 @@ pub fn all_tools() -> Vec<Tool> {
         // -- Session management --
         Tool::new(
             "list_active_notebooks",
-            "List running notebook sessions.",
+            "List notebook rooms the daemon is holding in memory. Each entry has a `state` field: \
+             `active` (peers connected), `idle` (no peers, kernel still alive in grace), or \
+             `inactive` (no peers, no kernel - resumable; reconnect with open_notebook(path=...) \
+             or open_notebook(notebook_id=...)). Inactive rooms keep the doc, outputs, and file \
+             binding intact until the daemon's ghost-room reaper sweeps them.",
             schema_for::<EmptyParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false))
