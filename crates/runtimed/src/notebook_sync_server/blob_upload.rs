@@ -1034,6 +1034,10 @@ mod tests {
         (tmp, blob_store, envelope, writer_task)
     }
 
+    fn staged_bytes(state: &MultipartUploadState) -> u64 {
+        state.lock().staged_bytes
+    }
+
     #[tokio::test]
     async fn put_blob_success_stores_blob_and_replies() {
         let body = b"abc";
@@ -1299,6 +1303,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn put_blob_busy_worker_replies_to_multipart_part_without_blocking_peer_loop() {
+        let (worker_tx, _worker_rx) = mpsc::channel(PUT_BLOB_QUEUE_CAPACITY);
+        let worker = PutBlobWorker::for_test_busy(worker_tx);
+        let (mut reader, writer) = tokio::io::duplex(1024 * 1024);
+        let (peer_writer, _writer_task) =
+            super::super::peer_writer::spawn_peer_writer(writer, "notebook".into(), "peer".into());
+        let sha256 = hex::encode(Sha256::digest(b"abc"));
+        let request_payload = part_payload("part-busy", "upload-busy", 1, &sha256, b"abc");
+
+        let start = std::time::Instant::now();
+        enqueue_put_blob(&worker, &peer_writer, request_payload, "notebook", "peer")
+            .expect("busy worker should report a structured response");
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(50),
+            "busy multipart worker should not block the peer loop"
+        );
+
+        let frame = connection::recv_typed_frame(&mut reader)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame.frame_type, NotebookFrameType::Response);
+        let envelope: NotebookResponseEnvelope = serde_json::from_slice(&frame.payload).unwrap();
+        assert_eq!(envelope.id.as_deref(), Some("part-busy"));
+        assert!(matches!(
+            envelope.response,
+            NotebookResponse::BlobUploadError {
+                reason: BlobUploadErrorKind::TooManyInFlight
+            }
+        ));
+    }
+
+    #[tokio::test]
     async fn multipart_upload_success_publishes_only_on_complete() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let blob_store = Arc::new(BlobStore::new(tmp.path().join("blobs")));
@@ -1314,6 +1351,7 @@ mod tests {
             first_response.response,
             NotebookResponse::BlobPartStored { part_number: 1, .. }
         ));
+        assert_eq!(staged_bytes(&state), 3);
         assert!(!blob_store.exists(&final_hash));
 
         let second_hash = hex::encode(Sha256::digest(b"def"));
@@ -1323,6 +1361,7 @@ mod tests {
             second_response.response,
             NotebookResponse::BlobPartStored { part_number: 2, .. }
         ));
+        assert_eq!(staged_bytes(&state), 6);
 
         let response = handle_complete_blob_upload(
             &state,
@@ -1353,6 +1392,7 @@ mod tests {
             }
             other => panic!("unexpected complete response: {other:?}"),
         }
+        assert_eq!(staged_bytes(&state), 0);
     }
 
     #[tokio::test]
@@ -1469,14 +1509,22 @@ mod tests {
         let blob_store = Arc::new(BlobStore::new(tmp.path().join("blobs")));
         let state = MultipartUploadState::new(&blob_store);
         let upload_id = create_upload(&state, &blob_store, b"abc", Some(3)).await;
+        let sha256 = hex::encode(Sha256::digest(b"abc"));
+        let request = part_payload("part-before-abort", &upload_id, 1, &sha256, b"abc");
+        let response = run_part_handler(&blob_store, &state, &request).await;
+        assert!(matches!(
+            response.response,
+            NotebookResponse::BlobPartStored { part_number: 1, .. }
+        ));
+        assert_eq!(staged_bytes(&state), 3);
 
         let abort = handle_abort_blob_upload(&state, &upload_id).await;
         assert!(matches!(
             abort,
             NotebookResponse::BlobUploadAborted { upload_id: ref id } if id == &upload_id
         ));
+        assert_eq!(staged_bytes(&state), 0);
 
-        let sha256 = hex::encode(Sha256::digest(b"abc"));
         let request = part_payload("part-after-abort", &upload_id, 1, &sha256, b"abc");
         let response = run_part_handler(&blob_store, &state, &request).await;
         assert!(matches!(
