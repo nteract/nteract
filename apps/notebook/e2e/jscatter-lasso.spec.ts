@@ -1,4 +1,11 @@
-import { expect, test, type FrameLocator, type Locator, type Page } from "@playwright/test";
+import {
+  expect,
+  test,
+  type FrameLocator,
+  type Locator,
+  type Page,
+  type TestInfo,
+} from "@playwright/test";
 import {
   ensureCodeCell,
   executeCell,
@@ -20,7 +27,9 @@ test.describe("jupyter-scatter lasso selection", () => {
     mcp = null;
   });
 
-  test("round-trips a lasso selection through binary widget comm buffers", async ({ page }) => {
+  test("round-trips a lasso selection through binary widget comm buffers", async ({
+    page,
+  }, testInfo) => {
     test.setTimeout(240_000);
 
     const notebookId = crypto.randomUUID();
@@ -74,6 +83,7 @@ test.describe("jupyter-scatter lasso selection", () => {
     await expect
       .poll(() => getFrontendSelectionCount(page), { timeout: 30_000 })
       .toBeGreaterThan(0);
+    await attachLassoScreenshots(testInfo, page, plotSurface);
 
     const selectionCellId = await mcp.createCell("# jscatter selection probe");
     await waitForCellCount(page, 2);
@@ -128,6 +138,17 @@ async function dragLassoAroundCenter(page: Page, canvas: Locator) {
   }
   await page.mouse.up();
   await page.waitForTimeout(750);
+}
+
+async function attachLassoScreenshots(testInfo: TestInfo, page: Page, plotSurface: Locator) {
+  await testInfo.attach("jscatter-after-lasso-page", {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: "image/png",
+  });
+  await testInfo.attach("jscatter-after-lasso-canvas", {
+    body: await plotSurface.screenshot(),
+    contentType: "image/png",
+  });
 }
 
 function parseSelectionCount(text: string | null, marker: string): number {
