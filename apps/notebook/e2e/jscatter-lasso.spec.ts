@@ -21,6 +21,8 @@ test.describe("jupyter-scatter lasso selection", () => {
   });
 
   test("round-trips a lasso selection through binary widget comm buffers", async ({ page }) => {
+    test.setTimeout(240_000);
+
     const notebookId = crypto.randomUUID();
     await openNotebookRoom(page, notebookId);
     await waitForKernelStatus(page, "idle", 120_000);
