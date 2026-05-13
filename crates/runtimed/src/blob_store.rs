@@ -17,7 +17,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -42,6 +42,7 @@ pub struct BlobMeta {
 #[derive(Debug)]
 struct BlobStoreInner {
     root: PathBuf,
+    memory_cap: usize,
     memory: Mutex<MemoryLayer>,
 }
 
@@ -92,6 +93,8 @@ impl MemoryLayer {
             self.total_bytes = self.total_bytes.saturating_sub(existing.data.len());
         }
 
+        // Re-putting the same content leaves a stale order entry behind. The
+        // sequence check in eviction skips those stale entries without scanning.
         let seq = self.next_seq;
         self.next_seq = self.next_seq.wrapping_add(1);
         self.total_bytes += data.len();
@@ -168,6 +171,7 @@ impl BlobStore {
         Self {
             inner: Arc::new(BlobStoreInner {
                 root,
+                memory_cap: cap,
                 memory: Mutex::new(MemoryLayer::new(cap)),
             }),
         }
@@ -225,6 +229,8 @@ impl BlobStore {
             }
             BlobDurability::Ephemeral => {
                 if data.len() > self.memory_cap() {
+                    // A single entry larger than the cap can never be cached
+                    // without violating the budget, so keep it durable-only.
                     debug!(
                         blob = %hash,
                         bytes = data.len(),
@@ -335,13 +341,19 @@ impl BlobStore {
     }
 
     fn insert_memory(&self, hash: &str, data: Bytes, media_type: &str, created_at: DateTime<Utc>) {
-        let mut memory = self.inner.memory.lock().expect("blob memory lock poisoned");
+        let mut memory = self.memory_layer();
         memory.insert(hash.to_string(), data, media_type.to_string(), created_at);
     }
 
+    fn memory_layer(&self) -> MutexGuard<'_, MemoryLayer> {
+        match self.inner.memory.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
     fn memory_cap(&self) -> usize {
-        let memory = self.inner.memory.lock().expect("blob memory lock poisoned");
-        memory.cap
+        self.inner.memory_cap
     }
 
     /// Retrieve blob bytes by hash. Returns `None` if not found.
@@ -350,7 +362,7 @@ impl BlobStore {
             return Ok(None);
         }
         if let Some(entry) = {
-            let memory = self.inner.memory.lock().expect("blob memory lock poisoned");
+            let memory = self.memory_layer();
             memory.get(hash)
         } {
             return Ok(Some(entry.data.to_vec()));
@@ -369,7 +381,7 @@ impl BlobStore {
             return Ok(None);
         }
         if let Some(entry) = {
-            let memory = self.inner.memory.lock().expect("blob memory lock poisoned");
+            let memory = self.memory_layer();
             memory.get(hash)
         } {
             return Ok(Some(entry.meta()));
@@ -392,7 +404,7 @@ impl BlobStore {
             return false;
         }
         {
-            let memory = self.inner.memory.lock().expect("blob memory lock poisoned");
+            let memory = self.memory_layer();
             if memory.contains(hash) {
                 return true;
             }
@@ -407,7 +419,7 @@ impl BlobStore {
             return Ok(false);
         }
         let existed_in_memory = {
-            let mut memory = self.inner.memory.lock().expect("blob memory lock poisoned");
+            let mut memory = self.memory_layer();
             memory.remove(hash)
         };
         let (_, blob_path, meta_path) = self.paths(hash);
@@ -473,7 +485,7 @@ impl BlobStore {
 
     #[cfg(test)]
     fn memory_contains_for_test(&self, hash: &str) -> bool {
-        let memory = self.inner.memory.lock().expect("blob memory lock poisoned");
+        let memory = self.memory_layer();
         memory.contains(hash)
     }
 }
