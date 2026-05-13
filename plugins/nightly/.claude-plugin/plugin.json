@@ -1,6 +1,6 @@
 {
   "name": "nightly",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "nteract notebooks (nightly channel) for Claude Code.",
   "repository": "https://github.com/nteract/desktop"
 }
