@@ -239,6 +239,72 @@ async fn file_backed_room_has_path_some() {
 }
 
 #[tokio::test]
+async fn reservation_guard_increments_and_decrements_counter() {
+    use std::sync::atomic::Ordering;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let room = Arc::new(NotebookRoom::new_fresh(
+        Uuid::new_v4(),
+        None,
+        tmp.path(),
+        blob_store,
+        false,
+    ));
+
+    assert_eq!(room.connections.reservations.load(Ordering::Relaxed), 0);
+
+    let guard = ReservationGuard::new(room.clone());
+    assert_eq!(room.connections.reservations.load(Ordering::Relaxed), 1);
+
+    drop(guard);
+    assert_eq!(room.connections.reservations.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn reservation_guards_stack() {
+    use std::sync::atomic::Ordering;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let room = Arc::new(NotebookRoom::new_fresh(
+        Uuid::new_v4(),
+        None,
+        tmp.path(),
+        blob_store,
+        false,
+    ));
+
+    let g1 = ReservationGuard::new(room.clone());
+    let g2 = ReservationGuard::new(room.clone());
+    let g3 = ReservationGuard::new(room.clone());
+    assert_eq!(room.connections.reservations.load(Ordering::Relaxed), 3);
+
+    drop(g2);
+    assert_eq!(room.connections.reservations.load(Ordering::Relaxed), 2);
+
+    drop(g1);
+    drop(g3);
+    assert_eq!(room.connections.reservations.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn reservation_guard_room_accessor_returns_same_arc() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let room = Arc::new(NotebookRoom::new_fresh(
+        Uuid::new_v4(),
+        None,
+        tmp.path(),
+        blob_store,
+        false,
+    ));
+
+    let guard = ReservationGuard::new(room.clone());
+    assert!(Arc::ptr_eq(guard.room(), &room));
+}
+
+#[tokio::test]
 async fn test_room_load_or_create_new() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
@@ -279,13 +345,11 @@ async fn test_room_persists_and_reloads() {
 async fn test_get_or_create_room_reuses_existing() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
-    let rooms: NotebookRooms = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-    let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
     let uuid1 = Uuid::new_v4();
 
-    let room1 = get_or_create_room(
+    let (room1, _g1) = get_or_create_room(
         &rooms,
-        &path_index,
         uuid1,
         RoomCreationOptions {
             path: None,
@@ -296,9 +360,8 @@ async fn test_get_or_create_room_reuses_existing() {
         },
     )
     .await;
-    let room2 = get_or_create_room(
+    let (room2, _g2) = get_or_create_room(
         &rooms,
-        &path_index,
         uuid1,
         RoomCreationOptions {
             path: None,
@@ -318,14 +381,12 @@ async fn test_get_or_create_room_reuses_existing() {
 async fn test_get_or_create_room_different_notebooks() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
-    let rooms: NotebookRooms = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-    let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
     let uuid1 = Uuid::new_v4();
     let uuid2 = Uuid::new_v4();
 
-    let room1 = get_or_create_room(
+    let (room1, _g1) = get_or_create_room(
         &rooms,
-        &path_index,
         uuid1,
         RoomCreationOptions {
             path: None,
@@ -336,9 +397,8 @@ async fn test_get_or_create_room_different_notebooks() {
         },
     )
     .await;
-    let room2 = get_or_create_room(
+    let (room2, _g2) = get_or_create_room(
         &rooms,
-        &path_index,
         uuid2,
         RoomCreationOptions {
             path: None,
@@ -352,7 +412,7 @@ async fn test_get_or_create_room_different_notebooks() {
 
     // Should be different rooms
     assert!(!Arc::ptr_eq(&room1, &room2));
-    assert_eq!(rooms.lock().await.len(), 2);
+    assert_eq!(rooms.len().await, 2);
 }
 
 #[tokio::test]
@@ -645,7 +705,7 @@ async fn test_ephemeral_room_skips_persistence() {
     let notebook_uuid = uuid::Uuid::new_v4();
     let room = NotebookRoom::new_fresh(notebook_uuid, None, dir.path(), blob_store, true);
 
-    assert!(room.persistence.debouncer.is_none());
+    assert!(!room.persistence.has_debouncer());
     assert!(room.file_binding.is_ephemeral());
 
     // No .automerge file should exist
@@ -660,7 +720,7 @@ async fn test_session_room_persists() {
     let notebook_uuid = uuid::Uuid::new_v4();
     let room = NotebookRoom::new_fresh(notebook_uuid, None, dir.path(), blob_store, false);
 
-    assert!(room.persistence.debouncer.is_some());
+    assert!(room.persistence.has_debouncer());
     assert!(!room.file_binding.is_ephemeral());
 }
 
@@ -3171,11 +3231,13 @@ async fn saving_untitled_notebook_updates_path_index_and_keeps_uuid() {
         let mut doc = room.doc.write().await;
         doc.add_cell(0, "c1", "code").unwrap();
     }
-    let rooms: NotebookRooms = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-    rooms.lock().await.insert(uuid, room.clone());
-    let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
+    rooms
+        .insert_or_get(uuid, room.clone(), None)
+        .await
+        .expect("registry insert for test setup");
 
-    // 2. Simulate the handler's transition: save to disk then wire path_index.
+    // 2. Simulate the handler's transition: save to disk then bind the path.
     let save_target = tmp.path().join("note.ipynb");
     let written = save_notebook_to_disk(&room, Some(save_target.to_str().unwrap()))
         .await
@@ -3184,18 +3246,14 @@ async fn saving_untitled_notebook_updates_path_index_and_keeps_uuid() {
         .await
         .unwrap_or_else(|_| PathBuf::from(&written));
 
-    path_index
-        .lock()
-        .await
-        .insert(canonical.clone(), room.id)
-        .unwrap();
+    rooms.bind_path(room.id, canonical.clone()).await.unwrap();
     room.file_binding
         .set_path_for_test(Some(canonical.clone()))
         .await;
 
-    // UUID key unchanged, path_index populated, room.file_binding.path set.
-    assert!(rooms.lock().await.contains_key(&uuid));
-    assert_eq!(path_index.lock().await.lookup(&canonical), Some(uuid));
+    // UUID key unchanged, path index populated, room.file_binding.path set.
+    assert!(rooms.peek_uuid(uuid).await.is_some());
+    assert_eq!(rooms.peek_path_uuid(&canonical).await, Some(uuid));
     assert_eq!(
         room.file_binding.path().await.as_deref(),
         Some(canonical.as_path())
@@ -3215,11 +3273,10 @@ async fn saving_to_already_open_path_returns_path_already_open_error() {
     // Existing room already claiming `target_path`.
     let existing_uuid = Uuid::new_v4();
     let target_path = tmp.path().join("existing.ipynb");
-    let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
-    path_index
-        .lock()
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
+    rooms
+        .bind_path(existing_uuid, target_path.clone())
         .await
-        .insert(target_path.clone(), existing_uuid)
         .unwrap();
 
     // Fresh untitled room that tries to claim the same path.
@@ -3229,7 +3286,7 @@ async fn saving_to_already_open_path_returns_path_already_open_error() {
     ));
 
     // Try to claim the path — must fail.
-    let err = try_claim_path(&path_index, &target_path, new_uuid)
+    let err = try_claim_path(&rooms, &target_path, new_uuid)
         .await
         .unwrap_err();
 
@@ -3270,13 +3327,9 @@ async fn path_collision_does_not_overwrite_existing_file() {
     // Canonicalize before inserting so the key matches what the handler
     // would compute via canonical_target_path at save time.
     let canonical = canonical_target_path(&target_path).await;
-    let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
     let uuid_a = Uuid::new_v4();
-    path_index
-        .lock()
-        .await
-        .insert(canonical.clone(), uuid_a)
-        .unwrap();
+    rooms.bind_path(uuid_a, canonical.clone()).await.unwrap();
 
     // Room B attempts to save to the same path. Per the handler's
     // claim-before-write ordering, it must fail at try_claim_path without
@@ -3285,7 +3338,7 @@ async fn path_collision_does_not_overwrite_existing_file() {
     let _room_b = Arc::new(NotebookRoom::new_fresh(
         uuid_b, None, &docs_dir, blob_store, false,
     ));
-    let claim = try_claim_path(&path_index, &canonical, uuid_b).await;
+    let claim = try_claim_path(&rooms, &canonical, uuid_b).await;
     assert!(claim.is_err(), "claim must fail on collision");
 
     // Target file must be byte-for-byte identical.
@@ -3326,8 +3379,11 @@ async fn test_promote_untitled_starts_autosave() {
     }
 
     // 2. Insert into rooms map under UUID key (UUID key stays constant).
-    let rooms: NotebookRooms = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-    rooms.lock().await.insert(uuid, room.clone());
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
+    rooms
+        .insert_or_get(uuid, room.clone(), None)
+        .await
+        .expect("registry insert for test setup");
 
     // 3. Save to disk — creates the .ipynb file.
     let save_path = tmp.path().join("saved.ipynb");
@@ -3340,16 +3396,15 @@ async fn test_promote_untitled_starts_autosave() {
     let canonical = tokio::fs::canonicalize(&written)
         .await
         .unwrap_or_else(|_| PathBuf::from(&written));
-    let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
 
-    try_claim_path(&path_index, &canonical, room.id)
+    try_claim_path(&rooms, &canonical, room.id)
         .await
         .expect("path claim should succeed");
     finalize_untitled_promotion(&room, canonical.clone()).await;
 
     // Verify post-promotion state.
     assert!(
-        rooms.lock().await.contains_key(&uuid),
+        rooms.peek_uuid(uuid).await.is_some(),
         "UUID key should still be present after promotion"
     );
     assert_eq!(
@@ -3358,9 +3413,9 @@ async fn test_promote_untitled_starts_autosave() {
         "room.file_binding.path should be set after promotion"
     );
     assert_eq!(
-        path_index.lock().await.lookup(&canonical),
+        rooms.peek_path_uuid(&canonical).await,
         Some(uuid),
-        "path_index should contain the room's UUID"
+        "registry path index should contain the room's UUID"
     );
     assert!(
         !room.file_binding.is_ephemeral(),
@@ -3421,8 +3476,7 @@ async fn test_promote_untitled_starts_autosave() {
 async fn find_room_by_path_returns_room_after_index_insert() {
     let tmp = tempfile::tempdir().unwrap();
     let blob_store = test_blob_store(&tmp);
-    let rooms: NotebookRooms = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-    let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
     let uuid = Uuid::new_v4();
     let fake = tmp.path().join("note.ipynb");
     let room = Arc::new(NotebookRoom::new_fresh(
@@ -3432,20 +3486,22 @@ async fn find_room_by_path_returns_room_after_index_insert() {
         blob_store,
         false,
     ));
-    rooms.lock().await.insert(uuid, room.clone());
-    path_index.lock().await.insert(fake.clone(), uuid).unwrap();
+    rooms
+        .insert_or_get(uuid, room.clone(), Some(&fake))
+        .await
+        .unwrap();
 
-    let found = find_room_by_path(&rooms, &path_index, &fake).await;
+    let found = find_room_by_path(&rooms, &fake).await;
     assert!(found.is_some());
-    assert!(Arc::ptr_eq(&found.unwrap(), &room));
+    let (found_room, _guard) = found.unwrap();
+    assert!(Arc::ptr_eq(&found_room, &room));
 }
 
 #[tokio::test]
 async fn find_room_by_path_returns_none_when_not_indexed() {
     let tmp = tempfile::tempdir().unwrap();
-    let rooms: NotebookRooms = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-    let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
-    let found = find_room_by_path(&rooms, &path_index, &tmp.path().join("nope.ipynb")).await;
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
+    let found = find_room_by_path(&rooms, &tmp.path().join("nope.ipynb")).await;
     assert!(found.is_none());
 }
 
@@ -3466,22 +3522,20 @@ async fn test_notebook_sync_path_handshake_reuses_existing_room() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
     let docs_dir = tmp.path().to_path_buf();
-    let rooms: NotebookRooms = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-    let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
 
     // Simulate a file-backed path (doesn't need to exist for this test).
     let notebook_path = tmp.path().join("my_notebook.ipynb");
 
     // --- First handshake (simulates the fixed NotebookSync path) ---
-    // 1. Check path_index — not yet indexed, so mint a new UUID.
-    let room1 = {
-        let (uuid, path) = match find_room_by_path(&rooms, &path_index, &notebook_path).await {
-            Some(existing) => (existing.id, Some(notebook_path.clone())),
+    // 1. Check the path index — not yet indexed, so mint a new UUID.
+    let (room1, _g1) = {
+        let (uuid, path) = match find_room_by_path(&rooms, &notebook_path).await {
+            Some((existing, _)) => (existing.id, Some(notebook_path.clone())),
             None => (Uuid::new_v4(), Some(notebook_path.clone())),
         };
         get_or_create_room(
             &rooms,
-            &path_index,
             uuid,
             RoomCreationOptions {
                 path,
@@ -3496,14 +3550,13 @@ async fn test_notebook_sync_path_handshake_reuses_existing_room() {
 
     // --- Second handshake for the same path ---
     // find_room_by_path should now return the existing room.
-    let room2 = {
-        let (uuid, path) = match find_room_by_path(&rooms, &path_index, &notebook_path).await {
-            Some(existing) => (existing.id, Some(notebook_path.clone())),
+    let (room2, _g2) = {
+        let (uuid, path) = match find_room_by_path(&rooms, &notebook_path).await {
+            Some((existing, _)) => (existing.id, Some(notebook_path.clone())),
             None => (Uuid::new_v4(), Some(notebook_path.clone())),
         };
         get_or_create_room(
             &rooms,
-            &path_index,
             uuid,
             RoomCreationOptions {
                 path,
@@ -3524,16 +3577,16 @@ async fn test_notebook_sync_path_handshake_reuses_existing_room() {
 
     // Exactly one room in the map (not two).
     assert_eq!(
-        rooms.lock().await.len(),
+        rooms.len().await,
         1,
         "Only one room should exist after two handshakes for the same path"
     );
 
-    // path_index has exactly one entry.
+    // The registry's path index has exactly one entry.
     assert_eq!(
-        path_index.lock().await.len(),
+        rooms.path_count().await,
         1,
-        "path_index should have exactly one entry"
+        "registry path index should have exactly one entry"
     );
 }
 
@@ -6661,37 +6714,30 @@ fn test_missing_conda_env_yml_name_prefix_with_python_is_not_missing() {
 // CloneAsEphemeral handler tests
 // ---------------------------------------------------------------------------
 
-/// Build the minimum scaffolding the clone handler needs: a notebook_rooms
-/// map, a path_index, a docs_dir, and a blob store. Lets the handler run
+/// Build the minimum scaffolding the clone handler needs: a combined
+/// room registry, a docs_dir, and a blob store. Lets the handler run
 /// without a full `Daemon`.
 fn clone_test_scaffolding(
     tmp: &tempfile::TempDir,
-) -> (
-    NotebookRooms,
-    Arc<tokio::sync::Mutex<PathIndex>>,
-    std::path::PathBuf,
-    Arc<BlobStore>,
-) {
-    let rooms: NotebookRooms = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-    let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
+) -> (NotebookRooms, std::path::PathBuf, Arc<BlobStore>) {
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
     let docs_dir = tmp.path().join("docs");
     std::fs::create_dir_all(&docs_dir).unwrap();
     let blob_store = test_blob_store(tmp);
-    (rooms, path_index, docs_dir, blob_store)
+    (rooms, docs_dir, blob_store)
 }
 
 #[tokio::test]
 async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let (rooms, path_index, docs_dir, blob_store) = clone_test_scaffolding(&tmp);
+    let (rooms, docs_dir, blob_store) = clone_test_scaffolding(&tmp);
 
     // Build a file-backed source room with cells + markdown/raw attachments
     // + stamped trust, registered in the rooms map.
     let source_path = tmp.path().join("source.ipynb");
     let source_uuid = Uuid::new_v4();
-    let source_room = get_or_create_room(
+    let (source_room, _source_guard) = get_or_create_room(
         &rooms,
-        &path_index,
         source_uuid,
         RoomCreationOptions {
             path: Some(source_path.clone()),
@@ -6759,7 +6805,6 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
     // Dispatch clone handler.
     let response = crate::requests::clone_notebook::handle_inner(
         &rooms,
-        &path_index,
         &docs_dir,
         blob_store.clone(),
         source_uuid.to_string(),
@@ -6787,10 +6832,8 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
 
     // Room is registered.
     let clone_room = rooms
-        .lock()
+        .peek_uuid(clone_uuid)
         .await
-        .get(&clone_uuid)
-        .cloned()
         .expect("clone room should be registered");
 
     // Ephemeral.
@@ -6869,17 +6912,12 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
 #[tokio::test]
 async fn test_clone_as_ephemeral_rejects_unknown_source() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let (rooms, path_index, docs_dir, blob_store) = clone_test_scaffolding(&tmp);
+    let (rooms, docs_dir, blob_store) = clone_test_scaffolding(&tmp);
 
     let bogus = Uuid::new_v4().to_string();
-    let response = crate::requests::clone_notebook::handle_inner(
-        &rooms,
-        &path_index,
-        &docs_dir,
-        blob_store,
-        bogus.clone(),
-    )
-    .await;
+    let response =
+        crate::requests::clone_notebook::handle_inner(&rooms, &docs_dir, blob_store, bogus.clone())
+            .await;
 
     match response {
         NotebookResponse::Error { error } => {
@@ -6895,11 +6933,10 @@ async fn test_clone_as_ephemeral_rejects_unknown_source() {
 #[tokio::test]
 async fn test_clone_as_ephemeral_rejects_invalid_uuid() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let (rooms, path_index, docs_dir, blob_store) = clone_test_scaffolding(&tmp);
+    let (rooms, docs_dir, blob_store) = clone_test_scaffolding(&tmp);
 
     let response = crate::requests::clone_notebook::handle_inner(
         &rooms,
-        &path_index,
         &docs_dir,
         blob_store,
         "not-a-uuid".to_string(),
@@ -7018,12 +7055,11 @@ async fn test_clone_as_ephemeral_carries_unknown_metadata_extras() {
     // Codex F3 on PR #2192: clone must preserve unknown top-level
     // metadata keys from source (jupytext, colab, vscode, etc.).
     let tmp = tempfile::TempDir::new().unwrap();
-    let (rooms, path_index, docs_dir, blob_store) = clone_test_scaffolding(&tmp);
+    let (rooms, docs_dir, blob_store) = clone_test_scaffolding(&tmp);
 
     let source_uuid = Uuid::new_v4();
-    let source_room = get_or_create_room(
+    let (source_room, _source_guard) = get_or_create_room(
         &rooms,
-        &path_index,
         source_uuid,
         RoomCreationOptions {
             path: Some(tmp.path().join("source.ipynb")),
@@ -7059,7 +7095,6 @@ async fn test_clone_as_ephemeral_carries_unknown_metadata_extras() {
 
     let response = crate::requests::clone_notebook::handle_inner(
         &rooms,
-        &path_index,
         &docs_dir,
         blob_store.clone(),
         source_uuid.to_string(),
@@ -7072,10 +7107,8 @@ async fn test_clone_as_ephemeral_carries_unknown_metadata_extras() {
     };
     let clone_uuid = Uuid::parse_str(&clone_id).unwrap();
     let clone_room = rooms
-        .lock()
+        .peek_uuid(clone_uuid)
         .await
-        .get(&clone_uuid)
-        .cloned()
         .expect("clone room should be registered");
 
     let clone_snap = clone_room
@@ -7517,8 +7550,8 @@ async fn test_autosave_fires_on_runtime_file_dirty_without_self_loop() {
     let canonical = tokio::fs::canonicalize(&written)
         .await
         .unwrap_or_else(|_| PathBuf::from(&written));
-    let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
-    try_claim_path(&path_index, &canonical, room.id)
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
+    try_claim_path(&rooms, &canonical, room.id)
         .await
         .expect("path claim should succeed");
     finalize_untitled_promotion(&room, canonical).await;
@@ -7617,8 +7650,8 @@ async fn test_autosave_shutdown_flushes_pending_doc_change() {
     let canonical = tokio::fs::canonicalize(&written)
         .await
         .unwrap_or_else(|_| PathBuf::from(&written));
-    let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
-    try_claim_path(&path_index, &canonical, room.id)
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
+    try_claim_path(&rooms, &canonical, room.id)
         .await
         .expect("path claim should succeed");
     finalize_untitled_promotion(&room, canonical.clone()).await;

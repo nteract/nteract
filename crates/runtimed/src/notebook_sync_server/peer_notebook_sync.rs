@@ -78,9 +78,8 @@ pub(super) async fn finish_notebook_doc_frame(
     room: &NotebookRoom,
     effects: NotebookDocSideEffects,
 ) {
-    if let Some(ref d) = room.persistence.debouncer {
-        let _ = d.persist_tx.send(Some(effects.persist_bytes));
-    }
+    room.persistence
+        .enqueue_persist_bytes(effects.persist_bytes);
 
     if effects.metadata_changed {
         check_and_broadcast_sync_state(room).await;

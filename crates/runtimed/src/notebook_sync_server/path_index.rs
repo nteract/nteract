@@ -22,6 +22,7 @@ pub enum PathIndexError {
 }
 
 impl PathIndex {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -48,20 +49,31 @@ impl PathIndex {
         self.inner.remove(path)
     }
 
-    pub fn remove_by_uuid(&mut self, uuid: Uuid) -> Option<PathBuf> {
-        let path = self
+    /// Remove every path that maps to the given UUID. A save-as in
+    /// flight can briefly hold both the old and the pre-claimed new
+    /// path for the same UUID; removing only one would leave the
+    /// other as a stale entry pointing at a missing room, which the
+    /// next open of that path would hit as `PathAlreadyOpen` with
+    /// nothing to coalesce to.
+    pub fn remove_by_uuid(&mut self, uuid: Uuid) -> Vec<PathBuf> {
+        let paths: Vec<PathBuf> = self
             .inner
             .iter()
-            .find(|(_, &u)| u == uuid)
-            .map(|(p, _)| p.clone())?;
-        self.inner.remove(&path);
-        Some(path)
+            .filter(|(_, &u)| u == uuid)
+            .map(|(p, _)| p.clone())
+            .collect();
+        for p in &paths {
+            self.inner.remove(p);
+        }
+        paths
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.inner.len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
@@ -136,7 +148,18 @@ mod tests {
         let mut idx = PathIndex::new();
         let uuid = Uuid::new_v4();
         idx.insert(path("/tmp/foo.ipynb"), uuid).unwrap();
-        assert_eq!(idx.remove_by_uuid(uuid), Some(path("/tmp/foo.ipynb")));
+        assert_eq!(idx.remove_by_uuid(uuid), vec![path("/tmp/foo.ipynb")]);
+        assert!(idx.is_empty());
+    }
+
+    #[test]
+    fn remove_by_uuid_clears_every_alias() {
+        let mut idx = PathIndex::new();
+        let uuid = Uuid::new_v4();
+        idx.insert(path("/tmp/old.ipynb"), uuid).unwrap();
+        idx.insert(path("/tmp/new.ipynb"), uuid).unwrap();
+        let removed = idx.remove_by_uuid(uuid);
+        assert_eq!(removed.len(), 2);
         assert!(idx.is_empty());
     }
 

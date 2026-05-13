@@ -839,9 +839,7 @@ pub(crate) async fn process_markdown_assets(room: &NotebookRoom) {
     };
 
     let _ = room.broadcasts.changed_tx.send(());
-    if let Some(ref d) = room.persistence.debouncer {
-        let _ = d.persist_tx.send(Some(persist_bytes));
-    }
+    room.persistence.enqueue_persist_bytes(persist_bytes);
 }
 
 /// Check if the current metadata differs from kernel's launched config and broadcast sync state.

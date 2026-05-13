@@ -3,7 +3,7 @@
 //! The daemon manages prewarmed environment pools and handles requests from
 //! notebook windows via IPC (Unix domain sockets on Unix, named pipes on Windows).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Weak};
@@ -27,7 +27,7 @@ use tokio::sync::RwLock;
 use crate::async_outcome::{await_result_with_timeout, TimedResult};
 use crate::blob_server;
 use crate::blob_store::BlobStore;
-use crate::notebook_sync_server::{NotebookRooms, PathIndex};
+use crate::notebook_sync_server::{NotebookRooms, RoomRegistry};
 use crate::paths::{default_cache_dir, default_socket_path, pool_env_root};
 use crate::protocol::{BlobRequest, BlobResponse, Request, Response};
 use crate::settings_doc::{SettingsDoc, SyncedSettings};
@@ -389,6 +389,17 @@ struct Pool {
 
 const MIN_WARM_BASES: usize = 2;
 const POOL_PACKAGE_HASH_FILE: &str = ".runt-pool-packages.sha256";
+/// How long a peer-less, kernel-less room may sit before the reaper
+/// removes it. Set to 24h so a user who returns within the same day
+/// reattaches to the same in-memory doc + outputs.
+const RESIDENT_ROOM_TTL_SECS: u64 = 24 * 3600;
+/// How often the reaper wakes up. Cheap sweep — not on a hot path.
+const REAPER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+/// Soft cap on the number of resident peer-less rooms. When exceeded,
+/// the reaper picks the oldest peer-less rooms (by
+/// `last_kernel_torn_down_at`) and reaps them regardless of TTL.
+/// Active rooms (peers > 0 or kernel still running) are exempt.
+const MAX_RESIDENT_PEERLESS_ROOMS: usize = 32;
 const POOL_PACKAGE_HASH_VERSION: &str = "v1";
 const DEFAULT_DATA_PACKAGES: &[&str] = &["pandas", "polars", "matplotlib", "plotly", "altair"];
 const BASE_RUNTIME_PACKAGES: &[&str] = &[
@@ -1094,11 +1105,12 @@ pub struct Daemon {
     /// When the daemon process began. Reported via Ping for diagnostics.
     started_at: chrono::DateTime<chrono::Utc>,
     /// Per-notebook Automerge sync rooms.
+    /// Per-notebook Automerge sync rooms plus the canonical-path
+    /// secondary index, behind a single tokio mutex inside
+    /// `RoomRegistry`. The combined registry makes insert / remove and
+    /// path lookup atomic against each other so a peer-connect can't
+    /// race a save-as into producing two rooms for the same `.ipynb`.
     pub(crate) notebook_rooms: NotebookRooms,
-    /// Secondary index: canonical .ipynb path → room UUID.
-    /// Kept in sync with `notebook_rooms` by `get_or_create_room` (insert)
-    /// and the eviction loop (remove). Queried by `find_room_by_path`.
-    pub(crate) path_index: Arc<tokio::sync::Mutex<PathIndex>>,
     /// Set to `true` the first time any client causes a room to be
     /// acquired in `notebook_rooms` (via `get_or_create_room`). Used by
     /// the zero-room sweep-skip guard to distinguish "post-restart, no
@@ -1392,8 +1404,7 @@ impl Daemon {
             trusted_packages,
             blob_port: Mutex::new(None),
             started_at: chrono::Utc::now(),
-            notebook_rooms: Arc::new(Mutex::new(HashMap::new())),
-            path_index: Arc::new(tokio::sync::Mutex::new(PathIndex::new())),
+            notebook_rooms: Arc::new(RoomRegistry::new()),
             rooms_ever_seen: std::sync::atomic::AtomicBool::new(false),
             uv_warming_respawns: std::sync::atomic::AtomicU32::new(0),
             conda_warming_respawns: std::sync::atomic::AtomicU32::new(0),
@@ -1451,10 +1462,13 @@ impl Daemon {
             return Response::ExecutionResult { record };
         }
 
-        let rooms = {
-            let rooms_guard = self.notebook_rooms.lock().await;
-            rooms_guard.values().cloned().collect::<Vec<_>>()
-        };
+        let rooms: Vec<_> = self
+            .notebook_rooms
+            .snapshot()
+            .await
+            .into_iter()
+            .map(|(_, room)| room)
+            .collect();
 
         for room in rooms {
             let Some(exec) = room
@@ -1816,10 +1830,7 @@ impl Daemon {
         //
         // To avoid holding the notebook_rooms lock across .await points, first
         // drain the map into an owned collection, then shut down agents.
-        let drained_rooms = {
-            let mut rooms = self.notebook_rooms.lock().await;
-            rooms.drain().collect::<Vec<_>>()
-        };
+        let drained_rooms = self.notebook_rooms.drain().await;
 
         for (notebook_uuid, room) in drained_rooms {
             // Shut down runtime agent via RPC before dropping handle
@@ -2431,45 +2442,23 @@ impl Daemon {
                 // - UUID notebook_id → untitled room (path=None)
                 // - Path notebook_id → file-backed room (path=Some)
                 //
-                // When notebook_id is a path, canonicalize and consult path_index
-                // before minting a new UUID. Without this, each reconnect creates a
-                // fresh UUID and a duplicate room (two file watchers, two autosave
-                // debouncers, two writers on the same .ipynb — zombie rooms).
-                let room = {
-                    let (ns_uuid, ns_path) = if let Ok(parsed) = uuid::Uuid::parse_str(&notebook_id)
-                    {
-                        (parsed, None)
-                    } else {
-                        // notebook_id is a path — canonicalize and look up
-                        // existing room.
-                        let raw = PathBuf::from(&notebook_id);
-                        let canonical = match tokio::fs::canonicalize(&raw).await {
-                            Ok(c) => c,
-                            Err(e) => {
-                                warn!(
-                                        "[daemon] canonicalize({}) for NotebookSync handshake failed: {}, using raw path",
-                                        notebook_id, e
-                                    );
-                                raw
-                            }
-                        };
-                        match crate::notebook_sync_server::find_room_by_path(
-                            &self.notebook_rooms,
-                            &self.path_index,
-                            &canonical,
-                        )
-                        .await
-                        {
-                            Some(existing) => (existing.id, Some(canonical)),
-                            None => (uuid::Uuid::new_v4(), Some(canonical)),
-                        }
-                    };
+                // When notebook_id is a path, canonicalize and consult the
+                // registry's path map before minting a new UUID. Without this,
+                // each reconnect creates a fresh UUID and a duplicate room
+                // (two file watchers, two autosave debouncers, two writers on
+                // the same .ipynb — zombie rooms).
+                // Hold the room guard from `find_room_by_path` through the
+                // `get_or_create_room_result` call. Dropping it between
+                // lookup and create-or-fetch opens a window where the
+                // reaper could remove the resumed room and a new room
+                // would replace it, losing the in-memory doc and outputs
+                // the resident-room cache is meant to preserve.
+                let (room, _room_guard) = if let Ok(parsed) = uuid::Uuid::parse_str(&notebook_id) {
                     crate::notebook_sync_server::get_or_create_room_result(
                         &self.notebook_rooms,
-                        &self.path_index,
-                        ns_uuid,
+                        parsed,
                         crate::notebook_sync_server::RoomCreationOptions {
-                            path: ns_path,
+                            path: None,
                             docs_dir: &docs_dir,
                             blob_store: self.blob_store.clone(),
                             ephemeral: false, // NotebookSync handshake is always persistent
@@ -2477,6 +2466,39 @@ impl Daemon {
                         },
                     )
                     .await?
+                } else {
+                    let raw = PathBuf::from(&notebook_id);
+                    let canonical = match tokio::fs::canonicalize(&raw).await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            warn!(
+                                "[daemon] canonicalize({}) for NotebookSync handshake failed: {}, using raw path",
+                                notebook_id, e
+                            );
+                            raw
+                        }
+                    };
+                    if let Some(found) = crate::notebook_sync_server::find_room_by_path(
+                        &self.notebook_rooms,
+                        &canonical,
+                    )
+                    .await
+                    {
+                        found
+                    } else {
+                        crate::notebook_sync_server::get_or_create_room_result(
+                            &self.notebook_rooms,
+                            uuid::Uuid::new_v4(),
+                            crate::notebook_sync_server::RoomCreationOptions {
+                                path: Some(canonical),
+                                docs_dir: &docs_dir,
+                                blob_store: self.blob_store.clone(),
+                                ephemeral: false,
+                                trusted_packages: self.trusted_packages.clone(),
+                            },
+                        )
+                        .await?
+                    }
                 };
                 self.mark_rooms_ever_seen();
                 let (reader, writer) = tokio::io::split(stream);
@@ -2540,12 +2562,9 @@ impl Daemon {
                     "[runtimed] Runtime agent connecting via socket: notebook={} runtime_agent={}",
                     notebook_id, runtime_agent_id
                 );
-                let room = {
-                    let rooms = self.notebook_rooms.lock().await;
-                    // notebook_id from runtime agent is always a UUID string
-                    uuid::Uuid::parse_str(&notebook_id)
-                        .ok()
-                        .and_then(|uuid| rooms.get(&uuid).cloned())
+                let room = match uuid::Uuid::parse_str(&notebook_id) {
+                    Ok(uuid) => self.notebook_rooms.peek_uuid(uuid).await,
+                    Err(_) => None,
                 };
                 match room {
                     Some(room) => {
@@ -2748,35 +2767,29 @@ impl Daemon {
 
         // Get or create room for this notebook.
         // First check if an existing room already owns this canonical path.
-        // The path_index gives O(1) lookup without scanning all rooms.
+        // The registry's path map gives O(1) lookup without scanning all rooms.
         let docs_dir = self.config.notebook_docs_dir.clone();
         let canonical_path = PathBuf::from(&notebook_id);
-        let room = {
-            if let Some(existing) = crate::notebook_sync_server::find_room_by_path(
+        let (room, _room_guard) = if let Some(existing) =
+            crate::notebook_sync_server::find_room_by_path(&self.notebook_rooms, &canonical_path)
+                .await
+        {
+            existing
+        } else {
+            let uuid = uuid::Uuid::new_v4();
+            let path = Some(canonical_path.clone());
+            crate::notebook_sync_server::get_or_create_room_result(
                 &self.notebook_rooms,
-                &self.path_index,
-                &canonical_path,
+                uuid,
+                crate::notebook_sync_server::RoomCreationOptions {
+                    path,
+                    docs_dir: &docs_dir,
+                    blob_store: self.blob_store.clone(),
+                    ephemeral: false, // OpenNotebook handshake is always persistent
+                    trusted_packages: self.trusted_packages.clone(),
+                },
             )
-            .await
-            {
-                existing
-            } else {
-                let uuid = uuid::Uuid::new_v4();
-                let path = Some(canonical_path.clone());
-                crate::notebook_sync_server::get_or_create_room_result(
-                    &self.notebook_rooms,
-                    &self.path_index,
-                    uuid,
-                    crate::notebook_sync_server::RoomCreationOptions {
-                        path,
-                        docs_dir: &docs_dir,
-                        blob_store: self.blob_store.clone(),
-                        ephemeral: false, // OpenNotebook handshake is always persistent
-                        trusted_packages: self.trusted_packages.clone(),
-                    },
-                )
-                .await?
-            }
+            .await?
         };
         self.mark_rooms_ever_seen();
 
@@ -2951,9 +2964,8 @@ impl Daemon {
         // always a UUID (new room) or an existing UUID (session restore).
         let docs_dir = self.config.notebook_docs_dir.clone();
         let uuid = uuid::Uuid::parse_str(&notebook_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
-        let room = crate::notebook_sync_server::get_or_create_room_result(
+        let (room, _room_guard) = crate::notebook_sync_server::get_or_create_room_result(
             &self.notebook_rooms,
-            &self.path_index,
             uuid,
             crate::notebook_sync_server::RoomCreationOptions {
                 path: None, // CreateNotebook creates untitled rooms with no file path
@@ -2998,16 +3010,14 @@ impl Daemon {
         }; // doc lock dropped
 
         if let Some(e) = create_error {
-            // Remove the room to prevent stale state (consistency with OpenNotebook)
-            // CreateNotebook rooms have no path, so no path_index cleanup needed.
-            {
-                let mut rooms = self.notebook_rooms.lock().await;
-                rooms.remove(&uuid);
-                info!(
-                    "[runtimed] Removed room {} after create failure",
-                    notebook_id
-                );
-            }
+            // Remove the room to prevent stale state (consistency with OpenNotebook).
+            // CreateNotebook rooms have no path, so no path_index cleanup needed —
+            // the registry removes both maps under one lock regardless.
+            self.notebook_rooms.remove(uuid).await;
+            info!(
+                "[runtimed] Removed room {} after create failure",
+                notebook_id
+            );
             let (mut reader, mut writer) = tokio::io::split(stream);
             let response = NotebookConnectionInfo {
                 capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string())),
@@ -3489,13 +3499,9 @@ impl Daemon {
                 info!("[runtimed] Inspecting notebook: {}", notebook_id);
 
                 // First try to get from an active room.
-                // Clone the Arc and drop the lock before any .await to avoid
-                // holding notebook_rooms across async calls.
-                let maybe_room = {
-                    let rooms = self.notebook_rooms.lock().await;
-                    uuid::Uuid::parse_str(&notebook_id)
-                        .ok()
-                        .and_then(|uuid| rooms.get(&uuid).cloned())
+                let maybe_room = match uuid::Uuid::parse_str(&notebook_id) {
+                    Ok(uuid) => self.notebook_rooms.peek_uuid(uuid).await,
+                    Err(_) => None,
                 };
                 if let Some(room) = maybe_room {
                     // Outputs live in RuntimeStateDoc under execution_id/output_id.
@@ -3581,15 +3587,16 @@ impl Daemon {
             }
 
             Request::ListRooms => {
-                // Snapshot room references and drop the lock before any .await
-                // to avoid holding notebook_rooms across async calls (convoy deadlock).
-                let snapshot: Vec<_> = {
-                    let rooms = self.notebook_rooms.lock().await;
-                    rooms
-                        .iter()
-                        .map(|(id, room)| (id.to_string(), room.clone()))
-                        .collect()
-                };
+                // Snapshot room references through the registry; the
+                // registry releases its lock before this call returns
+                // so the per-room async work below doesn't convoy.
+                let snapshot: Vec<(String, _)> = self
+                    .notebook_rooms
+                    .snapshot()
+                    .await
+                    .into_iter()
+                    .map(|(id, room)| (id.to_string(), room))
+                    .collect();
                 let mut room_infos = Vec::new();
                 for (notebook_id, room) in &snapshot {
                     // Get kernel info if available
@@ -3638,27 +3645,14 @@ impl Daemon {
             }
 
             Request::ShutdownNotebook { notebook_id } => {
-                // Remove the room from the map and drop the lock before any .await
-                // to avoid holding notebook_rooms across async teardown calls.
-                //
-                // Note: the room is already removed from the map so concurrent
-                // get_or_create_room() calls will create a fresh room. This is
-                // identical to the original behavior (remove() was always called
-                // before teardown), but now the lock isn't held during the async
-                // teardown that follows.
-                let maybe_room = {
-                    let mut rooms = self.notebook_rooms.lock().await;
-                    uuid::Uuid::parse_str(&notebook_id)
-                        .ok()
-                        .and_then(|uuid| rooms.remove(&uuid))
+                // Atomically remove the room from both the UUID map and
+                // the path index. The registry removes both under one
+                // lock, so a concurrent open-by-path can't race in
+                // between and find a stale UUID.
+                let maybe_room = match uuid::Uuid::parse_str(&notebook_id) {
+                    Ok(uuid) => self.notebook_rooms.remove(uuid).await,
+                    Err(_) => None,
                 };
-                // Clean up path_index if the room had a path.
-                if let Some(ref room) = maybe_room {
-                    let path = room.file_binding.path().await;
-                    if let Some(p) = path {
-                        self.path_index.lock().await.remove(&p);
-                    }
-                }
                 if let Some(room) = maybe_room {
                     // Shut down runtime agent via RPC before dropping handle.
                     // RuntimeAgentHandle doesn't own the Child (it's in a background
@@ -3704,14 +3698,9 @@ impl Daemon {
 
     /// Collect env paths from all running kernels to protect from GC eviction.
     async fn collect_active_env_paths(&self) -> std::collections::HashSet<PathBuf> {
-        // Snapshot room references and drop the lock before any .await
-        // to avoid holding notebook_rooms across async calls.
-        let snapshot: Vec<_> = {
-            let rooms = self.notebook_rooms.lock().await;
-            rooms.values().cloned().collect()
-        };
+        let snapshot = self.notebook_rooms.snapshot().await;
         let mut paths = std::collections::HashSet::new();
-        for room in &snapshot {
+        for (_, room) in &snapshot {
             // Check runtime-agent-backed kernel. Normalise to the top-level
             // pool dir so that GC's top-level scan will match pixi envs
             // whose venv_path is nested (e.g. .pixi/envs/default).
@@ -3787,14 +3776,21 @@ impl Daemon {
             // Clean up orphaned notebook-docs (emergency persist files, legacy untitled docs)
             let notebook_docs_dir = self.config.notebook_docs_dir.clone();
             if notebook_docs_dir.exists() {
-                let active_rooms = self.notebook_rooms.lock().await;
-                let active_hashes: std::collections::HashSet<String> = active_rooms
-                    .keys()
-                    .map(|id| crate::paths::notebook_doc_filename(&id.to_string()))
+                let active_hashes: std::collections::HashSet<String> = self
+                    .notebook_rooms
+                    .snapshot()
+                    .await
+                    .into_iter()
+                    .map(|(id, _)| crate::paths::notebook_doc_filename(&id.to_string()))
                     .collect();
-                drop(active_rooms);
 
-                let docs_max_age = std::time::Duration::from_secs(24 * 3600); // 24 hours
+                // 7 days. The resident-room reaper's 24h TTL handles the
+                // common case; this sweep is the long-tail safety net for
+                // `.automerge` files left behind by daemon crashes, legacy
+                // untitled docs, and the post-reap window where an
+                // untitled room's persisted bytes survive on disk so a
+                // returning user can resurrect cells.
+                let docs_max_age = std::time::Duration::from_secs(7 * 24 * 3600);
                 let mut docs_cleaned = 0;
                 if let Ok(mut entries) = tokio::fs::read_dir(&notebook_docs_dir).await {
                     while let Ok(Some(entry)) = entries.next_entry().await {
@@ -3834,15 +3830,16 @@ impl Daemon {
             // batches to avoid starving other daemon tasks. Deletions are also
             // batched with yields between chunks.
             {
-                // Collect (id, Arc<room>) pairs under the rooms lock, then drop
-                // it before any async state_doc reads (deadlock prevention).
-                let room_arcs: Vec<(String, _)> = {
-                    let rooms = self.notebook_rooms.lock().await;
-                    rooms
-                        .iter()
-                        .map(|(k, v)| (k.to_string(), v.clone()))
-                        .collect()
-                };
+                // Collect (id, Arc<room>) pairs through the registry; the
+                // registry releases its lock before this call returns
+                // so the async state_doc reads below don't convoy.
+                let room_arcs: Vec<(String, _)> = self
+                    .notebook_rooms
+                    .snapshot()
+                    .await
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v))
+                    .collect();
 
                 // Zero-rooms sweep-skip: ambiguous only right after a daemon
                 // restart before any client has reconnected. `rooms_ever_seen`
@@ -3887,35 +3884,30 @@ impl Daemon {
         }
     }
 
-    /// Background reaper for "ghost" notebook rooms.
+    /// Background reaper for peer-less notebook rooms.
     ///
     /// After `handle_peer_disconnect` runs kernel teardown, the room
-    /// stays in `notebook_rooms` (and its path stays in `path_index`)
-    /// so a reconnecting peer finds the same doc, outputs, and file
-    /// binding. The room becomes "ghost" once it has been kernel-less
-    /// and peer-less for longer than `GHOST_ROOM_TTL`. The reaper then
-    /// removes it from both maps and shuts down its file watcher,
-    /// project-file watcher, and autosave debouncer.
+    /// stays in the registry so a reconnecting peer finds the same
+    /// doc, outputs, and file binding. A room becomes a reap
+    /// candidate once it has been kernel-less and peer-less for longer
+    /// than `RESIDENT_ROOM_TTL_SECS`, or once the count of peer-less
+    /// rooms exceeds `MAX_RESIDENT_PEERLESS_ROOMS` (oldest first).
+    /// The reaper then removes the room from both maps and shuts down
+    /// its file watcher, project-file watcher, autosave debouncer,
+    /// and persist debouncer.
     ///
     /// Reconnect safety: `peer_connection::handle_join` zeroes the
     /// teardown timestamp the moment it bumps `active_peers`, and the
-    /// reaper re-checks `active_peers == 0 && !has_kernel` under the
-    /// rooms lock before removing. A peer that reconnects between the
-    /// snapshot pass and the remove pass keeps its room.
+    /// reaper re-checks `active_peers == 0 && reservations == 0`
+    /// under the registry lock before removing. A peer that
+    /// reconnects between the snapshot pass and the remove pass keeps
+    /// its room.
     async fn ghost_room_reaper_loop(self: Arc<Self>) {
-        /// How long a room may sit kernel-less and peer-less before the
-        /// reaper sweeps it. The `.ipynb` was saved at kernel-teardown
-        /// time, so removal is non-destructive — a future open reads
-        /// the same content back off disk.
-        const GHOST_ROOM_TTL_SECS: u64 = 24 * 3600;
-        /// How often the reaper wakes up to look for ghost rooms.
-        const REAPER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
-
         let mut tick = tokio::time::interval(REAPER_INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tick.tick().await;
-            self.ghost_room_reaper_sweep(GHOST_ROOM_TTL_SECS).await;
+            self.ghost_room_reaper_sweep(RESIDENT_ROOM_TTL_SECS).await;
         }
     }
 
@@ -3930,7 +3922,7 @@ impl Daemon {
         &self,
         uuid: uuid::Uuid,
     ) -> Option<Arc<crate::notebook_sync_server::NotebookRoom>> {
-        self.notebook_rooms.lock().await.get(&uuid).cloned()
+        self.notebook_rooms.peek_uuid(uuid).await
     }
 
     /// Test helper: count resident rooms. `pub` for the same reason as
@@ -3939,160 +3931,167 @@ impl Daemon {
     /// removed entirely."
     #[doc(hidden)]
     pub async fn test_room_count(&self) -> usize {
-        self.notebook_rooms.lock().await.len()
+        self.notebook_rooms.len().await
     }
 
-    /// One sweep of the ghost-room reaper. Extracted so tests can drive
-    /// the reaper synchronously without waiting on `REAPER_INTERVAL`.
-    /// Public so integration tests (separate crate) can drive a sweep.
+    /// One sweep of the resident-room reaper. Extracted so tests can
+    /// drive the reaper synchronously without waiting on
+    /// `REAPER_INTERVAL`. Public so integration tests (separate crate)
+    /// can drive a sweep.
+    ///
+    /// Selection has two layers:
+    ///   1. **TTL**: every peer-less room older than `ttl_secs`.
+    ///   2. **Count cap**: if peer-less rooms outnumber
+    ///      `MAX_RESIDENT_PEERLESS_ROOMS`, the oldest overflow rooms
+    ///      are reaped regardless of TTL.
     pub async fn ghost_room_reaper_sweep(self: &Arc<Self>, ttl_secs: u64) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        // Snapshot candidate (uuid, room, generation) tuples under the
-        // rooms lock. Filter on the timestamp first to keep the snapshot
-        // small; the active_peers / has_kernel checks happen below
-        // without the rooms lock held (has_kernel takes the
-        // runtime_agent lock). The generation snapshot lets the remove
-        // pass detect a fast reconnect/disconnect cycle that would
-        // otherwise look idle by peer count alone.
+        // Snapshot peer-less rooms (timestamp > 0 means kernel
+        // teardown ran; reconnect zeroes it back to None). Live rooms
+        // (kernel still running or peers > 0) never make this list.
+        // has_kernel is cheap to skip here because we re-check it
+        // outside the rooms lock per candidate below.
+        let peerless: Vec<(
+            uuid::Uuid,
+            Arc<crate::notebook_sync_server::NotebookRoom>,
+            u64,
+            u64,
+        )> = self
+            .notebook_rooms
+            .snapshot()
+            .await
+            .into_iter()
+            .filter_map(|(uuid, room)| {
+                let ts = room.connections.last_kernel_torn_down_at()?;
+                if room
+                    .connections
+                    .active_peers
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    > 0
+                {
+                    return None;
+                }
+                let gen_at_sample = room.connections.connection_generation();
+                Some((uuid, room, ts, gen_at_sample))
+            })
+            .collect();
+
+        // TTL layer: aged-out rooms.
+        let aged_out: std::collections::HashSet<uuid::Uuid> = peerless
+            .iter()
+            .filter(|(_, _, ts, _)| now.saturating_sub(*ts) >= ttl_secs)
+            .map(|(uuid, _, _, _)| *uuid)
+            .collect();
+
+        // Count-cap layer: oldest-first overflow rooms.
+        let overflow: std::collections::HashSet<uuid::Uuid> =
+            if peerless.len() > MAX_RESIDENT_PEERLESS_ROOMS {
+                let mut by_age: Vec<&uuid::Uuid> =
+                    peerless.iter().map(|(uuid, _, _, _)| uuid).collect();
+                by_age.sort_by_key(|uuid| {
+                    peerless
+                        .iter()
+                        .find(|(u, _, _, _)| u == *uuid)
+                        .map(|(_, _, ts, _)| *ts)
+                        .unwrap_or(u64::MAX)
+                });
+                let cull = peerless.len() - MAX_RESIDENT_PEERLESS_ROOMS;
+                by_age.into_iter().take(cull).copied().collect()
+            } else {
+                std::collections::HashSet::new()
+            };
+
         let candidates: Vec<(
             uuid::Uuid,
             Arc<crate::notebook_sync_server::NotebookRoom>,
             u64,
-        )> = {
-            let rooms_guard = self.notebook_rooms.lock().await;
-            rooms_guard
-                .iter()
-                .filter_map(|(uuid, room)| {
-                    let ts = room.connections.last_kernel_torn_down_at()?;
-                    if now.saturating_sub(ts) < ttl_secs {
-                        return None;
-                    }
-                    if room
-                        .connections
-                        .active_peers
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                        > 0
-                    {
-                        return None;
-                    }
-                    // Snapshot the generation so the remove pass can
-                    // detect a reconnect-then-disconnect cycle that
-                    // would otherwise look idle by peer count alone.
-                    let gen_at_sample = room.connections.connection_generation();
-                    Some((*uuid, room.clone(), gen_at_sample))
-                })
-                .collect()
-        };
+        )> = peerless
+            .into_iter()
+            .filter(|(uuid, _, _, _)| aged_out.contains(uuid) || overflow.contains(uuid))
+            .map(|(uuid, room, _, gen_at_sample)| (uuid, room, gen_at_sample))
+            .collect();
 
         for (uuid, room, gen_at_sample) in candidates {
             // Re-verify outside the lock. `has_kernel` touches the
-            // runtime-agent mutex; do it before re-acquiring rooms.
+            // runtime-agent mutex; do it before any further work.
             if room.has_kernel().await {
                 continue;
             }
 
-            // Read the bound path BEFORE removing from notebook_rooms.
-            // The path_index must be cleared first: if we cleared
-            // rooms first, an open-by-path lookup that lands in the
-            // window between the rooms-remove and the path_index-remove
-            // would find a stale UUID in `path_index`, fail to find
-            // the room in `notebook_rooms`, and then create a new
-            // room — whose `path_index.insert` would fail because the
-            // stale entry is still there. The room would end up in
-            // `notebook_rooms` but not in `path_index`, and a
-            // subsequent open-by-path could create a duplicate room
-            // for the same file.
-            let path_for_index = room.file_binding.path().await;
-            if let Some(ref p) = path_for_index {
-                // Only remove the path_index entry if it still maps to
-                // this ghost's UUID. A concurrent save-as on a
-                // different room could have repointed the path; we
-                // must not strip that.
-                let mut idx = self.path_index.lock().await;
-                if idx.lookup(p) == Some(uuid) {
-                    idx.remove(p);
-                }
-            }
-
-            // Atomic remove pass: re-check active_peers AND the
-            // connection generation AND the teardown timestamp under
-            // the rooms lock so a peer that reconnected between the
-            // snapshot and now keeps its room. A brief peer-touch
-            // (connect, then disconnect again) leaves active_peers == 0
-            // but bumps the generation and may have zeroed the
-            // teardown timestamp; treat all three as "still idle"
-            // signals. If the room is no longer idle, the path_index
-            // removal above doesn't matter — `find_room_by_path` falls
-            // through to the rooms-map lookup which still has the room,
-            // and the next save-as / open path will reinsert the entry.
-            // Drop the rooms lock before any further .await to honour
-            // the no-await-with-rooms-lock convention.
-            let removed = {
-                let mut rooms_guard = self.notebook_rooms.lock().await;
-                let still_idle = rooms_guard
-                    .get(&uuid)
-                    .map(|r| {
-                        let no_peers = r
-                            .connections
-                            .active_peers
-                            .load(std::sync::atomic::Ordering::Relaxed)
-                            == 0;
-                        let same_gen = r.connections.connection_generation() == gen_at_sample;
-                        // A reconnect zeroed the timestamp on join. If
-                        // a subsequent disconnect ran, peer_eviction
-                        // re-stamps it; either way, requiring "stamped
-                        // AND aged out" filters the second case
-                        // through the candidate pass on a later cycle
-                        // rather than reaping it eagerly here.
-                        let still_stamped = r
-                            .connections
-                            .last_kernel_torn_down_at()
-                            .map(|ts| now.saturating_sub(ts) >= ttl_secs)
-                            .unwrap_or(false);
-                        no_peers && same_gen && still_stamped
-                    })
-                    .unwrap_or(false);
-                if still_idle {
-                    rooms_guard.remove(&uuid)
-                } else {
-                    None
-                }
-            };
-
-            let Some(room) = removed else {
-                // Room was rescued between our path-index-remove
-                // and our rooms-lock check. Reinsert the path so the
-                // resumed room remains discoverable by path.
-                if let Some(ref p) = path_for_index {
-                    let mut idx = self.path_index.lock().await;
-                    if let Err(e) = idx.insert(p.clone(), uuid) {
-                        warn!(
-                            "[runtimed] Ghost reaper: failed to reinsert path_index for rescued room {} at {:?}: {}",
-                            uuid, p, e
-                        );
-                    }
-                }
-                continue;
-            };
-            let path = path_for_index;
-
-            // Shut down the watchers and autosave debouncer that were
-            // left armed across kernel teardown. The .ipynb has been
-            // saved (kernel teardown wrote a final save) and no peers
-            // are around to make further edits, so this is just freeing
-            // file-descriptors and the autosave task.
-            room.file_binding.shutdown_notebook_watcher().await;
-            room.file_binding.shutdown_project_file_watcher().await;
-            const AUTOSAVE_SHUTDOWN_TIMEOUT: std::time::Duration =
-                std::time::Duration::from_secs(5);
+            let path = room.file_binding.path().await;
             let notebook_id_label = path
                 .as_ref()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|| uuid.to_string());
+
+            // Step 1: force-flush the persist debouncer so the
+            // `.automerge` mirror is current before we touch
+            // anything. Skipped for ephemeral rooms (no debouncer).
+            // The flush is non-destructive (the debouncer keeps
+            // running), so an abort after this point leaves the room
+            // fully functional. Flush failure leaves the room resident
+            // and the next sweep retries.
+            const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+            if let Some(ack_rx) = room.persistence.request_flush() {
+                use crate::async_outcome::{recv_oneshot_with_timeout, TimedOneShot};
+                match recv_oneshot_with_timeout(ack_rx, FLUSH_TIMEOUT).await {
+                    TimedOneShot::Received(true) | TimedOneShot::SenderDropped => {}
+                    TimedOneShot::Received(false) | TimedOneShot::TimedOut => {
+                        warn!(
+                            "[runtimed] Resident-room reaper: persist flush failed for {} - keeping resident, retrying next sweep",
+                            notebook_id_label
+                        );
+                        continue;
+                    }
+                }
+            }
+
+            // Step 2: atomic commit before any destructive cleanup.
+            // Re-check active_peers, reservations, generation, and
+            // still-torn-down under the registry lock. A reconnect
+            // that races in zeroes the timestamp and bumps the
+            // generation; the predicate fails and the room stays
+            // resident with its autosave + watchers + debouncer
+            // still wired up. No destructive teardown happens on an
+            // aborted reap.
+            let removed = self
+                .notebook_rooms
+                .remove_if(uuid, |r| {
+                    let no_peers = r
+                        .connections
+                        .active_peers
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                        == 0;
+                    let no_reservations = r.connections.reservations() == 0;
+                    let same_gen = r.connections.connection_generation() == gen_at_sample;
+                    let still_stamped = r.connections.last_kernel_torn_down_at().is_some();
+                    no_peers && no_reservations && same_gen && still_stamped
+                })
+                .await;
+
+            let Some(room) = removed else {
+                debug!(
+                    "[runtimed] Resident-room reaper: {} no longer idle at commit; keeping resident",
+                    notebook_id_label
+                );
+                continue;
+            };
+
+            // Commit point. The room is gone from the registry; from
+            // here on the cleanup is internal and can take its time
+            // without racing the connect side.
+
+            // Step 3: shut down the autosave debouncer. The autosave
+            // task owns an `Arc<NotebookRoom>`; the ack guarantees a
+            // final save before exit. A timeout here leaks the Arc
+            // until the kernel/process dies, but the room is already
+            // out of the registry.
+            const AUTOSAVE_SHUTDOWN_TIMEOUT: std::time::Duration =
+                std::time::Duration::from_secs(5);
             let _ = crate::notebook_sync_server::shutdown_autosave_debouncer(
                 &room,
                 &notebook_id_label,
@@ -4100,13 +4099,23 @@ impl Daemon {
             )
             .await;
 
+            // Step 4: fire-and-forget watcher shutdowns. Each task
+            // owns an `Arc<NotebookRoom>` and releases it on receipt
+            // of the oneshot signal.
+            room.file_binding.shutdown_notebook_watcher().await;
+            room.file_binding.shutdown_project_file_watcher().await;
+
+            // Step 5: take the persist debouncer out so its senders
+            // drop and the task exits via its shutdown arm with one
+            // final flush. Without `.take()` the senders only drop
+            // when the room Arc itself drops, which the autosave /
+            // watcher tasks delay if they haven't released yet.
+            let _ = room.persistence.take_debouncer();
+
             info!(
-                "[runtimed] Ghost-room reaper removed room {} (path={:?})",
+                "[runtimed] Resident-room reaper removed room {} (path={:?})",
                 uuid, path
             );
-            // Dropping `room` here also drops the persist debouncer's
-            // sender half; the debouncer task exits via its shutdown arm
-            // and gets one final flush in.
             drop(room);
         }
     }

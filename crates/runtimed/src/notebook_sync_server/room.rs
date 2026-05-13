@@ -114,26 +114,19 @@ impl NotebookFileBinding {
     }
 
     pub async fn claim_path(
-        path_index: &Arc<tokio::sync::Mutex<PathIndex>>,
+        rooms: &NotebookRooms,
         canonical: &Path,
         uuid: uuid::Uuid,
     ) -> Result<(), notebook_protocol::protocol::SaveErrorKind> {
-        try_claim_path(path_index, canonical, uuid).await
+        try_claim_path(rooms, canonical, uuid).await
     }
 
-    pub async fn release_path(path_index: &Arc<tokio::sync::Mutex<PathIndex>>, canonical: &Path) {
-        path_index.lock().await.remove(canonical);
+    pub async fn release_path(rooms: &NotebookRooms, canonical: &Path) {
+        rooms.unbind_path(canonical).await;
     }
 
-    pub async fn replace_claim(
-        path_index: &Arc<tokio::sync::Mutex<PathIndex>>,
-        old: &Path,
-        new: PathBuf,
-        uuid: uuid::Uuid,
-    ) {
-        let mut idx = path_index.lock().await;
-        idx.remove(old);
-        if let Err(e) = idx.insert(new.clone(), uuid) {
+    pub async fn replace_claim(rooms: &NotebookRooms, old: &Path, new: PathBuf, uuid: uuid::Uuid) {
+        if let Err(e) = rooms.replace_path(old, new.clone(), uuid).await {
             warn!(
                 "[notebook-sync] post-write path_index reinsert failed for {:?}: {} \
                  — room {} may be orphaned from path lookup",
@@ -342,7 +335,14 @@ pub struct RoomPersistence {
     /// rooms keep this `None`, and so do rooms promoted via Save (the
     /// `.automerge` stream isn't restarted post-promotion — see comment
     /// in `finalize_untitled_promotion`).
-    pub debouncer: Option<PersistDebouncer>,
+    ///
+    /// The `Mutex<Option<...>>` wrapper lets the reaper `.take()` the
+    /// debouncer at room removal so the watch sender drops, the
+    /// debouncer task exits via its shutdown arm, and one final flush
+    /// lands before the room is dropped. Without `.take()` the
+    /// sender would only drop when the `Arc<NotebookRoom>` itself
+    /// drops, which races the room map removal.
+    debouncer: std::sync::Mutex<Option<PersistDebouncer>>,
     /// Cell sources as they were written to disk at last save.
     ///
     /// The file watcher compares disk content against this snapshot (not the
@@ -374,7 +374,7 @@ impl RoomPersistence {
     /// Build a persistence struct with no active debouncer (ephemeral rooms).
     pub fn ephemeral() -> Self {
         Self {
-            debouncer: None,
+            debouncer: std::sync::Mutex::new(None),
             last_save_sources: RwLock::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
             is_loading: AtomicBool::new(false),
@@ -387,14 +387,64 @@ impl RoomPersistence {
         flush_request_tx: mpsc::UnboundedSender<FlushRequest>,
     ) -> Self {
         Self {
-            debouncer: Some(PersistDebouncer {
+            debouncer: std::sync::Mutex::new(Some(PersistDebouncer {
                 persist_tx,
                 flush_request_tx,
-            }),
+            })),
             last_save_sources: RwLock::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
             is_loading: AtomicBool::new(false),
         }
+    }
+
+    /// True when this room has an active `.automerge` debouncer.
+    pub fn has_debouncer(&self) -> bool {
+        self.lock_debouncer().is_some()
+    }
+
+    /// Send the latest doc bytes to the debouncer. No-op when no
+    /// debouncer is wired up (ephemeral rooms). The watch sender keeps
+    /// only the most recent value, so a fast burst of edits collapses
+    /// to one persist write.
+    pub fn enqueue_persist_bytes(&self, bytes: Vec<u8>) {
+        if let Some(d) = self.lock_debouncer().as_ref() {
+            let _ = d.persist_tx.send(Some(bytes));
+        }
+    }
+
+    /// Send a synchronous flush request. Returns the ack receiver if a
+    /// debouncer is wired up and the send succeeded; `None` when the
+    /// room is ephemeral or the debouncer task has already exited.
+    /// Callers must `.await` the receiver outside any held lock.
+    pub fn request_flush(&self) -> Option<tokio::sync::oneshot::Receiver<bool>> {
+        let guard = self.lock_debouncer();
+        let d = guard.as_ref()?;
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel::<bool>();
+        if d.flush_request_tx.send(ack_tx).is_ok() {
+            Some(ack_rx)
+        } else {
+            None
+        }
+    }
+
+    /// Take the debouncer out of the room. Used by the reaper at room
+    /// removal: dropping the returned `PersistDebouncer` drops the
+    /// `watch::Sender` and the `mpsc::UnboundedSender`, which makes
+    /// the persist task exit via its shutdown arm with one final
+    /// flush. Returns `None` for ephemeral rooms or if a prior caller
+    /// already took it.
+    #[allow(dead_code)]
+    pub fn take_debouncer(&self) -> Option<PersistDebouncer> {
+        self.lock_debouncer().take()
+    }
+
+    /// Lock the debouncer Mutex. Recovers from poisoning by treating
+    /// the inner value as still usable — a panicking caller would only
+    /// be writing the field, never mutating the inner channels.
+    fn lock_debouncer(&self) -> std::sync::MutexGuard<'_, Option<PersistDebouncer>> {
+        self.debouncer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Atomically claim the loading role. Returns `true` if this caller won
@@ -448,6 +498,14 @@ pub struct RoomConnections {
     /// and forces a fresh auto-launch instead of trusting the stale
     /// "has_kernel" snapshot.
     pub kernel_teardown_destructive: AtomicBool,
+    /// In-flight handshake reservations. Bumped the moment a caller
+    /// receives an `Arc<NotebookRoom>` from the registry; decremented
+    /// when the handshake either commits (incrementing `active_peers`)
+    /// or aborts. The room reaper requires `reservations == 0` in
+    /// addition to `active_peers == 0` so a racing reconnect that has
+    /// the Arc but has not yet bumped `active_peers` is not reaped out
+    /// from under it.
+    pub reservations: AtomicUsize,
 }
 
 impl Default for RoomConnections {
@@ -458,6 +516,7 @@ impl Default for RoomConnections {
             last_kernel_torn_down_at: AtomicU64::new(0),
             connection_generation: AtomicU64::new(0),
             kernel_teardown_destructive: AtomicBool::new(false),
+            reservations: AtomicUsize::new(0),
         }
     }
 }
@@ -500,6 +559,58 @@ impl RoomConnections {
     /// rooms lock before destructive ops.
     pub fn connection_generation(&self) -> u64 {
         self.connection_generation.load(Ordering::Relaxed)
+    }
+
+    /// Number of in-flight handshake reservations against this room. The
+    /// reaper combines this with `active_peers` to decide whether a room
+    /// is truly peer-less. Held by `ReservationGuard`.
+    pub fn reservations(&self) -> usize {
+        self.reservations.load(Ordering::Relaxed)
+    }
+}
+
+/// RAII guard for a handshake reservation against a room.
+///
+/// Bumps `RoomConnections::reservations` on construction, decrements on
+/// drop. Hand-off contract: callers that receive an `Arc<NotebookRoom>`
+/// from the registry hold a guard until the handshake either reaches
+/// `active_peers.fetch_add(1)` or aborts. The reaper's peer-less
+/// predicate is `active_peers == 0 && reservations == 0`, which closes
+/// the gap where the Arc has been cloned out of the registry but the
+/// active-peer increment has not yet landed.
+///
+/// The guard intentionally does not implement `Clone`; each
+/// reservation is a single slot.
+#[must_use = "drop the guard when the handshake commits or aborts; otherwise the reservation leaks until the room itself is dropped"]
+pub struct ReservationGuard {
+    room: Arc<NotebookRoom>,
+}
+
+impl ReservationGuard {
+    /// Take a reservation on `room`. Increments `reservations` once.
+    pub fn new(room: Arc<NotebookRoom>) -> Self {
+        room.connections
+            .reservations
+            .fetch_add(1, Ordering::Relaxed);
+        Self { room }
+    }
+
+    /// The room this guard is reserving.
+    #[allow(dead_code)]
+    pub fn room(&self) -> &Arc<NotebookRoom> {
+        &self.room
+    }
+}
+
+impl Drop for ReservationGuard {
+    fn drop(&mut self) {
+        // Saturating-decrement guard against an accidental double-drop
+        // (which would only happen on a misuse like manually `Drop`-ing
+        // the value twice via `unsafe`; safe code can't reach it).
+        self.room
+            .connections
+            .reservations
+            .fetch_sub(1, Ordering::Relaxed);
     }
 }
 

@@ -67,7 +67,7 @@ pub(crate) async fn handle(
 
     if let Some(ref canonical_pre) = pre_claim {
         if let Err(kind) =
-            NotebookFileBinding::claim_path(&daemon.path_index, canonical_pre, room.id).await
+            NotebookFileBinding::claim_path(&daemon.notebook_rooms, canonical_pre, room.id).await
         {
             return NotebookResponse::SaveError { error: kind };
         }
@@ -79,11 +79,11 @@ pub(crate) async fn handle(
             // Rollback the path_index claim we just made so the room
             // stays untitled / its old path stays claimed.
             if let Some(ref canonical_pre) = pre_claim {
-                NotebookFileBinding::release_path(&daemon.path_index, canonical_pre).await;
+                NotebookFileBinding::release_path(&daemon.notebook_rooms, canonical_pre).await;
             }
             // Emergency persist for ephemeral rooms: if saving to .ipynb
             // failed, at least write the Automerge doc so data isn't lost.
-            if binding_snapshot.is_ephemeral && room.persistence.debouncer.is_none() {
+            if binding_snapshot.is_ephemeral && !room.persistence.has_debouncer() {
                 let bytes = room.doc.write().await.save();
                 persist_notebook_bytes(&bytes, &room.identity.persist_path);
                 warn!(
@@ -118,7 +118,7 @@ pub(crate) async fn handle(
     if let Some(ref canonical_pre) = pre_claim {
         if canonical_pre != &canonical {
             NotebookFileBinding::replace_claim(
-                &daemon.path_index,
+                &daemon.notebook_rooms,
                 canonical_pre,
                 canonical.clone(),
                 room.id,
@@ -134,7 +134,7 @@ pub(crate) async fn handle(
         if path_changed {
             // Save-as rename: new path already claimed above; remove
             // the old path_index entry and rebind the room to the new path.
-            NotebookFileBinding::release_path(&daemon.path_index, old).await;
+            NotebookFileBinding::release_path(&daemon.notebook_rooms, old).await;
             NotebookFileBinding::rebind_after_save_as(room, canonical.clone()).await;
         }
         // If path didn't change, this is save-in-place: nothing else.
