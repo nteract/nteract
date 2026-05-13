@@ -6,6 +6,7 @@ import {
   setCellSource,
   waitForCellCount,
   waitForCodeCellContaining,
+  waitForCellSourceContaining,
   waitForKernelStatus,
   waitForOutputContaining,
 } from "./helpers";
@@ -71,21 +72,11 @@ test.describe("jupyter-scatter lasso selection", () => {
     await expect
       .poll(() => getFrontendSelectionCount(page), { timeout: 30_000 })
       .toBeGreaterThan(0);
-    // The frontend selection write reaches Python via the kernel comm queue.
-    // Give that comm_msg a turn before sending the execute_request that reads
-    // jpl.selection, otherwise CI can race the backend verification cell ahead
-    // of the widget update.
-    await page.waitForTimeout(2_000);
 
-    await mcp.createCell("print('jscatter-selection-count', len(jpl.selection))");
+    const selectionCellId = await mcp.createCell("# jscatter selection probe");
     await waitForCellCount(page, 2);
-    const selectionCell = await waitForCodeCellContaining(page, "jscatter-selection-count");
-
-    await executeCell(selectionCell);
-    const output = await waitForOutputContaining(selectionCell, "jscatter-selection-count", 60_000);
-    await expect
-      .poll(async () => parseSelectionCount(await output.textContent()), { timeout: 60_000 })
-      .toBeGreaterThan(0);
+    const selectionCell = await waitForCodeCellContaining(page, "jscatter selection probe");
+    await waitForBackendSelectionCount(page, mcp, selectionCellId, selectionCell);
 
     await expect
       .poll(() => getFrontendSelectionCount(page), { timeout: 30_000 })
@@ -137,9 +128,38 @@ async function dragLassoAroundCenter(page: Page, canvas: Locator) {
   await page.waitForTimeout(750);
 }
 
-function parseSelectionCount(text: string | null): number {
-  const match = text?.match(/jscatter-selection-count\s+(\d+)/);
+function parseSelectionCount(text: string | null, marker: string): number {
+  const escapedMarker = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = text?.match(new RegExp(`${escapedMarker}\\s+(\\d+)`));
   return match ? Number(match[1]) : 0;
+}
+
+async function waitForBackendSelectionCount(
+  page: Page,
+  mcp: McpPeer,
+  selectionCellId: string,
+  selectionCell: Locator,
+) {
+  const deadline = Date.now() + 120_000;
+  let attempt = 0;
+  let lastCount = 0;
+
+  while (Date.now() < deadline) {
+    attempt += 1;
+    const marker = `jscatter-selection-count-${attempt}-${crypto.randomUUID()}`;
+    await mcp.setCell(selectionCellId, `print('${marker}', len(jpl.selection))`);
+    await waitForCellSourceContaining(selectionCell, marker, 30_000);
+
+    await executeCell(selectionCell);
+    await waitForKernelStatus(page, "idle", 60_000);
+    const output = await waitForOutputContaining(selectionCell, marker, 60_000);
+    lastCount = parseSelectionCount(await output.textContent(), marker);
+    if (lastCount > 0) return;
+
+    await page.waitForTimeout(1_000);
+  }
+
+  expect(lastCount).toBeGreaterThan(0);
 }
 
 async function getFrontendSelectionCount(page: Page): Promise<number> {
