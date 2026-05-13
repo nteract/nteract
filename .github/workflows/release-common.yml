@@ -189,9 +189,6 @@ jobs:
     name: Build macOS Executables
     runs-on: macos-14
     needs: [compute-version, build-wasm]
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -208,12 +205,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "macos-release"
-
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.10
-
-      - name: Warm up sccache
-        uses: ./.github/actions/sccache-warmup
 
       - name: Download WASM artifacts
         uses: actions/download-artifact@v8
@@ -260,9 +251,6 @@ jobs:
     name: Build macOS ARM64 Notebook
     runs-on: macos-14
     needs: [compute-version, build-wasm]
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -276,12 +264,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "macos-notebook-arm64"
-
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.10
-
-      - name: Warm up sccache
-        uses: ./.github/actions/sccache-warmup
 
       - name: Download WASM artifacts
         uses: actions/download-artifact@v8
@@ -439,9 +421,6 @@ jobs:
     name: Build macOS x64 Notebook
     runs-on: macos-14
     needs: [compute-version, build-wasm]
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -458,12 +437,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "macos-notebook-x64"
-
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.10
-
-      - name: Warm up sccache
-        uses: ./.github/actions/sccache-warmup
 
       - name: Download WASM artifacts
         uses: actions/download-artifact@v8
@@ -952,19 +925,23 @@ jobs:
     runs-on: ${{ matrix.platform.runner }}
     needs: [compute-version, build-wasm]
     env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
+      SCCACHE_GHA_ENABLED: ${{ matrix.platform.sccache && 'true' || '' }}
+      RUSTC_WRAPPER: ${{ matrix.platform.sccache && 'sccache' || '' }}
     strategy:
       matrix:
         platform:
           - runner: macos-14
             target: aarch64-apple-darwin
+            sccache: false
           - runner: macos-14
             target: x86_64-apple-darwin
+            sccache: false
           - runner: blacksmith-4vcpu-ubuntu-2404
             target: x86_64-unknown-linux-gnu
+            sccache: true
           - runner: blacksmith-4vcpu-windows-2025
             target: x86_64-pc-windows-msvc
+            sccache: true
     steps:
       - uses: actions/checkout@v6
         with:
@@ -981,9 +958,11 @@ jobs:
           shared-key: "python-${{ matrix.platform.target }}"
 
       - name: Install sccache
+        if: matrix.platform.sccache
         uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Warm up sccache
+        if: matrix.platform.sccache
         uses: ./.github/actions/sccache-warmup
 
       - name: Download WASM artifacts
@@ -1052,14 +1031,14 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist
           working-directory: python/runtimed
-          # sccache is installed and selected above with RUSTC_WRAPPER. Letting
-          # maturin-action manage sccache as well can leave its post-build stats
-          # step talking to a different client/server version.
+          # Linux and Windows use the job-level RUSTC_WRAPPER when sccache is
+          # enabled. Letting maturin-action manage sccache as well can leave
+          # its post-build stats step talking to a different client/server version.
           sccache: false
           maturin-version: "v1.11.5"
 
       - name: Print sccache stats
-        if: always()
+        if: always() && matrix.platform.sccache
         shell: bash
         run: |
           if command -v sccache >/dev/null 2>&1; then
