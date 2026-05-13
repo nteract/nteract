@@ -332,7 +332,7 @@ Because the daemon socket is same-UID trusted, treat the runtime-agent handshake
 | `packages/runtimed/src/request-types.ts` | Generated TS request/response protocol unions |
 | `packages/runtimed/src/protocol-contract.ts` | Generated TS discriminant lists for drift tests |
 | `packages/runtimed/src/transport.ts` | TS `FrameType` constants and transport boundary |
-| `crates/runtimed-client/src/protocol.rs` | Daemon-internal `Request` / `Response` / `BlobRequest`, re-exports from `notebook-protocol` |
+| `crates/runtimed-client/src/protocol.rs` | Daemon-internal `Request` / `Response`, re-exports from `notebook-protocol` |
 | `crates/notebook-sync/src/{relay,connect,handle}.rs` | Relay handle, connection setup, `DocHandle` |
 | `crates/runtimed/src/notebook_sync_server/` | Notebook sync server: catalog, room, peer connection/loop/session, writer, metadata |
 | `crates/runtimed/src/requests/` | Notebook request routing handlers |

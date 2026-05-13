@@ -32,9 +32,6 @@ pub enum Handshake {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         initial_metadata: Option<String>,
     },
-    /// Blob store: write blobs, query port.
-    Blob,
-
     /// Open an existing notebook file. Daemon loads from disk, derives notebook_id.
     ///
     /// The daemon returns `NotebookConnectionInfo` before starting sync.

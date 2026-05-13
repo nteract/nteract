@@ -194,10 +194,6 @@ mod tests {
             r#"{"channel":"notebook_sync","notebook_id":"550e8400-e29b-41d4-a716-446655440000","protocol":"v4","working_dir":"/home/user/project"}"#
         );
 
-        // Blob
-        let json = serde_json::to_string(&Handshake::Blob).unwrap();
-        assert_eq!(json, r#"{"channel":"blob"}"#);
-
         // OpenNotebook
         let json = serde_json::to_string(&Handshake::OpenNotebook {
             path: "/home/user/notebook.ipynb".into(),
