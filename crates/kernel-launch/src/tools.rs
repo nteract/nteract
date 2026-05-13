@@ -1187,9 +1187,14 @@ pub async fn pixi_info(manifest_path: &std::path::Path) -> Result<PixiInfoResult
 ///
 /// These env vars can be applied to a `Command` with `cmd.envs()` for
 /// direct Python launch without the `pixi run` wrapper.
+///
+/// `extra_env` is applied to the spawned `pixi` subprocess (not to the
+/// returned activation vars). Use this to set `PIXI_FROZEN=true` when offline
+/// so pixi does not try to refresh the lockfile from the network.
 pub async fn pixi_shell_hook(
     manifest_path: &std::path::Path,
     environment: Option<&str>,
+    extra_env: &std::collections::HashMap<String, String>,
 ) -> Result<std::collections::HashMap<String, String>> {
     let pixi_path = get_pixi_path().await?;
     let mut cmd = tokio::process::Command::new(&pixi_path);
@@ -1197,6 +1202,9 @@ pub async fn pixi_shell_hook(
     cmd.arg(manifest_path);
     if let Some(env_name) = environment {
         cmd.args(["--environment", env_name]);
+    }
+    for (key, value) in extra_env {
+        cmd.env(key, value);
     }
 
     let output = cmd

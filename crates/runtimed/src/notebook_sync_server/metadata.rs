@@ -3681,6 +3681,7 @@ pub(crate) async fn auto_launch_kernel(
     };
 
     let mut uv_pyproject_offline = false;
+    let mut pixi_toml_frozen = false;
     if matches!(env_source, EnvSource::Pyproject) {
         match crate::uv_project::prepare_uv_pyproject_environment(
             notebook_path_opt.as_deref(),
@@ -3697,6 +3698,36 @@ pub(crate) async fn auto_launch_kernel(
             }
             Err(e) => {
                 let details = format!("Failed to prepare UV project environment: {e}");
+                error!("[notebook-sync] {}", details);
+                reset_and_publish_environment_launch_error(
+                    room,
+                    env_source.as_str(),
+                    Some(KernelErrorReason::EnvironmentPrepareFailed),
+                    &details,
+                )
+                .await;
+                return;
+            }
+        }
+    } else if matches!(env_source, EnvSource::PixiToml) {
+        let outcome = crate::pixi_project::prepare_pixi_toml_environment(
+            notebook_path_opt.as_deref(),
+            progress_handler.clone(),
+        )
+        .await;
+        // Always clear the `ProjectPreparing` env progress the probe may
+        // have published; without this a successful fallback launch leaves
+        // "preparing pixi" pinned in the UI after the kernel is idle.
+        if let Err(e) = room.state.with_doc(|sd| sd.clear_env_progress()) {
+            warn!("[runtime-state] {}", e);
+        }
+        match outcome {
+            crate::pixi_project::PixiPrepareOutcome::SkipOrOnline => {}
+            crate::pixi_project::PixiPrepareOutcome::Frozen => {
+                pixi_toml_frozen = true;
+            }
+            crate::pixi_project::PixiPrepareOutcome::OfflineUnrecoverable(e) => {
+                let details = format!("Failed to prepare pixi:toml environment: {e}");
                 error!("[notebook-sync] {}", details);
                 reset_and_publish_environment_launch_error(
                     room,
@@ -3914,7 +3945,9 @@ pub(crate) async fn auto_launch_kernel(
                 }
 
                 // Send LaunchKernel RPC via the runtime agent's sync connection
-                let launch_env_vars = crate::uv_project::uv_offline_env_vars(uv_pyproject_offline);
+                let mut launch_env_vars =
+                    crate::uv_project::uv_offline_env_vars(uv_pyproject_offline);
+                launch_env_vars.extend(crate::pixi_project::pixi_frozen_env_vars(pixi_toml_frozen));
                 match send_runtime_agent_request_with_kernel_ports(room, |kernel_ports| {
                     notebook_protocol::protocol::RuntimeAgentRequest::LaunchKernel {
                         kernel_type: kernel_type.to_string(),
