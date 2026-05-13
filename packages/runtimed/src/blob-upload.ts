@@ -1,5 +1,5 @@
 import { FrameType, type NotebookTransport } from "./transport";
-import type { BlobUploadErrorKind, NotebookResponse } from "./request-types";
+import type { BlobDurability, BlobUploadErrorKind, NotebookResponse } from "./request-types";
 
 export interface PutBlobResult {
   blob: string;
@@ -20,16 +20,27 @@ export async function putBlob(
   transport: NotebookTransport,
   bytes: Uint8Array,
   mediaType: string,
+  durability: BlobDurability = "durable",
 ): Promise<PutBlobResult> {
   const sha256 = await hexHash(bytes);
   const id = crypto.randomUUID();
-  const header = {
+  const header: {
+    op: "put";
+    id: string;
+    media_type: string;
+    size: number;
+    sha256: string;
+    durability?: BlobDurability;
+  } = {
     op: "put",
     id,
     media_type: mediaType,
     size: bytes.byteLength,
     sha256,
   };
+  if (durability !== "durable") {
+    header.durability = durability;
+  }
   const headerBytes = new TextEncoder().encode(JSON.stringify(header));
   const frame = new Uint8Array(4 + headerBytes.length + bytes.byteLength);
   new DataView(frame.buffer, frame.byteOffset, frame.byteLength).setUint32(

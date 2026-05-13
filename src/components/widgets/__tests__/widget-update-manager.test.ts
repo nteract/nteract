@@ -141,15 +141,15 @@ describe("WidgetUpdateManager", () => {
     });
 
     it("uploads extracted binary leaves before writing ContentRefs to CRDT", async () => {
-      const uploadCalls: Array<{ bytes: number[]; mediaType: string }> = [];
+      const uploadCalls: Array<{ bytes: number[]; mediaType: string; durability?: string }> = [];
       const contentRef: ContentRef = {
         blob: "sha256:abc",
         size: 4,
         media_type: "application/octet-stream",
       };
       const { manager, writerCalls } = setup({
-        blobUploader: async (bytes, mediaType) => {
-          uploadCalls.push({ bytes: Array.from(bytes), mediaType });
+        blobUploader: async (bytes, mediaType, durability) => {
+          uploadCalls.push({ bytes: Array.from(bytes), mediaType, durability });
           return contentRef;
         },
       });
@@ -162,7 +162,9 @@ describe("WidgetUpdateManager", () => {
         },
       });
 
-      expect(uploadCalls).toEqual([{ bytes: [1, 2, 3, 4], mediaType: "application/octet-stream" }]);
+      expect(uploadCalls).toEqual([
+        { bytes: [1, 2, 3, 4], mediaType: "application/octet-stream", durability: "ephemeral" },
+      ]);
       expect(writerCalls).toHaveLength(1);
       expect(writerCalls[0].patch).toEqual({
         selection: {

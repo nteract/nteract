@@ -264,6 +264,14 @@ pub struct PutBlobResult {
     pub media_type: String,
 }
 
+/// Durability hint for a one-shot PutBlob upload.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BlobDurability {
+    Durable,
+    Ephemeral,
+}
+
 /// Header carried at the start of a binary PutBlob frame.
 ///
 /// The frame payload is `u32 header_len_be | JSON header | raw blob bytes`.
@@ -276,6 +284,8 @@ pub enum PutBlobHeader {
         media_type: String,
         size: u64,
         sha256: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        durability: Option<BlobDurability>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         purpose: Option<String>,
     },
@@ -1081,6 +1091,7 @@ mod tests {
                 size: 3,
                 sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
                     .to_string(),
+                durability: None,
                 purpose: Some("widget-state".to_string()),
             }
         );
@@ -1093,6 +1104,7 @@ mod tests {
             media_type: "application/octet-stream".to_string(),
             size: 3,
             sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".to_string(),
+            durability: Some(BlobDurability::Ephemeral),
             purpose: Some("widget-state".to_string()),
         };
 
@@ -1106,6 +1118,7 @@ mod tests {
         assert_eq!(header_json["id"], "blob-request-encode");
         assert_eq!(header_json["media_type"], "application/octet-stream");
         assert_eq!(header_json["size"], 3);
+        assert_eq!(header_json["durability"], "ephemeral");
         assert_eq!(header_json["purpose"], "widget-state");
 
         let (parsed, body) = PutBlobHeader::try_parse(&frame).unwrap();

@@ -14,15 +14,22 @@
 //! All writes are atomic: data is written to a temp file in the shard
 //! directory and renamed into place, so readers never see partial writes.
 
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
 
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use notebook_protocol::protocol::BlobDurability;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tracing::debug;
 
 /// Maximum blob size accepted by `put()` (100 MiB).
 pub const MAX_BLOB_SIZE: usize = 100 * 1024 * 1024;
+/// Maximum bytes retained in the ephemeral in-memory layer (64 MiB).
+pub const EPHEMERAL_BLOB_CAP_BYTES: usize = 64 * 1024 * 1024;
 
 /// Metadata stored alongside each blob.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,10 +39,124 @@ pub struct BlobMeta {
     pub created_at: DateTime<Utc>,
 }
 
-/// Content-addressed on-disk blob store.
+#[derive(Debug)]
+struct BlobStoreInner {
+    root: PathBuf,
+    memory_cap: usize,
+    memory: Mutex<MemoryLayer>,
+}
+
+#[derive(Debug)]
+struct MemoryLayer {
+    entries: HashMap<String, MemoryEntry>,
+    order: VecDeque<(String, u64)>,
+    total_bytes: usize,
+    cap: usize,
+    next_seq: u64,
+}
+
+#[derive(Debug, Clone)]
+struct MemoryEntry {
+    data: Bytes,
+    media_type: String,
+    created_at: DateTime<Utc>,
+    seq: u64,
+}
+
+impl MemoryEntry {
+    fn meta(&self) -> BlobMeta {
+        BlobMeta {
+            media_type: self.media_type.clone(),
+            size: self.data.len() as u64,
+            created_at: self.created_at,
+        }
+    }
+}
+
+impl MemoryLayer {
+    fn new(cap: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            total_bytes: 0,
+            cap,
+            next_seq: 0,
+        }
+    }
+
+    fn insert(&mut self, hash: String, data: Bytes, media_type: String, created_at: DateTime<Utc>) {
+        if data.len() > self.cap {
+            return;
+        }
+
+        if let Some(existing) = self.entries.remove(&hash) {
+            self.total_bytes = self.total_bytes.saturating_sub(existing.data.len());
+        }
+
+        // Re-putting the same content leaves a stale order entry behind. The
+        // sequence check in eviction skips those stale entries without scanning.
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
+        self.total_bytes += data.len();
+        self.order.push_back((hash.clone(), seq));
+        self.entries.insert(
+            hash,
+            MemoryEntry {
+                data,
+                media_type,
+                created_at,
+                seq,
+            },
+        );
+
+        self.evict_to_cap();
+    }
+
+    fn get(&self, hash: &str) -> Option<MemoryEntry> {
+        self.entries.get(hash).cloned()
+    }
+
+    fn contains(&self, hash: &str) -> bool {
+        self.entries.contains_key(hash)
+    }
+
+    fn remove(&mut self, hash: &str) -> bool {
+        if let Some(entry) = self.entries.remove(hash) {
+            self.total_bytes = self.total_bytes.saturating_sub(entry.data.len());
+            true
+        } else {
+            false
+        }
+    }
+
+    fn evict_to_cap(&mut self) {
+        while self.total_bytes > self.cap {
+            let Some((hash, seq)) = self.order.pop_front() else {
+                break;
+            };
+            let should_remove = self
+                .entries
+                .get(&hash)
+                .is_some_and(|entry| entry.seq == seq);
+            if should_remove {
+                if let Some(entry) = self.entries.remove(&hash) {
+                    debug!(
+                        blob = %hash,
+                        bytes = entry.data.len(),
+                        "evicted blob from ephemeral memory layer"
+                    );
+                    self.total_bytes = self.total_bytes.saturating_sub(entry.data.len());
+                }
+            }
+        }
+    }
+}
+
+/// Content-addressed blob store with durable disk storage and an ephemeral
+/// in-memory layer for transient widget buffers.
 #[derive(Debug, Clone)]
 pub struct BlobStore {
-    root: PathBuf,
+    inner: Arc<BlobStoreInner>,
 }
 
 impl BlobStore {
@@ -43,12 +164,22 @@ impl BlobStore {
     ///
     /// The directory is created lazily on first `put()`.
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self::with_ephemeral_cap(root, EPHEMERAL_BLOB_CAP_BYTES)
+    }
+
+    fn with_ephemeral_cap(root: PathBuf, cap: usize) -> Self {
+        Self {
+            inner: Arc::new(BlobStoreInner {
+                root,
+                memory_cap: cap,
+                memory: Mutex::new(MemoryLayer::new(cap)),
+            }),
+        }
     }
 
     /// Get the root directory of this blob store.
     pub fn root(&self) -> &Path {
-        &self.root
+        &self.inner.root
     }
 
     /// Store `data` with the given `media_type`.
@@ -61,6 +192,21 @@ impl BlobStore {
     /// the blob or metadata first (e.g. `rename` fails with `AlreadyExists` on
     /// Windows), we detect the existing file and return `Ok(hash)`.
     pub async fn put(&self, data: &[u8], media_type: &str) -> io::Result<String> {
+        self.put_with_durability(data, media_type, BlobDurability::Durable)
+            .await
+    }
+
+    /// Store `data` with an explicit durability hint.
+    ///
+    /// `Durable` writes through to disk and primes the in-memory layer.
+    /// `Ephemeral` prefers memory-only storage and falls back to disk when one
+    /// blob is larger than the memory cap.
+    pub async fn put_with_durability(
+        &self,
+        data: &[u8],
+        media_type: &str,
+        durability: BlobDurability,
+    ) -> io::Result<String> {
         if data.len() > MAX_BLOB_SIZE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -73,7 +219,41 @@ impl BlobStore {
         }
 
         let hash = hex::encode(Sha256::digest(data));
-        let (shard_dir, blob_path, meta_path) = self.paths(&hash);
+        let created_at = Utc::now();
+
+        match durability {
+            BlobDurability::Durable => {
+                self.put_disk(&hash, data, media_type, created_at).await?;
+                self.insert_memory(&hash, Bytes::copy_from_slice(data), media_type, created_at);
+                Ok(hash)
+            }
+            BlobDurability::Ephemeral => {
+                if data.len() > self.memory_cap() {
+                    // A single entry larger than the cap can never be cached
+                    // without violating the budget, so keep it durable-only.
+                    debug!(
+                        blob = %hash,
+                        bytes = data.len(),
+                        cap = self.memory_cap(),
+                        "ephemeral blob exceeds memory cap; writing to disk"
+                    );
+                    self.put_disk(&hash, data, media_type, created_at).await?;
+                } else {
+                    self.insert_memory(&hash, Bytes::copy_from_slice(data), media_type, created_at);
+                }
+                Ok(hash)
+            }
+        }
+    }
+
+    async fn put_disk(
+        &self,
+        hash: &str,
+        data: &[u8],
+        media_type: &str,
+        created_at: DateTime<Utc>,
+    ) -> io::Result<()> {
+        let (shard_dir, blob_path, meta_path) = self.paths(hash);
 
         // Fast path: both files already present.
         // If the caller provides a different media_type than what's stored,
@@ -93,7 +273,7 @@ impl BlobStore {
                     }
                 }
             }
-            return Ok(hash);
+            return Ok(());
         }
 
         tokio::fs::create_dir_all(&shard_dir).await?;
@@ -130,7 +310,7 @@ impl BlobStore {
         let meta = BlobMeta {
             media_type: media_type.to_string(),
             size: data.len() as u64,
-            created_at: Utc::now(),
+            created_at,
         };
         let meta_json = serde_json::to_string(&meta).map_err(io::Error::other)?;
 
@@ -146,7 +326,7 @@ impl BlobStore {
                 tokio::fs::remove_file(&tmp_meta).await.ok();
                 if meta_path.exists() {
                     // Concurrent writer placed metadata — done.
-                    return Ok(hash);
+                    return Ok(());
                 }
                 // Metadata write truly failed. If *we* created the blob (not a
                 // concurrent writer), remove it to avoid leaving orphaned data.
@@ -157,13 +337,35 @@ impl BlobStore {
             }
         }
 
-        Ok(hash)
+        Ok(())
+    }
+
+    fn insert_memory(&self, hash: &str, data: Bytes, media_type: &str, created_at: DateTime<Utc>) {
+        let mut memory = self.memory_layer();
+        memory.insert(hash.to_string(), data, media_type.to_string(), created_at);
+    }
+
+    fn memory_layer(&self) -> MutexGuard<'_, MemoryLayer> {
+        match self.inner.memory.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn memory_cap(&self) -> usize {
+        self.inner.memory_cap
     }
 
     /// Retrieve blob bytes by hash. Returns `None` if not found.
     pub async fn get(&self, hash: &str) -> io::Result<Option<Vec<u8>>> {
         if !Self::validate_hash(hash) {
             return Ok(None);
+        }
+        if let Some(entry) = {
+            let memory = self.memory_layer();
+            memory.get(hash)
+        } {
+            return Ok(Some(entry.data.to_vec()));
         }
         let (_, blob_path, _) = self.paths(hash);
         match tokio::fs::read(&blob_path).await {
@@ -177,6 +379,12 @@ impl BlobStore {
     pub async fn get_meta(&self, hash: &str) -> io::Result<Option<BlobMeta>> {
         if !Self::validate_hash(hash) {
             return Ok(None);
+        }
+        if let Some(entry) = {
+            let memory = self.memory_layer();
+            memory.get(hash)
+        } {
+            return Ok(Some(entry.meta()));
         }
         let (_, _, meta_path) = self.paths(hash);
         match tokio::fs::read_to_string(&meta_path).await {
@@ -195,6 +403,12 @@ impl BlobStore {
         if !Self::validate_hash(hash) {
             return false;
         }
+        {
+            let memory = self.memory_layer();
+            if memory.contains(hash) {
+                return true;
+            }
+        }
         let (_, blob_path, _) = self.paths(hash);
         blob_path.exists()
     }
@@ -204,24 +418,28 @@ impl BlobStore {
         if !Self::validate_hash(hash) {
             return Ok(false);
         }
+        let existed_in_memory = {
+            let mut memory = self.memory_layer();
+            memory.remove(hash)
+        };
         let (_, blob_path, meta_path) = self.paths(hash);
         let existed = blob_path.exists();
         if existed {
             tokio::fs::remove_file(&blob_path).await.ok();
             tokio::fs::remove_file(&meta_path).await.ok();
         }
-        Ok(existed)
+        Ok(existed || existed_in_memory)
     }
 
     /// List all blob hashes in the store.
     pub async fn list(&self) -> io::Result<Vec<String>> {
         let mut hashes = Vec::new();
 
-        if !self.root.exists() {
+        if !self.inner.root.exists() {
             return Ok(hashes);
         }
 
-        let mut shard_entries = tokio::fs::read_dir(&self.root).await?;
+        let mut shard_entries = tokio::fs::read_dir(&self.inner.root).await?;
         while let Some(shard) = shard_entries.next_entry().await? {
             if !shard.path().is_dir() {
                 continue;
@@ -254,7 +472,7 @@ impl BlobStore {
     fn paths(&self, hash: &str) -> (PathBuf, PathBuf, PathBuf) {
         let shard = &hash[..2];
         let rest = &hash[2..];
-        let shard_dir = self.root.join(shard);
+        let shard_dir = self.inner.root.join(shard);
         let blob_path = shard_dir.join(rest);
         let meta_path = shard_dir.join(format!("{}.meta", rest));
         (shard_dir, blob_path, meta_path)
@@ -263,6 +481,12 @@ impl BlobStore {
     /// Validate that a hash looks like a 64-character hex string.
     fn validate_hash(hash: &str) -> bool {
         hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit())
+    }
+
+    #[cfg(test)]
+    fn memory_contains_for_test(&self, hash: &str) -> bool {
+        let memory = self.memory_layer();
+        memory.contains(hash)
     }
 }
 
@@ -273,6 +497,15 @@ mod tests {
 
     fn test_store(dir: &TempDir) -> BlobStore {
         BlobStore::new(dir.path().join("blobs"))
+    }
+
+    fn test_store_with_cap(dir: &TempDir, cap: usize) -> BlobStore {
+        BlobStore::with_ephemeral_cap(dir.path().join("blobs"), cap)
+    }
+
+    fn disk_blob_exists(store: &BlobStore, hash: &str) -> bool {
+        let (_, blob_path, meta_path) = store.paths(hash);
+        blob_path.exists() && meta_path.exists()
     }
 
     #[tokio::test]
@@ -440,5 +673,162 @@ mod tests {
 
         assert_eq!(hash1, hash2);
         assert_eq!(store.get(&hash1).await.unwrap().unwrap(), data);
+    }
+
+    #[tokio::test]
+    async fn put_ephemeral_lives_in_memory_not_disk() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let hash = store
+            .put_with_durability(
+                b"ephemeral",
+                "application/octet-stream",
+                BlobDurability::Ephemeral,
+            )
+            .await
+            .unwrap();
+
+        assert!(store.memory_contains_for_test(&hash));
+        assert!(!disk_blob_exists(&store, &hash));
+        assert_eq!(store.get(&hash).await.unwrap().unwrap(), b"ephemeral");
+    }
+
+    #[tokio::test]
+    async fn put_durable_lives_in_both_memory_and_disk() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let hash = store
+            .put_with_durability(b"durable", "text/plain", BlobDurability::Durable)
+            .await
+            .unwrap();
+
+        assert!(store.memory_contains_for_test(&hash));
+        assert!(disk_blob_exists(&store, &hash));
+    }
+
+    #[tokio::test]
+    async fn get_ephemeral_after_eviction_returns_none() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store_with_cap(&dir, 2);
+
+        let evicted = store
+            .put_with_durability(b"a", "text/plain", BlobDurability::Ephemeral)
+            .await
+            .unwrap();
+        store
+            .put_with_durability(b"b", "text/plain", BlobDurability::Ephemeral)
+            .await
+            .unwrap();
+        store
+            .put_with_durability(b"c", "text/plain", BlobDurability::Ephemeral)
+            .await
+            .unwrap();
+
+        assert!(!store.memory_contains_for_test(&evicted));
+        assert!(!disk_blob_exists(&store, &evicted));
+        assert!(store.get(&evicted).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn get_durable_after_eviction_falls_back_to_disk() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store_with_cap(&dir, 2);
+
+        let durable = store
+            .put_with_durability(b"a", "text/plain", BlobDurability::Durable)
+            .await
+            .unwrap();
+        store
+            .put_with_durability(b"b", "text/plain", BlobDurability::Ephemeral)
+            .await
+            .unwrap();
+        store
+            .put_with_durability(b"c", "text/plain", BlobDurability::Ephemeral)
+            .await
+            .unwrap();
+
+        assert!(!store.memory_contains_for_test(&durable));
+        assert!(disk_blob_exists(&store, &durable));
+        assert_eq!(store.get(&durable).await.unwrap().unwrap(), b"a");
+    }
+
+    #[tokio::test]
+    async fn put_oversize_ephemeral_falls_through_to_disk() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store_with_cap(&dir, 2);
+
+        let hash = store
+            .put_with_durability(b"abc", "text/plain", BlobDurability::Ephemeral)
+            .await
+            .unwrap();
+
+        assert!(!store.memory_contains_for_test(&hash));
+        assert!(disk_blob_exists(&store, &hash));
+        assert_eq!(store.get(&hash).await.unwrap().unwrap(), b"abc");
+    }
+
+    #[tokio::test]
+    async fn put_durable_then_ephemeral_same_hash_keeps_disk_copy() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let hash = store
+            .put_with_durability(b"same", "text/plain", BlobDurability::Durable)
+            .await
+            .unwrap();
+        let hash2 = store
+            .put_with_durability(b"same", "text/plain", BlobDurability::Ephemeral)
+            .await
+            .unwrap();
+
+        assert_eq!(hash, hash2);
+        assert!(store.memory_contains_for_test(&hash));
+        assert!(disk_blob_exists(&store, &hash));
+    }
+
+    #[tokio::test]
+    async fn put_ephemeral_then_durable_same_hash_promotes_to_disk() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let hash = store
+            .put_with_durability(b"same", "text/plain", BlobDurability::Ephemeral)
+            .await
+            .unwrap();
+        assert!(!disk_blob_exists(&store, &hash));
+
+        let hash2 = store
+            .put_with_durability(b"same", "text/plain", BlobDurability::Durable)
+            .await
+            .unwrap();
+
+        assert_eq!(hash, hash2);
+        assert!(store.memory_contains_for_test(&hash));
+        assert!(disk_blob_exists(&store, &hash));
+    }
+
+    #[tokio::test]
+    async fn lru_eviction_oldest_first() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store_with_cap(&dir, 2);
+
+        let first = store
+            .put_with_durability(b"a", "text/plain", BlobDurability::Ephemeral)
+            .await
+            .unwrap();
+        let second = store
+            .put_with_durability(b"b", "text/plain", BlobDurability::Ephemeral)
+            .await
+            .unwrap();
+        let third = store
+            .put_with_durability(b"c", "text/plain", BlobDurability::Ephemeral)
+            .await
+            .unwrap();
+
+        assert!(!store.memory_contains_for_test(&first));
+        assert!(store.memory_contains_for_test(&second));
+        assert!(store.memory_contains_for_test(&third));
     }
 }
