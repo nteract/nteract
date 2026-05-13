@@ -330,6 +330,31 @@ pub(super) async fn handle_peer_disconnect(
             // down at the point the room is actually removed from the map.
             // With no peers driving doc edits, the debouncer/watchers sit
             // idle and cost nothing.
+            //
+            // For file-backed rooms we still force one synchronous
+            // `.ipynb` save now so the disk record is current at the
+            // moment we go inactive. The autosave debouncer may still
+            // have unflushed edits in its window, and the daemon could
+            // restart (or be killed) before the next debounce tick
+            // fires. Skip when we already saved as part of the
+            // hot-sync deps flush above. Untitled rooms have no
+            // `.ipynb` to save and use the persisted Automerge doc
+            // instead, which the synchronous flush at the top of this
+            // task already wrote.
+            if !save_succeeded && room_for_teardown.file_binding.has_saved_path().await {
+                match save_notebook_to_disk(&room_for_teardown, None).await {
+                    Ok(_) => {
+                        debug!(
+                            "[notebook-sync] Final .ipynb save on kernel teardown for {}",
+                            notebook_id_for_teardown
+                        );
+                    }
+                    Err(e) => warn!(
+                        "[notebook-sync] Final .ipynb save failed for {}: {} — autosave debouncer still armed for next reconnect",
+                        notebook_id_for_teardown, e
+                    ),
+                }
+            }
 
             // Rename the env dir to match the post-flush unified
             // hash so the next reopen's `unified_env_on_disk` lookup
@@ -364,6 +389,35 @@ pub(super) async fn handle_peer_disconnect(
                         }
                     }
                 }
+            }
+
+            // Revalidate one more time before destructive env cleanup.
+            // Between the previous check and this point we ran an
+            // env-dir rename and a save; a peer that joined in that
+            // window will have triggered auto-launch and written a new
+            // env path into `runtime_agent_env_path`. Deleting it now
+            // would orphan the resumed kernel. The room stays
+            // resident, so aborting is the right move.
+            let still_valid = {
+                let _rooms_guard = rooms_for_teardown.lock().await;
+                let no_peers = room_for_teardown
+                    .connections
+                    .active_peers
+                    .load(Ordering::Relaxed)
+                    == 0;
+                let same_generation =
+                    room_for_teardown.connections.connection_generation() == teardown_generation;
+                no_peers && same_generation
+            };
+            if !still_valid {
+                debug!(
+                    "[notebook-sync] Skipping env cleanup for {} (peer reconnected and may have relaunched)",
+                    notebook_id_for_teardown
+                );
+                // Do NOT stamp last_kernel_torn_down_at — a peer is
+                // back and the room is no longer in the teardown
+                // pipeline.
+                return;
             }
 
             // Clean up the environment directory on teardown — unless

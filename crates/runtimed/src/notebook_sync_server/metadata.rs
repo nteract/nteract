@@ -2686,9 +2686,27 @@ pub(crate) async fn auto_launch_kernel(
 
     // For saved notebooks, notebook_path_opt is the file path (kernel cwd = parent dir).
     // For untitled notebooks, use working_dir as-is (output_prep handles is_dir()).
-    let notebook_path = PathBuf::from(notebook_id);
-    let notebook_path_opt = if notebook_path.exists() {
-        Some(notebook_path.clone())
+    //
+    // Prefer the room's bound path first: an MCP UUID-based reconnect
+    // to a resumable file-backed room passes the UUID as
+    // `notebook_id`, but the room already has its `.ipynb` path bound
+    // via `file_binding`. Without consulting the binding, we would
+    // misclassify the reconnect as an untitled notebook and launch
+    // the kernel with the default working_dir instead of the notebook's
+    // own directory — breaking notebook-relative project preparation.
+    let bound_path = room.file_binding.path().await;
+    let notebook_path_from_id = PathBuf::from(notebook_id);
+    let notebook_path_opt = if let Some(ref bp) = bound_path {
+        if bp.exists() {
+            Some(bp.clone())
+        } else {
+            // Bound path was deleted between teardown and reconnect.
+            // Treat as untitled to avoid passing a missing path to
+            // env launch.
+            None
+        }
+    } else if notebook_path_from_id.exists() {
+        Some(notebook_path_from_id.clone())
     } else if is_untitled_notebook(notebook_id) {
         let working_dir = room.identity.working_dir.read().await;
         working_dir.clone().inspect(|p| {
