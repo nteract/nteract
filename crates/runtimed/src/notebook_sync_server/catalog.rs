@@ -74,9 +74,12 @@ pub async fn get_or_create_room_result(
         options.trusted_packages,
     )?);
 
-    // Atomic insert across rooms + path_index. If we lose a race to a
-    // concurrent caller (same UUID), the registry returns the existing
-    // room and our `room` is dropped.
+    // Atomic insert across the registry's UUID map and path index.
+    // If we lose a race to a concurrent caller (same UUID or same
+    // path), the registry returns the existing room and our `room`
+    // is dropped. The only `Err` is registry inconsistency (path
+    // indexes a UUID that has no room) — propagate it so the caller
+    // sees the broken state.
     let outcome = match rooms
         .insert_or_get(uuid, room, path_for_room.as_deref())
         .await
@@ -84,7 +87,7 @@ pub async fn get_or_create_room_result(
         Ok(outcome) => outcome,
         Err(e) => {
             error!(
-                "[notebook-sync] path_index.insert failed for new room {} at {:?}: {} - this is a caller invariant violation (find_room_by_path should have returned the existing room).",
+                "[notebook-sync] registry inconsistency on insert for {} at {:?}: {}",
                 uuid, path_for_room, e
             );
             return Err(anyhow::anyhow!(e));

@@ -4019,8 +4019,10 @@ impl Daemon {
             // Step 1: force-flush the persist debouncer so the
             // `.automerge` mirror is current before we touch
             // anything. Skipped for ephemeral rooms (no debouncer).
-            // Flush failure leaves the room resident; the next sweep
-            // retries.
+            // The flush is non-destructive (the debouncer keeps
+            // running), so an abort after this point leaves the room
+            // fully functional. Flush failure leaves the room resident
+            // and the next sweep retries.
             const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
             if let Some(ack_rx) = room.persistence.request_flush() {
                 use crate::async_outcome::{recv_oneshot_with_timeout, TimedOneShot};
@@ -4036,37 +4038,14 @@ impl Daemon {
                 }
             }
 
-            // Step 2: shut down the autosave debouncer. If the task
-            // doesn't ack within the timeout we abandon — it's
-            // pinning the room Arc and the next sweep will retry.
-            const AUTOSAVE_SHUTDOWN_TIMEOUT: std::time::Duration =
-                std::time::Duration::from_secs(5);
-            let autosave_shutdown_ok = crate::notebook_sync_server::shutdown_autosave_debouncer(
-                &room,
-                &notebook_id_label,
-                AUTOSAVE_SHUTDOWN_TIMEOUT,
-            )
-            .await;
-            if !autosave_shutdown_ok {
-                warn!(
-                    "[runtimed] Resident-room reaper: autosave shutdown stalled for {} - keeping resident, retrying next sweep",
-                    notebook_id_label
-                );
-                continue;
-            }
-
-            // Step 3: fire-and-forget watcher shutdowns. Both tasks
-            // own an `Arc<NotebookRoom>` and release it on receipt of
-            // the oneshot signal.
-            room.file_binding.shutdown_notebook_watcher().await;
-            room.file_binding.shutdown_project_file_watcher().await;
-
-            // Step 4: atomic commit. Re-check active_peers,
-            // reservations, generation, and still-torn-down under the
-            // registry lock. The registry removes the room from the
-            // UUID map and the path index together; a concurrent
-            // open-by-path either sees the live room or hits the new-
-            // room path cleanly.
+            // Step 2: atomic commit before any destructive cleanup.
+            // Re-check active_peers, reservations, generation, and
+            // still-torn-down under the registry lock. A reconnect
+            // that races in zeroes the timestamp and bumps the
+            // generation; the predicate fails and the room stays
+            // resident with its autosave + watchers + debouncer
+            // still wired up. No destructive teardown happens on an
+            // aborted reap.
             let removed = self
                 .notebook_rooms
                 .remove_if(uuid, |r| {
@@ -4083,26 +4062,42 @@ impl Daemon {
                 .await;
 
             let Some(room) = removed else {
-                // Abort path: a peer reconnected between cleanup and
-                // commit. Autosave and watchers were torn down above;
-                // re-arm them so the reconnect inherits a working room.
-                // The persist debouncer was only flushed, not torn
-                // down, so it's still running.
-                if let Some(ref p) = path {
-                    crate::notebook_sync_server::NotebookFileBinding::bind_existing(&room, p).await;
-                }
                 debug!(
-                    "[runtimed] Resident-room reaper: peer reconnected for {} mid-cleanup; watchers re-armed",
+                    "[runtimed] Resident-room reaper: {} no longer idle at commit; keeping resident",
                     notebook_id_label
                 );
                 continue;
             };
 
-            // Commit point. Step 5: take the persist debouncer out so
-            // its senders drop and the task exits via its shutdown arm
-            // with one final flush. Dropping the room Arc next is no
-            // longer enough on its own because nothing else holds an
-            // Arc to gate the persist task on.
+            // Commit point. The room is gone from the registry; from
+            // here on the cleanup is internal and can take its time
+            // without racing the connect side.
+
+            // Step 3: shut down the autosave debouncer. The autosave
+            // task owns an `Arc<NotebookRoom>`; the ack guarantees a
+            // final save before exit. A timeout here leaks the Arc
+            // until the kernel/process dies, but the room is already
+            // out of the registry.
+            const AUTOSAVE_SHUTDOWN_TIMEOUT: std::time::Duration =
+                std::time::Duration::from_secs(5);
+            let _ = crate::notebook_sync_server::shutdown_autosave_debouncer(
+                &room,
+                &notebook_id_label,
+                AUTOSAVE_SHUTDOWN_TIMEOUT,
+            )
+            .await;
+
+            // Step 4: fire-and-forget watcher shutdowns. Each task
+            // owns an `Arc<NotebookRoom>` and releases it on receipt
+            // of the oneshot signal.
+            room.file_binding.shutdown_notebook_watcher().await;
+            room.file_binding.shutdown_project_file_watcher().await;
+
+            // Step 5: take the persist debouncer out so its senders
+            // drop and the task exits via its shutdown arm with one
+            // final flush. Without `.take()` the senders only drop
+            // when the room Arc itself drops, which the autosave /
+            // watcher tasks delay if they haven't released yet.
             let _ = room.persistence.take_debouncer();
 
             info!(

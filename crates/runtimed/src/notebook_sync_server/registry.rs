@@ -87,11 +87,15 @@ impl RoomRegistry {
         self.inner.lock().await.rooms.get(&uuid).cloned()
     }
 
-    /// Insert a freshly-built room. Idempotent on UUID: if a room with
-    /// the same UUID already exists, the existing `Arc` is returned and
-    /// the caller's `room` is dropped. Returns
-    /// `Err(PathIndexError::PathAlreadyOpen)` only when `path` is
-    /// `Some` and conflicts with a different room's UUID.
+    /// Insert a freshly-built room. Idempotent on UUID and on path:
+    /// if a room with the same UUID already exists, or if `path` is
+    /// `Some` and another room already owns that path, the existing
+    /// `Arc` is returned and the caller's `room` is dropped. The path
+    /// coalescing case is what makes two concurrent
+    /// `find_room_by_path -> get_or_create_room_result` racers join
+    /// the same room instead of one of them seeing
+    /// `PathAlreadyOpen`. Only returns `Err` when the path map is
+    /// somehow inconsistent (path indexes a UUID that has no room).
     pub async fn insert_or_get(
         &self,
         uuid: Uuid,
@@ -107,7 +111,29 @@ impl RoomRegistry {
         }
 
         if let Some(p) = path {
-            inner.paths.insert(p.to_path_buf(), uuid)?;
+            match inner.paths.insert(p.to_path_buf(), uuid) {
+                Ok(()) => {}
+                Err(PathIndexError::PathAlreadyOpen {
+                    uuid: existing_uuid,
+                    ..
+                }) => {
+                    // Two racers both missed the path lookup; the
+                    // winner is already in. Coalesce on the existing
+                    // room rather than failing the loser.
+                    if let Some(existing) = inner.rooms.get(&existing_uuid) {
+                        let existing = existing.clone();
+                        let guard = ReservationGuard::new(existing.clone());
+                        return Ok(InsertOutcome::Existing(existing, guard));
+                    }
+                    // Path index points at a UUID with no room: the
+                    // registry is inconsistent. Propagate the error so
+                    // the caller logs it.
+                    return Err(PathIndexError::PathAlreadyOpen {
+                        uuid: existing_uuid,
+                        path: p.to_path_buf(),
+                    });
+                }
+            }
         }
         inner.rooms.insert(uuid, room.clone());
         let guard = ReservationGuard::new(room.clone());
