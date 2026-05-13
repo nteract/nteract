@@ -2447,39 +2447,18 @@ impl Daemon {
                 // each reconnect creates a fresh UUID and a duplicate room
                 // (two file watchers, two autosave debouncers, two writers on
                 // the same .ipynb — zombie rooms).
-                let (room, _room_guard) = {
-                    let (ns_uuid, ns_path) = if let Ok(parsed) = uuid::Uuid::parse_str(&notebook_id)
-                    {
-                        (parsed, None)
-                    } else {
-                        // notebook_id is a path — canonicalize and look up
-                        // existing room.
-                        let raw = PathBuf::from(&notebook_id);
-                        let canonical = match tokio::fs::canonicalize(&raw).await {
-                            Ok(c) => c,
-                            Err(e) => {
-                                warn!(
-                                        "[daemon] canonicalize({}) for NotebookSync handshake failed: {}, using raw path",
-                                        notebook_id, e
-                                    );
-                                raw
-                            }
-                        };
-                        match crate::notebook_sync_server::find_room_by_path(
-                            &self.notebook_rooms,
-                            &canonical,
-                        )
-                        .await
-                        {
-                            Some((existing, _)) => (existing.id, Some(canonical)),
-                            None => (uuid::Uuid::new_v4(), Some(canonical)),
-                        }
-                    };
+                // Hold the room guard from `find_room_by_path` through the
+                // `get_or_create_room_result` call. Dropping it between
+                // lookup and create-or-fetch opens a window where the
+                // reaper could remove the resumed room and a new room
+                // would replace it, losing the in-memory doc and outputs
+                // the resident-room cache is meant to preserve.
+                let (room, _room_guard) = if let Ok(parsed) = uuid::Uuid::parse_str(&notebook_id) {
                     crate::notebook_sync_server::get_or_create_room_result(
                         &self.notebook_rooms,
-                        ns_uuid,
+                        parsed,
                         crate::notebook_sync_server::RoomCreationOptions {
-                            path: ns_path,
+                            path: None,
                             docs_dir: &docs_dir,
                             blob_store: self.blob_store.clone(),
                             ephemeral: false, // NotebookSync handshake is always persistent
@@ -2487,6 +2466,39 @@ impl Daemon {
                         },
                     )
                     .await?
+                } else {
+                    let raw = PathBuf::from(&notebook_id);
+                    let canonical = match tokio::fs::canonicalize(&raw).await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            warn!(
+                                "[daemon] canonicalize({}) for NotebookSync handshake failed: {}, using raw path",
+                                notebook_id, e
+                            );
+                            raw
+                        }
+                    };
+                    if let Some(found) = crate::notebook_sync_server::find_room_by_path(
+                        &self.notebook_rooms,
+                        &canonical,
+                    )
+                    .await
+                    {
+                        found
+                    } else {
+                        crate::notebook_sync_server::get_or_create_room_result(
+                            &self.notebook_rooms,
+                            uuid::Uuid::new_v4(),
+                            crate::notebook_sync_server::RoomCreationOptions {
+                                path: Some(canonical),
+                                docs_dir: &docs_dir,
+                                blob_store: self.blob_store.clone(),
+                                ephemeral: false,
+                                trusted_packages: self.trusted_packages.clone(),
+                            },
+                        )
+                        .await?
+                    }
                 };
                 self.mark_rooms_ever_seen();
                 let (reader, writer) = tokio::io::split(stream);
