@@ -1489,6 +1489,331 @@ async fn test_eviction_flushes_before_reconnect() {
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
 
+/// PR 1 contract: after the last peer disconnects and the kernel-teardown
+/// task fires, the room must stay resident in `notebook_rooms` and the
+/// `path_index` entry must stay intact. A reconnect by `notebook_id` (or
+/// by path) finds the same room with the same doc — no reload from disk.
+#[tokio::test]
+async fn test_kernel_teardown_keeps_room_resident() {
+    use std::sync::atomic::Ordering;
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut config = test_config(&temp_dir);
+    // Instant teardown so the test doesn't have to wait the production
+    // grace. The reaper TTL is still measured in seconds, so this only
+    // affects the kernel-teardown scheduling.
+    config.room_eviction_delay_ms = Some(0);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_for_inspect = daemon.clone();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    // Create an untitled notebook, add cells, then drop the client to
+    // trigger the kernel-teardown task.
+    let notebook_id;
+    {
+        let result = connect::connect_create(
+            socket_path.clone(),
+            "python",
+            None,
+            "test",
+            false,
+            None,
+            vec![],
+        )
+        .await
+        .unwrap();
+        notebook_id = result.info.notebook_id.clone();
+        let client = result.handle;
+
+        assert!(
+            wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await,
+            "client should reach session-ready state"
+        );
+
+        client.add_cell_after("c1", "code", None).unwrap();
+        client.update_source("c1", "resident = True").unwrap();
+        client.add_cell_after("c2", "markdown", Some("c1")).unwrap();
+        client.update_source("c2", "# survives teardown").unwrap();
+        client.confirm_sync().await.unwrap();
+    }
+
+    // Poll for the room to enter the inactive state: peers == 0 and the
+    // kernel-teardown task has stamped `last_kernel_torn_down_at`.
+    // Without a kernel running, this happens fast — but we still poll
+    // because the teardown task is async.
+    let uuid = uuid::Uuid::parse_str(&notebook_id).unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(room) = daemon_for_inspect.test_get_room(uuid).await {
+            let no_peers = room.connections.active_peers.load(Ordering::Relaxed) == 0;
+            let torn_down = room
+                .connections
+                .last_kernel_torn_down_at
+                .load(Ordering::Relaxed)
+                != 0;
+            if no_peers && torn_down {
+                break;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("kernel teardown did not stamp last_kernel_torn_down_at within 5s");
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+
+    // Room must still be in the rooms map.
+    assert_eq!(
+        daemon_for_inspect.test_room_count().await,
+        1,
+        "room should remain resident after kernel teardown"
+    );
+
+    // ListRooms must report state == inactive (peers == 0, has_kernel == false).
+    let rooms = pool_client.list_rooms().await.unwrap();
+    assert_eq!(rooms.len(), 1, "list_rooms should still show the room");
+    assert_eq!(rooms[0].notebook_id, notebook_id);
+    assert_eq!(
+        rooms[0].state,
+        runtimed::protocol::RoomState::Inactive,
+        "room should report inactive after kernel teardown"
+    );
+    assert_eq!(rooms[0].active_peers, 0);
+    assert!(!rooms[0].has_kernel);
+
+    // Reconnect by notebook_id and verify both cells survive without a
+    // reload-from-disk fallback.
+    let client = connect::connect(socket_path.clone(), notebook_id.clone(), "test")
+        .await
+        .expect("reconnect should succeed")
+        .handle;
+
+    assert!(
+        wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await,
+        "reconnected client should reach session-ready"
+    );
+    assert!(
+        wait_for_cell_count(&client, 2, SESSION_READY_TIMEOUT).await,
+        "reconnected client should see the resident cells"
+    );
+    let cells = client.get_cells();
+    assert_eq!(cells.len(), 2);
+    assert_eq!(cells[0].source, "resident = True");
+    assert_eq!(cells[1].source, "# survives teardown");
+
+    // Once reconnected, the teardown timestamp must be cleared so the
+    // ghost reaper cannot fire on a live room.
+    {
+        let room = daemon_for_inspect.test_get_room(uuid).await.unwrap();
+        assert_eq!(
+            room.connections
+                .last_kernel_torn_down_at
+                .load(Ordering::Relaxed),
+            0,
+            "reconnect must clear last_kernel_torn_down_at"
+        );
+        assert_eq!(room.connections.active_peers.load(Ordering::Relaxed), 1);
+    }
+
+    drop(client);
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+/// PR 1 contract: the ghost-room reaper removes a room only after it has
+/// been kernel-less and peer-less for longer than the TTL. Drive a sweep
+/// manually with a tiny TTL and a stamped timestamp to verify the room
+/// (and its path-index entry, if any) come out of the maps.
+#[tokio::test]
+async fn test_ghost_reaper_removes_after_ttl() {
+    use std::sync::atomic::Ordering;
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut config = test_config(&temp_dir);
+    config.room_eviction_delay_ms = Some(0);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_for_inspect = daemon.clone();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let notebook_id;
+    {
+        let result = connect::connect_create(
+            socket_path.clone(),
+            "python",
+            None,
+            "test",
+            false,
+            None,
+            vec![],
+        )
+        .await
+        .unwrap();
+        notebook_id = result.info.notebook_id.clone();
+        let client = result.handle;
+        assert!(wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await);
+        client.add_cell_after("c1", "code", None).unwrap();
+        client.update_source("c1", "ghost = True").unwrap();
+        client.confirm_sync().await.unwrap();
+    }
+
+    let uuid = uuid::Uuid::parse_str(&notebook_id).unwrap();
+
+    // Wait for kernel teardown to stamp the timestamp.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(room) = daemon_for_inspect.test_get_room(uuid).await {
+            if room
+                .connections
+                .last_kernel_torn_down_at
+                .load(Ordering::Relaxed)
+                != 0
+                && room.connections.active_peers.load(Ordering::Relaxed) == 0
+            {
+                break;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("kernel teardown did not stamp last_kernel_torn_down_at within 5s");
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+
+    // A fresh stamp should NOT trigger the reaper at production TTL.
+    daemon_for_inspect.ghost_room_reaper_sweep(24 * 3600).await;
+    assert_eq!(
+        daemon_for_inspect.test_room_count().await,
+        1,
+        "reaper must not remove fresh ghosts"
+    );
+
+    // Backdate the timestamp by 25h and sweep again — room must go.
+    {
+        let room = daemon_for_inspect.test_get_room(uuid).await.unwrap();
+        let backdated = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .saturating_sub(25 * 3600);
+        room.connections
+            .last_kernel_torn_down_at
+            .store(backdated, Ordering::Relaxed);
+    }
+
+    daemon_for_inspect.ghost_room_reaper_sweep(24 * 3600).await;
+    assert_eq!(
+        daemon_for_inspect.test_room_count().await,
+        0,
+        "reaper must remove ghosts past the TTL"
+    );
+
+    // list_rooms should also show the room is gone now.
+    let rooms = pool_client.list_rooms().await.unwrap();
+    assert!(
+        rooms.is_empty(),
+        "list_rooms must drop the swept room: {rooms:?}"
+    );
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+/// PR 1 contract: a reconnect that lands between the kernel-teardown
+/// stamp and the next reaper sweep must keep the room alive. The
+/// reconnect zeroes `last_kernel_torn_down_at`; a subsequent sweep with
+/// a tiny TTL must skip the room because peers > 0 and the timestamp is
+/// 0.
+#[tokio::test]
+async fn test_ghost_reaper_skips_reconnected_room() {
+    use std::sync::atomic::Ordering;
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut config = test_config(&temp_dir);
+    config.room_eviction_delay_ms = Some(0);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_for_inspect = daemon.clone();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let notebook_id;
+    {
+        let result = connect::connect_create(
+            socket_path.clone(),
+            "python",
+            None,
+            "test",
+            false,
+            None,
+            vec![],
+        )
+        .await
+        .unwrap();
+        notebook_id = result.info.notebook_id.clone();
+        let client = result.handle;
+        assert!(wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await);
+        client.add_cell_after("c1", "code", None).unwrap();
+        client.update_source("c1", "alive = True").unwrap();
+        client.confirm_sync().await.unwrap();
+    }
+
+    let uuid = uuid::Uuid::parse_str(&notebook_id).unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(room) = daemon_for_inspect.test_get_room(uuid).await {
+            if room
+                .connections
+                .last_kernel_torn_down_at
+                .load(Ordering::Relaxed)
+                != 0
+            {
+                break;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("kernel teardown did not stamp last_kernel_torn_down_at within 5s");
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+
+    // Reconnect — should clear the timestamp.
+    let client = connect::connect(socket_path.clone(), notebook_id.clone(), "test")
+        .await
+        .expect("reconnect should succeed")
+        .handle;
+    assert!(wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await);
+
+    // Even with TTL=0 the reaper must skip this room — it now has peers
+    // and a zeroed timestamp.
+    daemon_for_inspect.ghost_room_reaper_sweep(0).await;
+    assert_eq!(
+        daemon_for_inspect.test_room_count().await,
+        1,
+        "reaper must not remove a reconnected room"
+    );
+
+    drop(client);
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
 #[tokio::test]
 async fn test_notebook_cell_delete_propagation() {
     let temp_dir = TempDir::new().unwrap();

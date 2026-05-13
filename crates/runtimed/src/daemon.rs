@@ -3919,9 +3919,33 @@ impl Daemon {
         }
     }
 
+    /// Test helper: look up a resident room by UUID. Returns `None`
+    /// if the UUID is unknown or the room has already been removed.
+    ///
+    /// `pub` so integration tests (separate crate) can drive ghost-room
+    /// scenarios by stamping `last_kernel_torn_down_at` directly. Not
+    /// intended for production callers.
+    #[doc(hidden)]
+    pub async fn test_get_room(
+        &self,
+        uuid: uuid::Uuid,
+    ) -> Option<Arc<crate::notebook_sync_server::NotebookRoom>> {
+        self.notebook_rooms.lock().await.get(&uuid).cloned()
+    }
+
+    /// Test helper: count resident rooms. `pub` for the same reason as
+    /// `test_get_room`; tests assert on this after kernel teardown to
+    /// distinguish "room still resident, just no kernel" from "room was
+    /// removed entirely."
+    #[doc(hidden)]
+    pub async fn test_room_count(&self) -> usize {
+        self.notebook_rooms.lock().await.len()
+    }
+
     /// One sweep of the ghost-room reaper. Extracted so tests can drive
     /// the reaper synchronously without waiting on `REAPER_INTERVAL`.
-    pub(crate) async fn ghost_room_reaper_sweep(self: &Arc<Self>, ttl_secs: u64) {
+    /// Public so integration tests (separate crate) can drive a sweep.
+    pub async fn ghost_room_reaper_sweep(self: &Arc<Self>, ttl_secs: u64) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
