@@ -2725,6 +2725,32 @@ pub(crate) async fn auto_launch_kernel(
     // Resolve metadata snapshot: try Automerge doc first, fall back to disk
     let metadata_snapshot = resolve_metadata_snapshot(room, notebook_path_opt.as_deref()).await;
 
+    // If a kernel-teardown task is in its destructive phase, the
+    // `runtime_agent_handle` slot still holds the doomed agent. Wait
+    // briefly for teardown to clear it before deciding whether
+    // another auto-launch beat us. Without this, the "skip: runtime
+    // agent already exists" check below races with peer_eviction's
+    // handle-clear: this auto-launch returns early thinking another
+    // launch is in flight, teardown then clears the handle, and the
+    // reconnected peer ends up with no kernel and no further launch.
+    {
+        let teardown_wait_deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while room
+            .connections
+            .kernel_teardown_destructive
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            if tokio::time::Instant::now() >= teardown_wait_deadline {
+                warn!(
+                    "[notebook-sync] Auto-launch gave up waiting for kernel teardown to clear destructive latch; proceeding"
+                );
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+
     // Check RuntimeStateDoc — skip if already starting or running
     {
         // Skip if runtime agent already exists (another auto-launch won the race)

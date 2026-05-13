@@ -3995,6 +3995,29 @@ impl Daemon {
                 continue;
             }
 
+            // Read the bound path BEFORE removing from notebook_rooms.
+            // The path_index must be cleared first: if we cleared
+            // rooms first, an open-by-path lookup that lands in the
+            // window between the rooms-remove and the path_index-remove
+            // would find a stale UUID in `path_index`, fail to find
+            // the room in `notebook_rooms`, and then create a new
+            // room — whose `path_index.insert` would fail because the
+            // stale entry is still there. The room would end up in
+            // `notebook_rooms` but not in `path_index`, and a
+            // subsequent open-by-path could create a duplicate room
+            // for the same file.
+            let path_for_index = room.file_binding.path().await;
+            if let Some(ref p) = path_for_index {
+                // Only remove the path_index entry if it still maps to
+                // this ghost's UUID. A concurrent save-as on a
+                // different room could have repointed the path; we
+                // must not strip that.
+                let mut idx = self.path_index.lock().await;
+                if idx.lookup(p) == Some(uuid) {
+                    idx.remove(p);
+                }
+            }
+
             // Atomic remove pass: re-check active_peers AND the
             // connection generation AND the teardown timestamp under
             // the rooms lock so a peer that reconnected between the
@@ -4002,8 +4025,12 @@ impl Daemon {
             // (connect, then disconnect again) leaves active_peers == 0
             // but bumps the generation and may have zeroed the
             // teardown timestamp; treat all three as "still idle"
-            // signals. Drop the rooms lock before any further .await
-            // to honour the no-await-with-rooms-lock convention.
+            // signals. If the room is no longer idle, the path_index
+            // removal above doesn't matter — `find_room_by_path` falls
+            // through to the rooms-map lookup which still has the room,
+            // and the next save-as / open path will reinsert the entry.
+            // Drop the rooms lock before any further .await to honour
+            // the no-await-with-rooms-lock convention.
             let removed = {
                 let mut rooms_guard = self.notebook_rooms.lock().await;
                 let still_idle = rooms_guard
@@ -4036,16 +4063,22 @@ impl Daemon {
                 }
             };
 
-            let Some(room) = removed else { continue };
-
-            // Path index cleanup is best-effort: a stale path_index entry
-            // would make a reopen-by-path miss the (non-existent) room
-            // and fall through to disk-load, which is the right thing
-            // anyway. Still, keep them in sync.
-            let path = room.file_binding.path().await;
-            if let Some(ref p) = path {
-                self.path_index.lock().await.remove(p);
-            }
+            let Some(room) = removed else {
+                // Room was rescued between our path-index-remove
+                // and our rooms-lock check. Reinsert the path so the
+                // resumed room remains discoverable by path.
+                if let Some(ref p) = path_for_index {
+                    let mut idx = self.path_index.lock().await;
+                    if let Err(e) = idx.insert(p.clone(), uuid) {
+                        warn!(
+                            "[runtimed] Ghost reaper: failed to reinsert path_index for rescued room {} at {:?}: {}",
+                            uuid, p, e
+                        );
+                    }
+                }
+                continue;
+            };
+            let path = path_for_index;
 
             // Shut down the watchers and autosave debouncer that were
             // left armed across kernel teardown. The .ipynb has been
