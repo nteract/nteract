@@ -24,7 +24,11 @@ function filterBufferPathsToKeys(
 }
 
 // Type for sending messages to kernel
-type SendUpdate = (commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
+type SendUpdate = (
+  commId: string,
+  state: Record<string, unknown>,
+  buffers?: ArrayBuffer[],
+) => void | Promise<void>;
 
 type SendCustom = (
   commId: string,
@@ -306,7 +310,11 @@ export class CommBridgeManager {
         const current = this.previousState.get(commId) ?? {};
         this.previousState.set(commId, this.cloneStateSnapshot({ ...current, ...data }));
         // Then forward to kernel
-        this.sendUpdateToKernel(commId, data, buffers);
+        void Promise.resolve(this.sendUpdateToKernel(commId, data, buffers)).catch(
+          (error: unknown) => {
+            console.error("[widgets] failed to persist iframe widget state update:", error);
+          },
+        );
       } finally {
         this.isProcessingIframeUpdate = false;
       }

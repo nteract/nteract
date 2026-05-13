@@ -37,7 +37,7 @@ describe("OutputWidget", () => {
           store,
           handleMessage: () => {},
           sendMessage: () => {},
-          sendUpdate: () => {},
+          sendUpdate: async () => {},
           sendCustom: () => {},
           closeComm: () => {},
         }}
@@ -85,7 +85,7 @@ describe("OutputWidget", () => {
           store,
           handleMessage: () => {},
           sendMessage: () => {},
-          sendUpdate: () => {},
+          sendUpdate: async () => {},
           sendCustom: () => {},
           closeComm: () => {},
         }}

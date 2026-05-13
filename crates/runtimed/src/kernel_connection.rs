@@ -113,6 +113,8 @@ pub trait KernelConnection: Send {
         &mut self,
         comm_id: &str,
         state: serde_json::Value,
+        buffer_paths: Vec<Vec<String>>,
+        buffers: Vec<Vec<u8>>,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Request code completions from the kernel.

@@ -111,7 +111,13 @@ export function IframeWidgetStoreProvider({ children }: IframeWidgetStoreProvide
   const mainContextValue = useMemo(
     () => ({
       store: client.store,
-      sendUpdate: client.sendUpdate,
+      sendUpdate: async (
+        commId: string,
+        state: Record<string, unknown>,
+        buffers?: ArrayBuffer[],
+      ) => {
+        client.sendUpdate(commId, state, buffers);
+      },
       sendCustom: client.sendCustom,
       closeComm: client.closeComm,
     }),

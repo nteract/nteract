@@ -51,6 +51,9 @@ use crate::kernel_state::KernelState;
 use crate::output_prep::{QueueCommand, QueueCommandReceivers};
 use crate::protocol::QueueEntry;
 
+mod echo_suppression;
+use echo_suppression::EchoSuppressor;
+
 /// Shared context for the runtime agent (no kernel -- kernel is owned locally).
 struct RuntimeAgentContext {
     state: RuntimeStateHandle,
@@ -121,6 +124,7 @@ pub async fn run_runtime_agent(
     let mut interrupt_handle: Option<crate::jupyter_kernel::InterruptHandle> = None;
     let mut kernel_state = KernelState::new(state.clone());
     let mut seen_execution_ids = HashSet::new();
+    let mut echo_suppressor = EchoSuppressor::default();
     let mut lifecycle_rx: Option<mpsc::UnboundedReceiver<QueueCommand>> = None;
     let mut work_rx: Option<mpsc::Receiver<QueueCommand>> = None;
 
@@ -380,8 +384,41 @@ pub async fn run_runtime_agent(
                                             if !comm_updates.is_empty() {
                                                 if let Some(ref mut k) = kernel {
                                                     for (comm_id, delta) in &comm_updates {
-                                                        if let Err(e) = k.send_comm_update(comm_id, delta.clone()).await {
-                                                            warn!("[runtime-agent] Failed to forward comm state to kernel: {}", e);
+                                                        let Some(update) = prepare_comm_update(
+                                                            comm_id,
+                                                            delta,
+                                                            &ctx.blob_store,
+                                                            &mut echo_suppressor,
+                                                        )
+                                                        .await
+                                                        else {
+                                                            continue;
+                                                        };
+                                                        let RehydratedCommUpdate {
+                                                            state,
+                                                            buffer_paths,
+                                                            buffers,
+                                                            content_hashes,
+                                                        } = update;
+                                                        match k
+                                                            .send_comm_update(
+                                                                comm_id,
+                                                                state,
+                                                                buffer_paths,
+                                                                buffers,
+                                                            )
+                                                            .await
+                                                        {
+                                                            Ok(()) => {
+                                                                for hash in content_hashes {
+                                                                    echo_suppressor.record_outgoing(
+                                                                        comm_id, &hash,
+                                                                    );
+                                                                }
+                                                            }
+                                                            Err(e) => {
+                                                                warn!("[runtime-agent] Failed to forward comm state to kernel: {}", e);
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -1334,9 +1371,14 @@ async fn handle_queue_command(
         QueueCommand::SendCommUpdate {
             comm_id,
             state: comm_state,
+            buffer_paths,
+            buffers,
         } => {
             if let Some(ref mut k) = kernel {
-                if let Err(e) = k.send_comm_update(&comm_id, comm_state).await {
+                if let Err(e) = k
+                    .send_comm_update(&comm_id, comm_state, buffer_paths, buffers)
+                    .await
+                {
                     warn!("[runtime-agent] Failed to send comm update: {}", e);
                 }
             }
@@ -1419,6 +1461,156 @@ fn diff_comm_state(
     updates
 }
 
+struct RehydratedCommUpdate {
+    state: serde_json::Value,
+    buffer_paths: Vec<Vec<String>>,
+    buffers: Vec<Vec<u8>>,
+    content_hashes: Vec<String>,
+}
+
+async fn prepare_comm_update(
+    comm_id: &str,
+    delta: &serde_json::Value,
+    blob_store: &BlobStore,
+    echo_suppressor: &mut EchoSuppressor,
+) -> Option<RehydratedCommUpdate> {
+    let content_refs = collect_content_refs(delta);
+    if content_refs
+        .iter()
+        .any(|(_, hash)| echo_suppressor.is_recent_echo(comm_id, hash))
+    {
+        debug!(
+            "[runtime-agent] Suppressing echoed binary comm update for comm_id={}",
+            comm_id
+        );
+        return None;
+    }
+
+    let mut state = delta.clone();
+    let mut buffer_paths = Vec::new();
+    let mut buffers = Vec::new();
+    let mut content_hashes = Vec::new();
+
+    for (path, hash) in content_refs {
+        set_json_path(&mut state, &path, serde_json::Value::Null);
+        match blob_store.get(&hash).await {
+            Ok(Some(bytes)) => {
+                buffer_paths.push(path);
+                buffers.push(bytes);
+                content_hashes.push(hash);
+            }
+            Ok(None) => {
+                warn!(
+                    "[runtime-agent] Missing blob {} for widget comm update; skipping buffer",
+                    hash
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "[runtime-agent] Failed to read blob {} for widget comm update: {}",
+                    hash, e
+                );
+            }
+        }
+    }
+
+    Some(RehydratedCommUpdate {
+        state,
+        buffer_paths,
+        buffers,
+        content_hashes,
+    })
+}
+
+fn collect_content_refs(delta: &serde_json::Value) -> Vec<(Vec<String>, String)> {
+    let mut refs = Vec::new();
+    collect_content_refs_at(delta, &mut Vec::new(), &mut refs);
+    refs
+}
+
+fn collect_content_refs_at(
+    value: &serde_json::Value,
+    path: &mut Vec<String>,
+    refs: &mut Vec<(Vec<String>, String)>,
+) {
+    if let Some(hash) = strict_content_ref_hash(value) {
+        refs.push((path.clone(), hash.to_string()));
+        return;
+    }
+
+    match value {
+        serde_json::Value::Object(obj) => {
+            for (key, child) in obj {
+                path.push(key.clone());
+                collect_content_refs_at(child, path, refs);
+                path.pop();
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                path.push(index.to_string());
+                collect_content_refs_at(child, path, refs);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
+fn strict_content_ref_hash(value: &serde_json::Value) -> Option<&str> {
+    let obj = value.as_object()?;
+    if obj.len() != 3 {
+        return None;
+    }
+    let blob = obj.get("blob")?.as_str()?;
+    let _size = obj.get("size")?.as_u64()?;
+    let _media_type = obj.get("media_type")?.as_str()?;
+    Some(blob)
+}
+
+fn set_json_path(root: &mut serde_json::Value, path: &[String], value: serde_json::Value) {
+    if path.is_empty() {
+        *root = value;
+        return;
+    }
+
+    let mut current = root;
+    for segment in &path[..path.len() - 1] {
+        current = match current {
+            serde_json::Value::Object(obj) => match obj.get_mut(segment) {
+                Some(next) => next,
+                None => return,
+            },
+            serde_json::Value::Array(items) => match segment
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| items.get_mut(index))
+            {
+                Some(next) => next,
+                None => return,
+            },
+            _ => return,
+        };
+    }
+
+    let last = &path[path.len() - 1];
+    match current {
+        serde_json::Value::Object(obj) => {
+            obj.insert(last.clone(), value);
+        }
+        serde_json::Value::Array(items) => {
+            if let Some(slot) = last
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| items.get_mut(index))
+            {
+                *slot = value;
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1451,7 +1643,13 @@ mod tests {
         async fn send_comm_message(&mut self, _: serde_json::Value) -> Result<()> {
             Ok(())
         }
-        async fn send_comm_update(&mut self, _: &str, _: serde_json::Value) -> Result<()> {
+        async fn send_comm_update(
+            &mut self,
+            _: &str,
+            _: serde_json::Value,
+            _: Vec<Vec<String>>,
+            _: Vec<Vec<u8>>,
+        ) -> Result<()> {
             Ok(())
         }
         async fn complete(
@@ -1590,6 +1788,8 @@ mod tests {
             .try_send(QueueCommand::SendCommUpdate {
                 comm_id: "comm-a".to_string(),
                 state: serde_json::json!({ "outputs": [] }),
+                buffer_paths: vec![],
+                buffers: vec![],
             })
             .expect("work queue should accept one item");
         lifecycle_tx
@@ -1739,5 +1939,99 @@ mod tests {
         let ec = handle.read(|sd| sd.get_execution("eC").unwrap()).unwrap();
         assert_eq!(ec.status, "done");
         assert_eq!(ec.success, Some(true));
+    }
+
+    #[tokio::test]
+    async fn prepare_comm_update_rehydrates_content_refs_to_buffers() {
+        let temp = tempfile::tempdir().unwrap();
+        let blob_store = BlobStore::new(temp.path().join("blobs"));
+        let hash = blob_store
+            .put(&[1, 2, 3, 4], "application/octet-stream")
+            .await
+            .unwrap();
+        let delta = serde_json::json!({
+            "selection": {
+                "view": {
+                    "blob": hash,
+                    "size": 4,
+                    "media_type": "application/octet-stream"
+                },
+                "dtype": "uint32",
+                "shape": [1]
+            }
+        });
+        let mut suppressor = EchoSuppressor::default();
+
+        let update = prepare_comm_update("comm-a", &delta, &blob_store, &mut suppressor)
+            .await
+            .expect("update should not be suppressed");
+
+        assert_eq!(
+            update.state,
+            serde_json::json!({
+                "selection": {
+                    "view": null,
+                    "dtype": "uint32",
+                    "shape": [1]
+                }
+            })
+        );
+        assert_eq!(
+            update.buffer_paths,
+            vec![vec!["selection".to_string(), "view".to_string()]]
+        );
+        assert_eq!(update.buffers, vec![vec![1, 2, 3, 4]]);
+        assert_eq!(update.content_hashes, vec![hash]);
+    }
+
+    #[tokio::test]
+    async fn prepare_comm_update_ignores_non_strict_content_ref_shape() {
+        let temp = tempfile::tempdir().unwrap();
+        let blob_store = BlobStore::new(temp.path().join("blobs"));
+        let hash = blob_store
+            .put(&[1], "application/octet-stream")
+            .await
+            .unwrap();
+        let delta = serde_json::json!({
+            "value": {
+                "blob": hash,
+                "size": 1,
+                "media_type": "application/octet-stream",
+                "extra": true
+            }
+        });
+        let mut suppressor = EchoSuppressor::default();
+
+        let update = prepare_comm_update("comm-a", &delta, &blob_store, &mut suppressor)
+            .await
+            .expect("update should not be suppressed");
+
+        assert_eq!(update.state, delta);
+        assert!(update.buffer_paths.is_empty());
+        assert!(update.buffers.is_empty());
+        assert!(update.content_hashes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn prepare_comm_update_drops_recent_echoes() {
+        let temp = tempfile::tempdir().unwrap();
+        let blob_store = BlobStore::new(temp.path().join("blobs"));
+        let hash = blob_store
+            .put(&[1], "application/octet-stream")
+            .await
+            .unwrap();
+        let delta = serde_json::json!({
+            "selection": {
+                "blob": hash,
+                "size": 1,
+                "media_type": "application/octet-stream"
+            }
+        });
+        let mut suppressor = EchoSuppressor::default();
+        suppressor.record_outgoing("comm-a", &hash);
+
+        let update = prepare_comm_update("comm-a", &delta, &blob_store, &mut suppressor).await;
+
+        assert!(update.is_none());
     }
 }

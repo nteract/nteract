@@ -211,7 +211,11 @@ type EventCallback = (...args: unknown[]) => void;
  * daemon shell channel as a Jupyter `comm_msg(method: "custom")`.
  */
 export interface AFMProxyOutbound {
-  sendUpdate: (commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
+  sendUpdate: (
+    commId: string,
+    state: Record<string, unknown>,
+    buffers?: ArrayBuffer[],
+  ) => Promise<void>;
   sendCustom: (commId: string, content: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
 }
 
@@ -278,7 +282,9 @@ export function createAFMModelProxy(
       // store update + echo suppression. In the iframe it posts a bridge
       // notification to the parent which then takes the same path. Either
       // way, no hand-built comm_msg frame and no shell-channel fallback.
-      outbound.sendUpdate(model.id, patch);
+      void Promise.resolve(outbound.sendUpdate(model.id, patch)).catch((error: unknown) => {
+        console.error("[widgets] failed to persist widget state update:", error);
+      });
 
       for (const key of Object.keys(pendingChanges)) {
         delete pendingChanges[key];
