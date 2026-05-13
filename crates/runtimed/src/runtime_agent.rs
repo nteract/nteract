@@ -365,7 +365,14 @@ pub async fn run_runtime_agent(
                                                         Vec::new()
                                                     }
                                                 };
-                                                Ok(Some((queued, comm_updates)))
+                                                let comms_after = sd.read_state().comms;
+                                                let superseded_hashes =
+                                                    superseded_content_ref_hashes_by_comm(
+                                                        &comms_before,
+                                                        &comms_after,
+                                                        &comm_updates,
+                                                    );
+                                                Ok(Some((queued, comm_updates, superseded_hashes)))
                                             }
                                             Ok(_) => Ok(None),
                                             Err(e) => {
@@ -380,10 +387,19 @@ pub async fn run_runtime_agent(
 
                                     // Async work outside the lock
                                     match sync_result {
-                                        Ok(Some((queued, comm_updates))) => {
+                                        Ok(Some((
+                                            queued,
+                                            comm_updates,
+                                            superseded_hashes_by_comm,
+                                        ))) => {
                                             if !comm_updates.is_empty() {
                                                 if let Some(ref mut k) = kernel {
                                                     for (comm_id, delta) in &comm_updates {
+                                                        let superseded_hashes =
+                                                            superseded_hashes_by_comm
+                                                                .get(comm_id)
+                                                                .cloned()
+                                                                .unwrap_or_default();
                                                         let Some(update) = prepare_comm_update(
                                                             comm_id,
                                                             delta,
@@ -392,6 +408,16 @@ pub async fn run_runtime_agent(
                                                         )
                                                         .await
                                                         else {
+                                                            // The doc supersession already happened; even though no
+                                                            // kernel send is needed for an echo, stale ephemeral blobs
+                                                            // can be freed here. Failed kernel sends skip this cleanup
+                                                            // below so the bytes remain available for a retry.
+                                                            free_superseded_ephemeral_blobs(
+                                                                &ctx.blob_store,
+                                                                comm_id,
+                                                                &superseded_hashes,
+                                                            )
+                                                            .await;
                                                             continue;
                                                         };
                                                         let RehydratedCommUpdate {
@@ -415,6 +441,12 @@ pub async fn run_runtime_agent(
                                                                         comm_id, &hash,
                                                                     );
                                                                 }
+                                                                free_superseded_ephemeral_blobs(
+                                                                    &ctx.blob_store,
+                                                                    comm_id,
+                                                                    &superseded_hashes,
+                                                                )
+                                                                .await;
                                                             }
                                                             Err(e) => {
                                                                 warn!("[runtime-agent] Failed to forward comm state to kernel: {}", e);
@@ -1461,6 +1493,64 @@ fn diff_comm_state(
     updates
 }
 
+fn superseded_content_ref_hashes_by_comm(
+    before: &HashMap<String, CommDocEntry>,
+    after: &HashMap<String, CommDocEntry>,
+    comm_updates: &[(String, serde_json::Value)],
+) -> HashMap<String, Vec<String>> {
+    // BlobStore is content-addressed across the document, so identical hashes
+    // still referenced by another comm must stay live.
+    let live_hashes_after = content_ref_hashes_in_comms(after);
+    let mut superseded = HashMap::new();
+
+    for (comm_id, _) in comm_updates {
+        let Some(before_entry) = before.get(comm_id) else {
+            continue;
+        };
+        let mut hashes = HashSet::new();
+        for (_, hash) in collect_content_refs(&before_entry.state) {
+            if !live_hashes_after.contains(&hash) {
+                hashes.insert(hash);
+            }
+        }
+        if !hashes.is_empty() {
+            superseded.insert(comm_id.clone(), hashes.into_iter().collect());
+        }
+    }
+
+    superseded
+}
+
+fn content_ref_hashes_in_comms(comms: &HashMap<String, CommDocEntry>) -> HashSet<String> {
+    let mut hashes = HashSet::new();
+    for entry in comms.values() {
+        for (_, hash) in collect_content_refs(&entry.state) {
+            hashes.insert(hash);
+        }
+    }
+    hashes
+}
+
+async fn free_superseded_ephemeral_blobs(blob_store: &BlobStore, comm_id: &str, hashes: &[String]) {
+    for hash in hashes {
+        match blob_store.delete_if_ephemeral(hash).await {
+            Ok(true) => {
+                debug!(
+                    "[runtime-agent] Freed superseded ephemeral blob {} for comm_id={}",
+                    hash, comm_id
+                );
+            }
+            Ok(false) => {}
+            Err(e) => {
+                warn!(
+                    "[runtime-agent] Failed to free superseded ephemeral blob {} for comm_id={}: {}",
+                    hash, comm_id, e
+                );
+            }
+        }
+    }
+}
+
 struct RehydratedCommUpdate {
     state: serde_json::Value,
     buffer_paths: Vec<Vec<String>>,
@@ -1618,7 +1708,7 @@ mod tests {
     use crate::output_prep::queue_command_channels;
     use crate::protocol::CompletionItem;
     use anyhow::Result;
-    use notebook_protocol::protocol::LaunchedEnvConfig;
+    use notebook_protocol::protocol::{BlobDurability, LaunchedEnvConfig};
     use std::path::PathBuf;
 
     /// Minimal mock kernel for testing queue/state logic without ZeroMQ.
@@ -1683,6 +1773,18 @@ mod tests {
             true
         }
         fn update_launched_uv_deps(&mut self, _: Vec<String>) {}
+    }
+
+    fn comm_entry(state: serde_json::Value) -> CommDocEntry {
+        CommDocEntry {
+            target_name: "jupyter.widget".to_string(),
+            model_module: "anywidget".to_string(),
+            model_name: "AnyModel".to_string(),
+            state,
+            outputs: Vec::new(),
+            seq: 0,
+            capture_msg_id: String::new(),
+        }
     }
 
     /// Build test fixtures: RuntimeAgentContext + KernelState wired to the same doc.
@@ -2033,5 +2135,183 @@ mod tests {
         let update = prepare_comm_update("comm-a", &delta, &blob_store, &mut suppressor).await;
 
         assert!(update.is_none());
+    }
+
+    #[tokio::test]
+    async fn prepare_comm_update_or_supersession_frees_replaced_ephemeral_blob() {
+        let temp = tempfile::tempdir().unwrap();
+        let blob_store = BlobStore::new(temp.path().join("blobs"));
+        let hash = blob_store
+            .put_with_durability(
+                b"old",
+                "application/octet-stream",
+                BlobDurability::Ephemeral,
+            )
+            .await
+            .unwrap();
+        let before_state = serde_json::json!({
+            "selection": {
+                "view": { "blob": hash, "size": 3, "media_type": "application/octet-stream" }
+            }
+        });
+        let after_state = serde_json::json!({ "selection": null });
+        let before = HashMap::from([("comm-a".to_string(), comm_entry(before_state))]);
+        let after = HashMap::from([("comm-a".to_string(), comm_entry(after_state))]);
+        let updates = vec![(
+            "comm-a".to_string(),
+            serde_json::json!({ "selection": null }),
+        )];
+
+        let superseded = superseded_content_ref_hashes_by_comm(&before, &after, &updates);
+        free_superseded_ephemeral_blobs(&blob_store, "comm-a", superseded.get("comm-a").unwrap())
+            .await;
+
+        assert!(blob_store.get(&hash).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn supersession_keeps_durable_blob() {
+        let temp = tempfile::tempdir().unwrap();
+        let blob_store = BlobStore::new(temp.path().join("blobs"));
+        let hash = blob_store
+            .put_with_durability(b"old", "application/octet-stream", BlobDurability::Durable)
+            .await
+            .unwrap();
+        let before_state = serde_json::json!({
+            "selection": {
+                "view": { "blob": hash, "size": 3, "media_type": "application/octet-stream" }
+            }
+        });
+        let after_state = serde_json::json!({ "selection": null });
+        let before = HashMap::from([("comm-a".to_string(), comm_entry(before_state))]);
+        let after = HashMap::from([("comm-a".to_string(), comm_entry(after_state))]);
+        let updates = vec![(
+            "comm-a".to_string(),
+            serde_json::json!({ "selection": null }),
+        )];
+
+        let superseded = superseded_content_ref_hashes_by_comm(&before, &after, &updates);
+        free_superseded_ephemeral_blobs(&blob_store, "comm-a", superseded.get("comm-a").unwrap())
+            .await;
+
+        assert_eq!(
+            blob_store.get(&hash).await.unwrap().as_deref(),
+            Some(&b"old"[..])
+        );
+    }
+
+    #[tokio::test]
+    async fn supersession_handles_within_comm_path_move() {
+        let temp = tempfile::tempdir().unwrap();
+        let blob_store = BlobStore::new(temp.path().join("blobs"));
+        let hash = blob_store
+            .put_with_durability(
+                b"old",
+                "application/octet-stream",
+                BlobDurability::Ephemeral,
+            )
+            .await
+            .unwrap();
+        let content_ref = serde_json::json!({ "blob": hash, "size": 3, "media_type": "application/octet-stream" });
+        let before_state = serde_json::json!({ "a": { "view": content_ref.clone() } });
+        let after_state = serde_json::json!({ "b": { "view": content_ref } });
+        let before = HashMap::from([("comm-a".to_string(), comm_entry(before_state))]);
+        let after = HashMap::from([("comm-a".to_string(), comm_entry(after_state))]);
+        let updates = vec![(
+            "comm-a".to_string(),
+            serde_json::json!({ "a": null, "b": {} }),
+        )];
+
+        let superseded = superseded_content_ref_hashes_by_comm(&before, &after, &updates);
+
+        assert!(superseded.get("comm-a").is_none_or(Vec::is_empty));
+        assert_eq!(
+            blob_store.get(&hash).await.unwrap().as_deref(),
+            Some(&b"old"[..])
+        );
+    }
+
+    #[tokio::test]
+    async fn supersession_keeps_hash_referenced_by_another_comm() {
+        let temp = tempfile::tempdir().unwrap();
+        let blob_store = BlobStore::new(temp.path().join("blobs"));
+        let hash = blob_store
+            .put_with_durability(
+                b"old",
+                "application/octet-stream",
+                BlobDurability::Ephemeral,
+            )
+            .await
+            .unwrap();
+        let content_ref = serde_json::json!({ "blob": hash, "size": 3, "media_type": "application/octet-stream" });
+        let before = HashMap::from([
+            (
+                "comm-a".to_string(),
+                comm_entry(serde_json::json!({ "selection": { "view": content_ref.clone() } })),
+            ),
+            (
+                "comm-b".to_string(),
+                comm_entry(serde_json::json!({ "selection": { "view": content_ref.clone() } })),
+            ),
+        ]);
+        let after = HashMap::from([
+            (
+                "comm-a".to_string(),
+                comm_entry(serde_json::json!({ "selection": null })),
+            ),
+            (
+                "comm-b".to_string(),
+                comm_entry(serde_json::json!({ "selection": { "view": content_ref } })),
+            ),
+        ]);
+        let updates = vec![(
+            "comm-a".to_string(),
+            serde_json::json!({ "selection": null }),
+        )];
+
+        let superseded = superseded_content_ref_hashes_by_comm(&before, &after, &updates);
+
+        assert!(superseded.get("comm-a").is_none_or(Vec::is_empty));
+        assert_eq!(
+            blob_store.get(&hash).await.unwrap().as_deref(),
+            Some(&b"old"[..])
+        );
+    }
+
+    #[tokio::test]
+    async fn supersession_skipped_on_kernel_send_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let blob_store = BlobStore::new(temp.path().join("blobs"));
+        let hash = blob_store
+            .put_with_durability(
+                b"old",
+                "application/octet-stream",
+                BlobDurability::Ephemeral,
+            )
+            .await
+            .unwrap();
+        let before_state = serde_json::json!({
+            "selection": {
+                "view": { "blob": hash, "size": 3, "media_type": "application/octet-stream" }
+            }
+        });
+        let after_state = serde_json::json!({ "selection": null });
+        let before = HashMap::from([("comm-a".to_string(), comm_entry(before_state))]);
+        let after = HashMap::from([("comm-a".to_string(), comm_entry(after_state))]);
+        let updates = vec![(
+            "comm-a".to_string(),
+            serde_json::json!({ "selection": null }),
+        )];
+
+        let superseded = superseded_content_ref_hashes_by_comm(&before, &after, &updates);
+        assert_eq!(superseded.get("comm-a"), Some(&vec![hash.clone()]));
+        // Production only calls free_superseded_ephemeral_blobs after a
+        // successful send_comm_update or an echo-suppressed update. A failed
+        // kernel send keeps the blob available for a possible retry.
+
+        assert_eq!(
+            blob_store.get(&hash).await.unwrap().as_deref(),
+            Some(&b"old"[..])
+        );
     }
 }

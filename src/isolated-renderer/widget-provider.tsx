@@ -36,7 +36,7 @@ import { createWidgetBridgeClient, type WidgetBridgeClient } from "./widget-brid
 interface IframeWidgetStoreContextValue {
   store: WidgetStore;
   /** Send a state update to the parent (which forwards to kernel) */
-  sendUpdate: (commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
+  sendUpdate: (commId: string, state: Record<string, unknown>) => void;
   /** Send a custom message to the parent (which forwards to kernel) */
   sendCustom: (commId: string, content: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
   /** Close a comm channel via parent */
@@ -111,12 +111,8 @@ export function IframeWidgetStoreProvider({ children }: IframeWidgetStoreProvide
   const mainContextValue = useMemo(
     () => ({
       store: client.store,
-      sendUpdate: async (
-        commId: string,
-        state: Record<string, unknown>,
-        buffers?: ArrayBuffer[],
-      ) => {
-        client.sendUpdate(commId, state, buffers);
+      sendUpdate: async (commId: string, state: Record<string, unknown>) => {
+        client.sendUpdate(commId, state);
       },
       sendCustom: client.sendCustom,
       closeComm: client.closeComm,

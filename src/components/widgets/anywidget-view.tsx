@@ -211,11 +211,7 @@ type EventCallback = (...args: unknown[]) => void;
  * daemon shell channel as a Jupyter `comm_msg(method: "custom")`.
  */
 export interface AFMProxyOutbound {
-  sendUpdate: (
-    commId: string,
-    state: Record<string, unknown>,
-    buffers?: ArrayBuffer[],
-  ) => Promise<void>;
+  sendUpdate: (commId: string, state: Record<string, unknown>) => Promise<void>;
   sendCustom: (commId: string, content: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
 }
 
@@ -512,8 +508,7 @@ export function AnyWidgetView({ modelId, className }: AnyWidgetViewProps) {
         // the widget (event listeners, timers) always see the current
         // sendUpdate/sendCustom without triggering this effect to re-run.
         const outboundProxy: AFMProxyOutbound = {
-          sendUpdate: (commId, state, buffers) =>
-            outboundRef.current.sendUpdate(commId, state, buffers),
+          sendUpdate: (commId, state) => outboundRef.current.sendUpdate(commId, state),
           sendCustom: (commId, content, buffers) =>
             outboundRef.current.sendCustom(commId, content, buffers),
         };
