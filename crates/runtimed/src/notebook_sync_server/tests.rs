@@ -705,7 +705,7 @@ async fn test_ephemeral_room_skips_persistence() {
     let notebook_uuid = uuid::Uuid::new_v4();
     let room = NotebookRoom::new_fresh(notebook_uuid, None, dir.path(), blob_store, true);
 
-    assert!(room.persistence.debouncer.is_none());
+    assert!(!room.persistence.has_debouncer());
     assert!(room.file_binding.is_ephemeral());
 
     // No .automerge file should exist
@@ -720,7 +720,7 @@ async fn test_session_room_persists() {
     let notebook_uuid = uuid::Uuid::new_v4();
     let room = NotebookRoom::new_fresh(notebook_uuid, None, dir.path(), blob_store, false);
 
-    assert!(room.persistence.debouncer.is_some());
+    assert!(room.persistence.has_debouncer());
     assert!(!room.file_binding.is_ephemeral());
 }
 

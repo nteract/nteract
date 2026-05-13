@@ -1,7 +1,6 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
 use crate::async_outcome::{recv_oneshot_with_timeout, TimedOneShot};
@@ -111,29 +110,26 @@ pub(super) async fn handle_peer_disconnect(
                 const FLUSH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
                 let mut flush_ok = true;
                 let mut flush_failure_kind: Option<&'static str> = None;
-                if let Some(ref d) = room_for_teardown.persistence.debouncer {
-                    let (ack_tx, ack_rx) = oneshot::channel::<bool>();
-                    if d.flush_request_tx.send(ack_tx).is_ok() {
-                        match recv_oneshot_with_timeout(ack_rx, FLUSH_TIMEOUT).await {
-                            TimedOneShot::Received(true) => {}
-                            TimedOneShot::Received(false) => {
-                                flush_ok = false;
-                                flush_failure_kind = Some("write error");
-                            }
-                            TimedOneShot::SenderDropped => {
-                                // Debouncer dropped the ack sender without
-                                // replying — task already exited (e.g. a
-                                // previous teardown flushed and closed). Any
-                                // pending bytes went through the shutdown path.
-                                debug!(
-                                    "[notebook-sync] Kernel-teardown flush ack dropped for {} (debouncer exited)",
-                                    notebook_id_for_teardown
-                                );
-                            }
-                            TimedOneShot::TimedOut => {
-                                flush_ok = false;
-                                flush_failure_kind = Some("timeout");
-                            }
+                if let Some(ack_rx) = room_for_teardown.persistence.request_flush() {
+                    match recv_oneshot_with_timeout(ack_rx, FLUSH_TIMEOUT).await {
+                        TimedOneShot::Received(true) => {}
+                        TimedOneShot::Received(false) => {
+                            flush_ok = false;
+                            flush_failure_kind = Some("write error");
+                        }
+                        TimedOneShot::SenderDropped => {
+                            // Debouncer dropped the ack sender without
+                            // replying — task already exited (e.g. a
+                            // previous teardown flushed and closed). Any
+                            // pending bytes went through the shutdown path.
+                            debug!(
+                                "[notebook-sync] Kernel-teardown flush ack dropped for {} (debouncer exited)",
+                                notebook_id_for_teardown
+                            );
+                        }
+                        TimedOneShot::TimedOut => {
+                            flush_ok = false;
+                            flush_failure_kind = Some("timeout");
                         }
                     }
                 }

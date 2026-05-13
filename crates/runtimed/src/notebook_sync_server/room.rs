@@ -335,7 +335,14 @@ pub struct RoomPersistence {
     /// rooms keep this `None`, and so do rooms promoted via Save (the
     /// `.automerge` stream isn't restarted post-promotion — see comment
     /// in `finalize_untitled_promotion`).
-    pub debouncer: Option<PersistDebouncer>,
+    ///
+    /// The `Mutex<Option<...>>` wrapper lets the reaper `.take()` the
+    /// debouncer at room removal so the watch sender drops, the
+    /// debouncer task exits via its shutdown arm, and one final flush
+    /// lands before the room is dropped. Without `.take()` the
+    /// sender would only drop when the `Arc<NotebookRoom>` itself
+    /// drops, which races the room map removal.
+    debouncer: std::sync::Mutex<Option<PersistDebouncer>>,
     /// Cell sources as they were written to disk at last save.
     ///
     /// The file watcher compares disk content against this snapshot (not the
@@ -367,7 +374,7 @@ impl RoomPersistence {
     /// Build a persistence struct with no active debouncer (ephemeral rooms).
     pub fn ephemeral() -> Self {
         Self {
-            debouncer: None,
+            debouncer: std::sync::Mutex::new(None),
             last_save_sources: RwLock::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
             is_loading: AtomicBool::new(false),
@@ -380,14 +387,64 @@ impl RoomPersistence {
         flush_request_tx: mpsc::UnboundedSender<FlushRequest>,
     ) -> Self {
         Self {
-            debouncer: Some(PersistDebouncer {
+            debouncer: std::sync::Mutex::new(Some(PersistDebouncer {
                 persist_tx,
                 flush_request_tx,
-            }),
+            })),
             last_save_sources: RwLock::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
             is_loading: AtomicBool::new(false),
         }
+    }
+
+    /// True when this room has an active `.automerge` debouncer.
+    pub fn has_debouncer(&self) -> bool {
+        self.lock_debouncer().is_some()
+    }
+
+    /// Send the latest doc bytes to the debouncer. No-op when no
+    /// debouncer is wired up (ephemeral rooms). The watch sender keeps
+    /// only the most recent value, so a fast burst of edits collapses
+    /// to one persist write.
+    pub fn enqueue_persist_bytes(&self, bytes: Vec<u8>) {
+        if let Some(d) = self.lock_debouncer().as_ref() {
+            let _ = d.persist_tx.send(Some(bytes));
+        }
+    }
+
+    /// Send a synchronous flush request. Returns the ack receiver if a
+    /// debouncer is wired up and the send succeeded; `None` when the
+    /// room is ephemeral or the debouncer task has already exited.
+    /// Callers must `.await` the receiver outside any held lock.
+    pub fn request_flush(&self) -> Option<tokio::sync::oneshot::Receiver<bool>> {
+        let guard = self.lock_debouncer();
+        let d = guard.as_ref()?;
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel::<bool>();
+        if d.flush_request_tx.send(ack_tx).is_ok() {
+            Some(ack_rx)
+        } else {
+            None
+        }
+    }
+
+    /// Take the debouncer out of the room. Used by the reaper at room
+    /// removal: dropping the returned `PersistDebouncer` drops the
+    /// `watch::Sender` and the `mpsc::UnboundedSender`, which makes
+    /// the persist task exit via its shutdown arm with one final
+    /// flush. Returns `None` for ephemeral rooms or if a prior caller
+    /// already took it.
+    #[allow(dead_code)]
+    pub fn take_debouncer(&self) -> Option<PersistDebouncer> {
+        self.lock_debouncer().take()
+    }
+
+    /// Lock the debouncer Mutex. Recovers from poisoning by treating
+    /// the inner value as still usable — a panicking caller would only
+    /// be writing the field, never mutating the inner channels.
+    fn lock_debouncer(&self) -> std::sync::MutexGuard<'_, Option<PersistDebouncer>> {
+        self.debouncer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Atomically claim the loading role. Returns `true` if this caller won

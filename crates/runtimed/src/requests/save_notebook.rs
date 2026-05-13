@@ -83,7 +83,7 @@ pub(crate) async fn handle(
             }
             // Emergency persist for ephemeral rooms: if saving to .ipynb
             // failed, at least write the Automerge doc so data isn't lost.
-            if binding_snapshot.is_ephemeral && room.persistence.debouncer.is_none() {
+            if binding_snapshot.is_ephemeral && !room.persistence.has_debouncer() {
                 let bytes = room.doc.write().await.save();
                 persist_notebook_bytes(&bytes, &room.identity.persist_path);
                 warn!(
