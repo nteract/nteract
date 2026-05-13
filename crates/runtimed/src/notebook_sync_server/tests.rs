@@ -3505,6 +3505,65 @@ async fn find_room_by_path_returns_none_when_not_indexed() {
     assert!(found.is_none());
 }
 
+/// PR 2 contract: when two callers race to insert a room for the
+/// same path with different UUIDs (both saw `find_room_by_path ==
+/// None`), the loser coalesces onto the winner's room rather than
+/// erroring with `PathAlreadyOpen`. The combined registry is what
+/// makes that joinable — both inserts contend for the same lock.
+#[tokio::test]
+async fn registry_insert_coalesces_concurrent_path_racers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
+    let shared_path = tmp.path().join("shared.ipynb");
+
+    let winner_uuid = Uuid::new_v4();
+    let winner_room = Arc::new(NotebookRoom::new_fresh(
+        winner_uuid,
+        Some(shared_path.clone()),
+        tmp.path(),
+        blob_store.clone(),
+        false,
+    ));
+    let loser_uuid = Uuid::new_v4();
+    let loser_room = Arc::new(NotebookRoom::new_fresh(
+        loser_uuid,
+        Some(shared_path.clone()),
+        tmp.path(),
+        blob_store,
+        false,
+    ));
+
+    // Winner gets in first.
+    let winner_outcome = rooms
+        .insert_or_get(winner_uuid, winner_room.clone(), Some(&shared_path))
+        .await
+        .expect("winner insert should succeed");
+    assert!(matches!(winner_outcome, InsertOutcome::Inserted(_, _)));
+
+    // Loser arrives with a different UUID but the same path. The
+    // registry must coalesce onto the winner's room rather than
+    // failing with PathAlreadyOpen.
+    let loser_outcome = rooms
+        .insert_or_get(loser_uuid, loser_room.clone(), Some(&shared_path))
+        .await
+        .expect("loser must coalesce, not error");
+    assert!(
+        matches!(loser_outcome, InsertOutcome::Existing(_, _)),
+        "racing path insert must return Existing for the winner's room"
+    );
+    let (returned, _guard) = loser_outcome.into_parts();
+    assert!(
+        Arc::ptr_eq(&returned, &winner_room),
+        "loser must receive the winner's Arc, not its own"
+    );
+
+    // The registry holds exactly one room and one path binding.
+    assert_eq!(rooms.len().await, 1);
+    assert_eq!(rooms.path_count().await, 1);
+    assert_eq!(rooms.peek_path_uuid(&shared_path).await, Some(winner_uuid));
+}
+
 // ── C1 regression: NotebookSync path handshake must reuse existing room ──
 
 /// Verify that the pattern used by the NotebookSync handshake — consulting

@@ -3907,7 +3907,11 @@ impl Daemon {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tick.tick().await;
-            self.ghost_room_reaper_sweep(RESIDENT_ROOM_TTL_SECS).await;
+            self.ghost_room_reaper_sweep_with_cap(
+                RESIDENT_ROOM_TTL_SECS,
+                MAX_RESIDENT_PEERLESS_ROOMS,
+            )
+            .await;
         }
     }
 
@@ -3934,17 +3938,25 @@ impl Daemon {
         self.notebook_rooms.len().await
     }
 
+    /// One sweep at production cap. Convenience wrapper around
+    /// `ghost_room_reaper_sweep_with_cap` for tests that only want to
+    /// drive the TTL layer.
+    pub async fn ghost_room_reaper_sweep(self: &Arc<Self>, ttl_secs: u64) {
+        self.ghost_room_reaper_sweep_with_cap(ttl_secs, MAX_RESIDENT_PEERLESS_ROOMS)
+            .await
+    }
+
     /// One sweep of the resident-room reaper. Extracted so tests can
     /// drive the reaper synchronously without waiting on
-    /// `REAPER_INTERVAL`. Public so integration tests (separate crate)
-    /// can drive a sweep.
+    /// `REAPER_INTERVAL`, and so they can pick a tiny `cap` to
+    /// exercise the LRU overflow path. Public so integration tests
+    /// (separate crate) can drive a sweep.
     ///
     /// Selection has two layers:
     ///   1. **TTL**: every peer-less room older than `ttl_secs`.
-    ///   2. **Count cap**: if peer-less rooms outnumber
-    ///      `MAX_RESIDENT_PEERLESS_ROOMS`, the oldest overflow rooms
-    ///      are reaped regardless of TTL.
-    pub async fn ghost_room_reaper_sweep(self: &Arc<Self>, ttl_secs: u64) {
+    ///   2. **Count cap**: if peer-less rooms outnumber `cap`, the
+    ///      oldest overflow rooms are reaped regardless of TTL.
+    pub async fn ghost_room_reaper_sweep_with_cap(self: &Arc<Self>, ttl_secs: u64, cap: usize) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -3988,22 +4000,21 @@ impl Daemon {
             .collect();
 
         // Count-cap layer: oldest-first overflow rooms.
-        let overflow: std::collections::HashSet<uuid::Uuid> =
-            if peerless.len() > MAX_RESIDENT_PEERLESS_ROOMS {
-                let mut by_age: Vec<&uuid::Uuid> =
-                    peerless.iter().map(|(uuid, _, _, _)| uuid).collect();
-                by_age.sort_by_key(|uuid| {
-                    peerless
-                        .iter()
-                        .find(|(u, _, _, _)| u == *uuid)
-                        .map(|(_, _, ts, _)| *ts)
-                        .unwrap_or(u64::MAX)
-                });
-                let cull = peerless.len() - MAX_RESIDENT_PEERLESS_ROOMS;
-                by_age.into_iter().take(cull).copied().collect()
-            } else {
-                std::collections::HashSet::new()
-            };
+        let overflow: std::collections::HashSet<uuid::Uuid> = if peerless.len() > cap {
+            let mut by_age: Vec<&uuid::Uuid> =
+                peerless.iter().map(|(uuid, _, _, _)| uuid).collect();
+            by_age.sort_by_key(|uuid| {
+                peerless
+                    .iter()
+                    .find(|(u, _, _, _)| u == *uuid)
+                    .map(|(_, _, ts, _)| *ts)
+                    .unwrap_or(u64::MAX)
+            });
+            let cull = peerless.len() - cap;
+            by_age.into_iter().take(cull).copied().collect()
+        } else {
+            std::collections::HashSet::new()
+        };
 
         let candidates: Vec<(
             uuid::Uuid,

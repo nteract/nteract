@@ -1896,6 +1896,288 @@ async fn test_peer_reconnect_bumps_generation() {
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
 
+/// PR 2 contract: when the count of peer-less rooms exceeds the cap,
+/// the reaper evicts the oldest peer-less rooms by
+/// `last_kernel_torn_down_at` regardless of TTL. The two
+/// most-recently-torn-down rooms must survive a cap=2 sweep over 3
+/// idle rooms.
+#[tokio::test]
+async fn test_resident_room_reaper_lru_cap_evicts_oldest() {
+    use std::sync::atomic::Ordering;
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut config = test_config(&temp_dir);
+    config.room_eviction_delay_ms = Some(0);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_for_inspect = daemon.clone();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    // Create three notebooks; disconnect each so the kernel teardown
+    // task stamps `last_kernel_torn_down_at`. The Vec preserves
+    // creation order (oldest first).
+    let mut notebook_ids: Vec<String> = Vec::new();
+    for tag in ["a", "b", "c"] {
+        let result = connect::connect_create(
+            socket_path.clone(),
+            "python",
+            None,
+            tag,
+            false,
+            None,
+            vec![],
+        )
+        .await
+        .unwrap();
+        let notebook_id = result.info.notebook_id.clone();
+        let client = result.handle;
+        assert!(wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await);
+        client.confirm_sync().await.unwrap();
+        notebook_ids.push(notebook_id);
+        // `client` drops here -> peer disconnect.
+    }
+
+    // Wait for every room to be peer-less and stamped. Then backdate
+    // their timestamps in creation order so `a < b < c` even on a
+    // fast machine where the stamps could land in the same second.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut ready = 0;
+        for id in &notebook_ids {
+            let uuid = uuid::Uuid::parse_str(id).unwrap();
+            if let Some(room) = daemon_for_inspect.test_get_room(uuid).await {
+                let no_peers = room.connections.active_peers.load(Ordering::Relaxed) == 0;
+                let stamped = room
+                    .connections
+                    .last_kernel_torn_down_at
+                    .load(Ordering::Relaxed)
+                    != 0;
+                if no_peers && stamped {
+                    ready += 1;
+                }
+            }
+        }
+        if ready == notebook_ids.len() {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("not all rooms reached peer-less + stamped within 5s");
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    for (offset, id) in notebook_ids.iter().enumerate() {
+        let uuid = uuid::Uuid::parse_str(id).unwrap();
+        let room = daemon_for_inspect.test_get_room(uuid).await.unwrap();
+        // a = oldest (now - 30), b = middle (now - 20), c = newest (now - 10).
+        let ts = now_secs - 30 + (offset as u64) * 10;
+        room.connections
+            .last_kernel_torn_down_at
+            .store(ts, Ordering::Relaxed);
+    }
+
+    // Sweep with a long TTL (so none have aged out) and cap=2. The
+    // overflow layer must drop exactly the oldest room (`a`).
+    daemon_for_inspect
+        .ghost_room_reaper_sweep_with_cap(24 * 3600, 2)
+        .await;
+
+    assert_eq!(
+        daemon_for_inspect.test_room_count().await,
+        2,
+        "cap=2 must leave exactly two rooms resident"
+    );
+    let uuid_a = uuid::Uuid::parse_str(&notebook_ids[0]).unwrap();
+    let uuid_b = uuid::Uuid::parse_str(&notebook_ids[1]).unwrap();
+    let uuid_c = uuid::Uuid::parse_str(&notebook_ids[2]).unwrap();
+    assert!(
+        daemon_for_inspect.test_get_room(uuid_a).await.is_none(),
+        "oldest peer-less room must be reaped"
+    );
+    assert!(
+        daemon_for_inspect.test_get_room(uuid_b).await.is_some(),
+        "middle peer-less room must survive"
+    );
+    assert!(
+        daemon_for_inspect.test_get_room(uuid_c).await.is_some(),
+        "newest peer-less room must survive"
+    );
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+/// PR 2 contract: active rooms (peers > 0) are exempt from both the
+/// TTL layer and the count cap. A cap of 1 with three connected
+/// notebooks must leave all three resident.
+#[tokio::test]
+async fn test_resident_room_reaper_lru_cap_exempts_active() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_for_inspect = daemon.clone();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    // Hold three clients connected so each room has active_peers == 1.
+    let mut clients = Vec::new();
+    for tag in ["a", "b", "c"] {
+        let result = connect::connect_create(
+            socket_path.clone(),
+            "python",
+            None,
+            tag,
+            false,
+            None,
+            vec![],
+        )
+        .await
+        .unwrap();
+        let client = result.handle;
+        assert!(wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await);
+        clients.push(client);
+    }
+
+    assert_eq!(daemon_for_inspect.test_room_count().await, 3);
+
+    // Sweep with cap=1 and TTL=0. The selection pass filters by
+    // `active_peers == 0`, so all three active rooms must survive.
+    daemon_for_inspect
+        .ghost_room_reaper_sweep_with_cap(0, 1)
+        .await;
+    assert_eq!(
+        daemon_for_inspect.test_room_count().await,
+        3,
+        "active rooms must not be reaped regardless of cap"
+    );
+
+    drop(clients);
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+/// PR 2 contract: an outstanding reservation blocks the reaper even
+/// when the room is past TTL. Simulates the handshake window where
+/// a connection has cloned the room's `Arc` but not yet incremented
+/// `active_peers`.
+#[tokio::test]
+async fn test_resident_room_reaper_skips_reserved_room() {
+    use std::sync::atomic::Ordering;
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut config = test_config(&temp_dir);
+    config.room_eviction_delay_ms = Some(0);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_for_inspect = daemon.clone();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let notebook_id;
+    {
+        let result = connect::connect_create(
+            socket_path.clone(),
+            "python",
+            None,
+            "test",
+            false,
+            None,
+            vec![],
+        )
+        .await
+        .unwrap();
+        notebook_id = result.info.notebook_id.clone();
+        let client = result.handle;
+        assert!(wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await);
+    }
+
+    let uuid = uuid::Uuid::parse_str(&notebook_id).unwrap();
+
+    // Wait for kernel teardown + stamp.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(room) = daemon_for_inspect.test_get_room(uuid).await {
+            if room
+                .connections
+                .last_kernel_torn_down_at
+                .load(Ordering::Relaxed)
+                != 0
+                && room.connections.active_peers.load(Ordering::Relaxed) == 0
+            {
+                break;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("kernel teardown did not stamp within 5s");
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+
+    // Backdate so the room is past TTL, then bump the reservation
+    // counter directly to simulate an in-flight handshake.
+    {
+        let room = daemon_for_inspect.test_get_room(uuid).await.unwrap();
+        let backdated = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .saturating_sub(25 * 3600);
+        room.connections
+            .last_kernel_torn_down_at
+            .store(backdated, Ordering::Relaxed);
+        room.connections
+            .reservations
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    // TTL would normally take the room, but `reservations > 0` blocks
+    // the commit-time predicate.
+    daemon_for_inspect.ghost_room_reaper_sweep(24 * 3600).await;
+    assert_eq!(
+        daemon_for_inspect.test_room_count().await,
+        1,
+        "reaper must skip rooms with outstanding reservations"
+    );
+
+    // Drop the reservation; the next sweep removes the room.
+    {
+        let room = daemon_for_inspect.test_get_room(uuid).await.unwrap();
+        room.connections
+            .reservations
+            .fetch_sub(1, Ordering::Relaxed);
+    }
+    daemon_for_inspect.ghost_room_reaper_sweep(24 * 3600).await;
+    assert_eq!(
+        daemon_for_inspect.test_room_count().await,
+        0,
+        "reaper must remove the room once the reservation drops"
+    );
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
 #[tokio::test]
 async fn test_notebook_cell_delete_propagation() {
     let temp_dir = TempDir::new().unwrap();
