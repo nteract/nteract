@@ -97,6 +97,10 @@ where
         .active_peers
         .fetch_add(1, Ordering::Relaxed);
     room.connections.had_peers.store(true, Ordering::Relaxed);
+    // Resuming a room that the ghost-room reaper might otherwise sweep:
+    // clear the inactive-since timestamp so the reaper can't pick this room
+    // off between now and the next kernel teardown.
+    room.connections.clear_kernel_torn_down();
     let peers = room.connections.active_peers.load(Ordering::Relaxed);
     info!(
         "[notebook-sync] Client connected to room {} ({} peer{})",

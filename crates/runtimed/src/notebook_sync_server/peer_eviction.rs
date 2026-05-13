@@ -9,10 +9,32 @@ use crate::task_supervisor::spawn_best_effort;
 
 use super::{
     flush_launched_deps_to_metadata, rename_env_dir_to_unified_hash, save_notebook_to_disk,
-    send_runtime_agent_request, should_preserve_env_on_eviction, shutdown_autosave_debouncer,
-    CapturedEnvRuntime, NotebookRoom, NotebookRooms,
+    send_runtime_agent_request, should_preserve_env_on_eviction, CapturedEnvRuntime, NotebookRoom,
+    NotebookRooms,
 };
 
+/// Handle a peer disconnecting from a room.
+///
+/// When the last peer leaves we tear down the kernel and clean up the
+/// environment, but the room stays resident in `notebook_rooms` and in
+/// `path_index` so a reconnecting peer finds the same doc, outputs, and
+/// file binding intact. The ghost-room reaper in `daemon.rs` removes the
+/// room from the maps only after a long no-peer, no-kernel idle window.
+///
+/// Concretely, "kernel teardown" runs:
+///   - synchronous flush of the persist debouncer,
+///   - `ShutdownKernel` RPC to the runtime agent (with timeout),
+///   - clear `runtime_agent_handle` and `runtime_agent_request_tx`,
+///   - flush hot-installed dependencies into notebook metadata,
+///   - one final autosave of the `.ipynb`,
+///   - rename the env directory to the post-flush unified hash,
+///   - delete the env directory unless the room holds a preserved env.
+///
+/// The autosave debouncer and the `.ipynb` / project-file watchers are
+/// left alive: `get_or_create_room_result` reuses the existing room on
+/// reconnect without rebinding them, so tearing them down here would
+/// silently drop autosave coverage for the resumed session. The reaper
+/// shuts them down when it actually removes the room.
 pub(super) async fn handle_peer_disconnect(
     room: &Arc<NotebookRoom>,
     rooms: NotebookRooms,
@@ -20,82 +42,67 @@ pub(super) async fn handle_peer_disconnect(
     peer_id: &str,
     daemon: &Arc<crate::daemon::Daemon>,
 ) {
-    // Peer disconnected — decrement and possibly evict the room.
+    // Peer disconnected — decrement and possibly tear down the kernel.
     let remaining = room
         .connections
         .active_peers
         .fetch_sub(1, Ordering::Relaxed)
         - 1;
     if remaining == 0 {
-        // Schedule delayed eviction check. This handles:
+        // Schedule delayed teardown check. This handles:
         // 1. Grace period during auto-launch (client may reconnect)
         // 2. Kernel running with no peers (idle timeout)
-        // Without this, rooms with kernels would leak indefinitely.
-        let eviction_delay = daemon.room_eviction_delay().await;
-        let rooms_for_eviction = rooms.clone();
-        let path_index_for_eviction = daemon.path_index.clone();
-        let room_for_eviction = room.clone();
-        let notebook_id_for_eviction = notebook_id.to_string();
+        // Without this, kernels would leak indefinitely.
+        let teardown_delay = daemon.room_eviction_delay().await;
+        let rooms_for_teardown = rooms.clone();
+        let room_for_teardown = room.clone();
+        let notebook_id_for_teardown = notebook_id.to_string();
 
         info!(
-            "[notebook-sync] All peers disconnected from room {} (uuid={}, peer_id={}), scheduling eviction check in {:?}",
-            notebook_id,
-            room.id,
-            peer_id,
-            eviction_delay
+            "[notebook-sync] All peers disconnected from room {} (uuid={}, peer_id={}), scheduling kernel teardown in {:?}",
+            notebook_id, room.id, peer_id, teardown_delay
         );
 
-        spawn_best_effort("room-eviction", async move {
-            // Outer loop wraps the eviction attempt so a flush timeout can
-            // back off and retry rather than leak the room (and any attached
-            // kernel / watcher) indefinitely. The loop exits either by
-            // cancelling (peers reconnected) or by completing teardown.
-            let mut delay = eviction_delay;
+        spawn_best_effort("room-kernel-teardown", async move {
+            // Outer loop wraps the teardown attempt so a flush timeout can
+            // back off and retry rather than leak the kernel indefinitely.
+            // Exits either by cancelling (peers reconnected) or by
+            // completing teardown.
+            let mut delay = teardown_delay;
             let mut flush_retries: u32 = 0;
             loop {
                 tokio::time::sleep(delay).await;
 
                 // Check if peers reconnected during the delay
-                if room_for_eviction
+                if room_for_teardown
                     .connections
                     .active_peers
                     .load(Ordering::Relaxed)
                     > 0
                 {
                     info!(
-                        "[notebook-sync] Eviction cancelled for {} (peers reconnected)",
-                        notebook_id_for_eviction
+                        "[notebook-sync] Kernel teardown cancelled for {} (peers reconnected)",
+                        notebook_id_for_teardown
                     );
                     return;
                 }
 
-                // Force a synchronous flush of the persist debouncer BEFORE removing
-                // the room from the map. Without this, a fast reconnect lands in
-                // the window between HashMap removal and the debouncer's shutdown
-                // flush (which only fires when the last Arc to the room drops, and
-                // the eviction task still holds one while running kernel/env
-                // teardown). In that window get_or_create_room creates a fresh
-                // room that loads stale bytes from the .automerge file — or no
-                // file at all for brand-new untitled notebooks — silently losing
-                // cells and edits.
+                // Force a synchronous flush of the persist debouncer BEFORE
+                // we touch the kernel. The room stays resident across kernel
+                // teardown, so the historical "fast reconnect lands in a
+                // post-removal window" race no longer applies — but the
+                // flush is still load-bearing because hot-installed deps
+                // and any unflushed edits should be on disk before kernel
+                // RPC starts unwinding things.
                 //
-                // Request/ack over a dedicated channel. The debouncer has a
-                // select! arm that writes the latest doc bytes and replies on
-                // the oneshot with the I/O result.
-                //
-                // On timeout or write failure we back off and retry indefinitely.
-                // Proceeding with HashMap removal on a failed flush reopens the
-                // race: either the write is still in flight, or the latest bytes
-                // are only in the soon-to-be-dropped room. We'd rather leak a
-                // room than silently lose user edits. A reconnect still finds
-                // the live in-memory room and recovers; a genuinely wedged
-                // filesystem will surface through other signals, and daemon
-                // shutdown still tries a last flush on persist_tx drop.
+                // On timeout or write failure we back off and retry. The
+                // room stays resident, so retrying is cheap and a reconnect
+                // still finds the live in-memory doc.
                 const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
                 const FLUSH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
                 let mut flush_ok = true;
                 let mut flush_failure_kind: Option<&'static str> = None;
-                if let Some(ref d) = room_for_eviction.persistence.debouncer {
+                if let Some(ref d) = room_for_teardown.persistence.debouncer {
                     let (ack_tx, ack_rx) = oneshot::channel::<bool>();
                     if d.flush_request_tx.send(ack_tx).is_ok() {
                         match recv_oneshot_with_timeout(ack_rx, FLUSH_TIMEOUT).await {
@@ -107,11 +114,11 @@ pub(super) async fn handle_peer_disconnect(
                             TimedOneShot::SenderDropped => {
                                 // Debouncer dropped the ack sender without
                                 // replying — task already exited (e.g. a
-                                // previous eviction flushed and closed). Any
+                                // previous teardown flushed and closed). Any
                                 // pending bytes went through the shutdown path.
                                 debug!(
-                                    "[notebook-sync] Eviction flush ack dropped for {} (debouncer exited)",
-                                    notebook_id_for_eviction
+                                    "[notebook-sync] Kernel-teardown flush ack dropped for {} (debouncer exited)",
+                                    notebook_id_for_teardown
                                 );
                             }
                             TimedOneShot::TimedOut => {
@@ -124,8 +131,8 @@ pub(super) async fn handle_peer_disconnect(
                 if !flush_ok {
                     flush_retries += 1;
                     warn!(
-                        "[notebook-sync] Eviction flush failed for {} ({}; attempt {}); keeping room resident, retrying in {:?}",
-                        notebook_id_for_eviction,
+                        "[notebook-sync] Kernel-teardown flush failed for {} ({}; attempt {}); retrying in {:?}",
+                        notebook_id_for_teardown,
                         flush_failure_kind.unwrap_or("unknown"),
                         flush_retries,
                         FLUSH_RETRY_DELAY
@@ -135,8 +142,8 @@ pub(super) async fn handle_peer_disconnect(
                 }
                 if flush_retries > 0 {
                     info!(
-                        "[notebook-sync] Eviction flush succeeded for {} after {} retr{}",
-                        notebook_id_for_eviction,
+                        "[notebook-sync] Kernel-teardown flush succeeded for {} after {} retr{}",
+                        notebook_id_for_teardown,
                         flush_retries,
                         if flush_retries == 1 { "y" } else { "ies" }
                     );
@@ -144,306 +151,263 @@ pub(super) async fn handle_peer_disconnect(
                 break;
             }
 
-            // Remove room from the map under the lock, then drop the lock
-            // BEFORE async teardown. Holding the lock across runtime agent
-            // shutdown RPCs causes a convoy deadlock when the agent is
-            // unresponsive — all notebook operations block on the lock.
-            //
-            // Look up the room by Arc pointer — UUID key is stable, but this
-            // guards against double-eviction races.
-            let (should_teardown, evicted_uuid) = {
-                let mut rooms_guard = rooms_for_eviction.lock().await;
-                if room_for_eviction
+            // Re-check the peer count under the rooms lock to serialize with
+            // reconnects. The room is kept in the map either way — we only
+            // gate the kernel-side teardown on "still no peers."
+            let should_teardown = {
+                let _rooms_guard = rooms_for_teardown.lock().await;
+                room_for_teardown
                     .connections
                     .active_peers
                     .load(Ordering::Relaxed)
                     == 0
-                {
-                    // Find the room's UUID key by Arc pointer identity
-                    let current_key = rooms_guard
-                        .iter()
-                        .find(|(_, r)| Arc::ptr_eq(r, &room_for_eviction))
-                        .map(|(k, _)| *k);
-                    if let Some(uuid) = current_key {
-                        rooms_guard.remove(&uuid);
-                        (true, Some(uuid))
-                    } else {
-                        debug!(
-                            "[notebook-sync] Eviction skipped for {} (room already removed)",
-                            notebook_id_for_eviction
-                        );
-                        (false, None)
-                    }
-                } else {
-                    (false, None)
-                }
             }; // rooms lock dropped here
 
-            // Clean up path_index entry (separate lock, after rooms lock is dropped).
-            // Use remove_by_uuid rather than reading the room binding path; a
-            // concurrent save-path update can hold the binding write lock, and
-            // a try_read() would silently return None, leaking the path_index entry.
-            if should_teardown {
-                if let Some(uuid) = evicted_uuid {
-                    path_index_for_eviction.lock().await.remove_by_uuid(uuid);
+            if !should_teardown {
+                debug!(
+                    "[notebook-sync] Kernel teardown skipped for {} (peers reconnected during flush)",
+                    notebook_id_for_teardown
+                );
+                return;
+            }
+
+            info!(
+                "[notebook-sync] Kernel teardown starting for {} (uuid={})",
+                notebook_id_for_teardown, room_for_teardown.id
+            );
+
+            // Shut down runtime agent subprocess if running. RuntimeAgentHandle::spawn
+            // moves Child into a background task, so kill_on_drop doesn't
+            // trigger on room drop — we need explicit shutdown via RPC.
+            {
+                let has_runtime_agent = room_for_teardown
+                    .runtime_agent_request_tx
+                    .lock()
+                    .await
+                    .is_some();
+                if has_runtime_agent {
+                    // Timeout the shutdown RPC — a dead/stuck agent shouldn't
+                    // block teardown forever.
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        send_runtime_agent_request(
+                            &room_for_teardown,
+                            notebook_protocol::protocol::RuntimeAgentRequest::ShutdownKernel,
+                        ),
+                    )
+                    .await
+                    {
+                        Ok(_) => {}
+                        Err(_) => {
+                            warn!(
+                                "[notebook-sync] Runtime agent shutdown timed out for {}, force-dropping",
+                                notebook_id_for_teardown
+                            );
+                        }
+                    }
+                    // Drop the handle so it tears down the runtime-agent ownership group
+                    // and removes the matching manifest only after cleanup succeeds.
+                    {
+                        let mut guard = room_for_teardown.runtime_agent_handle.lock().await;
+                        *guard = None;
+                    }
+                    {
+                        let mut tx = room_for_teardown.runtime_agent_request_tx.lock().await;
+                        *tx = None;
+                    }
                 }
             }
 
-            if should_teardown {
-                info!(
-                    "[notebook-sync] Eviction teardown starting for {} (uuid={:?})",
-                    notebook_id_for_eviction, evicted_uuid
+            // Flush launched_config deps → metadata.runt.{uv,conda}.dependencies
+            // before env cleanup and final save. This captures any packages
+            // the user hot-installed during the session so they land in
+            // the .ipynb, and feeds the preserve-predicate below with the
+            // up-to-date dep list so the unified-hash path check points
+            // at the right directory.
+            //
+            // The launched config carries deps for at most one runtime
+            // (UV xor Conda), and `effective_user_deps_from_launched`
+            // gates strictly on that — so at most one flush happens per
+            // teardown. We record which runtime flushed so the rename
+            // step below uses the right hash function.
+            let launched_snapshot = room_for_teardown
+                .runtime_agent_launched_config
+                .read()
+                .await
+                .clone();
+            let mut flushed_runtime: Option<CapturedEnvRuntime> = None;
+            let mut save_succeeded = false;
+            if let Some(ref launched) = launched_snapshot {
+                let has_saved_path = room_for_teardown.file_binding.has_saved_path().await;
+                let env_source = room_for_teardown
+                    .state
+                    .read(|sd| sd.read_state().kernel.env_source.clone())
+                    .unwrap_or_default();
+                let project_backed = matches!(
+                    env_source.as_str(),
+                    "pixi:toml" | "uv:pyproject" | "conda:env_yml"
                 );
-                // Shut down runtime agent subprocess if running. RuntimeAgentHandle::spawn
-                // moves Child into a background task, so kill_on_drop doesn't
-                // trigger on room drop — we need explicit shutdown via RPC.
-                {
-                    let has_runtime_agent = room_for_eviction
-                        .runtime_agent_request_tx
-                        .lock()
-                        .await
-                        .is_some();
-                    if has_runtime_agent {
-                        // Timeout the shutdown RPC — a dead/stuck agent shouldn't
-                        // block teardown forever.
-                        match tokio::time::timeout(
-                            std::time::Duration::from_secs(5),
-                            send_runtime_agent_request(
-                                &room_for_eviction,
-                                notebook_protocol::protocol::RuntimeAgentRequest::ShutdownKernel,
-                            ),
-                        )
-                        .await
+                if has_saved_path && !project_backed {
+                    for runtime in [CapturedEnvRuntime::Uv, CapturedEnvRuntime::Conda] {
+                        if flush_launched_deps_to_metadata(&room_for_teardown, launched, runtime)
+                            .await
                         {
-                            Ok(_) => {}
-                            Err(_) => {
-                                warn!(
-                                    "[notebook-sync] Runtime agent shutdown timed out for {}, force-dropping",
-                                    notebook_id_for_eviction
-                                );
-                            }
-                        }
-                        // Drop the handle so it tears down the runtime-agent ownership group
-                        // and removes the matching manifest only after cleanup succeeds.
-                        {
-                            let mut guard = room_for_eviction.runtime_agent_handle.lock().await;
-                            *guard = None;
-                        }
-                        {
-                            let mut tx = room_for_eviction.runtime_agent_request_tx.lock().await;
-                            *tx = None;
+                            flushed_runtime = Some(runtime);
                         }
                     }
-                }
-
-                // Stop file watcher if running. `NotebookFileBinding` owns
-                // the lifecycle slot; it is empty until a watcher is spawned.
-                if room_for_eviction
-                    .file_binding
-                    .shutdown_notebook_watcher()
-                    .await
-                {
-                    debug!(
-                        "[notebook-sync] Stopped file watcher for {}",
-                        notebook_id_for_eviction
-                    );
-                }
-
-                // Stop the project-file watcher if one is armed. Armed only
-                // when `refresh_project_context` actually found a project
-                // file to watch; untitled / bare-dir notebooks leave it
-                // unset.
-                room_for_eviction
-                    .file_binding
-                    .shutdown_project_file_watcher()
-                    .await;
-
-                // Flush launched_config deps → metadata.runt.{uv,conda}.dependencies
-                // before env cleanup and final save. This captures any packages
-                // the user hot-installed during the session so they land in
-                // the .ipynb, and feeds the preserve-predicate below with the
-                // up-to-date dep list so the unified-hash path check points
-                // at the right directory.
-                //
-                // The launched config carries deps for at most one runtime
-                // (UV xor Conda), and `effective_user_deps_from_launched`
-                // gates strictly on that — so at most one flush happens per
-                // eviction. We record which runtime flushed so the rename
-                // step below uses the right hash function.
-                let launched_snapshot = room_for_eviction
-                    .runtime_agent_launched_config
-                    .read()
-                    .await
-                    .clone();
-                let mut flushed_runtime: Option<CapturedEnvRuntime> = None;
-                let mut save_succeeded = false;
-                if let Some(ref launched) = launched_snapshot {
-                    let has_saved_path = room_for_eviction.file_binding.has_saved_path().await;
-                    let env_source = room_for_eviction
-                        .state
-                        .read(|sd| sd.read_state().kernel.env_source.clone())
-                        .unwrap_or_default();
-                    let project_backed = matches!(
-                        env_source.as_str(),
-                        "pixi:toml" | "uv:pyproject" | "conda:env_yml"
-                    );
-                    if has_saved_path && !project_backed {
-                        for runtime in [CapturedEnvRuntime::Uv, CapturedEnvRuntime::Conda] {
-                            if flush_launched_deps_to_metadata(
-                                &room_for_eviction,
-                                launched,
-                                runtime,
-                            )
-                            .await
-                            {
-                                flushed_runtime = Some(runtime);
-                            }
-                        }
-                        if flushed_runtime.is_some() {
-                            info!(
-                                "[notebook-sync] Flushed hot-sync deps into metadata for {}",
-                                notebook_id_for_eviction
-                            );
-                            // Persist to disk now — the autosave debouncer
-                            // has already fired for this eviction, and the
-                            // daemon is about to tear the room down.
-                            match save_notebook_to_disk(&room_for_eviction, None).await {
-                                Ok(_) => save_succeeded = true,
-                                Err(e) => warn!(
-                                    "[notebook-sync] Failed to persist hot-sync deps to {}: {} — skipping env-dir rename",
-                                    notebook_id_for_eviction, e
-                                ),
-                            }
-                        }
-                    } else if project_backed {
-                        debug!(
-                            "[notebook-sync] Skipping launched dep metadata flush for project-backed env {}",
-                            env_source
+                    if flushed_runtime.is_some() {
+                        info!(
+                            "[notebook-sync] Flushed hot-sync deps into metadata for {}",
+                            notebook_id_for_teardown
                         );
-                    }
-                }
-
-                const AUTOSAVE_SHUTDOWN_TIMEOUT: std::time::Duration =
-                    std::time::Duration::from_secs(5);
-                let autosave_shutdown_ok = shutdown_autosave_debouncer(
-                    &room_for_eviction,
-                    &notebook_id_for_eviction,
-                    AUTOSAVE_SHUTDOWN_TIMEOUT,
-                )
-                .await;
-                if !autosave_shutdown_ok {
-                    warn!(
-                        "[notebook-sync] Autosave shutdown did not complete final .ipynb save for {}; continuing eviction after .automerge flush",
-                        notebook_id_for_eviction
-                    );
-                }
-
-                // Rename the env dir to match the post-flush unified
-                // hash so the next reopen's `unified_env_on_disk` lookup
-                // finds it. Skip the rename when save failed — leaving
-                // disk metadata on the old hash while the env moved to
-                // the new one would defeat the next reopen. Kernel is
-                // already dead at this point (runtime agent was shut
-                // down above), so the rename is safe.
-                if let Some(runtime) = flushed_runtime {
-                    if save_succeeded {
-                        let current = room_for_eviction
-                            .runtime_agent_env_path
-                            .read()
-                            .await
-                            .clone();
-                        if let Some(current_path) = current {
-                            let metadata_after = {
-                                let doc = room_for_eviction.doc.read().await;
-                                doc.get_metadata_snapshot()
-                            };
-                            let new_path = rename_env_dir_to_unified_hash(
-                                &current_path,
-                                metadata_after.as_ref(),
-                                runtime,
-                                &kernel_env::uv::default_cache_dir_uv(),
-                                &kernel_env::conda::default_cache_dir_conda(),
-                            )
-                            .await;
-                            if new_path != current_path {
-                                let mut ep = room_for_eviction.runtime_agent_env_path.write().await;
-                                *ep = Some(new_path);
-                            }
+                        // Persist to disk now — autosave already saw the
+                        // teardown and is about to flush, but writing
+                        // here keeps the env-dir rename below correct
+                        // even if autosave is wedged.
+                        match save_notebook_to_disk(&room_for_teardown, None).await {
+                            Ok(_) => save_succeeded = true,
+                            Err(e) => warn!(
+                                "[notebook-sync] Failed to persist hot-sync deps to {}: {} — skipping env-dir rename",
+                                notebook_id_for_teardown, e
+                            ),
                         }
                     }
+                } else if project_backed {
+                    debug!(
+                        "[notebook-sync] Skipping launched dep metadata flush for project-backed env {}",
+                        env_source
+                    );
                 }
+            }
 
-                // Clean up the environment directory on eviction — unless
-                // the room holds a captured env bound to a saved .ipynb.
-                //
-                // Pool envs (`runtimed-{uv,conda,pixi}-*`) and captured envs
-                // for untitled notebooks are orphaned once the room is gone:
-                // pool envs were mutated with the notebook's deps and can't
-                // be returned, and captured envs with no saved .ipynb have
-                // no persistent `env_id` reference. Both delete eagerly.
-                //
-                // Captured envs for saved notebooks are the reopen cache.
-                // Preserve them so the next daemon session's first open
-                // hits `unified_env_on_disk` instead of rebuilding from the
-                // pool. A future age-based GC sweeps envs whose notebook
-                // hasn't been opened in a long time.
-                //
-                // Use pool_env_root() to normalise pixi paths — their
-                // venv_path is nested (e.g. .pixi/envs/default) but we
-                // operate on the top-level runtimed-pixi-* directory.
-                {
-                    let env_path = room_for_eviction
+            // Autosave + file watchers stay alive across kernel teardown so
+            // `get_or_create_room_result` reuses the resident room on
+            // reconnect without rebinding them. The ghost reaper shuts them
+            // down at the point the room is actually removed from the map.
+            // With no peers driving doc edits, the debouncer/watchers sit
+            // idle and cost nothing.
+
+            // Rename the env dir to match the post-flush unified
+            // hash so the next reopen's `unified_env_on_disk` lookup
+            // finds it. Skip the rename when save failed — leaving
+            // disk metadata on the old hash while the env moved to
+            // the new one would defeat the next reopen. Kernel is
+            // already dead at this point (runtime agent was shut
+            // down above), so the rename is safe.
+            if let Some(runtime) = flushed_runtime {
+                if save_succeeded {
+                    let current = room_for_teardown
                         .runtime_agent_env_path
                         .read()
                         .await
                         .clone();
-                    if let Some(ref path) = env_path {
-                        let has_saved_path = room_for_eviction.file_binding.has_saved_path().await;
-                        let metadata = {
-                            let doc = room_for_eviction.doc.read().await;
+                    if let Some(current_path) = current {
+                        let metadata_after = {
+                            let doc = room_for_teardown.doc.read().await;
                             doc.get_metadata_snapshot()
                         };
-                        let preserve = should_preserve_env_on_eviction(
-                            has_saved_path,
-                            path,
-                            metadata.as_ref(),
+                        let new_path = rename_env_dir_to_unified_hash(
+                            &current_path,
+                            metadata_after.as_ref(),
+                            runtime,
                             &kernel_env::uv::default_cache_dir_uv(),
                             &kernel_env::conda::default_cache_dir_conda(),
-                        );
-                        if preserve {
-                            info!(
-                                "[notebook-sync] Preserving captured env {:?} on eviction (saved notebook)",
-                                path
-                            );
-                        } else {
-                            let root = crate::paths::pool_env_root(path);
-                            let cache_dir = crate::paths::default_cache_dir();
-                            if !crate::is_within_cache_dir(&root, &cache_dir) {
-                                warn!(
-                                    "[notebook-sync] Refusing to delete env {:?} on eviction (not within cache dir)",
-                                    root
-                                );
-                            } else if root.exists() {
-                                info!(
-                                    "[notebook-sync] Cleaning up env {:?} on room eviction",
-                                    root
-                                );
-                                if let Err(e) = tokio::fs::remove_dir_all(&root).await {
-                                    warn!(
-                                        "[notebook-sync] Failed to clean up env {:?} on eviction: {}",
-                                        root, e
-                                    );
-                                }
-                            }
+                        )
+                        .await;
+                        if new_path != current_path {
+                            let mut ep = room_for_teardown.runtime_agent_env_path.write().await;
+                            *ep = Some(new_path);
                         }
                     }
                 }
-
-                info!(
-                    "[notebook-sync] Eviction teardown finished for {} (idle timeout)",
-                    notebook_id_for_eviction
-                );
             }
+
+            // Clean up the environment directory on teardown — unless
+            // the room holds a captured env bound to a saved .ipynb.
+            //
+            // Pool envs (`runtimed-{uv,conda,pixi}-*`) and captured envs
+            // for untitled notebooks are orphaned once the kernel is gone:
+            // pool envs were mutated with the notebook's deps and can't
+            // be returned, and captured envs with no saved .ipynb have
+            // no persistent `env_id` reference. Both delete eagerly.
+            //
+            // Captured envs for saved notebooks are the reopen cache.
+            // Preserve them so the next launch's `unified_env_on_disk`
+            // lookup hits the cached env instead of rebuilding from the
+            // pool. A future age-based GC sweeps envs whose notebook
+            // hasn't been opened in a long time.
+            //
+            // Use pool_env_root() to normalise pixi paths — their
+            // venv_path is nested (e.g. .pixi/envs/default) but we
+            // operate on the top-level runtimed-pixi-* directory.
+            {
+                let env_path = room_for_teardown
+                    .runtime_agent_env_path
+                    .read()
+                    .await
+                    .clone();
+                if let Some(ref path) = env_path {
+                    let has_saved_path = room_for_teardown.file_binding.has_saved_path().await;
+                    let metadata = {
+                        let doc = room_for_teardown.doc.read().await;
+                        doc.get_metadata_snapshot()
+                    };
+                    let preserve = should_preserve_env_on_eviction(
+                        has_saved_path,
+                        path,
+                        metadata.as_ref(),
+                        &kernel_env::uv::default_cache_dir_uv(),
+                        &kernel_env::conda::default_cache_dir_conda(),
+                    );
+                    if preserve {
+                        info!(
+                            "[notebook-sync] Preserving captured env {:?} on kernel teardown (saved notebook)",
+                            path
+                        );
+                    } else {
+                        let root = crate::paths::pool_env_root(path);
+                        let cache_dir = crate::paths::default_cache_dir();
+                        if !crate::is_within_cache_dir(&root, &cache_dir) {
+                            warn!(
+                                "[notebook-sync] Refusing to delete env {:?} on kernel teardown (not within cache dir)",
+                                root
+                            );
+                        } else if root.exists() {
+                            info!(
+                                "[notebook-sync] Cleaning up env {:?} on kernel teardown",
+                                root
+                            );
+                            if let Err(e) = tokio::fs::remove_dir_all(&root).await {
+                                warn!(
+                                    "[notebook-sync] Failed to clean up env {:?} on kernel teardown: {}",
+                                    root, e
+                                );
+                            }
+                        }
+                    }
+                    // Clear the env-path slot now that the directory is
+                    // gone (or has been intentionally preserved under a
+                    // new unified-hash name). Leaving the old path here
+                    // would mis-report the env to `runt env clean` and
+                    // friends once the dir no longer exists.
+                    if !preserve {
+                        let mut ep = room_for_teardown.runtime_agent_env_path.write().await;
+                        *ep = None;
+                    }
+                }
+            }
+
+            // Stamp the room as "kernel torn down at now" so the ghost
+            // reaper can find it. If a peer raced in between the last
+            // peer-count check and now, their reconnect path zeroes this
+            // back out — the reaper re-checks `active_peers == 0` under
+            // the lock before sweeping.
+            room_for_teardown.connections.stamp_kernel_torn_down_now();
+
+            info!(
+                "[notebook-sync] Kernel torn down for {}; room held for resume",
+                notebook_id_for_teardown
+            );
         });
     } else {
         info!(

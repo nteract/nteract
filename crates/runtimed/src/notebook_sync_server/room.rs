@@ -418,14 +418,21 @@ impl RoomPersistence {
 
 /// Per-connection accounting for room eviction + `is_draining` reporting.
 ///
-/// - `active_peers`: live counter, drives room eviction when it hits zero.
+/// - `active_peers`: live counter, drives kernel teardown when it hits zero.
 /// - `had_peers`: one-way latch flipped on first connect. Kept because the
 ///   Python SDK's `is_draining = (active_peers == 0 && had_peers)` check
 ///   needs to distinguish "brand-new, no one has connected yet" from
-///   "drained, awaiting eviction." Exposed on the `RoomInfo` wire type.
+///   "drained, awaiting kernel teardown." Exposed on the `RoomInfo` wire type.
+/// - `last_kernel_torn_down_at`: unix-epoch seconds when the room finished
+///   kernel teardown after the last peer left. `0` means "never torn down"
+///   (still active, still has a kernel, or the room was just created). The
+///   ghost-room reaper uses this to remove rooms that have been kernel-less
+///   and peer-less for longer than `GHOST_ROOM_TTL`. Cleared back to `0`
+///   when a peer reconnects so the reaper won't fire on a live room.
 pub struct RoomConnections {
     pub active_peers: AtomicUsize,
     pub had_peers: AtomicBool,
+    pub last_kernel_torn_down_at: AtomicU64,
 }
 
 impl Default for RoomConnections {
@@ -433,7 +440,35 @@ impl Default for RoomConnections {
         Self {
             active_peers: AtomicUsize::new(0),
             had_peers: AtomicBool::new(false),
+            last_kernel_torn_down_at: AtomicU64::new(0),
         }
+    }
+}
+
+impl RoomConnections {
+    /// Unix-epoch seconds when the room last finished kernel teardown with
+    /// no peers, or `None` if the room is currently active or has never had
+    /// kernel teardown.
+    pub fn last_kernel_torn_down_at(&self) -> Option<u64> {
+        match self.last_kernel_torn_down_at.load(Ordering::Relaxed) {
+            0 => None,
+            ts => Some(ts),
+        }
+    }
+
+    /// Stamp the teardown timestamp to "now" (unix epoch seconds).
+    pub fn stamp_kernel_torn_down_now(&self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.last_kernel_torn_down_at.store(now, Ordering::Relaxed);
+    }
+
+    /// Clear the teardown timestamp. Called on peer reconnect so the
+    /// ghost-room reaper does not race with an active room.
+    pub fn clear_kernel_torn_down(&self) {
+        self.last_kernel_torn_down_at.store(0, Ordering::Relaxed);
     }
 }
 
