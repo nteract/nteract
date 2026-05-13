@@ -114,26 +114,19 @@ impl NotebookFileBinding {
     }
 
     pub async fn claim_path(
-        path_index: &Arc<tokio::sync::Mutex<PathIndex>>,
+        rooms: &NotebookRooms,
         canonical: &Path,
         uuid: uuid::Uuid,
     ) -> Result<(), notebook_protocol::protocol::SaveErrorKind> {
-        try_claim_path(path_index, canonical, uuid).await
+        try_claim_path(rooms, canonical, uuid).await
     }
 
-    pub async fn release_path(path_index: &Arc<tokio::sync::Mutex<PathIndex>>, canonical: &Path) {
-        path_index.lock().await.remove(canonical);
+    pub async fn release_path(rooms: &NotebookRooms, canonical: &Path) {
+        rooms.unbind_path(canonical).await;
     }
 
-    pub async fn replace_claim(
-        path_index: &Arc<tokio::sync::Mutex<PathIndex>>,
-        old: &Path,
-        new: PathBuf,
-        uuid: uuid::Uuid,
-    ) {
-        let mut idx = path_index.lock().await;
-        idx.remove(old);
-        if let Err(e) = idx.insert(new.clone(), uuid) {
+    pub async fn replace_claim(rooms: &NotebookRooms, old: &Path, new: PathBuf, uuid: uuid::Uuid) {
+        if let Err(e) = rooms.replace_path(old, new.clone(), uuid).await {
             warn!(
                 "[notebook-sync] post-write path_index reinsert failed for {:?}: {} \
                  — room {} may be orphaned from path lookup",
@@ -531,17 +524,11 @@ impl RoomConnections {
 ///
 /// The guard intentionally does not implement `Clone`; each
 /// reservation is a single slot.
-///
-/// The non-test callers (`find_room_by_path`, `get_or_create_room_result`)
-/// are wired up in the following commit that introduces `RoomRegistry`;
-/// hence the `allow(dead_code)` here.
 #[must_use = "drop the guard when the handshake commits or aborts; otherwise the reservation leaks until the room itself is dropped"]
-#[allow(dead_code)]
 pub struct ReservationGuard {
     room: Arc<NotebookRoom>,
 }
 
-#[allow(dead_code)]
 impl ReservationGuard {
     /// Take a reservation on `room`. Increments `reservations` once.
     pub fn new(room: Arc<NotebookRoom>) -> Self {
@@ -552,6 +539,7 @@ impl ReservationGuard {
     }
 
     /// The room this guard is reserving.
+    #[allow(dead_code)]
     pub fn room(&self) -> &Arc<NotebookRoom> {
         &self.room
     }

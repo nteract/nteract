@@ -325,15 +325,14 @@ pub(crate) async fn canonical_target_path(target: &Path) -> PathBuf {
     target.to_path_buf()
 }
 
-/// Try to claim a path in the path_index for a given room. Returns the
+/// Try to claim a path in the path index for a given room. Returns the
 /// structured `PathAlreadyOpen` error if another room already holds it.
 pub(crate) async fn try_claim_path(
-    path_index: &Arc<tokio::sync::Mutex<PathIndex>>,
+    rooms: &NotebookRooms,
     canonical: &Path,
     uuid: uuid::Uuid,
 ) -> Result<(), notebook_protocol::protocol::SaveErrorKind> {
-    let mut idx = path_index.lock().await;
-    match idx.insert(canonical.to_path_buf(), uuid) {
+    match rooms.bind_path(uuid, canonical.to_path_buf()).await {
         Ok(()) => Ok(()),
         Err(path_index::PathIndexError::PathAlreadyOpen { uuid, path: p }) => Err(
             notebook_protocol::protocol::SaveErrorKind::PathAlreadyOpen {

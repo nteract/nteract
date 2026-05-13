@@ -169,17 +169,18 @@ pub(super) async fn handle_peer_disconnect(
             // room stays in the map either way; we only gate the
             // kernel-side teardown on "no peers AND no reconnect since
             // scheduling."
-            let should_teardown = {
-                let _rooms_guard = rooms_for_teardown.lock().await;
-                let no_peers = room_for_teardown
-                    .connections
-                    .active_peers
-                    .load(Ordering::Relaxed)
-                    == 0;
-                let same_generation =
-                    room_for_teardown.connections.connection_generation() == teardown_generation;
-                no_peers && same_generation
-            }; // rooms lock dropped here
+            let should_teardown = rooms_for_teardown
+                .serialize_with(|| {
+                    let no_peers = room_for_teardown
+                        .connections
+                        .active_peers
+                        .load(Ordering::Relaxed)
+                        == 0;
+                    let same_generation = room_for_teardown.connections.connection_generation()
+                        == teardown_generation;
+                    no_peers && same_generation
+                })
+                .await;
 
             if !should_teardown {
                 debug!(
@@ -215,24 +216,25 @@ pub(super) async fn handle_peer_disconnect(
             // the peer-count / generation check makes the connect path
             // observe a consistent "destructive teardown in progress"
             // state if (and only if) we will actually proceed below.
-            let still_valid = {
-                let _rooms_guard = rooms_for_teardown.lock().await;
-                let no_peers = room_for_teardown
-                    .connections
-                    .active_peers
-                    .load(Ordering::Relaxed)
-                    == 0;
-                let same_generation =
-                    room_for_teardown.connections.connection_generation() == teardown_generation;
-                let ok = no_peers && same_generation;
-                if ok {
-                    room_for_teardown
+            let still_valid = rooms_for_teardown
+                .serialize_with(|| {
+                    let no_peers = room_for_teardown
                         .connections
-                        .kernel_teardown_destructive
-                        .store(true, Ordering::Release);
-                }
-                ok
-            };
+                        .active_peers
+                        .load(Ordering::Relaxed)
+                        == 0;
+                    let same_generation = room_for_teardown.connections.connection_generation()
+                        == teardown_generation;
+                    let ok = no_peers && same_generation;
+                    if ok {
+                        room_for_teardown
+                            .connections
+                            .kernel_teardown_destructive
+                            .store(true, Ordering::Release);
+                    }
+                    ok
+                })
+                .await;
             if !still_valid {
                 debug!(
                     "[notebook-sync] Kernel teardown aborted for {} (peer reconnected just before shutdown RPC)",
@@ -424,17 +426,18 @@ pub(super) async fn handle_peer_disconnect(
             // env path into `runtime_agent_env_path`. Deleting it now
             // would orphan the resumed kernel. The room stays
             // resident, so aborting is the right move.
-            let still_valid = {
-                let _rooms_guard = rooms_for_teardown.lock().await;
-                let no_peers = room_for_teardown
-                    .connections
-                    .active_peers
-                    .load(Ordering::Relaxed)
-                    == 0;
-                let same_generation =
-                    room_for_teardown.connections.connection_generation() == teardown_generation;
-                no_peers && same_generation
-            };
+            let still_valid = rooms_for_teardown
+                .serialize_with(|| {
+                    let no_peers = room_for_teardown
+                        .connections
+                        .active_peers
+                        .load(Ordering::Relaxed)
+                        == 0;
+                    let same_generation = room_for_teardown.connections.connection_generation()
+                        == teardown_generation;
+                    no_peers && same_generation
+                })
+                .await;
             if !still_valid {
                 debug!(
                     "[notebook-sync] Skipping env cleanup for {} (peer reconnected and may have relaunched)",

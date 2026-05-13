@@ -16,16 +16,13 @@ use uuid::Uuid;
 
 use crate::blob_store::BlobStore;
 use crate::daemon::Daemon;
-use crate::notebook_sync_server::{
-    get_or_create_room_result, NotebookRoom, NotebookRooms, PathIndex,
-};
+use crate::notebook_sync_server::{get_or_create_room_result, NotebookRoom, NotebookRooms};
 use crate::protocol::NotebookResponse;
 
 /// Dispatcher entry point — unwraps the Daemon pieces for the inner fn.
 pub(crate) async fn handle(daemon: &Arc<Daemon>, source_notebook_id: String) -> NotebookResponse {
     handle_inner(
         &daemon.notebook_rooms,
-        &daemon.path_index,
         &daemon.config.notebook_docs_dir,
         daemon.blob_store.clone(),
         source_notebook_id,
@@ -37,7 +34,6 @@ pub(crate) async fn handle(daemon: &Arc<Daemon>, source_notebook_id: String) -> 
 /// of pieces needed to look up the source room and register the clone.
 pub(crate) async fn handle_inner(
     rooms: &NotebookRooms,
-    path_index: &Arc<tokio::sync::Mutex<PathIndex>>,
     docs_dir: &Path,
     blob_store: Arc<BlobStore>,
     source_notebook_id: String,
@@ -51,15 +47,12 @@ pub(crate) async fn handle_inner(
             };
         }
     };
-    let source_room = {
-        let rooms_guard = rooms.lock().await;
-        match rooms_guard.get(&source_uuid).cloned() {
-            Some(r) => r,
-            None => {
-                return NotebookResponse::Error {
-                    error: format!("Source notebook not found: {source_notebook_id}"),
-                };
-            }
+    let source_room = match rooms.peek_uuid(source_uuid).await {
+        Some(r) => r,
+        None => {
+            return NotebookResponse::Error {
+                error: format!("Source notebook not found: {source_notebook_id}"),
+            };
         }
     };
 
@@ -70,9 +63,8 @@ pub(crate) async fn handle_inner(
     let clone_uuid = Uuid::new_v4();
 
     // 4. Create the new ephemeral room (empty).
-    let clone_room = match get_or_create_room_result(
+    let (clone_room, _clone_guard) = match get_or_create_room_result(
         rooms,
-        path_index,
         clone_uuid,
         crate::notebook_sync_server::RoomCreationOptions {
             path: None, // ephemeral, no file path
@@ -102,7 +94,7 @@ pub(crate) async fn handle_inner(
     if let Err(e) = seed_clone_from_source(&source_room, &clone_room).await {
         // On seed failure, evict the partially-initialized room so we
         // don't leak an empty ephemeral.
-        rooms.lock().await.remove(&clone_uuid);
+        rooms.remove(clone_uuid).await;
         return NotebookResponse::Error {
             error: format!("Failed to seed cloned notebook: {e}"),
         };

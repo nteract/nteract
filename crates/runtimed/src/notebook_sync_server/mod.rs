@@ -66,6 +66,7 @@ mod peer_session;
 mod peer_writer;
 mod persist;
 mod project_context;
+mod registry;
 mod room;
 mod runtime_bridge;
 #[cfg(test)]
@@ -76,13 +77,13 @@ pub(crate) use catalog::*;
 pub(crate) use load::*;
 pub(crate) use metadata::*;
 pub(crate) use nbformat_convert::*;
-pub use path_index::{PathIndex, PathIndexError};
 pub(crate) use peer_connection::*;
 #[cfg(test)]
 pub(crate) use peer_presence::sanitize_peer_label;
 pub(crate) use peer_runtime_agent::handle_runtime_agent_sync_connection;
 pub(crate) use peer_runtime_sync::notebook_execution_context_id;
 pub(crate) use persist::*;
+pub(crate) use registry::*;
 pub(crate) use room::*;
 pub(crate) use runtime_bridge::*;
 

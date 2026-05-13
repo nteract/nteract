@@ -22,6 +22,7 @@ pub enum PathIndexError {
 }
 
 impl PathIndex {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -58,10 +59,12 @@ impl PathIndex {
         Some(path)
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.inner.len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }

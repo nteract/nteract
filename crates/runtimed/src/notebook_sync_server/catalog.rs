@@ -1,6 +1,14 @@
+use super::registry::{InsertOutcome, RoomRegistry};
 use super::*;
 
-pub type NotebookRooms = Arc<Mutex<HashMap<uuid::Uuid, Arc<NotebookRoom>>>>;
+/// Daemon-wide handle to the resident-room registry.
+///
+/// Previously `Arc<Mutex<HashMap<Uuid, Arc<NotebookRoom>>>>`. The
+/// underlying type is now `RoomRegistry`, which owns both the UUID
+/// map and the path → UUID secondary index under one tokio mutex.
+/// Existing call sites keep the `NotebookRooms` name and only the
+/// operations change.
+pub type NotebookRooms = Arc<RoomRegistry>;
 
 pub(crate) struct RoomCreationOptions<'a> {
     pub path: Option<PathBuf>,
@@ -12,99 +20,93 @@ pub(crate) struct RoomCreationOptions<'a> {
 
 /// Look up an open room by its canonical .ipynb path.
 ///
-/// Returns `None` if no room is currently serving that path. O(1) lookup
-/// via the path_index — no scanning.
+/// Returns `None` if no room is currently serving that path. O(1)
+/// lookup through the combined registry. On hit, the caller receives
+/// the `Arc<NotebookRoom>` plus a fresh `ReservationGuard` that holds
+/// the room against the reaper until the handshake commits or aborts.
 pub async fn find_room_by_path(
     rooms: &NotebookRooms,
-    path_index: &Arc<tokio::sync::Mutex<PathIndex>>,
     path: &Path,
-) -> Option<Arc<NotebookRoom>> {
-    let uuid = {
-        let idx = path_index.lock().await;
-        idx.lookup(path)?
-    };
-    rooms.lock().await.get(&uuid).cloned()
+) -> Option<(Arc<NotebookRoom>, ReservationGuard)> {
+    rooms.lookup_path(path).await
 }
 
 /// Get or create a room for a notebook.
 ///
-/// Creates a new fresh room if one for the given UUID doesn't already exist.
-/// The .ipynb file is the source of truth — the first client to connect will
-/// populate the Automerge doc from their local file.
+/// Creates a new fresh room if one for the given UUID doesn't already
+/// exist. The `.ipynb` file is the source of truth: the first client
+/// to connect populates the Automerge doc from their local file.
 ///
-/// For .ipynb files, a file watcher is spawned to detect external changes.
-/// Also inserts an entry into `path_index` when `path` is `Some`.
+/// For `.ipynb` files, a file watcher is spawned. The UUID-keyed
+/// room map and path → UUID index are updated together under one
+/// lock.
 #[cfg(test)]
 pub async fn get_or_create_room(
     rooms: &NotebookRooms,
-    path_index: &Arc<tokio::sync::Mutex<PathIndex>>,
     uuid: uuid::Uuid,
     options: RoomCreationOptions<'_>,
-) -> Arc<NotebookRoom> {
-    get_or_create_room_result(rooms, path_index, uuid, options)
+) -> (Arc<NotebookRoom>, ReservationGuard) {
+    get_or_create_room_result(rooms, uuid, options)
         .await
         .unwrap_or_else(|err| panic!("create notebook room runtime state: {err}"))
 }
 
 pub async fn get_or_create_room_result(
     rooms: &NotebookRooms,
-    path_index: &Arc<tokio::sync::Mutex<PathIndex>>,
     uuid: uuid::Uuid,
     options: RoomCreationOptions<'_>,
-) -> anyhow::Result<Arc<NotebookRoom>> {
-    // Fast path: room already exists.
-    {
-        let rooms_guard = rooms.lock().await;
-        if let Some(existing) = rooms_guard.get(&uuid) {
-            return Ok(existing.clone());
-        }
+) -> anyhow::Result<(Arc<NotebookRoom>, ReservationGuard)> {
+    // Fast path: room already exists. The registry hands back the
+    // existing Arc plus a fresh reservation guard without minting a
+    // new room.
+    if let Some(found) = rooms.lookup_uuid(uuid).await {
+        return Ok(found);
     }
 
-    // Create new room and insert.
     info!("[notebook-sync] Creating room for {}", uuid);
+    let path_for_room = options.path.clone();
     let room = Arc::new(NotebookRoom::new_fresh_with_trusted_packages(
         uuid,
-        options.path.clone(),
+        path_for_room.clone(),
         options.docs_dir,
         options.blob_store,
         options.ephemeral,
         options.trusted_packages,
     )?);
 
+    // Atomic insert across rooms + path_index. If we lose a race to a
+    // concurrent caller (same UUID), the registry returns the existing
+    // room and our `room` is dropped.
+    let outcome = match rooms
+        .insert_or_get(uuid, room, path_for_room.as_deref())
+        .await
     {
-        let mut rooms_guard = rooms.lock().await;
-        // Double-check in case of a race: another task may have created the room
-        // between our unlock above and acquiring the write lock here.
-        if let Some(existing) = rooms_guard.get(&uuid) {
-            return Ok(existing.clone());
+        Ok(outcome) => outcome,
+        Err(e) => {
+            error!(
+                "[notebook-sync] path_index.insert failed for new room {} at {:?}: {} - this is a caller invariant violation (find_room_by_path should have returned the existing room).",
+                uuid, path_for_room, e
+            );
+            return Err(anyhow::anyhow!(e));
         }
-        rooms_guard.insert(uuid, room.clone());
-    }
+    };
 
-    // Record the notebook's project-file context on the runtime-state doc.
-    // Single-writer invariant: only the daemon writes this key. Also
-    // re-runs after untitled promotion and save-as rename; see
-    // `project_context::refresh_project_context` callers.
-    super::project_context::refresh_project_context_async(&room, options.path.as_deref()).await;
+    let inserted_new = matches!(outcome, InsertOutcome::Inserted(_, _));
+    let (room, guard) = outcome.into_parts();
 
-    // Insert into path_index (under a separate lock per the locking convention).
-    if let Some(ref p) = options.path {
-        match path_index.lock().await.insert(p.clone(), uuid) {
-            Ok(()) => {}
-            Err(e) => {
-                error!(
-                    "[notebook-sync] path_index.insert failed for new room {} at {:?}: {} — \
-                     this is a caller invariant violation (should have done find_room_by_path first). \
-                     Room is orphaned from path lookup.",
-                    uuid, p, e
-                );
-            }
+    // Side-effects only happen when we actually inserted a fresh room.
+    // If we lost the race, the racing caller already ran them.
+    if inserted_new {
+        // Record the notebook's project-file context on the runtime-state
+        // doc. Single-writer invariant: only the daemon writes this key.
+        // Also re-runs after untitled promotion and save-as rename; see
+        // `project_context::refresh_project_context` callers.
+        super::project_context::refresh_project_context_async(&room, options.path.as_deref()).await;
+
+        if let Some(ref notebook_path) = options.path {
+            NotebookFileBinding::bind_existing(&room, notebook_path).await;
         }
     }
 
-    if let Some(ref notebook_path) = options.path {
-        NotebookFileBinding::bind_existing(&room, notebook_path).await;
-    }
-
-    Ok(room)
+    Ok((room, guard))
 }
