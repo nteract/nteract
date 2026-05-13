@@ -487,11 +487,20 @@ pub async fn disconnect_notebook(
 }
 
 /// List all active notebook sessions.
+///
+/// "Active" here means peers are connected or the kernel is still alive in
+/// the disconnect grace period. Inactive (resumable) rooms — those the daemon
+/// is holding in memory after a kernel teardown so a peer can come back — are
+/// hidden from this listing. `runt ps` surfaces all states.
 pub async fn list_active_notebooks(server: &NteractMcp) -> Result<CallToolResult, McpError> {
     let client = PoolClient::new(server.socket_path.clone());
     match client.list_rooms().await {
         Ok(rooms) => {
-            let json = serde_json::to_string_pretty(&rooms).unwrap_or_else(|_| "[]".to_string());
+            let visible: Vec<_> = rooms
+                .into_iter()
+                .filter(|r| !matches!(r.state, runtimed_client::protocol::RoomState::Inactive))
+                .collect();
+            let json = serde_json::to_string_pretty(&visible).unwrap_or_else(|_| "[]".to_string());
             tool_success(&json)
         }
         Err(e) => tool_error(&format!(
