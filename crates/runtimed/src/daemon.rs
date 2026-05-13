@@ -29,7 +29,7 @@ use crate::blob_server;
 use crate::blob_store::BlobStore;
 use crate::notebook_sync_server::{NotebookRooms, RoomRegistry};
 use crate::paths::{default_cache_dir, default_socket_path, pool_env_root};
-use crate::protocol::{BlobRequest, BlobResponse, Request, Response};
+use crate::protocol::{Request, Response};
 use crate::settings_doc::{SettingsDoc, SyncedSettings};
 use crate::singleton::DaemonLock;
 use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
@@ -2526,7 +2526,6 @@ impl Daemon {
                 )
                 .await
             }
-            Handshake::Blob => self.handle_blob_connection(stream).await,
             Handshake::OpenNotebook { path } => {
                 self.handle_open_notebook(stream, path, client_protocol_version)
                     .await
@@ -3099,56 +3098,6 @@ impl Daemon {
 
             let response = self.clone().handle_request(request).await;
             connection::send_json_frame(&mut stream, &response).await?;
-        }
-
-        Ok(())
-    }
-
-    /// Handle a blob channel connection.
-    ///
-    /// Protocol:
-    /// - `{"action":"store","media_type":"..."}` followed by a raw binary frame
-    ///   -> `{"hash":"..."}`
-    /// - `{"action":"get_port"}` -> `{"port":N}`
-    async fn handle_blob_connection<S>(self: Arc<Self>, mut stream: S) -> anyhow::Result<()>
-    where
-        S: AsyncRead + AsyncWrite + Unpin,
-    {
-        loop {
-            let request: BlobRequest = match connection::recv_json_frame(&mut stream).await? {
-                Some(req) => req,
-                None => break,
-            };
-
-            match request {
-                BlobRequest::Store { media_type } => {
-                    // Next frame is the raw binary blob data
-                    let data = match connection::recv_frame(&mut stream).await? {
-                        Some(d) => d,
-                        None => break,
-                    };
-
-                    let response = match self.blob_store.put(&data, &media_type).await {
-                        Ok(hash) => BlobResponse::Stored { hash },
-                        Err(e) => BlobResponse::Error {
-                            error: e.to_string(),
-                        },
-                    };
-                    connection::send_json_frame(&mut stream, &response).await?;
-                }
-                BlobRequest::GetPort => {
-                    let response = {
-                        let port = self.blob_port.lock().await;
-                        match *port {
-                            Some(p) => BlobResponse::Port { port: p },
-                            None => BlobResponse::Error {
-                                error: "blob server not running".to_string(),
-                            },
-                        }
-                    };
-                    connection::send_json_frame(&mut stream, &response).await?;
-                }
-            }
         }
 
         Ok(())

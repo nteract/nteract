@@ -4,8 +4,7 @@
 //! NotebookBroadcast, etc.) are defined in the `notebook-protocol` crate
 //! and re-exported here for backward compatibility.
 //!
-//! Daemon-internal types (Request, Response, BlobRequest,
-//! BlobResponse) are defined here.
+//! Daemon-internal types (Request, Response) are defined here.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -291,28 +290,6 @@ pub struct RoomInfo {
     pub state: RoomState,
 }
 
-/// Blob channel request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case")]
-pub enum BlobRequest {
-    /// Store a blob. The next frame is the raw binary data.
-    Store { media_type: String },
-    /// Query the blob HTTP server port.
-    GetPort,
-}
-
-/// Blob channel response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum BlobResponse {
-    /// Blob stored successfully.
-    Stored { hash: String },
-    /// Blob server port.
-    Port { port: u16 },
-    /// Error.
-    Error { error: String },
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,34 +548,6 @@ mod tests {
     fn test_invalid_json() {
         let result: Result<Request, _> = serde_json::from_slice(b"not valid json");
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_blob_request_store() {
-        let req = BlobRequest::Store {
-            media_type: "image/png".into(),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("store"));
-        assert!(json.contains("image/png"));
-        let parsed: BlobRequest = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, BlobRequest::Store { .. }));
-    }
-
-    #[test]
-    fn test_blob_request_get_port() {
-        let req = BlobRequest::GetPort;
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("get_port"));
-    }
-
-    #[test]
-    fn test_blob_response_stored() {
-        let resp = BlobResponse::Stored {
-            hash: "abc123".into(),
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("abc123"));
     }
 
     // Notebook protocol tests
