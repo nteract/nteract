@@ -2017,11 +2017,17 @@ async fn test_resident_room_reaper_lru_cap_evicts_oldest() {
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
 
-/// PR 2 contract: active rooms (peers > 0) are exempt from both the
-/// TTL layer and the count cap. A cap of 1 with three connected
-/// notebooks must leave all three resident.
+/// PR 2 contract: the `active_peers > 0` check exempts a room even
+/// when it has a stale teardown stamp — the brief window during a
+/// fast reconnect where the timestamp has not yet been zeroed. To
+/// pin that check, force a non-zero stamp on each connected room
+/// before sweeping so the timestamp filter doesn't short-circuit;
+/// only the active-peers predicate stands between the rooms and the
+/// reaper.
 #[tokio::test]
 async fn test_resident_room_reaper_lru_cap_exempts_active() {
+    use std::sync::atomic::Ordering;
+
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
@@ -2037,6 +2043,7 @@ async fn test_resident_room_reaper_lru_cap_exempts_active() {
 
     // Hold three clients connected so each room has active_peers == 1.
     let mut clients = Vec::new();
+    let mut notebook_ids = Vec::new();
     for tag in ["a", "b", "c"] {
         let result = connect::connect_create(
             socket_path.clone(),
@@ -2049,6 +2056,7 @@ async fn test_resident_room_reaper_lru_cap_exempts_active() {
         )
         .await
         .unwrap();
+        notebook_ids.push(result.info.notebook_id.clone());
         let client = result.handle;
         assert!(wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await);
         clients.push(client);
@@ -2056,8 +2064,25 @@ async fn test_resident_room_reaper_lru_cap_exempts_active() {
 
     assert_eq!(daemon_for_inspect.test_room_count().await, 3);
 
-    // Sweep with cap=1 and TTL=0. The selection pass filters by
-    // `active_peers == 0`, so all three active rooms must survive.
+    // Force a non-zero teardown stamp on every room so the selection
+    // pass's timestamp filter doesn't short-circuit. The
+    // `active_peers > 0` check is what should keep them resident.
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    for (offset, id) in notebook_ids.iter().enumerate() {
+        let uuid = uuid::Uuid::parse_str(id).unwrap();
+        let room = daemon_for_inspect.test_get_room(uuid).await.unwrap();
+        let ts = now_secs - 30 + (offset as u64) * 10;
+        room.connections
+            .last_kernel_torn_down_at
+            .store(ts, Ordering::Relaxed);
+    }
+
+    // Sweep with cap=1 and TTL=0. With stamps in place, only the
+    // `active_peers > 0` filter stands between these rooms and the
+    // reaper. All three must survive.
     daemon_for_inspect
         .ghost_room_reaper_sweep_with_cap(0, 1)
         .await;
