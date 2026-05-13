@@ -70,9 +70,9 @@ pub fn install_mcpb(app: &tauri::AppHandle) -> Result<PathBuf, String> {
             }
         },
         "tools": [
-            { "name": "list_active_notebooks", "description": "List running notebook sessions." },
+            { "name": "list_active_notebooks", "description": "List active notebook sessions." },
             { "name": "connect_notebook", "description": "Attach to a notebook. Pass path (.ipynb) or notebook_id (UUID) — not both." },
-            { "name": "create_notebook", "description": "Create a new notebook. Ephemeral by default; use environment_mode=\"notebook\" to ignore project files for env selection, and save_notebook(path) to persist." },
+            { "name": "create_notebook", "description": "Create a notebook. Ephemeral by default; save_notebook(path) to persist." },
             { "name": "save_notebook", "description": "Save notebook to disk. For notebooks created with create_notebook(), you must provide a path." },
             { "name": "show_notebook", "description": "Open the notebook in the nteract app for the user. Headless: returns a structured no-display reason." },
             { "name": "disconnect_notebook", "description": "Release a notebook session's peer connection. Omit notebook_id to disconnect the active session." },
@@ -84,10 +84,10 @@ pub fn install_mcpb(app: &tauri::AppHandle) -> Result<PathBuf, String> {
             { "name": "move_cell", "description": "Move a cell to a new position." },
             { "name": "execute_cell", "description": "Execute a code cell." },
             { "name": "run_all_cells", "description": "Execute all code cells in order." },
-            { "name": "get_results", "description": "Get outputs for an execution by ID. Returns status (done/error/running/queued) so you know if outputs are complete. Use the execution_id from execute_cell, set_cell(and_run), or run_all_cells." },
+            { "name": "get_results", "description": "Get outputs and status (done/error/running/queued) for an execution_id." },
             { "name": "interrupt_kernel", "description": "Interrupt execution." },
             { "name": "restart_kernel", "description": "Restart the kernel, clearing all state." },
-            { "name": "manage_dependencies", "description": "Review or update notebook dependencies. With no parameters, returns current dependencies, dependency fingerprint, and trust state. Use add/remove arrays for edits; set trust=true to approve the resulting dependency metadata; set apply='sync' or 'restart' to apply." },
+            { "name": "manage_dependencies", "description": "Review or update notebook dependencies. Returns current deps, fingerprint, and trust state." },
             { "name": "replace_match", "description": "Replace literal text in a cell. Use context_before/context_after to disambiguate repeated matches." },
             { "name": "replace_regex", "description": "Replace a regex match in a cell (fancy-regex). Fails if 0 or >1 matches. Replacement is literal text." }
         ],
