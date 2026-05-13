@@ -974,6 +974,17 @@ jobs:
         with:
           skip-wasm: true
 
+      - name: Restore Rust toolchain PATH (macOS)
+        if: runner.os == 'macOS'
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Verify Rust toolchain PATH (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          type -a cargo rustup
+          cargo --version
+          rustup --version
+
       - name: Build runtimed binary (Unix)
         if: runner.os != 'Windows'
         run: |
