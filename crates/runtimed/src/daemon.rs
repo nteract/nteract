@@ -3605,22 +3605,33 @@ impl Daemon {
                         .await
                         .map(|p| p.to_string_lossy().to_string());
 
+                    let active_peers = room
+                        .connections
+                        .active_peers
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    let has_kernel = room.has_kernel().await;
+                    let state = if active_peers > 0 {
+                        crate::protocol::RoomState::Active
+                    } else if has_kernel {
+                        crate::protocol::RoomState::Idle
+                    } else {
+                        crate::protocol::RoomState::Inactive
+                    };
+
                     room_infos.push(crate::protocol::RoomInfo {
                         notebook_id: notebook_id.clone(),
-                        active_peers: room
-                            .connections
-                            .active_peers
-                            .load(std::sync::atomic::Ordering::Relaxed),
+                        active_peers,
                         had_peers: room
                             .connections
                             .had_peers
                             .load(std::sync::atomic::Ordering::Relaxed),
-                        has_kernel: room.has_kernel().await,
+                        has_kernel,
                         kernel_type,
                         env_source,
                         kernel_status,
                         ephemeral: room.file_binding.is_ephemeral(),
                         notebook_path,
+                        state,
                     });
                 }
                 Response::RoomsList { rooms: room_infos }
