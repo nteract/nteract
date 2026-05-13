@@ -140,28 +140,32 @@ PR 1 leaves these alive on a peer-less room with kernel torn down:
 
 Autosave, file watcher, and project-file watcher own `Arc<NotebookRoom>`. They pin the room. PR 2's reaper must explicitly shut them down before the last Arc can drop.
 
-Order of operations in the reaper, per room. The ordering is constrained by three failure modes worth calling out:
+Order of operations in the reaper, per room. The ordering is constrained by four failure modes:
 
-- **Removing from `notebook_rooms` before the persist flush succeeds** would land a reconnecting peer in the window between map removal and final write, creating a fresh room from stale or missing `.automerge` bytes. The existing `peer_eviction.rs` deliberately flushes-then-removes for exactly this reason.
-- **Removing from `notebook_rooms` before `path_index`** opens the path-index race: `find_room_by_path` reads `path_index` first, then dereferences in `notebook_rooms`. A reaper that clears the rooms map but not the index leaves a dangling UUID; the racing opener creates a new room and then fails `path_index.insert` with `PathAlreadyOpen`, orphaning the new room from path lookup.
-- **Deleting `room.identity.persist_path` before the persist debouncer task has exited** would let the task immediately rewrite the `.automerge` we just removed: `spawn_persist_debouncer` flushes pending bytes on `flush_rx` closure (all senders dropped) and again on `persist_rx.changed()` returning `Err`. Wait for the task to actually exit.
+- **Removing from `notebook_rooms` before the persist flush succeeds** lands a reconnecting peer in the window between map removal and final write, creating a fresh room from stale or missing `.automerge` bytes. `peer_eviction.rs` flushes-then-removes for this reason.
+- **Removing from `notebook_rooms` before `path_index` (or vice versa) under separate locks** opens the path-index race: `find_room_by_path` reads `path_index` first, then dereferences in `notebook_rooms`. A reaper that splits the removals can leave a dangling UUID; the racing opener mints a new UUID and then fails `path_index.insert` with `PathAlreadyOpen`, orphaning the new room from path lookup.
+- **Deleting `room.identity.persist_path` before the persist debouncer task has exited** lets the task rewrite the file we just removed: `spawn_persist_debouncer` flushes pending bytes on `flush_rx` closure and again on `persist_rx.changed()` returning `Err`.
+- **Removing from the maps before cleanup tasks confirm exit** makes a hung autosave or watcher invisible to the reaper. A retry-by-finding-it-in-the-map model is then impossible, so cleanup timeouts permanently leak resident rooms - the exact failure this PR is bounding.
+
+The corollary is that map removal must be the **last** step, after every Arc-pinning task has confirmed exit. Cleanup happens with the room still in the registry. A peer reconnecting mid-cleanup aborts the pass; that's fine because cleanup has not made anything externally visible.
+
+**Combined registry.** `notebook_rooms` and `path_index` are currently behind separate `tokio::sync::Mutex`es. Holding both across a single critical section requires nested `.lock().await` calls, which violates the load-bearing tokio-mutex invariant (no `.await` while holding a guard). Implementation introduces a `RoomRegistry` that owns both inside a single `tokio::sync::Mutex`, with sync helper methods for joined operations. All other callers (catalog, peer_eviction, daemon-side handshakes) move to the new API. This is the joined-indices fix for the path-index race **and** the mutex-invariant fix.
 
 The sequence:
 
-1. Snapshot the room's `Arc<NotebookRoom>` and UUID.
-2. Force-flush the persist debouncer via `flush_request_tx`, with timeout + retry. On failure, abandon this pass; the room stays in `notebook_rooms` and we try again next tick. Prefer leak over data loss. (Matches `peer_eviction.rs`.)
-3. Acquire `notebook_rooms.lock()`. Re-check `active_peers == 0` and `last_kernel_torn_down_at != 0` and the LRU / TTL predicate. If a peer raced in, drop the lock and return.
-4. **Under the rooms lock**, also acquire `path_index.lock()` and `remove_by_uuid` the room's UUID. Then `notebook_rooms.remove(uuid)`. Release both locks. This serializes the path/UUID transition: any `find_room_by_path` either sees both entries or neither.
-5. `shutdown_autosave_debouncer(room, notebook_id, AUTOSAVE_TIMEOUT)` - sends final-save request and waits for ack. Releases the autosave task's `Arc<NotebookRoom>`.
-6. `room.file_binding.shutdown_notebook_watcher()` - fire-and-forget oneshot; the watcher task drops its `Arc` on receipt.
-7. `room.file_binding.shutdown_project_file_watcher()` - fire-and-forget oneshot.
-8. Take the `Option<PersistDebouncer>` out of `room.persistence.debouncer` (requires changing the field to `Mutex<Option<...>>` or `OnceLock<Option<...>>`; see `finalize_untitled_promotion`'s TODO note). Dropping the `watch::Sender` closes `persist_rx`; dropping the `mpsc::Sender<FlushRequest>` closes `flush_rx`. Wait for the task to exit. Easiest implementation: send a sentinel oneshot through `flush_rx` whose `do_persist` is the final write, then await its ack. Or wrap the debouncer with an `await`-able join handle.
-9. For file-backed rooms: delete `room.identity.persist_path`. Safe now that the debouncer is gone. For untitled non-ephemeral rooms: leave the file in place; it's the only resume path.
-10. Drop our `Arc`. With the autosave / watcher / debouncer tasks gone, the last `Arc` is ours; the room is freed.
+1. Snapshot the room's `Arc<NotebookRoom>` and UUID. Verify it is a reap candidate under the registry lock (snapshot + drop).
+2. Force-flush the persist debouncer via `flush_request_tx`, with timeout + retry. On failure, abandon the pass.
+3. `shutdown_autosave_debouncer(room, notebook_id, AUTOSAVE_TIMEOUT)` - sends final-save request and waits for ack. Releases the autosave task's `Arc<NotebookRoom>` on success.
+4. `room.file_binding.shutdown_notebook_watcher()` - fire-and-forget oneshot; watcher task drops its `Arc` on receipt. Optionally wait by polling task-supervisor counters or by adding an ack channel.
+5. `room.file_binding.shutdown_project_file_watcher()` - same.
+6. Take the `Option<PersistDebouncer>` out of `room.persistence.debouncer` (requires the field to become `Mutex<Option<...>>`; see `finalize_untitled_promotion`'s TODO note). Drop the `watch::Sender` and the `mpsc::Sender<FlushRequest>`. Wait for the debouncer task to exit. Easiest: send a sentinel flush whose ack signals "after this, the task will close." Or wrap the debouncer in a `JoinHandle` and await it.
+7. After every cleanup step above confirms exit (or any one of them fails / times out), the reaper now decides whether to commit:
+   - **All cleanup steps confirmed:** acquire the `RoomRegistry` lock. Re-check `active_peers == 0` (a peer may have raced in during cleanup, though autosave shutdown will have nack'd in that case). If still peer-less, remove from both indices in one sync block, drop the lock.
+   - **Any cleanup step failed / timed out OR a peer reconnected during cleanup:** abandon the pass. The room is still in the registry; next reaper tick can retry. Cleanup that already happened (e.g. autosave was shut down) is restarted by the reconnect handler, which re-`bind_existing`s the file binding. This implies `bind_existing` must be idempotent against partial teardown - verify in the implementation.
+8. For file-backed rooms: delete `room.identity.persist_path`. Safe now that the debouncer is gone.
+9. Drop our `Arc`. With all the pinning tasks gone, the last `Arc` is ours; the room is freed.
 
-Steps 5-7 each return after their owning task confirms exit (or times out). Step 8 is the new piece - the persist debouncer needs an explicit shutdown handle that the current code does not have. Closing the watch sender alone exits the task, but doesn't tell us when; we want the wait so step 9 is safe. The simplest implementation is to send a final flush request, ack it, then drop the senders.
-
-If any of steps 5-8 time out, abandon the reap for this room and log; we already removed it from the maps in step 4. Reaper's correctness invariant becomes "if it's not in `notebook_rooms`, the live tasks are best-effort being torn down." A leaked room with no map entry is a memory bug; a leaked file with no live writer is harmless and eventually cleaned by the orphan-doc sweep.
+This is the minimal sequence that satisfies all four constraints. The trade-off is that a partial cleanup can be "unwound" by a racing reconnect, requiring `bind_existing` to handle that case. The alternative (commit map removal early, accept Arc leaks on timeout) was the previous draft and is unsound because it permanently leaks rooms that hit a stuck filesystem.
 
 ## Path index lifecycle
 
@@ -181,31 +185,36 @@ The reaper runs on a periodic tick. Concurrent flows worth enumerating:
 
 | Scenario | Risk | Resolution |
 |----------|------|-----------|
-| Reap candidate selected; peer reconnects mid-sweep | Two rooms for one path | Re-check `active_peers == 0` under `notebook_rooms.lock()` before removing. PR 1's `clear_kernel_torn_down()` on reconnect zeroes the LRU key, so future sweeps skip this room. |
-| Reap concurrent with PR 1's kernel-teardown task | Double cleanup, double final-save | Reaper skips rooms with `last_kernel_torn_down_at == 0` (kernel-teardown not yet finished). Kernel teardown stamps the timestamp at the end. |
-| Reap concurrent with `OpenNotebook` for the same path | Stale `path_index` entry orphans the new room | `find_room_by_path` reads `path_index` first, then dereferences in `notebook_rooms`. If the reaper splits those removals across two locks, a racing open can see a UUID in the index that no longer maps to a live room. Resolution: the reap step that removes from `notebook_rooms` and from `path_index` takes **both locks** in a fixed order (rooms then path_index) and releases together. Any racing open either sees both entries or neither. |
-| `SaveAs` while reaper holds a snapshot of the Arc | TOCTOU on path | Reaper uses UUID, not path, to remove from `path_index` (`remove_by_uuid`). Mirrors the pattern in `peer_eviction.rs`. |
-| Persist debouncer flush fails (timeout / write error) | Data loss if removed from map | Reap aborts before touching `notebook_rooms` or `path_index`. Room stays resident; next pass retries. |
-| Persist file recreated after delete | Stale `.automerge` survives the reap | Step 8 of the reap waits for the persist debouncer task to actually exit before step 9 deletes the file. Required because `spawn_persist_debouncer` flushes pending bytes both on `flush_rx` closure and on `persist_rx.changed()` returning `Err`. |
-| Autosave shutdown hangs | Watcher task pins room indefinitely | Timeout-and-warn. The room is already out of the maps (step 4 already happened); a leak past timeout is a memory bug but not a correctness one. Log and continue. Next pass cannot retry this room because it is no longer in the map; this is the price of the flush-first ordering. |
+| Reap candidate selected; peer reconnects mid-sweep | Two rooms for one path | The reaper does all cleanup before any map removal. The final `RoomRegistry` lock re-checks `active_peers == 0` after cleanup; if a peer raced in during cleanup, abandon the pass. PR 1's `clear_kernel_torn_down()` on reconnect zeroes the LRU key so future sweeps skip the room. |
+| Reap concurrent with PR 1's kernel-teardown task | Double cleanup, double final-save | Reaper skips rooms with `last_kernel_torn_down_at == 0` (kernel teardown not yet finished). PR 1 stamps the timestamp at the end of teardown. |
+| Reap concurrent with `OpenNotebook` for the same path | Stale `path_index` entry orphans the new room | The combined `RoomRegistry` holds both indices behind a single tokio `Mutex`. The reap step that drops the room removes from both in one sync block. Any racing `find_room_by_path` either sees both entries or neither. |
+| Reap holds rooms lock across path_index lock | Lint failure / convoy deadlock | Joined registry has a single lock; no nested `.await`-on-lock pattern. |
+| `SaveAs` while reaper has cloned the Arc | TOCTOU on path | Reaper uses UUID, not path, to update the registry. Mirrors `peer_eviction.rs`. |
+| Persist debouncer flush fails (timeout / write error) | Data loss if removed from map | Reap aborts before any map removal. Room stays in registry; next pass retries. |
+| Persist file recreated after delete | Stale `.automerge` survives the reap | The reap waits for the debouncer task to exit before unlinking. The task's shutdown-flush path runs first (before the wait returns), so the final write is durable. |
+| Autosave / watcher shutdown hangs | Indefinite leak invisible to the reaper | Map removal is deferred until cleanup confirms. On timeout, abandon the pass; the room stays in the registry, the reaper re-evaluates it on the next tick, and the partially-cleaned state must be restartable on a racing reconnect. The implementation must verify `bind_existing` and `spawn_*_debouncer` are idempotent against partial teardown. |
+| Daemon shutdown mid-reap | Half-cleaned room at exit | Existing global-shutdown signal already triggers debouncer / autosave final flushes via channel close. Reaper task uses `spawn_best_effort` so it is dropped on shutdown without holding cleanup. |
 
 The hard invariants:
 
-- Never remove a room from `notebook_rooms` while `active_peers > 0` or `last_kernel_torn_down_at == 0`.
-- Never remove from `notebook_rooms` without also removing from `path_index` in the same critical section (or vice versa). They are joined indices.
+- Never remove from the registry while `active_peers > 0`, while `last_kernel_torn_down_at == 0`, or while any pinning task is still running. The order is: cleanup first, then atomic removal under the registry lock.
+- Removal from `notebook_rooms` and from `path_index` happens in a single sync block under the registry's tokio mutex. No `.await` between them.
 - Never delete `room.identity.persist_path` before the persist debouncer task has exited.
+- Cleanup that has begun and then been aborted (because a reconnect raced in) must be safely restartable. `bind_existing` is the re-arm path.
 
 ## Code that gets simplified or replaced
 
 Nothing from PR 1 is removed. PR 1 sets up `last_kernel_torn_down_at`; PR 2 reads it. PR 1's kernel-teardown task does not remove the room from any map; PR 2's reaper is the only code path that does.
 
-The existing 24h orphan-doc sweep in `env_gc_loop` (`daemon.rs` around line 3766) walks `notebook_docs_dir/` and deletes `.automerge` files that don't correspond to any room in `notebook_rooms` AND are older than 24h. After PR 2:
+**Combined `RoomRegistry`.** Today's `NotebookRooms` (`Arc<Mutex<HashMap<Uuid, Arc<NotebookRoom>>>>`) and `Arc<Mutex<PathIndex>>` are split. PR 2 unifies them so joined operations don't need nested locks. Catalog, peer_eviction, and daemon handshake code paths move to the new API. Public surface stays similar - `find_room_by_path`, `get_or_create_room_result` remain, just rerouted through the new owner.
 
-- Spilled untitled rooms have a `.automerge` on disk with no live room. The orphan sweep would delete it after 24h. That's wrong if the reaper TTL is also 24h - we'd be relying on the reaper firing first.
-- Fix: the reaper deletes the `.automerge` itself for file-backed rooms (where the .ipynb is the truth). For untitled, the reaper keeps the file; the orphan sweep eventually claims it once it ages past its own (longer) TTL.
-- Raise the orphan-sweep floor to 7 days. The reaper handles the 24h window; the orphan sweep becomes a long-tail safety net.
+**Orphan-doc sweep window.** The existing 24h orphan-doc sweep in `env_gc_loop` (`daemon.rs` around line 3766) walks `notebook_docs_dir/` and deletes `.automerge` files that don't correspond to any room in `notebook_rooms` AND are older than 24h. After PR 2:
 
-This is the only existing code that changes semantics. No removals.
+- Spilled untitled rooms have a `.automerge` on disk with no live room. The orphan sweep would delete it after 24h. That overlaps with the reaper's TTL.
+- Fix: the reaper deletes the `.automerge` itself for file-backed rooms (the .ipynb is the truth). For untitled, the reaper keeps the file; the orphan sweep eventually claims it after a longer TTL.
+- Raise the orphan-sweep floor to 7 days. Reaper handles the 24h window; orphan sweep becomes the long-tail safety net.
+
+No outright removals.
 
 ## Test plan
 
@@ -224,7 +233,8 @@ Integration tests live in `crates/runtimed/src/notebook_sync_server/tests.rs`. R
 | 9 | Reap deletes the file-backed `.automerge` and does not let it come back | After reap finishes, the persist path does not exist and is not recreated within a generous (1s+) settle window. Catches a regression where the persist task flushes after the file was deleted. |
 | 10 | `find_room_by_path` never sees a half-removed pair | Drive a `find_room_by_path` lookup concurrently with a reap. Across many iterations, every lookup either returns the live room or returns `None` (and the subsequent `path_index.insert` of a new UUID succeeds). No `PathIndexError::PathAlreadyOpen` leakage. |
 | 11 | Flush failure aborts the reap | Inject a persist-debouncer that always fails the flush. Reap pass leaves `notebook_rooms` and `path_index` untouched. Room is still findable on the next lookup. |
-| 12 | Pure unit test on reaper selection logic | Given a set of (UUID, last_kernel_torn_down_at, active_peers) tuples and a count cap, produce the eviction set. No I/O. |
+| 12 | Reconnect mid-cleanup restarts autosave + watchers | Open notebook, reap starts, autosave shutdown completes, then a peer reconnects before the reaper takes the registry lock. Reaper abandons the pass. Reconnect calls `bind_existing` which respawns autosave and the file watcher. The room is healthy. |
+| 13 | Pure unit test on reaper selection logic | Given a set of (UUID, last_kernel_torn_down_at, active_peers) tuples and a count cap, produce the eviction set. No I/O. |
 
 Plus stress: a soak test that opens, runs, and disconnects N notebooks in a loop, asserts resident-room count stays bounded.
 
