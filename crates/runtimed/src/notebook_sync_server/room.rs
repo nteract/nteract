@@ -448,6 +448,14 @@ pub struct RoomConnections {
     /// and forces a fresh auto-launch instead of trusting the stale
     /// "has_kernel" snapshot.
     pub kernel_teardown_destructive: AtomicBool,
+    /// In-flight handshake reservations. Bumped the moment a caller
+    /// receives an `Arc<NotebookRoom>` from the registry; decremented
+    /// when the handshake either commits (incrementing `active_peers`)
+    /// or aborts. The room reaper requires `reservations == 0` in
+    /// addition to `active_peers == 0` so a racing reconnect that has
+    /// the Arc but has not yet bumped `active_peers` is not reaped out
+    /// from under it.
+    pub reservations: AtomicUsize,
 }
 
 impl Default for RoomConnections {
@@ -458,6 +466,7 @@ impl Default for RoomConnections {
             last_kernel_torn_down_at: AtomicU64::new(0),
             connection_generation: AtomicU64::new(0),
             kernel_teardown_destructive: AtomicBool::new(false),
+            reservations: AtomicUsize::new(0),
         }
     }
 }
@@ -500,6 +509,63 @@ impl RoomConnections {
     /// rooms lock before destructive ops.
     pub fn connection_generation(&self) -> u64 {
         self.connection_generation.load(Ordering::Relaxed)
+    }
+
+    /// Number of in-flight handshake reservations against this room. The
+    /// reaper combines this with `active_peers` to decide whether a room
+    /// is truly peer-less. Held by `ReservationGuard`.
+    pub fn reservations(&self) -> usize {
+        self.reservations.load(Ordering::Relaxed)
+    }
+}
+
+/// RAII guard for a handshake reservation against a room.
+///
+/// Bumps `RoomConnections::reservations` on construction, decrements on
+/// drop. Hand-off contract: callers that receive an `Arc<NotebookRoom>`
+/// from the registry hold a guard until the handshake either reaches
+/// `active_peers.fetch_add(1)` or aborts. The reaper's peer-less
+/// predicate is `active_peers == 0 && reservations == 0`, which closes
+/// the gap where the Arc has been cloned out of the registry but the
+/// active-peer increment has not yet landed.
+///
+/// The guard intentionally does not implement `Clone`; each
+/// reservation is a single slot.
+///
+/// The non-test callers (`find_room_by_path`, `get_or_create_room_result`)
+/// are wired up in the following commit that introduces `RoomRegistry`;
+/// hence the `allow(dead_code)` here.
+#[must_use = "drop the guard when the handshake commits or aborts; otherwise the reservation leaks until the room itself is dropped"]
+#[allow(dead_code)]
+pub struct ReservationGuard {
+    room: Arc<NotebookRoom>,
+}
+
+#[allow(dead_code)]
+impl ReservationGuard {
+    /// Take a reservation on `room`. Increments `reservations` once.
+    pub fn new(room: Arc<NotebookRoom>) -> Self {
+        room.connections
+            .reservations
+            .fetch_add(1, Ordering::Relaxed);
+        Self { room }
+    }
+
+    /// The room this guard is reserving.
+    pub fn room(&self) -> &Arc<NotebookRoom> {
+        &self.room
+    }
+}
+
+impl Drop for ReservationGuard {
+    fn drop(&mut self) {
+        // Saturating-decrement guard against an accidental double-drop
+        // (which would only happen on a misuse like manually `Drop`-ing
+        // the value twice via `unsafe`; safe code can't reach it).
+        self.room
+            .connections
+            .reservations
+            .fetch_sub(1, Ordering::Relaxed);
     }
 }
 

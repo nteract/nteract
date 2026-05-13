@@ -239,6 +239,72 @@ async fn file_backed_room_has_path_some() {
 }
 
 #[tokio::test]
+async fn reservation_guard_increments_and_decrements_counter() {
+    use std::sync::atomic::Ordering;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let room = Arc::new(NotebookRoom::new_fresh(
+        Uuid::new_v4(),
+        None,
+        tmp.path(),
+        blob_store,
+        false,
+    ));
+
+    assert_eq!(room.connections.reservations.load(Ordering::Relaxed), 0);
+
+    let guard = ReservationGuard::new(room.clone());
+    assert_eq!(room.connections.reservations.load(Ordering::Relaxed), 1);
+
+    drop(guard);
+    assert_eq!(room.connections.reservations.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn reservation_guards_stack() {
+    use std::sync::atomic::Ordering;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let room = Arc::new(NotebookRoom::new_fresh(
+        Uuid::new_v4(),
+        None,
+        tmp.path(),
+        blob_store,
+        false,
+    ));
+
+    let g1 = ReservationGuard::new(room.clone());
+    let g2 = ReservationGuard::new(room.clone());
+    let g3 = ReservationGuard::new(room.clone());
+    assert_eq!(room.connections.reservations.load(Ordering::Relaxed), 3);
+
+    drop(g2);
+    assert_eq!(room.connections.reservations.load(Ordering::Relaxed), 2);
+
+    drop(g1);
+    drop(g3);
+    assert_eq!(room.connections.reservations.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn reservation_guard_room_accessor_returns_same_arc() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let room = Arc::new(NotebookRoom::new_fresh(
+        Uuid::new_v4(),
+        None,
+        tmp.path(),
+        blob_store,
+        false,
+    ));
+
+    let guard = ReservationGuard::new(room.clone());
+    assert!(Arc::ptr_eq(guard.room(), &room));
+}
+
+#[tokio::test]
 async fn test_room_load_or_create_new() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
