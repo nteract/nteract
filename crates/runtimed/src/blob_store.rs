@@ -18,18 +18,35 @@ use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use notebook_protocol::protocol::BlobDurability;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::time::sleep;
 use tracing::debug;
 
 /// Maximum blob size accepted by `put()` (100 MiB).
 pub const MAX_BLOB_SIZE: usize = 100 * 1024 * 1024;
 /// Maximum bytes retained in the ephemeral in-memory layer (64 MiB).
 pub const EPHEMERAL_BLOB_CAP_BYTES: usize = 64 * 1024 * 1024;
+const BLOB_FILE_LOCK_RETRY_MS: u64 = 10;
+const BLOB_FILE_LOCK_STALE_SECS: u64 = 60;
+const BLOB_FILE_LOCK_TIMEOUT_SECS: u64 = 10;
+
+struct BlobFileLock {
+    path: PathBuf,
+    file: Option<std::fs::File>,
+}
+
+impl Drop for BlobFileLock {
+    fn drop(&mut self) {
+        self.file.take();
+        std::fs::remove_file(&self.path).ok();
+    }
+}
 
 /// Metadata stored alongside each blob.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +68,13 @@ fn merged_durability(existing: BlobDurability, incoming: BlobDurability) -> Blob
     } else {
         BlobDurability::Ephemeral
     }
+}
+
+fn lock_is_stale(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .and_then(|modified| modified.elapsed().map_err(io::Error::other))
+        .is_ok_and(|age| age > Duration::from_secs(BLOB_FILE_LOCK_STALE_SECS))
 }
 
 #[derive(Debug)]
@@ -314,6 +338,7 @@ impl BlobStore {
         durability: BlobDurability,
     ) -> io::Result<BlobDurability> {
         let (shard_dir, blob_path, meta_path) = self.paths(hash);
+        let _lock = self.acquire_blob_file_lock(&shard_dir, &meta_path).await?;
 
         // Fast path: both files already present.
         // If the caller provides a different media_type than what's stored,
@@ -341,8 +366,6 @@ impl BlobStore {
             }
             return Ok(durability);
         }
-
-        tokio::fs::create_dir_all(&shard_dir).await?;
 
         // --- Blob ---
         // Write to a temp file and atomically rename into place.
@@ -434,6 +457,48 @@ impl BlobStore {
 
     fn memory_cap(&self) -> usize {
         self.inner.memory_cap
+    }
+
+    async fn acquire_blob_file_lock(
+        &self,
+        shard_dir: &Path,
+        meta_path: &Path,
+    ) -> io::Result<BlobFileLock> {
+        tokio::fs::create_dir_all(shard_dir).await?;
+        let lock_path = meta_path.with_extension("lock");
+        let started = Instant::now();
+
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_path)
+            {
+                Ok(file) => {
+                    return Ok(BlobFileLock {
+                        path: lock_path,
+                        file: Some(file),
+                    });
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                    if lock_is_stale(&lock_path) {
+                        std::fs::remove_file(&lock_path).ok();
+                        continue;
+                    }
+                    if started.elapsed() >= Duration::from_secs(BLOB_FILE_LOCK_TIMEOUT_SECS) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            format!(
+                                "timed out acquiring blob file lock at {}",
+                                lock_path.display()
+                            ),
+                        ));
+                    }
+                    sleep(Duration::from_millis(BLOB_FILE_LOCK_RETRY_MS)).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     /// Retrieve blob bytes by hash. Returns `None` if not found.
@@ -533,7 +598,8 @@ impl BlobStore {
             return Ok(false);
         }
 
-        let (_, blob_path, meta_path) = self.paths(hash);
+        let (shard_dir, blob_path, meta_path) = self.paths(hash);
+        let _lock = self.acquire_blob_file_lock(&shard_dir, &meta_path).await?;
         let disk_was_ephemeral = match tokio::fs::read_to_string(&meta_path).await {
             Ok(json) => serde_json::from_str::<BlobMeta>(&json)
                 .map(|meta| meta.durability == BlobDurability::Ephemeral)
