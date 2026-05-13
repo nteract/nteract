@@ -250,7 +250,23 @@ pub enum BlobUploadErrorKind {
     OverCap,
     TooManyInFlight,
     InvalidHeader,
+    UnknownUpload,
+    PartSizeMismatch,
+    PartHashMismatch,
+    DuplicatePartConflict,
+    ManifestMismatch,
+    FinalHashMismatch,
+    OverPeerBudget,
+    SessionExpired,
     Io { message: String },
+}
+
+/// One manifest entry supplied when completing a multipart blob upload.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BlobUploadPart {
+    pub part_number: u32,
+    pub sha256: String,
+    pub size: u64,
 }
 
 /// Successful one-shot PutBlob upload result returned to callers.
@@ -288,6 +304,13 @@ pub enum PutBlobHeader {
         durability: Option<BlobDurability>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         purpose: Option<String>,
+    },
+    Part {
+        id: String,
+        upload_id: String,
+        part_number: u32,
+        size: u64,
+        sha256: String,
     },
 }
 
@@ -352,6 +375,7 @@ impl PutBlobHeader {
     pub fn id(&self) -> &str {
         match self {
             PutBlobHeader::Put { id, .. } => id,
+            PutBlobHeader::Part { id, .. } => id,
         }
     }
 }
@@ -530,6 +554,27 @@ pub enum NotebookRequest {
     /// Get the full Automerge document bytes from the daemon's canonical doc.
     /// Used by the frontend to bootstrap its WASM Automerge peer.
     GetDocBytes {},
+
+    /// Begin a peer-scoped multipart blob upload.
+    CreateBlobUpload {
+        media_type: String,
+        size: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sha256: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        part_size: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        purpose: Option<String>,
+    },
+
+    /// Publish a completed multipart upload into the content-addressed store.
+    CompleteBlobUpload {
+        upload_id: String,
+        parts: Vec<BlobUploadPart>,
+    },
+
+    /// Abort a peer-scoped multipart upload and discard staged parts.
+    AbortBlobUpload { upload_id: String },
 }
 
 /// Responses from daemon to notebook app.
@@ -637,6 +682,23 @@ pub enum NotebookResponse {
         size: u64,
         media_type: String,
     },
+
+    /// Multipart blob upload was created.
+    BlobUploadCreated {
+        upload_id: String,
+        part_size: u64,
+        expires_at: String,
+    },
+
+    /// Multipart blob part bytes were staged.
+    BlobPartStored {
+        upload_id: String,
+        part_number: u32,
+        sha256: String,
+    },
+
+    /// Multipart blob upload was aborted.
+    BlobUploadAborted { upload_id: String },
 
     /// Blob upload failed before publishing bytes.
     BlobUploadError { reason: BlobUploadErrorKind },
@@ -1272,6 +1334,34 @@ mod tests {
             (
                 "get_doc_bytes",
                 serde_json::json!({ "action": "get_doc_bytes" }),
+            ),
+            (
+                "create_blob_upload",
+                serde_json::json!({
+                    "action": "create_blob_upload",
+                    "media_type": "application/octet-stream",
+                    "size": 12,
+                    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                    "part_size": 8,
+                    "purpose": "comm-buffer",
+                }),
+            ),
+            (
+                "complete_blob_upload",
+                serde_json::json!({
+                    "action": "complete_blob_upload",
+                    "upload_id": "upload-1",
+                    "parts": [
+                        { "part_number": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "size": 12 }
+                    ],
+                }),
+            ),
+            (
+                "abort_blob_upload",
+                serde_json::json!({
+                    "action": "abort_blob_upload",
+                    "upload_id": "upload-1",
+                }),
             ),
             (
                 "send_comm",

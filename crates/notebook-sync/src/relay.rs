@@ -21,7 +21,8 @@
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use notebook_protocol::protocol::{
-    NotebookBroadcast, NotebookRequest, NotebookResponse, PutBlobHeader, PutBlobResult,
+    BlobUploadPart, NotebookBroadcast, NotebookRequest, NotebookResponse, PutBlobHeader,
+    PutBlobResult,
 };
 use sha2::{Digest, Sha256};
 
@@ -246,6 +247,127 @@ impl RelayHandle {
             other => Err(SyncError::Protocol(format!(
                 "Unexpected response for PutBlob: {other:?}"
             ))),
+        }
+    }
+
+    /// Upload bytes to the daemon blob store using multipart PutBlob frames.
+    pub async fn put_blob_multipart(
+        &self,
+        bytes: &[u8],
+        media_type: &str,
+    ) -> Result<PutBlobResult, SyncError> {
+        let expected_sha256 = hex::encode(Sha256::digest(bytes));
+        let created = self
+            .send_request(NotebookRequest::CreateBlobUpload {
+                media_type: media_type.to_string(),
+                size: bytes.len() as u64,
+                sha256: Some(expected_sha256),
+                part_size: None,
+                purpose: None,
+            })
+            .await?;
+
+        let (upload_id, part_size) = match created {
+            NotebookResponse::BlobUploadCreated {
+                upload_id,
+                part_size,
+                ..
+            } => (upload_id, part_size as usize),
+            NotebookResponse::BlobUploadError { reason } => {
+                return Err(SyncError::BlobUpload(reason));
+            }
+            other => {
+                return Err(SyncError::Protocol(format!(
+                    "Unexpected response for create_blob_upload: {other:?}"
+                )));
+            }
+        };
+
+        let mut manifest = Vec::new();
+        for (index, chunk) in bytes.chunks(part_size).enumerate() {
+            let part_number = (index + 1) as u32;
+            let part_sha256 = hex::encode(Sha256::digest(chunk));
+            let id = uuid::Uuid::new_v4().to_string();
+            let header = PutBlobHeader::Part {
+                id: id.clone(),
+                upload_id: upload_id.clone(),
+                part_number,
+                size: chunk.len() as u64,
+                sha256: part_sha256.clone(),
+            };
+            let response = self
+                .send_put_blob_frame(id, header.encode_frame(chunk)?)
+                .await?;
+            match response {
+                NotebookResponse::BlobPartStored {
+                    upload_id: response_upload_id,
+                    part_number: response_part_number,
+                    sha256,
+                } if response_upload_id == upload_id
+                    && response_part_number == part_number
+                    && sha256 == part_sha256 =>
+                {
+                    manifest.push(BlobUploadPart {
+                        part_number,
+                        sha256: part_sha256,
+                        size: chunk.len() as u64,
+                    });
+                }
+                NotebookResponse::BlobUploadError { reason } => {
+                    return Err(SyncError::BlobUpload(reason));
+                }
+                other => {
+                    return Err(SyncError::Protocol(format!(
+                        "Unexpected response for PutBlob part: {other:?}"
+                    )));
+                }
+            }
+        }
+
+        match self
+            .send_request(NotebookRequest::CompleteBlobUpload {
+                upload_id,
+                parts: manifest,
+            })
+            .await?
+        {
+            NotebookResponse::BlobStored {
+                hash,
+                size,
+                media_type,
+            } => Ok(PutBlobResult {
+                blob: hash,
+                size,
+                media_type,
+            }),
+            NotebookResponse::BlobUploadError { reason } => Err(SyncError::BlobUpload(reason)),
+            other => Err(SyncError::Protocol(format!(
+                "Unexpected response for complete_blob_upload: {other:?}"
+            ))),
+        }
+    }
+
+    async fn send_put_blob_frame(
+        &self,
+        id: String,
+        frame: Vec<u8>,
+    ) -> Result<NotebookResponse, SyncError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.cmd_tx
+            .send(RelayCommand::SendPutBlob {
+                id: id.clone(),
+                frame,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SyncError::Disconnected)?;
+
+        match tokio::time::timeout(PUT_BLOB_TIMEOUT, crate::reply::recv(reply_rx)).await {
+            Ok(reply) => reply,
+            Err(_) => {
+                let _ = self.cmd_tx.send(RelayCommand::CancelRequest { id }).await;
+                Err(SyncError::Timeout)
+            }
         }
     }
 

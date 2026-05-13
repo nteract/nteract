@@ -14,6 +14,7 @@
 
 use std::sync::Arc;
 
+use notebook_protocol::protocol::BlobUploadErrorKind;
 use tracing::debug;
 
 use crate::daemon::Daemon;
@@ -59,6 +60,9 @@ pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
         NotebookRequest::ApproveTrust { .. } => "ApproveTrust",
         NotebookRequest::ApproveProjectEnvironment { .. } => "ApproveProjectEnvironment",
         NotebookRequest::GetDocBytes { .. } => "GetDocBytes",
+        NotebookRequest::CreateBlobUpload { .. } => "CreateBlobUpload",
+        NotebookRequest::CompleteBlobUpload { .. } => "CompleteBlobUpload",
+        NotebookRequest::AbortBlobUpload { .. } => "AbortBlobUpload",
     }
 }
 
@@ -126,5 +130,11 @@ pub(crate) async fn handle_notebook_request(
         }
 
         NotebookRequest::GetDocBytes {} => get_doc_bytes::handle(room).await,
+
+        NotebookRequest::CreateBlobUpload { .. }
+        | NotebookRequest::CompleteBlobUpload { .. }
+        | NotebookRequest::AbortBlobUpload { .. } => NotebookResponse::BlobUploadError {
+            reason: BlobUploadErrorKind::UnknownUpload,
+        },
     }
 }

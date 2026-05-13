@@ -1,4 +1,4 @@
-use super::blob_upload::{enqueue_put_blob, spawn_put_blob_worker};
+use super::blob_upload::{enqueue_put_blob, spawn_put_blob_worker, MultipartUploadState};
 use super::peer_notebook_sync::{
     finish_notebook_doc_frame, forward_notebook_doc_broadcast, handle_notebook_doc_frame,
     queue_doc_sync, NotebookDocFrameOutcome,
@@ -140,16 +140,19 @@ where
     // client is temporarily slow to read daemon frames.
     let (peer_writer, mut writer_task) =
         spawn_peer_writer(writer, notebook_id.clone(), peer_id.to_string());
+    let multipart_uploads = MultipartUploadState::new(&room.blob_store);
     let mut request_worker = spawn_peer_request_worker(
         room.clone(),
         daemon.clone(),
         peer_writer.clone(),
+        multipart_uploads.clone(),
         notebook_id.clone(),
         peer_id.to_string(),
     );
     let mut put_blob_worker = spawn_put_blob_worker(
         room.blob_store.clone(),
         peer_writer.clone(),
+        multipart_uploads,
         notebook_id.clone(),
         peer_id.to_string(),
     );
