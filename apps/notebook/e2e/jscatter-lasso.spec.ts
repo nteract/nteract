@@ -71,6 +71,11 @@ test.describe("jupyter-scatter lasso selection", () => {
     await expect
       .poll(() => getFrontendSelectionCount(page), { timeout: 30_000 })
       .toBeGreaterThan(0);
+    // The frontend selection write reaches Python via the kernel comm queue.
+    // Give that comm_msg a turn before sending the execute_request that reads
+    // jpl.selection, otherwise CI can race the backend verification cell ahead
+    // of the widget update.
+    await page.waitForTimeout(2_000);
 
     await mcp.createCell("print('jscatter-selection-count', len(jpl.selection))");
     await waitForCellCount(page, 2);
