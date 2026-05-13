@@ -1773,6 +1773,16 @@ impl Daemon {
             gc_daemon.env_gc_loop().await;
         });
 
+        // Spawn the ghost-room reaper: removes notebook rooms that have
+        // been kernel-less and peer-less for longer than `GHOST_ROOM_TTL`.
+        // Rooms stay resident across kernel teardown so a reconnecting
+        // peer finds the doc, outputs, and file binding intact; the
+        // reaper draws the line at "no one has touched this in a day."
+        let reaper_daemon = self.clone();
+        spawn_best_effort("ghost-room-reaper", async move {
+            reaper_daemon.ghost_room_reaper_loop().await;
+        });
+
         // Spawn the settings.json file watcher
         let watcher_daemon = self.clone();
         spawn_best_effort("watch-settings-json", async move {
@@ -3595,22 +3605,33 @@ impl Daemon {
                         .await
                         .map(|p| p.to_string_lossy().to_string());
 
+                    let active_peers = room
+                        .connections
+                        .active_peers
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    let has_kernel = room.has_kernel().await;
+                    let state = if active_peers > 0 {
+                        crate::protocol::RoomState::Active
+                    } else if has_kernel {
+                        crate::protocol::RoomState::Idle
+                    } else {
+                        crate::protocol::RoomState::Inactive
+                    };
+
                     room_infos.push(crate::protocol::RoomInfo {
                         notebook_id: notebook_id.clone(),
-                        active_peers: room
-                            .connections
-                            .active_peers
-                            .load(std::sync::atomic::Ordering::Relaxed),
+                        active_peers,
                         had_peers: room
                             .connections
                             .had_peers
                             .load(std::sync::atomic::Ordering::Relaxed),
-                        has_kernel: room.has_kernel().await,
+                        has_kernel,
                         kernel_type,
                         env_source,
                         kernel_status,
                         ephemeral: room.file_binding.is_ephemeral(),
                         notebook_path,
+                        state,
                     });
                 }
                 Response::RoomsList { rooms: room_infos }
@@ -3863,6 +3884,230 @@ impl Daemon {
             // Run every 30 minutes (was 6 hours — too slow for sustained
             // workloads that create many ephemeral environments).
             tokio::time::sleep(std::time::Duration::from_secs(30 * 60)).await;
+        }
+    }
+
+    /// Background reaper for "ghost" notebook rooms.
+    ///
+    /// After `handle_peer_disconnect` runs kernel teardown, the room
+    /// stays in `notebook_rooms` (and its path stays in `path_index`)
+    /// so a reconnecting peer finds the same doc, outputs, and file
+    /// binding. The room becomes "ghost" once it has been kernel-less
+    /// and peer-less for longer than `GHOST_ROOM_TTL`. The reaper then
+    /// removes it from both maps and shuts down its file watcher,
+    /// project-file watcher, and autosave debouncer.
+    ///
+    /// Reconnect safety: `peer_connection::handle_join` zeroes the
+    /// teardown timestamp the moment it bumps `active_peers`, and the
+    /// reaper re-checks `active_peers == 0 && !has_kernel` under the
+    /// rooms lock before removing. A peer that reconnects between the
+    /// snapshot pass and the remove pass keeps its room.
+    async fn ghost_room_reaper_loop(self: Arc<Self>) {
+        /// How long a room may sit kernel-less and peer-less before the
+        /// reaper sweeps it. The `.ipynb` was saved at kernel-teardown
+        /// time, so removal is non-destructive — a future open reads
+        /// the same content back off disk.
+        const GHOST_ROOM_TTL_SECS: u64 = 24 * 3600;
+        /// How often the reaper wakes up to look for ghost rooms.
+        const REAPER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+        let mut tick = tokio::time::interval(REAPER_INTERVAL);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            self.ghost_room_reaper_sweep(GHOST_ROOM_TTL_SECS).await;
+        }
+    }
+
+    /// Test helper: look up a resident room by UUID. Returns `None`
+    /// if the UUID is unknown or the room has already been removed.
+    ///
+    /// `pub` so integration tests (separate crate) can drive ghost-room
+    /// scenarios by stamping `last_kernel_torn_down_at` directly. Not
+    /// intended for production callers.
+    #[doc(hidden)]
+    pub async fn test_get_room(
+        &self,
+        uuid: uuid::Uuid,
+    ) -> Option<Arc<crate::notebook_sync_server::NotebookRoom>> {
+        self.notebook_rooms.lock().await.get(&uuid).cloned()
+    }
+
+    /// Test helper: count resident rooms. `pub` for the same reason as
+    /// `test_get_room`; tests assert on this after kernel teardown to
+    /// distinguish "room still resident, just no kernel" from "room was
+    /// removed entirely."
+    #[doc(hidden)]
+    pub async fn test_room_count(&self) -> usize {
+        self.notebook_rooms.lock().await.len()
+    }
+
+    /// One sweep of the ghost-room reaper. Extracted so tests can drive
+    /// the reaper synchronously without waiting on `REAPER_INTERVAL`.
+    /// Public so integration tests (separate crate) can drive a sweep.
+    pub async fn ghost_room_reaper_sweep(self: &Arc<Self>, ttl_secs: u64) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        // Snapshot candidate (uuid, room, generation) tuples under the
+        // rooms lock. Filter on the timestamp first to keep the snapshot
+        // small; the active_peers / has_kernel checks happen below
+        // without the rooms lock held (has_kernel takes the
+        // runtime_agent lock). The generation snapshot lets the remove
+        // pass detect a fast reconnect/disconnect cycle that would
+        // otherwise look idle by peer count alone.
+        let candidates: Vec<(
+            uuid::Uuid,
+            Arc<crate::notebook_sync_server::NotebookRoom>,
+            u64,
+        )> = {
+            let rooms_guard = self.notebook_rooms.lock().await;
+            rooms_guard
+                .iter()
+                .filter_map(|(uuid, room)| {
+                    let ts = room.connections.last_kernel_torn_down_at()?;
+                    if now.saturating_sub(ts) < ttl_secs {
+                        return None;
+                    }
+                    if room
+                        .connections
+                        .active_peers
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                        > 0
+                    {
+                        return None;
+                    }
+                    // Snapshot the generation so the remove pass can
+                    // detect a reconnect-then-disconnect cycle that
+                    // would otherwise look idle by peer count alone.
+                    let gen_at_sample = room.connections.connection_generation();
+                    Some((*uuid, room.clone(), gen_at_sample))
+                })
+                .collect()
+        };
+
+        for (uuid, room, gen_at_sample) in candidates {
+            // Re-verify outside the lock. `has_kernel` touches the
+            // runtime-agent mutex; do it before re-acquiring rooms.
+            if room.has_kernel().await {
+                continue;
+            }
+
+            // Read the bound path BEFORE removing from notebook_rooms.
+            // The path_index must be cleared first: if we cleared
+            // rooms first, an open-by-path lookup that lands in the
+            // window between the rooms-remove and the path_index-remove
+            // would find a stale UUID in `path_index`, fail to find
+            // the room in `notebook_rooms`, and then create a new
+            // room — whose `path_index.insert` would fail because the
+            // stale entry is still there. The room would end up in
+            // `notebook_rooms` but not in `path_index`, and a
+            // subsequent open-by-path could create a duplicate room
+            // for the same file.
+            let path_for_index = room.file_binding.path().await;
+            if let Some(ref p) = path_for_index {
+                // Only remove the path_index entry if it still maps to
+                // this ghost's UUID. A concurrent save-as on a
+                // different room could have repointed the path; we
+                // must not strip that.
+                let mut idx = self.path_index.lock().await;
+                if idx.lookup(p) == Some(uuid) {
+                    idx.remove(p);
+                }
+            }
+
+            // Atomic remove pass: re-check active_peers AND the
+            // connection generation AND the teardown timestamp under
+            // the rooms lock so a peer that reconnected between the
+            // snapshot and now keeps its room. A brief peer-touch
+            // (connect, then disconnect again) leaves active_peers == 0
+            // but bumps the generation and may have zeroed the
+            // teardown timestamp; treat all three as "still idle"
+            // signals. If the room is no longer idle, the path_index
+            // removal above doesn't matter — `find_room_by_path` falls
+            // through to the rooms-map lookup which still has the room,
+            // and the next save-as / open path will reinsert the entry.
+            // Drop the rooms lock before any further .await to honour
+            // the no-await-with-rooms-lock convention.
+            let removed = {
+                let mut rooms_guard = self.notebook_rooms.lock().await;
+                let still_idle = rooms_guard
+                    .get(&uuid)
+                    .map(|r| {
+                        let no_peers = r
+                            .connections
+                            .active_peers
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                            == 0;
+                        let same_gen = r.connections.connection_generation() == gen_at_sample;
+                        // A reconnect zeroed the timestamp on join. If
+                        // a subsequent disconnect ran, peer_eviction
+                        // re-stamps it; either way, requiring "stamped
+                        // AND aged out" filters the second case
+                        // through the candidate pass on a later cycle
+                        // rather than reaping it eagerly here.
+                        let still_stamped = r
+                            .connections
+                            .last_kernel_torn_down_at()
+                            .map(|ts| now.saturating_sub(ts) >= ttl_secs)
+                            .unwrap_or(false);
+                        no_peers && same_gen && still_stamped
+                    })
+                    .unwrap_or(false);
+                if still_idle {
+                    rooms_guard.remove(&uuid)
+                } else {
+                    None
+                }
+            };
+
+            let Some(room) = removed else {
+                // Room was rescued between our path-index-remove
+                // and our rooms-lock check. Reinsert the path so the
+                // resumed room remains discoverable by path.
+                if let Some(ref p) = path_for_index {
+                    let mut idx = self.path_index.lock().await;
+                    if let Err(e) = idx.insert(p.clone(), uuid) {
+                        warn!(
+                            "[runtimed] Ghost reaper: failed to reinsert path_index for rescued room {} at {:?}: {}",
+                            uuid, p, e
+                        );
+                    }
+                }
+                continue;
+            };
+            let path = path_for_index;
+
+            // Shut down the watchers and autosave debouncer that were
+            // left armed across kernel teardown. The .ipynb has been
+            // saved (kernel teardown wrote a final save) and no peers
+            // are around to make further edits, so this is just freeing
+            // file-descriptors and the autosave task.
+            room.file_binding.shutdown_notebook_watcher().await;
+            room.file_binding.shutdown_project_file_watcher().await;
+            const AUTOSAVE_SHUTDOWN_TIMEOUT: std::time::Duration =
+                std::time::Duration::from_secs(5);
+            let notebook_id_label = path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| uuid.to_string());
+            let _ = crate::notebook_sync_server::shutdown_autosave_debouncer(
+                &room,
+                &notebook_id_label,
+                AUTOSAVE_SHUTDOWN_TIMEOUT,
+            )
+            .await;
+
+            info!(
+                "[runtimed] Ghost-room reaper removed room {} (path={:?})",
+                uuid, path
+            );
+            // Dropping `room` here also drops the persist debouncer's
+            // sender half; the debouncer task exits via its shutdown arm
+            // and gets one final flush in.
+            drop(room);
         }
     }
 }

@@ -2686,9 +2686,27 @@ pub(crate) async fn auto_launch_kernel(
 
     // For saved notebooks, notebook_path_opt is the file path (kernel cwd = parent dir).
     // For untitled notebooks, use working_dir as-is (output_prep handles is_dir()).
-    let notebook_path = PathBuf::from(notebook_id);
-    let notebook_path_opt = if notebook_path.exists() {
-        Some(notebook_path.clone())
+    //
+    // Prefer the room's bound path first: an MCP UUID-based reconnect
+    // to a resumable file-backed room passes the UUID as
+    // `notebook_id`, but the room already has its `.ipynb` path bound
+    // via `file_binding`. Without consulting the binding, we would
+    // misclassify the reconnect as an untitled notebook and launch
+    // the kernel with the default working_dir instead of the notebook's
+    // own directory — breaking notebook-relative project preparation.
+    let bound_path = room.file_binding.path().await;
+    let notebook_path_from_id = PathBuf::from(notebook_id);
+    let notebook_path_opt = if let Some(ref bp) = bound_path {
+        if bp.exists() {
+            Some(bp.clone())
+        } else {
+            // Bound path was deleted between teardown and reconnect.
+            // Treat as untitled to avoid passing a missing path to
+            // env launch.
+            None
+        }
+    } else if notebook_path_from_id.exists() {
+        Some(notebook_path_from_id.clone())
     } else if is_untitled_notebook(notebook_id) {
         let working_dir = room.identity.working_dir.read().await;
         working_dir.clone().inspect(|p| {
@@ -2706,6 +2724,32 @@ pub(crate) async fn auto_launch_kernel(
 
     // Resolve metadata snapshot: try Automerge doc first, fall back to disk
     let metadata_snapshot = resolve_metadata_snapshot(room, notebook_path_opt.as_deref()).await;
+
+    // If a kernel-teardown task is in its destructive phase, the
+    // `runtime_agent_handle` slot still holds the doomed agent. Wait
+    // briefly for teardown to clear it before deciding whether
+    // another auto-launch beat us. Without this, the "skip: runtime
+    // agent already exists" check below races with peer_eviction's
+    // handle-clear: this auto-launch returns early thinking another
+    // launch is in flight, teardown then clears the handle, and the
+    // reconnected peer ends up with no kernel and no further launch.
+    {
+        let teardown_wait_deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while room
+            .connections
+            .kernel_teardown_destructive
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            if tokio::time::Instant::now() >= teardown_wait_deadline {
+                warn!(
+                    "[notebook-sync] Auto-launch gave up waiting for kernel teardown to clear destructive latch; proceeding"
+                );
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
 
     // Check RuntimeStateDoc — skip if already starting or running
     {

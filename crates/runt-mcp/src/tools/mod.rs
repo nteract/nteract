@@ -86,7 +86,7 @@ pub fn all_tools() -> Vec<Tool> {
         // -- Session management --
         Tool::new(
             "list_active_notebooks",
-            "List running notebook sessions.",
+            "List active notebook sessions.",
             schema_for::<EmptyParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false))
@@ -105,7 +105,7 @@ pub fn all_tools() -> Vec<Tool> {
         .with_meta(always_load_meta()),
         Tool::new(
             "create_notebook",
-            "Create a new notebook. Ephemeral by default; use environment_mode=\"notebook\" to ignore project files for env selection, and save_notebook(path) to persist.",
+            "Create a notebook. Ephemeral by default; save_notebook(path) to persist.",
             schema_for::<session::CreateNotebookParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
@@ -194,9 +194,7 @@ pub fn all_tools() -> Vec<Tool> {
         .with_meta(app_tool_meta()),
         Tool::new(
             "get_results",
-            "Get outputs for an execution by ID. Returns status (done/error/running/queued) \
-             so you know if outputs are complete. Use the execution_id from execute_cell, \
-             set_cell(and_run), or run_all_cells.",
+            "Get outputs and status (done/error/running/queued) for an execution_id.",
             schema_for::<execution::GetResultsParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false))
@@ -222,9 +220,7 @@ pub fn all_tools() -> Vec<Tool> {
         // -- Dependencies --
         Tool::new(
             "manage_dependencies",
-            "Review or update notebook dependencies. With no parameters, returns current dependencies, \
-             dependency fingerprint, and trust state. Use add/remove arrays for edits; set trust=true \
-             to approve the resulting dependency metadata; set apply='sync' or 'restart' to apply.",
+            "Review or update notebook dependencies. Returns current deps, fingerprint, and trust state.",
             schema_for::<deps::ManageDependenciesParams>(),
         )
         .annotate(
@@ -584,16 +580,6 @@ mod tests {
                     .any(|field| field == "dependency_fingerprint")
             });
         assert!(!fingerprint_is_required);
-        assert!(tool
-            .description
-            .as_deref()
-            .unwrap_or_default()
-            .contains("dependency fingerprint"));
-        assert!(tool
-            .description
-            .as_deref()
-            .unwrap_or_default()
-            .contains("trust state"));
 
         let annotations = tool
             .annotations
@@ -607,16 +593,16 @@ mod tests {
     fn manage_dependencies_tool_advertises_apply_modes() {
         let tool = registered_tool("manage_dependencies");
 
-        assert!(tool
-            .description
-            .as_deref()
-            .unwrap_or_default()
-            .contains("apply='sync'"));
-        assert!(tool
-            .description
-            .as_deref()
-            .unwrap_or_default()
-            .contains("restart"));
+        let examples = tool
+            .input_schema
+            .get("properties")
+            .and_then(|p| p.get("apply"))
+            .and_then(|a| a.get("examples"))
+            .and_then(serde_json::Value::as_array)
+            .expect("manage_dependencies.apply should advertise example values");
+        let examples: Vec<&str> = examples.iter().filter_map(|v| v.as_str()).collect();
+        assert!(examples.contains(&"sync"));
+        assert!(examples.contains(&"restart"));
 
         let annotations = tool
             .annotations
@@ -636,11 +622,6 @@ mod tests {
             .expect("create_notebook schema should expose properties");
 
         assert!(properties.contains_key("environment_mode"));
-        assert!(tool
-            .description
-            .as_deref()
-            .unwrap_or_default()
-            .contains("environment_mode=\"notebook\""));
     }
 
     #[test]

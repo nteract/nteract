@@ -7,7 +7,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "List running notebook sessions.",
+    "description": "List active notebook sessions.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "Empty params for tools that take no arguments.",
@@ -56,7 +56,7 @@
       "destructiveHint": false,
       "openWorldHint": false
     },
-    "description": "Create a new notebook. Ephemeral by default; use environment_mode=\"notebook\" to ignore project files for env selection, and save_notebook(path) to persist.",
+    "description": "Create a notebook. Ephemeral by default; save_notebook(path) to persist.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -541,7 +541,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Get outputs for an execution by ID. Returns status (done/error/running/queued) so you know if outputs are complete. Use the execution_id from execute_cell, set_cell(and_run), or run_all_cells.",
+    "description": "Get outputs and status (done/error/running/queued) for an execution_id.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -601,7 +601,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Review or update notebook dependencies. With no parameters, returns current dependencies, dependency fingerprint, and trust state. Use add/remove arrays for edits; set trust=true to approve the resulting dependency metadata; set apply='sync' or 'restart' to apply.",
+    "description": "Review or update notebook dependencies. Returns current deps, fingerprint, and trust state.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {

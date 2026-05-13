@@ -43,6 +43,21 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
+    // Claim the room for this peer before any other await. Bumping the
+    // generation here protects against two ghost-room reaper races:
+    //   1. The reaper has already snapshotted candidates and is between
+    //      snapshot and remove pass — the remove pass re-checks
+    //      generation under the rooms lock and bails because we moved
+    //      it.
+    //   2. A reaper sweep arrives during the awaited setup below — the
+    //      remove pass observes the bumped generation and bails before
+    //      removing the room out from under this connection.
+    // Clearing the teardown timestamp here keeps a brand-new reaper
+    // cycle from snapshotting this room as a candidate while we are
+    // still attaching.
+    room.connections.bump_connection_generation();
+    room.connections.clear_kernel_torn_down();
+
     // Set working_dir on the room if provided (for untitled notebook project detection)
     if let Some(wd) = working_dir {
         let mut room_wd = room.identity.working_dir.write().await;
@@ -97,6 +112,16 @@ where
         .active_peers
         .fetch_add(1, Ordering::Relaxed);
     room.connections.had_peers.store(true, Ordering::Relaxed);
+    // Resuming a room that the ghost-room reaper might otherwise sweep:
+    // clear the inactive-since timestamp so the reaper can't pick this
+    // room off between now and the next kernel teardown.
+    room.connections.clear_kernel_torn_down();
+    // Bump the connection generation so any in-flight kernel-teardown
+    // task that snapshotted the previous value aborts before destroying
+    // a kernel this peer might still want, and so the ghost reaper
+    // notices the touch even if `active_peers` ping-pongs back to zero
+    // before the reaper's remove pass.
+    room.connections.bump_connection_generation();
     let peers = room.connections.active_peers.load(Ordering::Relaxed);
     info!(
         "[notebook-sync] Client connected to room {} ({} peer{})",
@@ -119,7 +144,20 @@ where
             trust_state.status.clone()
         };
         let has_kernel = room.has_kernel().await;
-        let should_auto_launch = !has_kernel
+        // If a kernel-teardown task is in its destructive section,
+        // `has_kernel()` may currently return `true` but the runtime
+        // agent is about to be killed. Treat that as "no kernel" for
+        // the auto-launch decision: a fresh launch is what the peer
+        // needs once teardown completes. `auto_launch_kernel` itself
+        // re-checks the handle slot once teardown clears it, so this
+        // doesn't fight with teardown — it just stops the peer from
+        // sitting with a doomed kernel forever.
+        let kernel_being_torn_down = room
+            .connections
+            .kernel_teardown_destructive
+            .load(Ordering::Acquire);
+        let effective_has_kernel = has_kernel && !kernel_being_torn_down;
+        let should_auto_launch = !effective_has_kernel
             && matches!(
                 trust_status,
                 runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies

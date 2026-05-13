@@ -226,6 +226,44 @@ pub struct NotebookKernelInfo {
     pub status: String,
 }
 
+/// High-level lifecycle position of a notebook room.
+///
+/// - `Active`: at least one peer is connected.
+/// - `Idle`: no peers, but the kernel is still running (within the
+///   no-peers grace before kernel teardown).
+/// - `Inactive`: no peers and no kernel — resumable. Open by path or
+///   `notebook_id` to bring the room back to life. After the ghost
+///   reaper's TTL the room is removed entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomState {
+    Active,
+    Idle,
+    Inactive,
+}
+
+impl Default for RoomState {
+    /// Backwards-compat default for clients deserializing from older
+    /// daemons that don't emit a `state` field. Treat absence as
+    /// `Active` because that was the universal behaviour before the
+    /// state field existed (rooms only appeared in `list_rooms` while a
+    /// peer was connected).
+    fn default() -> Self {
+        RoomState::Active
+    }
+}
+
+impl RoomState {
+    /// Wire-stable string form for CLI and logs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RoomState::Active => "active",
+            RoomState::Idle => "idle",
+            RoomState::Inactive => "inactive",
+        }
+    }
+}
+
 /// Info about an active notebook room.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoomInfo {
@@ -246,6 +284,11 @@ pub struct RoomInfo {
     pub ephemeral: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notebook_path: Option<String>,
+    /// Lifecycle position: `active` (peers > 0), `idle` (no peers,
+    /// kernel alive), or `inactive` (no peers, no kernel — resumable).
+    /// Older daemons that don't emit this field default to `active`.
+    #[serde(default)]
+    pub state: RoomState,
 }
 
 /// Blob channel request.
