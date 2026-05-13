@@ -3772,7 +3772,13 @@ impl Daemon {
                     .map(|(id, _)| crate::paths::notebook_doc_filename(&id.to_string()))
                     .collect();
 
-                let docs_max_age = std::time::Duration::from_secs(24 * 3600); // 24 hours
+                // 7 days. The resident-room reaper's 24h TTL handles the
+                // common case; this sweep is the long-tail safety net for
+                // `.automerge` files left behind by daemon crashes, legacy
+                // untitled docs, and the post-reap window where an
+                // untitled room's persisted bytes survive on disk so a
+                // returning user can resurrect cells.
+                let docs_max_age = std::time::Duration::from_secs(7 * 24 * 3600);
                 let mut docs_cleaned = 0;
                 if let Ok(mut entries) = tokio::fs::read_dir(&notebook_docs_dir).await {
                     while let Ok(Some(entry)) = entries.next_entry().await {
