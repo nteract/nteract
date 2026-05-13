@@ -1189,7 +1189,7 @@ pub async fn pixi_info(manifest_path: &std::path::Path) -> Result<PixiInfoResult
 /// direct Python launch without the `pixi run` wrapper.
 ///
 /// `extra_env` is applied to the spawned `pixi` subprocess (not to the
-/// returned activation vars). Use this to set `PIXI_FROZEN=1` when offline
+/// returned activation vars). Use this to set `PIXI_FROZEN=true` when offline
 /// so pixi does not try to refresh the lockfile from the network.
 pub async fn pixi_shell_hook(
     manifest_path: &std::path::Path,

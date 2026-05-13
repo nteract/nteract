@@ -545,7 +545,7 @@ impl KernelConnection for JupyterKernel {
                         } else {
                             "ipykernel_launcher"
                         };
-                        // Forward launch-config env vars (e.g. PIXI_FROZEN=1
+                        // Forward launch-config env vars (e.g. PIXI_FROZEN=true
                         // when the daemon-side prepare needed frozen mode)
                         // to the shell-hook subprocess. The bottom of this
                         // function also applies them to the final kernel

@@ -4,7 +4,7 @@
 //! `pixi shell-hook`. That call can hit the network when pixi decides the
 //! lockfile needs to refresh, so this module mirrors `uv_project` and adds
 //! an offline-tolerant prepare probe: if `pixi shell-hook` fails with
-//! network or DNS markers, retry with `PIXI_FROZEN=1` so pixi uses the
+//! network or DNS markers, retry with `PIXI_FROZEN=true` so pixi uses the
 //! lockfile as-is. When the retry succeeds, callers propagate the frozen
 //! signal through the kernel launch so the runtime-agent-side
 //! `pixi shell-hook` and the fallback `pixi run` also stay offline.
@@ -141,9 +141,10 @@ fn locate_pixi_manifest(notebook_path: Option<&Path>) -> Option<std::path::PathB
 }
 
 /// Walks up from the notebook directory and picks the closest pixi
-/// manifest. At each directory level `pixi.toml` wins over `pyproject.toml`
-/// with `[tool.pixi]`, and a bare `pyproject.toml` without `[tool.pixi]`
-/// is skipped (it's not our concern). Mirrors the boundaries of
+/// manifest. At each directory level `pyproject.toml` with `[tool.pixi]`
+/// wins over sibling `pixi.toml`, and a bare `pyproject.toml` without
+/// `[tool.pixi]` is skipped when no sibling `pixi.toml` exists. Mirrors
+/// the boundaries of
 /// `crate::project_file::find_nearest_project_file` (stops at `.git` or
 /// the home directory) so the probe targets the same project the launch
 /// path will end up activating.
