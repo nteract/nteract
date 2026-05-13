@@ -526,6 +526,12 @@ pub struct NotebookRoom {
     /// Trust state for this notebook (for auto-launch decisions).
     pub trust_state: Arc<RwLock<TrustState>>,
     /// Daemon-local package allowlist for familiar dependency auto-approval.
+    ///
+    /// `TrustedPackageStore` is `pub(crate)`, but `NotebookRoom` reaches
+    /// visibility `pub` via `Daemon::test_get_room` (a `#[doc(hidden)]` test
+    /// escape hatch). The store is not consumed across the crate boundary;
+    /// allow the lint here rather than widen the store's surface.
+    #[allow(private_interfaces)]
     pub trusted_packages: crate::trusted_packages::TrustedPackageStore,
     /// Per-notebook RuntimeStateDoc handle — daemon-authoritative ephemeral state
     /// (kernel status, queue, env sync). Clients sync read-only.
@@ -597,6 +603,7 @@ impl NotebookRoom {
         .expect("create test notebook room runtime state")
     }
 
+    #[allow(private_interfaces)]
     pub fn new_fresh_with_trusted_packages(
         uuid: uuid::Uuid,
         path: Option<PathBuf>,
