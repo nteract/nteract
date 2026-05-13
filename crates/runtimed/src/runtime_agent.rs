@@ -408,6 +408,10 @@ pub async fn run_runtime_agent(
                                                         )
                                                         .await
                                                         else {
+                                                            // The doc supersession already happened; even though no
+                                                            // kernel send is needed for an echo, stale ephemeral blobs
+                                                            // can be freed here. Failed kernel sends skip this cleanup
+                                                            // below so the bytes remain available for a retry.
                                                             free_superseded_ephemeral_blobs(
                                                                 &ctx.blob_store,
                                                                 comm_id,
@@ -2304,7 +2308,6 @@ mod tests {
         // Production only calls free_superseded_ephemeral_blobs after a
         // successful send_comm_update or an echo-suppressed update. A failed
         // kernel send keeps the blob available for a possible retry.
-        let _kernel_send_failed = true;
 
         assert_eq!(
             blob_store.get(&hash).await.unwrap().as_deref(),
