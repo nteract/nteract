@@ -308,7 +308,7 @@ pub(crate) async fn handle_put_blob_frame(
                 PartBegin::Ready { path } => {
                     if let Err(error) = write_staged_part(&path, body).await {
                         warn!("[notebook-sync] PutBlob part write failed: {}", error);
-                        let _ = finish_part_upload(
+                        if let PartFinish::Error { cleanup_file, .. } = finish_part_upload(
                             multipart_uploads,
                             &upload_id,
                             part_number,
@@ -316,7 +316,9 @@ pub(crate) async fn handle_put_blob_frame(
                             &sha256,
                             path,
                             false,
-                        );
+                        ) {
+                            cleanup_upload_file(cleanup_file).await;
+                        }
                         send_blob_upload_error(
                             peer_writer,
                             Some(id),
@@ -336,7 +338,7 @@ pub(crate) async fn handle_put_blob_frame(
                         path,
                         true,
                     ) {
-                        Ok(()) => {
+                        PartFinish::Stored => {
                             send_blob_response(
                                 peer_writer,
                                 Some(id),
@@ -347,7 +349,11 @@ pub(crate) async fn handle_put_blob_frame(
                                 },
                             )?;
                         }
-                        Err(reason) => {
+                        PartFinish::Error {
+                            reason,
+                            cleanup_file,
+                        } => {
+                            cleanup_upload_file(cleanup_file).await;
                             send_blob_upload_error(peer_writer, Some(id), reason)?;
                         }
                     }
@@ -363,7 +369,11 @@ pub(crate) async fn handle_put_blob_frame(
                         },
                     )?;
                 }
-                PartBegin::Error(reason) => {
+                PartBegin::Error {
+                    reason,
+                    cleanup_dir,
+                } => {
+                    cleanup_upload_dir(cleanup_dir).await;
                     send_blob_upload_error(peer_writer, Some(id), reason)?;
                 }
             }
@@ -407,14 +417,44 @@ pub(super) async fn maybe_handle_blob_upload_request(
 }
 
 enum PartBegin {
-    Ready { path: PathBuf },
+    Ready {
+        path: PathBuf,
+    },
     AlreadyStored,
-    Error(BlobUploadErrorKind),
+    Error {
+        reason: BlobUploadErrorKind,
+        cleanup_dir: Option<PathBuf>,
+    },
+}
+
+enum PartFinish {
+    Stored,
+    Error {
+        reason: BlobUploadErrorKind,
+        cleanup_file: Option<PathBuf>,
+    },
+}
+
+struct CompletionError {
+    reason: BlobUploadErrorKind,
+    cleanup_dir: Option<PathBuf>,
 }
 
 async fn cleanup_upload_dirs(paths: Vec<PathBuf>) {
     for path in paths {
         tokio::fs::remove_dir_all(path).await.ok();
+    }
+}
+
+async fn cleanup_upload_dir(path: Option<PathBuf>) {
+    if let Some(path) = path {
+        tokio::fs::remove_dir_all(path).await.ok();
+    }
+}
+
+async fn cleanup_upload_file(path: Option<PathBuf>) {
+    if let Some(path) = path {
+        tokio::fs::remove_file(path).await.ok();
     }
 }
 
@@ -505,29 +545,44 @@ fn begin_part_upload(
     let projected_staged_bytes = registry.staged_bytes.saturating_add(size);
     let budget_bytes = registry.budget_bytes;
     let Some(upload) = registry.uploads.get_mut(upload_id) else {
-        return PartBegin::Error(BlobUploadErrorKind::UnknownUpload);
+        return PartBegin::Error {
+            reason: BlobUploadErrorKind::UnknownUpload,
+            cleanup_dir: None,
+        };
     };
     if upload.expires_at <= Utc::now() {
         let dir = registry.remove_upload(upload_id).map(|upload| upload.dir);
-        if let Some(dir) = dir {
-            std::fs::remove_dir_all(dir).ok();
-        }
-        return PartBegin::Error(BlobUploadErrorKind::SessionExpired);
+        return PartBegin::Error {
+            reason: BlobUploadErrorKind::SessionExpired,
+            cleanup_dir: dir,
+        };
     }
     if upload.active_part || upload.completing {
-        return PartBegin::Error(BlobUploadErrorKind::OverPeerBudget);
+        return PartBegin::Error {
+            reason: BlobUploadErrorKind::OverPeerBudget,
+            cleanup_dir: None,
+        };
     }
     if size > upload.part_size {
-        return PartBegin::Error(BlobUploadErrorKind::PartSizeMismatch);
+        return PartBegin::Error {
+            reason: BlobUploadErrorKind::PartSizeMismatch,
+            cleanup_dir: None,
+        };
     }
     if let Some(existing) = upload.parts.get(&part_number) {
         if existing.sha256 == sha256 && existing.size == size {
             return PartBegin::AlreadyStored;
         }
-        return PartBegin::Error(BlobUploadErrorKind::DuplicatePartConflict);
+        return PartBegin::Error {
+            reason: BlobUploadErrorKind::DuplicatePartConflict,
+            cleanup_dir: None,
+        };
     }
     if projected_staged_bytes > budget_bytes {
-        return PartBegin::Error(BlobUploadErrorKind::OverPeerBudget);
+        return PartBegin::Error {
+            reason: BlobUploadErrorKind::OverPeerBudget,
+            cleanup_dir: None,
+        };
     }
     upload.active_part = true;
     PartBegin::Ready {
@@ -547,22 +602,26 @@ fn finish_part_upload(
     sha256: &str,
     path: PathBuf,
     write_succeeded: bool,
-) -> Result<(), BlobUploadErrorKind> {
+) -> PartFinish {
     let mut registry = multipart_uploads.lock();
     let Some(upload) = registry.uploads.get_mut(upload_id) else {
-        std::fs::remove_file(path).ok();
-        return Err(BlobUploadErrorKind::UnknownUpload);
+        return PartFinish::Error {
+            reason: BlobUploadErrorKind::UnknownUpload,
+            cleanup_file: Some(path),
+        };
     };
     upload.active_part = false;
     if !write_succeeded {
-        return Ok(());
+        return PartFinish::Stored;
     }
     if let Some(existing) = upload.parts.get(&part_number) {
         if existing.sha256 == sha256 && existing.size == size {
-            return Ok(());
+            return PartFinish::Stored;
         }
-        std::fs::remove_file(path).ok();
-        return Err(BlobUploadErrorKind::DuplicatePartConflict);
+        return PartFinish::Error {
+            reason: BlobUploadErrorKind::DuplicatePartConflict,
+            cleanup_file: Some(path),
+        };
     }
 
     upload.parts.insert(
@@ -574,7 +633,7 @@ fn finish_part_upload(
         },
     );
     registry.staged_bytes = registry.staged_bytes.saturating_add(size);
-    Ok(())
+    PartFinish::Stored
 }
 
 async fn write_staged_part(path: &PathBuf, body: &[u8]) -> std::io::Result<()> {
@@ -605,8 +664,11 @@ async fn handle_complete_blob_upload(
     cleanup_upload_dirs(multipart_uploads.sweep_expired()).await;
     let mut plan = match prepare_completion(multipart_uploads, upload_id, parts) {
         Ok(plan) => plan,
-        Err(reason) => {
-            return NotebookResponse::BlobUploadError { reason };
+        Err(error) => {
+            cleanup_upload_dir(error.cleanup_dir).await;
+            return NotebookResponse::BlobUploadError {
+                reason: error.reason,
+            };
         }
     };
 
@@ -669,20 +731,26 @@ fn prepare_completion(
     multipart_uploads: &MultipartUploadState,
     upload_id: &str,
     manifest: &[BlobUploadPart],
-) -> Result<CompletionPlan, BlobUploadErrorKind> {
+) -> Result<CompletionPlan, CompletionError> {
     let mut registry = multipart_uploads.lock();
     let Some(upload) = registry.uploads.get_mut(upload_id) else {
-        return Err(BlobUploadErrorKind::UnknownUpload);
+        return Err(CompletionError {
+            reason: BlobUploadErrorKind::UnknownUpload,
+            cleanup_dir: None,
+        });
     };
     if upload.expires_at <= Utc::now() {
         let dir = registry.remove_upload(upload_id).map(|upload| upload.dir);
-        if let Some(dir) = dir {
-            std::fs::remove_dir_all(dir).ok();
-        }
-        return Err(BlobUploadErrorKind::SessionExpired);
+        return Err(CompletionError {
+            reason: BlobUploadErrorKind::SessionExpired,
+            cleanup_dir: dir,
+        });
     }
     if upload.active_part || upload.completing {
-        return Err(BlobUploadErrorKind::OverPeerBudget);
+        return Err(CompletionError {
+            reason: BlobUploadErrorKind::OverPeerBudget,
+            cleanup_dir: None,
+        });
     }
 
     let mut seen = BTreeSet::new();
@@ -690,24 +758,40 @@ fn prepare_completion(
     let mut part_paths = Vec::with_capacity(manifest.len());
     for manifest_part in manifest {
         if !seen.insert(manifest_part.part_number) {
-            return Err(BlobUploadErrorKind::ManifestMismatch);
+            return Err(CompletionError {
+                reason: BlobUploadErrorKind::ManifestMismatch,
+                cleanup_dir: None,
+            });
         }
         let Some(staged) = upload.parts.get(&manifest_part.part_number) else {
-            return Err(BlobUploadErrorKind::ManifestMismatch);
+            return Err(CompletionError {
+                reason: BlobUploadErrorKind::ManifestMismatch,
+                cleanup_dir: None,
+            });
         };
         if staged.sha256 != manifest_part.sha256 || staged.size != manifest_part.size {
-            return Err(BlobUploadErrorKind::ManifestMismatch);
+            return Err(CompletionError {
+                reason: BlobUploadErrorKind::ManifestMismatch,
+                cleanup_dir: None,
+            });
         }
-        total_size = total_size
-            .checked_add(staged.size)
-            .ok_or(BlobUploadErrorKind::ManifestMismatch)?;
+        total_size = total_size.checked_add(staged.size).ok_or(CompletionError {
+            reason: BlobUploadErrorKind::ManifestMismatch,
+            cleanup_dir: None,
+        })?;
         part_paths.push(staged.path.clone());
     }
     if total_size != upload.expected_size {
-        return Err(BlobUploadErrorKind::ManifestMismatch);
+        return Err(CompletionError {
+            reason: BlobUploadErrorKind::ManifestMismatch,
+            cleanup_dir: None,
+        });
     }
     if upload.parts.len() != manifest.len() {
-        return Err(BlobUploadErrorKind::ManifestMismatch);
+        return Err(CompletionError {
+            reason: BlobUploadErrorKind::ManifestMismatch,
+            cleanup_dir: None,
+        });
     }
 
     upload.completing = true;

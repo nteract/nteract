@@ -394,6 +394,32 @@ mod tests {
         (handle, daemon_read, daemon_write)
     }
 
+    async fn recv_request_for_test(
+        daemon_read: &mut tokio::io::ReadHalf<tokio::io::DuplexStream>,
+    ) -> NotebookRequestEnvelope {
+        let frame = connection::recv_typed_frame(daemon_read)
+            .await
+            .expect("read request frame")
+            .expect("request frame");
+        assert_eq!(frame.frame_type, NotebookFrameType::Request);
+        serde_json::from_slice(&frame.payload).expect("parse request")
+    }
+
+    async fn send_response_for_test(
+        daemon_write: &mut tokio::io::WriteHalf<tokio::io::DuplexStream>,
+        id: Option<String>,
+        response: NotebookResponse,
+    ) {
+        let envelope = NotebookResponseEnvelope { id, response };
+        connection::send_typed_frame(
+            daemon_write,
+            NotebookFrameType::Response,
+            &serde_json::to_vec(&envelope).unwrap(),
+        )
+        .await
+        .expect("send response");
+    }
+
     #[tokio::test]
     async fn relay_handle_put_blob_one_shot_routes_response_by_id() {
         let (handle, mut daemon_read, mut daemon_write) = spawn_relay_for_test().await;
@@ -618,5 +644,122 @@ mod tests {
                 media_type: "text/plain".to_string(),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn relay_handle_put_blob_multipart_rejects_zero_part_size_and_aborts() {
+        let (handle, mut daemon_read, mut daemon_write) = spawn_relay_for_test().await;
+        let upload = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.put_blob_multipart(b"abcdef", "text/plain").await }
+        });
+
+        let create_envelope = recv_request_for_test(&mut daemon_read).await;
+        let create_id = create_envelope.id.clone().expect("create id");
+        match create_envelope.request {
+            NotebookRequest::CreateBlobUpload { .. } => {}
+            other => panic!("unexpected create request: {other:?}"),
+        }
+        send_response_for_test(
+            &mut daemon_write,
+            Some(create_id),
+            NotebookResponse::BlobUploadCreated {
+                upload_id: "upload-zero".to_string(),
+                part_size: 0,
+                expires_at: "2026-05-13T00:00:00Z".to_string(),
+            },
+        )
+        .await;
+
+        let abort_envelope = recv_request_for_test(&mut daemon_read).await;
+        let abort_id = abort_envelope.id.clone().expect("abort id");
+        match abort_envelope.request {
+            NotebookRequest::AbortBlobUpload { upload_id } => {
+                assert_eq!(upload_id, "upload-zero");
+            }
+            other => panic!("unexpected abort request: {other:?}"),
+        }
+        send_response_for_test(
+            &mut daemon_write,
+            Some(abort_id),
+            NotebookResponse::BlobUploadAborted {
+                upload_id: "upload-zero".to_string(),
+            },
+        )
+        .await;
+
+        let error = upload
+            .await
+            .expect("join upload")
+            .expect_err("upload returns protocol error");
+        match error {
+            SyncError::Protocol(message) => {
+                assert!(message.contains("part_size: 0"), "{message}");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn relay_handle_put_blob_multipart_aborts_after_part_error() {
+        let (handle, mut daemon_read, mut daemon_write) = spawn_relay_for_test().await;
+        let upload = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.put_blob_multipart(b"abcdef", "text/plain").await }
+        });
+
+        let create_envelope = recv_request_for_test(&mut daemon_read).await;
+        let create_id = create_envelope.id.clone().expect("create id");
+        send_response_for_test(
+            &mut daemon_write,
+            Some(create_id),
+            NotebookResponse::BlobUploadCreated {
+                upload_id: "upload-fail".to_string(),
+                part_size: 3,
+                expires_at: "2026-05-13T00:00:00Z".to_string(),
+            },
+        )
+        .await;
+
+        let part_frame = connection::recv_typed_frame(&mut daemon_read)
+            .await
+            .expect("read part frame")
+            .expect("part frame");
+        assert_eq!(part_frame.frame_type, NotebookFrameType::PutBlob);
+        let (part_header, _) = PutBlobHeader::try_parse(&part_frame.payload).expect("parse part");
+        send_response_for_test(
+            &mut daemon_write,
+            Some(part_header.id().to_string()),
+            NotebookResponse::BlobUploadError {
+                reason: BlobUploadErrorKind::PartHashMismatch,
+            },
+        )
+        .await;
+
+        let abort_envelope = recv_request_for_test(&mut daemon_read).await;
+        let abort_id = abort_envelope.id.clone().expect("abort id");
+        match abort_envelope.request {
+            NotebookRequest::AbortBlobUpload { upload_id } => {
+                assert_eq!(upload_id, "upload-fail");
+            }
+            other => panic!("unexpected abort request: {other:?}"),
+        }
+        send_response_for_test(
+            &mut daemon_write,
+            Some(abort_id),
+            NotebookResponse::BlobUploadAborted {
+                upload_id: "upload-fail".to_string(),
+            },
+        )
+        .await;
+
+        let error = upload
+            .await
+            .expect("join upload")
+            .expect_err("upload returns part error");
+        match error {
+            SyncError::BlobUpload(BlobUploadErrorKind::PartHashMismatch) => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }

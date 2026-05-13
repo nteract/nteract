@@ -29,6 +29,7 @@ use sha2::{Digest, Sha256};
 use crate::error::SyncError;
 
 const PUT_BLOB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const PUT_BLOB_ABORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Commands for the relay task — only socket I/O operations.
 ///
@@ -272,7 +273,17 @@ impl RelayHandle {
                 upload_id,
                 part_size,
                 ..
-            } => (upload_id, part_size as usize),
+            } if part_size > 0 => (upload_id, part_size as usize),
+            NotebookResponse::BlobUploadCreated {
+                upload_id,
+                part_size,
+                ..
+            } => {
+                self.abort_blob_upload_best_effort(&upload_id).await;
+                return Err(SyncError::Protocol(format!(
+                    "Invalid multipart blob part_size: {part_size}"
+                )));
+            }
             NotebookResponse::BlobUploadError { reason } => {
                 return Err(SyncError::BlobUpload(reason));
             }
@@ -285,7 +296,15 @@ impl RelayHandle {
 
         let mut manifest = Vec::new();
         for (index, chunk) in bytes.chunks(part_size).enumerate() {
-            let part_number = (index + 1) as u32;
+            let part_number = match u32::try_from(index + 1) {
+                Ok(part_number) => part_number,
+                Err(_) => {
+                    self.abort_blob_upload_best_effort(&upload_id).await;
+                    return Err(SyncError::Protocol(
+                        "multipart blob upload exceeds u32 part count".to_string(),
+                    ));
+                }
+            };
             let part_sha256 = hex::encode(Sha256::digest(chunk));
             let id = uuid::Uuid::new_v4().to_string();
             let header = PutBlobHeader::Part {
@@ -295,9 +314,21 @@ impl RelayHandle {
                 size: chunk.len() as u64,
                 sha256: part_sha256.clone(),
             };
-            let response = self
-                .send_put_blob_frame(id, header.encode_frame(chunk)?)
-                .await?;
+            let frame = match header.encode_frame(chunk) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    self.abort_blob_upload_best_effort(&upload_id).await;
+                    return Err(error.into());
+                }
+            };
+            let response = self.send_put_blob_frame(id, frame).await;
+            let response = match response {
+                Ok(response) => response,
+                Err(error) => {
+                    self.abort_blob_upload_best_effort(&upload_id).await;
+                    return Err(error);
+                }
+            };
             match response {
                 NotebookResponse::BlobPartStored {
                     upload_id: response_upload_id,
@@ -314,9 +345,11 @@ impl RelayHandle {
                     });
                 }
                 NotebookResponse::BlobUploadError { reason } => {
+                    self.abort_blob_upload_best_effort(&upload_id).await;
                     return Err(SyncError::BlobUpload(reason));
                 }
                 other => {
+                    self.abort_blob_upload_best_effort(&upload_id).await;
                     return Err(SyncError::Protocol(format!(
                         "Unexpected response for PutBlob part: {other:?}"
                     )));
@@ -324,13 +357,21 @@ impl RelayHandle {
             }
         }
 
-        match self
+        let complete_response = match self
             .send_request(NotebookRequest::CompleteBlobUpload {
-                upload_id,
+                upload_id: upload_id.clone(),
                 parts: manifest,
             })
-            .await?
+            .await
         {
+            Ok(response) => response,
+            Err(error) => {
+                self.abort_blob_upload_best_effort(&upload_id).await;
+                return Err(error);
+            }
+        };
+
+        match complete_response {
             NotebookResponse::BlobStored {
                 hash,
                 size,
@@ -340,10 +381,43 @@ impl RelayHandle {
                 size,
                 media_type,
             }),
-            NotebookResponse::BlobUploadError { reason } => Err(SyncError::BlobUpload(reason)),
-            other => Err(SyncError::Protocol(format!(
-                "Unexpected response for complete_blob_upload: {other:?}"
-            ))),
+            NotebookResponse::BlobUploadError { reason } => {
+                self.abort_blob_upload_best_effort(&upload_id).await;
+                Err(SyncError::BlobUpload(reason))
+            }
+            other => {
+                self.abort_blob_upload_best_effort(&upload_id).await;
+                Err(SyncError::Protocol(format!(
+                    "Unexpected response for complete_blob_upload: {other:?}"
+                )))
+            }
+        }
+    }
+
+    async fn abort_blob_upload_best_effort(&self, upload_id: &str) {
+        let id = uuid::Uuid::new_v4().to_string();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .cmd_tx
+            .send(RelayCommand::SendRequest {
+                id: id.clone(),
+                request: NotebookRequest::AbortBlobUpload {
+                    upload_id: upload_id.to_string(),
+                },
+                required_heads: Vec::new(),
+                reply: reply_tx,
+                broadcast_tx: None,
+            })
+            .await
+            .is_err()
+        {
+            return;
+        }
+        if tokio::time::timeout(PUT_BLOB_ABORT_TIMEOUT, crate::reply::recv(reply_rx))
+            .await
+            .is_err()
+        {
+            let _ = self.cmd_tx.send(RelayCommand::CancelRequest { id }).await;
         }
     }
 
