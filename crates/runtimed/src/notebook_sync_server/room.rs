@@ -441,6 +441,13 @@ pub struct RoomConnections {
     pub had_peers: AtomicBool,
     pub last_kernel_torn_down_at: AtomicU64,
     pub connection_generation: AtomicU64,
+    /// `true` while the kernel-teardown task is in the destructive
+    /// section (ShutdownKernel RPC plus handle/request-tx clear). A
+    /// peer that joined during this window saw `has_kernel = true` but
+    /// the kernel is about to die: the connect path checks this flag
+    /// and forces a fresh auto-launch instead of trusting the stale
+    /// "has_kernel" snapshot.
+    pub kernel_teardown_destructive: AtomicBool,
 }
 
 impl Default for RoomConnections {
@@ -450,6 +457,7 @@ impl Default for RoomConnections {
             had_peers: AtomicBool::new(false),
             last_kernel_torn_down_at: AtomicU64::new(0),
             connection_generation: AtomicU64::new(0),
+            kernel_teardown_destructive: AtomicBool::new(false),
         }
     }
 }

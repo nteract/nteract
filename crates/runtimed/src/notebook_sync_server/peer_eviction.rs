@@ -205,6 +205,16 @@ pub(super) async fn handle_peer_disconnect(
             // this, the ShutdownKernel RPC can fire for a kernel a
             // newly-joined peer is already using (and which they
             // skipped auto-launch for because they saw has_kernel=true).
+            // Atomically check no-peers + same-generation AND flip the
+            // `kernel_teardown_destructive` latch under the rooms lock.
+            // The connect path reads this latch when deciding whether to
+            // skip auto-launch on `has_kernel=true`: if it's set, the
+            // visible kernel is about to die and the peer must
+            // auto-launch a fresh kernel rather than use the stale
+            // handle. Setting it under the rooms lock together with
+            // the peer-count / generation check makes the connect path
+            // observe a consistent "destructive teardown in progress"
+            // state if (and only if) we will actually proceed below.
             let still_valid = {
                 let _rooms_guard = rooms_for_teardown.lock().await;
                 let no_peers = room_for_teardown
@@ -214,7 +224,14 @@ pub(super) async fn handle_peer_disconnect(
                     == 0;
                 let same_generation =
                     room_for_teardown.connections.connection_generation() == teardown_generation;
-                no_peers && same_generation
+                let ok = no_peers && same_generation;
+                if ok {
+                    room_for_teardown
+                        .connections
+                        .kernel_teardown_destructive
+                        .store(true, Ordering::Release);
+                }
+                ok
             };
             if !still_valid {
                 debug!(
@@ -261,6 +278,15 @@ pub(super) async fn handle_peer_disconnect(
                     }
                 }
             }
+            // Destructive section done: handle slot is empty, so any
+            // peer-connect path that runs `has_kernel()` from here on
+            // sees `false` and can auto-launch. Clear the latch so we
+            // don't keep the connect path in "force auto-launch" mode
+            // unnecessarily.
+            room_for_teardown
+                .connections
+                .kernel_teardown_destructive
+                .store(false, Ordering::Release);
 
             // Flush launched_config deps → metadata.runt.{uv,conda}.dependencies
             // before env cleanup and final save. This captures any packages
