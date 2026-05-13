@@ -34,6 +34,9 @@ describe("protocol contract discriminants", () => {
       "approve_trust",
       "approve_project_environment",
       "get_doc_bytes",
+      "create_blob_upload",
+      "complete_blob_upload",
+      "abort_blob_upload",
     ]);
   });
 
@@ -58,6 +61,9 @@ describe("protocol contract discriminants", () => {
       "sync_environment_failed",
       "doc_bytes",
       "blob_stored",
+      "blob_upload_created",
+      "blob_part_stored",
+      "blob_upload_aborted",
       "blob_upload_error",
     ]);
   });

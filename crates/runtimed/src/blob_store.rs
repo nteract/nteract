@@ -25,6 +25,7 @@ use chrono::{DateTime, Utc};
 use notebook_protocol::protocol::BlobDurability;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::sleep;
 use tracing::debug;
 
@@ -428,6 +429,143 @@ impl BlobStore {
         }
 
         Ok(durability)
+    }
+
+    /// Store a blob by streaming already-staged part files into the
+    /// content-addressed namespace.
+    ///
+    /// The caller supplies the expected final digest and byte count. The store
+    /// re-hashes while copying so a corrupt or mismatched staging manifest never
+    /// publishes a partial blob.
+    pub async fn put_part_files_with_hash(
+        &self,
+        parts: &[PathBuf],
+        media_type: &str,
+        expected_size: u64,
+        expected_hash: &str,
+        durability: BlobDurability,
+    ) -> io::Result<String> {
+        if !Self::validate_hash(expected_hash) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "expected multipart blob hash is not a valid sha256 hex digest",
+            ));
+        }
+
+        let created_at = Utc::now();
+        let (shard_dir, blob_path, meta_path) = self.paths(expected_hash);
+        let _lock = self.acquire_blob_file_lock(&shard_dir, &meta_path).await?;
+
+        if blob_path.exists() && meta_path.exists() {
+            if let Ok(existing_meta_json) = tokio::fs::read_to_string(&meta_path).await {
+                if let Ok(existing_meta) = serde_json::from_str::<BlobMeta>(&existing_meta_json) {
+                    let updated_durability =
+                        merged_durability(existing_meta.durability, durability);
+                    if existing_meta.media_type != media_type
+                        || existing_meta.durability != updated_durability
+                    {
+                        let updated = BlobMeta {
+                            media_type: media_type.to_string(),
+                            durability: updated_durability,
+                            ..existing_meta
+                        };
+                        if let Ok(json) = serde_json::to_string(&updated) {
+                            tokio::fs::write(&meta_path, json).await.ok();
+                        }
+                    }
+                    return Ok(expected_hash.to_string());
+                }
+            }
+            return Ok(expected_hash.to_string());
+        }
+
+        let tmp_blob = shard_dir.join(format!(".tmp.{}", uuid::Uuid::new_v4()));
+        let mut out = tokio::fs::File::create(&tmp_blob).await?;
+        let mut hasher = Sha256::new();
+        let mut total_size = 0_u64;
+        let mut buf = vec![0_u8; 64 * 1024];
+
+        for part_path in parts {
+            let mut input = tokio::fs::File::open(part_path).await?;
+            loop {
+                let read = input.read(&mut buf).await?;
+                if read == 0 {
+                    break;
+                }
+                total_size = total_size.checked_add(read as u64).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "multipart blob size overflow")
+                })?;
+                hasher.update(&buf[..read]);
+                out.write_all(&buf[..read]).await?;
+            }
+        }
+        out.flush().await?;
+        out.sync_all().await?;
+        drop(out);
+
+        if total_size != expected_size {
+            tokio::fs::remove_file(&tmp_blob).await.ok();
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "final size mismatch: got {} bytes, expected {}",
+                    total_size, expected_size
+                ),
+            ));
+        }
+
+        let actual_hash = hex::encode(hasher.finalize());
+        if actual_hash != expected_hash {
+            tokio::fs::remove_file(&tmp_blob).await.ok();
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("final hash mismatch: got {actual_hash}, expected {expected_hash}"),
+            ));
+        }
+
+        let we_wrote_blob;
+        match tokio::fs::rename(&tmp_blob, &blob_path).await {
+            Ok(()) => {
+                we_wrote_blob = true;
+            }
+            Err(e) => {
+                tokio::fs::remove_file(&tmp_blob).await.ok();
+                if blob_path.exists() {
+                    we_wrote_blob = false;
+                } else {
+                    return Err(e);
+                }
+            }
+        }
+
+        let meta = BlobMeta {
+            media_type: media_type.to_string(),
+            size: expected_size,
+            created_at,
+            durability,
+        };
+        let meta_json = serde_json::to_string(&meta).map_err(io::Error::other)?;
+        let tmp_meta = shard_dir.join(format!(".tmp.{}.meta", uuid::Uuid::new_v4()));
+        match async {
+            tokio::fs::write(&tmp_meta, meta_json).await?;
+            tokio::fs::rename(&tmp_meta, &meta_path).await
+        }
+        .await
+        {
+            Ok(()) => {}
+            Err(e) => {
+                tokio::fs::remove_file(&tmp_meta).await.ok();
+                if meta_path.exists() {
+                    return Ok(expected_hash.to_string());
+                }
+                if we_wrote_blob {
+                    tokio::fs::remove_file(&blob_path).await.ok();
+                }
+                return Err(e);
+            }
+        }
+
+        Ok(expected_hash.to_string())
     }
 
     fn insert_memory(

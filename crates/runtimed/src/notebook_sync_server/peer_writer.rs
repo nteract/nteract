@@ -7,6 +7,7 @@ use tracing::{debug, warn};
 
 use notebook_protocol::connection::{self, NotebookFrameType};
 
+use super::blob_upload::{maybe_handle_blob_upload_request, MultipartUploadState};
 use super::NotebookRoom;
 use crate::requests::{handle_notebook_request, request_label};
 
@@ -145,6 +146,7 @@ pub(super) fn spawn_peer_request_worker(
     room: Arc<NotebookRoom>,
     daemon: Arc<crate::daemon::Daemon>,
     writer: PeerWriter,
+    multipart_uploads: MultipartUploadState,
     notebook_id: String,
     peer_id: String,
 ) -> PeerRequestWorker {
@@ -163,7 +165,19 @@ pub(super) fn spawn_peer_request_worker(
 
             let start = std::time::Instant::now();
             let response = match wait_for_required_heads(&room, &envelope.required_heads).await {
-                Ok(()) => handle_notebook_request(&room, envelope.request, daemon.clone()).await,
+                Ok(()) => {
+                    if let Some(response) = maybe_handle_blob_upload_request(
+                        &multipart_uploads,
+                        &room.blob_store,
+                        &envelope.request,
+                    )
+                    .await
+                    {
+                        response
+                    } else {
+                        handle_notebook_request(&room, envelope.request, daemon.clone()).await
+                    }
+                }
                 Err(error) => notebook_protocol::protocol::NotebookResponse::Error { error },
             };
             let elapsed = start.elapsed();

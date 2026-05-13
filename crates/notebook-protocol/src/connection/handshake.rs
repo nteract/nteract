@@ -135,7 +135,7 @@ impl ProtocolCapabilities {
             put_blob: Some(PutBlobCapability {
                 version: 1,
                 single_frame_max: put_blob_limits.cap as u64,
-                multipart: false,
+                multipart: true,
                 ephemeral_supported: true,
             }),
         }
