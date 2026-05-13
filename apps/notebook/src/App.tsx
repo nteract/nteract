@@ -156,7 +156,7 @@ function resolveCommOutputs(
 function AppContent() {
   const host = useNotebookHost();
   const blobUploader = useMemo<BlobUploader>(
-    () => (bytes, mediaType) => putBlob(host.transport, bytes, mediaType),
+    () => (bytes, mediaType, durability) => putBlob(host.transport, bytes, mediaType, durability),
     [host],
   );
   _blobUploaderRef = blobUploader;

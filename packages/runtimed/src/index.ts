@@ -185,6 +185,7 @@ export {
 // Notebook client
 export { NotebookClient, type NotebookClientOptions, SaveNotebookError } from "./notebook-client";
 export type {
+  BlobDurability,
   BlobUploadErrorKind,
   CommRequestMessage,
   CompletionItem,

@@ -136,6 +136,7 @@ impl ProtocolCapabilities {
                 version: 1,
                 single_frame_max: put_blob_limits.cap as u64,
                 multipart: false,
+                ephemeral_supported: true,
             }),
         }
     }
@@ -150,6 +151,9 @@ pub struct PutBlobCapability {
     pub single_frame_max: u64,
     /// Whether multipart uploads are supported.
     pub multipart: bool,
+    /// Whether `PutBlobHeader::Put.durability = "ephemeral"` is supported.
+    #[serde(default)]
+    pub ephemeral_supported: bool,
 }
 
 /// Server response for `OpenNotebook` and `CreateNotebook` handshakes.

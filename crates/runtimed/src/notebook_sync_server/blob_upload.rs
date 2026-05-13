@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use notebook_protocol::connection::NotebookFrameType;
 use notebook_protocol::protocol::{
-    BlobUploadErrorKind, NotebookResponse, NotebookResponseEnvelope, PutBlobHeader,
+    BlobDurability, BlobUploadErrorKind, NotebookResponse, NotebookResponseEnvelope, PutBlobHeader,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
@@ -112,11 +112,13 @@ pub(crate) async fn handle_put_blob_frame(
             media_type,
             size,
             sha256,
+            durability,
             purpose,
         } => {
+            let durability = durability.unwrap_or(BlobDurability::Durable);
             debug!(
-                "[notebook-sync] PutBlob id={} media_type={} size={} purpose={:?}",
-                id, media_type, size, purpose
+                "[notebook-sync] PutBlob id={} media_type={} size={} durability={:?} purpose={:?}",
+                id, media_type, size, durability, purpose
             );
             if body.len() as u64 != size {
                 send_blob_upload_error(peer_writer, Some(id), BlobUploadErrorKind::SizeMismatch)?;
@@ -129,7 +131,10 @@ pub(crate) async fn handle_put_blob_frame(
                 return Ok(());
             }
 
-            match blob_store.put(body, &media_type).await {
+            match blob_store
+                .put_with_durability(body, &media_type, durability)
+                .await
+            {
                 Ok(hash) => {
                     send_blob_response(
                         peer_writer,
@@ -206,12 +211,24 @@ mod tests {
     use notebook_protocol::protocol::{NotebookResponse, NotebookResponseEnvelope};
 
     fn payload(id: &str, media_type: &str, size: u64, sha256: &str, body: &[u8]) -> Vec<u8> {
+        payload_with_durability(id, media_type, size, sha256, body, None)
+    }
+
+    fn payload_with_durability(
+        id: &str,
+        media_type: &str,
+        size: u64,
+        sha256: &str,
+        body: &[u8],
+        durability: Option<BlobDurability>,
+    ) -> Vec<u8> {
         let header = serde_json::json!({
             "op": "put",
             "id": id,
             "media_type": media_type,
             "size": size,
             "sha256": sha256,
+            "durability": durability,
         });
         let header_bytes = serde_json::to_vec(&header).expect("header serializes");
         let mut payload = Vec::new();
@@ -219,6 +236,14 @@ mod tests {
         payload.extend_from_slice(&header_bytes);
         payload.extend_from_slice(body);
         payload
+    }
+
+    fn disk_blob_exists(store: &BlobStore, hash: &str) -> bool {
+        let shard_dir = store.root().join(&hash[..2]);
+        let rest = &hash[2..];
+        let blob_path = shard_dir.join(rest);
+        let meta_path = shard_dir.join(format!("{rest}.meta"));
+        blob_path.exists() && meta_path.exists()
     }
 
     async fn run_handler(
@@ -274,6 +299,33 @@ mod tests {
             }
             other => panic!("unexpected response: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn put_blob_ephemeral_success_keeps_blob_out_of_disk_store() {
+        let body = b"abc";
+        let sha256 = hex::encode(Sha256::digest(body));
+        let request_payload = payload_with_durability(
+            "blob-ephemeral",
+            "application/octet-stream",
+            3,
+            &sha256,
+            body,
+            Some(BlobDurability::Ephemeral),
+        );
+
+        let (_tmp, blob_store, envelope, _writer_task) = run_handler(&request_payload).await;
+
+        assert_eq!(envelope.id.as_deref(), Some("blob-ephemeral"));
+        assert!(matches!(
+            envelope.response,
+            NotebookResponse::BlobStored { ref hash, .. } if hash == &sha256
+        ));
+        assert_eq!(
+            blob_store.get(&sha256).await.unwrap().as_deref(),
+            Some(&body[..])
+        );
+        assert!(!disk_blob_exists(&blob_store, &sha256));
     }
 
     #[tokio::test]

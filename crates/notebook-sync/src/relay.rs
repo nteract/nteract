@@ -209,6 +209,7 @@ impl RelayHandle {
             media_type: media_type.to_string(),
             size: bytes.len() as u64,
             sha256,
+            durability: None,
             purpose: None,
         };
         let frame = header.encode_frame(bytes)?;

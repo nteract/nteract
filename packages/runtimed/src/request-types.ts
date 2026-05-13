@@ -172,3 +172,5 @@ export type BlobUploadErrorKind =
   | { kind: "too_many_in_flight" }
   | { kind: "invalid_header" }
   | { kind: "io"; message: string };
+
+export type BlobDurability = "durable" | "ephemeral";

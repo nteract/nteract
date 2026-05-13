@@ -17,7 +17,12 @@ import type { WidgetStore } from "./widget-store";
 
 type CrdtCommWriter = (commId: string, patch: Record<string, unknown>) => void;
 export type ContentRef = { blob: string; size: number; media_type: string };
-export type BlobUploader = (bytes: Uint8Array, mediaType: string) => Promise<ContentRef>;
+export type BlobDurability = "durable" | "ephemeral";
+export type BlobUploader = (
+  bytes: Uint8Array,
+  mediaType: string,
+  durability?: BlobDurability,
+) => Promise<ContentRef>;
 
 /** Debounce interval for CRDT writes (ms). */
 const DEBOUNCE_MS = 50;
@@ -314,7 +319,7 @@ export class WidgetUpdateManager {
 
     const contentRefs = await Promise.all(
       buffers.map((buffer) =>
-        this.uploadWithRetry(uploader, new Uint8Array(buffer), BLOB_MEDIA_TYPE),
+        this.uploadWithRetry(uploader, new Uint8Array(buffer), BLOB_MEDIA_TYPE, "ephemeral"),
       ),
     );
 
@@ -329,11 +334,12 @@ export class WidgetUpdateManager {
     uploader: BlobUploader,
     bytes: Uint8Array,
     mediaType: string,
+    durability: BlobDurability,
   ): Promise<ContentRef> {
     let attempt = 0;
     while (true) {
       try {
-        return await uploader(bytes, mediaType);
+        return await uploader(bytes, mediaType, durability);
       } catch (error) {
         if (!isTooManyInFlight(error) || attempt >= BLOB_RETRY_DELAYS_MS.length) {
           throw error;

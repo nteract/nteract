@@ -69,6 +69,30 @@ describe("putBlob", () => {
     });
   });
 
+  it("includes durability only when explicitly ephemeral", async () => {
+    const bytes = new TextEncoder().encode("abc");
+    const transport = createTransport(async (_frameType, frame, id) => {
+      const { header } = parsePutBlobFrame(frame);
+      expect(header).toEqual({
+        op: "put",
+        id,
+        media_type: "text/plain",
+        size: 3,
+        sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        durability: "ephemeral",
+      });
+
+      return {
+        result: "blob_stored",
+        hash: "hash123",
+        size: 3,
+        media_type: "text/plain",
+      };
+    });
+
+    await putBlob(transport, bytes, "text/plain", "ephemeral");
+  });
+
   it("propagates structured blob upload errors", async () => {
     const transport = createTransport(async () => ({
       result: "blob_upload_error",

@@ -368,6 +368,7 @@ mod tests {
             frame_size_limits(notebook_wire::frame_types::PUT_BLOB).cap as u64
         );
         assert!(!put_blob.multipart);
+        assert!(put_blob.ephemeral_supported);
     }
 
     #[tokio::test]
