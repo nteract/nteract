@@ -5296,12 +5296,14 @@ fn format_size(bytes: u64) -> String {
 struct NotebookTableRow {
     #[tabled(rename = "NOTEBOOK")]
     notebook: String,
+    #[tabled(rename = "PATH")]
+    path: String,
+    #[tabled(rename = "STATE")]
+    state: String,
     #[tabled(rename = "KERNEL")]
     kernel: String,
     #[tabled(rename = "ENV")]
     env: String,
-    #[tabled(rename = "STATUS")]
-    status: String,
     #[tabled(rename = "PEERS")]
     peers: String,
 }
@@ -5327,9 +5329,14 @@ async fn list_notebooks(json_output: bool) -> Result<()> {
                     .iter()
                     .map(|r| NotebookTableRow {
                         notebook: shorten_path(&PathBuf::from(&r.notebook_id)),
+                        path: r
+                            .notebook_path
+                            .as_deref()
+                            .map(|p| shorten_path(&PathBuf::from(p)))
+                            .unwrap_or_else(|| "(untitled)".to_string()),
+                        state: r.state.as_str().to_string(),
                         kernel: r.kernel_type.clone().unwrap_or_else(|| "-".to_string()),
                         env: r.env_source.clone().unwrap_or_else(|| "-".to_string()),
-                        status: r.kernel_status.clone().unwrap_or_else(|| "-".to_string()),
                         peers: r.active_peers.to_string(),
                     })
                     .collect();
