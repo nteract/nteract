@@ -83,7 +83,7 @@ export interface WidgetBridgeClient {
    * Send a state update to the parent (to be forwarded to kernel).
    * Called when a widget's state changes due to user interaction.
    */
-  sendUpdate: (commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
+  sendUpdate: (commId: string, state: Record<string, unknown>) => void;
 
   /**
    * Send a custom message to the parent (to be forwarded to kernel).
@@ -178,16 +178,13 @@ export function createWidgetBridgeClient(transport: JsonRpcTransport): WidgetBri
   return {
     store,
 
-    sendUpdate(commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) {
+    sendUpdate(commId: string, state: Record<string, unknown>) {
       // Update local store immediately for responsive UI (optimistic update).
-      // Outgoing `buffers` go over the wire to the kernel; they don't shape
-      // the inbound bufferPaths metadata the store tracks.
       store.updateModel(commId, state);
       transport.notify(NTERACT_WIDGET_COMM_MSG, {
         commId,
         method: "update",
         data: state,
-        buffers,
       });
     },
 

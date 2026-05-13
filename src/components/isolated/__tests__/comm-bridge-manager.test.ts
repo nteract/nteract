@@ -102,7 +102,7 @@ describe("CommBridgeManager", () => {
   beforeEach(() => {
     mockStore = createMockStore();
     mockFrame = createMockFrame();
-    sendUpdate = vi.fn();
+    sendUpdate = vi.fn().mockResolvedValue(undefined);
     sendCustom = vi.fn();
     closeComm = vi.fn();
     vi.clearAllMocks();
@@ -332,7 +332,7 @@ describe("CommBridgeManager", () => {
       });
 
       expect(mockStore.store.updateModel).toHaveBeenCalledWith("comm-1", { value: 42 });
-      expect(sendUpdate).toHaveBeenCalledWith("comm-1", { value: 42 }, undefined);
+      expect(sendUpdate).toHaveBeenCalledWith("comm-1", { value: 42 });
     });
 
     it("processes widget_comm_msg with custom method", () => {

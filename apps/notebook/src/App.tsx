@@ -487,9 +487,28 @@ function AppContent() {
       updateManager.updateAndPersist(commId, patch);
     };
     w.__nteractWidgetStore = widgetStore;
+    w.__nteractWidgetTest = {
+      selectionCountForComm(commId: string | null): number | null {
+        const models =
+          commId === null
+            ? Array.from(widgetStore.getSnapshot().values())
+            : [widgetStore.getModel(commId)];
+        for (const model of models) {
+          const selection = model?.state.selection as
+            | { view?: { byteLength?: number }; shape?: unknown }
+            | undefined;
+          const shape = selection?.shape;
+          if (Array.isArray(shape) && typeof shape[0] === "number") return shape[0];
+          const byteLength = selection?.view?.byteLength;
+          if (typeof byteLength === "number") return byteLength;
+        }
+        return null;
+      },
+    };
     return () => {
       delete w.__nteractWidgetUpdate;
       delete w.__nteractWidgetStore;
+      delete w.__nteractWidgetTest;
     };
   }, [widgetStore]);
 

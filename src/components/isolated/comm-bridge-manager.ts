@@ -24,11 +24,7 @@ function filterBufferPathsToKeys(
 }
 
 // Type for sending messages to kernel
-type SendUpdate = (
-  commId: string,
-  state: Record<string, unknown>,
-  buffers?: ArrayBuffer[],
-) => void | Promise<void>;
+type SendUpdate = (commId: string, state: Record<string, unknown>) => Promise<void>;
 
 type SendCustom = (
   commId: string,
@@ -302,19 +298,16 @@ export class CommBridgeManager {
       // Set flag to prevent echoing this update back to iframe
       this.isProcessingIframeUpdate = true;
       try {
-        // Update parent store first (so UI stays in sync). Outgoing
-        // `buffers` are in flight to the kernel; they're not a new
-        // bufferPaths manifest so we leave that field untouched.
+        // Update parent store first (so UI stays in sync). Binary state leaves
+        // travel inside `data` and are extracted by WidgetUpdateManager.
         this.store.updateModel(commId, data);
         // Update our tracked state
         const current = this.previousState.get(commId) ?? {};
         this.previousState.set(commId, this.cloneStateSnapshot({ ...current, ...data }));
         // Then forward to kernel
-        void Promise.resolve(this.sendUpdateToKernel(commId, data, buffers)).catch(
-          (error: unknown) => {
-            console.error("[widgets] failed to persist iframe widget state update:", error);
-          },
-        );
+        void this.sendUpdateToKernel(commId, data).catch((error: unknown) => {
+          console.error("[widgets] failed to persist iframe widget state update:", error);
+        });
       } finally {
         this.isProcessingIframeUpdate = false;
       }

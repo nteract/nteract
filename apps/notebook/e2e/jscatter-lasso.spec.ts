@@ -65,7 +65,7 @@ test.describe("jupyter-scatter lasso selection", () => {
     const plotSurface = widgetFrame.locator("canvas").first();
     await expect(plotSurface).toBeVisible({ timeout: 120_000 });
 
-    await selectLassoTool(page, scatterCell, widgetFrame);
+    await selectLassoTool(widgetFrame);
     await dragLassoAroundCenter(page, plotSurface);
     await page.waitForTimeout(3_000);
     await expect
@@ -88,7 +88,7 @@ test.describe("jupyter-scatter lasso selection", () => {
   });
 });
 
-async function selectLassoTool(page: Page, cell: Locator, widgetFrame: FrameLocator) {
+async function selectLassoTool(widgetFrame: FrameLocator) {
   const namedButton = widgetFrame.getByRole("button", { name: /activate lasso selection/i });
   if ((await namedButton.count()) > 0) {
     await namedButton.click();
@@ -105,11 +105,11 @@ async function selectLassoTool(page: Page, cell: Locator, widgetFrame: FrameLoca
     return;
   }
 
-  const cellBox = await cell.boundingBox();
-  const canvasBox = await cell.locator("iframe").first().boundingBox();
-  if (!cellBox || !canvasBox) throw new Error("jscatter output is missing layout boxes");
-
-  await page.mouse.click(cellBox.x + 28, canvasBox.y + 72);
+  throw new Error(
+    "Could not find lasso tool: tried role=button[name=lasso] and " +
+      "[title|aria-label*=lasso]. jscatter toolbar may have changed; " +
+      "update selectLassoTool fallbacks.",
+  );
 }
 
 async function dragLassoAroundCenter(page: Page, canvas: Locator) {
@@ -139,22 +139,11 @@ function parseSelectionCount(text: string | null): number {
 
 async function getFrontendSelectionCount(page: Page): Promise<number> {
   return await page.evaluate(() => {
-    const store = (window as unknown as { __nteractWidgetStore?: unknown }).__nteractWidgetStore as
-      | {
-          getSnapshot?: () => Map<
-            string,
-            { state?: { selection?: { view?: { byteLength?: number }; shape?: unknown } } }
-          >;
-        }
-      | undefined;
-    const models = store?.getSnapshot?.();
-    if (!models) return 0;
-    for (const model of models.values()) {
-      const shape = model.state?.selection?.shape;
-      if (Array.isArray(shape) && typeof shape[0] === "number") return shape[0];
-      const byteLength = model.state?.selection?.view?.byteLength;
-      if (typeof byteLength === "number") return byteLength;
-    }
-    return 0;
+    const testApi = (
+      window as unknown as {
+        __nteractWidgetTest?: { selectionCountForComm(commId: string | null): number | null };
+      }
+    ).__nteractWidgetTest;
+    return testApi?.selectionCountForComm(null) ?? 0;
   });
 }

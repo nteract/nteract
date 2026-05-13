@@ -74,11 +74,7 @@ export interface UseCommRouterOptions {
 
 export interface UseCommRouterReturn {
   /** Send a state update to the kernel */
-  sendUpdate: (
-    commId: string,
-    state: Record<string, unknown>,
-    buffers?: ArrayBuffer[],
-  ) => Promise<void>;
+  sendUpdate: (commId: string, state: Record<string, unknown>) => Promise<void>;
   /** Send a custom message to the kernel */
   sendCustom: (commId: string, content: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
   /** Close a comm channel */
@@ -161,12 +157,9 @@ export function useCommRouter({
     managerRef.current = updateManager;
   });
 
-  const sendUpdate = useCallback(
-    (commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) => {
-      return managerRef.current.updateAndPersist(commId, state, buffers);
-    },
-    [],
-  );
+  const sendUpdate = useCallback((commId: string, state: Record<string, unknown>) => {
+    return managerRef.current.updateAndPersist(commId, state);
+  }, []);
 
   const sendCustom = useCallback(
     (commId: string, content: Record<string, unknown>, buffers?: ArrayBuffer[]) => {

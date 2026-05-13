@@ -125,18 +125,8 @@ export class WidgetUpdateManager {
    * are uploaded to blob storage. The optimistic store update keeps the
    * original DataView/typed-array values so active widgets don't flicker.
    */
-  async updateAndPersist(
-    commId: string,
-    patch: Record<string, unknown>,
-    buffers?: ArrayBuffer[],
-  ): Promise<void> {
+  async updateAndPersist(commId: string, patch: Record<string, unknown>): Promise<void> {
     const extracted = extractCommBuffers(patch);
-
-    if (buffers?.length && extracted.buffers.length) {
-      console.warn(
-        "[widgets] update supplied both extracted binary leaves and legacy buffers; using extracted leaves",
-      );
-    }
 
     // 1. Instant store update — UI reflects change immediately
     this.getStore()?.updateModel(commId, patch);
@@ -165,13 +155,7 @@ export class WidgetUpdateManager {
     // 3. Accumulate JSON-only patch
     this.enqueuePending(commId, extracted.jsonPatch);
 
-    // 4. Legacy binary buffers — preserve the old immediate-flush behavior.
-    if (buffers?.length) {
-      this.flushComm(commId);
-      return;
-    }
-
-    // 5. Debounced flush — reset timer on each update
+    // 4. Debounced flush — reset timer on each update
     const existing_timer = this.flushTimers.get(commId);
     if (existing_timer !== undefined) {
       clearTimeout(existing_timer);

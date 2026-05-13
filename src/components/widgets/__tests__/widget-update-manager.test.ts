@@ -129,17 +129,6 @@ describe("WidgetUpdateManager", () => {
       expect(writerCalls[0].patch).toEqual({ value: 20 });
     });
 
-    it("flushes immediately for binary buffers", () => {
-      const { manager, writerCalls } = setup();
-
-      const buffer = new ArrayBuffer(8);
-      manager.updateAndPersist("comm-1", { value: 42 }, [buffer]);
-
-      // Flushed immediately, no debounce
-      expect(writerCalls).toHaveLength(1);
-      expect(writerCalls[0].patch).toEqual({ value: 42 });
-    });
-
     it("uploads extracted binary leaves before writing ContentRefs to CRDT", async () => {
       const uploadCalls: Array<{ bytes: number[]; mediaType: string; durability?: string }> = [];
       const contentRef: ContentRef = {
