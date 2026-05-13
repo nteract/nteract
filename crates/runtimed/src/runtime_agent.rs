@@ -104,7 +104,10 @@ pub async fn run_runtime_agent(
 
     // -- 3. Create local infrastructure -------------------------------------
 
-    let blob_store = Arc::new(BlobStore::new(blob_root.clone()));
+    let blob_store = Arc::new(BlobStore::for_notebook(
+        blob_root.clone(),
+        notebook_id.clone(),
+    )?);
     let (broadcast_tx, _broadcast_rx) =
         broadcast::channel::<notebook_protocol::protocol::NotebookBroadcast>(16);
     let presence = Arc::new(RwLock::new(PresenceState::new()));

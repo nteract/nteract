@@ -3687,6 +3687,12 @@ impl Daemon {
                             *tx = None;
                         }
                     }
+                    if let Err(e) = room.blob_store.delete_ephemeral_room(&notebook_id).await {
+                        warn!(
+                            "[runtimed] Failed to remove ephemeral blobs for shutdown room {}: {}",
+                            notebook_id, e
+                        );
+                    }
                     info!("[runtimed] Evicted room for notebook: {}", notebook_id);
                     Response::NotebookShutdown { found: true }
                 } else {
@@ -4099,6 +4105,16 @@ impl Daemon {
                 AUTOSAVE_SHUTDOWN_TIMEOUT,
             )
             .await;
+            if let Err(e) = room
+                .blob_store
+                .delete_ephemeral_room(&uuid.to_string())
+                .await
+            {
+                warn!(
+                    "[runtimed] Ghost-room reaper failed to remove ephemeral blobs for room {}: {}",
+                    uuid, e
+                );
+            }
 
             info!(
                 "[runtimed] Ghost-room reaper removed room {} (path={:?})",

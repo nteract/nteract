@@ -43,7 +43,8 @@ pub(super) fn spawn_put_blob_worker(
                 notebook_id,
                 payload.len()
             );
-            let result = handle_put_blob_frame(&payload, &blob_store, &peer_writer).await;
+            let result =
+                handle_put_blob_frame(&payload, &blob_store, &peer_writer, &notebook_id).await;
             worker_in_flight.store(false, Ordering::Release);
             result?;
         }
@@ -97,6 +98,7 @@ pub(crate) async fn handle_put_blob_frame(
     payload: &[u8],
     blob_store: &Arc<BlobStore>,
     peer_writer: &PeerWriter,
+    notebook_id: &str,
 ) -> anyhow::Result<()> {
     let (header, body) = match PutBlobHeader::try_parse(payload) {
         Ok(parsed) => parsed,
@@ -132,7 +134,7 @@ pub(crate) async fn handle_put_blob_frame(
             }
 
             match blob_store
-                .put_with_durability(body, &media_type, durability)
+                .put_with_durability_for_room(body, &media_type, durability, Some(notebook_id))
                 .await
             {
                 Ok(hash) => {
@@ -260,7 +262,7 @@ mod tests {
         let (peer_writer, writer_task) =
             super::super::peer_writer::spawn_peer_writer(writer, "notebook".into(), "peer".into());
 
-        handle_put_blob_frame(payload, &blob_store, &peer_writer)
+        handle_put_blob_frame(payload, &blob_store, &peer_writer, "notebook")
             .await
             .expect("handler succeeds");
 
@@ -321,17 +323,18 @@ mod tests {
             envelope.response,
             NotebookResponse::BlobStored { ref hash, .. } if hash == &sha256
         ));
-        assert_eq!(
-            blob_store.get(&sha256).await.unwrap().as_deref(),
-            Some(&body[..])
-        );
-        assert!(disk_blob_exists(&blob_store, &sha256));
+        assert!(blob_store.get(&sha256).await.unwrap().is_none());
+        assert!(!disk_blob_exists(&blob_store, &sha256));
 
-        let other_store = BlobStore::new(_tmp.path().join("blobs"));
+        let other_store = BlobStore::for_notebook(_tmp.path().join("blobs"), "notebook").unwrap();
         assert_eq!(
             other_store.get(&sha256).await.unwrap().as_deref(),
             Some(&body[..])
         );
+
+        let other_room_store =
+            BlobStore::for_notebook(_tmp.path().join("blobs"), "other-notebook").unwrap();
+        assert!(other_room_store.get(&sha256).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -397,10 +400,10 @@ mod tests {
         let sha256 = hex::encode(Sha256::digest(body));
         let request_payload = payload("blob-repeat", "text/plain", 3, &sha256, body);
 
-        handle_put_blob_frame(&request_payload, &blob_store, &peer_writer)
+        handle_put_blob_frame(&request_payload, &blob_store, &peer_writer, "notebook")
             .await
             .unwrap();
-        handle_put_blob_frame(&request_payload, &blob_store, &peer_writer)
+        handle_put_blob_frame(&request_payload, &blob_store, &peer_writer, "notebook")
             .await
             .unwrap();
 
@@ -442,8 +445,8 @@ mod tests {
             super::super::peer_writer::spawn_peer_writer(writer_b, "notebook".into(), "b".into());
 
         let (result_a, result_b) = tokio::join!(
-            handle_put_blob_frame(&payload_a, &blob_store, &peer_writer_a),
-            handle_put_blob_frame(&payload_b, &blob_store, &peer_writer_b)
+            handle_put_blob_frame(&payload_a, &blob_store, &peer_writer_a, "notebook-a"),
+            handle_put_blob_frame(&payload_b, &blob_store, &peer_writer_b, "notebook-b")
         );
         result_a.unwrap();
         result_b.unwrap();

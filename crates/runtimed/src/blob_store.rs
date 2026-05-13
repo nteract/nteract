@@ -81,6 +81,7 @@ fn lock_is_stale(path: &Path) -> bool {
 struct BlobStoreInner {
     root: PathBuf,
     memory_cap: usize,
+    ephemeral_room_id: Option<String>,
     memory: Mutex<MemoryLayer>,
 }
 
@@ -226,10 +227,31 @@ impl BlobStore {
     }
 
     fn with_ephemeral_cap(root: PathBuf, cap: usize) -> Self {
+        Self::with_ephemeral_cap_and_room(root, cap, None)
+    }
+
+    /// Create a BlobStore view bound to one notebook room's ephemeral namespace.
+    ///
+    /// Durable blobs remain global and content-addressed. Ephemeral blobs are
+    /// read from `rooms/<notebook_id>/...` after the global durable path misses,
+    /// so runtime-agent subprocesses can rehydrate frontend-uploaded widget
+    /// buffers without sharing the daemon process memory layer.
+    pub fn for_notebook(root: PathBuf, notebook_id: impl Into<String>) -> io::Result<Self> {
+        let notebook_id = notebook_id.into();
+        Self::validate_room_id(&notebook_id)?;
+        Ok(Self::with_ephemeral_cap_and_room(
+            root,
+            EPHEMERAL_BLOB_CAP_BYTES,
+            Some(notebook_id),
+        ))
+    }
+
+    fn with_ephemeral_cap_and_room(root: PathBuf, cap: usize, room_id: Option<String>) -> Self {
         Self {
             inner: Arc::new(BlobStoreInner {
                 root,
                 memory_cap: cap,
+                ephemeral_room_id: room_id,
                 memory: Mutex::new(MemoryLayer::new(cap)),
             }),
         }
@@ -267,6 +289,23 @@ impl BlobStore {
         media_type: &str,
         durability: BlobDurability,
     ) -> io::Result<String> {
+        self.put_with_durability_for_room(data, media_type, durability, None)
+            .await
+    }
+
+    /// Store `data`, optionally scoping ephemeral disk storage to a notebook room.
+    ///
+    /// The room id is ignored for durable writes. Ephemeral room-scoped writes
+    /// intentionally do not prime this process's global memory layer: the
+    /// runtime agent that needs the bytes runs in a separate process and reads
+    /// from the room-scoped disk path.
+    pub async fn put_with_durability_for_room(
+        &self,
+        data: &[u8],
+        media_type: &str,
+        durability: BlobDurability,
+        room_id: Option<&str>,
+    ) -> io::Result<String> {
         if data.len() > MAX_BLOB_SIZE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -280,11 +319,25 @@ impl BlobStore {
 
         let hash = hex::encode(Sha256::digest(data));
         let created_at = Utc::now();
+        let room_id = match (durability, room_id) {
+            (BlobDurability::Ephemeral, Some(room_id)) => {
+                Self::validate_room_id(room_id)?;
+                Some(room_id)
+            }
+            _ => None,
+        };
 
         match durability {
             BlobDurability::Durable => {
                 let effective_durability = self
-                    .put_disk(&hash, data, media_type, created_at, BlobDurability::Durable)
+                    .put_disk(
+                        &hash,
+                        data,
+                        media_type,
+                        created_at,
+                        BlobDurability::Durable,
+                        None,
+                    )
                     .await?;
                 self.insert_memory(
                     &hash,
@@ -303,8 +356,12 @@ impl BlobStore {
                         media_type,
                         created_at,
                         BlobDurability::Ephemeral,
+                        room_id,
                     )
                     .await?;
+                if room_id.is_some() {
+                    return Ok(hash);
+                }
                 if data.len() > self.memory_cap() {
                     // A single entry larger than the cap can never be cached
                     // without violating the budget, so leave it as disk-only
@@ -336,8 +393,9 @@ impl BlobStore {
         media_type: &str,
         created_at: DateTime<Utc>,
         durability: BlobDurability,
+        room_id: Option<&str>,
     ) -> io::Result<BlobDurability> {
-        let (shard_dir, blob_path, meta_path) = self.paths(hash);
+        let (shard_dir, blob_path, meta_path) = self.paths_for_scope(hash, room_id)?;
         let _lock = self.acquire_blob_file_lock(&shard_dir, &meta_path).await?;
 
         // Fast path: both files already present.
@@ -515,7 +573,17 @@ impl BlobStore {
         let (_, blob_path, _) = self.paths(hash);
         match tokio::fs::read(&blob_path).await {
             Ok(data) => Ok(Some(data)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                let Some(room_id) = self.inner.ephemeral_room_id.as_deref() else {
+                    return Ok(None);
+                };
+                let (_, room_blob_path, _) = self.paths_for_scope(hash, Some(room_id))?;
+                match tokio::fs::read(&room_blob_path).await {
+                    Ok(data) => Ok(Some(data)),
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+                    Err(e) => Err(e),
+                }
+            }
             Err(e) => Err(e),
         }
     }
@@ -538,7 +606,21 @@ impl BlobStore {
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                 Ok(Some(meta))
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                let Some(room_id) = self.inner.ephemeral_room_id.as_deref() else {
+                    return Ok(None);
+                };
+                let (_, _, room_meta_path) = self.paths_for_scope(hash, Some(room_id))?;
+                match tokio::fs::read_to_string(&room_meta_path).await {
+                    Ok(json) => {
+                        let meta: BlobMeta = serde_json::from_str(&json)
+                            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                        Ok(Some(meta))
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+                    Err(e) => Err(e),
+                }
+            }
             Err(e) => Err(e),
         }
     }
@@ -555,7 +637,15 @@ impl BlobStore {
             }
         }
         let (_, blob_path, _) = self.paths(hash);
-        blob_path.exists()
+        if blob_path.exists() {
+            return true;
+        }
+        let Some(room_id) = self.inner.ephemeral_room_id.as_deref() else {
+            return false;
+        };
+        self.paths_for_scope(hash, Some(room_id))
+            .map(|(_, room_blob_path, _)| room_blob_path.exists())
+            .unwrap_or(false)
     }
 
     /// Delete a blob and its metadata. Returns `true` if the blob existed.
@@ -598,7 +688,8 @@ impl BlobStore {
             return Ok(false);
         }
 
-        let (shard_dir, blob_path, meta_path) = self.paths(hash);
+        let (shard_dir, blob_path, meta_path) =
+            self.paths_for_scope(hash, self.inner.ephemeral_room_id.as_deref())?;
         let _lock = self.acquire_blob_file_lock(&shard_dir, &meta_path).await?;
         let disk_was_ephemeral = match tokio::fs::read_to_string(&meta_path).await {
             Ok(json) => serde_json::from_str::<BlobMeta>(&json)
@@ -614,6 +705,21 @@ impl BlobStore {
         }
 
         Ok(memory_was_ephemeral || disk_was_ephemeral)
+    }
+
+    /// Remove all room-scoped ephemeral blobs for a notebook room.
+    ///
+    /// This is used when a room is actually evicted, not when its kernel is
+    /// merely torn down. Resident ghost rooms may still hold RuntimeStateDoc
+    /// comm refs needed by a future reconnect.
+    pub async fn delete_ephemeral_room(&self, room_id: &str) -> io::Result<bool> {
+        Self::validate_room_id(room_id)?;
+        let room_dir = self.room_dir(room_id);
+        match tokio::fs::remove_dir_all(&room_dir).await {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     /// List all blob hashes in the store.
@@ -655,6 +761,24 @@ impl BlobStore {
 
     /// Compute shard dir, blob path, and meta path for a given hash.
     fn paths(&self, hash: &str) -> (PathBuf, PathBuf, PathBuf) {
+        self.global_paths(hash)
+    }
+
+    fn paths_for_scope(
+        &self,
+        hash: &str,
+        room_id: Option<&str>,
+    ) -> io::Result<(PathBuf, PathBuf, PathBuf)> {
+        match room_id {
+            Some(room_id) => {
+                Self::validate_room_id(room_id)?;
+                Ok(self.room_paths(room_id, hash))
+            }
+            None => Ok(self.global_paths(hash)),
+        }
+    }
+
+    fn global_paths(&self, hash: &str) -> (PathBuf, PathBuf, PathBuf) {
         let shard = &hash[..2];
         let rest = &hash[2..];
         let shard_dir = self.inner.root.join(shard);
@@ -663,9 +787,37 @@ impl BlobStore {
         (shard_dir, blob_path, meta_path)
     }
 
+    fn room_paths(&self, room_id: &str, hash: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let shard = &hash[..2];
+        let rest = &hash[2..];
+        let shard_dir = self.room_dir(room_id).join(shard);
+        let blob_path = shard_dir.join(rest);
+        let meta_path = shard_dir.join(format!("{}.meta", rest));
+        (shard_dir, blob_path, meta_path)
+    }
+
+    fn room_dir(&self, room_id: &str) -> PathBuf {
+        self.inner.root.join("rooms").join(room_id)
+    }
+
     /// Validate that a hash looks like a 64-character hex string.
     fn validate_hash(hash: &str) -> bool {
         hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit())
+    }
+
+    fn validate_room_id(room_id: &str) -> io::Result<()> {
+        if !room_id.is_empty()
+            && room_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid blob room id: {room_id:?}"),
+            ))
+        }
     }
 
     #[cfg(test)]
@@ -690,6 +842,11 @@ mod tests {
 
     fn disk_blob_exists(store: &BlobStore, hash: &str) -> bool {
         let (_, blob_path, meta_path) = store.paths(hash);
+        blob_path.exists() && meta_path.exists()
+    }
+
+    fn room_disk_blob_exists(store: &BlobStore, room_id: &str, hash: &str) -> bool {
+        let (_, blob_path, meta_path) = store.room_paths(room_id, hash);
         blob_path.exists() && meta_path.exists()
     }
 
@@ -895,6 +1052,98 @@ mod tests {
             runtime_agent_store.get(&hash).await.unwrap().unwrap(),
             b"ephemeral"
         );
+    }
+
+    #[tokio::test]
+    async fn room_scoped_ephemeral_is_visible_to_matching_room_store_only() {
+        let dir = TempDir::new().unwrap();
+        let daemon_store = test_store(&dir);
+        let hash = daemon_store
+            .put_with_durability_for_room(
+                b"room bytes",
+                "application/octet-stream",
+                BlobDurability::Ephemeral,
+                Some("room-a"),
+            )
+            .await
+            .unwrap();
+
+        assert!(!disk_blob_exists(&daemon_store, &hash));
+        assert!(room_disk_blob_exists(&daemon_store, "room-a", &hash));
+        assert!(daemon_store.get(&hash).await.unwrap().is_none());
+
+        let room_store = BlobStore::for_notebook(dir.path().join("blobs"), "room-a").unwrap();
+        assert_eq!(
+            room_store.get(&hash).await.unwrap().as_deref(),
+            Some(&b"room bytes"[..])
+        );
+
+        let other_room_store = BlobStore::for_notebook(dir.path().join("blobs"), "room-b").unwrap();
+        assert!(other_room_store.get(&hash).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn room_scoped_same_hash_delete_keeps_other_room_copy() {
+        let dir = TempDir::new().unwrap();
+        let daemon_store = test_store(&dir);
+        let hash_a = daemon_store
+            .put_with_durability_for_room(
+                b"same bytes",
+                "application/octet-stream",
+                BlobDurability::Ephemeral,
+                Some("room-a"),
+            )
+            .await
+            .unwrap();
+        let hash_b = daemon_store
+            .put_with_durability_for_room(
+                b"same bytes",
+                "application/octet-stream",
+                BlobDurability::Ephemeral,
+                Some("room-b"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(hash_a, hash_b);
+
+        let room_a_store = BlobStore::for_notebook(dir.path().join("blobs"), "room-a").unwrap();
+        let room_b_store = BlobStore::for_notebook(dir.path().join("blobs"), "room-b").unwrap();
+
+        assert!(room_a_store.delete_if_ephemeral(&hash_a).await.unwrap());
+        assert!(room_a_store.get(&hash_a).await.unwrap().is_none());
+        assert_eq!(
+            room_b_store.get(&hash_b).await.unwrap().as_deref(),
+            Some(&b"same bytes"[..])
+        );
+        assert!(room_disk_blob_exists(&daemon_store, "room-b", &hash_b));
+    }
+
+    #[tokio::test]
+    async fn delete_ephemeral_room_removes_only_that_room_subtree() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+        let room_a = store
+            .put_with_durability_for_room(
+                b"a",
+                "text/plain",
+                BlobDurability::Ephemeral,
+                Some("room-a"),
+            )
+            .await
+            .unwrap();
+        let room_b = store
+            .put_with_durability_for_room(
+                b"b",
+                "text/plain",
+                BlobDurability::Ephemeral,
+                Some("room-b"),
+            )
+            .await
+            .unwrap();
+
+        assert!(store.delete_ephemeral_room("room-a").await.unwrap());
+        assert!(!room_disk_blob_exists(&store, "room-a", &room_a));
+        assert!(room_disk_blob_exists(&store, "room-b", &room_b));
     }
 
     #[tokio::test]
