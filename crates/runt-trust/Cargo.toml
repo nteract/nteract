@@ -1,6 +1,6 @@
 [package]
 name = "runt-trust"
-version = "0.3.7"
+version = "0.3.8"
 edition.workspace = true
 description = "Notebook trust extraction for the per-machine package allowlist"
 repository.workspace = true
