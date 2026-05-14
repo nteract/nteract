@@ -199,12 +199,14 @@ jobs:
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
 
-      - name: Install cross-compilation targets
-        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
-
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "macos-release"
+
+      - uses: ./.github/actions/repair-macos-rust-toolchain
+
+      - name: Install cross-compilation targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - name: Download WASM artifacts
         uses: actions/download-artifact@v8
@@ -264,6 +266,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "macos-notebook-arm64"
+
+      - uses: ./.github/actions/repair-macos-rust-toolchain
 
       - name: Download WASM artifacts
         uses: actions/download-artifact@v8
@@ -431,12 +435,14 @@ jobs:
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
 
-      - name: Install cross-compilation target
-        run: rustup target add x86_64-apple-darwin
-
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "macos-notebook-x64"
+
+      - uses: ./.github/actions/repair-macos-rust-toolchain
+
+      - name: Install cross-compilation target
+        run: rustup target add x86_64-apple-darwin
 
       - name: Download WASM artifacts
         uses: actions/download-artifact@v8
@@ -950,9 +956,6 @@ jobs:
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
 
-      - name: Install compilation target
-        run: rustup target add ${{ matrix.platform.target }}
-
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "python-${{ matrix.platform.target }}"
@@ -965,6 +968,12 @@ jobs:
         if: matrix.platform.sccache
         uses: ./.github/actions/sccache-warmup
 
+      - uses: ./.github/actions/repair-macos-rust-toolchain
+        if: runner.os == 'macOS'
+
+      - name: Install compilation target
+        run: rustup target add ${{ matrix.platform.target }}
+
       - name: Download WASM artifacts
         uses: actions/download-artifact@v8
         with:
@@ -973,17 +982,6 @@ jobs:
       - uses: ./.github/actions/build-runtime-artifacts
         with:
           skip-wasm: true
-
-      - name: Restore Rust toolchain PATH (macOS)
-        if: runner.os == 'macOS'
-        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
-      - name: Verify Rust toolchain PATH (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          type -a cargo rustup
-          cargo --version
-          rustup --version
 
       - name: Build runtimed binary (Unix)
         if: runner.os != 'Windows'

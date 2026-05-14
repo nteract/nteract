@@ -1,0 +1,25 @@
+name: Repair macOS Rust toolchain
+description: Reinstall rustup shims after macOS runner/cache restores can shadow cargo with rustup-init
+
+runs:
+  using: composite
+  steps:
+    - name: Repair rustup shims
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # The 20260512 macOS arm64 image can expose rustup-init where cargo or
+        # rustup shims should be, and rust-cache may restore that into ~/.cargo/bin.
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+        export PATH="$HOME/.cargo/bin:$PATH"
+
+        rustup toolchain install --profile minimal
+        rustup show active-toolchain
+        type -a cargo rustup rustc
+        cargo --version
+        rustup --version
+        rustc --version
