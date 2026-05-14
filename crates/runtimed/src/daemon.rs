@@ -5800,6 +5800,10 @@ mod tests {
             blob_store_dir: temp_dir.path().join("blobs"),
             execution_store_dir: temp_dir.path().join("executions"),
             notebook_docs_dir: temp_dir.path().join("notebook-docs"),
+            // Mirror the integration helper: scope the trust DB per-temp-dir
+            // so parallel daemon unit tests can't contaminate each other's
+            // allowlists through the shared default path.
+            trusted_packages_db_path: temp_dir.path().join("trusted-packages.sqlite"),
             uv_pool_size: 0,
             conda_pool_size: 0,
             pixi_pool_size: 0,
