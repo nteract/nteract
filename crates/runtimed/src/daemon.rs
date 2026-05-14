@@ -2988,9 +2988,10 @@ impl Daemon {
         // Populate the room's doc with the empty notebook content — but only if the
         // room is empty. If a persisted doc was loaded (session restore with notebook_id
         // hint), the room already has cells and we skip creation.
-        let (cell_count, create_error) = {
+        let (cell_count, create_error, freshly_created) = {
             let mut doc = room.doc.write().await;
             let mut err = None;
+            let mut fresh = false;
             if doc.cell_count() > 0 {
                 // Room already has content (loaded from persisted doc)
                 info!(
@@ -3007,13 +3008,15 @@ impl Daemon {
                     package_manager,
                     &dependencies,
                 ) {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        fresh = true;
+                    }
                     Err(e) => {
                         err = Some(e);
                     }
                 }
             }
-            (doc.cell_count(), err)
+            (doc.cell_count(), err, fresh)
         }; // doc lock dropped
 
         if let Some(e) = create_error {
@@ -3045,13 +3048,19 @@ impl Daemon {
             *mode = environment_mode;
         }
 
-        // When the caller explicitly passed deps to CreateNotebook, the tool
-        // call is itself the consent event — auto-seed those names into the
-        // trusted-package allowlist so the auto-launch path doesn't stall on
-        // AwaitingTrust with no human in the loop. Notebooks loaded from
-        // disk (OpenNotebook) go nowhere near this code and still gate on
-        // the trust dialog.
-        if !dependencies.is_empty() {
+        // When the caller explicitly passed deps to CreateNotebook AND we
+        // actually populated a fresh doc from those deps, the tool call is
+        // the consent event — auto-seed those names into the trusted-package
+        // allowlist so the auto-launch path doesn't stall on AwaitingTrust
+        // with no human in the loop.
+        //
+        // Session restores (cell_count > 0 going in) deliberately don't seed:
+        // the request's `dependencies` array is ignored when reopening a
+        // persisted doc, and approving the doc's restored dep list would let
+        // a CreateNotebook handshake silently grant trust to whatever was on
+        // disk. Restore goes through the same trust-dialog path as
+        // OpenNotebook instead.
+        if freshly_created && !dependencies.is_empty() {
             crate::notebook_sync_server::seed_trust_from_doc_metadata(&room, "mcp_create_notebook")
                 .await;
         }
