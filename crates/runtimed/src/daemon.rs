@@ -401,15 +401,18 @@ const REAPER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 
 /// Active rooms (peers > 0 or kernel still running) are exempt.
 const MAX_RESIDENT_PEERLESS_ROOMS: usize = 32;
 const POOL_PACKAGE_HASH_VERSION: &str = "v1";
-const DEFAULT_DATA_PACKAGES: &[&str] = &[
-    "pandas",
-    "polars",
-    "numpy",
-    "scipy",
-    "matplotlib",
-    "plotly",
-    "altair",
-];
+const DEFAULT_DATA_PACKAGES: &[&str] = &["pandas", "polars", "matplotlib", "plotly", "altair"];
+/// Extra package names that get auto-approved in the trusted-package
+/// allowlist on daemon start, but are NOT installed into prewarmed pool
+/// envs. Use this for foundational deps that data-science agents reach
+/// for routinely (numpy, scipy) where:
+///   - the trust gap would otherwise stall every fresh notebook that
+///     declares them, and
+///   - installing them eagerly into every pool env would balloon the
+///     prewarm cost (scipy in particular pulls BLAS/LAPACK).
+/// They still land in the env when a notebook declares them as inline
+/// deps; this constant just controls trust seeding.
+const DEFAULT_TRUSTED_EXTRA_PACKAGES: &[&str] = &["numpy", "scipy"];
 const BASE_RUNTIME_PACKAGES: &[&str] = &[
     "ipykernel",
     "ipywidgets",
@@ -1384,6 +1387,9 @@ impl Daemon {
                     }
                     if let Err(e) = store.seed_defaults(ecosystem, DEFAULT_DATA_PACKAGES) {
                         warn!("[trusted-packages] Failed to seed default data packages ({ecosystem}): {e}");
+                    }
+                    if let Err(e) = store.seed_defaults(ecosystem, DEFAULT_TRUSTED_EXTRA_PACKAGES) {
+                        warn!("[trusted-packages] Failed to seed extra trusted packages ({ecosystem}): {e}");
                     }
                 }
                 store
@@ -5535,6 +5541,42 @@ mod tests {
         }
         assert!(packages.iter().any(|pkg| pkg == "nbformat"));
         assert!(packages.iter().any(|pkg| pkg == "pyarrow>=14"));
+    }
+
+    /// `DEFAULT_TRUSTED_EXTRA_PACKAGES` are seeded into the allowlist on
+    /// daemon start but must NOT prewarm into pool envs. Scipy in
+    /// particular pulls BLAS/LAPACK and pushed CI pool builds past the
+    /// 150s readiness budget when it accidentally landed in
+    /// `DEFAULT_DATA_PACKAGES`. Lock the split so a future edit doesn't
+    /// silently regress prewarm cost.
+    #[test]
+    fn test_trusted_extras_do_not_appear_in_prewarmed_packages() {
+        let with_data = uv_prewarmed_packages(&[], true);
+        let without_data = uv_prewarmed_packages(&[], false);
+        for pkg in DEFAULT_TRUSTED_EXTRA_PACKAGES {
+            assert!(
+                !with_data.iter().any(|candidate| candidate == pkg),
+                "trust-extra {pkg} leaked into uv prewarm (default_data_packages=true)"
+            );
+            assert!(
+                !without_data.iter().any(|candidate| candidate == pkg),
+                "trust-extra {pkg} leaked into uv prewarm (default_data_packages=false)"
+            );
+        }
+
+        let conda_with = conda_prewarmed_packages(&[], true);
+        let conda_without = conda_prewarmed_packages(&[], false);
+        for pkg in DEFAULT_TRUSTED_EXTRA_PACKAGES {
+            assert!(!conda_with.iter().any(|candidate| candidate == pkg));
+            assert!(!conda_without.iter().any(|candidate| candidate == pkg));
+        }
+
+        let pixi_with = pixi_prewarmed_packages(&[], true);
+        let pixi_without = pixi_prewarmed_packages(&[], false);
+        for pkg in DEFAULT_TRUSTED_EXTRA_PACKAGES {
+            assert!(!pixi_with.iter().any(|candidate| candidate == pkg));
+            assert!(!pixi_without.iter().any(|candidate| candidate == pkg));
+        }
     }
 
     #[test]
