@@ -3065,6 +3065,25 @@ impl Daemon {
                 .await;
         }
 
+        // Re-evaluate trust now that the doc is populated (and possibly
+        // post-seed) so `room.trust_state` and the runtime state doc reflect
+        // reality before we answer the handshake. Without this, `trust_state`
+        // is still whatever room creation initialized it to (empty doc →
+        // NoDependencies) and the handshake reply would lie when seeding
+        // failed, or when the deps weren't auto-approved (session restore,
+        // empty deps from caller).
+        crate::notebook_sync_server::check_and_update_trust_state(&room).await;
+
+        // Read the resolved trust state for the handshake reply. Mirrors
+        // the OpenNotebook handler so both paths produce the same shape.
+        let needs_trust_approval = {
+            let trust_state = room.trust_state.read().await;
+            !matches!(
+                trust_state.status,
+                runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
+            )
+        };
+
         // Send NotebookConnectionInfo response.
         // Always send the room's UUID on the wire, even when the caller
         // provided a notebook_id_hint — room.id is the canonical source.
@@ -3078,7 +3097,7 @@ impl Daemon {
             capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string())),
             notebook_id: room.id.to_string(),
             cell_count,
-            needs_trust_approval: false,
+            needs_trust_approval,
             error: None,
             ephemeral,
             notebook_path,

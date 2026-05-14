@@ -3574,6 +3574,85 @@ async fn test_create_notebook_default_manager_with_deps() {
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
 
+/// `CreateNotebook` with explicit deps auto-seeds the trusted-package
+/// allowlist (the tool call is the consent event). The handshake
+/// `needs_trust_approval` must reflect the post-seed trust state so
+/// clients reading it don't surface a stale "approval required" banner.
+#[tokio::test]
+async fn test_create_notebook_with_deps_reports_no_trust_approval_needed() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let result = connect::connect_create(
+        socket_path.clone(),
+        "python",
+        None,
+        "test",
+        false,
+        None,
+        vec!["scipy".to_string()],
+    )
+    .await
+    .expect("create with explicit deps should succeed");
+
+    assert!(
+        !result.info.needs_trust_approval,
+        "CreateNotebook with explicit deps auto-seeds trust; handshake should report no approval needed"
+    );
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+/// `CreateNotebook` with no deps must report `needs_trust_approval: false`
+/// (the trust state resolves to `NoDependencies`). Locks the wire shape
+/// for the empty-deps path so a refactor of the create-handshake trust
+/// re-evaluation can't silently regress to the pre-fix hardcoded `false`
+/// that ignored the actual room state.
+#[tokio::test]
+async fn test_create_notebook_with_no_deps_reports_no_trust_approval_needed() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let result = connect::connect_create(
+        socket_path.clone(),
+        "python",
+        None,
+        "test",
+        false,
+        None,
+        vec![],
+    )
+    .await
+    .expect("create with no deps should succeed");
+
+    assert!(
+        !result.info.needs_trust_approval,
+        "no deps → trust=NoDependencies → handshake reports no approval needed"
+    );
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
 /// `notebook-sync::connect` clients (runt-mcp, runtimed-py, integration tests)
 /// get an auto-heartbeat that fires from `sync_task::run`'s biased select. A
 /// quiet but live peer must survive past the daemon's idle_peer_timeout solely
