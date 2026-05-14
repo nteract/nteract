@@ -822,9 +822,12 @@ pub fn create_empty_notebook(
         dependencies,
     );
 
-    // Seeded deps land as plain dep metadata. The notebook arrives Untrusted
-    // until the user approves them through the regular trust dialog; the
-    // allowlist write at approval time is what makes future opens silent.
+    // Seeded deps land as plain dep metadata. By default the notebook arrives
+    // Untrusted and the trust dialog drives the allowlist write. The
+    // `CreateNotebook` handshake path seeds the allowlist directly when deps
+    // were explicit on the request — the caller already supplied them, so the
+    // tool call itself is the consent event. See `handle_create_notebook` and
+    // `seed_trust_from_doc_metadata`.
 
     doc.set_metadata_snapshot(&metadata_snapshot)
         .map_err(|e| format!("Failed to set metadata: {}", e))?;

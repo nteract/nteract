@@ -401,7 +401,15 @@ const REAPER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 
 /// Active rooms (peers > 0 or kernel still running) are exempt.
 const MAX_RESIDENT_PEERLESS_ROOMS: usize = 32;
 const POOL_PACKAGE_HASH_VERSION: &str = "v1";
-const DEFAULT_DATA_PACKAGES: &[&str] = &["pandas", "polars", "matplotlib", "plotly", "altair"];
+const DEFAULT_DATA_PACKAGES: &[&str] = &[
+    "pandas",
+    "polars",
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "plotly",
+    "altair",
+];
 const BASE_RUNTIME_PACKAGES: &[&str] = &[
     "ipykernel",
     "ipywidgets",
@@ -3037,8 +3045,18 @@ impl Daemon {
             *mode = environment_mode;
         }
 
+        // When the caller explicitly passed deps to CreateNotebook, the tool
+        // call is itself the consent event — auto-seed those names into the
+        // trusted-package allowlist so the auto-launch path doesn't stall on
+        // AwaitingTrust with no human in the loop. Notebooks loaded from
+        // disk (OpenNotebook) go nowhere near this code and still gate on
+        // the trust dialog.
+        if !dependencies.is_empty() {
+            crate::notebook_sync_server::seed_trust_from_doc_metadata(&room, "mcp_create_notebook")
+                .await;
+        }
+
         // Send NotebookConnectionInfo response.
-        // Trust approval is handled later via CRDT trust state, not at creation time.
         // Always send the room's UUID on the wire, even when the caller
         // provided a notebook_id_hint — room.id is the canonical source.
         let (reader, mut writer) = tokio::io::split(stream);
