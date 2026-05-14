@@ -410,6 +410,7 @@ const DEFAULT_DATA_PACKAGES: &[&str] = &["pandas", "polars", "matplotlib", "plot
 ///     declares them, and
 ///   - installing them eagerly into every pool env would balloon the
 ///     prewarm cost (scipy in particular pulls BLAS/LAPACK).
+///
 /// They still land in the env when a notebook declares them as inline
 /// deps; this constant just controls trust seeding.
 const DEFAULT_TRUSTED_EXTRA_PACKAGES: &[&str] = &["numpy", "scipy"];
