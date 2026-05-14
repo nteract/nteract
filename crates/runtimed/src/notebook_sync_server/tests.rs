@@ -698,6 +698,120 @@ async fn test_new_fresh_untitled_trust_from_doc() {
     );
 }
 
+/// Auto-trust path for MCP `create_notebook` with explicit deps. Seeding
+/// the doc-declared deps into the allowlist must promote the room from
+/// Untrusted → Trusted on the next `check_and_update_trust_state`, so the
+/// auto-launch path can fire without a human-in-the-loop trust dialog.
+#[tokio::test]
+async fn test_seed_trust_from_doc_metadata_promotes_to_trusted() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let store =
+        crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
+            .unwrap();
+
+    let notebook_uuid = Uuid::new_v4();
+    let room = Arc::new(
+        NotebookRoom::new_fresh_with_trusted_packages(
+            notebook_uuid,
+            None,
+            tmp.path(),
+            blob_store,
+            true,
+            store,
+        )
+        .unwrap(),
+    );
+
+    // Populate the doc with explicit deps (mirrors create_empty_notebook).
+    let snapshot = snapshot_with_uv(vec!["pandas".to_string(), "scipy".to_string()]);
+    {
+        let mut doc = room.doc.write().await;
+        doc.set_metadata_snapshot(&snapshot).unwrap();
+    }
+
+    // Before seeding: trust check on the doc's deps must fail.
+    let pre_info = runt_trust::extract_trust_info(&snapshot_metadata_hashmap(&snapshot));
+    assert!(
+        !room
+            .trusted_packages
+            .all_dependencies_approved(&pre_info)
+            .unwrap(),
+        "fresh store should not approve un-seeded deps"
+    );
+
+    crate::notebook_sync_server::seed_trust_from_doc_metadata(&room, "mcp_create_notebook").await;
+
+    // After seeding: same deps must approve, and re-verifying from snapshot
+    // resolves to Trusted.
+    let post_info = runt_trust::extract_trust_info(&snapshot_metadata_hashmap(&snapshot));
+    assert!(
+        room.trusted_packages
+            .all_dependencies_approved(&post_info)
+            .unwrap(),
+        "deps must approve after seed_trust_from_doc_metadata"
+    );
+    let verified =
+        crate::notebook_sync_server::verify_trust_from_snapshot(&snapshot, &room.trusted_packages);
+    assert_eq!(verified.status, runt_trust::TrustStatus::Trusted);
+}
+
+/// No-op path: a freshly created notebook with no declared deps must not
+/// touch the allowlist when seeded. NoDependencies short-circuits before
+/// the store write so a brand-new untitled notebook doesn't get a
+/// phantom "mcp_create_notebook" trust row.
+#[tokio::test]
+async fn test_seed_trust_from_doc_metadata_skips_when_no_deps() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let store =
+        crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
+            .unwrap();
+
+    let notebook_uuid = Uuid::new_v4();
+    let room = Arc::new(
+        NotebookRoom::new_fresh_with_trusted_packages(
+            notebook_uuid,
+            None,
+            tmp.path(),
+            blob_store,
+            true,
+            store,
+        )
+        .unwrap(),
+    );
+
+    let snapshot = snapshot_with_uv(vec![]);
+    {
+        let mut doc = room.doc.write().await;
+        doc.set_metadata_snapshot(&snapshot).unwrap();
+    }
+
+    crate::notebook_sync_server::seed_trust_from_doc_metadata(&room, "mcp_create_notebook").await;
+
+    // An unrelated dep must still not approve — the seed call should have
+    // been a no-op.
+    let probe = runt_trust::TrustInfo {
+        status: runt_trust::TrustStatus::Untrusted,
+        uv_dependencies: vec!["pandas".to_string()],
+        approved_uv_dependencies: vec![],
+        conda_dependencies: vec![],
+        approved_conda_dependencies: vec![],
+        conda_channels: vec![],
+        approved_conda_channels: vec![],
+        pixi_dependencies: vec![],
+        approved_pixi_dependencies: vec![],
+        pixi_pypi_dependencies: vec![],
+        approved_pixi_pypi_dependencies: vec![],
+        pixi_channels: vec![],
+        approved_pixi_channels: vec![],
+    };
+    assert!(!room
+        .trusted_packages
+        .all_dependencies_approved(&probe)
+        .unwrap());
+}
+
 #[tokio::test(start_paused = true)]
 async fn test_ephemeral_room_skips_persistence() {
     let dir = tempfile::tempdir().unwrap();

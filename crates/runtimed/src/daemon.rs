@@ -402,6 +402,18 @@ const REAPER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 
 const MAX_RESIDENT_PEERLESS_ROOMS: usize = 32;
 const POOL_PACKAGE_HASH_VERSION: &str = "v1";
 const DEFAULT_DATA_PACKAGES: &[&str] = &["pandas", "polars", "matplotlib", "plotly", "altair"];
+/// Extra package names that get auto-approved in the trusted-package
+/// allowlist on daemon start, but are NOT installed into prewarmed pool
+/// envs. Use this for foundational deps that data-science agents reach
+/// for routinely (numpy, scipy) where:
+///   - the trust gap would otherwise stall every fresh notebook that
+///     declares them, and
+///   - installing them eagerly into every pool env would balloon the
+///     prewarm cost (scipy in particular pulls BLAS/LAPACK).
+///
+/// They still land in the env when a notebook declares them as inline
+/// deps; this constant just controls trust seeding.
+const DEFAULT_TRUSTED_EXTRA_PACKAGES: &[&str] = &["numpy", "scipy"];
 const BASE_RUNTIME_PACKAGES: &[&str] = &[
     "ipykernel",
     "ipywidgets",
@@ -1376,6 +1388,9 @@ impl Daemon {
                     }
                     if let Err(e) = store.seed_defaults(ecosystem, DEFAULT_DATA_PACKAGES) {
                         warn!("[trusted-packages] Failed to seed default data packages ({ecosystem}): {e}");
+                    }
+                    if let Err(e) = store.seed_defaults(ecosystem, DEFAULT_TRUSTED_EXTRA_PACKAGES) {
+                        warn!("[trusted-packages] Failed to seed extra trusted packages ({ecosystem}): {e}");
                     }
                 }
                 store
@@ -2980,9 +2995,10 @@ impl Daemon {
         // Populate the room's doc with the empty notebook content — but only if the
         // room is empty. If a persisted doc was loaded (session restore with notebook_id
         // hint), the room already has cells and we skip creation.
-        let (cell_count, create_error) = {
+        let (cell_count, create_error, freshly_created) = {
             let mut doc = room.doc.write().await;
             let mut err = None;
+            let mut fresh = false;
             if doc.cell_count() > 0 {
                 // Room already has content (loaded from persisted doc)
                 info!(
@@ -2999,13 +3015,15 @@ impl Daemon {
                     package_manager,
                     &dependencies,
                 ) {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        fresh = true;
+                    }
                     Err(e) => {
                         err = Some(e);
                     }
                 }
             }
-            (doc.cell_count(), err)
+            (doc.cell_count(), err, fresh)
         }; // doc lock dropped
 
         if let Some(e) = create_error {
@@ -3037,8 +3055,43 @@ impl Daemon {
             *mode = environment_mode;
         }
 
+        // When the caller explicitly passed deps to CreateNotebook AND we
+        // actually populated a fresh doc from those deps, the tool call is
+        // the consent event — auto-seed those names into the trusted-package
+        // allowlist so the auto-launch path doesn't stall on AwaitingTrust
+        // with no human in the loop.
+        //
+        // Session restores (cell_count > 0 going in) deliberately don't seed:
+        // the request's `dependencies` array is ignored when reopening a
+        // persisted doc, and approving the doc's restored dep list would let
+        // a CreateNotebook handshake silently grant trust to whatever was on
+        // disk. Restore goes through the same trust-dialog path as
+        // OpenNotebook instead.
+        if freshly_created && !dependencies.is_empty() {
+            crate::notebook_sync_server::seed_trust_from_doc_metadata(&room, "mcp_create_notebook")
+                .await;
+        }
+
+        // Re-evaluate trust now that the doc is populated (and possibly
+        // post-seed) so `room.trust_state` and the runtime state doc reflect
+        // reality before we answer the handshake. Without this, `trust_state`
+        // is still whatever room creation initialized it to (empty doc →
+        // NoDependencies) and the handshake reply would lie when seeding
+        // failed, or when the deps weren't auto-approved (session restore,
+        // empty deps from caller).
+        crate::notebook_sync_server::check_and_update_trust_state(&room).await;
+
+        // Read the resolved trust state for the handshake reply. Mirrors
+        // the OpenNotebook handler so both paths produce the same shape.
+        let needs_trust_approval = {
+            let trust_state = room.trust_state.read().await;
+            !matches!(
+                trust_state.status,
+                runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
+            )
+        };
+
         // Send NotebookConnectionInfo response.
-        // Trust approval is handled later via CRDT trust state, not at creation time.
         // Always send the room's UUID on the wire, even when the caller
         // provided a notebook_id_hint — room.id is the canonical source.
         let (reader, mut writer) = tokio::io::split(stream);
@@ -3051,7 +3104,7 @@ impl Daemon {
             capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string())),
             notebook_id: room.id.to_string(),
             cell_count,
-            needs_trust_approval: false,
+            needs_trust_approval,
             error: None,
             ephemeral,
             notebook_path,
@@ -5491,6 +5544,42 @@ mod tests {
         assert!(packages.iter().any(|pkg| pkg == "pyarrow>=14"));
     }
 
+    /// `DEFAULT_TRUSTED_EXTRA_PACKAGES` are seeded into the allowlist on
+    /// daemon start but must NOT prewarm into pool envs. Scipy in
+    /// particular pulls BLAS/LAPACK and pushed CI pool builds past the
+    /// 150s readiness budget when it accidentally landed in
+    /// `DEFAULT_DATA_PACKAGES`. Lock the split so a future edit doesn't
+    /// silently regress prewarm cost.
+    #[test]
+    fn test_trusted_extras_do_not_appear_in_prewarmed_packages() {
+        let with_data = uv_prewarmed_packages(&[], true);
+        let without_data = uv_prewarmed_packages(&[], false);
+        for pkg in DEFAULT_TRUSTED_EXTRA_PACKAGES {
+            assert!(
+                !with_data.iter().any(|candidate| candidate == pkg),
+                "trust-extra {pkg} leaked into uv prewarm (default_data_packages=true)"
+            );
+            assert!(
+                !without_data.iter().any(|candidate| candidate == pkg),
+                "trust-extra {pkg} leaked into uv prewarm (default_data_packages=false)"
+            );
+        }
+
+        let conda_with = conda_prewarmed_packages(&[], true);
+        let conda_without = conda_prewarmed_packages(&[], false);
+        for pkg in DEFAULT_TRUSTED_EXTRA_PACKAGES {
+            assert!(!conda_with.iter().any(|candidate| candidate == pkg));
+            assert!(!conda_without.iter().any(|candidate| candidate == pkg));
+        }
+
+        let pixi_with = pixi_prewarmed_packages(&[], true);
+        let pixi_without = pixi_prewarmed_packages(&[], false);
+        for pkg in DEFAULT_TRUSTED_EXTRA_PACKAGES {
+            assert!(!pixi_with.iter().any(|candidate| candidate == pkg));
+            assert!(!pixi_without.iter().any(|candidate| candidate == pkg));
+        }
+    }
+
     #[test]
     fn test_conda_and_pixi_prewarmed_packages_include_pip() {
         let conda = conda_prewarmed_packages(&[], false);
@@ -5754,6 +5843,10 @@ mod tests {
             blob_store_dir: temp_dir.path().join("blobs"),
             execution_store_dir: temp_dir.path().join("executions"),
             notebook_docs_dir: temp_dir.path().join("notebook-docs"),
+            // Mirror the integration helper: scope the trust DB per-temp-dir
+            // so parallel daemon unit tests can't contaminate each other's
+            // allowlists through the shared default path.
+            trusted_packages_db_path: temp_dir.path().join("trusted-packages.sqlite"),
             uv_pool_size: 0,
             conda_pool_size: 0,
             pixi_pool_size: 0,

@@ -42,6 +42,42 @@ pub(crate) fn write_trust_to_runtime_state(room: &NotebookRoom, trust: &TrustSta
     }
 }
 
+/// Seed the trusted-package allowlist with the dependency names declared in
+/// the room's current notebook metadata, attributing the approval to `source`.
+///
+/// The caller is asserting that the deps already in the doc came from a
+/// consent-bearing channel (e.g., an explicit `dependencies` arg on an MCP
+/// `create_notebook` tool call). Skips silently when the doc has no metadata
+/// snapshot yet or carries no deps. Errors are logged, not propagated — the
+/// notebook still works without seeding, it just falls back to the trust
+/// dialog.
+pub(crate) async fn seed_trust_from_doc_metadata(room: &NotebookRoom, source: &str) {
+    let snapshot = {
+        let doc = room.doc.read().await;
+        doc.get_metadata_snapshot()
+    };
+    let Some(snapshot) = snapshot else {
+        return;
+    };
+
+    let mut metadata = std::collections::HashMap::new();
+    if let Ok(runt_value) = serde_json::to_value(&snapshot.runt) {
+        metadata.insert("runt".to_string(), runt_value);
+    }
+    let info = runt_trust::extract_trust_info(&metadata);
+
+    if matches!(info.status, runt_trust::TrustStatus::NoDependencies) {
+        return;
+    }
+
+    if let Err(e) = room.trusted_packages.add_from_info(&info, source) {
+        warn!(
+            "[trusted-packages] Failed to seed deps for room {} from {}: {}",
+            room.id, source, e
+        );
+    }
+}
+
 fn runtime_trust_state(trust: &TrustState) -> TrustRuntimeState {
     TrustRuntimeState {
         status: trust_status_str(&trust.status).to_string(),

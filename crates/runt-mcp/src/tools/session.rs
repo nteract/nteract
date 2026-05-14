@@ -278,6 +278,75 @@ fn read_runtime_info(handle: &notebook_sync::handle::DocHandle) -> serde_json::V
                     info.insert("error_details".into(), serde_json::json!(details));
                 }
             }
+
+            // Surface the trust block so callers can see why a kernel hasn't
+            // launched yet. The `status` and `needs_approval` fields are
+            // already in `RuntimeState.trust`; we project them through and
+            // add a remediation hint when the kernel is parked in
+            // `AwaitingTrust` so an MCP client knows the exact follow-up
+            // call to make. Notebooks loaded from disk hit this when their
+            // dep set isn't in the local allowlist — review `dependencies`
+            // (e.g. via `get_dependencies` / `manage_dependencies`) before
+            // approving so a sketchy package name like `canhazpassword`
+            // doesn't sail through silently.
+            if !state.trust.status.is_empty() {
+                let mut trust_obj = serde_json::Map::new();
+                trust_obj.insert("status".into(), serde_json::json!(state.trust.status));
+                trust_obj.insert(
+                    "needs_approval".into(),
+                    serde_json::json!(state.trust.needs_approval),
+                );
+                if !state.trust.approved_uv_dependencies.is_empty() {
+                    trust_obj.insert(
+                        "approved_uv_dependencies".into(),
+                        serde_json::json!(state.trust.approved_uv_dependencies),
+                    );
+                }
+                if !state.trust.approved_conda_dependencies.is_empty() {
+                    trust_obj.insert(
+                        "approved_conda_dependencies".into(),
+                        serde_json::json!(state.trust.approved_conda_dependencies),
+                    );
+                }
+                if !state.trust.approved_conda_channels.is_empty() {
+                    trust_obj.insert(
+                        "approved_conda_channels".into(),
+                        serde_json::json!(state.trust.approved_conda_channels),
+                    );
+                }
+                if !state.trust.approved_pixi_dependencies.is_empty() {
+                    trust_obj.insert(
+                        "approved_pixi_dependencies".into(),
+                        serde_json::json!(state.trust.approved_pixi_dependencies),
+                    );
+                }
+                if !state.trust.approved_pixi_pypi_dependencies.is_empty() {
+                    trust_obj.insert(
+                        "approved_pixi_pypi_dependencies".into(),
+                        serde_json::json!(state.trust.approved_pixi_pypi_dependencies),
+                    );
+                }
+                if !state.trust.approved_pixi_channels.is_empty() {
+                    trust_obj.insert(
+                        "approved_pixi_channels".into(),
+                        serde_json::json!(state.trust.approved_pixi_channels),
+                    );
+                }
+                info.insert("trust".into(), serde_json::Value::Object(trust_obj));
+            }
+            if matches!(
+                state.kernel.lifecycle,
+                runtime_doc::RuntimeLifecycle::AwaitingTrust
+            ) {
+                info.insert(
+                    "next_action".into(),
+                    serde_json::json!({
+                        "tool": "manage_dependencies",
+                        "args": { "trust": true },
+                        "reason": "Kernel launch is parked at awaiting_trust because the notebook's declared dependencies are not in the local trusted-package allowlist. Inspect the dependency list (e.g. with get_dependencies) before approving; call manage_dependencies with trust=true to grant approval and unblock launch.",
+                    }),
+                );
+            }
         }
         Err(_) => {
             info.insert("kernel_status".into(), serde_json::json!("unknown"));
