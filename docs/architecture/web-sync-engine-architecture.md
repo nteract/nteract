@@ -49,10 +49,12 @@ or the exact sync-engine ABI needed to interpret daemon frames.
   and `crates/notebook-wire/src/lib.rs`. `PROTOCOL_VERSION` is 4 and
   `MIN_PROTOCOL_VERSION` is also 4 today, so the preamble check accepts v4 only.
   Any wider window has to be reintroduced when we want to broaden the gate.
-- `ProtocolCapabilities` and `NotebookConnectionInfo`
-  (`crates/notebook-protocol/src/connection/handshake.rs:110-155`) carry
-  `protocol`, `protocol_version`, and `daemon_version`. They do not carry
-  document compatibility data, sync-engine package metadata, or feature flags.
+- `ProtocolCapabilities`
+  (`crates/notebook-protocol/src/connection/handshake.rs:106-154`) carries
+  `protocol`, `protocol_version`, `daemon_version`, and the current
+  `put_blob` capability. `NotebookConnectionInfo` flattens that same capability
+  object into open/create responses. They do not yet carry document
+  compatibility data or sync-engine package metadata.
 - `SessionControlMessage::SyncStatus`
   (`crates/notebook-wire/src/lib.rs:159-169`) wraps `SessionSyncStatusWire` with
   three phases:
@@ -104,6 +106,12 @@ or the exact sync-engine ABI needed to interpret daemon frames.
   plugin files as `no-store` (line 261), and embedded plugin assets with a
   bounded cache (`public, max-age=86400`, line 309). New sync-engine routes
   should live alongside these and mirror the per-route cache policy.
+- Blob writes are now socket-authenticated typed frames, not a separate Blob
+  handshake. `PUT_BLOB` is frame `0x08`, accepts
+  `u32 header_len | JSON header | raw bytes`, replies on the existing response
+  frame, and is advertised through `ProtocolCapabilities.put_blob`. Remote web
+  upload support should keep using this capability-gated transport path rather
+  than adding write authority to the HTTP blob server.
 - There are no manifest endpoints, compatibility-check handlers, or
   sync-engine asset routes in the daemon today. The blob server currently
   exposes only `/blob/{hash}`, `/plugins/{name}`, and `/health`. Phase 4 is
@@ -188,6 +196,14 @@ The daemon should expose a manifest, not ask the app to guess.
     },
     "pool_state": {
       "schema": 1
+    }
+  },
+  "transport": {
+    "put_blob": {
+      "version": 1,
+      "single_frame_max": 33554432,
+      "multipart": true,
+      "ephemeral_supported": true
     }
   },
   "sync_engine": {
@@ -411,9 +427,15 @@ diagnostics`).
 - The manifest must bind protocol version, document schema versions, genesis
   hashes, engine ABI, package ID, asset URLs, and asset digests in one object.
   A valid asset hash is not enough if an attacker can replay a stale manifest.
+- Capability metadata such as `put_blob` should come from the same handshake or
+  manifest snapshot as the sync-engine decision. Do not allow the app to combine
+  a fresh engine manifest with stale transport capabilities.
 - Daemon-served engine routes should be authenticated and same-origin where
   possible. If cross-origin is unavoidable, use an allowlist and credentials
   strategy; do not copy the permissive blob/plugin CORS policy by default.
+- Keep blob writes on authenticated notebook transports (`PUT_BLOB` or its
+  successors). The HTTP blob server remains read-only for content-addressed GETs
+  and plugin/engine asset delivery.
 - Serve worker scripts with their own CSP response header. Workers are not a
   reason to relax the main app CSP.
 - Keep daemon-served JS out of the main realm even after digest verification.
@@ -427,15 +449,21 @@ diagnostics`).
   `crates/notebook-doc` and `crates/runtime-doc` next to the existing genesis
   assets. Add an explicit pool-state schema version without implying a frozen
   pool genesis artifact.
-- Extend `ProtocolCapabilities` and `NotebookConnectionInfo` in
+- Extend `ProtocolCapabilities` in
   `crates/notebook-protocol/src/connection/handshake.rs` with optional
-  `document_compatibility` and `sync_engine` fields.
+  `document_compatibility` and `sync_engine` fields. `NotebookConnectionInfo`
+  already flattens `ProtocolCapabilities`, so open/create responses should pick
+  up the same metadata without a parallel shape.
 - Keep the new fields optional so current clients remain source-compatible
   during the rollout. The wire-version gate (`PROTOCOL_VERSION = 4`,
   `MIN_PROTOCOL_VERSION = 4`) does not need to move for additive metadata.
 - Add tests that assert manifest hashes match the checked-in `.am` artifacts at
   `crates/notebook-doc/assets/notebook_genesis_v4.am` and
   `crates/runtime-doc/assets/runtime_state_genesis_v1.am`.
+- Add tests that `ProtocolCapabilities::v4(...)`, direct `NotebookSync`, and
+  `NotebookConnectionInfo` open/create responses all expose the same
+  document/sync-engine compatibility metadata alongside the existing `put_blob`
+  capability.
 - Add a manifest replay test: an older valid manifest with stale schema or
   package metadata must be rejected against a newer daemon capability response.
 
@@ -509,6 +537,8 @@ diagnostics`).
 - Serve worker script responses with a narrow worker CSP. Do not depend only on
   the parent document CSP.
 - Add explicit digest verification before instantiating downloaded assets.
+- Keep `/sync-engine/*` routes read-only. Do not reuse them for blob upload;
+  authenticated blob writes stay on `PUT_BLOB`/multipart notebook frames.
 
 ### Phase 5: Remote Web Deployment
 
@@ -549,6 +579,9 @@ diagnostics`).
 - Daemon engine hash mismatch: asset rejected with `engine_integrity_failed`.
 - Stale but hash-valid manifest replay: manifest rejected because it does not
   match current daemon capability metadata.
+- Stale transport capability replay: client must not combine fresh
+  sync-engine metadata with stale `put_blob` limits or unsupported multipart
+  behavior.
 - Cached daemon engine package with stale package ID or digest: cache entry is
   ignored and assets are refetched or rejected with `engine_integrity_failed`.
 - Mutable engine manifest is not served with immutable cache headers.
