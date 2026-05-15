@@ -336,14 +336,30 @@ about it because the desktop has not yet committed to any model.
 No automerge-swift, no live sync. Daemon exposes a read-only HTTP endpoint:
 
 - `GET /notebook/{id}/snapshot.json` → current ipynb-equivalent JSON
-- `GET /blob/{hash}` already exists (`crates/runtimed/src/blob_server.rs`)
+- Output blobs by content hash
 
-Swift app renders cells from JSON. Refresh on pull. Useful by itself: same
+The existing blob server (`crates/runtimed/src/blob_server.rs`) binds to
+`127.0.0.1` and is documented as unauthenticated localhost HTTP. That's fine
+for the iOS Simulator and a same-host dev workflow but unreachable from a
+physical device. Phase 0 therefore splits in two:
+
+- **Same-host (Simulator / dev)**: reuse the existing `/blob/{hash}` route
+  directly. No new daemon surface required for blobs. Snapshot endpoint is
+  the only addition.
+- **Off-host (real device, blog embed, hosted runtime)**: add an
+  authenticated, externally-bindable blob proxy alongside the snapshot
+  endpoint. Bearer-token gated, same auth front door the `/automerge-repo/v1`
+  endpoint will use. Reverse-proxy to the underlying `127.0.0.1` blob server
+  rather than re-implementing storage. Keeps the existing loopback boundary
+  intact for the desktop path.
+
+Swift app renders cells from JSON. Refresh on pull. The same snapshot
 endpoint can power blog embeds, link previews, anything that wants a
 notebook snapshot without running a CRDT.
 
 This unblocks UI work (cell rendering, mobile layout) before any wire
-decisions are committed.
+decisions are committed. The split also forces the auth question early: the
+moment a physical phone enters the picture, blob URLs need a story.
 
 ### Phase 1: Live read-only via automerge-repo endpoint
 
