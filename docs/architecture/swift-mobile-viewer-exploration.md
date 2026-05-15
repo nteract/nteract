@@ -133,8 +133,13 @@ re-wraps inbound WebSocket messages with a length prefix before writing to
 the Unix socket. There is no preamble in the WebSocket transport; the relay
 performs the handshake on behalf of the client over the socket.
 
-A Swift client connecting to a future `/automerge-repo/v1`-style WebSocket
-endpoint would follow the WebSocket form, not the Unix-socket form.
+Note that this typed-frame-over-WebSocket form is distinct from the proposed
+`/automerge-repo/v1` endpoint in the Recommendation section below. That
+endpoint speaks `automerge-repo`'s CBOR-per-WS-message wire format, not the
+typed-frame form. A Swift client at Phase 1/2 (read-only) targets the
+`automerge-repo` endpoint and uses its CBOR wire. A Swift client at Phase 3
+(interactive) targets the typed-frame WebSocket form and implements this
+codec.
 
 Per-type body caps (`crates/notebook-wire/src/lib.rs` `frame_size_limits`):
 
