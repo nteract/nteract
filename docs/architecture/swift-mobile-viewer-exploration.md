@@ -5,8 +5,13 @@
 Exploratory. This document is research thinking, not an implementation plan. It
 maps what a SwiftUI iOS notebook viewer would need from our daemon, identifies
 where our wire protocol diverges from upstream `automerge-repo`, and proposes
-where convergence is worth the cost. Sibling reading: `web-sync-engine-architecture.md`,
-which lays the manifest and compatibility gate this client would consume.
+where convergence is worth the cost.
+
+Sibling reading: PR #2657 (`docs/architecture/web-sync-engine-architecture.md`
+on branch `quod/web-sync-engine-architecture`), which lays the manifest and
+compatibility gate this client would consume. That PR is itself exploratory
+and not yet merged, so the file may not exist on the branch you check out
+this doc from. References below assume the manifest shape PR #2657 proposes.
 
 ## Context
 
@@ -94,8 +99,38 @@ Length-prefixed binary, framed identically over Unix socket and (today) over
 the WebSocket relay in `packages/notebook-host/src/browser/index.ts`.
 
 Preamble: 5 bytes (`0xC0DE01AC` magic + 1 protocol version byte). After the
-preamble, each frame is `u8 frame_type | u32_be length | payload`. Maximum
-payload is 100 MiB for sync/data frames, 64 KiB for control/handshake frames.
+preamble, each frame is:
+
+```
+┌──────────────────┬────────────────┬─────────────────────┐
+│ u32 big-endian   │ u8 type byte   │ payload             │
+│ length (incl.    │                │ (length - 1 bytes)  │
+│  type byte)      │                │                     │
+└──────────────────┴────────────────┴─────────────────────┘
+```
+
+The length includes the type byte, so the body is `length - 1` bytes. Receivers
+read length first, then type, then apply a per-type cap before allocating the
+body (`crates/notebook-protocol/src/connection/framing.rs` `recv_typed_frame`).
+This means a corrupted length on a narrow channel (e.g. a 1.8 GB length aimed
+at the Request channel) is rejected before the allocator honors it.
+
+Per-type body caps (`crates/notebook-wire/src/lib.rs` `frame_size_limits`):
+
+| Type | Cap |
+|------|-----|
+| `0x00 AutomergeSync` | 64 MiB |
+| `0x05 RuntimeStateSync` | 64 MiB |
+| `0x02 Response` | 64 MiB |
+| `0x08 PutBlob` | 32 MiB |
+| `0x01 Request` | 16 MiB |
+| `0x03 Broadcast` | 16 MiB |
+| `0x04 Presence` | 1 MiB |
+| `0x06 PoolStateSync` | 1 MiB |
+| `0x07 SessionControl` | 1 MiB |
+
+The outer ceiling for any frame is 100 MiB (`MAX_FRAME_SIZE`), applied before
+the type byte is even read.
 
 Frame types (`crates/notebook-wire/src/lib.rs`):
 
@@ -190,9 +225,22 @@ We have `Request` / `Response` / `Broadcast` / `SessionControl` / `PutBlob` /
 `Presence`. These are mostly kernel-control concerns that automerge-repo has
 no notion of, and we should not pretend they fit into `ephemeral`.
 
-Our `Presence` frame is the only one that maps cleanly to `ephemeral`: it is
-already opaque CBOR with no daemon interpretation, which is exactly what
-`ephemeral.data` carries.
+Our `Presence` frame is the closest match to `ephemeral`, but it does not map
+1:1. The daemon decodes the CBOR in `peer_presence::handle_presence_frame`
+(`crates/runtimed/src/notebook_sync_server/peer_presence.rs`), maintains a
+shared `PresenceState`, rejects client-published `KernelState` channel
+updates, synthesizes initial snapshots for new peers, emits `Left` events on
+disconnect, and prunes stale peers by TTL. `automerge-repo`'s `ephemeral` is
+pure peer-to-peer relay with no server interpretation, and the daemon would
+have to keep doing the validation and state synthesis even if the wire shape
+were borrowed.
+
+In practice that means presence on the read-only `automerge-repo` endpoint
+either: (a) ships without the snapshot/left/prune semantics and Swift clients
+get a degraded view, or (b) keeps a daemon adapter that reads/validates
+inbound `ephemeral` payloads as if they were `Presence` frames. Option (b) is
+the right answer once we want write-side presence; option (a) is fine for a
+read-only viewer that only needs to see other peers' cursors.
 
 ### Auth
 
@@ -205,7 +253,7 @@ This is the divergence we have to design through, not around (see "Auth" below).
 
 automerge-repo has none. Documents merge or they don't. nteract has a
 `PROTOCOL_VERSION`, a `SCHEMA_VERSION`, frozen genesis artifacts, and (per
-`web-sync-engine-architecture.md`) a planned manifest with content-addressed
+PR #2657's `web-sync-engine-architecture.md`) a planned manifest with content-addressed
 engine packages. This is strictly more disciplined than automerge-repo and we
 should keep it. A Swift client benefits from a manifest as much as a WASM
 engine does, for the same reason: it can refuse to connect when its baked-in
@@ -237,7 +285,7 @@ The automerge-repo endpoint:
   `Authorization` header, validated before upgrade. Maps to a capability
   (e.g., "read NotebookDoc N").
 - Exposes a manifest at `GET /automerge-repo/v1/manifest.json` mirroring the
-  fields defined in `web-sync-engine-architecture.md`: protocol version,
+  fields defined in PR #2657's `web-sync-engine-architecture.md`: protocol version,
   document schema versions, genesis hashes, capability summary.
 
 Why this works:
@@ -256,7 +304,7 @@ Why not just adopt automerge-repo wire everywhere:
   inner length prefix anyway and we would have re-invented our current
   framing inside CBOR.
 - The desktop frontend already has the typed-frame codec wired in nine
-  places (per `web-sync-engine-architecture.md` Phase 2). Migrating those
+  places (per PR #2657's `web-sync-engine-architecture.md` Phase 2). Migrating those
   call sites is a real cost with no user-visible payoff.
 
 ## Auth
@@ -426,7 +474,7 @@ for await frame in connection.frames() {
 ```
 
 `URLSessionWebSocketTask`'s callback API wraps cleanly into `AsyncStream`.
-Pre-engine buffering (per `web-sync-engine-architecture.md` Phase 3) is
+Pre-engine buffering (per PR #2657's `web-sync-engine-architecture.md` Phase 3) is
 trivial as a bounded `AsyncStream` with overflow policy `.dropOldest` →
 typed compatibility error.
 
@@ -481,7 +529,7 @@ notebooks where the daemon hasn't shipped the document yet.
 6. **automerge-repo-swift adoption cost.** The package is on a separate
    release cadence from `automerge-swift`. Pinning a version means
    pinning their upgrade timeline. Evaluate before committing.
-7. **Manifest signing.** `web-sync-engine-architecture.md` flags signed
+7. **Manifest signing.** PR #2657's `web-sync-engine-architecture.md` flags signed
    manifests as a "maybe" for multi-tenant scenarios. Mobile to a hosted
    daemon is a multi-tenant scenario. If we want this, decide before the
    first hosted deployment.
