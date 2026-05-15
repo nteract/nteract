@@ -95,9 +95,11 @@ the server side is a 5-second ping/pong.
 
 ### nteract notebook wire protocol
 
-Length-prefixed binary, framed identically over Unix socket and (today) over
-the WebSocket relay in `packages/notebook-host/src/browser/index.ts`.
+Two transports today, with different framing because each has a different
+message-boundary model. A Swift client targeting WebSocket implements the
+WebSocket form; it does not need the Unix-socket form.
 
+**Unix socket** (`crates/notebook-protocol/src/connection/framing.rs`).
 Preamble: 5 bytes (`0xC0DE01AC` magic + 1 protocol version byte). After the
 preamble, each frame is:
 
@@ -111,9 +113,28 @@ preamble, each frame is:
 
 The length includes the type byte, so the body is `length - 1` bytes. Receivers
 read length first, then type, then apply a per-type cap before allocating the
-body (`crates/notebook-protocol/src/connection/framing.rs` `recv_typed_frame`).
-This means a corrupted length on a narrow channel (e.g. a 1.8 GB length aimed
-at the Request channel) is rejected before the allocator honors it.
+body (`recv_typed_frame`). This means a corrupted length on a narrow channel
+(e.g. a 1.8 GB length aimed at the Request channel) is rejected before the
+allocator honors it.
+
+**WebSocket relay** (`apps/notebook/vite-plugin-browser-relay.ts` server side,
+`packages/notebook-host/src/browser/index.ts` client side). Each WebSocket
+binary message is one frame, shape:
+
+```
+┌────────────────┬─────────────────────┐
+│ u8 type byte   │ payload             │
+└────────────────┴─────────────────────┘
+```
+
+No length prefix. The WebSocket frame boundary is the length. The relay
+unwraps daemon length-prefixed frames before forwarding to the browser, and
+re-wraps inbound WebSocket messages with a length prefix before writing to
+the Unix socket. There is no preamble in the WebSocket transport; the relay
+performs the handshake on behalf of the client over the socket.
+
+A Swift client connecting to a future `/automerge-repo/v1`-style WebSocket
+endpoint would follow the WebSocket form, not the Unix-socket form.
 
 Per-type body caps (`crates/notebook-wire/src/lib.rs` `frame_size_limits`):
 
