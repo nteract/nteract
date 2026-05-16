@@ -41,6 +41,7 @@ jobs:
   native:
     name: Native package (${{ matrix.target }})
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # npm trusted publishing / provenance requires GitHub-hosted runners.
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -51,9 +52,6 @@ jobs:
           - target: linux-x64-gnu
             runner: ubuntu-latest
           - target: win32-x64-msvc
-            # npm provenance / sigstore requires GitHub-hosted runners.
-            # Publishing from a self-hosted (Blacksmith) Windows runner fails
-            # with: "Unsupported GitHub Actions runner environment: self-hosted".
             runner: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -101,6 +99,7 @@ jobs:
     name: Wrapper package
     needs: [native]
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # npm trusted publishing / provenance requires GitHub-hosted runners.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -170,6 +169,7 @@ jobs:
     name: Pi package
     needs: [wrapper]
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # npm trusted publishing / provenance requires GitHub-hosted runners.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

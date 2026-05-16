@@ -249,7 +249,7 @@ jobs:
 
   build-notebook-macos-arm64:
     name: Build macOS ARM64 Notebook
-    runs-on: macos-14
+    runs-on: blacksmith-6vcpu-macos-15
     needs: [compute-version, build-wasm]
     steps:
       - name: Checkout
@@ -942,7 +942,7 @@ jobs:
     strategy:
       matrix:
         platform:
-          - runner: macos-14
+          - runner: blacksmith-6vcpu-macos-15
             target: aarch64-apple-darwin
             sccache: false
           - runner: macos-14

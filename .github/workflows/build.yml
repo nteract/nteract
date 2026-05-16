@@ -473,12 +473,12 @@ jobs:
     needs: [changes, build-ui]
     if: ${{ always() && (needs.changes.outputs.source_changed != 'true' || needs.build-ui.result == 'success') }}
     continue-on-error: ${{ matrix.platform.non_blocking }}
-    runs-on: ${{ needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr) && matrix.platform.runner || 'ubuntu-latest' }}
+    runs-on: ${{ needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr) && matrix.platform.runner || 'blacksmith-4vcpu-ubuntu-2404' }}
     strategy:
       matrix:
         platform:
           - name: macOS
-            runner: macos-14
+            runner: blacksmith-6vcpu-macos-15
             setup: echo "No extra deps needed on macOS"
             run_on_pr: false
             non_blocking: false

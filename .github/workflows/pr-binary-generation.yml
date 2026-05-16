@@ -68,7 +68,7 @@ jobs:
   build:
     name: Build ${{ inputs.target_os == 'linux' && 'Linux x64' || inputs.target_os == 'macos' && 'macOS' || 'Windows x64' }} binary
     needs: [resolve-pr]
-    runs-on: ${{ inputs.target_os == 'linux' && 'ubuntu-22.04' || inputs.target_os == 'macos' && 'macos-14' || 'blacksmith-4vcpu-windows-2025' }}
+    runs-on: ${{ inputs.target_os == 'linux' && 'blacksmith-4vcpu-ubuntu-2204' || inputs.target_os == 'macos' && 'blacksmith-6vcpu-macos-15' || 'blacksmith-4vcpu-windows-2025' }}
     env:
       NTERACT_BUILD_GIT_HASH: ${{ needs.resolve-pr.outputs.head_sha }}
 
