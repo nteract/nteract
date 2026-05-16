@@ -151,6 +151,7 @@ function OnboardingCTAPreview() {
 
 function PrivacySectionDemo() {
   const [telemetryEnabled, setTelemetryEnabled] = useState(true);
+  const [redactEnvValuesInOutputs, setRedactEnvValuesInOutputs] = useState(true);
   const [installId, setInstallId] = useState("c1d4e7f2-8a3b-4f1c-9e2a-1234567890ab");
   const now = Math.floor(Date.now() / 1000);
   const [lastDaemonPingAt] = useState<number | null>(now - 14 * 3600);
@@ -168,6 +169,8 @@ function PrivacySectionDemo() {
     <PrivacySection
       telemetryEnabled={telemetryEnabled}
       onTelemetryChange={setTelemetryEnabled}
+      redactEnvValuesInOutputs={redactEnvValuesInOutputs}
+      onRedactEnvValuesInOutputsChange={setRedactEnvValuesInOutputs}
       installId={installId}
       onRotate={rotateInstallId}
       lastDaemonPingAt={lastDaemonPingAt}

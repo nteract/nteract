@@ -1165,6 +1165,16 @@ impl Daemon {
         self.settings.read().await.get_all().default_python_env
     }
 
+    /// Whether newly launched kernels should redact eligible environment
+    /// variable values from textual outputs.
+    pub async fn redact_env_values_in_outputs(&self) -> bool {
+        self.settings
+            .read()
+            .await
+            .get_all()
+            .redact_env_values_in_outputs
+    }
+
     /// Mutate canonical `settings.json` first, then refresh the in-memory
     /// Automerge projection used by settings sync.
     ///

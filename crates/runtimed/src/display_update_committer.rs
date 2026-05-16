@@ -18,6 +18,7 @@ use crate::output_prep::QueueCommand;
 use crate::output_prep::{
     apply_display_manifest_updates, build_display_manifest_updates, collect_display_update_targets,
 };
+use crate::output_redaction::OutputRedactor;
 use crate::task_supervisor::spawn_supervised;
 
 const MAX_PENDING_DISPLAY_IDS: usize = 128;
@@ -111,6 +112,7 @@ async fn commit_pending_updates(
     state: &RuntimeStateHandle,
     blob_store: &BlobStore,
     kernel_actor_id: &str,
+    output_redactor: &OutputRedactor,
 ) {
     let updates = take_pending(pending);
     for (display_id, update) in updates {
@@ -132,6 +134,7 @@ async fn commit_pending_updates(
             &preflight_wrapper["data"],
             &update.metadata,
             blob_store,
+            output_redactor,
         )
         .await;
 
@@ -176,6 +179,7 @@ async fn run_display_update_committer(
     state: RuntimeStateHandle,
     blob_store: Arc<BlobStore>,
     kernel_actor_id: String,
+    output_redactor: Arc<OutputRedactor>,
 ) {
     loop {
         tokio::select! {
@@ -187,11 +191,25 @@ async fn run_display_update_committer(
             request = priority_rx.recv() => {
                 match request {
                     Some(request) => {
-                        commit_pending_updates(&pending, &state, &blob_store, &kernel_actor_id).await;
+                        commit_pending_updates(
+                            &pending,
+                            &state,
+                            &blob_store,
+                            &kernel_actor_id,
+                            &output_redactor,
+                        )
+                        .await;
                         let _ = request.ack.send(());
                     }
                     None => {
-                        commit_pending_updates(&pending, &state, &blob_store, &kernel_actor_id).await;
+                        commit_pending_updates(
+                            &pending,
+                            &state,
+                            &blob_store,
+                            &kernel_actor_id,
+                            &output_redactor,
+                        )
+                        .await;
                         break;
                     }
                 }
@@ -200,7 +218,14 @@ async fn run_display_update_committer(
             // Individual notifications are not individual updates; each wake
             // drains all currently pending display_ids.
             _ = pending.notify.notified() => {
-                commit_pending_updates(&pending, &state, &blob_store, &kernel_actor_id).await;
+                commit_pending_updates(
+                    &pending,
+                    &state,
+                    &blob_store,
+                    &kernel_actor_id,
+                    &output_redactor,
+                )
+                .await;
             }
 
             else => break,
@@ -213,6 +238,7 @@ pub(crate) fn start_display_update_committer(
     blob_store: Arc<BlobStore>,
     kernel_actor_id: String,
     lifecycle_tx: mpsc::UnboundedSender<QueueCommand>,
+    output_redactor: Arc<OutputRedactor>,
 ) -> DisplayUpdateCommitterHandle {
     let pending = Arc::new(SharedPending {
         updates: StdMutex::new(HashMap::new()),
@@ -228,6 +254,7 @@ pub(crate) fn start_display_update_committer(
             state,
             blob_store,
             kernel_actor_id,
+            output_redactor,
         ),
         move |_| {
             let _ = lifecycle_tx.send(QueueCommand::KernelDied);
@@ -289,6 +316,7 @@ mod tests {
             blob_store,
             "rt:kernel:test".to_string(),
             lifecycle_tx,
+            Arc::new(OutputRedactor::disabled()),
         );
 
         handle.request_update(

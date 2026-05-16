@@ -127,6 +127,10 @@ fn default_flexible_npm() -> bool {
     true
 }
 
+fn default_redact_env_values_in_outputs() -> bool {
+    true
+}
+
 /// An entry in the execution queue, pairing a cell with its execution.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QueueEntry {
@@ -766,6 +770,9 @@ pub enum RuntimeAgentRequest {
         /// Environment variables to set for the kernel process.
         #[serde(default)]
         env_vars: std::collections::HashMap<String, String>,
+        /// Redact eligible environment variable values from textual kernel outputs.
+        #[serde(default = "default_redact_env_values_in_outputs")]
+        redact_env_values_in_outputs: bool,
     },
 
     /// Interrupt the currently executing cell.
@@ -787,6 +794,8 @@ pub enum RuntimeAgentRequest {
         kernel_ports: KernelPorts,
         #[serde(default)]
         env_vars: std::collections::HashMap<String, String>,
+        #[serde(default = "default_redact_env_values_in_outputs")]
+        redact_env_values_in_outputs: bool,
     },
 
     /// Send a comm message to the kernel (widget interactions).
@@ -1579,6 +1588,7 @@ mod tests {
             launched_config: Default::default(),
             kernel_ports: ports,
             env_vars: Default::default(),
+            redact_env_values_in_outputs: true,
         };
         let json = serde_json::to_value(&launch).unwrap();
         assert_eq!(json["kernel_ports"]["stdin"], 9000);
@@ -1595,6 +1605,21 @@ mod tests {
                 ..
             } if kernel_ports == ports
         ));
+        let parsed_legacy: RuntimeAgentRequest = serde_json::from_value(serde_json::json!({
+            "action": "launch_kernel",
+            "kernel_type": "python",
+            "env_source": "uv:prewarmed",
+            "launched_config": {},
+            "kernel_ports": ports,
+        }))
+        .unwrap();
+        assert!(matches!(
+            parsed_legacy,
+            RuntimeAgentRequest::LaunchKernel {
+                redact_env_values_in_outputs: true,
+                ..
+            }
+        ));
 
         let restart = RuntimeAgentRequest::RestartKernel {
             kernel_type: "python".into(),
@@ -1603,6 +1628,7 @@ mod tests {
             launched_config: Default::default(),
             kernel_ports: ports,
             env_vars: Default::default(),
+            redact_env_values_in_outputs: true,
         };
         let json = serde_json::to_value(&restart).unwrap();
         let parsed: RuntimeAgentRequest = serde_json::from_value(json).unwrap();
@@ -1656,6 +1682,7 @@ mod tests {
                 iopub: 9004,
             },
             env_vars: Default::default(),
+            redact_env_values_in_outputs: true,
         }
         .is_command());
         assert!(!RuntimeAgentRequest::RestartKernel {
@@ -1671,6 +1698,7 @@ mod tests {
                 iopub: 9009,
             },
             env_vars: Default::default(),
+            redact_env_values_in_outputs: true,
         }
         .is_command());
         assert!(!RuntimeAgentRequest::SyncEnvironment(EnvKind::Uv {

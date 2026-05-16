@@ -221,6 +221,8 @@ export default function App() {
     setFeatureFlag,
     telemetryEnabled,
     setTelemetryEnabled,
+    redactEnvValuesInOutputs,
+    setRedactEnvValuesInOutputs,
     installId,
     rotateInstallId,
     lastDaemonPingAt,
@@ -467,6 +469,8 @@ export default function App() {
         <PrivacySection
           telemetryEnabled={telemetryEnabled}
           onTelemetryChange={setTelemetryEnabled}
+          redactEnvValuesInOutputs={redactEnvValuesInOutputs}
+          onRedactEnvValuesInOutputsChange={setRedactEnvValuesInOutputs}
           installId={installId}
           onRotate={rotateInstallId}
           lastDaemonPingAt={lastDaemonPingAt}

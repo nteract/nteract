@@ -16,6 +16,7 @@ use tracing::{debug, warn};
 
 use crate::blob_store::BlobStore;
 use crate::output_prep::QueueCommand;
+use crate::output_redaction::OutputRedactor;
 use crate::output_store::{self, ContentRef, OutputManifest, DEFAULT_INLINE_THRESHOLD};
 use crate::stream_flush::PendingStreamFlush;
 use crate::stream_terminal::{StreamOutputState, StreamTerminals};
@@ -28,6 +29,15 @@ struct PriorityStreamCommit {
     flushes: Vec<PendingStreamFlush>,
     signal: Option<QueueCommand>,
     ack: Option<oneshot::Sender<()>>,
+}
+
+struct StreamCommitterContext {
+    state: RuntimeStateHandle,
+    blob_store: Arc<BlobStore>,
+    stream_terminals: Arc<Mutex<StreamTerminals>>,
+    kernel_actor_id: String,
+    lifecycle_tx: mpsc::UnboundedSender<QueueCommand>,
+    output_redactor: Arc<OutputRedactor>,
 }
 
 #[derive(Clone)]
@@ -118,9 +128,18 @@ async fn commit_priority_streams(
     stream_terminals: &Arc<Mutex<StreamTerminals>>,
     kernel_actor_id: &str,
     lifecycle_tx: &mpsc::UnboundedSender<QueueCommand>,
+    output_redactor: &OutputRedactor,
 ) {
     for flush in request.flushes {
-        commit_stream_flush(state, blob_store, stream_terminals, kernel_actor_id, flush).await;
+        commit_stream_flush(
+            state,
+            blob_store,
+            stream_terminals,
+            kernel_actor_id,
+            flush,
+            output_redactor,
+        )
+        .await;
     }
     if let Some(signal) = request.signal {
         let _ = lifecycle_tx.send(signal);
@@ -136,18 +155,23 @@ async fn commit_periodic_stream(
     blob_store: &BlobStore,
     stream_terminals: &Arc<Mutex<StreamTerminals>>,
     kernel_actor_id: &str,
+    output_redactor: &OutputRedactor,
 ) {
-    commit_stream_flush(state, blob_store, stream_terminals, kernel_actor_id, flush).await;
+    commit_stream_flush(
+        state,
+        blob_store,
+        stream_terminals,
+        kernel_actor_id,
+        flush,
+        output_redactor,
+    )
+    .await;
 }
 
 async fn run_stream_committer(
     mut periodic_rx: mpsc::Receiver<PendingStreamFlush>,
     mut priority_rx: mpsc::UnboundedReceiver<PriorityStreamCommit>,
-    state: RuntimeStateHandle,
-    blob_store: Arc<BlobStore>,
-    stream_terminals: Arc<Mutex<StreamTerminals>>,
-    kernel_actor_id: String,
-    lifecycle_tx: mpsc::UnboundedSender<QueueCommand>,
+    context: StreamCommitterContext,
 ) {
     loop {
         tokio::select! {
@@ -156,21 +180,23 @@ async fn run_stream_committer(
             Some(request) = priority_rx.recv() => {
                 commit_priority_streams(
                     request,
-                    &state,
-                    &blob_store,
-                    &stream_terminals,
-                    &kernel_actor_id,
-                    &lifecycle_tx,
+                    &context.state,
+                    &context.blob_store,
+                    &context.stream_terminals,
+                    &context.kernel_actor_id,
+                    &context.lifecycle_tx,
+                    &context.output_redactor,
                 ).await;
             }
 
             Some(flush) = periodic_rx.recv() => {
                 commit_periodic_stream(
                     flush,
-                    &state,
-                    &blob_store,
-                    &stream_terminals,
-                    &kernel_actor_id,
+                    &context.state,
+                    &context.blob_store,
+                    &context.stream_terminals,
+                    &context.kernel_actor_id,
+                    &context.output_redactor,
                 ).await;
             }
 
@@ -185,21 +211,22 @@ pub(crate) fn start_stream_committer(
     stream_terminals: Arc<Mutex<StreamTerminals>>,
     kernel_actor_id: String,
     lifecycle_tx: mpsc::UnboundedSender<QueueCommand>,
+    output_redactor: Arc<OutputRedactor>,
 ) -> StreamCommitterHandle {
     let (periodic_tx, periodic_rx) = mpsc::channel(STREAM_COMMITTER_QUEUE_CAPACITY);
     let (priority_tx, priority_rx) = mpsc::unbounded_channel();
     let panic_lifecycle_tx = lifecycle_tx.clone();
+    let context = StreamCommitterContext {
+        state,
+        blob_store,
+        stream_terminals,
+        kernel_actor_id,
+        lifecycle_tx: lifecycle_tx.clone(),
+        output_redactor,
+    };
     spawn_supervised(
         "stream-committer",
-        run_stream_committer(
-            periodic_rx,
-            priority_rx,
-            state,
-            blob_store,
-            stream_terminals,
-            kernel_actor_id,
-            lifecycle_tx.clone(),
-        ),
+        run_stream_committer(periodic_rx, priority_rx, context),
         move |_| {
             let _ = panic_lifecycle_tx.send(QueueCommand::KernelDied);
         },
@@ -217,6 +244,7 @@ pub(crate) async fn commit_stream_flush(
     stream_terminals: &Arc<Mutex<StreamTerminals>>,
     kernel_actor_id: &str,
     flush: PendingStreamFlush,
+    output_redactor: &OutputRedactor,
 ) {
     let (known_state, rendered_text) = {
         let terminals = stream_terminals.lock().await;
@@ -243,16 +271,20 @@ pub(crate) async fn commit_stream_flush(
         "text": rendered_text,
     });
 
-    let manifest =
-        match output_store::create_manifest(&nbformat_value, blob_store, DEFAULT_INLINE_THRESHOLD)
-            .await
-        {
-            Ok(manifest) => manifest,
-            Err(e) => {
-                warn!("[stream-committer] Failed to create stream manifest: {}", e);
-                return;
-            }
-        };
+    let manifest = match output_store::create_manifest_with_redactor(
+        &nbformat_value,
+        blob_store,
+        DEFAULT_INLINE_THRESHOLD,
+        output_redactor,
+    )
+    .await
+    {
+        Ok(manifest) => manifest,
+        Err(e) => {
+            warn!("[stream-committer] Failed to create stream manifest: {}", e);
+            return;
+        }
+    };
     let manifest_json = manifest.to_json();
 
     let blob_hash = if let OutputManifest::Stream { ref text, .. } = manifest {
@@ -339,6 +371,7 @@ mod tests {
             terminals,
             "rt:kernel:test".to_string(),
             lifecycle_tx,
+            Arc::new(OutputRedactor::disabled()),
         );
 
         handle.flush_then_signal(
@@ -385,6 +418,7 @@ mod tests {
             terminals,
             "rt:kernel:test".to_string(),
             lifecycle_tx,
+            Arc::new(OutputRedactor::disabled()),
         );
 
         handle
@@ -418,6 +452,7 @@ mod tests {
                 execution_id: "exec-1".to_string(),
                 stream_name: "stdout".to_string(),
             },
+            &OutputRedactor::disabled(),
         )
         .await;
 

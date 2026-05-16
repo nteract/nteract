@@ -299,6 +299,15 @@ pub struct SyncedSettings {
     #[serde(default)]
     pub bootstrap_dx: bool,
 
+    /// Redact eligible environment variable values from text outputs for newly
+    /// launched or restarted kernels.
+    ///
+    /// The runtime agent applies this before output manifests or blobs are
+    /// written, so the setting is global-only and intentionally not stored in
+    /// notebook metadata.
+    #[serde(default = "default_redact_env_values_in_outputs")]
+    pub redact_env_values_in_outputs: bool,
+
     // ── Telemetry ───────────────────────────────────────────────────
     /// Opaque per-install UUIDv4. Generated on first heartbeat, persisted in
     /// settings. Not derived from any identifying data.
@@ -357,6 +366,7 @@ impl Default for SyncedSettings {
             pixi_pool_size: pool_sizes.pixi_pool_size,
             install_default_data_packages: true,
             bootstrap_dx: false,
+            redact_env_values_in_outputs: true,
             install_id: String::new(),
             telemetry_enabled: true,
             telemetry_consent_recorded: false,
@@ -368,6 +378,10 @@ impl Default for SyncedSettings {
 }
 
 fn default_telemetry_enabled() -> bool {
+    true
+}
+
+fn default_redact_env_values_in_outputs() -> bool {
     true
 }
 
@@ -548,6 +562,11 @@ impl SettingsDoc {
         let _ = doc.put(automerge::ROOT, "bootstrap_dx", defaults.bootstrap_dx);
         let _ = doc.put(
             automerge::ROOT,
+            "redact_env_values_in_outputs",
+            defaults.redact_env_values_in_outputs,
+        );
+        let _ = doc.put(
+            automerge::ROOT,
             "install_default_data_packages",
             defaults.install_default_data_packages,
         );
@@ -671,6 +690,12 @@ impl SettingsDoc {
         // bootstrap_dx: boolean
         if let Some(enabled) = json.get("bootstrap_dx").and_then(|v| v.as_bool()) {
             settings.put_bool("bootstrap_dx", enabled);
+        }
+        if let Some(enabled) = json
+            .get("redact_env_values_in_outputs")
+            .and_then(|v| v.as_bool())
+        {
+            settings.put_bool("redact_env_values_in_outputs", enabled);
         }
         if let Some(enabled) = json
             .get("install_default_data_packages")
@@ -1121,6 +1146,9 @@ impl SettingsDoc {
             bootstrap_dx: self
                 .get_bool("bootstrap_dx")
                 .unwrap_or(defaults.bootstrap_dx),
+            redact_env_values_in_outputs: self
+                .get_bool("redact_env_values_in_outputs")
+                .unwrap_or(defaults.redact_env_values_in_outputs),
             install_id: self.get("install_id").unwrap_or_default(),
             telemetry_enabled: self.get_bool("telemetry_enabled").unwrap_or(true),
             telemetry_consent_recorded: self
@@ -1323,6 +1351,20 @@ impl SettingsDoc {
             }
         }
         if let Some(enabled) = json
+            .get("redact_env_values_in_outputs")
+            .and_then(|v| v.as_bool())
+        {
+            let current = self.get_bool("redact_env_values_in_outputs");
+            if current != Some(enabled) {
+                info!(
+                    "[settings] apply_json_changes: redact_env_values_in_outputs changed {:?} -> {}",
+                    current, enabled
+                );
+                self.put_bool("redact_env_values_in_outputs", enabled);
+                changed = true;
+            }
+        }
+        if let Some(enabled) = json
             .get("install_default_data_packages")
             .and_then(|v| v.as_bool())
         {
@@ -1500,6 +1542,7 @@ mod tests {
         assert!(settings.conda.default_packages.is_empty());
         assert!(settings.pixi.default_packages.is_empty());
         assert!(settings.install_default_data_packages);
+        assert!(settings.redact_env_values_in_outputs);
     }
 
     #[test]
@@ -1560,6 +1603,18 @@ mod tests {
 
         assert_eq!(doc.get_bool("install_default_data_packages"), Some(false));
         assert!(!doc.get_all().install_default_data_packages);
+    }
+
+    #[test]
+    fn test_redact_env_values_in_outputs_can_be_disabled_from_json() {
+        let mut doc = SettingsDoc::new();
+
+        assert!(doc.apply_json_changes(&serde_json::json!({
+            "redact_env_values_in_outputs": false
+        })));
+
+        assert_eq!(doc.get_bool("redact_env_values_in_outputs"), Some(false));
+        assert!(!doc.get_all().redact_env_values_in_outputs);
     }
 
     #[test]
@@ -1929,6 +1984,7 @@ mod tests {
         assert!(schema_str.contains("default_runtime"));
         assert!(schema_str.contains("default_python_env"));
         assert!(schema_str.contains("install_default_data_packages"));
+        assert!(schema_str.contains("redact_env_values_in_outputs"));
         // Should have known values as examples for editor autocomplete
         assert!(schema_str.contains("python"));
         assert!(schema_str.contains("deno"));

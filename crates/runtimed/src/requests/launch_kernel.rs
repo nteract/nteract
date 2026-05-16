@@ -1484,6 +1484,7 @@ pub(crate) async fn handle(
     {
         warn!("[runtime-state] {}", e);
     }
+    let redact_env_values_in_outputs = daemon.redact_env_values_in_outputs().await;
 
     // If runtime agent is already connected, restart kernel in-place
     // (handles the shutdown → launch sequence without subprocess respawn)
@@ -1503,6 +1504,7 @@ pub(crate) async fn handle(
                     launched_config: launched_config.clone(),
                     kernel_ports,
                     env_vars: restart_env_vars.clone(),
+                    redact_env_values_in_outputs,
                 }
             })
             .await
@@ -1653,6 +1655,7 @@ pub(crate) async fn handle(
                         launched_config: launched_config.clone(),
                         kernel_ports,
                         env_vars: launch_env_vars.clone(),
+                        redact_env_values_in_outputs,
                     }
                 })
                 .await

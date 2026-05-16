@@ -1362,6 +1362,83 @@ async fn test_save_notebook_to_disk_with_outputs() {
     );
 }
 
+#[tokio::test]
+async fn test_redacted_output_manifests_do_not_leak_to_state_or_saved_nbformat() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "redacted-outputs.ipynb");
+    let secret = "secret-token-123";
+    let redactor =
+        crate::output_redaction::OutputRedactor::from_values_for_test(vec![secret.to_string()]);
+    let eid = "redacted-exec-1";
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell1", "code").unwrap();
+        doc.update_source(
+            "cell1",
+            "import os\nprint(os.environ['TOKEN'])\nraise Exception(os.environ['TOKEN'])",
+        )
+        .unwrap();
+        doc.set_execution_id("cell1", Some(eid)).unwrap();
+    }
+
+    let stream = serde_json::json!({
+        "output_type": "stream",
+        "name": "stdout",
+        "text": format!("{secret}\n")
+    });
+    let error = serde_json::json!({
+        "output_type": "error",
+        "ename": "Exception",
+        "evalue": format!("boom {secret}"),
+        "traceback": [format!("Traceback {secret}")]
+    });
+    let stream_manifest =
+        crate::output_store::create_manifest_with_redactor(&stream, &room.blob_store, 0, &redactor)
+            .await
+            .unwrap();
+    let error_manifest = crate::output_store::create_manifest_with_redactor(
+        &error,
+        &room.blob_store,
+        crate::output_store::DEFAULT_INLINE_THRESHOLD,
+        &redactor,
+    )
+    .await
+    .unwrap();
+    let output_values = vec![stream_manifest.to_json(), error_manifest.to_json()];
+
+    room.state
+        .with_doc(|sd| {
+            sd.create_execution(eid, "cell1")?;
+            sd.set_execution_count(eid, 1)?;
+            sd.set_outputs(eid, &output_values)?;
+            sd.set_execution_done(eid, false)?;
+            Ok(())
+        })
+        .unwrap();
+
+    let state_outputs = room.state.read(|sd| sd.get_outputs(eid)).unwrap();
+    let state_json = serde_json::to_string(&state_outputs).unwrap();
+    assert!(state_json.contains(crate::output_redaction::REDACTION_MARKER));
+    assert!(!state_json.contains(secret));
+
+    for output in &state_outputs {
+        let manifest: crate::output_store::OutputManifest =
+            serde_json::from_value(output.clone()).unwrap();
+        let resolved = crate::output_store::resolve_manifest(&manifest, &room.blob_store)
+            .await
+            .unwrap();
+        let resolved_json = serde_json::to_string(&resolved).unwrap();
+        assert!(resolved_json.contains(crate::output_redaction::REDACTION_MARKER));
+        assert!(!resolved_json.contains(secret));
+    }
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+    let saved = std::fs::read_to_string(&notebook_path).unwrap();
+    assert!(saved.contains(crate::output_redaction::REDACTION_MARKER));
+    assert!(!saved.contains(secret));
+}
+
 /// Saves should produce byte-identical output twice in a row for the same
 /// state, and top-level + cell keys should be alphabetically sorted. This is
 /// the git-diff churn fix: a no-op save produces the same bytes, and edits

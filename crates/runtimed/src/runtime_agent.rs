@@ -817,6 +817,7 @@ async fn handle_runtime_agent_request(
             launched_config,
             kernel_ports,
             env_vars,
+            redact_env_values_in_outputs,
         } => {
             info!(
                 "[runtime-agent] LaunchKernel: type={} source={}",
@@ -855,6 +856,7 @@ async fn handle_runtime_agent_request(
                 launched_config,
                 kernel_ports,
                 env_vars: env_vars.into_iter().collect(),
+                redact_env_values_in_outputs,
                 pooled_env,
             };
 
@@ -903,6 +905,7 @@ async fn handle_runtime_agent_request(
             launched_config,
             kernel_ports,
             env_vars,
+            redact_env_values_in_outputs,
         } => {
             info!(
                 "[runtime-agent] RestartKernel: type={} source={}",
@@ -959,6 +962,7 @@ async fn handle_runtime_agent_request(
                 launched_config,
                 kernel_ports,
                 env_vars: env_vars.into_iter().collect(),
+                redact_env_values_in_outputs,
                 pooled_env,
             };
 
