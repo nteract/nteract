@@ -41,6 +41,7 @@ jobs:
   pack-native:
     name: Pack native package (${{ matrix.target }})
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # npm trusted publishing / provenance requires GitHub-hosted runners.
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -159,6 +160,7 @@ jobs:
     name: Pack wrapper package
     needs: [publish-native]
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # npm trusted publishing / provenance requires GitHub-hosted runners.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -282,6 +284,7 @@ jobs:
     name: Pack Pi package
     needs: [publish-wrapper]
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # npm trusted publishing / provenance requires GitHub-hosted runners.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
