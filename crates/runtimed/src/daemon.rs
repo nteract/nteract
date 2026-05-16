@@ -1139,6 +1139,10 @@ pub struct Daemon {
     uv_warming_respawns: std::sync::atomic::AtomicU32,
     conda_warming_respawns: std::sync::atomic::AtomicU32,
     pixi_warming_respawns: std::sync::atomic::AtomicU32,
+    /// Snapshot of the user's login-shell env captured once at daemon startup.
+    /// Cheap to clone; merged into LaunchKernel/RestartKernel env_vars when
+    /// `import_shell_environment` is on. Daemon process env stays untouched.
+    pub(crate) shell_env_overlay: Arc<crate::shell_env_overlay::ShellEnvOverlay>,
 }
 
 /// Error returned when another daemon is already running.
@@ -1173,6 +1177,22 @@ impl Daemon {
             .await
             .get_all()
             .redact_env_values_in_outputs
+    }
+
+    /// Snapshot of the user's login-shell env captured at daemon startup.
+    pub fn shell_env_overlay(&self) -> Arc<crate::shell_env_overlay::ShellEnvOverlay> {
+        self.shell_env_overlay.clone()
+    }
+
+    /// Whether to merge the captured shell-env overlay into kernel launch
+    /// env_vars. When off, kernels only see the daemon's own (launchd-minimal)
+    /// env plus the uv/pixi vars the daemon already injects.
+    pub async fn import_shell_environment(&self) -> bool {
+        self.settings
+            .read()
+            .await
+            .get_all()
+            .import_shell_environment
     }
 
     /// Mutate canonical `settings.json` first, then refresh the in-memory
@@ -1330,7 +1350,20 @@ impl Daemon {
     /// Create a new daemon with the given configuration.
     ///
     /// Returns an error if another daemon is already running.
-    pub fn new(config: DaemonConfig) -> Result<Arc<Self>, DaemonAlreadyRunning> {
+    /// Test-only convenience that constructs a `Daemon` with an empty shell-env
+    /// overlay. Integration tests reach this through the crate's public surface.
+    #[doc(hidden)]
+    pub fn new_for_test(config: DaemonConfig) -> Result<Arc<Self>, DaemonAlreadyRunning> {
+        Self::new(
+            config,
+            Arc::new(crate::shell_env_overlay::ShellEnvOverlay::empty()),
+        )
+    }
+
+    pub fn new(
+        config: DaemonConfig,
+        shell_env_overlay: Arc<crate::shell_env_overlay::ShellEnvOverlay>,
+    ) -> Result<Arc<Self>, DaemonAlreadyRunning> {
         // Try to acquire the singleton lock
         let lock = DaemonLock::try_acquire(config.lock_dir.as_ref())
             .map_err(|info| DaemonAlreadyRunning { info })?;
@@ -1434,6 +1467,7 @@ impl Daemon {
             uv_warming_respawns: std::sync::atomic::AtomicU32::new(0),
             conda_warming_respawns: std::sync::atomic::AtomicU32::new(0),
             pixi_warming_respawns: std::sync::atomic::AtomicU32::new(0),
+            shell_env_overlay,
         }))
     }
 
@@ -5887,7 +5921,7 @@ mod tests {
     #[tokio::test]
     async fn update_settings_json_persists_refreshes_doc_and_broadcasts() {
         let temp_dir = TempDir::new().unwrap();
-        let daemon = Daemon::new(lease_test_config(&temp_dir)).unwrap();
+        let daemon = Daemon::new_for_test(lease_test_config(&temp_dir)).unwrap();
         let mut settings_rx = daemon.settings_changed.subscribe();
 
         let outcome = daemon
@@ -5920,7 +5954,7 @@ mod tests {
     #[tokio::test]
     async fn update_settings_json_noop_does_not_broadcast() {
         let temp_dir = TempDir::new().unwrap();
-        let daemon = Daemon::new(lease_test_config(&temp_dir)).unwrap();
+        let daemon = Daemon::new_for_test(lease_test_config(&temp_dir)).unwrap();
         let mut settings_rx = daemon.settings_changed.subscribe();
 
         let outcome = daemon.update_settings_json(|_| ()).await.unwrap();
@@ -5937,7 +5971,7 @@ mod tests {
     #[tokio::test]
     async fn update_settings_json_invalid_json_is_not_overwritten() {
         let temp_dir = TempDir::new().unwrap();
-        let daemon = Daemon::new(lease_test_config(&temp_dir)).unwrap();
+        let daemon = Daemon::new_for_test(lease_test_config(&temp_dir)).unwrap();
         let settings_json_path = daemon.config.resolved_settings_json_path();
         std::fs::write(&settings_json_path, "{ invalid json").unwrap();
 
@@ -6005,7 +6039,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn leased_env_survives_orphan_sweep() {
         let temp_dir = TempDir::new().unwrap();
-        let daemon = Daemon::new(lease_test_config(&temp_dir)).unwrap();
+        let daemon = Daemon::new_for_test(lease_test_config(&temp_dir)).unwrap();
         let venv_path = plant_uv_pool_env(&daemon, "runtimed-uv-leased-test");
 
         // Take the env: it leaves `available` and enters `leased_paths`.
@@ -6066,7 +6100,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dropped_lease_releases_but_does_not_delete() {
         let temp_dir = TempDir::new().unwrap();
-        let daemon = Daemon::new(lease_test_config(&temp_dir)).unwrap();
+        let daemon = Daemon::new_for_test(lease_test_config(&temp_dir)).unwrap();
         let venv_path = plant_uv_pool_env(&daemon, "runtimed-uv-drop-test");
 
         {
@@ -6140,7 +6174,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn released_env_unprotected_unless_runtime_owner_set() {
         let temp_dir = TempDir::new().unwrap();
-        let daemon = Daemon::new(lease_test_config(&temp_dir)).unwrap();
+        let daemon = Daemon::new_for_test(lease_test_config(&temp_dir)).unwrap();
         let venv_path = plant_uv_pool_env(&daemon, "runtimed-uv-released-no-owner");
 
         // Release the lease without recording any runtime owner, mirroring
@@ -6177,7 +6211,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn release_clears_lease_keeps_env() {
         let temp_dir = TempDir::new().unwrap();
-        let daemon = Daemon::new(lease_test_config(&temp_dir)).unwrap();
+        let daemon = Daemon::new_for_test(lease_test_config(&temp_dir)).unwrap();
         let venv_path = plant_uv_pool_env(&daemon, "runtimed-uv-release-test");
 
         let (env, guard) = daemon
@@ -6208,7 +6242,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_take_and_sweep_does_not_delete_leased() {
         let temp_dir = TempDir::new().unwrap();
-        let daemon = Daemon::new(lease_test_config(&temp_dir)).unwrap();
+        let daemon = Daemon::new_for_test(lease_test_config(&temp_dir)).unwrap();
 
         // Plant several envs.
         let envs: Vec<PathBuf> = (0..8)
@@ -7444,7 +7478,7 @@ mod tests {
             .await
             .unwrap();
 
-        let daemon = Daemon::new(config).unwrap();
+        let daemon = Daemon::new_for_test(config).unwrap();
         daemon.find_existing_environments().await;
 
         let pool = daemon.uv_pool.lock().await;
@@ -7474,7 +7508,7 @@ mod tests {
             .await
             .unwrap();
 
-        let daemon = Daemon::new(config).unwrap();
+        let daemon = Daemon::new_for_test(config).unwrap();
         daemon.find_existing_environments().await;
 
         let pool = daemon.pixi_pool.lock().await;
@@ -7494,7 +7528,7 @@ mod tests {
         let env = create_test_env_in(&config.cache_dir, "runtimed-uv-legacy");
         let root = pool_env_root(&env.venv_path);
 
-        let daemon = Daemon::new(config).unwrap();
+        let daemon = Daemon::new_for_test(config).unwrap();
         daemon.find_existing_environments().await;
 
         let pool = daemon.uv_pool.lock().await;
@@ -7516,7 +7550,7 @@ mod tests {
         let root_a = pool_env_root(&env_a.venv_path);
         let root_b = pool_env_root(&env_b.venv_path);
 
-        let daemon = Daemon::new(config).unwrap();
+        let daemon = Daemon::new_for_test(config).unwrap();
         daemon.find_existing_environments().await;
 
         let pool = daemon.uv_pool.lock().await;

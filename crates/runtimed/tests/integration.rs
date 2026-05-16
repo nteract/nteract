@@ -229,7 +229,7 @@ async fn test_daemon_ping_pong() {
     let socket_path = config.socket_path.clone();
 
     // Spawn daemon
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -256,7 +256,7 @@ async fn test_daemon_status() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -280,7 +280,7 @@ async fn test_daemon_take_empty_pool() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -307,7 +307,7 @@ async fn test_singleton_prevents_second_daemon() {
     let socket_path = config1.socket_path.clone();
 
     // Start first daemon
-    let daemon1 = Daemon::new(config1).unwrap();
+    let daemon1 = Daemon::new_for_test(config1).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon1.run().await.ok();
     });
@@ -330,7 +330,7 @@ async fn test_singleton_prevents_second_daemon() {
         ..Default::default()
     };
 
-    let result = Daemon::new(config2);
+    let result = Daemon::new_for_test(config2);
     assert!(result.is_err());
 
     // Shutdown first daemon
@@ -356,7 +356,7 @@ async fn test_multiple_client_connections() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -398,7 +398,7 @@ async fn test_settings_sync_via_unified_socket() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -429,7 +429,7 @@ async fn test_settings_sync_accepts_legacy_v3_preamble() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -480,7 +480,7 @@ async fn test_external_settings_json_edit_survives_settings_sync_ack() {
     let initial = serde_json::to_string_pretty(&SyncedSettings::default()).unwrap();
     std::fs::write(&settings_json_path, initial).unwrap();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -544,7 +544,7 @@ async fn test_settings_json_mirror_write_does_not_feedback_loop() {
     let initial = serde_json::to_string_pretty(&SyncedSettings::default()).unwrap();
     std::fs::write(&settings_json_path, initial).unwrap();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -595,7 +595,7 @@ async fn test_blob_server_health() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -637,7 +637,7 @@ async fn test_notebook_sync_via_unified_socket() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -723,7 +723,7 @@ async fn test_notebook_sync_cross_window_propagation() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -797,7 +797,7 @@ async fn test_parallel_cell_mutations_same_session_no_disconnect() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -885,7 +885,7 @@ async fn test_untrusted_launch_and_sync_environment_are_daemon_rejected() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -963,7 +963,7 @@ async fn test_launch_kernel_environment_mode_controls_project_priority() {
     let notebook_path = project_dir.join("notebook.ipynb");
     write_test_ipynb(&notebook_path, &[]);
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -1045,7 +1045,7 @@ async fn test_sync_environment_guard_rejects_stale_observed_dependencies() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -1103,7 +1103,7 @@ async fn test_approve_trust_guard_rejects_stale_observed_dependencies() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -1161,7 +1161,7 @@ async fn test_sync_environment_no_deps_reaches_existing_no_kernel_path() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -1212,7 +1212,7 @@ async fn test_parallel_daemon_requests_same_session_no_disconnect() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -1281,7 +1281,7 @@ async fn test_untitled_notebook_persists_through_eviction() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -1418,7 +1418,7 @@ async fn test_eviction_flushes_before_reconnect() {
     config.room_eviction_delay_ms = Some(0);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -1513,7 +1513,7 @@ async fn test_kernel_teardown_keeps_room_resident() {
     config.room_eviction_delay_ms = Some(0);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_for_inspect = daemon.clone();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
@@ -1647,7 +1647,7 @@ async fn test_ghost_reaper_removes_after_ttl() {
     config.room_eviction_delay_ms = Some(0);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_for_inspect = daemon.clone();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
@@ -1752,7 +1752,7 @@ async fn test_ghost_reaper_skips_reconnected_room() {
     config.room_eviction_delay_ms = Some(0);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_for_inspect = daemon.clone();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
@@ -1840,7 +1840,7 @@ async fn test_peer_reconnect_bumps_generation() {
     config.room_eviction_delay_ms = Some(5_000);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_for_inspect = daemon.clone();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
@@ -1918,7 +1918,7 @@ async fn test_resident_room_reaper_lru_cap_evicts_oldest() {
     config.room_eviction_delay_ms = Some(0);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_for_inspect = daemon.clone();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
@@ -2040,7 +2040,7 @@ async fn test_resident_room_reaper_lru_cap_exempts_active() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_for_inspect = daemon.clone();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
@@ -2118,7 +2118,7 @@ async fn test_resident_room_reaper_skips_reserved_room() {
     config.room_eviction_delay_ms = Some(0);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_for_inspect = daemon.clone();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
@@ -2217,7 +2217,7 @@ async fn test_notebook_cell_delete_propagation() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -2326,7 +2326,7 @@ async fn test_multiple_notebooks_concurrent_isolation() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -2497,7 +2497,7 @@ async fn test_streaming_load_via_open_notebook() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -2634,7 +2634,7 @@ async fn test_streaming_load_second_client_joins() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -2715,7 +2715,7 @@ async fn test_pool_ping_from_old_stable_preamble_returns_version_metadata() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -2783,7 +2783,7 @@ async fn test_pipe_mode_forwards_sync_frames() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -2860,7 +2860,7 @@ async fn test_pipe_mode_preserves_initial_session_status_frame() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -2903,7 +2903,7 @@ async fn test_pipe_mode_only_pipes_allowed_frame_types() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -2988,7 +2988,7 @@ async fn test_pipe_mode_does_not_forward_response_frames() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -3060,7 +3060,7 @@ async fn test_pipe_mode_preserves_frame_order() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -3375,7 +3375,7 @@ async fn test_create_notebook_with_deps() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -3443,7 +3443,7 @@ async fn test_create_notebook_with_explicit_manager_no_deps() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -3514,7 +3514,7 @@ async fn test_create_notebook_default_manager_with_deps() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -3584,7 +3584,7 @@ async fn test_create_notebook_with_deps_reports_no_trust_approval_needed() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -3624,7 +3624,7 @@ async fn test_create_notebook_with_no_deps_reports_no_trust_approval_needed() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });
@@ -3668,7 +3668,7 @@ async fn test_auto_heartbeat_keeps_idle_peer_connected() {
     config.idle_peer_timeout_ms = Some(20_000);
     let socket_path = config.socket_path.clone();
 
-    let daemon = Daemon::new(config).unwrap();
+    let daemon = Daemon::new_for_test(config).unwrap();
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });

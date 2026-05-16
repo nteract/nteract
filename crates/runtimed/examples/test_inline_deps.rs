@@ -71,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Socket path: {:?}", socket_path);
 
     // Start daemon
-    let daemon = Daemon::new(config)?;
+    let daemon = Daemon::new_for_test(config)?;
     let daemon_handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });

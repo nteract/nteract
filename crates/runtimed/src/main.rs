@@ -440,7 +440,15 @@ async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     info!("  UV pool size: {}", config.uv_pool_size);
     info!("  Conda pool size: {}", config.conda_pool_size);
     info!("  Pixi pool size: {}", config.pixi_pool_size);
-    let daemon = match Daemon::new(config) {
+
+    let shell_env_overlay =
+        std::sync::Arc::new(runtimed::shell_env_overlay::ShellEnvOverlay::capture());
+    info!(
+        "Shell env overlay: {} entries captured",
+        shell_env_overlay.len()
+    );
+
+    let daemon = match Daemon::new(config, shell_env_overlay) {
         Ok(d) => d,
         Err(e) => {
             // Another daemon is already running — this is expected during

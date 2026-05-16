@@ -308,6 +308,14 @@ pub struct SyncedSettings {
     #[serde(default = "default_redact_env_values_in_outputs")]
     pub redact_env_values_in_outputs: bool,
 
+    /// Merge the daemon's captured login-shell env into each kernel launch's
+    /// `env_vars`. Combined with `redact_env_values_in_outputs`, the user's
+    /// shell secrets reach the kernel but stay out of outputs and the blob
+    /// store. Default `true` to match Jupyter's behavior, but redacted on the
+    /// way out.
+    #[serde(default = "default_import_shell_environment")]
+    pub import_shell_environment: bool,
+
     // ── Telemetry ───────────────────────────────────────────────────
     /// Opaque per-install UUIDv4. Generated on first heartbeat, persisted in
     /// settings. Not derived from any identifying data.
@@ -367,6 +375,7 @@ impl Default for SyncedSettings {
             install_default_data_packages: true,
             bootstrap_dx: false,
             redact_env_values_in_outputs: true,
+            import_shell_environment: true,
             install_id: String::new(),
             telemetry_enabled: true,
             telemetry_consent_recorded: false,
@@ -382,6 +391,10 @@ fn default_telemetry_enabled() -> bool {
 }
 
 fn default_redact_env_values_in_outputs() -> bool {
+    true
+}
+
+fn default_import_shell_environment() -> bool {
     true
 }
 
@@ -567,6 +580,11 @@ impl SettingsDoc {
         );
         let _ = doc.put(
             automerge::ROOT,
+            "import_shell_environment",
+            defaults.import_shell_environment,
+        );
+        let _ = doc.put(
+            automerge::ROOT,
             "install_default_data_packages",
             defaults.install_default_data_packages,
         );
@@ -696,6 +714,12 @@ impl SettingsDoc {
             .and_then(|v| v.as_bool())
         {
             settings.put_bool("redact_env_values_in_outputs", enabled);
+        }
+        if let Some(enabled) = json
+            .get("import_shell_environment")
+            .and_then(|v| v.as_bool())
+        {
+            settings.put_bool("import_shell_environment", enabled);
         }
         if let Some(enabled) = json
             .get("install_default_data_packages")
@@ -1149,6 +1173,9 @@ impl SettingsDoc {
             redact_env_values_in_outputs: self
                 .get_bool("redact_env_values_in_outputs")
                 .unwrap_or(defaults.redact_env_values_in_outputs),
+            import_shell_environment: self
+                .get_bool("import_shell_environment")
+                .unwrap_or(defaults.import_shell_environment),
             install_id: self.get("install_id").unwrap_or_default(),
             telemetry_enabled: self.get_bool("telemetry_enabled").unwrap_or(true),
             telemetry_consent_recorded: self
@@ -1361,6 +1388,20 @@ impl SettingsDoc {
                     current, enabled
                 );
                 self.put_bool("redact_env_values_in_outputs", enabled);
+                changed = true;
+            }
+        }
+        if let Some(enabled) = json
+            .get("import_shell_environment")
+            .and_then(|v| v.as_bool())
+        {
+            let current = self.get_bool("import_shell_environment");
+            if current != Some(enabled) {
+                info!(
+                    "[settings] apply_json_changes: import_shell_environment changed {:?} -> {}",
+                    current, enabled
+                );
+                self.put_bool("import_shell_environment", enabled);
                 changed = true;
             }
         }

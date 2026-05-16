@@ -599,6 +599,8 @@ pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
         bootstrap_dx: get_bool("bootstrap_dx").unwrap_or(defaults.bootstrap_dx),
         redact_env_values_in_outputs: get_bool("redact_env_values_in_outputs")
             .unwrap_or(defaults.redact_env_values_in_outputs),
+        import_shell_environment: get_bool("import_shell_environment")
+            .unwrap_or(defaults.import_shell_environment),
         install_id: get_str("install_id").unwrap_or_default(),
         telemetry_enabled: get_bool("telemetry_enabled").unwrap_or(true),
         telemetry_consent_recorded: get_bool("telemetry_consent_recorded").unwrap_or(false),
