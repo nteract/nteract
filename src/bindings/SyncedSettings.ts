@@ -71,10 +71,10 @@ export type SyncedSettings = {
    */
   install_default_data_packages: boolean;
   /**
-   * Enable the nteract data-experience kernel bootstrap (nteract/dx).
-   * When true, the daemon installs `nteract-kernel-launcher` and `dx` into
-   * UV kernel environments, launches kernels via `nteract_kernel_launcher`,
-   * and runs `dx.install()` before the first user cell. Default: false.
+   * Enable the nteract data-experience kernel bootstrap.
+   * When true, the daemon launches kernels via `nteract_kernel_launcher`
+   * so the vendored launcher can register rich display formatters before
+   * the first user cell. Default: false.
    *
    * Mirrors `FeatureFlags::bootstrap_dx`. Flattened on the wire so the
    * settings JSON and Automerge document keep a flat layout even as new
@@ -82,13 +82,22 @@ export type SyncedSettings = {
    */
   bootstrap_dx: boolean;
   /**
-   * Redact eligible environment variable values from newly produced text outputs.
+   * Redact eligible environment variable values from text outputs for newly
+   * launched or restarted kernels.
    *
    * The runtime agent applies this before output manifests or blobs are
    * written, so the setting is global-only and intentionally not stored in
    * notebook metadata.
    */
   redact_env_values_in_outputs: boolean;
+  /**
+   * Merge the daemon's captured login-shell env into each kernel launch's
+   * `env_vars`. Combined with `redact_env_values_in_outputs`, the user's
+   * shell secrets reach the kernel but stay out of outputs and the blob
+   * store. Default `true` to match Jupyter's behavior, but redacted on the
+   * way out.
+   */
+  import_shell_environment: boolean;
   /**
    * Opaque per-install UUIDv4. Generated on first heartbeat, persisted in
    * settings. Not derived from any identifying data.

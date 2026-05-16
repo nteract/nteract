@@ -199,6 +199,7 @@ export function useSyncedSettings() {
   const [telemetryEnabled, setTelemetryEnabledState] = useState<boolean>(true);
   const [telemetryConsentRecorded, setTelemetryConsentRecordedState] = useState<boolean>(false);
   const [redactEnvValuesInOutputs, setRedactEnvValuesInOutputsState] = useState<boolean>(true);
+  const [importShellEnvironment, setImportShellEnvironmentState] = useState<boolean>(true);
   const [installId, setInstallIdState] = useState<string>("");
   const [lastDaemonPingAt, setLastDaemonPingAtState] = useState<number | null>(null);
   const [lastAppPingAt, setLastAppPingAtState] = useState<number | null>(null);
@@ -249,6 +250,9 @@ export function useSyncedSettings() {
         }
         if (typeof settings.redact_env_values_in_outputs === "boolean") {
           setRedactEnvValuesInOutputsState(settings.redact_env_values_in_outputs);
+        }
+        if (typeof settings.import_shell_environment === "boolean") {
+          setImportShellEnvironmentState(settings.import_shell_environment);
         }
         if (typeof settings.install_id === "string") {
           setInstallIdState(settings.install_id);
@@ -319,6 +323,9 @@ export function useSyncedSettings() {
       }
       if (typeof event.payload.redact_env_values_in_outputs === "boolean") {
         setRedactEnvValuesInOutputsState(event.payload.redact_env_values_in_outputs);
+      }
+      if (typeof event.payload.import_shell_environment === "boolean") {
+        setImportShellEnvironmentState(event.payload.import_shell_environment);
       }
       if (typeof event.payload.install_id === "string") {
         setInstallIdState(event.payload.install_id);
@@ -425,6 +432,15 @@ export function useSyncedSettings() {
     );
   }, []);
 
+  const setImportShellEnvironment = useCallback((value: boolean) => {
+    setImportShellEnvironmentState(value);
+    persistSyncedSetting(
+      "import_shell_environment",
+      value,
+      "[settings] Failed to persist import_shell_environment:",
+    );
+  }, []);
+
   const rotateInstallId = useCallback(async (): Promise<string | null> => {
     try {
       const newId = await invokeTauri<string>("rotate_install_id");
@@ -466,6 +482,8 @@ export function useSyncedSettings() {
     setTelemetryConsentRecorded,
     redactEnvValuesInOutputs,
     setRedactEnvValuesInOutputs,
+    importShellEnvironment,
+    setImportShellEnvironment,
     installId,
     rotateInstallId,
     lastDaemonPingAt,
