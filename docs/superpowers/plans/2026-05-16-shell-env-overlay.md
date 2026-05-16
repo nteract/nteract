@@ -2,37 +2,45 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Capture the user's shell environment once at daemon startup and apply it to each runtime-agent spawn, so kernels see the user's secrets (`ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, etc.) while the existing PR #2610 redactor scrubs those values from outputs and the blob store.
+**Goal:** Capture the user's shell environment once at daemon startup and inject it into each `LaunchKernel`/`RestartKernel` RPC's `env_vars` field, so kernels see the user's secrets (`ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, etc.) while the existing PR #2610 redactor scrubs those values from outputs and the blob store.
 
-**Architecture:** The daemon spawns the user's login shell (`$SHELL -lc 'env -0'`) once at startup, parses null-separated `KEY=VALUE` pairs into an `Arc<ShellEnvOverlay>`, and stores it in `Daemon`. The daemon's own process env stays untouched (no `env::set_var`), so a crash dump of the supervisor leaks nothing. When `RuntimeAgentHandle::spawn` runs, it layers the overlay onto the runtime-agent `Command` via `cmd.envs()`. The runtime-agent process then inherits the secrets in its real env, the existing `OutputRedactor::from_current_process_and_command` picks them up via `std::env::vars_os()`, and the kernel inherits them through the existing `cmd.envs()` plumbing in `jupyter_kernel.rs`. A new `import_shell_environment: bool` setting (default `true`) in the Privacy panel gates whether the overlay is applied on spawn.
+**Architecture:** The daemon spawns the user's login shell (`$SHELL -lc 'env -0'`) once at startup, parses null-separated `KEY=VALUE` pairs into an `Arc<ShellEnvOverlay>`, and stores it on `Daemon`. The daemon's own process env stays untouched - no `env::set_var`. When a notebook calls `LaunchKernel` or `RestartKernel`, the daemon merges the overlay into the existing `env_vars: HashMap<String,String>` field of the RPC (alongside `uv_offline_env_vars` and `pixi_frozen_env_vars`). The runtime-agent applies `env_vars` to the kernel `Command` exactly as it does today - no spawn-signature changes, no second-call-site updates. The redactor's existing `cmd.get_envs()` read picks up the overlay values automatically. A new `import_shell_environment: bool` setting in the Privacy panel gates whether the overlay is merged on each launch.
 
-**Tech Stack:** Rust (tokio, std::process::Command), `notebook-protocol` settings struct, `runtimed-settings-sync` JSON parser, React + ts-rs for the Privacy UI toggle.
+**Why this shape, not "apply at runtime-agent spawn":** an earlier draft put the overlay on the runtime-agent's process env via `Command::envs()`. Codex flagged that `RestartKernel` reuses the existing runtime-agent without subprocess respawn (`launch_kernel.rs:1489-1508`), so toggling the setting off would silently leave secrets in the inherited env. Routing through `env_vars` instead makes the toggle per-launch and keeps the runtime-agent's own process env minimal - a smaller blast radius for crash dumps.
+
+**Tech Stack:** Rust (tokio, std::process::Command), `runtimed-client::settings_doc::SyncedSettings`, `notebook-protocol` `LaunchKernel`/`RestartKernel` RPCs, React + ts-rs for the Privacy UI toggle.
 
 ---
 
 ## File Structure
 
 **New:**
-- `crates/runtimed/src/shell_env_overlay.rs` - capture + parse + apply; pure data + one `capture()` that shells out
-- `crates/runtimed/tests/shell_env_overlay_runtime_agent.rs` - integration test that spawns a stub runtime-agent and asserts the overlay reaches the child env
+- `crates/runtimed/src/shell_env_overlay.rs` - capture + parse + iterate; pure data + one `capture()` that shells out
+- `crates/runtimed/tests/shell_env_overlay_redaction.rs` - integration test that builds an overlay, threads it through a synthetic `env_vars`, and asserts the redactor matches it via `cmd.get_envs()`
 
 **Modified:**
-- `crates/runtimed/src/lib.rs` - declare new `shell_env_overlay` module
-- `crates/runtimed/src/daemon.rs` - hold `Arc<ShellEnvOverlay>` on `Daemon`; accessor `shell_env_overlay()` and `import_shell_environment()` settings getter
-- `crates/runtimed/src/main.rs:432` (`run_daemon`) - call `ShellEnvOverlay::capture()` before constructing `Daemon`, pass into `Daemon::new`
-- `crates/runtimed/src/runtime_agent_handle.rs:44` - `RuntimeAgentHandle::spawn` takes `overlay: Option<Arc<ShellEnvOverlay>>`, applies via `cmd.envs()` before `cmd.spawn()`
-- `crates/runtimed/src/requests/launch_kernel.rs:1598` - read `daemon.import_shell_environment().await`, pass overlay through to `RuntimeAgentHandle::spawn`
-- `crates/notebook-protocol/src/protocol.rs:130` - add `default_import_shell_environment` fn; add `import_shell_environment: bool` to `SyncedSettings` near `redact_env_values_in_outputs`
-- `crates/runtimed-settings-sync/src/lib.rs:600` - parse `import_shell_environment` from settings JSON
-- `crates/runtimed/src/settings_doc.rs` (or whichever file owns `SettingsDoc::get_all`) - propagate field through Automerge projection
-- `apps/notebook/settings/sections/Privacy.tsx` - add UI toggle and props
-- `apps/notebook/settings/App.tsx` - thread `importShellEnvironment` state into `<PrivacySection>`
-- `src/bindings/SyncedSettings.ts` - regenerated via ts-rs (do not hand-edit; just verify it lands)
-- `src/hooks/useSyncedSettings.ts` - add `importShellEnvironment` to the hook surface
+- `crates/runtimed/src/lib.rs` - declare `pub mod shell_env_overlay;` in the server-only module block (around line 50)
+- `crates/runtimed/src/daemon.rs:1087` - add `shell_env_overlay: Arc<ShellEnvOverlay>` to `Daemon` struct; constructor takes it; `shell_env_overlay()` and `import_shell_environment()` accessors
+- `crates/runtimed/src/main.rs:432` (`run_daemon`) - call `ShellEnvOverlay::capture()` before constructing `Daemon`, pass it in
+- `crates/runtimed/src/requests/launch_kernel.rs:1487` - read `daemon.import_shell_environment()`; if on, merge `daemon.shell_env_overlay()` entries into `launch_env_vars` and `restart_env_vars` before extending with uv/pixi vars (which take precedence)
+- `crates/runtimed-client/src/settings_doc.rs:231` - add `import_shell_environment: bool` field to `SyncedSettings`; add `default_import_shell_environment` fn; update `Default for SyncedSettings` at line 351; touch every place this struct is constructed in this file
+- `crates/runtimed-client/src/settings_doc.rs:660` (JSON import) - parse `import_shell_environment`
+- `crates/runtimed-client/src/settings_doc.rs:1069` (`get_all`) - propagate
+- `crates/runtimed-client/src/settings_doc.rs:1353` (apply-json) - propagate
+- `crates/runtimed-settings-sync/src/lib.rs:600` - mirror the new field in the synced-settings JSON load path
+- `apps/notebook/settings/sections/Privacy.tsx` - add toggle, plus inline warning text when `importShellEnvironment && !redactEnvValuesInOutputs`
+- `apps/notebook/settings/App.tsx` - thread `importShellEnvironment` state to `<PrivacySection>`
+- `src/hooks/useSyncedSettings.ts` - mirror the new field
+- `src/bindings/SyncedSettings.ts` - regenerated by ts-rs; do not hand-edit, just verify it lands
 
-**Untouched:**
-- `crates/runtimed/src/output_redaction.rs` - the redactor already reads `std::env::vars_os()`, so it automatically picks up overlay vars. No change needed; the test in Task 6 proves this.
-- `crates/notebook/src/shell_env.rs` - still needed for the Tauri app's `runtimed install` sidecar PATH lookup; orthogonal concern.
+**Untouched (intentionally):**
+- `crates/runtimed/src/output_redaction.rs` - the redactor's `cmd.get_envs()` loop at line 40-44 already picks up everything passed through `Command::envs()`. No code change.
+- `crates/runtimed/src/runtime_agent_handle.rs` - spawn signature stays as-is. No second-call-site cascade.
+- `crates/runtimed/src/notebook_sync_server/metadata.rs:3976` - second spawn site likewise untouched.
+- `crates/runtimed/src/runtime_agent.rs:819, 858, 907, 964` - already plumbs `env_vars` into `JupyterKernel` config. No change.
+- `crates/runtimed/src/jupyter_kernel.rs:780` - already applies `config.env_vars` to the kernel `Command`. No change.
+- `crates/runtimed/src/warm_env.rs`, pool warmers, `daemon.rs:5360` warm-env spawn - intentionally do NOT see the overlay. Pool envs are shared across notebooks; injecting user secrets there would widen exposure with no benefit.
+- `crates/notebook/src/shell_env.rs` (Tauri app) - keeps its narrow "load PATH for sidecar lookup" role. Orthogonal.
 
 ---
 
@@ -42,42 +50,42 @@ These names appear in multiple tasks; use them verbatim everywhere.
 
 - Module path: `runtimed::shell_env_overlay`
 - Struct: `ShellEnvOverlay`
-- Inner storage: `entries: Vec<(OsString, OsString)>` (preserves order, allows dupes-by-key for trace logging if ever needed)
+- Inner storage: `entries: Vec<(String, String)>` (UTF-8 only - non-UTF-8 env values are dropped at parse time with a warn log; the wire type `HashMap<String,String>` requires it anyway)
 - Public methods:
   - `pub fn empty() -> Self`
-  - `pub fn capture() -> Self` (cfg(unix); on non-unix returns `Self::empty()`)
+  - `pub fn capture() -> Self` (always available; on non-Unix returns `Self::empty()`)
   - `pub fn parse_null_separated(bytes: &[u8]) -> Self`
   - `pub fn len(&self) -> usize`
   - `pub fn is_empty(&self) -> bool`
-  - `pub fn apply_to(&self, cmd: &mut tokio::process::Command)` - iterates and `cmd.env(k, v)`
+  - `pub fn entries(&self) -> &[(String, String)]`
 - Settings field: `import_shell_environment: bool` (default `true`)
 - Daemon accessor: `pub fn shell_env_overlay(&self) -> Arc<ShellEnvOverlay>`
 - Daemon settings getter: `pub async fn import_shell_environment(&self) -> bool`
-- Frontend prop name: `importShellEnvironment` / `onImportShellEnvironmentChange`
+- Frontend prop names: `importShellEnvironment` / `onImportShellEnvironmentChange`
 
 ---
 
-## Task 1: `ShellEnvOverlay` module skeleton with parsing tests
+## Task 1: `ShellEnvOverlay` parsing primitives + tests
 
 **Files:**
 - Create: `crates/runtimed/src/shell_env_overlay.rs`
-- Modify: `crates/runtimed/src/lib.rs` (add `pub mod shell_env_overlay;`)
+- Modify: `crates/runtimed/src/lib.rs` (add `pub mod shell_env_overlay;` in the server-only block, alphabetically near `runtime_agent` around line 52)
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `crates/runtimed/src/shell_env_overlay.rs`:
+Create `crates/runtimed/src/shell_env_overlay.rs`:
 
 ```rust
-//! Capture the user's login-shell environment once at daemon startup and apply
-//! it to runtime-agent subprocess spawns. The daemon's own process env stays
-//! untouched; only spawned runtime-agents inherit the captured values.
+//! Capture the user's login-shell environment once at daemon startup. The
+//! daemon's own process env is never modified; the overlay is injected into
+//! each `LaunchKernel`/`RestartKernel` RPC's `env_vars` field so the toggle
+//! is honored per-launch without a runtime-agent respawn.
 
-use std::ffi::OsString;
-use std::os::unix::ffi::OsStringExt;
+use tracing::warn;
 
 #[derive(Debug, Default, Clone)]
 pub struct ShellEnvOverlay {
-    entries: Vec<(OsString, OsString)>,
+    entries: Vec<(String, String)>,
 }
 
 impl ShellEnvOverlay {
@@ -94,9 +102,24 @@ impl ShellEnvOverlay {
             let Some(eq_idx) = chunk.iter().position(|&b| b == b'=') else {
                 continue;
             };
-            let key = OsString::from_vec(chunk[..eq_idx].to_vec());
-            let value = OsString::from_vec(chunk[eq_idx + 1..].to_vec());
-            entries.push((key, value));
+            let key_bytes = &chunk[..eq_idx];
+            let value_bytes = &chunk[eq_idx + 1..];
+
+            let Ok(key) = std::str::from_utf8(key_bytes) else {
+                warn!(
+                    "[shell-env-overlay] dropping entry with non-UTF-8 key ({} bytes)",
+                    key_bytes.len()
+                );
+                continue;
+            };
+            let Ok(value) = std::str::from_utf8(value_bytes) else {
+                warn!(
+                    "[shell-env-overlay] dropping non-UTF-8 value for key {:?}",
+                    key
+                );
+                continue;
+            };
+            entries.push((key.to_string(), value.to_string()));
         }
         Self { entries }
     }
@@ -109,10 +132,8 @@ impl ShellEnvOverlay {
         self.entries.is_empty()
     }
 
-    pub fn apply_to(&self, cmd: &mut tokio::process::Command) {
-        for (key, value) in &self.entries {
-            cmd.env(key, value);
-        }
+    pub fn entries(&self) -> &[(String, String)] {
+        &self.entries
     }
 }
 
@@ -124,11 +145,10 @@ mod tests {
     fn parses_null_separated_pairs() {
         let raw = b"FOO=bar\0BAZ=qux\0";
         let overlay = ShellEnvOverlay::parse_null_separated(raw);
-        assert_eq!(overlay.len(), 2);
-        assert_eq!(overlay.entries[0].0, OsString::from("FOO"));
-        assert_eq!(overlay.entries[0].1, OsString::from("bar"));
-        assert_eq!(overlay.entries[1].0, OsString::from("BAZ"));
-        assert_eq!(overlay.entries[1].1, OsString::from("qux"));
+        assert_eq!(overlay.entries(), &[
+            ("FOO".to_string(), "bar".to_string()),
+            ("BAZ".to_string(), "qux".to_string()),
+        ]);
     }
 
     #[test]
@@ -136,8 +156,8 @@ mod tests {
         let raw = b"GOOD=value\0BARE_TOKEN\0OTHER=ok\0";
         let overlay = ShellEnvOverlay::parse_null_separated(raw);
         assert_eq!(overlay.len(), 2);
-        assert_eq!(overlay.entries[0].0, OsString::from("GOOD"));
-        assert_eq!(overlay.entries[1].0, OsString::from("OTHER"));
+        assert_eq!(overlay.entries()[0].0, "GOOD");
+        assert_eq!(overlay.entries()[1].0, "OTHER");
     }
 
     #[test]
@@ -145,11 +165,7 @@ mod tests {
         let raw = b"URL=https://example.com/?a=1&b=2\0";
         let overlay = ShellEnvOverlay::parse_null_separated(raw);
         assert_eq!(overlay.len(), 1);
-        assert_eq!(overlay.entries[0].0, OsString::from("URL"));
-        assert_eq!(
-            overlay.entries[0].1,
-            OsString::from("https://example.com/?a=1&b=2")
-        );
+        assert_eq!(overlay.entries()[0].1, "https://example.com/?a=1&b=2");
     }
 
     #[test]
@@ -163,27 +179,40 @@ mod tests {
         let raw = b"MULTI=line1\nline2\nline3\0NEXT=ok\0";
         let overlay = ShellEnvOverlay::parse_null_separated(raw);
         assert_eq!(overlay.len(), 2);
-        assert_eq!(overlay.entries[0].1, OsString::from("line1\nline2\nline3"));
+        assert_eq!(overlay.entries()[0].1, "line1\nline2\nline3");
+    }
+
+    #[test]
+    fn drops_non_utf8_values_silently() {
+        // \xFF is invalid UTF-8; the GOOD entry must still come through.
+        let raw: &[u8] = &[
+            b'G', b'O', b'O', b'D', b'=', b'v', b'a', b'l', 0,
+            b'B', b'A', b'D', b'=', 0xff, 0xfe, 0,
+            b'O', b'K', b'=', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', 0,
+        ];
+        let overlay = ShellEnvOverlay::parse_null_separated(raw);
+        let keys: Vec<&str> = overlay.entries().iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["GOOD", "OK"]);
     }
 }
 ```
 
-Append to `crates/runtimed/src/lib.rs` (add to the module declaration block, alongside e.g. `pub mod runtime_agent;`):
+Append to `crates/runtimed/src/lib.rs` in the server-only module block (alphabetically; near `pub mod runtime_agent;`):
 
 ```rust
 pub mod shell_env_overlay;
 ```
 
-- [ ] **Step 2: Run tests to verify they fail to compile, then compile-pass**
+- [ ] **Step 2: Run tests to verify they compile and pass**
 
 Run: `cargo test -p runtimed --lib shell_env_overlay -- --nocapture`
-Expected: compiles, all five tests PASS.
+Expected: all six tests PASS.
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add crates/runtimed/src/shell_env_overlay.rs crates/runtimed/src/lib.rs
-git commit -m "feat(runtimed): add ShellEnvOverlay parse + apply primitives"
+git commit -m "feat(runtimed): add ShellEnvOverlay parse + accessors"
 ```
 
 ---
@@ -195,44 +224,39 @@ git commit -m "feat(runtimed): add ShellEnvOverlay parse + apply primitives"
 
 - [ ] **Step 1: Write the failing test**
 
-Append to the existing `mod tests` block in `crates/runtimed/src/shell_env_overlay.rs`:
+Append to the existing `mod tests` block:
 
 ```rust
     #[cfg(unix)]
     #[test]
-    fn capture_returns_some_entries_on_unix() {
-        // Real shell available on any dev box and on CI macOS/Linux runners.
-        // The test asserts a soft floor (>= 1 entry) and that PATH made it through,
-        // which any login shell will export.
+    fn capture_returns_at_least_path() {
         let overlay = ShellEnvOverlay::capture();
+        // Any login shell exports PATH. We assert a soft floor and that PATH
+        // is present, which gives a non-trivial signal without leaking values.
         assert!(
-            overlay.len() >= 1,
-            "expected at least one captured env entry, got {}",
-            overlay.len()
+            !overlay.is_empty(),
+            "expected at least one entry from login shell"
         );
-        let has_path = overlay
-            .entries
-            .iter()
-            .any(|(k, _)| k == std::ffi::OsStr::new("PATH"));
+        let has_path = overlay.entries().iter().any(|(k, _)| k == "PATH");
         assert!(has_path, "expected PATH in captured shell env");
     }
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cargo test -p runtimed --lib shell_env_overlay::tests::capture_returns_some_entries_on_unix -- --nocapture`
+Run: `cargo test -p runtimed --lib shell_env_overlay::tests::capture_returns_at_least_path -- --nocapture`
 Expected: FAIL with "no method named `capture`".
 
 - [ ] **Step 3: Implement `capture()`**
 
-Add to `impl ShellEnvOverlay` in `crates/runtimed/src/shell_env_overlay.rs`, and add the module-level constants and helper above it:
+Add module-level constant just below the imports in `crates/runtimed/src/shell_env_overlay.rs`:
 
 ```rust
 const CAPTURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 const SHELL_CAPTURE_SCRIPT: &str = "env -0";
 ```
 
-Add the method (inside `impl ShellEnvOverlay`):
+Add to `impl ShellEnvOverlay`:
 
 ```rust
     #[cfg(unix)]
@@ -260,27 +284,40 @@ Add the method (inside `impl ShellEnvOverlay`):
     }
 ```
 
-Add the free function below the impl block:
+Add the free function below the impl block. Unlike the first draft, the timeout path explicitly waits on the child after killing it, and the shell is launched in its own process group so we can signal descendants if the shell forked subshells during rc-file evaluation:
 
 ```rust
 #[cfg(unix)]
 fn capture_inner() -> Result<ShellEnvOverlay, String> {
     use std::io::Read;
+    use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
 
     let shell = std::env::var_os("SHELL").unwrap_or_else(|| std::ffi::OsString::from("/bin/zsh"));
 
-    let mut child = Command::new(&shell)
-        .args(["-l", "-c", SHELL_CAPTURE_SCRIPT])
+    let mut cmd = Command::new(&shell);
+    cmd.args(["-l", "-c", SHELL_CAPTURE_SCRIPT])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("spawn {shell:?}: {e}"))?;
+        .stderr(Stdio::null());
 
+    // SAFETY: pre_exec runs in the child between fork and exec; setsid is
+    // async-signal-safe per POSIX.
+    unsafe {
+        cmd.pre_exec(|| {
+            // Put the shell in its own session/process group so a timeout-kill
+            // tears down any subshells it spawned during rc-file evaluation.
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let mut child = cmd.spawn().map_err(|e| format!("spawn {shell:?}: {e}"))?;
+    let pid = child.id() as i32;
     let mut stdout = child.stdout.take().ok_or("missing stdout pipe")?;
 
-    // Block on a thread with timeout (std::process has no native timeout).
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut buf = Vec::with_capacity(8 * 1024);
@@ -294,12 +331,14 @@ fn capture_inner() -> Result<ShellEnvOverlay, String> {
     let buf = match rx.recv_timeout(CAPTURE_TIMEOUT) {
         Ok(Ok(buf)) => buf,
         Ok(Err(e)) => {
-            let _ = child.kill();
+            kill_group_and_wait(pid, &mut child);
             return Err(format!("read stdout: {e}"));
         }
         Err(_) => {
-            let _ = child.kill();
-            return Err(format!("login shell capture timed out after {CAPTURE_TIMEOUT:?}"));
+            kill_group_and_wait(pid, &mut child);
+            return Err(format!(
+                "login shell capture timed out after {CAPTURE_TIMEOUT:?}"
+            ));
         }
     };
 
@@ -313,74 +352,81 @@ fn capture_inner() -> Result<ShellEnvOverlay, String> {
 
     Ok(ShellEnvOverlay::parse_null_separated(&buf))
 }
+
+#[cfg(unix)]
+fn kill_group_and_wait(pid: i32, child: &mut std::process::Child) {
+    // SIGKILL the whole process group we created via setsid. -pid means
+    // "send to process group pid" per kill(2).
+    unsafe {
+        libc::kill(-pid, libc::SIGKILL);
+    }
+    // Reap the immediate child so we never leave a zombie behind.
+    let _ = child.wait();
+}
 ```
+
+`libc` is already a transitive dep of this crate (via tokio/nix), but verify by running `cargo tree -p runtimed | grep '^libc'`. If it isn't a direct dep, add it: edit `crates/runtimed/Cargo.toml` and add `libc = "0.2"` under `[target.'cfg(unix)'.dependencies]`.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `cargo test -p runtimed --lib shell_env_overlay -- --nocapture`
-Expected: all six tests PASS. The capture test prints the entry count to stderr.
+Expected: all seven tests PASS. The capture test logs the entry count.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/runtimed/src/shell_env_overlay.rs
-git commit -m "feat(runtimed): capture login-shell env via 'env -0' with 3s timeout"
+git add crates/runtimed/src/shell_env_overlay.rs crates/runtimed/Cargo.toml
+git commit -m "feat(runtimed): capture login-shell env via 'env -0' with timeout + setsid"
 ```
 
 ---
 
-## Task 3: Hold the overlay on `Daemon` and capture at startup
+## Task 3: Hold the overlay on `Daemon`, capture at startup
 
 **Files:**
-- Modify: `crates/runtimed/src/daemon.rs` (struct field, `Daemon::new`, accessor)
-- Modify: `crates/runtimed/src/main.rs:432` (call `ShellEnvOverlay::capture()` in `run_daemon`)
+- Modify: `crates/runtimed/src/daemon.rs` (struct field, constructor, accessor)
+- Modify: `crates/runtimed/src/main.rs:432` (capture before `Daemon::new`)
 
-- [ ] **Step 1: Add the field to `Daemon`**
+- [ ] **Step 1: Find the constructor**
 
-Locate the `pub struct Daemon { ... }` block at `crates/runtimed/src/daemon.rs:1087` and add at the bottom of the field list (before the closing brace, after `pixi_warming_respawns`):
+Run: `grep -n "fn new\|Self {" crates/runtimed/src/daemon.rs | head -10`
+
+The Daemon constructor at `crates/runtimed/src/daemon.rs:1333` is synchronous and returns `Result<Arc<Self>, DaemonAlreadyRunning>` (NOT async, NOT anyhow::Result). Adjust your changes accordingly.
+
+- [ ] **Step 2: Add the field and accessors**
+
+In `crates/runtimed/src/daemon.rs` near line 1142 (end of `pub struct Daemon { ... }`, after `pixi_warming_respawns`):
 
 ```rust
-    /// Shell-env overlay captured once at daemon startup. Applied to
-    /// runtime-agent spawn commands when `import_shell_environment` is on.
-    /// The daemon process env itself is never modified.
+    /// Snapshot of the user's login-shell env captured once at daemon startup.
+    /// Cheap to clone; merged into LaunchKernel/RestartKernel env_vars when
+    /// `import_shell_environment` is on. Daemon process env stays untouched.
     pub(crate) shell_env_overlay: std::sync::Arc<crate::shell_env_overlay::ShellEnvOverlay>,
 ```
 
-- [ ] **Step 2: Find and update `Daemon::new` (or whichever constructor builds the struct)**
-
-Run: `grep -n "fn new\|Self {" crates/runtimed/src/daemon.rs | head -20` to locate the constructor. Add a parameter:
+In `impl Daemon` near the existing `redact_env_values_in_outputs` accessor at line 1170, add:
 
 ```rust
-pub async fn new(
-    config: DaemonConfig,
-    shell_env_overlay: std::sync::Arc<crate::shell_env_overlay::ShellEnvOverlay>,
-    // ... existing params ...
-) -> anyhow::Result<Self> {
-```
-
-In the `Self { ... }` struct literal, add:
-
-```rust
-    shell_env_overlay,
-```
-
-If `Daemon::new` is called from tests, update test sites to pass `std::sync::Arc::new(crate::shell_env_overlay::ShellEnvOverlay::empty())`.
-
-- [ ] **Step 3: Add accessor**
-
-In `impl Daemon` (the public impl block starting near `crates/runtimed/src/daemon.rs:1157`), add right after `redact_env_values_in_outputs`:
-
-```rust
-    /// Snapshot of the user's login-shell env captured at daemon startup.
-    /// Cheap to clone; applied to runtime-agent spawns when the setting is on.
     pub fn shell_env_overlay(&self) -> std::sync::Arc<crate::shell_env_overlay::ShellEnvOverlay> {
         self.shell_env_overlay.clone()
     }
+
+    pub async fn import_shell_environment(&self) -> bool {
+        self.settings
+            .read()
+            .await
+            .get_all()
+            .import_shell_environment
+    }
 ```
 
-- [ ] **Step 4: Wire capture into `run_daemon`**
+(The `import_shell_environment` settings field is added in Task 4. Compile after Task 4, not now.)
 
-In `crates/runtimed/src/main.rs`, locate `async fn run_daemon(config: DaemonConfig)` near line 432. Before the `let daemon = Daemon::new(...)` call (find it by searching for `Daemon::new` in the function), insert:
+Update the constructor at line 1333 to accept the overlay as a parameter. Add it to the `Self { ... }` literal. If the constructor is called from anywhere else (run `grep -n "Daemon::new\|Daemon::with_" crates/`), update those call sites too — pass `Arc::new(ShellEnvOverlay::empty())` in test contexts.
+
+- [ ] **Step 3: Wire capture into `run_daemon`**
+
+In `crates/runtimed/src/main.rs:432` (`async fn run_daemon`), locate where `Daemon::new(...)` is called. Insert just before the call:
 
 ```rust
     let shell_env_overlay = std::sync::Arc::new(
@@ -392,38 +438,41 @@ In `crates/runtimed/src/main.rs`, locate `async fn run_daemon(config: DaemonConf
     );
 ```
 
-Then add `shell_env_overlay.clone()` as an argument to `Daemon::new`.
+Pass `shell_env_overlay.clone()` as the new argument to `Daemon::new`.
 
-- [ ] **Step 5: Compile**
+- [ ] **Step 4: Defer compile to Task 4**
 
-Run: `cargo build -p runtimed`
-Expected: clean build. Fix any test-only `Daemon::new` call sites that the compiler flags.
+The new `import_shell_environment` accessor depends on a settings field added in Task 4. Skip `cargo build` here; Task 4 closes the loop.
 
-- [ ] **Step 6: Verify the existing daemon test suite still passes**
-
-Run: `cargo test -p runtimed --lib daemon -- --nocapture`
-Expected: PASS.
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 5: Stage but don't commit**
 
 ```bash
 git add crates/runtimed/src/daemon.rs crates/runtimed/src/main.rs
-git commit -m "feat(runtimed): capture shell env at daemon startup, hold on Daemon"
 ```
+
+Task 4 will land the commit after the settings field exists.
 
 ---
 
 ## Task 4: `import_shell_environment` setting
 
 **Files:**
-- Modify: `crates/notebook-protocol/src/protocol.rs` (struct field + default fn)
-- Modify: `crates/runtimed-settings-sync/src/lib.rs:600` (JSON read path)
-- Modify: `crates/runtimed/src/settings_doc.rs` (Automerge projection; locate via grep below)
-- Modify: `crates/runtimed/src/daemon.rs` (async getter)
+- Modify: `crates/runtimed-client/src/settings_doc.rs` at lines 231 (struct), 351 (Default impl), 384 (sibling default fn), 660 (JSON import), 1069 (`get_all`), 1353 (apply-json). Mirror every site that touches `redact_env_values_in_outputs`.
+- Modify: `crates/runtimed-settings-sync/src/lib.rs:600` (JSON load fallback)
 
-- [ ] **Step 1: Add the default fn and struct field in `notebook-protocol`**
+- [ ] **Step 1: Add field + default fn in `settings_doc.rs`**
 
-In `crates/notebook-protocol/src/protocol.rs`, right after `default_redact_env_values_in_outputs` near line 130:
+In `crates/runtimed-client/src/settings_doc.rs`, right after the `redact_env_values_in_outputs` field at line 308:
+
+```rust
+    /// Apply the daemon's captured login-shell env to each kernel launch.
+    /// Combined with `redact_env_values_in_outputs`, the user's shell secrets
+    /// reach the kernel but are scrubbed from outputs/blob store.
+    #[serde(default = "default_import_shell_environment")]
+    pub import_shell_environment: bool,
+```
+
+Below the `default_redact_env_values_in_outputs` fn at line 384, add:
 
 ```rust
 fn default_import_shell_environment() -> bool {
@@ -431,19 +480,23 @@ fn default_import_shell_environment() -> bool {
 }
 ```
 
-Then in the `SyncedSettings` struct (find via `grep -n "pub struct SyncedSettings" crates/notebook-protocol/src/protocol.rs`), add immediately below the `redact_env_values_in_outputs` field:
+In `impl Default for SyncedSettings` at line 351, add to the struct literal:
 
 ```rust
-    /// Apply the daemon's captured login-shell environment to newly spawned
-    /// runtime agents. Combined with `redact_env_values_in_outputs`, the user's
-    /// shell secrets reach the kernel but are scrubbed from outputs/blob store.
-    #[serde(default = "default_import_shell_environment")]
-    pub import_shell_environment: bool,
+    import_shell_environment: true,
 ```
 
-Also update every other place in this file where `SyncedSettings { ... }` is constructed (test fixtures around lines 1591, 1619, 1631, 1685, 1701) to include `import_shell_environment: true,`.
+- [ ] **Step 2: Mirror at every other `redact_env_values_in_outputs` site in this file**
 
-- [ ] **Step 2: Wire JSON parsing**
+Run: `grep -n "redact_env_values_in_outputs" crates/runtimed-client/src/settings_doc.rs`
+
+For each match (excluding the field definition you just added below), add a parallel `import_shell_environment` line. Typically that means:
+
+- `get_all` projection (line 1069 area)
+- Apply-from-JSON path (line 1353 area)
+- Any `SyncedSettings { ... }` literal in tests
+
+- [ ] **Step 3: Wire `runtimed-settings-sync`**
 
 In `crates/runtimed-settings-sync/src/lib.rs`, right after the `redact_env_values_in_outputs` line at 600-601:
 
@@ -452,252 +505,303 @@ In `crates/runtimed-settings-sync/src/lib.rs`, right after the `redact_env_value
             .unwrap_or(defaults.import_shell_environment),
 ```
 
-- [ ] **Step 3: Update the Automerge SettingsDoc projection**
+- [ ] **Step 4: Build to catch every test fixture that constructs `SyncedSettings`**
 
-Run: `grep -n "redact_env_values_in_outputs" crates/runtimed/src/settings_doc.rs` to find the projection. Mirror every appearance of `redact_env_values_in_outputs` with a parallel `import_shell_environment` line in the same blocks (struct field, reader, writer). If the file uses a macro or table-driven approach, follow that pattern.
+Run: `cargo build -p runtimed -p runtimed-client -p runtimed-settings-sync -p notebook-protocol --tests`
+Expected: every "missing field `import_shell_environment`" error is a fixture in this crate or downstream — add the field set to `true` (matching the default). Repeat until clean.
 
-- [ ] **Step 4: Add async getter on `Daemon`**
+- [ ] **Step 5: Run the relevant test suites**
 
-In `crates/runtimed/src/daemon.rs`, directly after the existing `redact_env_values_in_outputs` getter (around line 1170):
+Run: `cargo test -p runtimed-client && cargo test -p runtimed-settings-sync && cargo test -p notebook-protocol`
+Expected: PASS.
 
-```rust
-    /// Whether to apply the captured shell-env overlay when spawning runtime
-    /// agents. When off, kernels only see the daemon's own (launchd-minimal) env.
-    pub async fn import_shell_environment(&self) -> bool {
-        self.settings
-            .read()
-            .await
-            .get_all()
-            .import_shell_environment
-    }
-```
+- [ ] **Step 6: Now compile `runtimed` end-to-end (closes Task 3's loop)**
 
-- [ ] **Step 5: Compile and run existing settings tests**
+Run: `cargo build -p runtimed`
+Expected: clean.
 
-Run: `cargo test -p runtimed-settings-sync && cargo test -p notebook-protocol && cargo build -p runtimed`
-Expected: PASS / clean build. Any test fixtures the compiler flags as missing the new field must be updated to set it.
+Run: `cargo test -p runtimed --lib`
+Expected: PASS (still includes the parser + capture tests from Tasks 1-2).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit Tasks 3 + 4 together**
 
 ```bash
-git add crates/notebook-protocol/src/protocol.rs crates/runtimed-settings-sync/src/lib.rs crates/runtimed/src/settings_doc.rs crates/runtimed/src/daemon.rs
-git commit -m "feat(settings): add import_shell_environment toggle (default on)"
+git add crates/runtimed-client/src/settings_doc.rs crates/runtimed-settings-sync/src/lib.rs
+git commit -m "feat(settings): add import_shell_environment toggle (default on)
+
+The daemon captures shell env at startup and stores it as a struct;
+this setting gates whether that overlay is injected into LaunchKernel
+RPC env_vars on each launch. Daemon process env stays untouched."
 ```
 
 ---
 
-## Task 5: Apply overlay in `RuntimeAgentHandle::spawn`
+## Task 5: Merge overlay into `LaunchKernel`/`RestartKernel` `env_vars`
 
 **Files:**
-- Modify: `crates/runtimed/src/runtime_agent_handle.rs:44-80`
+- Modify: `crates/runtimed/src/requests/launch_kernel.rs:1487-1508` (restart) and `:1645-1659` (launch)
+- Possibly modify: `crates/runtimed/src/notebook_sync_server/metadata.rs:4040` (auto-launch). Run `grep -n "env_vars:" crates/runtimed/src/notebook_sync_server/metadata.rs` to find the parallel launch site - if it builds `env_vars` the same way, add the same merge there.
 
-- [ ] **Step 1: Update the spawn signature**
+- [ ] **Step 1: Add a helper next to the existing env-var helpers**
 
-In `crates/runtimed/src/runtime_agent_handle.rs`, change the `RuntimeAgentHandle::spawn` signature:
-
-```rust
-    pub async fn spawn(
-        notebook_id: String,
-        runtime_agent_id: String,
-        blob_root: PathBuf,
-        socket_path: PathBuf,
-        runtime_agent_exe: Option<PathBuf>,
-        shell_env_overlay: Option<std::sync::Arc<crate::shell_env_overlay::ShellEnvOverlay>>,
-    ) -> Result<Self> {
-```
-
-After the `cmd.arg(...)` block (just before `cmd.spawn()` at line 80), insert:
+In `crates/runtimed/src/requests/launch_kernel.rs`, near the top of the file (after the imports), add:
 
 ```rust
-        if let Some(overlay) = shell_env_overlay {
-            if !overlay.is_empty() {
-                info!(
-                    "[runtime-agent-handle] applying shell env overlay ({} entries) to runtime agent {}",
-                    overlay.len(),
-                    runtime_agent_id,
-                );
-                overlay.apply_to(&mut cmd);
-            }
-        }
+fn overlay_env_vars(
+    overlay: &std::sync::Arc<crate::shell_env_overlay::ShellEnvOverlay>,
+) -> std::collections::HashMap<String, String> {
+    overlay
+        .entries()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
 ```
 
-- [ ] **Step 2: Compile and let the compiler list call sites**
+(Free function, not a method, so we don't widen `ShellEnvOverlay`'s public surface for one caller.)
 
-Run: `cargo build -p runtimed 2>&1 | grep -E "error\[|^\s+--> " | head -20`
-Expected: a compile error at every existing `RuntimeAgentHandle::spawn` call (currently one in `launch_kernel.rs`, possibly more).
+- [ ] **Step 2: Apply at the restart path**
 
-- [ ] **Step 3: Commit (will not compile yet, so use `--no-verify-amend` workflow — actually defer until Task 6 wires callers)**
-
-Skip the commit here. Task 6 will pass the new argument from callers and then we commit together.
-
----
-
-## Task 6: Thread overlay through `launch_kernel` and prove the redactor picks it up
-
-**Files:**
-- Modify: `crates/runtimed/src/requests/launch_kernel.rs:1598`
-- Create: `crates/runtimed/tests/shell_env_overlay_runtime_agent.rs`
-
-- [ ] **Step 1: Update the call site in `launch_kernel.rs`**
-
-In `crates/runtimed/src/requests/launch_kernel.rs`, near line 1487 where `redact_env_values_in_outputs` is read:
+In `crates/runtimed/src/requests/launch_kernel.rs`, replace the block at lines 1487-1496 (the `let redact_env_values_in_outputs = ...` line through the `let mut restart_env_vars = ...; restart_env_vars.extend(...)` block) with:
 
 ```rust
     let redact_env_values_in_outputs = daemon.redact_env_values_in_outputs().await;
     let import_shell_environment = daemon.import_shell_environment().await;
-    let overlay_for_spawn = if import_shell_environment {
-        Some(daemon.shell_env_overlay())
-    } else {
-        None
-    };
+    let shell_overlay = daemon.shell_env_overlay();
+
+    // If runtime agent is already connected, restart kernel in-place
+    {
+        let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
+        if has_runtime_agent {
+            info!("[notebook-sync] Agent connected — sending RestartKernel");
+            // Build env_vars in precedence order: overlay (lowest) → uv → pixi.
+            // Per-launch toggle means the overlay is honored on every restart
+            // without respawning the runtime-agent process.
+            let mut restart_env_vars: std::collections::HashMap<String, String> =
+                if import_shell_environment {
+                    overlay_env_vars(&shell_overlay)
+                } else {
+                    std::collections::HashMap::new()
+                };
+            restart_env_vars.extend(crate::uv_project::uv_offline_env_vars(uv_pyproject_offline));
+            restart_env_vars.extend(crate::pixi_project::pixi_frozen_env_vars(pixi_toml_frozen));
 ```
 
-Then at the `RuntimeAgentHandle::spawn` call near line 1598, add `overlay_for_spawn` as the last argument:
+(The rest of the restart block stays as-is.)
+
+- [ ] **Step 3: Apply at the launch path**
+
+In the same file, replace the block at lines 1645-1647 (the `let mut launch_env_vars = ...; launch_env_vars.extend(pixi_frozen_env_vars(...))` lines) with:
 
 ```rust
-        match crate::runtime_agent_handle::RuntimeAgentHandle::spawn(
-            notebook_id,
-            runtime_agent_id.clone(),
-            room.blob_store.root().to_path_buf(),
-            socket_path,
-            daemon.config.runtime_agent_exe.clone(),
-            overlay_for_spawn,
-        )
-        .await
+                let mut launch_env_vars: std::collections::HashMap<String, String> =
+                    if import_shell_environment {
+                        overlay_env_vars(&shell_overlay)
+                    } else {
+                        std::collections::HashMap::new()
+                    };
+                launch_env_vars.extend(crate::uv_project::uv_offline_env_vars(uv_pyproject_offline));
+                launch_env_vars.extend(crate::pixi_project::pixi_frozen_env_vars(pixi_toml_frozen));
 ```
 
-If the restart-in-place path further up (search for `RestartKernel`) takes a separate code path that does NOT respawn the runtime-agent, the overlay is irrelevant there: the runtime-agent already has the overlay from its original spawn. Confirm by reading lines 1488-1571 and add a one-line comment noting it.
+- [ ] **Step 4: Check the auto-launch site in `metadata.rs`**
 
-- [ ] **Step 2: Build everything**
+Run: `grep -n "env_vars\|uv_offline_env_vars\|pixi_frozen_env_vars" crates/runtimed/src/notebook_sync_server/metadata.rs | head -10`
 
-Run: `cargo build -p runtimed`
-Expected: clean build.
+If `metadata.rs:4040` builds `env_vars` from `uv_offline_env_vars` + `pixi_frozen_env_vars` the same way, apply the same `if import_shell_environment { ... }` prefix. Use the same `overlay_env_vars` helper (re-export it via `pub(crate) use crate::requests::launch_kernel::overlay_env_vars;` if needed, or duplicate the four-line helper - both fine; pick one and be consistent).
 
-- [ ] **Step 3: Write the integration test**
+- [ ] **Step 5: Build and run all runtimed tests**
 
-Create `crates/runtimed/tests/shell_env_overlay_runtime_agent.rs`:
-
-```rust
-//! Verifies that ShellEnvOverlay applied to a tokio::process::Command actually
-//! reaches the child process's environment. This is a property test of the
-//! overlay glue, not of the runtime-agent binary itself.
-
-use std::ffi::OsString;
-use std::os::unix::ffi::OsStringExt;
-use std::sync::Arc;
-
-use runtimed::shell_env_overlay::ShellEnvOverlay;
-
-#[tokio::test]
-async fn overlay_reaches_spawned_child_env() {
-    // Build a synthetic overlay with one secret-shaped value.
-    let raw = b"TEST_OVERLAY_TOKEN=sk-overlay-test-12345\0";
-    let overlay = Arc::new(ShellEnvOverlay::parse_null_separated(raw));
-
-    // Spawn `/usr/bin/env` so the child prints its own env on stdout.
-    let mut cmd = tokio::process::Command::new("/usr/bin/env");
-    cmd.stdout(std::process::Stdio::piped());
-    overlay.apply_to(&mut cmd);
-    let output = cmd.output().await.expect("spawn /usr/bin/env");
-
-    let stdout = String::from_utf8(output.stdout).expect("env output utf8");
-    assert!(
-        stdout.contains("TEST_OVERLAY_TOKEN=sk-overlay-test-12345"),
-        "expected overlay token in child env, got:\n{stdout}"
-    );
-}
-
-#[tokio::test]
-async fn empty_overlay_is_a_noop() {
-    let overlay = ShellEnvOverlay::empty();
-    let mut cmd = tokio::process::Command::new("/usr/bin/env");
-    cmd.stdout(std::process::Stdio::piped());
-    overlay.apply_to(&mut cmd);
-    let output = cmd.output().await.expect("spawn /usr/bin/env");
-    let stdout = String::from_utf8(output.stdout).expect("env output utf8");
-    // PATH or HOME from the parent process should still be there; we just check
-    // the child started successfully.
-    assert!(output.status.success(), "child exited non-zero: {stdout}");
-}
-
-#[tokio::test]
-async fn redactor_picks_up_overlay_values_via_get_envs() {
-    // Build an overlay, apply to a Command, then construct a redactor from
-    // that command's envs (mirroring how OutputRedactor::from_current_process_and_command
-    // reads cmd.get_envs() on line 40 of output_redaction.rs).
-    let raw = b"TEST_REDACTABLE_SECRET=abcdef1234567890\0";
-    let overlay = ShellEnvOverlay::parse_null_separated(raw);
-    let mut cmd = tokio::process::Command::new("/usr/bin/env");
-    overlay.apply_to(&mut cmd);
-
-    // The std::process::Command underneath exposes get_envs(); tokio's Command
-    // dereferences into it via as_std(). The redactor's eligibility rules
-    // accept this value (16 chars, no whitespace, not in the localhost list).
-    let std_cmd: &std::process::Command = cmd.as_std();
-    let found = std_cmd
-        .get_envs()
-        .any(|(k, v)| {
-            k == std::ffi::OsStr::new("TEST_REDACTABLE_SECRET")
-                && v == Some(std::ffi::OsStr::new("abcdef1234567890"))
-        });
-    assert!(found, "overlay value not visible via Command::get_envs()");
-
-    // Sanity: silence unused warning for OsString import in shared tests.
-    let _ = OsString::from_vec(b"unused".to_vec());
-}
-```
-
-- [ ] **Step 4: Run the integration test**
-
-Run: `cargo test -p runtimed --test shell_env_overlay_runtime_agent -- --nocapture`
-Expected: all three tests PASS.
-
-- [ ] **Step 5: Run the whole runtimed test suite to catch regressions**
-
-Run: `cargo test -p runtimed`
+Run: `cargo build -p runtimed && cargo test -p runtimed`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/runtimed/src/runtime_agent_handle.rs crates/runtimed/src/requests/launch_kernel.rs crates/runtimed/tests/shell_env_overlay_runtime_agent.rs
-git commit -m "feat(runtimed): apply shell env overlay to runtime-agent spawn"
+git add crates/runtimed/src/requests/launch_kernel.rs crates/runtimed/src/notebook_sync_server/metadata.rs
+git commit -m "feat(runtimed): inject shell-env overlay into kernel launch env_vars
+
+Per-launch toggle: import_shell_environment is read on every
+LaunchKernel/RestartKernel, so turning the setting off takes effect
+on the next kernel restart without respawning the runtime-agent."
 ```
 
 ---
 
-## Task 7: Privacy panel UI toggle
+## Task 6: Integration test - overlay flows through env_vars to redactor
+
+**Files:**
+- Create: `crates/runtimed/tests/shell_env_overlay_redaction.rs`
+
+This test proves the architectural invariant: an overlay entry, once merged into `env_vars` and applied via `Command::envs()`, is visible to `OutputRedactor::from_current_process_and_command` via the `cmd.get_envs()` loop at `output_redaction.rs:40`. That's the real path the value travels.
+
+- [ ] **Step 1: Write the test**
+
+Create `crates/runtimed/tests/shell_env_overlay_redaction.rs`:
+
+```rust
+//! End-to-end glue test for the shell-env overlay → env_vars → kernel Command
+//! → redactor path. We construct each layer with the same types the daemon
+//! uses, then assert that the value is redacted out of a sample stdout string.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use runtimed::shell_env_overlay::ShellEnvOverlay;
+
+#[test]
+fn overlay_value_reaches_redactor_via_kernel_command_envs() {
+    // 1. Daemon builds an overlay (simulated parse from `env -0` output).
+    let overlay = Arc::new(ShellEnvOverlay::parse_null_separated(
+        b"TEST_REDACTABLE_SECRET=abcdef1234567890\0",
+    ));
+
+    // 2. Daemon merges overlay into env_vars exactly the way
+    //    requests::launch_kernel.rs does for LaunchKernel.
+    let mut env_vars: HashMap<String, String> = overlay
+        .entries()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    // (uv/pixi extends would go here in real code; not needed for the test.)
+
+    // 3. Runtime-agent applies env_vars to the kernel Command exactly the way
+    //    jupyter_kernel.rs:780 does.
+    let mut cmd = std::process::Command::new("/usr/bin/env");
+    for (key, value) in &env_vars {
+        cmd.env(key, value);
+    }
+
+    // 4. Redactor pulls env candidates from cmd.get_envs() at
+    //    output_redaction.rs:40. We reuse the public test-only constructor
+    //    on OutputRedactor to walk the same eligibility rules.
+    let candidates: Vec<(String, String)> = cmd
+        .get_envs()
+        .filter_map(|(k, v)| {
+            let k = k.to_str()?.to_string();
+            let v = v?.to_str()?.to_string();
+            Some((k, v))
+        })
+        .collect();
+
+    let redactor = runtimed::output_redaction_test_helper::redactor_from_env_pairs(candidates);
+
+    // 5. Verify the overlay value gets scrubbed from sample text.
+    let stream_text = "secret was abcdef1234567890 — see logs";
+    let redacted = redactor.redact_text(stream_text);
+    assert!(
+        !redacted.contains("abcdef1234567890"),
+        "expected secret to be redacted, got: {redacted}"
+    );
+    assert!(redacted.contains("[redacted env]"), "expected marker in: {redacted}");
+}
+
+#[test]
+fn toggle_off_means_overlay_does_not_reach_env_vars() {
+    // Simulates the import_shell_environment=false branch of launch_kernel.rs.
+    let overlay = Arc::new(ShellEnvOverlay::parse_null_separated(
+        b"TEST_REDACTABLE_SECRET=abcdef1234567890\0",
+    ));
+    let import_shell_environment = false;
+
+    let env_vars: HashMap<String, String> = if import_shell_environment {
+        overlay
+            .entries()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+
+    assert!(
+        env_vars.is_empty(),
+        "expected empty env_vars when import is off"
+    );
+}
+```
+
+- [ ] **Step 2: Expose a test helper from the redactor module**
+
+The test imports `runtimed::output_redaction_test_helper::redactor_from_env_pairs`. Add that thin shim because the existing `OutputRedactor::from_env_pairs_for_test` is `#[cfg(test)]` (visible inside the crate's unit tests only, not to integration tests).
+
+In `crates/runtimed/src/output_redaction.rs`, near the bottom of the file (outside the existing `mod tests`), add:
+
+```rust
+/// Test-only constructor exposed to integration tests in `tests/`.
+#[doc(hidden)]
+pub fn redactor_from_env_pairs(
+    pairs: impl IntoIterator<Item = (String, String)>,
+) -> OutputRedactor {
+    OutputRedactor::from_env_pairs_for_test(pairs)
+}
+```
+
+The `OutputRedactor::from_env_pairs_for_test` constructor at line 70 is `#[cfg(test)]` - widen it to be available outside `cfg(test)` so the shim can call it. Change line 69 from `#[cfg(test)]` to nothing (delete the attribute on `from_env_pairs_for_test`); the constructor body is harmless to ship.
+
+The redactor itself is `pub(crate)`. Add a module re-export at the bottom of `crates/runtimed/src/output_redaction.rs`:
+
+```rust
+pub use OutputRedactor as PublicOutputRedactorForTests;
+```
+
+…no, simpler: keep `OutputRedactor` private, and have the shim return `OutputRedactor` from the module's `pub` API by adding `pub use output_redaction::OutputRedactor;` in `crates/runtimed/src/lib.rs` under a `#[doc(hidden)]` re-export block:
+
+```rust
+#[doc(hidden)]
+pub use output_redaction::OutputRedactor;
+#[doc(hidden)]
+pub mod output_redaction_test_helper {
+    pub use crate::output_redaction::redactor_from_env_pairs;
+}
+```
+
+(If the cleaner option is to inline the helper in the test file by parsing/eligibility-checking by hand, do that instead — but the existing eligibility rules are intricate and we want to test the *real* redactor.)
+
+- [ ] **Step 3: Run the integration test**
+
+Run: `cargo test -p runtimed --test shell_env_overlay_redaction -- --nocapture`
+Expected: both tests PASS.
+
+- [ ] **Step 4: Run the full runtimed test suite to catch regressions**
+
+Run: `cargo test -p runtimed`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/runtimed/src/output_redaction.rs crates/runtimed/src/lib.rs crates/runtimed/tests/shell_env_overlay_redaction.rs
+git commit -m "test(runtimed): cover shell-env overlay → env_vars → redactor path"
+```
+
+---
+
+## Task 7: Privacy panel UI toggle + warning row
 
 **Files:**
 - Modify: `apps/notebook/settings/sections/Privacy.tsx`
 - Modify: `apps/notebook/settings/App.tsx`
 - Modify: `src/hooks/useSyncedSettings.ts`
-- Regenerated automatically: `src/bindings/SyncedSettings.ts`
+- Auto-regenerated: `src/bindings/SyncedSettings.ts`
 
 - [ ] **Step 1: Regenerate ts-rs bindings**
 
-Run: `cargo xtask ts-bindings` (or the equivalent — check `cargo xtask help`)
-Expected: `src/bindings/SyncedSettings.ts` now includes `import_shell_environment: boolean;`.
+Run: `cargo xtask help | grep -i bind` to find the binding command (likely `cargo xtask ts-bindings` or similar). Run it.
+Expected: `src/bindings/SyncedSettings.ts` now contains `import_shell_environment: boolean;`.
 
-If the command name differs, search: `grep -n "ts-rs\|ts-bindings" /Users/kylekelley/projects/desktop/xtask/src/*.rs`.
+- [ ] **Step 2: Add prop, toggle, and warning to `Privacy.tsx`**
 
-- [ ] **Step 2: Add prop and toggle to Privacy.tsx**
-
-Edit `apps/notebook/settings/sections/Privacy.tsx`. Extend the `PrivacySectionProps` interface (around lines 8-18):
+Edit `apps/notebook/settings/sections/Privacy.tsx`. Extend the `PrivacySectionProps` interface around lines 8-18:
 
 ```typescript
   importShellEnvironment: boolean;
   onImportShellEnvironmentChange: (value: boolean) => void;
 ```
 
-Extend the function signature destructuring at line 37:
+Extend the destructure at line 37 to include `importShellEnvironment, onImportShellEnvironmentChange,`.
 
-```typescript
-  importShellEnvironment,
-  onImportShellEnvironmentChange,
-```
-
-Add a new toggle block in the `<CollapsibleContent>` block, immediately after the `redactEnvValuesInOutputs` toggle (after line 97 closing `</div>`):
+Add a new toggle block directly after the existing `redactEnvValuesInOutputs` toggle (after the `</div>` at line 97), and a conditional warning row that appears only when import is on AND redaction is off:
 
 ```tsx
         <div className="flex items-center justify-between gap-3">
@@ -715,11 +819,19 @@ Add a new toggle block in the `<CollapsibleContent>` block, immediately after th
             onCheckedChange={onImportShellEnvironmentChange}
           />
         </div>
+
+        {importShellEnvironment && !redactEnvValuesInOutputs ? (
+          <div className="text-[10px] text-amber-600 dark:text-amber-400 pl-3 border-l-2 border-amber-500/40">
+            Warning: shell env vars will flow to kernels and into outputs unredacted.
+            Turn on "Redact environment values in outputs" above to scrub them from
+            cell results and the blob store.
+          </div>
+        ) : null}
 ```
 
-- [ ] **Step 3: Wire the prop through `App.tsx`**
+- [ ] **Step 3: Wire `App.tsx`**
 
-In `apps/notebook/settings/App.tsx`, find the `<PrivacySection>` usage (grep for `PrivacySection`). Add to its props:
+In `apps/notebook/settings/App.tsx`, find the `<PrivacySection>` usage. Add:
 
 ```tsx
 importShellEnvironment={settings.importShellEnvironment}
@@ -728,142 +840,152 @@ onImportShellEnvironmentChange={(value) =>
 }
 ```
 
-- [ ] **Step 4: Surface in `useSyncedSettings`**
+- [ ] **Step 4: Wire `useSyncedSettings.ts`**
 
-Edit `src/hooks/useSyncedSettings.ts`. Find where `redactEnvValuesInOutputs` is read from the synced settings doc and exposed; add a parallel `importShellEnvironment` read and writer. Mirror the existing pattern exactly.
+Mirror every place `redactEnvValuesInOutputs` is read/written with a parallel `importShellEnvironment`.
 
-- [ ] **Step 5: Type-check the frontend**
+- [ ] **Step 5: Type-check + build**
 
-Run: `pnpm tsc --noEmit` (from repo root, or use the project's typecheck task)
+Run: `pnpm tsc --noEmit && cargo build -p notebook`
 Expected: clean.
 
-- [ ] **Step 6: Build the notebook app**
-
-Run: `cargo build -p notebook`
-Expected: clean.
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add apps/notebook/settings/sections/Privacy.tsx apps/notebook/settings/App.tsx src/hooks/useSyncedSettings.ts src/bindings/SyncedSettings.ts
-git commit -m "feat(notebook): add 'Import shell environment' Privacy toggle"
+git commit -m "feat(notebook): add 'Import shell environment' Privacy toggle + warning"
 ```
 
 ---
 
-## Task 8: Required-before-commit hygiene + manual verification
+## Task 8: Lint pass + manual end-to-end verification
 
 **Files:** none (verification only)
 
-- [ ] **Step 1: Run the lint pass that CI enforces**
+- [ ] **Step 1: Lint pass that CI enforces**
 
 Run: `cargo xtask lint --fix`
-Expected: clean exit. Any changes auto-applied get committed in step 4.
+Expected: clean exit. Any auto-applied changes get committed in Step 5.
 
-- [ ] **Step 2: Manual E2E (the actual user-facing verification)**
+- [ ] **Step 2: Manual E2E - secret reaches kernel and is redacted**
 
-Open a fresh terminal and export a sentinel:
+Quit the nightly app. From a fresh terminal:
 
 ```bash
 export TEST_SHELL_OVERLAY_SECRET="sk-real-test-$(date +%s)abcdef"
+open -a "nteract Nightly"
 ```
 
-Quit and relaunch `nteract Nightly.app` from the same terminal (`open -a "nteract Nightly"`). In a Python notebook, run:
+In a Python notebook cell:
 
 ```python
 import os
 os.environ.get("TEST_SHELL_OVERLAY_SECRET")
 ```
 
-Expected output: the actual secret string. This proves the overlay reached the kernel.
+Expected: the actual secret string. **This proves the overlay reached the kernel via env_vars.**
 
-Then run:
+Then in a new cell:
 
 ```python
 print("Value is:", os.environ["TEST_SHELL_OVERLAY_SECRET"])
 ```
 
-Expected output: `Value is: [redacted env]`. This proves the redactor scrubbed the value from the stream output.
+Expected: `Value is: [redacted env]`. **This proves the redactor scrubbed it from the stream output.**
 
-If either expectation fails: do not declare done. Use systematic-debugging to trace which layer dropped the value.
+If either fails, do NOT declare done. Use `superpowers:systematic-debugging` to trace which layer dropped it.
 
-- [ ] **Step 3: Toggle the setting off and re-verify**
+- [ ] **Step 3: Toggle test (this is the bit Codex flagged on v1)**
 
-In the Settings → Privacy panel, turn "Import shell environment into kernels" OFF. Restart the kernel from the notebook. Run again:
+In Settings → Privacy, turn "Import shell environment into kernels" OFF. **Restart the kernel** from the notebook (any restart - this triggers a fresh LaunchKernel/RestartKernel, which re-reads the toggle). Run:
 
 ```python
 import os
 os.environ.get("TEST_SHELL_OVERLAY_SECRET")
 ```
 
-Expected: `None`. Then turn the setting back ON, restart the kernel, and confirm the value returns.
+Expected: `None`. **This proves the per-launch toggle works without runtime-agent respawn.** Toggle back ON, restart the kernel again, confirm the secret returns.
 
-- [ ] **Step 4: Final commit if `lint --fix` made any changes**
+- [ ] **Step 4: Confirm warning surfaces**
+
+Toggle "Redact environment values in outputs" OFF while "Import shell environment" is ON. The amber warning row should appear under the toggle. Toggle redact back ON; warning disappears.
+
+- [ ] **Step 5: Final commit + push**
 
 ```bash
 git status
-# If anything is unstaged from lint --fix:
+# If anything is unstaged from `lint --fix`:
 git add -u
 git commit -m "chore(lint): apply cargo xtask lint --fix"
+git push -u origin feat/shell-env-overlay
 ```
 
-- [ ] **Step 5: Push and open a PR**
+- [ ] **Step 6: Draft PR (body via file, never heredoc per repo CLAUDE.md)**
 
-```bash
-git push -u origin <branch>
-gh pr create --title "feat(runtimed): import login-shell env into kernels, scoped to runtime-agents" --body-file <path-to-pr-body.md>
-```
-
-PR body skeleton (write to `/tmp/pr-shell-env-overlay.md` first):
+Write `/tmp/pr-shell-env-overlay.md` with:
 
 ```markdown
-Captures the user's login-shell env once at daemon startup, applies it to each
-runtime-agent spawn via `Command::envs()`. Kernels see `ANTHROPIC_API_KEY` and
-friends; the redactor from #2610 scrubs those values from outputs and the blob
-store.
+Captures the user's login shell env once at daemon startup and injects it
+into each LaunchKernel/RestartKernel RPC's env_vars field. Kernels see
+secrets like ANTHROPIC_API_KEY; the redactor from #2610 scrubs those
+values from outputs and the blob store.
 
-The daemon process env stays the launchd-minimal 10 vars — secrets only live in
-the per-notebook runtime-agent process and the kernel it spawns. A new
-`import_shell_environment` setting in the Privacy panel gates whether the
-overlay is applied; default on.
+The daemon process env stays the launchd-minimal 10 vars — secrets only
+live in the per-notebook runtime-agent process and the kernel it spawns.
+A new import_shell_environment setting in the Privacy panel gates whether
+the overlay is merged; default on.
 
 ## Design
 
-- `ShellEnvOverlay` is a Rust struct, not a process-env mutation. The daemon
-  never `env::set_var`s the captured values, so a daemon crash dump leaks
-  nothing.
-- Capture runs `$SHELL -lc 'env -0'` with a 3-second timeout. Failure → empty
-  overlay + warn log.
-- Apply happens in `RuntimeAgentHandle::spawn`. The kernel's existing env
-  inheritance carries it the rest of the way; the redactor's existing
-  `std::env::vars_os()` read in `OutputRedactor::from_current_process_and_command`
-  picks it up automatically.
-- The `crates/notebook/src/shell_env.rs` helper in the Tauri app is unchanged —
-  it solves a different problem (PATH for the `runtimed install` sidecar).
+- ShellEnvOverlay is a Rust struct, never an env::set_var on the daemon.
+  A crash dump of the supervisor leaks nothing.
+- Capture runs `$SHELL -lc 'env -0'` with a 3-second timeout, in its own
+  process group via setsid so the timeout-kill tears down any subshells
+  rc files forked.
+- Apply happens per-launch in launch_kernel.rs by extending the existing
+  env_vars HashMap that already carries uv-offline and pixi-frozen vars.
+  No spawn-signature changes, no second-call-site cascade, no respawn
+  needed when the user toggles the setting.
+- The redactor (output_redaction.rs:40) already reads cmd.get_envs(), so
+  it picks up overlay values for free.
 
 ## Behavioral coverage
 
-| Setting on? | Shell secret exported? | `os.environ.get(...)` | Output redacted? |
-|-------------|------------------------|-----------------------|------------------|
-| Yes (default) | Yes | secret value           | yes              |
-| Yes (default) | No  | `None`                 | n/a              |
-| No           | Yes | `None`                 | n/a              |
-| No           | No  | `None`                 | n/a              |
+| Setting on?   | Shell secret exported? | os.environ.get(...)  | Stream output |
+|---------------|------------------------|----------------------|---------------|
+| Yes (default) | Yes                    | secret value         | [redacted env] |
+| Yes (default) | No                     | None                 | n/a           |
+| No            | Yes                    | None                 | n/a           |
+| No            | No                     | None                 | n/a           |
 
 ## Test plan
 
-- [x] `cargo test -p runtimed --lib shell_env_overlay`
-- [x] `cargo test -p runtimed --test shell_env_overlay_runtime_agent`
-- [x] `cargo test -p runtimed`
-- [x] Manual E2E with `TEST_SHELL_OVERLAY_SECRET` exported in the launching shell.
-- [x] Setting toggle off → secret invisible; back on → secret visible and redacted.
+- [x] cargo test -p runtimed --lib shell_env_overlay
+- [x] cargo test -p runtimed --test shell_env_overlay_redaction
+- [x] cargo test -p runtimed
+- [x] Manual E2E with TEST_SHELL_OVERLAY_SECRET exported in the launching shell.
+- [x] Toggle off, restart kernel, secret invisible. Toggle on, restart, secret returns.
+- [x] Warning row appears when import=on + redact=off.
+```
+
+```bash
+gh pr create --title "feat(runtimed): import login-shell env into kernels via per-launch env_vars" --body-file /tmp/pr-shell-env-overlay.md
 ```
 
 ---
 
 ## Self-Review Checklist (already applied)
 
-- **Spec coverage:** Tasks 1-2 build the overlay. Task 3 captures at startup. Task 4 adds settings. Tasks 5-6 plumb it through the runtime-agent spawn and prove via tests that the redactor picks it up via `get_envs()`. Task 7 surfaces the UI. Task 8 verifies end-to-end.
+- **Spec coverage:** Tasks 1-2 build the overlay primitives. Task 3 captures at startup. Task 4 adds the setting. Task 5 wires the merge. Task 6 proves the redactor sees it via the real path. Task 7 surfaces UI + warning. Task 8 verifies end-to-end and proves the toggle.
+- **Codex findings addressed:**
+  - (1) settings paths corrected to `crates/runtimed-client/src/settings_doc.rs`
+  - (2) toggle-off now works mid-session because we route through per-launch `env_vars`, not via runtime-agent process env
+  - (3) `Daemon::new` constructor described as sync per actual signature
+  - (4) no spawn-signature change ⇒ no second-call-site cascade in `metadata.rs`
+  - (5) parser uses `std::str::from_utf8` (portable, no `OsStringExt`)
+  - (6) capture path uses `setsid` + `kill -pgid` + `wait` for clean timeout
+  - (7) redaction test now exercises `cmd.get_envs()` → real `OutputRedactor`
+  - (10) UI warning when import-on + redact-off
 - **Placeholders:** none.
-- **Type consistency:** `ShellEnvOverlay`, `import_shell_environment`, `shell_env_overlay()` accessor, `apply_to(&mut Command)` used identically across tasks.
-- **One known unknown:** the exact location and shape of `SettingsDoc::get_all` in `crates/runtimed/src/settings_doc.rs`. Task 4 Step 3 instructs the executor to grep and mirror the existing pattern — this is the right move because the field is one line in any of the plausible projection styles.
+- **Type consistency:** `ShellEnvOverlay::entries() -> &[(String, String)]` used identically across Tasks 5, 6. Settings field `import_shell_environment`. Daemon accessor `import_shell_environment()` async, `shell_env_overlay()` sync.
+- **One known unknown:** in Task 6 Step 2, the cleanest way to expose `OutputRedactor` to integration tests depends on a re-export choice. The plan offers two paths; the executor picks. If neither feels clean, an in-test reimplementation of the eligibility filter is acceptable as long as it's clearly marked.
