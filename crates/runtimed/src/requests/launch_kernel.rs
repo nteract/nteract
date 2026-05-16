@@ -16,6 +16,15 @@ use runtime_doc::{KernelActivity, KernelErrorReason, RuntimeLifecycle};
 
 use crate::async_outcome::{recv_oneshot_with_timeout, TimedOneShot};
 use crate::daemon::Daemon;
+use crate::shell_env_overlay::ShellEnvOverlay;
+
+fn overlay_env_vars(overlay: &Arc<ShellEnvOverlay>) -> std::collections::HashMap<String, String> {
+    overlay
+        .entries()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
 use crate::notebook_sync_server::{
     acquire_prewarmed_env_with_capture, build_launched_config, captured_env_for_runtime,
     captured_env_source_override, check_and_broadcast_sync_state, check_inline_deps,
@@ -1485,14 +1494,26 @@ pub(crate) async fn handle(
         warn!("[runtime-state] {}", e);
     }
     let redact_env_values_in_outputs = daemon.redact_env_values_in_outputs().await;
+    let import_shell_environment = daemon.import_shell_environment().await;
+    let shell_overlay = daemon.shell_env_overlay();
 
     // If runtime agent is already connected, restart kernel in-place
-    // (handles the shutdown → launch sequence without subprocess respawn)
+    // (handles the shutdown → launch sequence without subprocess respawn).
+    // The overlay is re-evaluated per launch so the toggle takes effect on
+    // the next restart without respawning the runtime-agent process.
     {
         let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
         if has_runtime_agent {
             info!("[notebook-sync] Agent connected — sending RestartKernel");
-            let mut restart_env_vars = crate::uv_project::uv_offline_env_vars(uv_pyproject_offline);
+            // Precedence: overlay (lowest) → uv → pixi (highest), so daemon-required
+            // vars always win over imported shell values.
+            let mut restart_env_vars: std::collections::HashMap<String, String> =
+                if import_shell_environment {
+                    overlay_env_vars(&shell_overlay)
+                } else {
+                    std::collections::HashMap::new()
+                };
+            restart_env_vars.extend(crate::uv_project::uv_offline_env_vars(uv_pyproject_offline));
             restart_env_vars.extend(crate::pixi_project::pixi_frozen_env_vars(pixi_toml_frozen));
             match send_runtime_agent_request_with_kernel_ports(room, |kernel_ports| {
                 notebook_protocol::protocol::RuntimeAgentRequest::RestartKernel {
@@ -1641,9 +1662,16 @@ pub(crate) async fn handle(
                     }
                 }
 
-                // Send LaunchKernel RPC
-                let mut launch_env_vars =
-                    crate::uv_project::uv_offline_env_vars(uv_pyproject_offline);
+                // Send LaunchKernel RPC. Same precedence as the restart path
+                // above: overlay (lowest) → uv → pixi (highest).
+                let mut launch_env_vars: std::collections::HashMap<String, String> =
+                    if import_shell_environment {
+                        overlay_env_vars(&shell_overlay)
+                    } else {
+                        std::collections::HashMap::new()
+                    };
+                launch_env_vars
+                    .extend(crate::uv_project::uv_offline_env_vars(uv_pyproject_offline));
                 launch_env_vars.extend(crate::pixi_project::pixi_frozen_env_vars(pixi_toml_frozen));
                 match send_runtime_agent_request_with_kernel_ports(room, |kernel_ports| {
                     notebook_protocol::protocol::RuntimeAgentRequest::LaunchKernel {
