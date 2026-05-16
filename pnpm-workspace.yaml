@@ -10,7 +10,6 @@ onlyBuiltDependencies:
 minimumReleaseAge: 1440
 blockExoticSubdeps: true
 trustPolicy: no-downgrade
-trustPolicyIgnoreAfter: 10080
 catalog:
   vite: npm:@voidzero-dev/vite-plus-core@0.1.16
   vitest: npm:@voidzero-dev/vite-plus-test@0.1.16
