@@ -15,6 +15,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -59,7 +62,7 @@ jobs:
       # Build the MCP output widget HTML. runt-mcp's include_str! needs it
       # before we compile the Rust binaries.
       - name: Build MCP output widget
-        run: pnpm --filter nteract-mcp-app install && pnpm exec vp run nteract-mcp-app#build
+        run: pnpm --filter nteract-mcp-app install --frozen-lockfile && pnpm exec vp run nteract-mcp-app#build
 
       - name: Build external binaries
         shell: bash
@@ -420,7 +423,7 @@ jobs:
       # runt-mcp's include_str! pulls in the MCP output widget HTML. Build
       # before compiling Rust so the assets/_output.html target exists.
       - name: Build MCP output widget
-        run: pnpm --filter nteract-mcp-app install && pnpm exec vp run nteract-mcp-app#build
+        run: pnpm --filter nteract-mcp-app install --frozen-lockfile && pnpm exec vp run nteract-mcp-app#build
 
       - name: Build runtimed and runt
         run: cargo build --release -p runtimed -p runt -p nteract-mcp

@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -45,7 +48,6 @@ jobs:
               - "Cargo.lock"
               - "rust-toolchain.toml"
               - "package.json"
-              - "package-lock.json"
               - "pnpm-lock.yaml"
               - "pnpm-workspace.yaml"
               - "vite.config.ts"
@@ -78,7 +80,7 @@ jobs:
         with:
           node-version: "22"
           cache: pnpm
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
 
       - name: Check (format + lint)
         run: vp check
@@ -138,7 +140,7 @@ jobs:
       - uses: ./.github/actions/build-runtime-artifacts
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
-      - run: pnpm --filter nteract-mcp-app install && pnpm exec vp run nteract-mcp-app#build
+      - run: pnpm --filter nteract-mcp-app install --frozen-lockfile && pnpm exec vp run nteract-mcp-app#build
 
       - name: Clippy (Windows cross-check)
         # runtimed-node stays excluded here: napi's build script needs libnode.dll
@@ -340,7 +342,7 @@ jobs:
           skip-wasm: true
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
-      - run: pnpm --filter nteract-mcp-app install && pnpm exec vp run nteract-mcp-app#build
+      - run: pnpm --filter nteract-mcp-app install --frozen-lockfile && pnpm exec vp run nteract-mcp-app#build
 
       - name: Build external binaries
         shell: bash
@@ -434,7 +436,7 @@ jobs:
       - uses: ./.github/actions/build-runtime-artifacts
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
-      - run: pnpm --filter nteract-mcp-app install && pnpm exec vp run nteract-mcp-app#build
+      - run: pnpm --filter nteract-mcp-app install --frozen-lockfile && pnpm exec vp run nteract-mcp-app#build
 
       # Excludes: notebook (needs bundled binaries, checked in build-linux),
       # runtimed-wasm (needs wasm-pack, tested in wasm-deno),
@@ -535,7 +537,7 @@ jobs:
           skip-wasm: true
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
-      - run: pnpm --filter nteract-mcp-app install && pnpm exec vp run nteract-mcp-app#build
+      - run: pnpm --filter nteract-mcp-app install --frozen-lockfile && pnpm exec vp run nteract-mcp-app#build
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
 
       - name: Build external binaries
@@ -659,7 +661,7 @@ jobs:
             pnpm-store-${{ runner.os }}-
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Download E2E artifacts
         uses: actions/download-artifact@v8

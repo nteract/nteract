@@ -94,7 +94,7 @@ jobs:
           shared-key: pr-binary-${{ inputs.target_os }}
 
       # Build wasm + renderer plugins (gitignored; runtimed embeds them).
-      # Also handles node + pnpm + vp + pnpm install setup.
+      # Also handles node + pnpm + vp + pnpm install --frozen-lockfile setup.
       - uses: ./.github/actions/build-runtime-artifacts
 
       - name: Build frontend
@@ -182,7 +182,7 @@ jobs:
       # build-runtime-artifacts already ran the cargo xtask wasm chain
       # earlier in this job; this only adds the small _output.html file.
       - name: Build MCP output widget
-        run: pnpm --filter nteract-mcp-app install && pnpm exec vp run nteract-mcp-app#build
+        run: pnpm --filter nteract-mcp-app install --frozen-lockfile && pnpm exec vp run nteract-mcp-app#build
 
       - name: Build external binaries (Unix)
         if: runner.os != 'Windows'
