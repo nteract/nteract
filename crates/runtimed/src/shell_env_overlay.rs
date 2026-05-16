@@ -5,6 +5,9 @@
 
 use tracing::warn;
 
+const CAPTURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const SHELL_CAPTURE_SCRIPT: &str = "env -0";
+
 #[derive(Debug, Default, Clone)]
 pub struct ShellEnvOverlay {
     entries: Vec<(String, String)>,
@@ -57,6 +60,101 @@ impl ShellEnvOverlay {
     pub fn entries(&self) -> &[(String, String)] {
         &self.entries
     }
+
+    #[cfg(unix)]
+    pub fn capture() -> Self {
+        match capture_inner() {
+            Ok(overlay) => {
+                tracing::info!(
+                    "[shell-env-overlay] captured {} entries from login shell",
+                    overlay.len()
+                );
+                overlay
+            }
+            Err(e) => {
+                tracing::warn!("[shell-env-overlay] capture failed: {e}; using empty overlay");
+                Self::empty()
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    pub fn capture() -> Self {
+        Self::empty()
+    }
+}
+
+#[cfg(unix)]
+fn capture_inner() -> Result<ShellEnvOverlay, String> {
+    use std::io::Read;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    let shell = std::env::var_os("SHELL").unwrap_or_else(|| std::ffi::OsString::from("/bin/zsh"));
+
+    let mut cmd = Command::new(&shell);
+    cmd.args(["-l", "-c", SHELL_CAPTURE_SCRIPT])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+    // Put the shell in its own session so a timeout-kill via -pgid tears down
+    // any subshells rc files forked. setsid is async-signal-safe per POSIX.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let mut child = cmd.spawn().map_err(|e| format!("spawn {shell:?}: {e}"))?;
+    let pid = child.id() as i32;
+    let mut stdout = child.stdout.take().ok_or("missing stdout pipe")?;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::with_capacity(8 * 1024);
+        let result = stdout
+            .read_to_end(&mut buf)
+            .map(|_| buf)
+            .map_err(|e| e.to_string());
+        let _ = tx.send(result);
+    });
+
+    let buf = match rx.recv_timeout(CAPTURE_TIMEOUT) {
+        Ok(Ok(buf)) => buf,
+        Ok(Err(e)) => {
+            kill_group_and_wait(pid, &mut child);
+            return Err(format!("read stdout: {e}"));
+        }
+        Err(_) => {
+            kill_group_and_wait(pid, &mut child);
+            return Err(format!(
+                "login shell capture timed out after {CAPTURE_TIMEOUT:?}"
+            ));
+        }
+    };
+
+    match child.wait() {
+        Ok(status) if !status.success() => {
+            return Err(format!("login shell exited with status {status}"));
+        }
+        Err(e) => return Err(format!("wait on shell: {e}")),
+        _ => {}
+    }
+
+    Ok(ShellEnvOverlay::parse_null_separated(&buf))
+}
+
+#[cfg(unix)]
+fn kill_group_and_wait(pid: i32, child: &mut std::process::Child) {
+    // -pid signals the entire process group we created via setsid (kill(2)).
+    unsafe {
+        libc::kill(-pid, libc::SIGKILL);
+    }
+    let _ = child.wait();
 }
 
 #[cfg(test)]
@@ -105,6 +203,18 @@ mod tests {
         let overlay = ShellEnvOverlay::parse_null_separated(raw);
         assert_eq!(overlay.len(), 2);
         assert_eq!(overlay.entries()[0].1, "line1\nline2\nline3");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn capture_returns_at_least_path() {
+        let overlay = ShellEnvOverlay::capture();
+        assert!(
+            !overlay.is_empty(),
+            "expected at least one entry from login shell"
+        );
+        let has_path = overlay.entries().iter().any(|(k, _)| k == "PATH");
+        assert!(has_path, "expected PATH in captured shell env");
     }
 
     #[test]
