@@ -49,8 +49,6 @@ permissions:
   contents: write
 
 env:
-  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
   RUNT_BUILD_CHANNEL: ${{ inputs.version_suffix }}
   NTERACT_BUILD_GIT_HASH: ${{ github.sha }}
 
@@ -162,7 +160,7 @@ jobs:
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - name: Build MCP output widget
-        run: pnpm --filter nteract-mcp-app install && pnpm exec vp run nteract-mcp-app#build
+        run: pnpm --filter nteract-mcp-app install --frozen-lockfile && pnpm exec vp run nteract-mcp-app#build
 
       - name: Build for Linux x64
         run: cargo build --release --target x86_64-unknown-linux-gnu -p runt -p runtimed -p nteract-mcp
@@ -226,7 +224,7 @@ jobs:
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - name: Build MCP output widget
-        run: pnpm --filter nteract-mcp-app install && pnpm exec vp run nteract-mcp-app#build
+        run: pnpm --filter nteract-mcp-app install --frozen-lockfile && pnpm exec vp run nteract-mcp-app#build
 
       - name: Build for macOS ARM64
         run: cargo build --release --target aarch64-apple-darwin -p runt
@@ -346,7 +344,7 @@ jobs:
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - name: Build MCP output widget
-        run: pnpm --filter nteract-mcp-app install && pnpm exec vp run nteract-mcp-app#build
+        run: pnpm --filter nteract-mcp-app install --frozen-lockfile && pnpm exec vp run nteract-mcp-app#build
 
       - name: Build external binaries
         run: |
@@ -360,6 +358,8 @@ jobs:
       - name: Build with tauri-action
         uses: tauri-apps/tauri-action@v0
         env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -521,7 +521,7 @@ jobs:
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - name: Build MCP output widget
-        run: pnpm --filter nteract-mcp-app install && pnpm exec vp run nteract-mcp-app#build
+        run: pnpm --filter nteract-mcp-app install --frozen-lockfile && pnpm exec vp run nteract-mcp-app#build
 
       - name: Build external binaries
         run: |
@@ -535,6 +535,8 @@ jobs:
       - name: Build with tauri-action
         uses: tauri-apps/tauri-action@v0
         env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -690,7 +692,7 @@ jobs:
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - name: Build MCP output widget
-        run: pnpm --filter nteract-mcp-app install && pnpm exec vp run nteract-mcp-app#build
+        run: pnpm --filter nteract-mcp-app install --frozen-lockfile && pnpm exec vp run nteract-mcp-app#build
 
       - name: Build external binaries
         shell: bash
@@ -724,6 +726,8 @@ jobs:
       - name: Build with tauri-action
         uses: tauri-apps/tauri-action@v0
         env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -853,7 +857,7 @@ jobs:
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - name: Build MCP output widget
-        run: pnpm --filter nteract-mcp-app install && pnpm exec vp run nteract-mcp-app#build
+        run: pnpm --filter nteract-mcp-app install --frozen-lockfile && pnpm exec vp run nteract-mcp-app#build
 
       - name: Build external binaries
         run: |
@@ -867,6 +871,8 @@ jobs:
       - name: Build with tauri-action
         uses: tauri-apps/tauri-action@v0
         env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: crates/notebook

@@ -72,7 +72,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Use npm with trusted publishing support
-        run: npm install -g npm@latest
+        run: npm install -g npm@11.14.1
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -119,7 +119,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Use npm with trusted publishing support
-        run: npm install -g npm@latest
+        run: npm install -g npm@11.14.1
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -186,7 +186,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Use npm with trusted publishing support
-        run: npm install -g npm@latest
+        run: npm install -g npm@11.14.1
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

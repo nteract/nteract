@@ -21,6 +21,7 @@ jobs:
   deploy:
     name: Build & Deploy Sift Preview
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: read
       pull-requests: write
@@ -55,7 +56,7 @@ jobs:
         with:
           node-version: "22"
           cache: pnpm
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
 
       - name: Generate demo data
         working-directory: packages/sift
@@ -64,9 +65,6 @@ jobs:
       - name: Build sift demo
         working-directory: packages/sift
         run: vp build
-
-      - name: Install Wrangler
-        run: pnpm add -w wrangler@3.90.0
 
       - name: Deploy to Cloudflare Pages
         id: deploy
