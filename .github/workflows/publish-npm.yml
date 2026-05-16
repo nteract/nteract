@@ -23,7 +23,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
   group: npm-publish-stable
@@ -36,10 +35,11 @@ env:
   # published @runtimed/node would resolve under ~/.cache/runt-nightly. Source
   # builds (no env) intentionally stay on the Nightly default.
   RUNT_BUILD_CHANNEL: stable
+  NPM_TRUSTED_PUBLISHING_MIN_VERSION: 11.5.1
 
 jobs:
-  native:
-    name: Native package (${{ matrix.target }})
+  pack-native:
+    name: Pack native package (${{ matrix.target }})
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -51,9 +51,6 @@ jobs:
           - target: linux-x64-gnu
             runner: ubuntu-latest
           - target: win32-x64-msvc
-            # npm provenance / sigstore requires GitHub-hosted runners.
-            # Publishing from a self-hosted (Blacksmith) Windows runner fails
-            # with: "Unsupported GitHub Actions runner environment: self-hosted".
             runner: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -69,10 +66,6 @@ jobs:
         with:
           node-version: "24"
           cache: pnpm
-          registry-url: "https://registry.npmjs.org"
-
-      - name: Use npm with trusted publishing support
-        run: npm install -g npm@11.14.1
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -86,20 +79,85 @@ jobs:
       - name: Verify platform package
         run: pnpm --dir packages/runtimed-node/npm/${{ matrix.target }} pack:dry-run
 
+      - name: Pack platform package
+        shell: bash
+        run: pnpm --dir packages/runtimed-node/npm/${{ matrix.target }} pack --pack-destination "$RUNNER_TEMP"
+
+      - name: Upload platform package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-package-${{ matrix.target }}
+          path: ${{ runner.temp }}/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-native:
+    name: Publish native package (${{ matrix.target }})
+    needs: [pack-native]
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [darwin-arm64, linux-x64-gnu, win32-x64-msvc]
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Capture npm version
+        id: npm-version
+        run: echo "version=$(npm --version)" >> "$GITHUB_OUTPUT"
+
+      - name: Verify npm trusted publishing support
+        shell: bash
+        run: |
+          node <<'NODE'
+          const current = process.env.NPM_VERSION.split(".").map(Number);
+          const minimum = process.env.NPM_TRUSTED_PUBLISHING_MIN_VERSION.split(".").map(Number);
+          for (let i = 0; i < 3; i++) {
+            if ((current[i] ?? 0) > (minimum[i] ?? 0)) process.exit(0);
+            if ((current[i] ?? 0) < (minimum[i] ?? 0)) {
+              throw new Error(`npm ${process.env.NPM_VERSION} is older than ${process.env.NPM_TRUSTED_PUBLISHING_MIN_VERSION}`);
+            }
+          }
+          NODE
+        env:
+          NPM_VERSION: ${{ steps.npm-version.outputs.version }}
+
+      - name: Download platform package artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: npm-package-${{ matrix.target }}
+          path: ${{ runner.temp }}/npm-package
+
       - name: Publish platform package
         shell: bash
         run: |
-          PACKAGE="@runtimed/node-${{ matrix.target }}"
-          VERSION=$(node -p "require('./packages/runtimed-node/npm/${{ matrix.target }}/package.json').version")
+          TARBALL="$(find "$RUNNER_TEMP/npm-package" -maxdepth 1 -name '*.tgz' -print -quit)"
+          if [ -z "$TARBALL" ]; then
+            echo "::error::No npm package tarball found"
+            exit 1
+          fi
+
+          tar -xOf "$TARBALL" package/package.json > "$RUNNER_TEMP/package.json"
+          PACKAGE="$(node -p "require(process.env.RUNNER_TEMP + '/package.json').name")"
+          VERSION="$(node -p "require(process.env.RUNNER_TEMP + '/package.json').version")"
+
           if npm view "${PACKAGE}@${VERSION}" version >/dev/null 2>&1; then
             echo "${PACKAGE}@${VERSION} is already published; skipping."
             exit 0
           fi
-          npm publish packages/runtimed-node/npm/${{ matrix.target }} --tag latest --access public --provenance
 
-  wrapper:
-    name: Wrapper package
-    needs: [native]
+          npm publish "$TARBALL" --tag latest --access public --provenance
+
+  pack-wrapper:
+    name: Pack wrapper package
+    needs: [publish-native]
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
@@ -116,10 +174,6 @@ jobs:
         with:
           node-version: "24"
           cache: pnpm
-          registry-url: "https://registry.npmjs.org"
-
-      - name: Use npm with trusted publishing support
-        run: npm install -g npm@11.14.1
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -131,6 +185,7 @@ jobs:
         run: pnpm --dir packages/runtimed-node pack:dry-run
 
       - name: Pack wrapper package
+        shell: bash
         run: pnpm --dir packages/runtimed-node pack --pack-destination "$RUNNER_TEMP"
 
       - name: Verify wrapper package manifest
@@ -155,20 +210,77 @@ jobs:
           }
           NODE
 
+      - name: Upload wrapper package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-package-wrapper
+          path: ${{ runner.temp }}/runtimed-node-*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-wrapper:
+    name: Publish wrapper package
+    needs: [pack-wrapper]
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Capture npm version
+        id: npm-version
+        run: echo "version=$(npm --version)" >> "$GITHUB_OUTPUT"
+
+      - name: Verify npm trusted publishing support
+        shell: bash
+        run: |
+          node <<'NODE'
+          const current = process.env.NPM_VERSION.split(".").map(Number);
+          const minimum = process.env.NPM_TRUSTED_PUBLISHING_MIN_VERSION.split(".").map(Number);
+          for (let i = 0; i < 3; i++) {
+            if ((current[i] ?? 0) > (minimum[i] ?? 0)) process.exit(0);
+            if ((current[i] ?? 0) < (minimum[i] ?? 0)) {
+              throw new Error(`npm ${process.env.NPM_VERSION} is older than ${process.env.NPM_TRUSTED_PUBLISHING_MIN_VERSION}`);
+            }
+          }
+          NODE
+        env:
+          NPM_VERSION: ${{ steps.npm-version.outputs.version }}
+
+      - name: Download wrapper package artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: npm-package-wrapper
+          path: ${{ runner.temp }}/npm-package
+
       - name: Publish wrapper package
         shell: bash
         run: |
-          PACKAGE="@runtimed/node"
-          VERSION=$(node -p "require('./packages/runtimed-node/package.json').version")
+          TARBALL="$(find "$RUNNER_TEMP/npm-package" -maxdepth 1 -name '*.tgz' -print -quit)"
+          if [ -z "$TARBALL" ]; then
+            echo "::error::No npm package tarball found"
+            exit 1
+          fi
+
+          tar -xOf "$TARBALL" package/package.json > "$RUNNER_TEMP/package.json"
+          PACKAGE="$(node -p "require(process.env.RUNNER_TEMP + '/package.json').name")"
+          VERSION="$(node -p "require(process.env.RUNNER_TEMP + '/package.json').version")"
+
           if npm view "${PACKAGE}@${VERSION}" version >/dev/null 2>&1; then
             echo "${PACKAGE}@${VERSION} is already published; skipping."
             exit 0
           fi
-          npm publish "$RUNNER_TEMP"/runtimed-node-*.tgz --tag latest --access public --provenance
 
-  pi:
-    name: Pi package
-    needs: [wrapper]
+          npm publish "$TARBALL" --tag latest --access public --provenance
+
+  pack-pi:
+    name: Pack Pi package
+    needs: [publish-wrapper]
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
@@ -183,10 +295,6 @@ jobs:
         with:
           node-version: "24"
           cache: pnpm
-          registry-url: "https://registry.npmjs.org"
-
-      - name: Use npm with trusted publishing support
-        run: npm install -g npm@11.14.1
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -195,6 +303,7 @@ jobs:
         run: pnpm --dir plugins/nteract/pi pack:dry-run
 
       - name: Pack Pi package
+        shell: bash
         run: pnpm --dir plugins/nteract/pi pack --pack-destination "$RUNNER_TEMP"
 
       - name: Verify Pi package manifest
@@ -217,13 +326,70 @@ jobs:
           }
           NODE
 
+      - name: Upload Pi package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-package-pi
+          path: ${{ runner.temp }}/nteract-pi-*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-pi:
+    name: Publish Pi package
+    needs: [pack-pi]
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Capture npm version
+        id: npm-version
+        run: echo "version=$(npm --version)" >> "$GITHUB_OUTPUT"
+
+      - name: Verify npm trusted publishing support
+        shell: bash
+        run: |
+          node <<'NODE'
+          const current = process.env.NPM_VERSION.split(".").map(Number);
+          const minimum = process.env.NPM_TRUSTED_PUBLISHING_MIN_VERSION.split(".").map(Number);
+          for (let i = 0; i < 3; i++) {
+            if ((current[i] ?? 0) > (minimum[i] ?? 0)) process.exit(0);
+            if ((current[i] ?? 0) < (minimum[i] ?? 0)) {
+              throw new Error(`npm ${process.env.NPM_VERSION} is older than ${process.env.NPM_TRUSTED_PUBLISHING_MIN_VERSION}`);
+            }
+          }
+          NODE
+        env:
+          NPM_VERSION: ${{ steps.npm-version.outputs.version }}
+
+      - name: Download Pi package artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: npm-package-pi
+          path: ${{ runner.temp }}/npm-package
+
       - name: Publish Pi package
         shell: bash
         run: |
-          PACKAGE="@nteract/pi"
-          VERSION=$(node -p "require('./plugins/nteract/pi/package.json').version")
+          TARBALL="$(find "$RUNNER_TEMP/npm-package" -maxdepth 1 -name '*.tgz' -print -quit)"
+          if [ -z "$TARBALL" ]; then
+            echo "::error::No npm package tarball found"
+            exit 1
+          fi
+
+          tar -xOf "$TARBALL" package/package.json > "$RUNNER_TEMP/package.json"
+          PACKAGE="$(node -p "require(process.env.RUNNER_TEMP + '/package.json').name")"
+          VERSION="$(node -p "require(process.env.RUNNER_TEMP + '/package.json').version")"
+
           if npm view "${PACKAGE}@${VERSION}" version >/dev/null 2>&1; then
             echo "${PACKAGE}@${VERSION} is already published; skipping."
             exit 0
           fi
-          npm publish "$RUNNER_TEMP"/nteract-pi-*.tgz --tag latest --access public --provenance
+
+          npm publish "$TARBALL" --tag latest --access public --provenance
