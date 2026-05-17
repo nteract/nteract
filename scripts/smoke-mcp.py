@@ -69,10 +69,31 @@ def stdout_of(body: str) -> str:
 
     `execute_cell` and `get_results` both return human-formatted text where
     the actual stdout / execute_result body sits after the trailing ━━━
-    separator. Take the last segment, or the whole body if no banner.
+    separator. Newer MCP responses may place an "Output summary" block before
+    the rendered output; ignore that summary for this smoke's old exact-output
+    assertions.
     """
     parts = body.split("━━━")
-    return parts[-1].strip() if len(parts) > 1 else body.strip()
+    rendered = parts[-1].strip() if len(parts) > 1 else body.strip()
+    return strip_output_summary(rendered)
+
+
+def strip_output_summary(rendered: str) -> str:
+    """Remove the leading MCP output-summary block from rendered cell output."""
+    lines = rendered.splitlines()
+    if not lines:
+        return ""
+
+    first = lines[0].strip()
+    if first == "Output summary: 0 outputs":
+        return "\n".join(lines[1:]).strip()
+    if first != "Output summary:":
+        return rendered.strip()
+
+    idx = 1
+    while idx < len(lines) and re.match(r"^out\[\d+\]:", lines[idx]):
+        idx += 1
+    return "\n".join(lines[idx:]).strip()
 
 
 def parse_json_body(body: str) -> dict | None:
