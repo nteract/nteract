@@ -88,7 +88,7 @@ pub fn read_json_value<P: Into<automerge::Prop>>(
 /// CRDT scenarios: two peers calling `put_object` at the same key produce
 /// competing objects. Prefer [`update_json_at_key`] for shared keys.
 #[deprecated(
-    note = "Use update_json_at_key to avoid put_object conflicts. See nteract/desktop#1594."
+    note = "Use update_json_at_key to avoid put_object conflicts. See nteract/nteract#1594."
 )]
 #[allow(deprecated)]
 pub fn put_json_at_key(

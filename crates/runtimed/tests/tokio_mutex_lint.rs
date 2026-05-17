@@ -68,7 +68,7 @@ fn runtimed_has_no_tokio_mutex_across_await() {
         }
         msg.push_str(
             "\nFix: scope each lock in its own block so the guard drops before the next .await.\n\
-             See: https://github.com/nteract/desktop/pull/1614\n",
+             See: https://github.com/nteract/nteract/pull/1614\n",
         );
         panic!("{msg}");
     }

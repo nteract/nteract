@@ -9,7 +9,7 @@ REM cross-spawn), this wrapper runs and exec's the right .exe. If it
 REM does not, the user gets a clear "command not found" error and we
 REM need a `.mcp.json` tweak upstream.
 REM
-REM Edit scripts/plugin-dispatch-wrapper.cmd in nteract/desktop, not the
+REM Edit scripts/plugin-dispatch-wrapper.cmd in nteract/nteract, not the
 REM copy in the distribution repo — the distribution copy is overwritten
 REM on every release.
 

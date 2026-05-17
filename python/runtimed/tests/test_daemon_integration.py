@@ -2870,7 +2870,7 @@ class TestCreateNotebook:
         the daemon should detect it via project file search and report the
         missing named env instead of falling back to a prewarmed env.
 
-        Regression test for nteract/desktop#1643.
+        Regression test for nteract/nteract#1643.
         """
         import uuid
 
@@ -2971,7 +2971,7 @@ class TestTrustApproval:
         promote it to Trusted so `needs_trust_approval` is False and the
         auto-launch gate does not block.
 
-        Regression for nteract/desktop#2150.
+        Regression for nteract/nteract#2150.
         """
         import json
 
@@ -3276,7 +3276,7 @@ class TestPeerCleanup:
     properly decrements the daemon's active_peers counter.  Without these
     fixes, phantom peers keep rooms alive indefinitely.
 
-    See: https://github.com/nteract/desktop/pull/1123
+    See: https://github.com/nteract/nteract/pull/1123
     """
 
     # -- helpers ----------------------------------------------------------

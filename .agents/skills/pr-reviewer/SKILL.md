@@ -24,7 +24,7 @@ uv run pr-review doctor
 Review a GitHub PR:
 
 ```bash
-uv run pr-review https://github.com/nteract/desktop/pull/<number> \
+uv run pr-review https://github.com/nteract/nteract/pull/<number> \
   --max-turns 120 \
   --out .context/reviews/pr-<number>.json
 ```

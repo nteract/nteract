@@ -17,7 +17,7 @@ class BinaryNotFoundError(FileNotFoundError):
         paths_str = "\n  ".join(searched_paths)
         super().__init__(
             f"Could not find '{binary_name}' binary. Searched:\n  {paths_str}\n\n"
-            f"Install nteract (https://github.com/nteract/desktop/releases) "
+            f"Install nteract (https://github.com/nteract/nteract/releases) "
             f"or download the binary directly.\n"
             f"Or set {_env_var(binary_name)} to the binary path."
         )

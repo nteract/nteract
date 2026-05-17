@@ -7,12 +7,12 @@
   "license": "BSD-3-Clause",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/nteract/desktop.git",
+    "url": "git+https://github.com/nteract/nteract.git",
     "directory": "packages/runtimed-node/npm/win32-x64-msvc"
   },
-  "homepage": "https://github.com/nteract/desktop/tree/main/packages/runtimed-node#readme",
+  "homepage": "https://github.com/nteract/nteract/tree/main/packages/runtimed-node#readme",
   "bugs": {
-    "url": "https://github.com/nteract/desktop/issues"
+    "url": "https://github.com/nteract/nteract/issues"
   },
   "keywords": [
     "nteract",

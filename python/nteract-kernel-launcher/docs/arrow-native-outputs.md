@@ -1,6 +1,6 @@
 # Arrow-Native Notebook Outputs
 
-Issue: https://github.com/nteract/desktop/issues/1816
+Issue: https://github.com/nteract/nteract/issues/1816
 
 This plan updates the post-#2629/#2630/#2632 architecture direction. The short
 version: Arrow IPC stream should become the canonical rich table output for

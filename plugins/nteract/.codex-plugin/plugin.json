@@ -7,7 +7,7 @@
     "url": "https://nteract.io"
   },
   "homepage": "https://nteract.io",
-  "repository": "https://github.com/nteract/desktop",
+  "repository": "https://github.com/nteract/nteract",
   "license": "BSD-3-Clause",
   "keywords": [
     "jupyter",

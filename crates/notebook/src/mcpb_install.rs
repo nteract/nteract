@@ -50,10 +50,10 @@ pub fn install_mcpb(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         },
         "repository": {
             "type": "git",
-            "url": "https://github.com/nteract/desktop"
+            "url": "https://github.com/nteract/nteract"
         },
         "homepage": "https://nteract.io",
-        "support": "https://github.com/nteract/desktop/issues",
+        "support": "https://github.com/nteract/nteract/issues",
         "license": "BSD-3-Clause",
         "server": {
             "type": "binary",

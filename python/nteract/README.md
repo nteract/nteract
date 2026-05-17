@@ -23,7 +23,7 @@ claude mcp add nteract -- uvx --prerelease allow nteract
 
 That will run this PyPI package, which locates `runt mcp` from your nteract desktop install and exec's it.
 
-Only pre-release wheels are being published while the library surface settles — the stable channel is frozen. See [#2217](https://github.com/nteract/desktop/issues/2217).
+Only pre-release wheels are being published while the library surface settles — the stable channel is frozen. See [#2217](https://github.com/nteract/nteract/issues/2217).
 
 ## What you get
 
@@ -37,7 +37,7 @@ With nteract connected to Claude, you can:
 
 ## Related
 
-- [nteract/desktop](https://github.com/nteract/desktop) — desktop app, daemon, and plugin source
+- [nteract/nteract](https://github.com/nteract/nteract) — desktop app, daemon, and plugin source
 - [runtimed on PyPI](https://pypi.org/project/runtimed/) — low-level Python bindings for the daemon
 
 ## License

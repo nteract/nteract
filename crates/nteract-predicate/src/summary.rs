@@ -148,7 +148,7 @@ pub fn histogram(
     // range `[min, min + num_bins]`, leaving the TS consumer convinced
     // the column's max was `min + num_bins` (it reads `bins[last].x1` as
     // the upper bound). Header labels like "0.46 – 25.46" for a column
-    // where every row is 0.459 come from that. See nteract/desktop#1847.
+    // where every row is 0.459 come from that. See nteract/nteract#1847.
     if (max - min).abs() < f64::EPSILON {
         return Ok(vec![HistogramBin {
             x0: min,

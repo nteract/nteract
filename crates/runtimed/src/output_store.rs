@@ -2055,7 +2055,7 @@ mod tests {
         assert!(!blob_store.exists("abc"));
     }
 
-    /// Regression for nteract/desktop#2242.
+    /// Regression for nteract/nteract#2242.
     ///
     /// Jupyter writes multi-line text MIME values as an array of strings
     /// (`["<div>\n", "<style>\n", ...]`). Ingest has to join that back into

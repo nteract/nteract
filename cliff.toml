@@ -8,7 +8,7 @@ body = """
 {% for commit in commits %}
 - {{ commit.message | split(pat="\n") | first | trim }}\
     {% if commit.scope %} *({{ commit.scope }})*{% endif %}\
-    ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/nteract/desktop/commit/{{ commit.id }}))
+    ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/nteract/nteract/commit/{{ commit.id }}))
 {%- endfor %}
 {% endfor %}
 """

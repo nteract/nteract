@@ -328,7 +328,7 @@ jobs:
           sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" crates/notebook/tauri.conf.json
           sed -i '' "s/\"productName\": \"[^\"]*\"/\"productName\": \"${PRODUCT_NAME}\"/" crates/notebook/tauri.conf.json
           sed -i '' "s/\"identifier\": \"[^\"]*\"/\"identifier\": \"${BUNDLE_ID}\"/" crates/notebook/tauri.conf.json
-          sed -i '' "s#https://github.com/nteract/desktop/releases/download/stable-latest/latest.json#https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
+          sed -i '' "s#https://github.com/nteract/nteract/releases/download/stable-latest/latest.json#https://github.com/nteract/nteract/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runtimed/Cargo.toml
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/notebook/Cargo.toml
@@ -505,7 +505,7 @@ jobs:
           sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" crates/notebook/tauri.conf.json
           sed -i '' "s/\"productName\": \"[^\"]*\"/\"productName\": \"${PRODUCT_NAME}\"/" crates/notebook/tauri.conf.json
           sed -i '' "s/\"identifier\": \"[^\"]*\"/\"identifier\": \"${BUNDLE_ID}\"/" crates/notebook/tauri.conf.json
-          sed -i '' "s#https://github.com/nteract/desktop/releases/download/stable-latest/latest.json#https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
+          sed -i '' "s#https://github.com/nteract/nteract/releases/download/stable-latest/latest.json#https://github.com/nteract/nteract/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runtimed/Cargo.toml
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/notebook/Cargo.toml
@@ -671,7 +671,7 @@ jobs:
           $tauriConf = $tauriConf -replace '"version": "[^"]+"', "`"version`": `"$version`""
           $tauriConf = $tauriConf -replace '"productName": "[^"]+"', "`"productName`": `"$productName`""
           $tauriConf = $tauriConf -replace '"identifier": "[^"]+"', "`"identifier`": `"$bundleId`""
-          $tauriConf = $tauriConf -replace 'https://github.com/nteract/desktop/releases/download/stable-latest/latest.json', 'https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json'
+          $tauriConf = $tauriConf -replace 'https://github.com/nteract/nteract/releases/download/stable-latest/latest.json', 'https://github.com/nteract/nteract/releases/download/${{ inputs.updater_channel_tag }}/latest.json'
           Set-Content crates/notebook/tauri.conf.json $tauriConf
           $runtCargo = Get-Content crates/runt/Cargo.toml -Raw
           $runtCargo = $runtCargo -replace '(?m)^version = ".*"$', "version = `"$version`""
@@ -841,7 +841,7 @@ jobs:
           sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" crates/notebook/tauri.conf.json
           sed -i "s/\"productName\": \"[^\"]*\"/\"productName\": \"${PRODUCT_NAME}\"/" crates/notebook/tauri.conf.json
           sed -i "s/\"identifier\": \"[^\"]*\"/\"identifier\": \"${BUNDLE_ID}\"/" crates/notebook/tauri.conf.json
-          sed -i "s#https://github.com/nteract/desktop/releases/download/stable-latest/latest.json#https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
+          sed -i "s#https://github.com/nteract/nteract/releases/download/stable-latest/latest.json#https://github.com/nteract/nteract/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
           sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
           sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/runtimed/Cargo.toml
           sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/notebook/Cargo.toml
@@ -1155,7 +1155,7 @@ jobs:
           fi
 
           git commit -m "Release v${VERSION} (${CHANNEL})" \
-            -m "Generated from nteract/desktop@${GITHUB_SHA}" \
+            -m "Generated from nteract/nteract@${GITHUB_SHA}" \
             -m "Do not hand-edit — regenerated on every release."
           git tag -f "v${VERSION}"
 
@@ -1416,10 +1416,12 @@ jobs:
       # from crates/runt/Cargo.toml so the stable release promotes the same
       # API users install without --pre, even if pyproject.toml was stale.
       #
-      # Trusted-publisher config on PyPI must include an entry for this
-      # workflow (`release-common.yml`) for runtimed. Missing
-      # entries surface here as "403 Invalid API Token … not valid for
-      # project 'X'". Fix at https://pypi.org/manage/project/{name}/settings/publishing/.
+      # Trusted-publisher config on PyPI must include entries for the top-level
+      # caller workflows (`release-stable.yml` and `release-nightly.yml`) for
+      # runtimed. PyPI does not match reusable workflow files like this one.
+      # Missing entries surface here as "403 Invalid API Token ... not valid
+      # for project 'X'". Fix at:
+      # https://pypi.org/manage/project/{name}/settings/publishing/.
 
       - name: Publish runtimed to PyPI
         run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/runtimed/ ./wheels/*.whl

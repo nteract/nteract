@@ -231,7 +231,7 @@ DESKTOP
 
           meta = with pkgs.lib; {
             description = "A fast, modern toolkit for Jupyter notebooks";
-            homepage    = "https://github.com/nteract/desktop";
+            homepage    = "https://github.com/nteract/nteract";
             license     = licenses.bsd3;
             platforms   = platforms.linux;
             mainProgram = "nteract";

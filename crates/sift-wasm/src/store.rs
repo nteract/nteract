@@ -865,7 +865,7 @@ pub fn store_histogram(handle: u32, col: usize, num_bins: usize) -> Result<JsVal
         // rather than stretching `num_bins` bins across `[min, min + num_bins]`.
         // Without this the TS consumer reads `bins[last].x1 = min + num_bins`
         // as the column max, producing header labels like "0.46 - 25.46" for
-        // columns where every row is 0.459. See nteract/desktop#1847.
+        // columns where every row is 0.459. See nteract/nteract#1847.
         if (max - min).abs() < f64::EPSILON {
             let single = vec![HistogramBin {
                 x0: min,
@@ -1186,7 +1186,7 @@ pub fn store_filtered_histogram(
         let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
 
         // Same degenerate-bin collapse as `store_histogram` - see
-        // that function for the rationale. See nteract/desktop#1847.
+        // that function for the rationale. See nteract/nteract#1847.
         if (max - min).abs() < f64::EPSILON {
             let single = vec![HistogramBin {
                 x0: min,
@@ -1368,7 +1368,7 @@ pub fn store_sort_indices(handle: u32, col: usize, ascending: bool) -> Result<Ve
 ///
 /// Fast-path: if the batch has no view columns, returns `batch.clone()`.
 ///
-/// See nteract/desktop#1853.
+/// See nteract/nteract#1853.
 fn downgrade_view_types(batch: &RecordBatch) -> Result<RecordBatch, String> {
     use arrow::datatypes::{Field, Schema};
     use std::sync::Arc;

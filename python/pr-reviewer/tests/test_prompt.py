@@ -11,7 +11,7 @@ def test_build_review_prompt_includes_pr_context() -> None:
         path=Path("/tmp/review"),
         pr=PullRequestInfo(
             number=5,
-            url="https://github.com/nteract/desktop/pull/5",
+            url="https://github.com/nteract/nteract/pull/5",
             title="Improve review",
             base_ref="main",
             head_ref="branch",
@@ -32,7 +32,7 @@ def test_build_review_prompt_includes_pr_context() -> None:
 
     prompt = build_review_prompt(workspace, extra_prompt="Only high confidence findings.")
 
-    assert "https://github.com/nteract/desktop/pull/5" in prompt
+    assert "https://github.com/nteract/nteract/pull/5" in prompt
     assert "- src/a.py" in prompt
     assert "diff --git a/src/a.py b/src/a.py" in prompt
     assert "Only high confidence findings." in prompt

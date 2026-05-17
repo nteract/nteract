@@ -10,9 +10,9 @@ from pr_reviewer.workspace import ReviewWorkspace
 
 
 def test_review_parser_accepts_pr_url_without_subcommand() -> None:
-    args = build_parser().parse_args(["https://github.com/nteract/desktop/pull/2508"])
+    args = build_parser().parse_args(["https://github.com/nteract/nteract/pull/2508"])
 
-    assert args.pr == "https://github.com/nteract/desktop/pull/2508"
+    assert args.pr == "https://github.com/nteract/nteract/pull/2508"
     assert args.max_turns is None
 
 
@@ -46,7 +46,7 @@ def make_workspace(tmp_path: Path) -> ReviewWorkspace:
         path=tmp_path / "review",
         pr=PullRequestInfo(
             number=5,
-            url="https://github.com/nteract/desktop/pull/5",
+            url="https://github.com/nteract/nteract/pull/5",
             title="Test",
             base_ref="main",
             head_ref="branch",

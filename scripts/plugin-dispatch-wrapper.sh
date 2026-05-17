@@ -6,7 +6,7 @@
 # (or any MCP client) only talks to the real MCP server — no long-lived
 # wrapper parent, signals and exit codes are transparent.
 #
-# Edit scripts/plugin-dispatch-wrapper.sh in nteract/desktop, not the
+# Edit scripts/plugin-dispatch-wrapper.sh in nteract/nteract, not the
 # copy in the distribution repo — the distribution copy is overwritten
 # on every release.
 

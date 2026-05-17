@@ -2,5 +2,5 @@
   "name": "nteract",
   "version": "0.2.8",
   "description": "Skills for working with nteract notebooks",
-  "repository": "https://github.com/nteract/desktop"
+  "repository": "https://github.com/nteract/nteract"
 }
