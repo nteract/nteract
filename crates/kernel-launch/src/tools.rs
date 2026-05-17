@@ -858,25 +858,41 @@ async fn download_uv_from_github(version: &str) -> Result<BootstrappedTool> {
 static UV_PATH: OnceCell<Arc<Result<PathBuf, String>>> = OnceCell::const_new();
 
 /// Walk the current process's `PATH` for a binary by name. Returns the first
-/// match that exists as a file. Used by `get_uv_path` / `get_pixi_path` so
-/// callers can spawn the tool with an absolute path regardless of what
-/// `PATH` the child inherits.
+/// candidate that exists AND has execute permission (on Unix) or the right
+/// extension (on Windows). The exec check matters because PATH can contain
+/// non-executable files named `uv` (rare but possible — config files,
+/// leftover artifacts) ahead of the real binary; spawning a cached
+/// non-executable path would later fail with PermissionDenied.
 fn find_in_path(binary: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join(binary);
-        if candidate.is_file() {
+        if is_executable_file(&candidate) {
             return Some(candidate);
         }
         #[cfg(windows)]
         {
             let exe = dir.join(format!("{binary}.exe"));
-            if exe.is_file() {
+            if is_executable_file(&exe) {
                 return Some(exe);
             }
         }
     }
     None
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() => meta.permissions().mode() & 0o111 != 0,
+        _ => false,
+    }
+}
+
+#[cfg(windows)]
+fn is_executable_file(path: &std::path::Path) -> bool {
+    path.is_file()
 }
 
 /// Get the path to uv, with the following priority:

@@ -176,7 +176,14 @@ impl ShellEnvOverlay {
     }
 }
 
-fn merge_paths(user: &str, daemon: &str) -> String {
+/// Merge two `PATH`-style colon-separated lists, preferring entries from
+/// `user` and appending non-duplicate entries from `daemon`. Empty strings
+/// in either side pass through cleanly.
+///
+/// Exposed so `jupyter_kernel.rs` can re-merge when the per-launch kernel
+/// command already has a `PATH` set (e.g. pixi shell-hook output) and we
+/// want to preserve those entries while still adding the user's shell PATH.
+pub fn merge_paths(user: &str, daemon: &str) -> String {
     if user.is_empty() {
         return daemon.to_string();
     }
