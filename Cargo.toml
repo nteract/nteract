@@ -38,7 +38,7 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 license = "BSD-3-Clause"
-repository = "https://github.com/nteract/desktop"
+repository = "https://github.com/nteract/nteract"
 
 [workspace.dependencies]
 anyhow = "1"

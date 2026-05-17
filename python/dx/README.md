@@ -17,7 +17,7 @@ pip install --pre "dx[polars]"
 pip install --pre "dx[pandas,polars]"
 ```
 
-Python 3.10+. Only pre-release wheels are being published while the library surface settles — the stable channel is frozen. See [#2217](https://github.com/nteract/desktop/issues/2217). Most nteract users don't install `dx` directly: the kernel launcher calls `dx.install()` during bootstrap, so DataFrames render through the blob store inside the nteract desktop app automatically.
+Python 3.10+. Only pre-release wheels are being published while the library surface settles — the stable channel is frozen. See [#2217](https://github.com/nteract/nteract/issues/2217). Most nteract users don't install `dx` directly: the kernel launcher calls `dx.install()` during bootstrap, so DataFrames render through the blob store inside the nteract desktop app automatically.
 
 ## Use
 
@@ -43,5 +43,5 @@ That's it. `dx.install()` is idempotent and automatically called by nteract's ke
 ## Links
 
 - Homepage: <https://nteract.io>
-- Source & issues: <https://github.com/nteract/desktop>
+- Source & issues: <https://github.com/nteract/nteract>
 - License: BSD-3-Clause

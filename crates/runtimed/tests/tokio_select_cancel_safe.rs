@@ -88,7 +88,7 @@ fn workspace_has_no_cancel_unsafe_in_select() {
         msg.push_str(
             "\nFix: move the call into a dedicated reader/writer task that forwards parsed \
              messages over an mpsc channel; then `select!` on `channel.recv()`, which is \
-             cancel-safe. See nteract/desktop#2182 for the FramedReader actor pattern.\n",
+             cancel-safe. See nteract/nteract#2182 for the FramedReader actor pattern.\n",
         );
         panic!("{msg}");
     }

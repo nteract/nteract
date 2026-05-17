@@ -40,7 +40,7 @@
   "name": "nteract",
   "repository": {
     "type": "git",
-    "url": "https://github.com/nteract/desktop"
+    "url": "https://github.com/nteract/nteract"
   },
   "server": {
     "entry_point": "server/nteract-mcp",
@@ -58,7 +58,7 @@
     },
     "type": "binary"
   },
-  "support": "https://github.com/nteract/desktop/issues",
+  "support": "https://github.com/nteract/nteract/issues",
   "tools": [
     {
       "description": "List active notebook sessions.",

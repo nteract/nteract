@@ -6,7 +6,7 @@ Built on [jupyter-zmq-client](https://crates.io/crates/jupyter-zmq-client) and [
 
 ## Install
 
-Download the latest release from [GitHub Releases](https://github.com/nteract/desktop/releases).
+Download the latest release from [GitHub Releases](https://github.com/nteract/nteract/releases).
 
 Linux desktop users should use the AppImage from GitHub Releases; see
 [Linux install options](docs/linux.md). DEB/RPM/APT installs are not currently
@@ -97,7 +97,7 @@ $ runt notebooks
 ## Project structure
 
 ```
-nteract/desktop
+nteract/nteract
 ├── src/                    # Shared UI code (React components, hooks, utilities)
 │   ├── bindings/          # TypeScript types generated from Rust (ts-rs)
 │   ├── components/

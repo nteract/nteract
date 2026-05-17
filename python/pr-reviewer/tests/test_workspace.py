@@ -29,7 +29,7 @@ def test_prepare_review_workspace_builds_isolated_worktree(tmp_path: Path) -> No
 
     pr = PullRequestInfo(
         number=12,
-        url="https://github.com/nteract/desktop/pull/12",
+        url="https://github.com/nteract/nteract/pull/12",
         title="Patch",
         base_ref="main",
         head_ref="feature",
@@ -74,7 +74,7 @@ def test_prepare_review_workspace_removes_worktree_when_diff_collection_fails(
 
     pr = PullRequestInfo(
         number=12,
-        url="https://github.com/nteract/desktop/pull/12",
+        url="https://github.com/nteract/nteract/pull/12",
         title="Patch",
         base_ref="main",
         head_ref="feature",

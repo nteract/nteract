@@ -14,7 +14,7 @@ interface FeedbackSystemInfo {
 }
 
 const MAX_URL_LENGTH = 8000;
-const GITHUB_ISSUES_URL = "https://github.com/nteract/desktop/issues/new";
+const GITHUB_ISSUES_URL = "https://github.com/nteract/nteract/issues/new";
 
 export default function App() {
   useSyncedTheme();

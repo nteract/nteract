@@ -13,7 +13,7 @@ pip install --pre runtimed
 # or: uv pip install --prerelease allow runtimed
 ```
 
-Only pre-release wheels are being published while the library surface settles. The stable channel is frozen at the last-shipped release; the `--pre` channel tracks the nightly desktop app and discovers the nightly daemon socket automatically. See [#2217](https://github.com/nteract/desktop/issues/2217) for context.
+Only pre-release wheels are being published while the library surface settles. The stable channel is frozen at the last-shipped release; the `--pre` channel tracks the nightly desktop app and discovers the nightly daemon socket automatically. See [#2217](https://github.com/nteract/nteract/issues/2217) for context.
 
 `Client()` and the high-level Python API use `default_socket_path()` by default. That helper respects `RUNTIMED_SOCKET_PATH`, so exported test or MCP sockets take precedence over the package's default channel.
 
@@ -135,9 +135,9 @@ await cell.delete()
 
 ## Requirements
 
-- The runtimed daemon, which ships with the [nteract desktop app](https://nteract.io). For development, see the [nteract/desktop repo](https://github.com/nteract/desktop).
+- The runtimed daemon, which ships with the [nteract desktop app](https://nteract.io). For development, see the [nteract/nteract repo](https://github.com/nteract/nteract).
 - Python 3.10+
 
 ## Documentation
 
-See [crates/runtimed/AGENTS.md](https://github.com/nteract/desktop/blob/main/crates/runtimed/AGENTS.md) for architecture and Python binding usage.
+See [crates/runtimed/AGENTS.md](https://github.com/nteract/nteract/blob/main/crates/runtimed/AGENTS.md) for architecture and Python binding usage.

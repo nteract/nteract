@@ -6,7 +6,7 @@ from pr_reviewer.git import PullRequestRef, resolve_pr
 
 
 def test_pull_request_ref_extracts_number_from_url() -> None:
-    ref = PullRequestRef("https://github.com/nteract/desktop/pull/2508")
+    ref = PullRequestRef("https://github.com/nteract/nteract/pull/2508")
 
     assert ref.number == 2508
 
@@ -28,7 +28,7 @@ def test_resolve_pr_uses_gh_json() -> None:
             stdout=json.dumps(
                 {
                     "number": 2508,
-                    "url": "https://github.com/nteract/desktop/pull/2508",
+                    "url": "https://github.com/nteract/nteract/pull/2508",
                     "title": "Add reviewer",
                     "baseRefName": "main",
                     "headRefName": "feature",
@@ -39,9 +39,9 @@ def test_resolve_pr_uses_gh_json() -> None:
             stderr="",
         )
 
-    pr = resolve_pr(PullRequestRef("2508", repo="nteract/desktop"), cwd=Path("."), runner=runner)
+    pr = resolve_pr(PullRequestRef("2508", repo="nteract/nteract"), cwd=Path("."), runner=runner)
 
-    assert calls[0][-2:] == ["--repo", "nteract/desktop"]
+    assert calls[0][-2:] == ["--repo", "nteract/nteract"]
     assert pr.number == 2508
     assert pr.base_ref == "main"
     assert pr.head_sha == "abc123"

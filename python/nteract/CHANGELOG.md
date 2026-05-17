@@ -2,7 +2,7 @@
 
 ## 2.0.0 (unreleased)
 
-First release from `nteract/desktop`. The `nteract` package is now a thin wrapper that locates and launches the `runt mcp` server that ships with the [nteract desktop app](https://nteract.io).
+First release from the renamed `nteract/nteract` repository. The `nteract` package is now a thin wrapper that locates and launches the `runt mcp` server that ships with the [nteract desktop app](https://nteract.io).
 
 ### Highlights
 
@@ -13,4 +13,4 @@ First release from `nteract/desktop`. The `nteract` package is now a thin wrappe
 
 ### Breaking changes from 1.x
 
-The package was completely rewritten. The 1.x series (published from `nteract/nteract`) was a different project. There is no migration path — install and configure as new.
+The package was completely rewritten. The 1.x series (published from the previous repository that used the `nteract/nteract` name) was a different project. There is no migration path — install and configure as new.

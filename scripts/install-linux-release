@@ -21,7 +21,7 @@ Options:
   --tag <tag>          Download artifacts from a GitHub release tag.
                        Defaults to GitHub's latest non-prerelease release.
   --from-dir <dir>     Install artifacts from a local directory instead of GitHub.
-  --repo <owner/repo>  GitHub repository (default: nteract/desktop).
+  --repo <owner/repo>  GitHub repository (default: nteract/nteract).
   --channel <name>     stable or nightly (default: stable). Nightly requires --tag.
   --prefix <dir>       Install root (default: $XDG_DATA_HOME/nteract/<channel>,
                        or ~/.local/share/nteract/<channel>).
@@ -72,7 +72,7 @@ case "$(uname -m)" in
     ;;
 esac
 
-REPO="nteract/desktop"
+REPO="nteract/nteract"
 DEFAULT_CHANNEL="stable"
 DEFAULT_TAG=""
 CHANNEL="$DEFAULT_CHANNEL"

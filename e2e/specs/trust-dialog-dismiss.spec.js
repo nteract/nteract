@@ -4,7 +4,7 @@
  * Verifies that clicking "Trust & Start" closes the dialog immediately,
  * without waiting for kernel launch to complete.
  *
- * Regression test for: https://github.com/nteract/desktop/issues/515
+ * Regression test for: https://github.com/nteract/nteract/issues/515
  *
  * Requires: NOTEBOOK_PATH=crates/notebook/fixtures/audit-test/2-uv-inline.ipynb
  */

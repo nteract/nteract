@@ -17,7 +17,7 @@ diff reconstruction.
 ```bash
 uv run pr-review doctor
 
-uv run pr-review https://github.com/nteract/desktop/pull/2508 \
+uv run pr-review https://github.com/nteract/nteract/pull/2508 \
   --base main \
   --out .context/reviews/pr-2508.json
 ```
@@ -25,7 +25,7 @@ uv run pr-review https://github.com/nteract/desktop/pull/2508 \
 Review turn budgets scale from the PR diff size and can be overridden:
 
 ```bash
-uv run pr-review https://github.com/nteract/desktop/pull/2508 --max-turns 120
+uv run pr-review https://github.com/nteract/nteract/pull/2508 --max-turns 120
 ```
 
 ## Bedrock authentication

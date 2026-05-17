@@ -65,7 +65,7 @@ def make_workspace(tmp_path: Path) -> ReviewWorkspace:
         path=tmp_path,
         pr=PullRequestInfo(
             number=5,
-            url="https://github.com/nteract/desktop/pull/5",
+            url="https://github.com/nteract/nteract/pull/5",
             title="Test",
             base_ref="main",
             head_ref="branch",
