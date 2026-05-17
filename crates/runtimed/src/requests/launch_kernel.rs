@@ -19,10 +19,11 @@ use crate::daemon::Daemon;
 use crate::shell_env_overlay::ShellEnvOverlay;
 
 fn overlay_env_vars(overlay: &Arc<ShellEnvOverlay>) -> std::collections::HashMap<String, String> {
-    overlay
-        .entries_for_kernel_launch()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect()
+    // Merge the user's shell PATH with the daemon's PATH so the kernel can
+    // both find daemon-managed tools (uv) and the user's shell binaries
+    // (~/.local/bin, /opt/homebrew/bin, etc.).
+    let daemon_path = std::env::var("PATH").unwrap_or_default();
+    overlay.build_kernel_env_vars(&daemon_path)
 }
 use crate::notebook_sync_server::{
     acquire_prewarmed_env_with_capture, build_launched_config, captured_env_for_runtime,

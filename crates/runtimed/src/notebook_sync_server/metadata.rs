@@ -4029,10 +4029,10 @@ pub(crate) async fn auto_launch_kernel(
                 // Precedence: shell overlay (if import setting on) → uv → pixi.
                 let mut launch_env_vars: std::collections::HashMap<String, String> =
                     if import_shell_environment {
-                        shell_overlay
-                            .entries_for_kernel_launch()
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect()
+                        // Merge user shell PATH with daemon PATH; see
+                        // launch_kernel.rs::overlay_env_vars for rationale.
+                        let daemon_path = std::env::var("PATH").unwrap_or_default();
+                        shell_overlay.build_kernel_env_vars(&daemon_path)
                     } else {
                         std::collections::HashMap::new()
                     };
