@@ -308,7 +308,7 @@ pub struct SyncedSettings {
     #[serde(default = "default_redact_env_values_in_outputs")]
     pub redact_env_values_in_outputs: bool,
 
-    /// Merge the daemon's captured login-shell env into each kernel launch's
+    /// Merge the daemon's captured shell startup env into each kernel launch's
     /// `env_vars`. Combined with `redact_env_values_in_outputs`, the user's
     /// shell secrets reach the kernel but stay out of outputs and the blob
     /// store. Default `true` to match Jupyter's behavior, but redacted on the
