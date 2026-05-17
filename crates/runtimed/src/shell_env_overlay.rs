@@ -1,4 +1,4 @@
-//! Capture the user's login-shell environment once at daemon startup. The
+//! Capture the user's shell startup environment once at daemon startup. The
 //! daemon's own process env is never modified; the overlay is injected into
 //! each `LaunchKernel`/`RestartKernel` RPC's `env_vars` field so the toggle
 //! is honored per-launch without a runtime-agent respawn.
@@ -8,7 +8,13 @@ use tracing::warn;
 #[cfg(unix)]
 const CAPTURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 #[cfg(unix)]
-const SHELL_CAPTURE_SCRIPT: &str = "env -0";
+const DEFAULT_SHELL_CAPTURE_SCRIPT: &str = "env -0";
+#[cfg(unix)]
+const BASH_CAPTURE_SCRIPT: &str =
+    "printf '\\0'; if [ -r \"$HOME/.bashrc\" ]; then . \"$HOME/.bashrc\" >/dev/null 2>&1; fi; env -0";
+#[cfg(unix)]
+const ZSH_CAPTURE_SCRIPT: &str =
+    "printf '\\0'; if [[ -r \"$HOME/.zshrc\" ]]; then source \"$HOME/.zshrc\" >/dev/null 2>&1; fi; env -0";
 
 /// Env vars the daemon or the surrounding process tree manages directly. The
 /// overlay must not stomp these on the kernel `Command`:
@@ -158,7 +164,7 @@ impl ShellEnvOverlay {
         match capture_inner() {
             Ok(overlay) => {
                 tracing::info!(
-                    "[shell-env-overlay] captured {} entries from login shell",
+                    "[shell-env-overlay] captured {} entries from shell startup",
                     overlay.len()
                 );
                 overlay
@@ -209,9 +215,10 @@ fn capture_inner() -> Result<ShellEnvOverlay, String> {
     use std::process::{Command, Stdio};
 
     let shell = std::env::var_os("SHELL").unwrap_or_else(|| std::ffi::OsString::from("/bin/zsh"));
+    let script = capture_script_for_shell(&shell);
 
     let mut cmd = Command::new(&shell);
-    cmd.args(["-l", "-c", SHELL_CAPTURE_SCRIPT])
+    cmd.args(["-l", "-c", script])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -250,20 +257,33 @@ fn capture_inner() -> Result<ShellEnvOverlay, String> {
         Err(_) => {
             kill_group_and_wait(pid, &mut child);
             return Err(format!(
-                "login shell capture timed out after {CAPTURE_TIMEOUT:?}"
+                "shell startup capture timed out after {CAPTURE_TIMEOUT:?}"
             ));
         }
     };
 
     match child.wait() {
         Ok(status) if !status.success() => {
-            return Err(format!("login shell exited with status {status}"));
+            return Err(format!("shell startup capture exited with status {status}"));
         }
         Err(e) => return Err(format!("wait on shell: {e}")),
         _ => {}
     }
 
     Ok(ShellEnvOverlay::parse_null_separated(&buf))
+}
+
+#[cfg(unix)]
+fn capture_script_for_shell(shell: &std::ffi::OsStr) -> &'static str {
+    let shell_name = std::path::Path::new(shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    match shell_name {
+        "bash" => BASH_CAPTURE_SCRIPT,
+        "zsh" => ZSH_CAPTURE_SCRIPT,
+        _ => DEFAULT_SHELL_CAPTURE_SCRIPT,
+    }
 }
 
 #[cfg(unix)]
@@ -329,7 +349,7 @@ mod tests {
         let overlay = ShellEnvOverlay::capture();
         assert!(
             !overlay.is_empty(),
-            "expected at least one entry from login shell"
+            "expected at least one entry from shell startup"
         );
         let has_path = overlay.entries().iter().any(|(k, _)| k == "PATH");
         assert!(has_path, "expected PATH in captured shell env");
@@ -406,6 +426,23 @@ mod tests {
         let env = overlay.build_kernel_env_vars("/daemon/bin");
         // No user PATH => kernel inherits daemon PATH naturally; we don't set it.
         assert!(!env.contains_key("PATH"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zsh_capture_sources_zshrc_before_env_dump() {
+        let script = capture_script_for_shell(std::ffi::OsStr::new("/bin/zsh"));
+        assert!(script.contains(".zshrc"));
+        assert!(script.contains("env -0"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unknown_shells_use_plain_env_capture() {
+        assert_eq!(
+            capture_script_for_shell(std::ffi::OsStr::new("/usr/bin/fish")),
+            DEFAULT_SHELL_CAPTURE_SCRIPT,
+        );
     }
 
     #[test]

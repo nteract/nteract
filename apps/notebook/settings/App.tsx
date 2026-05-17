@@ -54,27 +54,34 @@ function secondsToSlider(secs: number): number {
   return Math.max(0, Math.min(SLIDER_STEPS, Math.round(position)));
 }
 
-/** Keep Alive slider - exponential scale from 5s to 7 days */
-function KeepAliveSlider({
-  value,
-  onChange,
+function RuntimeSection({
+  keepAliveSecs,
+  onKeepAliveSecsChange,
+  redactEnvValuesInOutputs,
+  onRedactEnvValuesInOutputsChange,
+  importShellEnvironment,
+  onImportShellEnvironmentChange,
 }: {
-  value: number;
-  onChange: (value: number) => void;
+  keepAliveSecs: number;
+  onKeepAliveSecsChange: (value: number) => void;
+  redactEnvValuesInOutputs: boolean;
+  onRedactEnvValuesInOutputsChange: (value: boolean) => void;
+  importShellEnvironment: boolean;
+  onImportShellEnvironmentChange: (value: boolean) => void;
 }) {
-  const [localValue, setLocalValue] = useState(value);
+  const [localValue, setLocalValue] = useState(keepAliveSecs);
 
   useEffect(() => {
-    setLocalValue(value);
-  }, [value]);
+    setLocalValue(keepAliveSecs);
+  }, [keepAliveSecs]);
 
   const sliderPosition = secondsToSlider(localValue);
 
   return (
-    <div className="space-y-3 pt-4 border-t border-border/50">
+    <div className="space-y-4 pt-4 border-t border-border/50">
       <div>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-          Runtimes
+          Runtime
         </span>
       </div>
       <div className="space-y-1">
@@ -95,12 +102,49 @@ function KeepAliveSlider({
           max={SLIDER_STEPS}
           step={1}
           onValueChange={(v) => setLocalValue(sliderToSeconds(v[0]))}
-          onValueCommit={(v) => onChange(sliderToSeconds(v[0]))}
+          onValueCommit={(v) => onKeepAliveSecsChange(sliderToSeconds(v[0]))}
         />
       </div>
       <div className="flex justify-between text-[10px] text-muted-foreground/70">
         <span>5s</span>
         <span>7 days</span>
+      </div>
+
+      <div className="space-y-3 pt-2">
+        <div className="flex items-center justify-between gap-3">
+          <div className="space-y-0.5">
+            <span className="text-sm text-foreground">Redact environment values in outputs</span>
+            <p className="text-[10px] text-muted-foreground/70">
+              Masks eligible environment variable values for newly launched or restarted kernels
+            </p>
+          </div>
+          <Switch
+            checked={redactEnvValuesInOutputs}
+            onCheckedChange={onRedactEnvValuesInOutputsChange}
+          />
+        </div>
+
+        <div className="flex items-center justify-between gap-3">
+          <div className="space-y-0.5">
+            <span className="text-sm text-foreground">Import shell environment into kernels</span>
+            <p className="text-[10px] text-muted-foreground/70">
+              Passes your shell startup env vars (API keys, tokens) to newly launched kernels. Pair
+              with redaction to keep values out of outputs.
+            </p>
+          </div>
+          <Switch
+            checked={importShellEnvironment}
+            onCheckedChange={onImportShellEnvironmentChange}
+          />
+        </div>
+
+        {importShellEnvironment && !redactEnvValuesInOutputs ? (
+          <div className="text-[10px] text-amber-600 dark:text-amber-400 pl-3 border-l-2 border-amber-500/40">
+            Warning: shell env vars will flow to kernels and into outputs unredacted. Turn on
+            "Redact environment values in outputs" to scrub them from cell results and the blob
+            store.
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -465,16 +509,18 @@ export default function App() {
           </div>
         </div>
 
-        {/* Runtimes */}
-        <KeepAliveSlider value={keepAliveSecs} onChange={setKeepAliveSecs} />
-
-        <PrivacySection
-          telemetryEnabled={telemetryEnabled}
-          onTelemetryChange={setTelemetryEnabled}
+        <RuntimeSection
+          keepAliveSecs={keepAliveSecs}
+          onKeepAliveSecsChange={setKeepAliveSecs}
           redactEnvValuesInOutputs={redactEnvValuesInOutputs}
           onRedactEnvValuesInOutputsChange={setRedactEnvValuesInOutputs}
           importShellEnvironment={importShellEnvironment}
           onImportShellEnvironmentChange={setImportShellEnvironment}
+        />
+
+        <PrivacySection
+          telemetryEnabled={telemetryEnabled}
+          onTelemetryChange={setTelemetryEnabled}
           installId={installId}
           onRotate={rotateInstallId}
           lastDaemonPingAt={lastDaemonPingAt}

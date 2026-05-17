@@ -8,10 +8,6 @@ import { Switch } from "@/components/ui/switch";
 interface PrivacySectionProps {
   telemetryEnabled: boolean;
   onTelemetryChange: (value: boolean) => void;
-  redactEnvValuesInOutputs: boolean;
-  onRedactEnvValuesInOutputsChange: (value: boolean) => void;
-  importShellEnvironment: boolean;
-  onImportShellEnvironmentChange: (value: boolean) => void;
   installId: string;
   onRotate: () => Promise<string | null>;
   lastDaemonPingAt: number | null;
@@ -39,10 +35,6 @@ function openOrFallThrough(url: string) {
 export function PrivacySection({
   telemetryEnabled,
   onTelemetryChange,
-  redactEnvValuesInOutputs,
-  onRedactEnvValuesInOutputsChange,
-  importShellEnvironment,
-  onImportShellEnvironmentChange,
   installId,
   onRotate,
   lastDaemonPingAt,
@@ -84,45 +76,6 @@ export function PrivacySection({
             </div>
           }
         />
-
-        <div className="flex items-center justify-between gap-3">
-          <div className="space-y-0.5">
-            <span className="text-xs text-muted-foreground">
-              Redact environment values in outputs
-            </span>
-            <p className="text-[10px] text-muted-foreground/70">
-              Masks eligible environment variable values for newly launched or restarted kernels
-            </p>
-          </div>
-          <Switch
-            checked={redactEnvValuesInOutputs}
-            onCheckedChange={onRedactEnvValuesInOutputsChange}
-          />
-        </div>
-
-        <div className="flex items-center justify-between gap-3">
-          <div className="space-y-0.5">
-            <span className="text-xs text-muted-foreground">
-              Import shell environment into kernels
-            </span>
-            <p className="text-[10px] text-muted-foreground/70">
-              Passes your login shell's env vars (API keys, tokens) to newly launched kernels. Pair
-              with redaction above to keep values out of outputs.
-            </p>
-          </div>
-          <Switch
-            checked={importShellEnvironment}
-            onCheckedChange={onImportShellEnvironmentChange}
-          />
-        </div>
-
-        {importShellEnvironment && !redactEnvValuesInOutputs ? (
-          <div className="text-[10px] text-amber-600 dark:text-amber-400 pl-3 border-l-2 border-amber-500/40">
-            Warning: shell env vars will flow to kernels and into outputs unredacted. Turn on
-            "Redact environment values in outputs" above to scrub them from cell results and the
-            blob store.
-          </div>
-        ) : null}
 
         <div className="space-y-1.5">
           <div className="flex items-center justify-between gap-3">
