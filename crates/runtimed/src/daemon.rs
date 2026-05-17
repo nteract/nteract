@@ -1347,26 +1347,38 @@ impl Daemon {
         )
     }
 
-    /// Create a new daemon with the given configuration.
-    ///
-    /// Returns an error if another daemon is already running.
     /// Test-only convenience that constructs a `Daemon` with an empty shell-env
     /// overlay. Integration tests reach this through the crate's public surface.
     #[doc(hidden)]
     pub fn new_for_test(config: DaemonConfig) -> Result<Arc<Self>, DaemonAlreadyRunning> {
-        Self::new(
-            config,
-            Arc::new(crate::shell_env_overlay::ShellEnvOverlay::empty()),
-        )
+        Self::new_with_overlay(config, || {
+            crate::shell_env_overlay::ShellEnvOverlay::empty()
+        })
     }
 
-    pub fn new(
+    /// Create a new daemon with the given configuration.
+    ///
+    /// Returns an error if another daemon is already running.
+    pub fn new(config: DaemonConfig) -> Result<Arc<Self>, DaemonAlreadyRunning> {
+        Self::new_with_overlay(config, crate::shell_env_overlay::ShellEnvOverlay::capture)
+    }
+
+    fn new_with_overlay(
         config: DaemonConfig,
-        shell_env_overlay: Arc<crate::shell_env_overlay::ShellEnvOverlay>,
+        overlay_provider: impl FnOnce() -> crate::shell_env_overlay::ShellEnvOverlay,
     ) -> Result<Arc<Self>, DaemonAlreadyRunning> {
-        // Try to acquire the singleton lock
+        // Acquire the singleton lock BEFORE capturing the shell env. Duplicate
+        // launchd/double-click starts hit this path, and we don't want them to
+        // pay the up-to-3s shell-capture cost or run rc files for side effects
+        // before discovering the existing daemon and exiting cleanly.
         let lock = DaemonLock::try_acquire(config.lock_dir.as_ref())
             .map_err(|info| DaemonAlreadyRunning { info })?;
+
+        let shell_env_overlay = Arc::new(overlay_provider());
+        tracing::info!(
+            "Shell env overlay: {} entries captured",
+            shell_env_overlay.len()
+        );
 
         // Load or create the in-memory settings document. settings.json is
         // canonical; the legacy Automerge file is read only for one-time

@@ -20,8 +20,7 @@ use crate::shell_env_overlay::ShellEnvOverlay;
 
 fn overlay_env_vars(overlay: &Arc<ShellEnvOverlay>) -> std::collections::HashMap<String, String> {
     overlay
-        .entries()
-        .iter()
+        .entries_for_kernel_launch()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect()
 }

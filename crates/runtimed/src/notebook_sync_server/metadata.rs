@@ -4030,8 +4030,7 @@ pub(crate) async fn auto_launch_kernel(
                 let mut launch_env_vars: std::collections::HashMap<String, String> =
                     if import_shell_environment {
                         shell_overlay
-                            .entries()
-                            .iter()
+                            .entries_for_kernel_launch()
                             .map(|(k, v)| (k.clone(), v.clone()))
                             .collect()
                     } else {

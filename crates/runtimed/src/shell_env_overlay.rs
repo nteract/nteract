@@ -5,8 +5,33 @@
 
 use tracing::warn;
 
+#[cfg(unix)]
 const CAPTURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+#[cfg(unix)]
 const SHELL_CAPTURE_SCRIPT: &str = "env -0";
+
+/// Env vars the daemon manages directly on the kernel `Command`. Excluding them
+/// from the overlay keeps the user's shell value from redirecting a pooled
+/// uv/conda kernel into the wrong Python or clobbering the launcher
+/// `PYTHONPATH` the daemon sets in `crates/runtimed/src/jupyter_kernel.rs`.
+///
+/// Anything not in this list - `PATH`, `HOME`, `ANTHROPIC_API_KEY`, etc. - still
+/// flows through to the kernel.
+const ACTIVATION_DENYLIST: &[&str] = &[
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "VIRTUAL_ENV",
+    "CONDA_PREFIX",
+    "CONDA_DEFAULT_ENV",
+    "CONDA_PYTHON_EXE",
+    "CONDA_EXE",
+    "CONDA_SHLVL",
+    "PIXI_PROJECT_MANIFEST",
+    "PIXI_PROJECT_NAME",
+    "PIXI_PROJECT_ROOT",
+    "PIXI_PROJECT_VERSION",
+    "PIXI_ENVIRONMENT_NAME",
+];
 
 #[derive(Debug, Default, Clone)]
 pub struct ShellEnvOverlay {
@@ -59,6 +84,17 @@ impl ShellEnvOverlay {
 
     pub fn entries(&self) -> &[(String, String)] {
         &self.entries
+    }
+
+    /// Iterate overlay entries with daemon-managed activation keys
+    /// (`PYTHONPATH`, `VIRTUAL_ENV`, `CONDA_*`, `PIXI_*`) filtered out. Use
+    /// this when injecting the overlay into `LaunchKernel`/`RestartKernel`
+    /// `env_vars` - those keys would otherwise overwrite values
+    /// `jupyter_kernel.rs` sets per-launch.
+    pub fn entries_for_kernel_launch(&self) -> impl Iterator<Item = &(String, String)> {
+        self.entries
+            .iter()
+            .filter(|(k, _)| !ACTIVATION_DENYLIST.contains(&k.as_str()))
     }
 
     #[cfg(unix)]
@@ -215,6 +251,19 @@ mod tests {
         );
         let has_path = overlay.entries().iter().any(|(k, _)| k == "PATH");
         assert!(has_path, "expected PATH in captured shell env");
+    }
+
+    #[test]
+    fn entries_for_kernel_launch_filters_activation_vars() {
+        let overlay = ShellEnvOverlay::parse_null_separated(
+            b"PYTHONPATH=/user/path\0FOO=bar\0VIRTUAL_ENV=/user/venv\0BAZ=qux\0\
+              CONDA_PREFIX=/c\0PIXI_PROJECT_ROOT=/p\0PYTHONHOME=/h\0SHELL_API_KEY=secret-12345\0",
+        );
+        let kept: Vec<&str> = overlay
+            .entries_for_kernel_launch()
+            .map(|(k, _)| k.as_str())
+            .collect();
+        assert_eq!(kept, vec!["FOO", "BAZ", "SHELL_API_KEY"]);
     }
 
     #[test]
