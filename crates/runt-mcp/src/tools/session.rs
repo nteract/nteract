@@ -403,9 +403,11 @@ fn format_cell_summaries(handle: &notebook_sync::handle::DocHandle) -> String {
                 &cell.id,
                 &cell.cell_type,
                 &cell.source,
-                ec,
-                display_status,
-                execution_id.as_deref(),
+                formatting::CellSummaryContext {
+                    execution_count: ec,
+                    status: display_status,
+                    execution_id: execution_id.as_deref(),
+                },
                 60,
             )
         })

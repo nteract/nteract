@@ -219,20 +219,25 @@ fn collapse_and_truncate(text: &str, preview_chars: usize) -> String {
 /// Example output:
 ///   0 | markdown | id=cell-1be2a179 | # Crate Download Analysis
 ///   1 | code | running | id=cell-e18fcc2a | exec=4 | exec_id=exec-7f3a2b | import requests…[+45 chars]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CellSummaryContext<'a> {
+    pub execution_count: Option<&'a str>,
+    pub status: Option<&'a str>,
+    pub execution_id: Option<&'a str>,
+}
+
 pub fn format_cell_summary(
     index: usize,
     cell_id: &str,
     cell_type: &str,
     source: &str,
-    execution_count: Option<&str>,
-    status: Option<&str>,
-    execution_id: Option<&str>,
+    context: CellSummaryContext<'_>,
     preview_chars: usize,
 ) -> String {
     let mut parts = vec![index.to_string(), cell_type.to_string()];
 
     // Status (running/queued) comes before id, like in Python
-    if let Some(st) = status {
+    if let Some(st) = context.status {
         if !st.is_empty() {
             parts.push(st.to_string());
         }
@@ -241,13 +246,13 @@ pub fn format_cell_summary(
     parts.push(format!("id={cell_id}"));
 
     // execution_count as exec=N (only for code cells with a value)
-    if let Some(ec) = execution_count {
+    if let Some(ec) = context.execution_count {
         if !ec.is_empty() && cell_type == "code" {
             parts.push(format!("exec={ec}"));
         }
     }
 
-    if let Some(eid) = execution_id {
+    if let Some(eid) = context.execution_id {
         if !eid.is_empty() && cell_type == "code" {
             parts.push(format!("exec_id={eid}"));
         }
@@ -516,9 +521,11 @@ mod tests {
             "cell-abc",
             "code",
             "import numpy as np\nimport pandas as pd",
-            Some("5"),
-            Some("idle"),
-            Some("exec-123"),
+            CellSummaryContext {
+                execution_count: Some("5"),
+                status: Some("idle"),
+                execution_id: Some("exec-123"),
+            },
             15,
         );
         assert!(summary.starts_with("3 | code | idle | id=cell-abc | exec=5 | "));
@@ -536,9 +543,11 @@ mod tests {
             "cell-md",
             "markdown",
             "# Hello",
-            Some("1"),
-            None,
-            Some("exec-md"),
+            CellSummaryContext {
+                execution_count: Some("1"),
+                status: None,
+                execution_id: Some("exec-md"),
+            },
             50,
         );
         assert!(!summary.contains("exec="));
@@ -554,9 +563,7 @@ mod tests {
             "cell-x",
             "code",
             "x = 1\n\n\n  y   =    2",
-            None,
-            None,
-            None,
+            CellSummaryContext::default(),
             100,
         );
         assert!(summary.contains("x = 1 y = 2"));

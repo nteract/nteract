@@ -316,9 +316,11 @@ pub async fn get_all_cells(
                     &cell.id,
                     &cell.cell_type,
                     &cell.source,
-                    ec,
-                    display_status,
-                    execution_id.as_deref(),
+                    formatting::CellSummaryContext {
+                        execution_count: ec,
+                        status: display_status,
+                        execution_id: execution_id.as_deref(),
+                    },
                     preview_chars,
                 );
                 let raw_outputs = outputs_by_cell.get(&cell.id).unwrap_or(&empty_outputs);
