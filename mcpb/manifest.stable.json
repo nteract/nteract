@@ -85,19 +85,19 @@
       "name": "disconnect_notebook"
     },
     {
-      "description": "Get a cell by ID.",
+      "description": "Get a cell by ID, including execution status/id and compact output summaries.",
       "name": "get_cell"
     },
     {
-      "description": "Get all cells as summary, json, or rich format.",
+      "description": "Get all cells as summary, json, or rich format with compact execution/output summaries.",
       "name": "get_all_cells"
     },
     {
-      "description": "Create a cell, optionally executing it.",
+      "description": "Create a cell, optionally executing it and returning execution_id/output summary.",
       "name": "create_cell"
     },
     {
-      "description": "Replace a cell's source or type.",
+      "description": "Replace a cell's source or type, optionally executing it and returning execution_id/output summary.",
       "name": "set_cell"
     },
     {
@@ -109,7 +109,7 @@
       "name": "move_cell"
     },
     {
-      "description": "Execute a code cell.",
+      "description": "Execute a code cell and return execution_id, status, and compact output summary.",
       "name": "execute_cell"
     },
     {

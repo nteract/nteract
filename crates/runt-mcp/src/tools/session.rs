@@ -390,13 +390,24 @@ fn format_cell_summaries(handle: &notebook_sync::handle::DocHandle) -> String {
         .map(|(i, cell)| {
             let status = cell_status_map.get(&cell.id).map(String::as_str);
             let ec = cell_ec_map.get(&cell.id).map(String::as_str);
+            let execution_id = handle.get_cell_execution_id(&cell.id);
+            let display_status = status.or_else(|| {
+                if cell.cell_type == "code" && execution_id.is_none() {
+                    Some("never_run")
+                } else {
+                    None
+                }
+            });
             formatting::format_cell_summary(
                 i,
                 &cell.id,
                 &cell.cell_type,
                 &cell.source,
-                ec,
-                status,
+                formatting::CellSummaryContext {
+                    execution_count: ec,
+                    status: display_status,
+                    execution_id: execution_id.as_deref(),
+                },
                 60,
             )
         })

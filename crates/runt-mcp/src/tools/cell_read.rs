@@ -15,7 +15,8 @@ use super::{arg_bool, arg_str, tool_error, tool_success};
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetCellParams {
-    /// The cell ID to retrieve.
+    /// The cell ID to retrieve. Response includes execution status/id and
+    /// compact output summaries before any output text.
     pub cell_id: String,
     /// Return the unabridged output text for any stream or error that was
     /// spilled to the blob store. When false (the default), outputs past the
@@ -38,7 +39,7 @@ pub struct GetAllCellsParams {
     /// Number of cells to return (null = all).
     #[serde(default)]
     pub count: Option<i64>,
-    /// Include output previews in summary format.
+    /// Include compact output summaries/previews in summary format.
     #[serde(default)]
     pub include_outputs: Option<bool>,
     /// Max chars for source preview in summary format.
@@ -102,8 +103,12 @@ pub async fn get_cell(
     )
     .await;
 
+    let execution_id = handle.get_cell_execution_id(cell_id);
+
     // Get execution status from RuntimeState
     let status = get_cell_status(&handle, cell_id);
+    let display_status =
+        display_status_for_cell(&cell.cell_type, status.as_deref(), execution_id.as_deref());
 
     let ec_display = if ec.is_empty() {
         None
@@ -114,8 +119,8 @@ pub async fn get_cell(
         &cell.id,
         &cell.cell_type,
         ec_display,
-        status.as_deref(),
-        None,
+        display_status,
+        execution_id.as_deref(),
     );
 
     // Include tags if present
@@ -139,6 +144,13 @@ pub async fn get_cell(
     }
 
     // Each output as a separate Content item (matches Python _cell_to_content)
+    let output_summaries = output_summary_lines(&outputs, &raw_outputs, 120);
+    if !output_summaries.is_empty() {
+        items.push(Content::text(format!(
+            "Output summary:\n{}",
+            output_summaries.join("\n")
+        )));
+    }
     items.extend(formatting::outputs_to_content_items(&outputs));
 
     Ok(CallToolResult::success(items))
@@ -194,6 +206,9 @@ pub async fn get_all_cells(
             for cell in slice {
                 let status = cell_status_map.get(&cell.id).map(String::as_str);
                 let ec: Option<i64> = cell_ec_map.get(&cell.id).and_then(|s| s.parse().ok());
+                let execution_id = handle.get_cell_execution_id(&cell.id);
+                let display_status =
+                    display_status_for_cell(&cell.cell_type, status, execution_id.as_deref());
                 let raw_outputs = outputs_by_cell.get(&cell.id).unwrap_or(&empty_outputs);
 
                 // Resolve outputs through the output resolver so that
@@ -214,6 +229,7 @@ pub async fn get_all_cells(
                     .iter()
                     .filter_map(formatting::format_output_text)
                     .collect();
+                let output_summary = output_summary_lines(&resolved, raw_outputs, 120);
 
                 // Extract tags from cell metadata
                 let tags: Vec<String> = cell
@@ -228,7 +244,9 @@ pub async fn get_all_cells(
                     "execution_count": ec,
                     "source": cell.source,
                     "outputs": output_texts,
-                    "status": status,
+                    "output_summary": output_summary,
+                    "status": display_status,
+                    "execution_id": execution_id,
                     "tags": tags,
                 }));
             }
@@ -240,6 +258,9 @@ pub async fn get_all_cells(
             for cell in slice {
                 let status = cell_status_map.get(&cell.id).map(String::as_str);
                 let ec = cell_ec_map.get(&cell.id).map(String::as_str);
+                let execution_id = handle.get_cell_execution_id(&cell.id);
+                let display_status =
+                    display_status_for_cell(&cell.cell_type, status, execution_id.as_deref());
                 let raw_outputs = outputs_by_cell.get(&cell.id).unwrap_or(&empty_outputs);
                 let outputs = output_resolver::resolve_cell_outputs_for_llm(
                     raw_outputs,
@@ -251,24 +272,33 @@ pub async fn get_all_cells(
                     },
                 )
                 .await;
-                let header =
-                    formatting::format_cell_header(&cell.id, &cell.cell_type, ec, status, None);
+                let header = formatting::format_cell_header(
+                    &cell.id,
+                    &cell.cell_type,
+                    ec,
+                    display_status,
+                    execution_id.as_deref(),
+                );
                 let tags = cell.tags();
                 let header = if tags.is_empty() {
                     header
                 } else {
                     format!("{header}\nTags: {}", tags.join(", "))
                 };
-                let output_text = formatting::format_outputs_text(&outputs);
                 let text = if !cell.source.is_empty() {
                     format!("{header}\n\n{}", cell.source)
                 } else {
                     header
                 };
                 items.push(Content::text(text));
-                if !output_text.is_empty() {
-                    items.push(Content::text(output_text));
+                let output_summaries = output_summary_lines(&outputs, raw_outputs, 120);
+                if !output_summaries.is_empty() {
+                    items.push(Content::text(format!(
+                        "Output summary:\n{}",
+                        output_summaries.join("\n")
+                    )));
                 }
+                items.extend(formatting::outputs_to_content_items(&outputs));
             }
             Ok(CallToolResult::success(items))
         }
@@ -278,13 +308,19 @@ pub async fn get_all_cells(
             for (i, cell) in slice.iter().enumerate() {
                 let status = cell_status_map.get(&cell.id).map(String::as_str);
                 let ec = cell_ec_map.get(&cell.id).map(String::as_str);
+                let execution_id = handle.get_cell_execution_id(&cell.id);
+                let display_status =
+                    display_status_for_cell(&cell.cell_type, status, execution_id.as_deref());
                 let line = formatting::format_cell_summary(
                     start + i,
                     &cell.id,
                     &cell.cell_type,
                     &cell.source,
-                    ec,
-                    status,
+                    formatting::CellSummaryContext {
+                        execution_count: ec,
+                        status: display_status,
+                        execution_id: execution_id.as_deref(),
+                    },
                     preview_chars,
                 );
                 let raw_outputs = outputs_by_cell.get(&cell.id).unwrap_or(&empty_outputs);
@@ -299,21 +335,15 @@ pub async fn get_all_cells(
                         },
                     )
                     .await;
-                    let output_text = formatting::format_outputs_text(&outputs);
-                    if !output_text.is_empty() {
-                        // Collapse to single line (matches Python format)
-                        let output_line: String =
-                            output_text.split_whitespace().collect::<Vec<_>>().join(" ");
-                        let char_count = output_line.chars().count();
-                        let output_preview = if char_count > preview_chars {
-                            let truncated: String =
-                                output_line.chars().take(preview_chars).collect();
-                            let remaining = char_count - preview_chars;
-                            format!("{truncated}…[+{remaining} chars]")
-                        } else {
-                            output_line
-                        };
-                        lines.push(format!("{line}\n  └─ {output_preview}"));
+                    let output_summaries =
+                        output_summary_lines(&outputs, raw_outputs, preview_chars);
+                    if !output_summaries.is_empty() {
+                        let summary = output_summaries
+                            .into_iter()
+                            .map(|line| format!("  └─ {line}"))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        lines.push(format!("{line}\n{summary}"));
                     } else {
                         lines.push(line);
                     }
@@ -324,6 +354,68 @@ pub async fn get_all_cells(
             tool_success(&lines.join("\n"))
         }
     }
+}
+
+fn display_status_for_cell<'a>(
+    cell_type: &str,
+    runtime_status: Option<&'a str>,
+    execution_id: Option<&str>,
+) -> Option<&'a str> {
+    runtime_status.or_else(|| {
+        if cell_type == "code" && execution_id.is_none() {
+            Some("never_run")
+        } else {
+            None
+        }
+    })
+}
+
+fn output_summary_lines(
+    outputs: &[runtimed_outputs::resolved_output::Output],
+    raw_outputs: &[serde_json::Value],
+    preview_chars: usize,
+) -> Vec<String> {
+    let summaries = formatting::format_outputs_summary_lines(outputs, preview_chars);
+    if !summaries.is_empty() {
+        return summaries;
+    }
+    raw_output_summary_lines(raw_outputs)
+}
+
+fn raw_output_summary_lines(raw_outputs: &[serde_json::Value]) -> Vec<String> {
+    raw_outputs
+        .iter()
+        .enumerate()
+        .map(|(index, raw)| {
+            let output_type = raw
+                .get("output_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("output");
+            let label = match output_type {
+                "stream" => {
+                    let name = raw.get("name").and_then(|v| v.as_str()).unwrap_or("stream");
+                    format!("stream({name})")
+                }
+                "display_data" | "execute_result" => {
+                    let mimes = raw
+                        .get("data")
+                        .and_then(|v| v.as_object())
+                        .map(|data| {
+                            let mut keys: Vec<&str> = data.keys().map(String::as_str).collect();
+                            keys.sort_unstable();
+                            keys.join(", ")
+                        })
+                        .filter(|mimes| !mimes.is_empty());
+                    match mimes {
+                        Some(mimes) => format!("{output_type}({mimes})"),
+                        None => output_type.to_string(),
+                    }
+                }
+                other => other.to_string(),
+            };
+            format!("out[{index}]: {label}")
+        })
+        .collect()
 }
 
 /// Get the execution_count for a cell from RuntimeStateDoc.
@@ -436,4 +528,53 @@ pub fn build_cell_status_map(
         }
     }
     map
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runtimed_outputs::resolved_output::Output;
+
+    #[test]
+    fn raw_output_summary_falls_back_when_resolver_returns_no_outputs() {
+        let raw_outputs = vec![serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                "application/x-custom": {"inline": "payload"},
+                "text/html": {"inline": "<b>hi</b>"}
+            }
+        })];
+
+        let lines = output_summary_lines(&[], &raw_outputs, 80);
+        assert_eq!(
+            lines,
+            vec!["out[0]: display_data(application/x-custom, text/html)"]
+        );
+    }
+
+    #[test]
+    fn resolved_output_summary_wins_over_raw_fallback() {
+        let raw_outputs = vec![serde_json::json!({
+            "output_type": "stream",
+            "name": "stderr",
+            "text": {"inline": "raw"}
+        })];
+        let resolved = vec![Output::stream("stdout", "resolved")];
+
+        let lines = output_summary_lines(&resolved, &raw_outputs, 80);
+        assert_eq!(lines, vec!["out[0]: stream(stdout) \"resolved\""]);
+    }
+
+    #[test]
+    fn code_cell_without_execution_id_is_never_run() {
+        assert_eq!(
+            display_status_for_cell("code", None, None),
+            Some("never_run")
+        );
+        assert_eq!(display_status_for_cell("markdown", None, None), None);
+        assert_eq!(
+            display_status_for_cell("code", Some("running"), None),
+            Some("running")
+        );
+    }
 }

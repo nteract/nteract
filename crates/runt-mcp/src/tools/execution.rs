@@ -19,7 +19,7 @@ use super::{arg_bool, arg_str, assert_cell_exists, tool_error, tool_success};
 pub struct ExecuteCellParams {
     /// The cell ID to execute.
     pub cell_id: String,
-    /// Max seconds to wait; returns partial results if exceeded.
+    /// Max seconds to wait; returns execution_id and partial results if exceeded.
     #[serde(default)]
     pub timeout_secs: Option<f64>,
 }
@@ -249,6 +249,13 @@ pub async fn run_all_cells(
             eid,
         );
         content_items.push(rmcp::model::Content::text(cell_header));
+        let output_summaries = formatting::format_outputs_summary_lines(&outputs, 120);
+        if !output_summaries.is_empty() {
+            content_items.push(rmcp::model::Content::text(format!(
+                "Output summary:\n{}",
+                output_summaries.join("\n")
+            )));
+        }
         content_items.extend(formatting::outputs_to_content_items(&outputs));
 
         // Structured content for MCP Apps: use manifests from the cell snapshot
@@ -409,6 +416,17 @@ async fn render_execution_result(
     };
 
     let mut items = vec![rmcp::model::Content::text(header)];
+    let output_summaries = formatting::format_outputs_summary_lines(&outputs, 120);
+    if output_summaries.is_empty() {
+        items.push(rmcp::model::Content::text(
+            "Output summary: 0 outputs".to_string(),
+        ));
+    } else {
+        items.push(rmcp::model::Content::text(format!(
+            "Output summary:\n{}",
+            output_summaries.join("\n")
+        )));
+    }
 
     if !is_terminal && outputs.is_empty() {
         // No outputs yet — make it crystal clear
