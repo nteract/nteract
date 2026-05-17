@@ -820,8 +820,14 @@ async fn handle_runtime_agent_request(
             redact_env_values_in_outputs,
         } => {
             info!(
-                "[runtime-agent] LaunchKernel: type={} source={}",
-                kernel_type, env_source
+                "[runtime-agent] LaunchKernel: type={} source={} env_vars_keys=[{}]",
+                kernel_type,
+                env_source,
+                {
+                    let mut keys: Vec<&str> = env_vars.keys().map(String::as_str).collect();
+                    keys.sort_unstable();
+                    keys.join(",")
+                }
             );
 
             let pooled_env = launched_config.venv_path.as_ref().and_then(|venv| {
@@ -908,8 +914,14 @@ async fn handle_runtime_agent_request(
             redact_env_values_in_outputs,
         } => {
             info!(
-                "[runtime-agent] RestartKernel: type={} source={}",
-                kernel_type, env_source
+                "[runtime-agent] RestartKernel: type={} source={} env_vars_keys=[{}]",
+                kernel_type,
+                env_source,
+                {
+                    let mut keys: Vec<&str> = env_vars.keys().map(String::as_str).collect();
+                    keys.sort_unstable();
+                    keys.join(",")
+                }
             );
 
             // Capture in-flight executions before shutdown so we can mark them

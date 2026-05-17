@@ -850,7 +850,19 @@ impl KernelConnection for JupyterKernel {
                 );
 
                 let spawn_started = std::time::Instant::now();
-                let mut process = cmd.spawn()?;
+                let mut process = cmd.spawn().map_err(|e| {
+                    let std_cmd = cmd.as_std();
+                    let program = std_cmd.get_program().to_string_lossy().to_string();
+                    let cwd = std_cmd.get_current_dir().map(|p| p.display().to_string());
+                    let mut keys: Vec<String> = std_cmd
+                        .get_envs()
+                        .filter_map(|(k, _)| k.to_str().map(String::from))
+                        .collect();
+                    keys.sort();
+                    anyhow::anyhow!(
+                        "spawn failed: {e} (program={program:?}, cwd={cwd:?}, env_keys={keys:?})"
+                    )
+                })?;
                 let stderr_buffer: Arc<StdMutex<VecDeque<String>>> =
                     Arc::new(StdMutex::new(VecDeque::with_capacity(STDERR_BUFFER_LINES)));
                 let stderr_drain: Option<JoinHandle<()>> =
@@ -1000,7 +1012,19 @@ impl KernelConnection for JupyterKernel {
                     );
                 }
                 let spawn_started = std::time::Instant::now();
-                let mut process = cmd.spawn()?;
+                let mut process = cmd.spawn().map_err(|e| {
+                    let std_cmd = cmd.as_std();
+                    let program = std_cmd.get_program().to_string_lossy().to_string();
+                    let cwd = std_cmd.get_current_dir().map(|p| p.display().to_string());
+                    let mut keys: Vec<String> = std_cmd
+                        .get_envs()
+                        .filter_map(|(k, _)| k.to_str().map(String::from))
+                        .collect();
+                    keys.sort();
+                    anyhow::anyhow!(
+                        "spawn failed: {e} (program={program:?}, cwd={cwd:?}, env_keys={keys:?})"
+                    )
+                })?;
                 #[cfg(not(windows))]
                 drop(listeners);
 
