@@ -3940,6 +3940,8 @@ pub(crate) async fn auto_launch_kernel(
         warn!("[runtime-state] {}", e);
     }
     let redact_env_values_in_outputs = daemon.redact_env_values_in_outputs().await;
+    let import_shell_environment = daemon.import_shell_environment().await;
+    let shell_overlay = daemon.shell_env_overlay();
 
     // (prewarmed_packages no longer needed — runtime agent handles its own launch config)
 
@@ -4023,9 +4025,19 @@ pub(crate) async fn auto_launch_kernel(
                     }
                 }
 
-                // Send LaunchKernel RPC via the runtime agent's sync connection
-                let mut launch_env_vars =
-                    crate::uv_project::uv_offline_env_vars(uv_pyproject_offline);
+                // Send LaunchKernel RPC via the runtime agent's sync connection.
+                // Precedence: shell overlay (if import setting on) → uv → pixi.
+                let mut launch_env_vars: std::collections::HashMap<String, String> =
+                    if import_shell_environment {
+                        // Merge user shell PATH with daemon PATH; see
+                        // launch_kernel.rs::overlay_env_vars for rationale.
+                        let daemon_path = std::env::var("PATH").unwrap_or_default();
+                        shell_overlay.build_kernel_env_vars(&daemon_path)
+                    } else {
+                        std::collections::HashMap::new()
+                    };
+                launch_env_vars
+                    .extend(crate::uv_project::uv_offline_env_vars(uv_pyproject_offline));
                 launch_env_vars.extend(crate::pixi_project::pixi_frozen_env_vars(pixi_toml_frozen));
                 match send_runtime_agent_request_with_kernel_ports(room, |kernel_ports| {
                     notebook_protocol::protocol::RuntimeAgentRequest::LaunchKernel {

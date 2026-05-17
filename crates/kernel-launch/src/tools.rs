@@ -857,6 +857,44 @@ async fn download_uv_from_github(version: &str) -> Result<BootstrappedTool> {
 /// This avoids repeated lookups once uv is bootstrapped.
 static UV_PATH: OnceCell<Arc<Result<PathBuf, String>>> = OnceCell::const_new();
 
+/// Walk the current process's `PATH` for a binary by name. Returns the first
+/// candidate that exists AND has execute permission (on Unix) or the right
+/// extension (on Windows). The exec check matters because PATH can contain
+/// non-executable files named `uv` (rare but possible — config files,
+/// leftover artifacts) ahead of the real binary; spawning a cached
+/// non-executable path would later fail with PermissionDenied.
+fn find_in_path(binary: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(binary);
+        if is_executable_file(&candidate) {
+            return Some(candidate);
+        }
+        #[cfg(windows)]
+        {
+            let exe = dir.join(format!("{binary}.exe"));
+            if is_executable_file(&exe) {
+                return Some(exe);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() => meta.permissions().mode() & 0o111 != 0,
+        _ => false,
+    }
+}
+
+#[cfg(windows)]
+fn is_executable_file(path: &std::path::Path) -> bool {
+    path.is_file()
+}
+
 /// Get the path to uv, with the following priority:
 ///
 /// 1. System uv if available on PATH (fast path, respects user's installation)
@@ -866,14 +904,23 @@ static UV_PATH: OnceCell<Arc<Result<PathBuf, String>>> = OnceCell::const_new();
 pub async fn get_uv_path() -> Result<PathBuf> {
     let result = UV_PATH
         .get_or_init(|| async {
-            // 1. Check for system uv on PATH
+            // 1. Check for system uv on PATH. Resolve to an absolute path so
+            //    spawned commands don't depend on the child process's PATH
+            //    (which may be overridden by per-launch env_vars).
             if let Ok(output) = tokio::process::Command::new("uv")
                 .arg("--version")
                 .output()
                 .await
             {
                 if output.status.success() {
-                    info!("Using system uv");
+                    if let Some(abs) = find_in_path("uv") {
+                        info!("Using system uv at {}", abs.display());
+                        return Arc::new(Ok(abs));
+                    }
+                    // Extremely unlikely: uv ran but isn't findable via PATH
+                    // walk. Fall back to the bare name so the daemon still
+                    // works (e.g. in test rigs that wrap the spawn).
+                    info!("Using system uv (could not resolve absolute path)");
                     return Arc::new(Ok(PathBuf::from("uv")));
                 }
             }
@@ -1062,14 +1109,20 @@ async fn download_pixi_from_github(version: &str) -> Result<BootstrappedTool> {
 pub async fn get_pixi_path() -> Result<PathBuf> {
     let result = PIXI_PATH
         .get_or_init(|| async {
-            // 1. Check for system pixi on PATH
+            // 1. Check for system pixi on PATH. Resolve to an absolute path
+            //    so spawned commands don't depend on the child process's
+            //    PATH (see `get_uv_path` for rationale).
             if let Ok(output) = tokio::process::Command::new("pixi")
                 .arg("--version")
                 .output()
                 .await
             {
                 if output.status.success() {
-                    info!("Using system pixi");
+                    if let Some(abs) = find_in_path("pixi") {
+                        info!("Using system pixi at {}", abs.display());
+                        return Arc::new(Ok(abs));
+                    }
+                    info!("Using system pixi (could not resolve absolute path)");
                     return Arc::new(Ok(PathBuf::from("pixi")));
                 }
             }

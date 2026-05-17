@@ -117,6 +117,10 @@ pub fn load_settings() -> SyncedSettings {
             .get("redact_env_values_in_outputs")
             .and_then(|v| v.as_bool())
             .unwrap_or(defaults.redact_env_values_in_outputs),
+        import_shell_environment: json
+            .get("import_shell_environment")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(defaults.import_shell_environment),
         install_id: json
             .get("install_id")
             .and_then(|v| v.as_str())

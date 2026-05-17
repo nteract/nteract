@@ -223,6 +223,8 @@ export default function App() {
     setTelemetryEnabled,
     redactEnvValuesInOutputs,
     setRedactEnvValuesInOutputs,
+    importShellEnvironment,
+    setImportShellEnvironment,
     installId,
     rotateInstallId,
     lastDaemonPingAt,
@@ -471,6 +473,8 @@ export default function App() {
           onTelemetryChange={setTelemetryEnabled}
           redactEnvValuesInOutputs={redactEnvValuesInOutputs}
           onRedactEnvValuesInOutputsChange={setRedactEnvValuesInOutputs}
+          importShellEnvironment={importShellEnvironment}
+          onImportShellEnvironmentChange={setImportShellEnvironment}
           installId={installId}
           onRotate={rotateInstallId}
           lastDaemonPingAt={lastDaemonPingAt}

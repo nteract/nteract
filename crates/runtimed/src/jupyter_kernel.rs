@@ -776,9 +776,36 @@ impl KernelConnection for JupyterKernel {
         cmd.env("COLUMNS", TERMINAL_COLUMNS_STR);
         cmd.env("LINES", TERMINAL_LINES_STR);
 
-        // Apply extra env vars from launch config
+        // Apply extra env vars from launch config. `PATH` is merged with
+        // whatever the per-launch branch above set on the command so the
+        // kernel keeps the environment-activation entries at the front (pixi
+        // shell-hook puts the env's bin dir there for `!python` isolation;
+        // uv:inline prepends the uv install dir). The imported shell PATH
+        // is appended after so user-shell binaries are still reachable but
+        // never shadow the activated environment.
         for (key, value) in &config.env_vars {
-            cmd.env(key, value);
+            if key == "PATH" {
+                let existing = cmd
+                    .as_std()
+                    .get_envs()
+                    .find_map(|(k, v)| {
+                        if k == std::ffi::OsStr::new("PATH") {
+                            v.and_then(|v| v.to_str()).map(String::from)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
+                let merged = if existing.is_empty() {
+                    value.clone()
+                } else {
+                    // existing (activation) first, then user shell PATH.
+                    crate::shell_env_overlay::merge_paths(&existing, value)
+                };
+                cmd.env("PATH", merged);
+            } else {
+                cmd.env(key, value);
+            }
         }
         cmd.env(
             REDACT_ENV_VALUES_IN_OUTPUTS_ENV,
