@@ -405,7 +405,7 @@ mod tests {
         let overlay = ShellEnvOverlay::parse_null_separated(b"OTHER=ok\0");
         let env = overlay.build_kernel_env_vars("/daemon/bin");
         // No user PATH => kernel inherits daemon PATH naturally; we don't set it.
-        assert!(env.get("PATH").is_none());
+        assert!(!env.contains_key("PATH"));
     }
 
     #[test]
