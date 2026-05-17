@@ -200,12 +200,12 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Get a cell by ID.",
+    "description": "Get a cell by ID, including execution status/id and compact output summaries.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "cell_id": {
-          "description": "The cell ID to retrieve.",
+          "description": "The cell ID to retrieve. Response includes execution status/id and\ncompact output summaries before any output text.",
           "type": "string"
         },
         "full_output": {
@@ -230,7 +230,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Get all cells as summary, json, or rich format.",
+    "description": "Get all cells as summary, json, or rich format with compact execution/output summaries.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -253,7 +253,7 @@
         },
         "include_outputs": {
           "default": null,
-          "description": "Include output previews in summary format.",
+          "description": "Include compact output summaries/previews in summary format.",
           "type": [
             "boolean",
             "null"
@@ -293,13 +293,13 @@
       "destructiveHint": false,
       "openWorldHint": false
     },
-    "description": "Create a cell, optionally executing it.",
+    "description": "Create a cell, optionally executing it and returning execution_id/output summary.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "and_run": {
           "default": null,
-          "description": "Execute the cell immediately after creation.",
+          "description": "Execute the cell immediately after creation. Response includes the\nexecution_id plus a compact output summary when the cell is code.",
           "type": [
             "boolean",
             "null"
@@ -355,13 +355,13 @@
       "destructiveHint": false,
       "openWorldHint": false
     },
-    "description": "Replace a cell's source or type.",
+    "description": "Replace a cell's source or type, optionally executing it and returning execution_id/output summary.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "and_run": {
           "default": null,
-          "description": "Execute the cell after changes (code cells only).",
+          "description": "Execute the cell after changes (code cells only). Response includes\nthe execution_id plus a compact output summary.",
           "type": [
             "boolean",
             "null"
@@ -468,7 +468,7 @@
       "destructiveHint": true,
       "openWorldHint": true
     },
-    "description": "Execute a code cell.",
+    "description": "Execute a code cell and return execution_id, status, and compact output summary.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -478,7 +478,7 @@
         },
         "timeout_secs": {
           "default": null,
-          "description": "Max seconds to wait; returns partial results if exceeded.",
+          "description": "Max seconds to wait; returns execution_id and partial results if exceeded.",
           "format": "double",
           "type": [
             "number",
