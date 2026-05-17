@@ -24,7 +24,8 @@ pub struct CreateCellParams {
     /// Position to insert (0-based index). None appends at end.
     #[serde(default)]
     pub index: Option<i64>,
-    /// Execute the cell immediately after creation.
+    /// Execute the cell immediately after creation. Response includes the
+    /// execution_id plus a compact output summary when the cell is code.
     #[serde(default)]
     pub and_run: Option<bool>,
     /// Max seconds to wait for execution.
@@ -43,7 +44,8 @@ pub struct SetCellParams {
     /// New cell type (None to leave unchanged).
     #[serde(default)]
     pub cell_type: Option<String>,
-    /// Execute the cell after changes (code cells only).
+    /// Execute the cell after changes (code cells only). Response includes
+    /// the execution_id plus a compact output summary.
     #[serde(default)]
     pub and_run: Option<bool>,
     /// Max seconds to wait for execution.

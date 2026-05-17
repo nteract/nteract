@@ -135,27 +135,27 @@ pub fn all_tools() -> Vec<Tool> {
         // -- Cell read --
         Tool::new(
             "get_cell",
-            "Get a cell by ID.",
+            "Get a cell by ID, including execution status/id and compact output summaries.",
             schema_for::<cell_read::GetCellParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
         Tool::new(
             "get_all_cells",
-            "Get all cells as summary, json, or rich format.",
+            "Get all cells as summary, json, or rich format with compact execution/output summaries.",
             schema_for::<cell_read::GetAllCellsParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
         // -- Cell CRUD --
         Tool::new(
             "create_cell",
-            "Create a cell, optionally executing it.",
+            "Create a cell, optionally executing it and returning execution_id/output summary.",
             schema_for::<cell_crud::CreateCellParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false))
         .with_meta(app_tool_meta()),
         Tool::new(
             "set_cell",
-            "Replace a cell's source or type.",
+            "Replace a cell's source or type, optionally executing it and returning execution_id/output summary.",
             schema_for::<cell_crud::SetCellParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false))
@@ -180,7 +180,7 @@ pub fn all_tools() -> Vec<Tool> {
         // -- Execution --
         Tool::new(
             "execute_cell",
-            "Execute a code cell.",
+            "Execute a code cell and return execution_id, status, and compact output summary.",
             schema_for::<execution::ExecuteCellParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(true).open_world(true))
@@ -488,6 +488,15 @@ pub async fn build_execution_result(
     );
 
     let mut items = vec![Content::text(header)];
+    let output_summaries = crate::formatting::format_outputs_summary_lines(&result.outputs, 120);
+    if output_summaries.is_empty() {
+        items.push(Content::text("Output summary: 0 outputs".to_string()));
+    } else {
+        items.push(Content::text(format!(
+            "Output summary:\n{}",
+            output_summaries.join("\n")
+        )));
+    }
     items.extend(crate::formatting::outputs_to_content_items(&result.outputs));
 
     // Build structured content directly from manifest Values + blob URLs.
@@ -497,25 +506,21 @@ pub async fn build_execution_result(
     let cell_snapshot = handle.get_cell(&result.cell_id);
     let mut structured_content = if let Some(snap) = cell_snapshot {
         let outputs = handle.get_cell_outputs(&result.cell_id).unwrap_or_default();
-        if outputs.is_empty() {
+        let ec_str = cell_read::get_cell_execution_count_from_runtime(handle, &snap.id);
+        let ec: Option<i64> = if ec_str.is_empty() {
             None
         } else {
-            let ec_str = cell_read::get_cell_execution_count_from_runtime(handle, &snap.id);
-            let ec: Option<i64> = if ec_str.is_empty() {
-                None
-            } else {
-                ec_str.parse().ok()
-            };
-            Some(crate::structured::cell_structured_content_from_manifests(
-                &snap.id,
-                &snap.cell_type,
-                &snap.source,
-                &outputs,
-                ec,
-                &result.status,
-                &server.blob_base_url,
-            ))
-        }
+            ec_str.parse().ok()
+        };
+        Some(crate::structured::cell_structured_content_from_manifests(
+            &snap.id,
+            &snap.cell_type,
+            &snap.source,
+            &outputs,
+            ec,
+            &result.status,
+            &server.blob_base_url,
+        ))
     } else {
         None
     };

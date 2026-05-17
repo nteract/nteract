@@ -155,11 +155,70 @@ pub fn outputs_to_content_items(outputs: &[Output]) -> Vec<rmcp::model::Content>
     items
 }
 
+/// Format compact output summary lines for list/read views.
+///
+/// These lines are intentionally small: they tell an agent that output exists,
+/// what kind of output it is, and which MIME types are present without forcing
+/// the full output body into context. A caller can still append the full
+/// formatted output text after these summaries.
+pub fn format_outputs_summary_lines(outputs: &[Output], preview_chars: usize) -> Vec<String> {
+    outputs
+        .iter()
+        .enumerate()
+        .map(|(index, output)| format_output_summary_line(index, output, preview_chars))
+        .collect()
+}
+
+fn format_output_summary_line(index: usize, output: &Output, preview_chars: usize) -> String {
+    let label = match output.output_type.as_str() {
+        "stream" => {
+            let name = output.name.as_deref().unwrap_or("stream");
+            format!("stream({name})")
+        }
+        "error" => "error".to_string(),
+        "display_data" | "execute_result" => {
+            let mimes = output
+                .data
+                .as_ref()
+                .map(|data| {
+                    let mut keys: Vec<&str> = data.keys().map(String::as_str).collect();
+                    keys.sort_unstable();
+                    keys.join(", ")
+                })
+                .filter(|mimes| !mimes.is_empty());
+            match mimes {
+                Some(mimes) => format!("{}({mimes})", output.output_type),
+                None => output.output_type.clone(),
+            }
+        }
+        other => other.to_string(),
+    };
+
+    let preview = format_output_text(output)
+        .map(|text| collapse_and_truncate(&text, preview_chars))
+        .filter(|text| !text.is_empty())
+        .map(|text| format!(" \"{text}\""))
+        .unwrap_or_default();
+
+    format!("out[{index}]: {label}{preview}")
+}
+
+fn collapse_and_truncate(text: &str, preview_chars: usize) -> String {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let char_count = collapsed.chars().count();
+    if char_count <= preview_chars {
+        return collapsed;
+    }
+    let truncated: String = collapsed.chars().take(preview_chars).collect();
+    let remaining = char_count - preview_chars;
+    format!("{truncated}…[+{remaining} chars]")
+}
+
 /// Format a compact one-line cell summary (matches Python _format_cell_summary).
 ///
 /// Example output:
 ///   0 | markdown | id=cell-1be2a179 | # Crate Download Analysis
-///   1 | code | running | id=cell-e18fcc2a | exec=4 | import requests…[+45 chars]
+///   1 | code | running | id=cell-e18fcc2a | exec=4 | exec_id=exec-7f3a2b | import requests…[+45 chars]
 pub fn format_cell_summary(
     index: usize,
     cell_id: &str,
@@ -167,6 +226,7 @@ pub fn format_cell_summary(
     source: &str,
     execution_count: Option<&str>,
     status: Option<&str>,
+    execution_id: Option<&str>,
     preview_chars: usize,
 ) -> String {
     let mut parts = vec![index.to_string(), cell_type.to_string()];
@@ -184,6 +244,12 @@ pub fn format_cell_summary(
     if let Some(ec) = execution_count {
         if !ec.is_empty() && cell_type == "code" {
             parts.push(format!("exec={ec}"));
+        }
+    }
+
+    if let Some(eid) = execution_id {
+        if !eid.is_empty() && cell_type == "code" {
+            parts.push(format!("exec_id={eid}"));
         }
     }
 
@@ -226,6 +292,7 @@ pub fn format_cell_header(
                 "running" => "◐",
                 "queued" => "⧗",
                 "cancelled" => "⊘",
+                "never_run" => "○",
                 _ => "?",
             };
             parts.push(format!("{icon} {st}"));
@@ -419,6 +486,30 @@ mod tests {
     }
 
     #[test]
+    fn output_summary_lines_include_kind_mimes_and_preview() {
+        let outputs = vec![
+            Output::stream("stdout", "hello\nworld\n"),
+            Output::display_data(data(&[(
+                "text/html",
+                DataValue::Text("<div>chart</div>".into()),
+            )])),
+        ];
+
+        let lines = format_outputs_summary_lines(&outputs, 20);
+        assert_eq!(lines[0], "out[0]: stream(stdout) \"hello world\"");
+        assert_eq!(lines[1], "out[1]: display_data(text/html)");
+    }
+
+    #[test]
+    fn output_summary_lines_truncate_preview() {
+        let outputs = vec![Output::stream("stdout", &"a ".repeat(40))];
+
+        let lines = format_outputs_summary_lines(&outputs, 12);
+        assert!(lines[0].contains("…[+"));
+        assert!(lines[0].contains("chars]"));
+    }
+
+    #[test]
     fn format_cell_summary_truncates_long_source() {
         let summary = format_cell_summary(
             3,
@@ -427,9 +518,11 @@ mod tests {
             "import numpy as np\nimport pandas as pd",
             Some("5"),
             Some("idle"),
+            Some("exec-123"),
             15,
         );
         assert!(summary.starts_with("3 | code | idle | id=cell-abc | exec=5 | "));
+        assert!(summary.contains("exec_id=exec-123"));
         assert!(summary.contains("…[+"));
         assert!(summary.contains(" chars]"));
     }
@@ -438,8 +531,18 @@ mod tests {
     fn format_cell_summary_skips_exec_for_markdown() {
         // Markdown cells don't have execution counts; the exec= field
         // must not appear even if a value was threaded through.
-        let summary = format_cell_summary(0, "cell-md", "markdown", "# Hello", Some("1"), None, 50);
+        let summary = format_cell_summary(
+            0,
+            "cell-md",
+            "markdown",
+            "# Hello",
+            Some("1"),
+            None,
+            Some("exec-md"),
+            50,
+        );
         assert!(!summary.contains("exec="));
+        assert!(!summary.contains("exec_id="));
         assert!(summary.contains("# Hello"));
     }
 
@@ -451,6 +554,7 @@ mod tests {
             "cell-x",
             "code",
             "x = 1\n\n\n  y   =    2",
+            None,
             None,
             None,
             100,
@@ -473,6 +577,9 @@ mod tests {
 
         let queued = format_cell_header("cell-d", "code", None, Some("queued"), None);
         assert!(queued.contains("⧗ queued"));
+
+        let never_run = format_cell_header("cell-z", "code", None, Some("never_run"), None);
+        assert!(never_run.contains("○ never_run"));
 
         let unknown = format_cell_header("cell-e", "code", None, Some("bogus"), None);
         assert!(unknown.contains("? bogus"));
