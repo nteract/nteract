@@ -1040,8 +1040,10 @@ where
                 .to_string();
 
             // Verify the running daemon version matches what we intended to install.
-            // `query_daemon_info` is socket-first with a `daemon.json`
-            // fallback for the one-release compat window.
+            // `query_daemon_info` is socket-first; the `daemon.json` fallback
+            // covers the moment immediately after `runtimed install` when the
+            // restarted daemon may briefly be reachable but not yet serving
+            // `GetDaemonInfo` cleanly.
             let running_version = runtimed_client::singleton::query_daemon_info(
                 runt_workspace::default_socket_path(),
             )
@@ -1402,7 +1404,9 @@ where
     if let Ok(()) = client.ping().await {
         // Daemon is running - check version alignment (production only).
         // `query_daemon_info` is socket-first with a `daemon.json`
-        // fallback for the one-release compat window.
+        // fallback. The fallback is how we read the version of a pre-2.2.0
+        // daemon that doesn't speak `GetDaemonInfo`; without it we'd skip
+        // the upgrade and wedge on the next v4 handshake.
         if !runt_workspace::is_dev_mode() {
             let running_version = runtimed_client::singleton::query_daemon_info(
                 runt_workspace::default_socket_path(),

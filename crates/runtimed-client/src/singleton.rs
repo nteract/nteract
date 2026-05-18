@@ -58,17 +58,21 @@ pub fn get_running_daemon_info() -> Option<DaemonInfo> {
 /// Get daemon info, preferring the socket-based `GetDaemonInfo` request
 /// and falling back to the on-disk `daemon.json` sidecar.
 ///
-/// This is the intended replacement for `get_running_daemon_info()` —
-/// the socket is the source of truth (the daemon fills the response
-/// from live state, so the result can't be stale the way the file
-/// can). The file is read only when the socket query fails, which
-/// happens when an older daemon doesn't recognise the new request.
-/// Once every daemon in the wild knows `GetDaemonInfo`, the fallback
-/// (and the whole file) can be deleted.
+/// The socket is the source of truth — the daemon fills the response
+/// from live state, so it can't go stale the way the file can. The file
+/// is read only when the socket query fails, which means the running
+/// daemon predates `GetDaemonInfo` (#1803, 2026-04-15 — pre-2.2.0-stable).
 ///
-/// `socket_path` pins which daemon is being queried. The fallback
-/// reads `daemon.json` from the **same directory as the socket**, so
-/// callers that pin a non-default daemon (tests, worktree isolation,
+/// The fallback is what lets `ensure_daemon_via_sidecar` discover an old
+/// daemon's version and decide to upgrade it. Without the fallback, that
+/// path returns `None`, the upgrade is skipped, and the new app then
+/// fails its v4 handshake against the old daemon — leaving the user
+/// wedged. Keep the fallback until we're confident no pre-#1803 daemons
+/// are still running.
+///
+/// `socket_path` pins which daemon is being queried. The fallback reads
+/// `daemon.json` from the **same directory as the socket**, so callers
+/// that pin a non-default daemon (tests, worktree isolation,
 /// cross-channel lookups) still resolve to the correct instance — not
 /// the process's default namespace.
 pub async fn query_daemon_info(socket_path: std::path::PathBuf) -> Option<DaemonInfo> {
