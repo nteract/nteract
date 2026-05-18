@@ -137,13 +137,13 @@ describe("IsolatedFrameController", () => {
   });
 
   describe("send queue", () => {
-    it("queues an unknown legacy message (interaction_state) until ready", () => {
+    it("queues a non-JSON-RPC message (interaction_state) until ready", () => {
       const controller = new IsolatedFrameController({
         iframe: iframe.element,
         rendererCode: "/*code*/",
         rendererCss: "body{}",
       });
-      // Pre-ready: legacy message must not slip through immediately.
+      // Pre-ready: raw postMessage must not slip through immediately.
       controller.send({ type: "interaction_state", payload: { active: true } });
       const preReadyInteraction = iframe.posts.filter(
         (p) => (p.message as { type?: string }).type === "interaction_state",
@@ -175,7 +175,7 @@ describe("IsolatedFrameController", () => {
       });
 
       controller.render({ mimeType: "text/plain", data: "hi" });
-      // Nothing JSON-RPC was posted yet (only theme via legacy postMessage
+      // Nothing JSON-RPC was posted yet (only theme via raw postMessage
       // would be in the post queue, and that only after `ready`).
       const renderPosts = iframe.posts.filter(
         (p) => (p.message as { method?: string }).method === NTERACT_RENDER_OUTPUT,
@@ -239,7 +239,7 @@ describe("IsolatedFrameController", () => {
   });
 
   describe("theme application", () => {
-    it("posts a legacy theme message on bootstrap", () => {
+    it("posts a theme message on bootstrap", () => {
       const controller = new IsolatedFrameController({
         iframe: iframe.element,
         rendererCode: "/*code*/",
@@ -348,7 +348,7 @@ describe("IsolatedFrameController", () => {
       });
       dispatchFromIframe(iframe, { type: "ready" });
 
-      // No eval posts yet — only the legacy theme message.
+      // No eval posts yet — only the bootstrap theme message.
       const evalPosts = iframe.posts.filter(
         (p) => (p.message as { type?: string }).type === "eval",
       );

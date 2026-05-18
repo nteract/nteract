@@ -7,11 +7,12 @@
  *     with reload transitions back to bootstrapped)
  *   - the JSON-RPC transport lifecycle (creation on bootstrap, teardown on
  *     reload/dispose)
- *   - the renderer-bundle injection sequence (CSS + JS via legacy `eval`
- *     messages, guarded by the iframe-side `__ISOLATED_*_LOADED__` flags)
+ *   - the renderer-bundle injection sequence (CSS + JS sent as `eval`
+ *     postMessages handled by the bootstrap script, guarded by the
+ *     iframe-side `__ISOLATED_*_LOADED__` flags)
  *   - the outbound send queue (render/theme/clear calls before the renderer
  *     bundle finishes installing get queued and flushed on `ready`)
- *   - message routing from the iframe (legacy `{ type, payload }` from the
+ *   - message routing from the iframe (raw `{ type, payload }` from the
  *     bootstrap script, JSON-RPC from the renderer bundle) into typed RxJS
  *     observables
  *   - wheel-boundary forwarding (so wheel events that hit a scroll boundary
@@ -72,9 +73,9 @@ import {
 import { scrollFrameWheelBoundary } from "./scroll-boundary";
 
 /**
- * Maps legacy `ParentToIframeMessage.type` values to canonical JSON-RPC
- * method names. Kept here so any caller using `send()` gets the same
- * routing the React shell used to perform inline.
+ * Maps `ParentToIframeMessage.type` values to their JSON-RPC method
+ * names. Kept here so any caller using `send()` gets the same routing
+ * the React shell used to perform inline.
  */
 const TYPE_TO_METHOD: Record<string, string> = {
   render: NTERACT_RENDER_OUTPUT,
@@ -218,10 +219,10 @@ export const ISOLATED_FRAME_SANDBOX =
 
 /**
  * Internal queued message. JSON-RPC sends carry a `method`/`params` pair
- * and are flushed via `rpc.notify()`. Legacy sends carry a `raw` message
- * (any `ParentToIframeMessage` that has no canonical JSON-RPC method,
- * e.g. `interaction_state`) and are flushed via raw postMessage so the
- * iframe-side legacy handler picks them up.
+ * and are flushed via `rpc.notify()`. Raw sends carry the original
+ * `ParentToIframeMessage` (for types with no JSON-RPC method, e.g.
+ * `interaction_state`) and are flushed via postMessage so the iframe-side
+ * bootstrap handler picks them up.
  */
 type QueuedSend =
   | { kind: "rpc"; method: string; params?: unknown }
@@ -242,7 +243,7 @@ export class IsolatedFrameController {
   private pending: QueuedSend[] = [];
 
   // Reserved for future routing of comm_open/comm_msg/comm_close through the
-  // controller. The bridge currently wires legacy events from IsolatedFrame.tsx
+  // controller. The bridge currently wires events from IsolatedFrame.tsx
   // directly; this slot lets a caller register one for the migration.
   // @ts-expect-error - intentionally held without read access yet.
   private commBridge: CommBridgeManager | null = null;
@@ -295,11 +296,10 @@ export class IsolatedFrameController {
   // ── Public commands ─────────────────────────────────────────────
 
   /**
-   * Generic outbound send. Maps legacy `{ type, payload }` shapes to their
-   * canonical JSON-RPC method names. Falls back to a raw postMessage when
-   * the renderer transport isn't up yet AND the message type isn't queueable
-   * — currently nothing slips through that path, since every type in
-   * `TYPE_TO_METHOD` is queueable.
+   * Generic outbound send. Maps `{ type, payload }` shapes onto their
+   * JSON-RPC method names. Types with no JSON-RPC method (currently
+   * `interaction_state`) are queued and flushed as raw postMessages once
+   * the renderer reports ready.
    *
    * Prefer the typed helpers (`render`, `setTheme`, etc.) over this; the
    * generic path exists for adapters that need to forward an
@@ -312,11 +312,11 @@ export class IsolatedFrameController {
       this.enqueue(method, params);
       return;
     }
-    // No canonical JSON-RPC method (e.g. `interaction_state`). Queue as a
-    // legacy postMessage and flush after the renderer is ready so the
-    // iframe-side legacy handler picks it up. Without this gate, an early
-    // `interaction_state` would land on the bootstrap-only listener and
-    // get dropped.
+    // No JSON-RPC method (e.g. `interaction_state`). Queue as a raw
+    // postMessage and flush after the renderer is ready so the iframe-side
+    // handler picks it up. Without this gate, an early `interaction_state`
+    // would land before the renderer-bundle listener is installed and get
+    // dropped.
     this.enqueueRaw(message);
   }
 
@@ -335,9 +335,9 @@ export class IsolatedFrameController {
   setTheme(theme: FrameThemePayload): void {
     this.theme = theme;
     // Theme can be applied before the renderer bundle is up — the iframe's
-    // bootstrap script handles legacy `theme` messages. Once the renderer
-    // transport is alive, prefer JSON-RPC so live theme changes follow the
-    // same path as everything else.
+    // bootstrap script handles `theme` postMessages directly. Once the
+    // renderer transport is alive, prefer JSON-RPC so live theme changes
+    // follow the same path as everything else.
     if (this.rpc && this.state === "ready") {
       this.rpc.notify(NTERACT_THEME, theme);
     } else if (this.iframe.contentWindow) {
@@ -381,7 +381,7 @@ export class IsolatedFrameController {
   attachCommBridge(manager: CommBridgeManager): void {
     this.commBridge = manager;
     // Future: forward comm_open/comm_msg/comm_close routing here. The bridge
-    // currently subscribes to legacy events directly from `IsolatedFrame.tsx`;
+    // currently subscribes to events directly from `IsolatedFrame.tsx`;
     // moving that wiring into the controller is a follow-up.
   }
 
@@ -461,9 +461,9 @@ export class IsolatedFrameController {
         this.handleBootstrapReady();
         break;
       case "renderer_ready":
-        // Legacy path some renderer paths still use; the canonical
-        // signal is the JSON-RPC `nteract/rendererReady` registered in
-        // attachTransport().
+        // Some renderer paths still emit this as a raw postMessage; the
+        // primary signal is the JSON-RPC `nteract/rendererReady` registered
+        // in attachTransport().
         this.handleRendererReady();
         break;
       case "resize":
@@ -472,9 +472,9 @@ export class IsolatedFrameController {
         }
         break;
       case "render_complete":
-        // Legacy RenderCompleteMessage only carries `height`. The richer
-        // payload shape (outputId/cellId/outputIndex) arrives through the
-        // JSON-RPC path registered in attachTransport().
+        // The bootstrap `render_complete` postMessage only carries
+        // `height`. The richer payload (outputId/cellId/outputIndex)
+        // arrives through the JSON-RPC path registered in attachTransport().
         if (data.payload?.height != null) {
           this._resize$.next({ height: data.payload.height });
         }
@@ -532,7 +532,7 @@ export class IsolatedFrameController {
     this._state$.next("bootstrapped");
 
     // Apply theme as soon as we're bootstrapped, before the renderer bundle
-    // takes over (the bootstrap script handles legacy `theme` messages).
+    // takes over — the bootstrap script handles `theme` postMessages.
     if (this.iframe.contentWindow) {
       this.iframe.contentWindow.postMessage({ type: "theme", payload: this.theme }, "*");
     }
@@ -620,8 +620,9 @@ export class IsolatedFrameController {
     if (!this.iframe.contentWindow) return;
     if (!this.rendererCode || !this.rendererCss) {
       // Bundle not yet available. The transport is up so callers can
-      // observe legacy/JSON-RPC messages, but the renderer stays uninstalled
-      // until `setRendererBundle()` lands and re-enters this path.
+      // observe raw and JSON-RPC messages, but the renderer stays
+      // uninstalled until `setRendererBundle()` lands and re-enters this
+      // path.
       return;
     }
     this.bootstrapping = true;
