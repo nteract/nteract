@@ -93,6 +93,29 @@ describe("IsolatedFrame theme updates", () => {
     });
   });
 
+  it("keeps the same JSON-RPC transport across autoHeight/min/max prop changes", async () => {
+    const { container, rerender } = render(
+      <IsolatedFrame darkMode={false} maxHeight={1000} minHeight={20} autoHeight={false} />,
+    );
+    const iframe = container.querySelector("iframe") as HTMLIFrameElement;
+    const iframeWindow = iframe.contentWindow as Window;
+
+    dispatchIframeReady(iframeWindow);
+    expect(MockJsonRpcTransport.instances).toHaveLength(1);
+    const initialTransport = MockJsonRpcTransport.instances[0];
+
+    // Flip every height-policy prop. The iframe never refires `ready`, so
+    // tearing the controller down here would strand the new instance in
+    // `booting` and drop every future message.
+    rerender(<IsolatedFrame darkMode={false} maxHeight={3000} minHeight={20} autoHeight={false} />);
+    rerender(<IsolatedFrame darkMode={false} maxHeight={3000} minHeight={40} autoHeight={false} />);
+    rerender(<IsolatedFrame darkMode={false} maxHeight={3000} minHeight={40} autoHeight />);
+
+    expect(MockJsonRpcTransport.instances).toHaveLength(1);
+    expect(MockJsonRpcTransport.instances[0]).toBe(initialTransport);
+    expect(initialTransport.stop).not.toHaveBeenCalled();
+  });
+
   it("re-applies the last measured content height when autoHeight changes", async () => {
     const { container, rerender } = render(
       <IsolatedFrame darkMode={false} maxHeight={2000} autoHeight={false} />,
