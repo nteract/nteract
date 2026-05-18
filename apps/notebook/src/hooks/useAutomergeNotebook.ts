@@ -60,8 +60,20 @@ const wasmReady: Promise<void> = init().then(() => {
   logger.info("[automerge-notebook] WASM initialized");
 });
 
+let warnedMissingExecutionViewProjector = false;
+
 function projectExecutionViewChangeset(handle: NotebookHandle) {
-  return (handle as unknown as SyncableHandle).project_execution_view_changeset?.();
+  const projector = (handle as unknown as SyncableHandle).project_execution_view_changeset;
+  if (typeof projector !== "function") {
+    if (!warnedMissingExecutionViewProjector) {
+      warnedMissingExecutionViewProjector = true;
+      logger.warn(
+        "[automerge-notebook] WASM handle is missing project_execution_view_changeset; rebuild runtimed-wasm so execution view stores stay current",
+      );
+    }
+    return undefined;
+  }
+  return projector.call(handle);
 }
 
 // ---------------------------------------------------------------------------

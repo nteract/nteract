@@ -108,6 +108,7 @@ pub struct ExecutionViewSnapshot {
 pub struct QueueProjection {
     pub executing_execution_id: Option<String>,
     pub queued_execution_ids: Vec<String>,
+    /// `None` means this projection was produced without a NotebookDoc adapter.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub notebook: Option<NotebookQueueProjection>,
 }
@@ -152,6 +153,7 @@ impl ExecutionViewChangeset {
 #[derive(Default, Debug)]
 struct ExecutionViewProjector {
     prev_cell_pointers: HashMap<String, Option<String>>,
+    execution_to_cell: HashMap<String, String>,
     known_execution_ids: HashSet<String>,
     prev_execution_fingerprint: HashMap<String, String>,
     prev_queue: Option<QueueProjection>,
@@ -160,6 +162,7 @@ struct ExecutionViewProjector {
 impl ExecutionViewProjector {
     fn reset(&mut self) {
         self.prev_cell_pointers.clear();
+        self.execution_to_cell.clear();
         self.known_execution_ids.clear();
         self.prev_execution_fingerprint.clear();
         self.prev_queue = None;
@@ -167,7 +170,7 @@ impl ExecutionViewProjector {
 
     fn project_all(&mut self, doc: &NotebookDoc, state: &RuntimeState) -> ExecutionViewChangeset {
         let mut changeset = self.project_notebook(doc);
-        let runtime_changeset = self.project_runtime(state, doc);
+        let runtime_changeset = self.project_runtime(state);
         changeset
             .execution_upserts
             .extend(runtime_changeset.execution_upserts);
@@ -186,9 +189,12 @@ impl ExecutionViewProjector {
 
         let mut cell_pointer_changes = Vec::new();
         for (cell_id, execution_id) in &current {
-            if self.prev_cell_pointers.get(cell_id) != Some(execution_id)
-                && (execution_id.is_some() || self.prev_cell_pointers.contains_key(cell_id))
-            {
+            let pointer_changed = self.prev_cell_pointers.get(cell_id) != Some(execution_id);
+            // Skip None -> None for a newly observed cell; emit clears only
+            // after we previously saw that cell.
+            let real_transition =
+                execution_id.is_some() || self.prev_cell_pointers.contains_key(cell_id);
+            if pointer_changed && real_transition {
                 cell_pointer_changes.push((cell_id.clone(), execution_id.clone()));
             }
         }
@@ -200,6 +206,14 @@ impl ExecutionViewProjector {
         }
 
         cell_pointer_changes.sort_by(|a, b| a.0.cmp(&b.0));
+        self.execution_to_cell = current
+            .iter()
+            .filter_map(|(cell_id, execution_id)| {
+                execution_id
+                    .as_ref()
+                    .map(|execution_id| (execution_id.clone(), cell_id.clone()))
+            })
+            .collect();
         self.prev_cell_pointers = current;
 
         ExecutionViewChangeset {
@@ -208,11 +222,7 @@ impl ExecutionViewProjector {
         }
     }
 
-    fn project_runtime(
-        &mut self,
-        state: &RuntimeState,
-        doc: &NotebookDoc,
-    ) -> ExecutionViewChangeset {
+    fn project_runtime(&mut self, state: &RuntimeState) -> ExecutionViewChangeset {
         let mut next_ids = HashSet::new();
         let mut execution_upserts = Vec::new();
 
@@ -256,7 +266,7 @@ impl ExecutionViewProjector {
                 .iter()
                 .map(|entry| entry.execution_id.clone())
                 .collect(),
-            notebook: Some(notebook_queue_projection(state, doc)),
+            notebook: Some(notebook_queue_projection(state, &self.execution_to_cell)),
         };
         let queue = if self.prev_queue.as_ref() == Some(&next_queue) {
             None
@@ -274,8 +284,10 @@ impl ExecutionViewProjector {
     }
 }
 
-fn notebook_queue_projection(state: &RuntimeState, doc: &NotebookDoc) -> NotebookQueueProjection {
-    let execution_to_cell = notebook_execution_to_cell(doc);
+fn notebook_queue_projection(
+    state: &RuntimeState,
+    execution_to_cell: &HashMap<String, String>,
+) -> NotebookQueueProjection {
     let executing_cell_id = state
         .queue
         .executing
@@ -291,16 +303,6 @@ fn notebook_queue_projection(state: &RuntimeState, doc: &NotebookDoc) -> Noteboo
         executing_cell_id,
         queued_cell_ids,
     }
-}
-
-fn notebook_execution_to_cell(doc: &NotebookDoc) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    for cell in doc.get_cells() {
-        if let Some(execution_id) = doc.get_execution_id(&cell.id) {
-            map.insert(execution_id, cell.id);
-        }
-    }
-    map
 }
 
 fn execution_snapshot(exec: &ExecutionState) -> ExecutionViewSnapshot {
@@ -2096,10 +2098,7 @@ impl NotebookHandle {
                     };
                     let execution_view_changeset = state
                         .as_ref()
-                        .map(|state| {
-                            self.execution_view_projector
-                                .project_runtime(state, &self.doc)
-                        })
+                        .map(|state| self.execution_view_projector.project_runtime(state))
                         .unwrap_or_default();
                     let reply = self
                         .state_doc
@@ -2147,10 +2146,7 @@ impl NotebookHandle {
 
                 let execution_view_changeset = state
                     .as_ref()
-                    .map(|state| {
-                        self.execution_view_projector
-                            .project_runtime(state, &self.doc)
-                    })
+                    .map(|state| self.execution_view_projector.project_runtime(state))
                     .unwrap_or_default();
 
                 events.push(FrameEvent::RuntimeStateSyncApplied {
@@ -2414,6 +2410,25 @@ mod tests {
         (resolved, buffer_paths, text_paths)
     }
 
+    fn execution_state(
+        status: &str,
+        execution_count: Option<i64>,
+        success: Option<bool>,
+        output_ids: &[&str],
+    ) -> ExecutionState {
+        ExecutionState {
+            status: status.to_string(),
+            execution_count,
+            success,
+            outputs: output_ids
+                .iter()
+                .map(|output_id| json!({ "output_id": output_id }))
+                .collect(),
+            source: None,
+            seq: None,
+        }
+    }
+
     #[test]
     fn execution_view_projects_notebook_queue_join() {
         let doc = notebook_with_execution_pointers(&[
@@ -2474,11 +2489,72 @@ mod tests {
 
         let mut projector = ExecutionViewProjector::default();
         projector.project_all(&doc, &first);
-        let changeset = projector.project_runtime(&second, &doc);
+        let changeset = projector.project_runtime(&second);
 
         assert_eq!(changeset.execution_upserts.len(), 1);
         assert_eq!(changeset.execution_upserts[0].0, "exec-1");
         assert_eq!(changeset.execution_upserts[0].1.output_ids, vec!["new"]);
+    }
+
+    #[test]
+    fn execution_view_runtime_projection_reports_trimmed_executions() {
+        let doc = notebook_with_execution_pointers(&[("cell-1", Some("exec-1"))]);
+        let mut first = RuntimeState::default();
+        first.executions.insert(
+            "exec-1".to_string(),
+            execution_state("done", Some(1), Some(true), &["out-1"]),
+        );
+
+        let mut projector = ExecutionViewProjector::default();
+        projector.project_all(&doc, &first);
+        let changeset = projector.project_runtime(&RuntimeState::default());
+
+        assert!(changeset.execution_upserts.is_empty());
+        assert_eq!(changeset.removed_execution_ids, vec!["exec-1"]);
+    }
+
+    #[test]
+    fn execution_view_projector_is_idempotent_without_state_changes() {
+        let doc = notebook_with_execution_pointers(&[("cell-1", Some("exec-1"))]);
+        let mut state = RuntimeState::default();
+        state.executions.insert(
+            "exec-1".to_string(),
+            execution_state("done", Some(1), Some(true), &["out-1"]),
+        );
+        state.queue.executing = Some(QueueEntry {
+            execution_id: "exec-1".to_string(),
+        });
+
+        let mut projector = ExecutionViewProjector::default();
+        assert!(!projector.project_all(&doc, &state).is_empty());
+        assert!(projector.project_all(&doc, &state).is_empty());
+    }
+
+    #[test]
+    fn execution_view_separates_notebook_and_runtime_ticks() {
+        let doc = notebook_with_execution_pointers(&[("cell-1", Some("exec-1"))]);
+        let mut state = RuntimeState::default();
+        state.executions.insert(
+            "exec-1".to_string(),
+            execution_state("running", Some(1), None, &["out-1"]),
+        );
+
+        let mut projector = ExecutionViewProjector::default();
+        let notebook_changeset = projector.project_notebook(&doc);
+        assert_eq!(
+            notebook_changeset.cell_pointer_changes,
+            vec![("cell-1".to_string(), Some("exec-1".to_string()))]
+        );
+        assert!(notebook_changeset.execution_upserts.is_empty());
+        assert!(notebook_changeset.queue.is_none());
+
+        let runtime_changeset = projector.project_runtime(&state);
+        assert!(runtime_changeset.cell_pointer_changes.is_empty());
+        assert_eq!(runtime_changeset.execution_upserts.len(), 1);
+        assert_eq!(runtime_changeset.execution_upserts[0].0, "exec-1");
+
+        let empty_changeset = projector.project_runtime(&state);
+        assert!(empty_changeset.is_empty());
     }
 
     #[test]
