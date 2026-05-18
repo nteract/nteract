@@ -100,21 +100,6 @@ type ExecutionViewChangeset = {
   execution_upserts?: Array<[executionId: string, snapshot: ExecutionViewSnapshot]>;
 };
 
-type ExecutionQueueProjection = {
-  executing_execution_id?: string | null;
-  queued_execution_ids: string[];
-  notebook?: {
-    executing_cell_id?: string | null;
-    queued_cell_ids: string[];
-  } | null;
-};
-
-type ExecutionView = {
-  cell_execution_ids: Record<string, string>;
-  executions: Record<string, ExecutionViewSnapshot>;
-  queue: ExecutionQueueProjection | null;
-};
-
 type SubscriptionLike = {
   unsubscribe?: () => void;
   dispose?: () => void;
@@ -127,7 +112,6 @@ type ObservableLike<T> = {
 type Session = {
   readonly notebookId: string;
   readonly executionViewChanges$?: ObservableLike<ExecutionViewChangeset>;
-  getExecutionView?(): ExecutionView;
   runCell(
     source: string,
     opts?: { timeoutMs?: number; cellType?: string; onUpdate?: (progress: CellResult) => void },
@@ -143,18 +127,16 @@ type Session = {
     opts?: { packageManager?: "uv" | "conda" | "pixi" },
   ): Promise<void>;
   getDependencyStatus?(): Promise<{ uv?: { dependencies: string[] }; fingerprint?: string }>;
-  getRuntimeStatus?(): Promise<RuntimeStatus>;
+  getRuntimeStatus?(): Promise<{
+    status: string;
+    lifecycle: string;
+    errorReason?: string;
+    errorDetails?: string;
+  }>;
   syncEnvironment(): Promise<void>;
   saveNotebook(path?: string): Promise<void>;
   shutdownNotebook?(): Promise<boolean>;
   close(): Promise<void>;
-};
-
-type RuntimeStatus = {
-  status: string;
-  lifecycle: string;
-  errorReason?: string;
-  errorDetails?: string;
 };
 
 function loadRuntimedNode(): RuntimedNode | null {
@@ -599,83 +581,6 @@ function findParquetBlobPath(result: CellResult): string | undefined {
   return undefined;
 }
 
-type ExecutionSummary = {
-  execution_id: string;
-  cell_id?: string;
-  status: string;
-  execution_count: number | null;
-  success: boolean | null;
-  output_count: number;
-};
-
-function summarizeExecutions(view: ExecutionView | undefined, limit = 5): ExecutionSummary[] {
-  if (!view) return [];
-  const executionToCell = new Map(
-    Object.entries(view.cell_execution_ids).map(([cellId, executionId]) => [executionId, cellId]),
-  );
-  return Object.entries(view.executions)
-    .map(([executionId, snapshot]) => ({
-      execution_id: executionId,
-      cell_id: executionToCell.get(executionId),
-      status: snapshot.status,
-      execution_count: snapshot.execution_count,
-      success: snapshot.success,
-      output_count: snapshot.output_ids.length,
-    }))
-    .sort((a, b) => {
-      const activeRank = (status: string) =>
-        status === "running" ? 2 : status === "queued" ? 1 : 0;
-      const rankDelta = activeRank(b.status) - activeRank(a.status);
-      if (rankDelta !== 0) return rankDelta;
-      return (b.execution_count ?? -1) - (a.execution_count ?? -1);
-    })
-    .slice(0, limit);
-}
-
-function formatSessionStatus(
-  notebookId: string,
-  runtime: RuntimeStatus | undefined,
-  view: ExecutionView | undefined,
-): string {
-  const lines = [`Notebook: ${notebookId}`];
-  if (runtime) {
-    const error = runtime.errorReason ? ` (${runtime.errorReason})` : "";
-    lines.push(`Runtime: ${runtime.status}/${runtime.lifecycle}${error}`);
-  }
-
-  const queue = view?.queue;
-  if (queue) {
-    const executing = queue.executing_execution_id
-      ? `${queue.executing_execution_id}${queue.notebook?.executing_cell_id ? ` (${queue.notebook.executing_cell_id})` : ""}`
-      : "idle";
-    const queued =
-      queue.queued_execution_ids.length === 0
-        ? "none"
-        : queue.queued_execution_ids
-            .map((executionId, index) => {
-              const cellId = queue.notebook?.queued_cell_ids[index];
-              return cellId ? `${executionId} (${cellId})` : executionId;
-            })
-            .join(", ");
-    lines.push(`Queue: executing=${executing}; queued=${queued}`);
-  }
-
-  const recent = summarizeExecutions(view);
-  if (recent.length > 0) {
-    lines.push("Recent executions:");
-    for (const execution of recent) {
-      const count = execution.execution_count == null ? "?" : String(execution.execution_count);
-      const cell = execution.cell_id ? ` ${execution.cell_id}` : "";
-      const ok = execution.success == null ? "" : execution.success ? " ok" : " failed";
-      lines.push(
-        `- ${execution.execution_id}${cell} [${count}] ${execution.status}${ok} outputs=${execution.output_count}`,
-      );
-    }
-  }
-
-  return lines.join("\n");
-}
-
 // --- extension ---------------------------------------------------------------
 
 // Braille frames for the "waiting on first token" spinner shown in `In [*]:`
@@ -713,19 +618,9 @@ const ADD_DEPENDENCIES_PARAMS = Type.Object({
   }),
 });
 
-const SESSION_STATUS_PARAMS = Type.Object({});
-
 type AddDependenciesDetails = {
   notebook_id?: string;
   packages?: string[];
-};
-
-type SessionStatusDetails = {
-  active: boolean;
-  notebook_id?: string;
-  runtime?: RuntimeStatus;
-  execution_view?: ExecutionView;
-  recent_executions?: ExecutionSummary[];
 };
 
 const SAVE_NOTEBOOK_PARAMS = Type.Object({
@@ -844,12 +739,6 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
     } finally {
       opening = null;
     }
-  }
-
-  async function getCurrentSession(): Promise<Session | null> {
-    if (session) return session;
-    if (opening) return opening;
-    return null;
   }
 
   pi.registerTool<typeof PYTHON_PARAMS, unknown, InCallState>({
@@ -1046,52 +935,6 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
           runtime: sess.getRuntimeStatus
             ? await sess.getRuntimeStatus().catch(() => undefined)
             : undefined,
-        },
-      };
-    },
-  });
-
-  pi.registerTool<typeof SESSION_STATUS_PARAMS, SessionStatusDetails>({
-    name: "python_session_status",
-    label: "Python Session Status",
-    description:
-      "Inspect the current persistent Python notebook session without starting a new kernel. Returns runtime lifecycle, execution queue, recent execution IDs, and cell bindings when available.",
-    promptSnippet:
-      "python_session_status: inspect the active Python session, queue, and recent execution IDs without starting a new kernel.",
-    parameters: SESSION_STATUS_PARAMS,
-    async execute(_toolCallId, _params, signal) {
-      if (signal?.aborted) throw new Error("aborted");
-      const sess = await getCurrentSession();
-      if (!sess) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: "No active Python session. Use python_repl to start one.",
-            },
-          ],
-          details: { active: false },
-        };
-      }
-
-      const runtime = sess.getRuntimeStatus
-        ? await sess.getRuntimeStatus().catch(() => undefined)
-        : undefined;
-      const executionView = sess.getExecutionView?.();
-      const recentExecutions = summarizeExecutions(executionView);
-      return {
-        content: [
-          {
-            type: "text",
-            text: formatSessionStatus(sess.notebookId, runtime, executionView),
-          },
-        ],
-        details: {
-          active: true,
-          notebook_id: sess.notebookId,
-          runtime,
-          execution_view: executionView,
-          recent_executions: recentExecutions,
         },
       };
     },

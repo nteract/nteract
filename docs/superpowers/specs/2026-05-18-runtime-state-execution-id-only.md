@@ -327,8 +327,8 @@ share the same Rust projector instead of reimplementing the join:
   `Session.getExecutionView()` for the current materialized snapshot.
 - `runtimed-py` exposes a snapshot-style execution view from the same shared
   projector.
-- Pi consumes the Node snapshot/changeset surface for session status and
-  execution prompt tracking without reading notebook cells itself.
+- Pi consumes the Node changeset surface for execution prompt tracking without
+  reading notebook cells itself.
 
 ## Remaining Follow-Up
 
