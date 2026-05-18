@@ -21,6 +21,29 @@ export interface ExecutionTransition {
   execution_count: number | null;
 }
 
+export interface ExecutionViewSnapshot {
+  execution_count: number | null;
+  status: "queued" | "running" | "done" | "error" | (string & {});
+  success: boolean | null;
+  output_ids: string[];
+}
+
+export interface ExecutionQueueProjection {
+  executing_execution_id?: string | null;
+  queued_execution_ids: string[];
+  notebook?: {
+    executing_cell_id?: string | null;
+    queued_cell_ids: string[];
+  } | null;
+}
+
+export interface ExecutionViewChangeset {
+  cell_pointer_changes?: Array<[cell_id: string, execution_id: string | null]>;
+  execution_upserts?: Array<[execution_id: string, snapshot: ExecutionViewSnapshot]>;
+  removed_execution_ids?: string[];
+  queue?: ExecutionQueueProjection;
+}
+
 export type RuntimeState = Record<string, unknown>;
 
 export type RuntimeKind = "python" | "deno" | (string & {});
@@ -178,6 +201,7 @@ export class Session {
   readonly notebookId: string;
   readonly runtimeState$: Observable<RuntimeState>;
   readonly executionTransitions$: Observable<ExecutionTransition>;
+  readonly executionViewChanges$: Observable<ExecutionViewChangeset>;
   readonly cellChanges$: Observable<null>;
   readonly broadcasts$: Observable<unknown>;
   readonly sessionStatus$: Observable<SessionStatus>;

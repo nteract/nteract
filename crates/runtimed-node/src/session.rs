@@ -21,7 +21,7 @@ use runtimed_outputs::output_resolver as shared_resolver;
 use runtimed_outputs::resolved_output::DataValue as SharedDataValue;
 
 use crate::error::to_napi_err;
-use runtime_doc::{diff_executions, ProjectContext, ProjectFileKind};
+use runtime_doc::{diff_executions, ExecutionViewProjector, ProjectContext, ProjectFileKind};
 
 /// Valid cell types accepted by `runCell`.
 const VALID_CELL_TYPES: &[&str] = &["code", "markdown", "raw"];
@@ -525,6 +525,61 @@ impl Session {
                     emit_json(&tsfn, &transition);
                 }
                 prev = curr;
+            }
+        });
+        Ok(EventSubscription::new(task))
+    }
+
+    /// Subscribe to shared execution-view changes. Callback receives a JSON string.
+    #[napi]
+    pub fn on_execution_view_change(
+        &self,
+        callback: Function<'_, (String,), ()>,
+    ) -> Result<EventSubscription> {
+        let handle = {
+            let st = self
+                .state
+                .try_lock()
+                .map_err(|_| Error::from_reason("Session state busy"))?;
+            st.handle
+                .as_ref()
+                .ok_or_else(|| Error::from_reason("Not connected"))?
+                .clone()
+        };
+        let mut notebook_rx = handle.subscribe();
+        let mut runtime_rx = handle.subscribe_runtime_state();
+        let tsfn = json_callback(callback)?;
+        let task = spawn_event_task(async move {
+            let mut projector = ExecutionViewProjector::default();
+            let state = runtime_rx.borrow().clone();
+            let changeset = projector.project_all(handle.get_cell_execution_pointers(), &state);
+            if !changeset.is_empty() {
+                emit_json(&tsfn, &changeset);
+            }
+
+            loop {
+                tokio::select! {
+                    changed = notebook_rx.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                        let state = runtime_rx.borrow().clone();
+                        let changeset = projector.project_all(handle.get_cell_execution_pointers(), &state);
+                        if !changeset.is_empty() {
+                            emit_json(&tsfn, &changeset);
+                        }
+                    }
+                    changed = runtime_rx.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                        let state = runtime_rx.borrow_and_update().clone();
+                        let changeset = projector.project_runtime(&state);
+                        if !changeset.is_empty() {
+                            emit_json(&tsfn, &changeset);
+                        }
+                    }
+                }
             }
         });
         Ok(EventSubscription::new(task))

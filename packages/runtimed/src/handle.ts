@@ -43,7 +43,7 @@ export interface TextAttribution {
 
 export interface ExecutionViewSnapshot {
   execution_count: number | null;
-  status: "queued" | "running" | "done" | "error";
+  status: "queued" | "running" | "done" | "error" | (string & {});
   success: boolean | null;
   output_ids: string[];
 }
@@ -101,8 +101,9 @@ export interface FrameEvent {
     removed?: string[];
   };
   /**
-   * Cross-document execution view diff produced by WASM. NotebookDoc owns
-   * cell -> execution_id pointers; RuntimeStateDoc owns execution snapshots.
+   * Cross-document execution view diff produced by the shared Rust projector.
+   * NotebookDoc owns cell -> execution_id pointers; RuntimeStateDoc owns
+   * execution snapshots.
    */
   execution_view_changeset?: ExecutionViewChangeset;
 }

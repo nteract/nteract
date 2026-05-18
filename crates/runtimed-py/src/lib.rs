@@ -26,8 +26,10 @@ use error::RuntimedError;
 
 use output::{
     Cell, CompletionItem, CompletionResult, ExecutionEvent, ExecutionProgress, ExecutionResult,
-    HistoryEntry, NotebookConnectionInfo, Output, PyCommDocEntry, PyEnvState, PyKernelState,
-    PyQueueEntry, PyRuntimeState, QueueState, SyncEnvironmentResult,
+    HistoryEntry, NotebookConnectionInfo, Output, PyCellExecutionPointer, PyCommDocEntry,
+    PyEnvState, PyExecutionQueueProjection, PyExecutionViewChangeset, PyExecutionViewSnapshot,
+    PyExecutionViewUpsert, PyKernelState, PyNotebookQueueProjection, PyQueueEntry, PyRuntimeState,
+    QueueState, SyncEnvironmentResult,
 };
 
 /// Launch the desktop notebook app, optionally opening a specific notebook.
@@ -122,6 +124,12 @@ fn _internals(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ExecutionResult>()?;
     m.add_class::<ExecutionProgress>()?;
     m.add_class::<ExecutionEvent>()?;
+    m.add_class::<PyExecutionViewSnapshot>()?;
+    m.add_class::<PyCellExecutionPointer>()?;
+    m.add_class::<PyExecutionViewUpsert>()?;
+    m.add_class::<PyNotebookQueueProjection>()?;
+    m.add_class::<PyExecutionQueueProjection>()?;
+    m.add_class::<PyExecutionViewChangeset>()?;
     m.add_class::<Output>()?;
     m.add_class::<SyncEnvironmentResult>()?;
     m.add_class::<NotebookConnectionInfo>()?;

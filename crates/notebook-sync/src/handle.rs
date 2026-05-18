@@ -535,6 +535,36 @@ impl DocHandle {
         read_execution_id(&state.doc, cell_id)
     }
 
+    /// Get notebook cell execution pointers as `(cell_id, execution_id)`.
+    ///
+    /// This is the notebook adapter input for the shared execution-view
+    /// projector. It intentionally returns only document-native pointers; the
+    /// runtime execution entries stay in RuntimeStateDoc.
+    pub fn get_cell_execution_pointers(&self) -> Vec<(String, Option<String>)> {
+        let cell_ids: Vec<String> = self
+            .snapshot_rx
+            .borrow()
+            .cells
+            .iter()
+            .map(|cell| cell.id.clone())
+            .collect();
+
+        let Ok(state) = self.doc.lock() else {
+            return cell_ids
+                .into_iter()
+                .map(|cell_id| (cell_id, None))
+                .collect();
+        };
+
+        cell_ids
+            .into_iter()
+            .map(|cell_id| {
+                let execution_id = read_execution_id(&state.doc, &cell_id);
+                (cell_id, execution_id)
+            })
+            .collect()
+    }
+
     /// Get a single cell's execution count (e.g. "5" or "null").
     ///
     /// RuntimeStateDoc is authoritative while an execution is known. The

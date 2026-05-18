@@ -102,8 +102,9 @@ sessions.
   Pass `onUpdate(progress)` to receive resolved output snapshots while the
   execution is still running.
 - `Session.runtimeState$`, `Session.executionTransitions$`,
-  `Session.cellChanges$`, `Session.broadcasts$`, and `Session.sessionStatus$`
-  expose the same projected event families used by the browser sync engine.
+  `Session.executionViewChanges$`, `Session.cellChanges$`, `Session.broadcasts$`,
+  and `Session.sessionStatus$` expose the same projected event families used by
+  the browser sync engine.
 - `Session.addDependency(spec, { packageManager })` /
   `Session.addDependencies(specs, { packageManager })` and
   `Session.removeDependency(spec, { packageManager })` /
