@@ -212,16 +212,14 @@ impl DocChangeset {
 /// Cell outputs live in `RuntimeStateDoc`, not in `NotebookDoc`. The
 /// runtime agent writes them via IOPub; the daemon syncs them via frame
 /// `0x05`. The WASM layer handles that path separately via
-/// `runtime_state::diff_execution_outputs`, which emits
-/// `RuntimeStateSyncApplied.output_changed_cells`. The sync engine then
-/// synthesizes a `CellChangeset` with `fields.outputs = true` for those
-/// cells so materialization goes through the same path as structural
-/// changes.
+/// `RuntimeStateSyncApplied.output_changeset`. The sync engine routes
+/// those output-id changes into the frontend output store without
+/// synthesizing cell changes.
 ///
 /// Do not add an output scan here. If you're tempted to, read
 /// `crates/runtimed-wasm/src/lib.rs` (`RuntimeStateSyncApplied` emit
-/// site) and `packages/runtimed/src/sync-engine.ts` (synthetic
-/// CellChangeset) first.
+/// site) and `packages/runtimed/src/sync-engine.ts` (output-id
+/// projection) first.
 ///
 /// # Arguments
 ///

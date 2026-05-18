@@ -115,11 +115,7 @@ impl ExecutionWatcher {
             })
             .unwrap_or_else(|| ("timeout".to_string(), None, Vec::new(), None));
         Some(ExecutionProgressState {
-            cell_id: self
-                .prev
-                .as_ref()
-                .map(|entry| entry.cell_id.clone())
-                .unwrap_or_else(|| self.cell_id.clone()),
+            cell_id: self.cell_id.clone(),
             execution_id: self.execution_id.clone(),
             status,
             success,
@@ -139,11 +135,7 @@ impl ExecutionWatcher {
 
         let terminal_reason = terminal_reason_for(entry);
         Some(ExecutionProgressState {
-            cell_id: if entry.cell_id.is_empty() {
-                self.cell_id.clone()
-            } else {
-                entry.cell_id.clone()
-            },
+            cell_id: self.cell_id.clone(),
             execution_id: self.execution_id.clone(),
             status: entry.status.clone(),
             success: entry.success,
@@ -232,7 +224,7 @@ mod tests {
     fn set_execution(
         tx: &watch::Sender<RuntimeState>,
         execution_id: &str,
-        cell_id: &str,
+        _cell_id: &str,
         status: &str,
         outputs: Vec<serde_json::Value>,
     ) {
@@ -240,7 +232,6 @@ mod tests {
         runtime.executions.insert(
             execution_id.to_string(),
             ExecutionState {
-                cell_id: cell_id.to_string(),
                 status: status.to_string(),
                 execution_count: None,
                 success: (status == "done")

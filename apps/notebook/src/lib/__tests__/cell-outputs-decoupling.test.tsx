@@ -63,7 +63,6 @@ describe("Phase C-lite: cell subscription / outputs decoupling", () => {
     act(() => {
       setOutput("o1", streamOutput("a"));
       setExecution("exec-1", {
-        cell_id: "c1",
         execution_count: 1,
         status: "running",
         success: null,
@@ -103,7 +102,6 @@ describe("Phase C-lite: cell subscription / outputs decoupling", () => {
     act(() => {
       setOutput("o2", streamOutput("b"));
       setExecution("exec-1", {
-        cell_id: "c1",
         execution_count: 1,
         status: "running",
         success: null,
@@ -123,14 +121,12 @@ describe("Phase C-lite: cell subscription / outputs decoupling", () => {
       setOutput("oA", oA);
       setOutput("oB", oB);
       setExecution("exec-a", {
-        cell_id: "A",
         execution_count: 1,
         status: "running",
         success: null,
         output_ids: ["oA"],
       });
       setExecution("exec-b", {
-        cell_id: "B",
         execution_count: 1,
         status: "running",
         success: null,

@@ -67,8 +67,6 @@ export interface FrameEvent {
   state?: unknown;
   /** Connection-local session status from SESSION_CONTROL frames. */
   status?: SessionStatus;
-  /** Cell IDs whose outputs changed in RuntimeStateDoc (from WASM-side diff). */
-  output_changed_cells?: string[];
   /**
    * Per-output diff for RuntimeStateSyncApplied events. Each `changed` entry
    * is `[output_id, narrowed_manifest]` — manifests are already MIME-narrowed

@@ -100,7 +100,6 @@ export function seedOutputStoresFromHandle(
     // state projection will overwrite with authoritative values when the
     // doc's sync frame lands.
     setExecution(executionId, {
-      cell_id: cellId,
       execution_count: null,
       status: "done",
       success: null,

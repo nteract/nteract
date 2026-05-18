@@ -26,7 +26,6 @@ describe("projectRuntimeStateToExecutions", () => {
     projectRuntimeStateToExecutions(
       stateWith({
         "exec-1": {
-          cell_id: "cell-1",
           execution_count: 1,
           status: "running",
           success: null,
@@ -43,7 +42,6 @@ describe("projectRuntimeStateToExecutions", () => {
     projectRuntimeStateToExecutions(
       stateWith({
         "exec-1": {
-          cell_id: "cell-1",
           execution_count: 1,
           status: "running",
           success: null,
@@ -64,7 +62,6 @@ describe("projectRuntimeStateToExecutions", () => {
     projectRuntimeStateToExecutions(
       stateWith({
         "exec-legacy": {
-          cell_id: "cell-legacy",
           execution_count: 1,
           status: "done",
           success: true,
@@ -85,7 +82,6 @@ describe("projectRuntimeStateToExecutions", () => {
     projectRuntimeStateToExecutions(
       stateWith({
         "exec-1": {
-          cell_id: "cell-1",
           execution_count: 1,
           status: "done",
           success: true,

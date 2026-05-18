@@ -118,7 +118,6 @@ export {
   type TrustState,
   type TrustStatus,
   diffExecutions,
-  getExecutionCountForCell,
 } from "./runtime-state";
 
 // Pool state
@@ -183,7 +182,13 @@ export {
 } from "./derived-state";
 
 // Notebook client
-export { NotebookClient, type NotebookClientOptions, SaveNotebookError } from "./notebook-client";
+export {
+  NotebookClient,
+  type ExecuteCellOptions,
+  type NotebookClientOptions,
+  type RunAllCellsOptions,
+  SaveNotebookError,
+} from "./notebook-client";
 export type {
   BlobDurability,
   BlobUploadErrorKind,

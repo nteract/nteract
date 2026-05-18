@@ -288,7 +288,7 @@ mod tests {
         let mut state = SharedDocState::new(AutoCommit::new(), "test-notebook".into());
         state
             .state_doc
-            .create_execution_with_source("exec-1", "cell-1", "x = 1", 1)
+            .create_execution_with_source("exec-1", "x = 1", 1)
             .expect("execution created");
 
         assert!(

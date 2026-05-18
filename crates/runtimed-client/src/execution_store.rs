@@ -52,7 +52,7 @@ impl ExecutionRecord {
             context_kind: context_kind.into(),
             context_id: context_id.into(),
             notebook_path,
-            cell_id: Some(exec.cell_id.clone()),
+            cell_id: None,
             status: exec.status.clone(),
             success: exec.success,
             execution_count: exec.execution_count,
@@ -100,7 +100,10 @@ impl ExecutionRecord {
             && self.context_kind == "notebook"
             && self.context_id == context_id
             && self.notebook_path.as_deref() == notebook_path
-            && self.cell_id.as_deref() == Some(cell_id)
+            && self
+                .cell_id
+                .as_deref()
+                .is_none_or(|record_cell_id| record_cell_id == cell_id)
             && self.source.as_deref() == Some(source)
             && self.execution_count == execution_count
             && outputs_match_for_reload(&self.outputs, outputs)
@@ -475,6 +478,34 @@ mod tests {
         let records = store.list_context("notebook", "/tmp/a.ipynb").await;
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].execution_id, "exec-1");
+    }
+
+    #[test]
+    fn matches_notebook_cell_accepts_execution_only_records() {
+        let mut record = record("exec-1");
+        record.cell_id = None;
+        assert!(record.matches_notebook_cell(
+            "/tmp/a.ipynb",
+            Some("/tmp/a.ipynb"),
+            "cell-1",
+            "1 + 1",
+            Some(1),
+            &record.outputs,
+        ));
+    }
+
+    #[test]
+    fn matches_notebook_cell_rejects_wrong_explicit_cell_id() {
+        let mut record = record("exec-1");
+        record.cell_id = Some("cell-2".to_string());
+        assert!(!record.matches_notebook_cell(
+            "/tmp/a.ipynb",
+            Some("/tmp/a.ipynb"),
+            "cell-1",
+            "1 + 1",
+            Some(1),
+            &record.outputs,
+        ));
     }
 
     #[tokio::test]

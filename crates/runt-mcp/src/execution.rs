@@ -65,6 +65,7 @@ pub async fn execute_and_wait(
     // Step 2: Submit execution request
     let request = NotebookRequest::ExecuteCell {
         cell_id: cell_id.to_string(),
+        execution_id: None,
     };
     let response = handle
         .send_request_after_heads(request, required_heads)
@@ -202,7 +203,12 @@ pub async fn run_all_and_queue(handle: &DocHandle) -> RunAllResult {
     };
 
     let response = handle
-        .send_request_after_heads(NotebookRequest::RunAllCells {}, required_heads)
+        .send_request_after_heads(
+            NotebookRequest::RunAllCells {
+                cell_execution_ids: None,
+            },
+            required_heads,
+        )
         .await;
 
     let cell_execution_ids: HashMap<String, String> = match response {

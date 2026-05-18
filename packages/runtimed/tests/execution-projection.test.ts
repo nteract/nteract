@@ -37,7 +37,6 @@ describe("execution projection helpers", () => {
 
   it("collects execution output ids from RuntimeState entries", () => {
     const entry: ExecutionState = {
-      cell_id: "cell-1",
       execution_count: 1,
       status: "running",
       success: null,
@@ -49,7 +48,6 @@ describe("execution projection helpers", () => {
 
   it("fingerprints same-length output id replacements", () => {
     const base: ExecutionState = {
-      cell_id: "cell-1",
       execution_count: 1,
       status: "running",
       success: null,
@@ -65,7 +63,6 @@ describe("execution projection helpers", () => {
 
   it("derives execution snapshots without carrying raw outputs", () => {
     const entry: ExecutionState = {
-      cell_id: "cell-1",
       execution_count: 2,
       status: "done",
       success: true,
@@ -73,7 +70,6 @@ describe("execution projection helpers", () => {
     };
 
     expect(buildRuntimeExecutionSnapshot(entry)).toEqual({
-      cell_id: "cell-1",
       execution_count: 2,
       status: "done",
       success: true,
@@ -87,7 +83,6 @@ describe("RuntimeExecutionProjector", () => {
     const projector = new RuntimeExecutionProjector();
     const state = stateWith({
       "exec-1": {
-        cell_id: "cell-1",
         execution_count: 1,
         status: "running",
         success: null,
@@ -100,7 +95,6 @@ describe("RuntimeExecutionProjector", () => {
         [
           "exec-1",
           {
-            cell_id: "cell-1",
             execution_count: 1,
             status: "running",
             success: null,
@@ -121,7 +115,6 @@ describe("RuntimeExecutionProjector", () => {
     projector.project(
       stateWith({
         "exec-1": {
-          cell_id: "cell-1",
           execution_count: 1,
           status: "running",
           success: null,
@@ -134,7 +127,6 @@ describe("RuntimeExecutionProjector", () => {
       projector.project(
         stateWith({
           "exec-1": {
-            cell_id: "cell-1",
             execution_count: 1,
             status: "running",
             success: null,
@@ -150,7 +142,6 @@ describe("RuntimeExecutionProjector", () => {
     projector.project(
       stateWith({
         "exec-1": {
-          cell_id: "cell-1",
           execution_count: 1,
           status: "done",
           success: true,
@@ -174,14 +165,12 @@ describe("RuntimeExecutionProjector", () => {
     projector.project(
       stateWith({
         "exec-stays": {
-          cell_id: "cell-1",
           execution_count: 1,
           status: "running",
           success: null,
           outputs: [{ output_id: "old" }],
         },
         "exec-removed": {
-          cell_id: "cell-2",
           execution_count: 2,
           status: "done",
           success: true,
@@ -193,14 +182,12 @@ describe("RuntimeExecutionProjector", () => {
     const projection = projector.project(
       stateWith({
         "exec-stays": {
-          cell_id: "cell-1",
           execution_count: 1,
           status: "running",
           success: null,
           outputs: [{ output_id: "new" }],
         },
         "exec-added": {
-          cell_id: "cell-3",
           execution_count: 3,
           status: "queued",
           success: null,
@@ -214,7 +201,6 @@ describe("RuntimeExecutionProjector", () => {
       [
         "exec-stays",
         {
-          cell_id: "cell-1",
           execution_count: 1,
           status: "running",
           success: null,
@@ -224,7 +210,6 @@ describe("RuntimeExecutionProjector", () => {
       [
         "exec-added",
         {
-          cell_id: "cell-3",
           execution_count: 3,
           status: "queued",
           success: null,
@@ -238,7 +223,6 @@ describe("RuntimeExecutionProjector", () => {
     const projector = new RuntimeExecutionProjector();
     const state = stateWith({
       "exec-1": {
-        cell_id: "cell-1",
         execution_count: 1,
         status: "done",
         success: true,

@@ -14,7 +14,6 @@ import { useMemo, useSyncExternalStore } from "react";
 // ---------------------------------------------------------------------------
 
 export interface ExecutionSnapshot {
-  cell_id: string;
   execution_count: number | null;
   /** "queued" | "running" | "done" | "error" */
   status: string;
@@ -28,6 +27,7 @@ const _executionMap: Map<string, ExecutionSnapshot> = new Map();
 
 /** Per-cell reverse index: cell_id -> latest execution_id. */
 const _cellToExecution: Map<string, string> = new Map();
+const _executionToCell: Map<string, string> = new Map();
 
 const _subscribers = new Map<string, Set<() => void>>();
 const _cellExecutionSubscribers = new Map<string, Set<() => void>>();
@@ -57,7 +57,6 @@ function emitCellExecutionPointerChange(cell_id: string): void {
 function snapshotsEqual(a: ExecutionSnapshot, b: ExecutionSnapshot): boolean {
   if (a === b) return true;
   if (
-    a.cell_id !== b.cell_id ||
     a.execution_count !== b.execution_count ||
     a.status !== b.status ||
     a.success !== b.success
@@ -94,6 +93,43 @@ export function useCellExecutionId(cell_id: string): string | null {
   const subscribe = useMemo(() => subscribeCellExecutionPointer(cell_id), [cell_id]);
   const getSnapshot = useMemo(() => getCellExecutionIdGetter(cell_id), [cell_id]);
   return useSyncExternalStore(subscribe, getSnapshot);
+}
+
+export function useCellExecutionPointers(
+  cell_ids: readonly string[],
+): ReadonlyMap<string, string> {
+  const cellIdsKey = JSON.stringify(cell_ids);
+  const stableCellIds = useMemo(() => [...cell_ids], [cellIdsKey]);
+  const subscribe = useMemo(
+    () => (callback: () => void) => {
+      const unsubscribers = stableCellIds.map((cell_id) =>
+        subscribeCellExecutionPointer(cell_id)(callback),
+      );
+      return () => {
+        for (const unsubscribe of unsubscribers) unsubscribe();
+      };
+    },
+    [stableCellIds],
+  );
+  const getSnapshot = useMemo(
+    () => () =>
+      JSON.stringify(
+        stableCellIds.map((cell_id) => [
+          cell_id,
+          _cellToExecution.get(cell_id) ?? null,
+        ]),
+      ),
+    [stableCellIds],
+  );
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot);
+  return useMemo(() => {
+    const pointers = new Map<string, string>();
+    for (const cell_id of stableCellIds) {
+      const execution_id = _cellToExecution.get(cell_id);
+      if (execution_id !== undefined) pointers.set(cell_id, execution_id);
+    }
+    return pointers;
+  }, [stableCellIds, snapshot]);
 }
 
 // ── Subscription helpers ────────────────────────────────────────────────
@@ -176,10 +212,14 @@ export function setCellExecutionPointer(
 ): void {
   const prev = _cellToExecution.get(cell_id) ?? null;
   if (prev === execution_id) return;
+  if (prev !== null && _executionToCell.get(prev) === cell_id) {
+    _executionToCell.delete(prev);
+  }
   if (execution_id === null) {
     _cellToExecution.delete(cell_id);
   } else {
     _cellToExecution.set(cell_id, execution_id);
+    _executionToCell.set(execution_id, cell_id);
   }
   emitCellExecutionPointerChange(cell_id);
 }
@@ -194,12 +234,13 @@ export function setCellExecutionPointer(
  */
 export function deleteExecutions(execution_ids: Iterable<string>): void {
   for (const eid of execution_ids) {
-    const snap = _executionMap.get(eid);
     if (!_executionMap.delete(eid)) continue;
     emitExecutionChange(eid);
-    if (snap && _cellToExecution.get(snap.cell_id) === eid) {
-      _cellToExecution.delete(snap.cell_id);
-      emitCellExecutionPointerChange(snap.cell_id);
+    const cellId = _executionToCell.get(eid);
+    _executionToCell.delete(eid);
+    if (cellId !== undefined && _cellToExecution.get(cellId) === eid) {
+      _cellToExecution.delete(cellId);
+      emitCellExecutionPointerChange(cellId);
     }
   }
 }
@@ -216,12 +257,18 @@ export function getCellExecutionId(cell_id: string): string | null {
   return _cellToExecution.get(cell_id) ?? null;
 }
 
+/** Read the current cell id for an execution pointer without subscribing. */
+export function getCellIdForExecutionId(execution_id: string): string | null {
+  return _executionToCell.get(execution_id) ?? null;
+}
+
 /** Reset the entire store. Called on notebook switch or full reset. */
 export function resetNotebookExecutions(): void {
   const eids = [..._executionMap.keys()];
   const cells = [..._cellToExecution.keys()];
   _executionMap.clear();
   _cellToExecution.clear();
+  _executionToCell.clear();
   for (const eid of eids) emitExecutionChange(eid);
   for (const cid of cells) emitCellExecutionPointerChange(cid);
 }

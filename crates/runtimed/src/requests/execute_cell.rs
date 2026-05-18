@@ -11,26 +11,59 @@ use crate::notebook_sync_server::{
 };
 use crate::protocol::NotebookResponse;
 use crate::requests::guarded;
+use crate::requests::trim_runtime_executions_for_doc;
 use crate::task_supervisor::spawn_best_effort;
+use notebook_protocol::protocol::ExecutionIdRejectionReason;
 
-pub(crate) async fn handle(room: &Arc<NotebookRoom>, cell_id: String) -> NotebookResponse {
-    handle_inner(room, cell_id, None).await
+const EXECUTION_ID_GENERATION_ATTEMPTS: usize = 16;
+
+fn execution_id_rejected(
+    execution_id: impl Into<String>,
+    reason: ExecutionIdRejectionReason,
+) -> NotebookResponse {
+    NotebookResponse::ExecutionIdRejected {
+        execution_id: execution_id.into(),
+        reason,
+    }
+}
+
+fn validate_requested_execution_id(
+    execution_id: &str,
+    already_exists: bool,
+) -> Result<(), ExecutionIdRejectionReason> {
+    if uuid::Uuid::parse_str(execution_id).is_err() {
+        return Err(ExecutionIdRejectionReason::Malformed);
+    }
+    if already_exists {
+        return Err(ExecutionIdRejectionReason::AlreadyExists);
+    }
+    Ok(())
+}
+
+pub(crate) async fn handle(
+    room: &Arc<NotebookRoom>,
+    cell_id: String,
+    execution_id: Option<String>,
+) -> NotebookResponse {
+    handle_inner(room, cell_id, execution_id, None).await
 }
 
 pub(crate) async fn handle_guarded(
     room: &Arc<NotebookRoom>,
     cell_id: String,
+    execution_id: Option<String>,
     observed_heads: Vec<String>,
 ) -> NotebookResponse {
     if let Err(rejection) = guarded::ensure_trusted(room).await {
         return rejection.into_response();
     }
-    handle_inner(room, cell_id, Some(observed_heads)).await
+    handle_inner(room, cell_id, execution_id, Some(observed_heads)).await
 }
 
 async fn handle_inner(
     room: &Arc<NotebookRoom>,
     cell_id: String,
+    requested_execution_id: Option<String>,
     observed_heads: Option<Vec<String>>,
 ) -> NotebookResponse {
     // Agent-backed kernel: write execution to RuntimeStateDoc queue.
@@ -56,21 +89,27 @@ async fn handle_inner(
                 }
             }
 
-            let (source, execution_id, format_heads) =
-                match queue_cell_if_current(room, &cell_id, observed_heads.as_deref()).await {
-                    QueueCellResult::Queued {
-                        source,
+            let (source, execution_id, format_heads) = match queue_cell_if_current(
+                room,
+                &cell_id,
+                requested_execution_id.as_deref(),
+                observed_heads.as_deref(),
+            )
+            .await
+            {
+                QueueCellResult::Queued {
+                    source,
+                    execution_id,
+                    format_heads,
+                } => (source, execution_id, format_heads),
+                QueueCellResult::AlreadyActive { execution_id } => {
+                    return NotebookResponse::CellQueued {
+                        cell_id,
                         execution_id,
-                        format_heads,
-                    } => (source, execution_id, format_heads),
-                    QueueCellResult::AlreadyActive { execution_id } => {
-                        return NotebookResponse::CellQueued {
-                            cell_id,
-                            execution_id,
-                        };
-                    }
-                    QueueCellResult::Response(response) => return *response,
-                };
+                    };
+                }
+                QueueCellResult::Response(response) => return *response,
+            };
 
             let room_clone = Arc::clone(room);
             let cell_id_clone = cell_id.clone();
@@ -126,8 +165,18 @@ enum QueueCellResult {
 async fn queue_cell_if_current(
     room: &Arc<NotebookRoom>,
     cell_id: &str,
+    requested_execution_id: Option<&str>,
     observed_heads: Option<&[String]>,
 ) -> QueueCellResult {
+    if let Some(execution_id) = requested_execution_id {
+        if let Err(reason) = validate_requested_execution_id(execution_id, false) {
+            return QueueCellResult::Response(Box::new(execution_id_rejected(
+                execution_id,
+                reason,
+            )));
+        }
+    }
+
     let mut doc = room.doc.write().await;
     if let Some(observed_heads) = observed_heads {
         if let Err(rejection) = guarded::validate_execute_cell(&mut doc, cell_id, observed_heads) {
@@ -163,39 +212,94 @@ async fn queue_cell_if_current(
     }
 
     let current_execution_id = doc.get_execution_id(cell_id);
-    if let Some(eid) = current_execution_id {
+    if let Some(eid) = current_execution_id.as_ref() {
         let is_active = room
             .state
             .read(|sd| {
-                sd.get_execution(&eid)
+                sd.get_execution(eid)
                     .is_some_and(|exec| exec.status == "queued" || exec.status == "running")
             })
             .unwrap_or(false);
         if is_active {
-            return QueueCellResult::AlreadyActive { execution_id: eid };
+            if requested_execution_id.is_some() {
+                return QueueCellResult::Response(Box::new(NotebookResponse::Error {
+                    error: format!("Cell already has an active execution: {}", eid),
+                }));
+            }
+            return QueueCellResult::AlreadyActive {
+                execution_id: eid.clone(),
+            };
         }
     }
 
-    let execution_id = uuid::Uuid::new_v4().to_string();
+    let mut execution_id = requested_execution_id
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let mut generated_retries = 0usize;
     let seq = room
         .next_queue_seq
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-    if let Err(e) = room
-        .state
-        .with_doc(|sd| sd.create_execution_with_source(&execution_id, cell_id, &cell.source, seq))
-    {
-        warn!(
-            "[notebook-sync] Failed to create_execution_with_source for {}: {}",
-            execution_id, e
-        );
-        return QueueCellResult::Response(Box::new(NotebookResponse::Error {
-            error: format!("failed to queue execution: {e}"),
-        }));
+    loop {
+        match room.state.with_doc(|sd| {
+            if sd.get_execution(&execution_id).is_some() {
+                return Ok(false);
+            }
+            sd.create_execution_with_source(&execution_id, &cell.source, seq)
+        }) {
+            Ok(true) => break,
+            Ok(false) if requested_execution_id.is_none() => {
+                generated_retries += 1;
+                if generated_retries >= EXECUTION_ID_GENERATION_ATTEMPTS {
+                    return QueueCellResult::Response(Box::new(NotebookResponse::Error {
+                        error: "failed to allocate unique execution_id".to_string(),
+                    }));
+                }
+                execution_id = uuid::Uuid::new_v4().to_string();
+            }
+            Ok(false) => {
+                return QueueCellResult::Response(Box::new(execution_id_rejected(
+                    execution_id,
+                    ExecutionIdRejectionReason::AlreadyExists,
+                )));
+            }
+            Err(e) => {
+                let rollback_id = execution_id.clone();
+                let _ = room.state.with_doc(|sd| {
+                    sd.remove_executions(&[rollback_id])?;
+                    Ok(())
+                });
+                warn!(
+                    "[notebook-sync] Failed to create_execution_with_source for {}: {}",
+                    execution_id, e
+                );
+                return QueueCellResult::Response(Box::new(NotebookResponse::Error {
+                    error: format!("failed to queue execution: {e}"),
+                }));
+            }
+        }
     }
 
     let source = cell.source;
-    let _ = doc.set_execution_id(cell_id, Some(&execution_id));
+    if let Err(e) = doc.set_execution_id(cell_id, Some(&execution_id)) {
+        let rollback_id = execution_id.clone();
+        let _ = room.state.with_doc(|sd| {
+            sd.remove_executions(&[rollback_id])?;
+            Ok(())
+        });
+        warn!(
+            "[notebook-sync] Failed to stamp execution_id {} on cell {}: {}",
+            execution_id, cell_id, e
+        );
+        return QueueCellResult::Response(Box::new(NotebookResponse::Error {
+            error: format!("failed to stamp execution pointer: {e}"),
+        }));
+    }
+    if let Some(previous_execution_id) = current_execution_id.as_deref() {
+        room.persistence
+            .remember_previous_visible_execution(cell_id, previous_execution_id);
+    }
+    trim_runtime_executions_for_doc(room, &doc);
     let format_heads = doc.get_heads();
     let _ = room.broadcasts.changed_tx.send(());
 
@@ -203,5 +307,34 @@ async fn queue_cell_if_current(
         source,
         execution_id,
         format_heads,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_requested_execution_id_rejects_malformed_uuid() {
+        assert_eq!(
+            validate_requested_execution_id("not-a-uuid", false),
+            Err(ExecutionIdRejectionReason::Malformed)
+        );
+    }
+
+    #[test]
+    fn validate_requested_execution_id_rejects_existing_uuid() {
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        assert_eq!(
+            validate_requested_execution_id(&execution_id, true),
+            Err(ExecutionIdRejectionReason::AlreadyExists)
+        );
+    }
+
+    #[test]
+    fn validate_requested_execution_id_accepts_new_uuid() {
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        validate_requested_execution_id(&execution_id, false)
+            .expect("fresh uuid should be accepted");
     }
 }

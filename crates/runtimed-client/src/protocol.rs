@@ -17,9 +17,9 @@ use crate::{EnvType, PooledEnv};
 // Re-export all notebook protocol types from the shared crate.
 pub use notebook_protocol::connection::{EnvSource, LaunchSpec};
 pub use notebook_protocol::protocol::{
-    CompletionItem, DenoLaunchedConfig, DependencyGuard, EnvSyncDiff, GuardedNotebookProvenance,
-    HistoryEntry, LaunchedEnvConfig, NotebookBroadcast, NotebookRequest, NotebookResponse,
-    QueueEntry,
+    CompletionItem, DenoLaunchedConfig, DependencyGuard, EnvSyncDiff, ExecutionIdRejectionReason,
+    GuardedNotebookProvenance, HistoryEntry, LaunchedEnvConfig, NotebookBroadcast, NotebookRequest,
+    NotebookResponse, QueueEntry,
 };
 
 /// Requests that clients can send to the daemon.
@@ -571,6 +571,7 @@ mod tests {
     fn test_notebook_request_execute_cell() {
         let req = NotebookRequest::ExecuteCell {
             cell_id: "cell-456".into(),
+            execution_id: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("execute_cell"));
@@ -578,8 +579,12 @@ mod tests {
 
         let parsed: NotebookRequest = serde_json::from_str(&json).unwrap();
         match parsed {
-            NotebookRequest::ExecuteCell { cell_id } => {
+            NotebookRequest::ExecuteCell {
+                cell_id,
+                execution_id,
+            } => {
                 assert_eq!(cell_id, "cell-456");
+                assert!(execution_id.is_none());
             }
             _ => panic!("unexpected request type"),
         }

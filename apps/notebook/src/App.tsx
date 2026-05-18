@@ -68,6 +68,7 @@ import { type PendingTrustAction } from "./lib/trust-actions";
 import { useObservable } from "./lib/use-observable";
 import { logger } from "./lib/logger";
 import { getNotebookCellsSnapshot } from "./lib/notebook-cells";
+import { useCellExecutionPointers } from "./lib/notebook-executions";
 import { useDetectRuntime } from "./lib/notebook-metadata";
 import { useNotebookHost } from "@nteract/notebook-host";
 import { startWindowFocusHandler } from "./lib/window-focus";
@@ -585,8 +586,20 @@ function AppContent() {
   }, [blobPort, getEngine]);
 
   // Split queue state into executing (currently running) and queued (waiting).
-  const executingCellIds = new Set(queueState.executing ? [queueState.executing.cell_id] : []);
-  const queuedCellIds = new Set(queueState.queued.map((e) => e.cell_id));
+  const cellExecutionPointers = useCellExecutionPointers(cellIds);
+  const executingExecutionId = queueState.executing?.execution_id ?? null;
+  const queuedExecutionIds = new Set(queueState.queued.map((e) => e.execution_id));
+  const executingCellIds = new Set(
+    executingExecutionId
+      ? cellIds.filter((cellId) => cellExecutionPointers.get(cellId) === executingExecutionId)
+      : [],
+  );
+  const queuedCellIds = new Set(
+    cellIds.filter((cellId) => {
+      const executionId = cellExecutionPointers.get(cellId);
+      return executionId !== undefined && queuedExecutionIds.has(executionId);
+    }),
+  );
 
   // ── Sync transient UI state into the cell-ui-state store ────────────
   // Two-phase update for StrictMode safety:

@@ -173,7 +173,7 @@ fn fixture_add_execution(
     execution_id: &str,
     manifests: &[OutputManifest],
 ) {
-    let _ = state_doc.create_execution(execution_id, cell_id);
+    let _ = state_doc.create_execution(execution_id);
     let _ = state_doc.set_execution_done(execution_id, true);
     if !manifests.is_empty() {
         let values: Vec<Value> = manifests.iter().map(OutputManifest::to_value).collect();

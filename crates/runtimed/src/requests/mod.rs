@@ -12,14 +12,23 @@
 //! This is a behavior-preserving split of the old 2k-line match statement —
 //! lock scoping, log lines, error strings, and response variants are untouched.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use notebook_protocol::protocol::BlobUploadErrorKind;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::daemon::Daemon;
 use crate::notebook_sync_server::NotebookRoom;
 use crate::protocol::{NotebookRequest, NotebookResponse};
+
+/// Maximum execution entries retained in the RuntimeStateDoc.
+///
+/// Retention is coordinated here, where both NotebookDoc cell pointers and
+/// RuntimeStateDoc queue/execution status are visible. Runtime-agent-only
+/// trimming cannot know which terminal executions are still referenced by
+/// document models.
+pub(crate) const MAX_EXECUTION_ENTRIES: usize = 64;
 
 pub(crate) mod approve_project_environment;
 pub(crate) mod approve_trust;
@@ -36,6 +45,55 @@ pub(crate) mod save_notebook;
 pub(crate) mod send_comm;
 pub(crate) mod shutdown_kernel;
 pub(crate) mod sync_environment;
+
+pub(crate) fn trim_runtime_executions_for_doc(
+    room: &NotebookRoom,
+    doc: &notebook_doc::NotebookDoc,
+) {
+    let mut preserve_execution_ids = HashSet::new();
+    for cell in doc.get_cells() {
+        if let Some(execution_id) = doc.get_execution_id(&cell.id) {
+            preserve_execution_ids.insert(execution_id);
+        }
+        if let Some(previous_execution_id) = room.persistence.previous_visible_execution(&cell.id) {
+            preserve_execution_ids.insert(previous_execution_id);
+        }
+    }
+
+    if let Err(e) = room.state.with_doc(|state_doc| {
+        match state_doc.trim_executions_preserving(
+            MAX_EXECUTION_ENTRIES,
+            &preserve_execution_ids,
+        ) {
+            Ok(trimmed) if trimmed > 0 => {
+                if let Err(rebuild_err) = state_doc.rebuild_from_save() {
+                    warn!(
+                        "[notebook-sync] Trimmed {} executions but failed to compact RuntimeStateDoc: {}",
+                        trimmed, rebuild_err
+                    );
+                } else {
+                    debug!(
+                        "[notebook-sync] Trimmed {} RuntimeStateDoc executions",
+                        trimmed
+                    );
+                }
+            }
+            Ok(_) => {}
+            Err(trim_err) => {
+                warn!(
+                    "[notebook-sync] Failed to trim RuntimeStateDoc executions: {}",
+                    trim_err
+                );
+            }
+        }
+        Ok(())
+    }) {
+        warn!(
+            "[notebook-sync] Failed to access RuntimeStateDoc for execution trimming: {}",
+            e
+        );
+    }
+}
 
 /// Short label for a request variant, used in telemetry logs.
 ///
@@ -84,22 +142,29 @@ pub(crate) async fn handle_notebook_request(
             notebook_path,
         } => launch_kernel::handle(room, &daemon, kernel_type, env_source, notebook_path).await,
 
-        NotebookRequest::ExecuteCell { cell_id } => execute_cell::handle(room, cell_id).await,
+        NotebookRequest::ExecuteCell {
+            cell_id,
+            execution_id,
+        } => execute_cell::handle(room, cell_id, execution_id).await,
 
         NotebookRequest::ExecuteCellGuarded {
             cell_id,
+            execution_id,
             observed_heads,
-        } => execute_cell::handle_guarded(room, cell_id, observed_heads).await,
+        } => execute_cell::handle_guarded(room, cell_id, execution_id, observed_heads).await,
 
         NotebookRequest::InterruptExecution {} => interrupt_execution::handle(room).await,
 
         NotebookRequest::ShutdownKernel {} => shutdown_kernel::handle(room).await,
 
-        NotebookRequest::RunAllCells {} => run_all_cells::handle(room).await,
-
-        NotebookRequest::RunAllCellsGuarded { observed_heads } => {
-            run_all_cells::handle_guarded(room, observed_heads).await
+        NotebookRequest::RunAllCells { cell_execution_ids } => {
+            run_all_cells::handle(room, cell_execution_ids).await
         }
+
+        NotebookRequest::RunAllCellsGuarded {
+            cell_execution_ids,
+            observed_heads,
+        } => run_all_cells::handle_guarded(room, cell_execution_ids, observed_heads).await,
 
         NotebookRequest::SendComm { message } => send_comm::handle(room, message).await,
 

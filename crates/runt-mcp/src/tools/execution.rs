@@ -333,7 +333,9 @@ pub async fn get_results(
             McpError::internal_error("Failed to read RuntimeStateDoc".to_string(), None)
         })?;
         if let Some(exec) = runtime_state.executions.get(execution_id) {
-            let cell = handle.get_cell(&exec.cell_id);
+            let cell = handle.get_cells().into_iter().find(|cell| {
+                handle.get_cell_execution_id(&cell.id).as_deref() == Some(execution_id)
+            });
             return render_execution_result(
                 server,
                 execution_id,
@@ -350,7 +352,6 @@ pub async fn get_results(
         runtimed_client::execution_store::ExecutionStore::new(server.execution_store_path.clone());
     if let Some(record) = store.read_record(execution_id).await {
         let exec = runtime_doc::ExecutionState {
-            cell_id: record.cell_id.clone().unwrap_or_default(),
             status: record.status,
             execution_count: record.execution_count,
             success: record.success,
@@ -385,10 +386,14 @@ async fn render_execution_result(
     };
 
     let ec_str = exec.execution_count.map(|c| c.to_string());
+    let cell_id = cell
+        .as_ref()
+        .map(|cell| cell.id.as_str())
+        .unwrap_or(execution_id);
 
     // Build header with execution state front and center
     let header = formatting::format_cell_header(
-        &exec.cell_id,
+        cell_id,
         "code",
         ec_str.as_deref(),
         Some(display_status),
@@ -445,7 +450,7 @@ async fn render_execution_result(
     // Build structured content from the execution's output manifests
     let fallback_source = exec.source.as_deref().unwrap_or_default();
     let fallback_cell = notebook_doc::CellSnapshot {
-        id: exec.cell_id.clone(),
+        id: execution_id.to_string(),
         cell_type: "code".to_string(),
         position: String::new(),
         source: fallback_source.to_string(),

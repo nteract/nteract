@@ -16,13 +16,10 @@
 //!     language: Str        (e.g. "python", "typescript")
 //!     env_source: Str      (e.g. "uv:prewarmed", "pixi:toml", "deno")
 //!   queue/
-//!     executing: Str|null              (cell_id currently executing)
-//!     executing_execution_id: Str|null (execution_id for the executing cell)
-//!     queued: List[Str]                (cell_ids waiting)
-//!     queued_execution_ids: List[Str]  (parallel execution_ids for queued entries)
+//!     executing_execution_id: Str|null (execution_id currently executing)
+//!     queued_execution_ids: List[Str]  (execution_ids waiting)
 //!   executions/             Map (keyed by execution_id)
 //!     {execution_id}/       Map
-//!       cell_id: Str
 //!       status: Str         ("queued" | "running" | "done" | "error")
 //!       execution_count: Int|null
 //!       success: Bool|null
@@ -166,7 +163,6 @@ impl Default for KernelState {
 /// An entry in the execution queue.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueEntry {
-    pub cell_id: String,
     pub execution_id: String,
 }
 
@@ -183,8 +179,6 @@ pub struct QueueState {
 /// Stored in `executions/{execution_id}/` in the RuntimeStateDoc.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecutionState {
-    /// Cell that was executed.
-    pub cell_id: String,
     /// Current status: "queued", "running", "done", "error".
     pub status: String,
     /// Kernel execution count (set when execution starts).
@@ -318,38 +312,16 @@ pub struct RuntimeState {
     pub project_context: ProjectContext,
 }
 
-impl RuntimeState {
-    /// Resolve the latest execution count for a cell from runtime state.
-    ///
-    /// `execution_count` is kernel-local and may reset after restart, so
-    /// numeric max is not a valid recency signal. Prefer the coordinator's
-    /// queue sequence number, falling back to the highest count only when
-    /// comparing legacy entries without sequence metadata.
-    pub fn execution_count_for_cell(&self, cell_id: &str) -> Option<i64> {
-        self.executions
-            .values()
-            .filter(|exec| exec.cell_id == cell_id)
-            .filter_map(|exec| Some((exec.seq, exec.execution_count?)))
-            // Keep in sync with packages/runtimed/src/runtime-state.ts.
-            .max_by(|(a_seq, a_count), (b_seq, b_count)| match (a_seq, b_seq) {
-                (Some(a), Some(b)) => a.cmp(b).then_with(|| a_count.cmp(b_count)),
-                (Some(_), None) => std::cmp::Ordering::Greater,
-                (None, Some(_)) => std::cmp::Ordering::Less,
-                (None, None) => a_count.cmp(b_count),
-            })
-            .map(|(_, count)| count)
-    }
-}
-
 use crate::RuntimeStateError;
 
 #[cfg(test)]
-const RUNTIME_STATE_SCHEMA_SEED_ACTOR: &str = "nteract:runtime-state-schema:v1";
-// Frozen Automerge genesis document for runtime-state schema v1.
+const RUNTIME_STATE_SCHEMA_SEED_ACTOR: &str = "nteract:runtime-state-schema:v2";
+pub const RUNTIME_STATE_SCHEMA_VERSION: u64 = 2;
+// Frozen Automerge genesis document for runtime-state schema v2.
 // Do not update this for additive runtime-state fields; those must be
-// daemon-authored changes after genesis, or a negotiated schema v2.
-const RUNTIME_STATE_GENESIS_V1_BYTES: &[u8] =
-    include_bytes!("../assets/runtime_state_genesis_v1.am");
+// daemon-authored changes after genesis, or a negotiated schema v3.
+const RUNTIME_STATE_GENESIS_V2_BYTES: &[u8] =
+    include_bytes!("../assets/runtime_state_genesis_v2.am");
 
 // ── RuntimeStateDoc ─────────────────────────────────────────────────
 
@@ -427,7 +399,7 @@ impl RuntimeStateDoc {
     }
 
     fn schema_seed_doc() -> Result<AutoCommit, RuntimeStateError> {
-        AutoCommit::load(RUNTIME_STATE_GENESIS_V1_BYTES).map_err(RuntimeStateError::from)
+        AutoCommit::load(RUNTIME_STATE_GENESIS_V2_BYTES).map_err(RuntimeStateError::from)
     }
 
     #[cfg(test)]
@@ -1120,31 +1092,24 @@ impl RuntimeStateDoc {
         queued: &[QueueEntry],
     ) -> Result<(), RuntimeStateError> {
         let queue = self.scaffold_map("queue")?;
-        let cur_exec_cid = self.read_opt_str(&queue, "executing");
         let cur_exec_eid = self.read_opt_str(&queue, "executing_execution_id");
-        let cur_queued_cids = self.read_str_list(&queue, "queued");
         let cur_queued_eids = self.read_str_list(&queue, "queued_execution_ids");
 
-        let exec_match = match (&cur_exec_cid, executing) {
+        let exec_match = match (&cur_exec_eid, executing) {
             (None, None) => true,
-            (Some(cid), Some(entry)) => {
-                cid == &entry.cell_id && cur_exec_eid.as_deref().unwrap_or("") == entry.execution_id
-            }
+            (Some(eid), Some(entry)) => eid == &entry.execution_id,
             _ => false,
         };
 
-        let queued_cids: Vec<&str> = queued.iter().map(|e| e.cell_id.as_str()).collect();
         let queued_eids: Vec<&str> = queued.iter().map(|e| e.execution_id.as_str()).collect();
-        let cur_cid_refs: Vec<&str> = cur_queued_cids.iter().map(|s| s.as_str()).collect();
         let cur_eid_refs: Vec<&str> = cur_queued_eids.iter().map(|s| s.as_str()).collect();
 
-        if exec_match && cur_cid_refs == queued_cids && cur_eid_refs == queued_eids {
+        if exec_match && cur_eid_refs == queued_eids {
             return Ok(());
         }
 
         match executing {
             Some(entry) => {
-                self.doc.put(&queue, "executing", entry.cell_id.as_str())?;
                 self.doc.put(
                     &queue,
                     "executing_execution_id",
@@ -1152,24 +1117,18 @@ impl RuntimeStateDoc {
                 )?;
             }
             None => {
-                self.doc.put(&queue, "executing", ScalarValue::Null)?;
                 self.doc
                     .put(&queue, "executing_execution_id", ScalarValue::Null)?;
             }
         }
 
-        let cid_list = self.scaffold_list(&queue, "queued")?;
         let eid_list = self.scaffold_list(&queue, "queued_execution_ids")?;
 
-        for i in (0..self.doc.length(&cid_list)).rev() {
-            self.doc.delete(&cid_list, i)?;
-        }
         for i in (0..self.doc.length(&eid_list)).rev() {
             self.doc.delete(&eid_list, i)?;
         }
 
         for (i, entry) in queued.iter().enumerate() {
-            self.doc.insert(&cid_list, i, entry.cell_id.as_str())?;
             self.doc.insert(&eid_list, i, entry.execution_id.as_str())?;
         }
 
@@ -1181,11 +1140,7 @@ impl RuntimeStateDoc {
     /// Create a new execution entry with status "queued".
     ///
     /// Called by the daemon when `queue_cell()` generates an execution_id.
-    pub fn create_execution(
-        &mut self,
-        execution_id: &str,
-        cell_id: &str,
-    ) -> Result<(), RuntimeStateError> {
+    pub fn create_execution(&mut self, execution_id: &str) -> Result<(), RuntimeStateError> {
         let executions = self.scaffold_map("executions")?;
 
         if self
@@ -1201,7 +1156,6 @@ impl RuntimeStateDoc {
         let entry = self
             .doc
             .put_object(&executions, execution_id, ObjType::Map)?;
-        self.doc.put(&entry, "cell_id", cell_id)?;
         self.doc.put(&entry, "status", "queued")?;
         self.doc.put(&entry, "execution_count", ScalarValue::Null)?;
         self.doc.put(&entry, "success", ScalarValue::Null)?;
@@ -1218,7 +1172,6 @@ impl RuntimeStateDoc {
     pub fn create_execution_with_source(
         &mut self,
         execution_id: &str,
-        cell_id: &str,
         source: &str,
         seq: u64,
     ) -> Result<bool, RuntimeStateError> {
@@ -1238,7 +1191,6 @@ impl RuntimeStateDoc {
         let entry = self
             .doc
             .put_object(&executions, execution_id, ObjType::Map)?;
-        self.doc.put(&entry, "cell_id", cell_id)?;
         self.doc.put(&entry, "status", "queued")?;
         self.doc.put(&entry, "execution_count", ScalarValue::Null)?;
         self.doc.put(&entry, "success", ScalarValue::Null)?;
@@ -1347,7 +1299,6 @@ impl RuntimeStateDoc {
 
         let (_, entry) = self.doc.get(&executions, execution_id).ok().flatten()?;
 
-        let cell_id = self.read_str(&entry, "cell_id");
         let status = self.read_str(&entry, "status");
 
         let execution_count = self
@@ -1396,7 +1347,6 @@ impl RuntimeStateDoc {
             });
 
         Some(ExecutionState {
-            cell_id,
             status,
             execution_count,
             success,
@@ -1620,15 +1570,15 @@ impl RuntimeStateDoc {
         Ok(true)
     }
 
-    /// Remove all execution entries associated with the given cell ids.
+    /// Remove execution entries by execution id.
     ///
-    /// Used when a failed notebook load rolls back newly added cells before
-    /// they become durable notebook state.
-    pub fn remove_executions_for_cells(
+    /// Used when a failed operation rolls back newly-created runtime records
+    /// before their document-owned pointers become durable notebook state.
+    pub fn remove_executions(
         &mut self,
-        cell_ids: &[String],
+        execution_ids: &[String],
     ) -> Result<usize, RuntimeStateError> {
-        if cell_ids.is_empty() {
+        if execution_ids.is_empty() {
             return Ok(0);
         }
 
@@ -1636,25 +1586,22 @@ impl RuntimeStateDoc {
             return Ok(0);
         };
 
-        let cell_ids: HashSet<&str> = cell_ids.iter().map(String::as_str).collect();
-        let execution_ids: Vec<String> = self
-            .doc
-            .keys(&executions)
-            .filter(|execution_id| {
-                let Some((_, entry)) = self.doc.get(&executions, execution_id).ok().flatten()
-                else {
-                    return false;
-                };
-                cell_ids.contains(self.read_str(&entry, "cell_id").as_str())
-            })
-            .collect();
-
-        for execution_id in &execution_ids {
-            self.doc.delete(&executions, execution_id.as_str())?;
-            self.remove_display_index_entries_for_execution(execution_id);
+        let mut removed = 0;
+        for execution_id in execution_ids {
+            if self
+                .doc
+                .get(&executions, execution_id.as_str())
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                self.doc.delete(&executions, execution_id.as_str())?;
+                self.remove_display_index_entries_for_execution(execution_id);
+                removed += 1;
+            }
         }
 
-        Ok(execution_ids.len())
+        Ok(removed)
     }
 
     // ── display_index management ─────────────────────────────────────
@@ -1894,46 +1841,76 @@ impl RuntimeStateDoc {
 
     // ── Execution lifecycle ────────────────────────────────────────
 
-    /// Remove old executions, keeping the most recent `max` entries.
-    ///
-    /// Entries are removed in insertion order (oldest first). Always keeps
-    /// the most recent execution for each cell_id regardless of `max`.
+    /// Remove old executions, keeping active and document-referenced entries.
     pub fn trim_executions(&mut self, max: usize) -> Result<usize, RuntimeStateError> {
+        self.trim_executions_preserving(max, &HashSet::new())
+    }
+
+    /// Remove old executions, preserving the provided execution ids plus any
+    /// ids that are currently queued or running in the RuntimeStateDoc queue.
+    ///
+    /// Call this from a coordinator that can include document-owned pointers
+    /// in `preserve_execution_ids`. Runtime-agent-only trimming cannot see
+    /// those pointers and must not be the owner of retention policy.
+    pub fn trim_executions_preserving(
+        &mut self,
+        max: usize,
+        preserve_execution_ids: &HashSet<String>,
+    ) -> Result<usize, RuntimeStateError> {
         let Some(executions) = self.get_map("executions") else {
             return Ok(0);
         };
 
-        let keys: Vec<(String, String)> = self
-            .doc
-            .keys(&executions)
-            .filter_map(|key| {
-                let (_, entry) = self.doc.get(&executions, &key).ok().flatten()?;
-                let cell_id = self.read_str(&entry, "cell_id");
-                Some((key, cell_id))
-            })
-            .collect();
+        let mut protected: HashSet<String> = preserve_execution_ids.clone();
+        if let Some(queue) = self.get_map("queue") {
+            if let Some(eid) = self.read_opt_str(&queue, "executing_execution_id") {
+                protected.insert(eid);
+            }
+            protected.extend(self.read_str_list(&queue, "queued_execution_ids"));
+        }
+
+        let mut keys = Vec::new();
+        for key in self.doc.keys(&executions) {
+            if let Some((_, entry)) = self.doc.get(&executions, &key).ok().flatten() {
+                let status = self.read_str(&entry, "status");
+                if status == "queued" || status == "running" {
+                    protected.insert(key.clone());
+                }
+                let seq = self
+                    .doc
+                    .get(&entry, "seq")
+                    .ok()
+                    .flatten()
+                    .and_then(|(value, _)| match value {
+                        Value::Scalar(s) => match s.as_ref() {
+                            ScalarValue::Uint(n) => Some(*n),
+                            ScalarValue::Int(n) if *n >= 0 => Some(*n as u64),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .unwrap_or(u64::MAX);
+                keys.push((key, seq));
+            }
+        }
 
         let total = keys.len();
         if total <= max {
             return Ok(0);
         }
 
-        let mut last_per_cell: HashMap<&str, usize> = HashMap::new();
-        for (i, (_, cell_id)) in keys.iter().enumerate() {
-            last_per_cell.insert(cell_id.as_str(), i);
-        }
+        keys.sort_by(|(a_id, a_seq), (b_id, b_seq)| a_seq.cmp(b_seq).then_with(|| a_id.cmp(b_id)));
 
         let mut removed = 0;
         let to_remove = total - max;
-        for (i, (exec_id, _)) in keys.iter().enumerate() {
+        for (exec_id, _) in keys {
             if removed >= to_remove {
                 break;
             }
-            let cell_id = &keys[i].1;
-            if last_per_cell.get(cell_id.as_str()) == Some(&i) {
+            if protected.contains(&exec_id) {
                 continue;
             }
-            self.remove_display_index_entries_for_execution(exec_id);
+            self.remove_display_index_entries_for_execution(&exec_id);
             self.doc.delete(&executions, exec_id.as_str())?;
             removed += 1;
         }
@@ -2541,27 +2518,14 @@ impl RuntimeStateDoc {
         let mut queue_state = queue
             .as_ref()
             .map(|q| {
-                let executing_cid = self.read_opt_str(q, "executing");
                 let executing_eid = self.read_opt_str(q, "executing_execution_id");
-                let queued_cids = self.read_str_list(q, "queued");
                 let queued_eids = self.read_str_list(q, "queued_execution_ids");
 
                 QueueState {
-                    executing: executing_cid.map(|cid| QueueEntry {
-                        cell_id: cid,
-                        execution_id: executing_eid.unwrap_or_default(),
-                    }),
-                    queued: queued_cids
+                    executing: executing_eid.map(|execution_id| QueueEntry { execution_id }),
+                    queued: queued_eids
                         .into_iter()
-                        .zip(
-                            queued_eids
-                                .into_iter()
-                                .chain(std::iter::repeat(String::new())),
-                        )
-                        .map(|(cid, eid)| QueueEntry {
-                            cell_id: cid,
-                            execution_id: eid,
-                        })
+                        .map(|execution_id| QueueEntry { execution_id })
                         .collect(),
                 }
             })
@@ -3092,6 +3056,12 @@ fn scaffold_project_context(doc: &mut AutoCommit) -> Result<(), RuntimeStateErro
 
 #[cfg(test)]
 fn scaffold_runtime_state_schema(doc: &mut AutoCommit) -> Result<(), RuntimeStateError> {
+    doc.put(
+        &ROOT,
+        "schema_version",
+        ScalarValue::Uint(RUNTIME_STATE_SCHEMA_VERSION),
+    )?;
+
     let kernel = doc.put_object(&ROOT, "kernel", ObjType::Map)?;
     doc.put(&kernel, "name", "")?;
     doc.put(&kernel, "language", "")?;
@@ -3103,9 +3073,7 @@ fn scaffold_runtime_state_schema(doc: &mut AutoCommit) -> Result<(), RuntimeStat
     doc.put(&kernel, "error_details", "")?;
 
     let queue = doc.put_object(&ROOT, "queue", ObjType::Map)?;
-    doc.put(&queue, "executing", ScalarValue::Null)?;
     doc.put(&queue, "executing_execution_id", ScalarValue::Null)?;
-    doc.put_object(&queue, "queued", ObjType::List)?;
     doc.put_object(&queue, "queued_execution_ids", ObjType::List)?;
 
     doc.put_object(&ROOT, "executions", ObjType::Map)?;
@@ -3169,13 +3137,11 @@ fn synthesize_queued_entries_from_executions(
             _ => std::cmp::Ordering::Equal,
         }
         .then_with(|| a_id.cmp(b_id))
-        .then_with(|| a.cell_id.cmp(&b.cell_id))
     });
 
     queued_from_executions
         .into_iter()
-        .map(|(execution_id, exec)| QueueEntry {
-            cell_id: exec.cell_id.clone(),
+        .map(|(execution_id, _exec)| QueueEntry {
             execution_id: execution_id.clone(),
         })
         .collect()
@@ -3197,18 +3163,18 @@ pub struct ForeignSyncView {
 
 /// Diff execution outputs between a previous snapshot and the current state.
 ///
-/// Returns `(changed_cell_ids, new_snapshot)` where:
-/// - `changed_cell_ids` lists cells whose outputs changed
+/// Returns `(changed_execution_ids, new_snapshot)` where:
+/// - `changed_execution_ids` lists executions whose outputs changed
 /// - `new_snapshot` is the updated prev_execution_outputs for the next diff
 ///
-/// Used by the WASM handle to detect mid-execution output changes
-/// (stream append, display update, error) without re-materializing
-/// all cells.
+/// Kept as a small helper for consumers that need execution-level invalidation.
+/// Notebook UIs should resolve cells through their NotebookDoc execution_id
+/// pointers instead of relying on RuntimeStateDoc to report changed cell ids.
 pub fn diff_execution_outputs(
     prev: &HashMap<String, Vec<serde_json::Value>>,
     current_executions: &HashMap<String, ExecutionState>,
 ) -> (Vec<String>, HashMap<String, Vec<serde_json::Value>>) {
-    let mut changed_cells = Vec::new();
+    let mut changed_execution_ids = Vec::new();
 
     for (eid, exec) in current_executions {
         let outputs_changed = match prev.get(eid) {
@@ -3216,7 +3182,7 @@ pub fn diff_execution_outputs(
             Some(prev_outputs) => prev_outputs != &exec.outputs,
         };
         if outputs_changed {
-            changed_cells.push(exec.cell_id.clone());
+            changed_execution_ids.push(eid.clone());
         }
     }
 
@@ -3227,7 +3193,7 @@ pub fn diff_execution_outputs(
         .map(|(eid, e)| (eid.clone(), e.outputs.clone()))
         .collect();
 
-    (changed_cells, new_snapshot)
+    (changed_execution_ids, new_snapshot)
 }
 
 /// Extract the `output_id` from an output manifest, if present.
@@ -3421,6 +3387,16 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    fn write_runtime_state_genesis_artifact() {
+        let Some(path) = std::env::var_os("RUNTIME_STATE_GENESIS_OUT") else {
+            return;
+        };
+        let mut generated = RuntimeStateDoc::generated_schema_seed_doc().unwrap();
+        std::fs::write(path, generated.save()).unwrap();
+    }
+
+    #[test]
     fn schema_seed_doc_loads_frozen_genesis_artifact() {
         let mut loaded = RuntimeStateDoc::schema_seed_doc().unwrap();
         assert_eq!(
@@ -3466,31 +3442,25 @@ mod tests {
     fn test_set_queue() {
         let mut doc = RuntimeStateDoc::new();
         let exec = QueueEntry {
-            cell_id: "cell-1".to_string(),
             execution_id: "exec-1".to_string(),
         };
         let queued = vec![
             QueueEntry {
-                cell_id: "cell-2".to_string(),
                 execution_id: "exec-2".to_string(),
             },
             QueueEntry {
-                cell_id: "cell-3".to_string(),
                 execution_id: "exec-3".to_string(),
             },
         ];
         doc.set_queue(Some(&exec), &queued).unwrap();
 
         let state = doc.read_state();
-        assert_eq!(state.queue.executing.as_ref().unwrap().cell_id, "cell-1");
         assert_eq!(
             state.queue.executing.as_ref().unwrap().execution_id,
             "exec-1"
         );
         assert_eq!(state.queue.queued.len(), 2);
-        assert_eq!(state.queue.queued[0].cell_id, "cell-2");
         assert_eq!(state.queue.queued[0].execution_id, "exec-2");
-        assert_eq!(state.queue.queued[1].cell_id, "cell-3");
         assert_eq!(state.queue.queued[1].execution_id, "exec-3");
     }
 
@@ -3685,11 +3655,9 @@ mod tests {
 
         // Same for queue
         let exec = QueueEntry {
-            cell_id: "x".to_string(),
             execution_id: "e1".to_string(),
         };
         let q = vec![QueueEntry {
-            cell_id: "a".to_string(),
             execution_id: "e2".to_string(),
         }];
         doc.set_queue(Some(&exec), &q).unwrap();
@@ -3753,16 +3721,13 @@ mod tests {
         daemon_doc
             .set_queue(
                 Some(&QueueEntry {
-                    cell_id: "cell-1".to_string(),
                     execution_id: "exec-1".to_string(),
                 }),
                 &[
                     QueueEntry {
-                        cell_id: "cell-2".to_string(),
                         execution_id: "exec-2".to_string(),
                     },
                     QueueEntry {
-                        cell_id: "cell-3".to_string(),
                         execution_id: "exec-3".to_string(),
                     },
                 ],
@@ -3817,10 +3782,6 @@ mod tests {
         );
         assert_eq!(client_state.kernel.name, "charming-toucan");
         assert_eq!(
-            client_state.queue.executing.as_ref().unwrap().cell_id,
-            "cell-1"
-        );
-        assert_eq!(
             client_state.queue.executing.as_ref().unwrap().execution_id,
             "exec-1"
         );
@@ -3837,7 +3798,7 @@ mod tests {
     #[test]
     fn test_generate_sync_message_bounded_encoded_compacts_on_oversized() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-1").unwrap();
         for i in 0..50 {
             let manifest = serde_json::json!({
                 "output_type": "stream",
@@ -3903,10 +3864,9 @@ mod tests {
     #[test]
     fn test_create_execution() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-1").unwrap();
 
         let es = doc.get_execution("exec-1").unwrap();
-        assert_eq!(es.cell_id, "cell-1");
         assert_eq!(es.status, "queued");
         assert_eq!(es.execution_count, None);
         assert_eq!(es.success, None);
@@ -3916,11 +3876,10 @@ mod tests {
     fn test_create_execution_with_source() {
         let mut doc = RuntimeStateDoc::new();
         assert!(doc
-            .create_execution_with_source("exec-1", "cell-1", "x = 42", 0)
+            .create_execution_with_source("exec-1", "x = 42", 0)
             .unwrap());
 
         let es = doc.get_execution("exec-1").unwrap();
-        assert_eq!(es.cell_id, "cell-1");
         assert_eq!(es.status, "queued");
         assert_eq!(es.source, Some("x = 42".to_string()));
         assert_eq!(es.seq, Some(0));
@@ -3929,11 +3888,11 @@ mod tests {
     #[test]
     fn test_get_queued_executions_sorted_by_seq() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution_with_source("exec-3", "cell-3", "z = 3", 2)
+        doc.create_execution_with_source("exec-3", "z = 3", 2)
             .unwrap();
-        doc.create_execution_with_source("exec-1", "cell-1", "x = 1", 0)
+        doc.create_execution_with_source("exec-1", "x = 1", 0)
             .unwrap();
-        doc.create_execution_with_source("exec-2", "cell-2", "y = 2", 1)
+        doc.create_execution_with_source("exec-2", "y = 2", 1)
             .unwrap();
 
         let queued = doc.get_queued_executions();
@@ -3952,9 +3911,9 @@ mod tests {
     #[test]
     fn read_state_projects_queued_executions_before_kernel_queue_catches_up() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution_with_source("exec-2", "cell-2", "y = 2", 2)
+        doc.create_execution_with_source("exec-2", "y = 2", 2)
             .unwrap();
-        doc.create_execution_with_source("exec-1", "cell-1", "x = 1", 1)
+        doc.create_execution_with_source("exec-1", "x = 1", 1)
             .unwrap();
 
         let state = doc.read_state();
@@ -3962,11 +3921,9 @@ mod tests {
             state.queue.queued,
             vec![
                 QueueEntry {
-                    cell_id: "cell-1".to_string(),
                     execution_id: "exec-1".to_string(),
                 },
                 QueueEntry {
-                    cell_id: "cell-2".to_string(),
                     execution_id: "exec-2".to_string(),
                 },
             ]
@@ -3976,10 +3933,9 @@ mod tests {
     #[test]
     fn read_state_does_not_duplicate_runtime_agent_queue_entries() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution_with_source("exec-1", "cell-1", "x = 1", 1)
+        doc.create_execution_with_source("exec-1", "x = 1", 1)
             .unwrap();
         let queued = [QueueEntry {
-            cell_id: "cell-1".to_string(),
             execution_id: "exec-1".to_string(),
         }];
         doc.set_queue(None, &queued).unwrap();
@@ -3991,10 +3947,9 @@ mod tests {
     #[test]
     fn read_state_does_not_duplicate_executing_entry_still_marked_queued() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution_with_source("exec-1", "cell-1", "x = 1", 1)
+        doc.create_execution_with_source("exec-1", "x = 1", 1)
             .unwrap();
         let executing = QueueEntry {
-            cell_id: "cell-1".to_string(),
             execution_id: "exec-1".to_string(),
         };
         doc.set_queue(Some(&executing), &[]).unwrap();
@@ -4007,15 +3962,15 @@ mod tests {
     #[test]
     fn test_create_execution_idempotent() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-1").unwrap();
         // Second create for same execution_id is a no-op
-        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-1").unwrap();
     }
 
     #[test]
     fn test_execution_lifecycle_success() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-1").unwrap();
 
         // queued → running
         doc.set_execution_running("exec-1").unwrap();
@@ -4038,7 +3993,7 @@ mod tests {
     #[test]
     fn test_execution_lifecycle_error() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-1").unwrap();
         doc.set_execution_running("exec-1").unwrap();
         doc.set_execution_count("exec-1", 3).unwrap();
 
@@ -4059,12 +4014,12 @@ mod tests {
     fn test_mark_inflight_executions_failed() {
         let mut doc = RuntimeStateDoc::new();
         // One running, one queued, one already done
-        doc.create_execution("exec-running", "cell-1").unwrap();
+        doc.create_execution("exec-running").unwrap();
         doc.set_execution_running("exec-running").unwrap();
 
-        doc.create_execution("exec-queued", "cell-2").unwrap();
+        doc.create_execution("exec-queued").unwrap();
 
-        doc.create_execution("exec-done", "cell-3").unwrap();
+        doc.create_execution("exec-done").unwrap();
         doc.set_execution_running("exec-done").unwrap();
         doc.set_execution_done("exec-done", true).unwrap();
 
@@ -4093,7 +4048,7 @@ mod tests {
     #[test]
     fn test_mark_inflight_noop_when_all_done() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-1").unwrap();
         doc.set_execution_running("exec-1").unwrap();
         doc.set_execution_done("exec-1", true).unwrap();
 
@@ -4103,7 +4058,7 @@ mod tests {
     #[test]
     fn test_set_execution_running_idempotent() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-1").unwrap();
         doc.set_execution_running("exec-1").unwrap();
         // Already running — no-op
         doc.set_execution_running("exec-1").unwrap();
@@ -4112,98 +4067,45 @@ mod tests {
     #[test]
     fn test_executions_in_read_state() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-1").unwrap();
         doc.set_execution_running("exec-1").unwrap();
         doc.set_execution_count("exec-1", 7).unwrap();
-        doc.create_execution("exec-2", "cell-2").unwrap();
+        doc.create_execution("exec-2").unwrap();
 
         let state = doc.read_state();
         assert_eq!(state.executions.len(), 2);
 
         let e1 = &state.executions["exec-1"];
-        assert_eq!(e1.cell_id, "cell-1");
         assert_eq!(e1.status, "running");
         assert_eq!(e1.execution_count, Some(7));
 
         let e2 = &state.executions["exec-2"];
-        assert_eq!(e2.cell_id, "cell-2");
         assert_eq!(e2.status, "queued");
     }
 
     #[test]
-    fn test_execution_count_for_cell_uses_latest_sequence() {
+    fn test_execution_count_is_keyed_by_execution_id() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution_with_source("exec-old", "cell-1", "x = 1", 1)
+        doc.create_execution_with_source("exec-1", "x = 1", 1)
             .unwrap();
-        doc.set_execution_count("exec-old", 12).unwrap();
-        doc.create_execution_with_source("exec-new", "cell-1", "x = 1", 2)
-            .unwrap();
-        doc.set_execution_count("exec-new", 1).unwrap();
+        doc.set_execution_count("exec-1", 12).unwrap();
 
         let state = doc.read_state();
-        assert_eq!(state.execution_count_for_cell("cell-1"), Some(1));
+        assert_eq!(state.executions["exec-1"].execution_count, Some(12));
     }
 
     #[test]
-    fn test_execution_count_for_cell_falls_back_to_highest_count_without_sequence() {
+    fn test_remove_executions_removes_matching_executions_and_indexes() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
-        doc.set_execution_count("exec-1", 2).unwrap();
-        doc.create_execution("exec-2", "cell-1").unwrap();
-        doc.set_execution_count("exec-2", 5).unwrap();
-
-        let state = doc.read_state();
-        assert_eq!(state.execution_count_for_cell("cell-1"), Some(5));
-    }
-
-    #[test]
-    fn test_execution_count_for_cell_prefers_zero_sequence_over_legacy() {
-        let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-legacy", "cell-1").unwrap();
-        doc.set_execution_count("exec-legacy", 12).unwrap();
-        doc.create_execution_with_source("exec-current", "cell-1", "x = 1", 0)
-            .unwrap();
-        doc.set_execution_count("exec-current", 1).unwrap();
-
-        let state = doc.read_state();
-        assert_eq!(state.execution_count_for_cell("cell-1"), Some(1));
-    }
-
-    #[test]
-    fn test_execution_count_for_cell_prefers_any_sequence_over_legacy() {
-        let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-legacy", "cell-1").unwrap();
-        doc.set_execution_count("exec-legacy", 100).unwrap();
-        doc.create_execution_with_source("exec-current", "cell-1", "x = 1", 5)
-            .unwrap();
-        doc.set_execution_count("exec-current", 1).unwrap();
-
-        let state = doc.read_state();
-        assert_eq!(state.execution_count_for_cell("cell-1"), Some(1));
-    }
-
-    #[test]
-    fn test_execution_count_for_cell_ignores_missing_counts() {
-        let mut doc = RuntimeStateDoc::new();
-        doc.create_execution_with_source("exec-1", "cell-1", "x = 1", 1)
-            .unwrap();
-
-        let state = doc.read_state();
-        assert_eq!(state.execution_count_for_cell("cell-1"), None);
-    }
-
-    #[test]
-    fn test_remove_executions_for_cells_removes_matching_executions_and_indexes() {
-        let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-a", "cell-a").unwrap();
-        doc.create_execution("exec-b", "cell-b").unwrap();
-        doc.create_execution("exec-c", "cell-a").unwrap();
+        doc.create_execution("exec-a").unwrap();
+        doc.create_execution("exec-b").unwrap();
+        doc.create_execution("exec-c").unwrap();
         doc.add_display_index_entry("display-1", "exec-a", "output-a");
         doc.add_display_index_entry("display-1", "exec-b", "output-b");
         doc.add_display_index_entry("display-2", "exec-a", "output-c");
 
         let removed = doc
-            .remove_executions_for_cells(&["cell-a".to_string()])
+            .remove_executions(&["exec-a".to_string(), "exec-c".to_string()])
             .unwrap();
 
         assert_eq!(removed, 2);
@@ -4225,38 +4127,63 @@ mod tests {
     #[test]
     fn test_trim_executions() {
         let mut doc = RuntimeStateDoc::new();
-        // Create 5 executions for 2 cells
-        doc.create_execution("e1", "cell-a").unwrap();
-        doc.create_execution("e2", "cell-a").unwrap();
-        doc.create_execution("e3", "cell-b").unwrap();
-        doc.create_execution("e4", "cell-a").unwrap();
-        doc.create_execution("e5", "cell-b").unwrap();
+        // Create 5 executions.
+        doc.create_execution("e1").unwrap();
+        doc.create_execution("e2").unwrap();
+        doc.create_execution("e3").unwrap();
+        doc.create_execution("e4").unwrap();
+        doc.create_execution("e5").unwrap();
+        for id in ["e1", "e2", "e3", "e4", "e5"] {
+            doc.set_execution_done(id, true).unwrap();
+        }
 
-        // Trim to 3 — should keep e4 (latest cell-a), e5 (latest cell-b),
-        // and one more. Oldest non-latest-per-cell are removed first.
+        // Trim to 3 by execution history.
         let removed = doc.trim_executions(3).unwrap();
         assert!(removed > 0);
 
         let state = doc.read_state();
-        // Must keep latest per cell: e4 (cell-a) and e5 (cell-b)
-        assert!(state.executions.contains_key("e4"));
-        assert!(state.executions.contains_key("e5"));
         assert!(state.executions.len() <= 3);
     }
 
     #[test]
     fn test_trim_executions_noop_when_under_max() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("e1", "cell-1").unwrap();
-        doc.create_execution("e2", "cell-2").unwrap();
+        doc.create_execution("e1").unwrap();
+        doc.create_execution("e2").unwrap();
         assert_eq!(doc.trim_executions(10).unwrap(), 0);
         assert_eq!(doc.read_state().executions.len(), 2);
     }
 
     #[test]
+    fn test_trim_executions_preserves_active_statuses() {
+        let mut doc = RuntimeStateDoc::new();
+        for id in ["old-1", "old-2", "old-3", "queued", "running"] {
+            doc.create_execution(id).unwrap();
+            doc.set_execution_count(id, 1).unwrap();
+        }
+        for id in ["old-1", "old-2", "old-3"] {
+            doc.set_execution_done(id, true).unwrap();
+        }
+        doc.set_execution_running("running").unwrap();
+
+        let removed = doc.trim_executions_preserving(2, &HashSet::new()).unwrap();
+
+        let state = doc.read_state();
+        assert!(removed > 0);
+        assert!(
+            state.executions.contains_key("queued"),
+            "queued executions must not be trimmed before the runtime agent sees them"
+        );
+        assert!(
+            state.executions.contains_key("running"),
+            "running executions must not be trimmed"
+        );
+    }
+
+    #[test]
     fn test_execution_lifecycle_syncs_between_docs() {
         let mut daemon_doc = RuntimeStateDoc::new();
-        daemon_doc.create_execution("exec-1", "cell-1").unwrap();
+        daemon_doc.create_execution("exec-1").unwrap();
         daemon_doc.set_execution_running("exec-1").unwrap();
         daemon_doc.set_execution_count("exec-1", 3).unwrap();
         daemon_doc.set_execution_done("exec-1", true).unwrap();
@@ -4289,7 +4216,6 @@ mod tests {
         let client_state = client_doc.read_state();
         assert_eq!(client_state.executions.len(), 1);
         let es = &client_state.executions["exec-1"];
-        assert_eq!(es.cell_id, "cell-1");
         assert_eq!(es.status, "done");
         assert_eq!(es.success, Some(true));
         assert_eq!(es.execution_count, Some(3));
@@ -4305,7 +4231,6 @@ mod tests {
         fork.set_actor("runtimed:state:test");
 
         let entry = QueueEntry {
-            cell_id: "cell-1".to_string(),
             execution_id: "exec-1".to_string(),
         };
         fork.set_queue(Some(&entry), &[]).unwrap();
@@ -4314,8 +4239,12 @@ mod tests {
 
         let state = doc.read_state();
         assert_eq!(
-            state.queue.executing.as_ref().map(|e| e.cell_id.as_str()),
-            Some("cell-1")
+            state
+                .queue
+                .executing
+                .as_ref()
+                .map(|e| e.execution_id.as_str()),
+            Some("exec-1")
         );
     }
 
@@ -4330,7 +4259,6 @@ mod tests {
 
         // Write queue on fork
         let entry = QueueEntry {
-            cell_id: "cell-1".to_string(),
             execution_id: "exec-1".to_string(),
         };
         fork.set_queue(Some(&entry), &[]).unwrap();
@@ -4348,8 +4276,12 @@ mod tests {
             RuntimeLifecycle::Running(KernelActivity::Busy)
         );
         assert_eq!(
-            state.queue.executing.as_ref().map(|e| e.cell_id.as_str()),
-            Some("cell-1")
+            state
+                .queue
+                .executing
+                .as_ref()
+                .map(|e| e.execution_id.as_str()),
+            Some("exec-1")
         );
     }
 
@@ -4388,7 +4320,7 @@ mod tests {
     #[test]
     fn test_append_output() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-1").unwrap();
         let m_a = test_stream("hash-a");
         let m_b = test_stream("hash-b");
         let id0 = doc.append_output("exec-1", &m_a).unwrap();
@@ -4414,7 +4346,7 @@ mod tests {
         // The production call sites now assign a unique actor per
         // fork so this error is impossible to hit in practice.
         let mut main = RuntimeStateDoc::new();
-        main.create_execution("exec-1", "cell-1").unwrap();
+        main.create_execution("exec-1").unwrap();
 
         let shared_actor = "rt:kernel:shared";
 
@@ -4441,7 +4373,7 @@ mod tests {
         // Same setup as the previous test but each fork gets its own
         // actor suffix. Both inserts must survive the merge.
         let mut main = RuntimeStateDoc::new();
-        main.create_execution("exec-1", "cell-1").unwrap();
+        main.create_execution("exec-1").unwrap();
 
         let mut fa = main.fork();
         fa.set_actor("rt:kernel:shared:fork-a");
@@ -4473,7 +4405,7 @@ mod tests {
             Some("rt:kernel:shared"),
             "test-runtime-transaction-a",
             |doc| {
-                doc.create_execution("exec-a", "cell-a")?;
+                doc.create_execution("exec-a")?;
                 Ok(())
             },
         )
@@ -4484,15 +4416,15 @@ mod tests {
             Some("rt:kernel:shared"),
             "test-runtime-transaction-b",
             |doc| {
-                doc.create_execution("exec-b", "cell-b")?;
+                doc.create_execution("exec-b")?;
                 Ok(())
             },
         )
         .unwrap();
 
         let state = doc.read_state();
-        assert_eq!(state.executions["exec-a"].cell_id, "cell-a");
-        assert_eq!(state.executions["exec-b"].cell_id, "cell-b");
+        assert!(state.executions.contains_key("exec-a"));
+        assert!(state.executions.contains_key("exec-b"));
     }
 
     #[test]
@@ -4508,7 +4440,7 @@ mod tests {
             Some("rt:kernel:shared"),
             "test-runtime-transaction-compose",
             |doc| {
-                doc.create_execution("exec-1", "cell-1")?;
+                doc.create_execution("exec-1")?;
                 Ok(())
             },
         )
@@ -4519,7 +4451,7 @@ mod tests {
             state.kernel.lifecycle,
             RuntimeLifecycle::Running(KernelActivity::Busy)
         );
-        assert_eq!(state.executions["exec-1"].cell_id, "cell-1");
+        assert!(state.executions.contains_key("exec-1"));
     }
 
     #[test]
@@ -4552,7 +4484,7 @@ mod tests {
     #[test]
     fn test_set_outputs() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-1").unwrap();
         doc.append_output("exec-1", &test_stream("old-hash"))
             .unwrap();
 
@@ -4565,7 +4497,7 @@ mod tests {
     #[test]
     fn test_replace_output() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-1").unwrap();
         let m_a = test_display("hash-a");
         let m_b = test_display("hash-b");
         let m_c = test_display("hash-c");
@@ -4589,7 +4521,7 @@ mod tests {
     #[test]
     fn test_replace_output_removes_stale_keys() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-1").unwrap();
 
         // Original manifest has an extra key (display_id)
         let original = serde_json::json!({
@@ -4618,7 +4550,7 @@ mod tests {
     #[test]
     fn test_upsert_stream_output_append() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-1").unwrap();
 
         let manifest = test_stream("hash-a");
         // No known state → append
@@ -4633,7 +4565,7 @@ mod tests {
     #[test]
     fn test_upsert_stream_output_update_in_place() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-1").unwrap();
         let m_a = test_stream("hash-a");
         doc.append_output("exec-1", &m_a).unwrap();
 
@@ -4655,7 +4587,7 @@ mod tests {
     #[test]
     fn test_upsert_stream_output_inline_update_in_place() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-1").unwrap();
         let m_a = test_stream_inline("***");
         doc.append_output("exec-1", &m_a).unwrap();
 
@@ -4678,7 +4610,7 @@ mod tests {
     #[test]
     fn test_upsert_stream_output_inline_to_blob_transition() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-1").unwrap();
         // Start with inline content
         let m_a = test_stream_inline("small");
         doc.append_output("exec-1", &m_a).unwrap();
@@ -4702,7 +4634,7 @@ mod tests {
     #[test]
     fn test_upsert_stream_output_hash_mismatch_appends() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-1").unwrap();
         let m_a = test_stream("hash-a");
         doc.append_output("exec-1", &m_a).unwrap();
 
@@ -4736,7 +4668,7 @@ mod tests {
     #[test]
     fn test_upsert_stream_preserves_output_id() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-1").unwrap();
         let m_a = serde_json::json!({
             "output_type": "stream",
             "output_id": "original-id-abc",
@@ -4780,7 +4712,7 @@ mod tests {
         // because only the text ContentRef scalars change — no tombstones
         // from deleted Maps accumulate.
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-1").unwrap();
 
         let initial = serde_json::json!({
             "output_type": "stream",
@@ -4833,8 +4765,8 @@ mod tests {
     #[test]
     fn test_get_all_outputs() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
-        doc.create_execution("exec-2", "cell-2").unwrap();
+        doc.create_execution("exec-1").unwrap();
+        doc.create_execution("exec-2").unwrap();
         let m1 = test_stream("h1");
         let m2 = test_stream("h2");
         let m3 = test_stream("h3");
@@ -4855,8 +4787,8 @@ mod tests {
     #[test]
     fn test_inline_outputs_in_execution_state() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
-        doc.create_execution("exec-2", "cell-2").unwrap();
+        doc.create_execution("exec-1").unwrap();
+        doc.create_execution("exec-2").unwrap();
         let m1 = test_stream("h1");
         let m2 = test_stream("h2");
         let m3 = test_stream("h3");
@@ -4875,10 +4807,10 @@ mod tests {
         // Create 5 executions with outputs
         for i in 1..=5 {
             let eid = format!("e{i}");
-            let cid = if i % 2 == 0 { "cell-a" } else { "cell-b" };
-            doc.create_execution(&eid, cid).unwrap();
+            doc.create_execution(&eid).unwrap();
             doc.append_output(&eid, &test_stream(&format!("hash-{i}")))
                 .unwrap();
+            doc.set_execution_done(&eid, true).unwrap();
         }
 
         // Trim to 3
@@ -4907,8 +4839,8 @@ mod tests {
     #[test]
     fn test_outputs_sync_between_docs() {
         let mut daemon_doc = RuntimeStateDoc::new();
-        daemon_doc.create_execution("exec-1", "cell-1").unwrap();
-        daemon_doc.create_execution("exec-2", "cell-2").unwrap();
+        daemon_doc.create_execution("exec-1").unwrap();
+        daemon_doc.create_execution("exec-2").unwrap();
         let m1 = test_stream("h1");
         let m2 = test_stream("h2");
         let m3 = test_stream("h3");
@@ -4948,7 +4880,7 @@ mod tests {
     #[test]
     fn test_fork_and_merge_outputs() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-1").unwrap();
         let m1 = test_stream("h1");
         let m2 = test_stream("h2");
         doc.append_output("exec-1", &m1).unwrap();
@@ -5179,7 +5111,6 @@ mod tests {
         execs.insert(
             "exec-1".to_string(),
             ExecutionState {
-                cell_id: "cell-1".to_string(),
                 status: "done".to_string(),
                 execution_count: Some(1),
                 success: Some(true),
@@ -5189,7 +5120,7 @@ mod tests {
             },
         );
         let (changed, _) = diff_execution_outputs(&prev, &execs);
-        assert_eq!(changed, vec!["cell-1"]);
+        assert_eq!(changed, vec!["exec-1"]);
     }
 
     #[test]
@@ -5199,7 +5130,6 @@ mod tests {
         execs.insert(
             "exec-1".to_string(),
             ExecutionState {
-                cell_id: "cell-1".to_string(),
                 status: "running".to_string(),
                 execution_count: None,
                 success: None,
@@ -5220,7 +5150,6 @@ mod tests {
         execs.insert(
             "exec-1".to_string(),
             ExecutionState {
-                cell_id: "cell-1".to_string(),
                 status: "done".to_string(),
                 execution_count: Some(1),
                 success: Some(true),
@@ -5230,7 +5159,7 @@ mod tests {
             },
         );
         let (changed, _) = diff_execution_outputs(&prev, &execs);
-        assert_eq!(changed, vec!["cell-1"]);
+        assert_eq!(changed, vec!["exec-1"]);
     }
 
     /// The critical edge case: after outputs are cleared, the snapshot
@@ -5244,7 +5173,6 @@ mod tests {
         execs.insert(
             "exec-1".to_string(),
             ExecutionState {
-                cell_id: "cell-1".to_string(),
                 status: "done".to_string(),
                 execution_count: Some(1),
                 success: Some(true),
@@ -5254,18 +5182,17 @@ mod tests {
             },
         );
         let (changed, snapshot) = diff_execution_outputs(&prev, &execs);
-        assert_eq!(changed, vec!["cell-1"]);
+        assert_eq!(changed, vec!["exec-1"]);
 
         // Stage 2: outputs cleared (pre-execute)
         execs.get_mut("exec-1").unwrap().outputs = vec![];
         let (changed, snapshot) = diff_execution_outputs(&snapshot, &execs);
-        assert_eq!(changed, vec!["cell-1"], "clear should be detected");
+        assert_eq!(changed, vec!["exec-1"], "clear should be detected");
 
         // Stage 3: new execution with empty outputs (just created)
         execs.insert(
             "exec-2".to_string(),
             ExecutionState {
-                cell_id: "cell-1".to_string(),
                 status: "running".to_string(),
                 execution_count: None,
                 success: None,
@@ -5282,7 +5209,7 @@ mod tests {
         let (changed, _) = diff_execution_outputs(&snapshot, &execs);
         assert_eq!(
             changed,
-            vec!["cell-1"],
+            vec!["exec-2"],
             "new output after clear must be detected"
         );
     }
@@ -5298,7 +5225,6 @@ mod tests {
         execs.insert(
             "exec-1".to_string(),
             ExecutionState {
-                cell_id: "cell-1".to_string(),
                 status: "done".to_string(),
                 execution_count: Some(1),
                 success: Some(true),
@@ -5371,7 +5297,7 @@ mod tests {
 
         let mut donor = RuntimeStateDoc::new();
         donor
-            .create_execution_with_source("exec-retry", "cell-retry", "x = 1", 1)
+            .create_execution_with_source("exec-retry", "x = 1", 1)
             .unwrap();
         let mut donor_sync = sync::State::new();
         if let Some(handshake) = receiver.generate_sync_message(&mut receiver_sync) {
@@ -5707,7 +5633,7 @@ mod tests {
     #[test]
     fn append_output_populates_display_index() {
         let mut sd = RuntimeStateDoc::new();
-        sd.create_execution("exec-1", "cell-1").unwrap();
+        sd.create_execution("exec-1").unwrap();
 
         let manifest = serde_json::json!({
             "output_type": "display_data",
@@ -5725,7 +5651,7 @@ mod tests {
     #[test]
     fn output_id_in_append_round_trips_through_crdt() {
         let mut sd = RuntimeStateDoc::new();
-        sd.create_execution("exec-1", "cell-1").unwrap();
+        sd.create_execution("exec-1").unwrap();
 
         let manifest = serde_json::json!({
             "output_type": "stream",
@@ -5743,7 +5669,7 @@ mod tests {
     #[test]
     fn stream_coalescence_preserves_distinct_output_ids() {
         let mut sd = RuntimeStateDoc::new();
-        sd.create_execution("exec-1", "cell-1").unwrap();
+        sd.create_execution("exec-1").unwrap();
 
         let m1 = serde_json::json!({
             "output_type": "stream",

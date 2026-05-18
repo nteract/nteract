@@ -17,7 +17,6 @@ export interface SessionStatus {
 
 export interface ExecutionTransition {
   execution_id: string;
-  cell_id: string;
   kind: "started" | "done" | "error";
   execution_count: number | null;
 }

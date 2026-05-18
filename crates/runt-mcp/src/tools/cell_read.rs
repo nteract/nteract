@@ -428,13 +428,11 @@ pub fn get_cell_execution_count_from_runtime(
     handle: &notebook_sync::handle::DocHandle,
     cell_id: &str,
 ) -> String {
+    let Some(execution_id) = handle.get_cell_execution_id(cell_id) else {
+        return String::new();
+    };
     if let Ok(state) = handle.get_runtime_state() {
-        if let Some(exec) = state
-            .executions
-            .values()
-            .filter(|e| e.cell_id == cell_id && e.execution_count.is_some())
-            .max_by_key(|e| e.execution_count)
-        {
+        if let Some(exec) = state.executions.get(&execution_id) {
             if let Some(count) = exec.execution_count {
                 return count.to_string();
             }
@@ -449,25 +447,25 @@ pub fn get_cell_execution_count_from_runtime(
 /// map for terminal status (done/error). Without this fallback, agents
 /// cannot distinguish "executed with output" from "never ran."
 fn get_cell_status(handle: &notebook_sync::handle::DocHandle, cell_id: &str) -> Option<String> {
-    if let Ok(state) = handle.get_runtime_state() {
+    let execution_id = handle.get_cell_execution_id(cell_id);
+    if let (Some(execution_id), Ok(state)) = (execution_id, handle.get_runtime_state()) {
         if state
             .queue
             .executing
             .as_ref()
-            .is_some_and(|e| e.cell_id == cell_id)
+            .is_some_and(|e| e.execution_id == execution_id)
         {
             return Some("running".to_string());
         }
-        if state.queue.queued.iter().any(|e| e.cell_id == cell_id) {
+        if state
+            .queue
+            .queued
+            .iter()
+            .any(|e| e.execution_id == execution_id)
+        {
             return Some("queued".to_string());
         }
-        // Check executions map for terminal status (most recent execution for this cell)
-        if let Some(exec) = state
-            .executions
-            .values()
-            .filter(|e| e.cell_id == cell_id)
-            .max_by_key(|e| e.execution_count)
-        {
+        if let Some(exec) = state.executions.get(&execution_id) {
             if exec.status == "done" || exec.status == "error" {
                 return Some(exec.status.clone());
             }
@@ -487,9 +485,16 @@ pub fn build_cell_execution_count_map(
     let mut map: std::collections::HashMap<String, (i64, String)> =
         std::collections::HashMap::new();
     if let Ok(state) = handle.get_runtime_state() {
-        for exec in state.executions.values() {
-            if let Some(count) = exec.execution_count {
-                let entry = map.entry(exec.cell_id.clone());
+        for cell in handle.get_cells() {
+            let Some(execution_id) = handle.get_cell_execution_id(&cell.id) else {
+                continue;
+            };
+            if let Some(count) = state
+                .executions
+                .get(&execution_id)
+                .and_then(|exec| exec.execution_count)
+            {
+                let entry = map.entry(cell.id);
                 match entry {
                     std::collections::hash_map::Entry::Vacant(e) => {
                         e.insert((count, count.to_string()));
@@ -512,19 +517,33 @@ pub fn build_cell_status_map(
 ) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
     if let Ok(state) = handle.get_runtime_state() {
-        // Terminal statuses from executions (written first, active queue overrides below)
-        for exec in state.executions.values() {
-            if exec.status == "done" || exec.status == "error" {
-                map.entry(exec.cell_id.clone())
-                    .or_insert_with(|| exec.status.clone());
+        for cell in handle.get_cells() {
+            let Some(execution_id) = handle.get_cell_execution_id(&cell.id) else {
+                continue;
+            };
+            if state
+                .queue
+                .executing
+                .as_ref()
+                .is_some_and(|e| e.execution_id == execution_id)
+            {
+                map.insert(cell.id.clone(), "running".to_string());
+                continue;
             }
-        }
-        // Active queue statuses override terminal ones
-        if let Some(ref e) = state.queue.executing {
-            map.insert(e.cell_id.clone(), "running".to_string());
-        }
-        for e in &state.queue.queued {
-            map.insert(e.cell_id.clone(), "queued".to_string());
+            if state
+                .queue
+                .queued
+                .iter()
+                .any(|e| e.execution_id == execution_id)
+            {
+                map.insert(cell.id.clone(), "queued".to_string());
+                continue;
+            }
+            if let Some(exec) = state.executions.get(&execution_id) {
+                if exec.status == "done" || exec.status == "error" {
+                    map.entry(cell.id).or_insert_with(|| exec.status.clone());
+                }
+            }
         }
     }
     map

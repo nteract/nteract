@@ -21,12 +21,12 @@ export {
 
 /** Resolve execution_count from the execution the notebook doc points at. */
 function getExecutionCountFromRuntime(
-  cellId: string,
+  _cellId: string,
   executionId: string | null | undefined,
 ): number | null {
   if (!executionId) return null;
   const execution = getRuntimeState().executions[executionId];
-  if (!execution || execution.cell_id !== cellId) return null;
+  if (!execution) return null;
   return execution.execution_count ?? null;
 }
 

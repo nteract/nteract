@@ -7,7 +7,6 @@ use crate::ExecutionState;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionTransition {
     pub execution_id: String,
-    pub cell_id: String,
     pub kind: ExecutionTransitionKind,
     pub execution_count: Option<i64>,
 }
@@ -80,7 +79,6 @@ fn transition(
 ) -> ExecutionTransition {
     ExecutionTransition {
         execution_id: execution_id.to_string(),
-        cell_id: entry.cell_id.clone(),
         kind,
         execution_count: entry.execution_count,
     }
@@ -92,7 +90,6 @@ mod tests {
 
     fn exec(status: &str, count: Option<i64>) -> ExecutionState {
         ExecutionState {
-            cell_id: "cell-1".to_string(),
             status: status.to_string(),
             execution_count: count,
             success: None,
@@ -111,7 +108,6 @@ mod tests {
             diff_executions(&prev, &curr),
             vec![ExecutionTransition {
                 execution_id: "exec-1".to_string(),
-                cell_id: "cell-1".to_string(),
                 kind: ExecutionTransitionKind::Started,
                 execution_count: Some(7),
             }]

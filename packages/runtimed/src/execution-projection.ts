@@ -1,7 +1,6 @@
 import type { ExecutionState, RuntimeState } from "./runtime-state";
 
 export interface RuntimeExecutionSnapshot {
-  cell_id: string;
   execution_count: number | null;
   status: ExecutionState["status"];
   success: boolean | null;
@@ -32,12 +31,11 @@ export function executionFingerprint(raw: ExecutionState): string {
   // Include the ordered `output_id` list so same-length replacements
   // (e.g. clear_output(wait=True)) still invalidate cached snapshots.
   const ids = collectExecutionOutputIds(raw);
-  return `${raw.cell_id}|${raw.execution_count ?? ""}|${raw.status}|${raw.success ?? ""}|${ids.join(",")}`;
+  return `${raw.execution_count ?? ""}|${raw.status}|${raw.success ?? ""}|${ids.join(",")}`;
 }
 
 export function buildRuntimeExecutionSnapshot(raw: ExecutionState): RuntimeExecutionSnapshot {
   return {
-    cell_id: raw.cell_id,
     execution_count: raw.execution_count,
     status: raw.status,
     success: raw.success,

@@ -95,15 +95,24 @@ pub(crate) async fn save_notebook_to_disk(
         (cells, metadata_snapshot, eids)
     };
 
+    let previous_visible_execution_ids: HashMap<String, String> = cells
+        .iter()
+        .filter_map(|cell| {
+            room.persistence
+                .previous_visible_execution(&cell.id)
+                .map(|execution_id| (cell.id.clone(), execution_id))
+        })
+        .collect();
+
     // Read outputs and execution_count from RuntimeStateDoc keyed by execution_id.
     //
-    // When a cell is re-queued, `set_execution_id` rewrites the cell's pointer
-    // to the new execution before the kernel produces outputs. Saving with the
-    // queued/running eid would clobber the previous outputs with an empty list.
-    // Fall back to the most recent terminal execution for the cell so an
-    // explicit Cmd+S during a run (or a racing autosave) preserves what's on
-    // disk until the live run completes. Cleared cells (`execution_id = None`)
-    // skip the fall-back and write empty outputs.
+    // NotebookDoc owns the cell -> execution pointer, while RuntimeStateDoc v2
+    // stores executions without durable cell identity. Saves use the current
+    // cell pointer directly except for the re-execution window where that
+    // pointer already targets a queued/running execution with no outputs yet;
+    // in that case daemon-local persistence hints preserve the previous
+    // visible outputs on disk. Cleared cells (`execution_id = None`) still
+    // write empty outputs.
     let (cell_outputs, cell_execution_counts): (
         HashMap<String, Vec<serde_json::Value>>,
         HashMap<String, Option<i64>>,
@@ -115,14 +124,30 @@ pub(crate) async fn save_notebook_to_disk(
             let mut ec_map = HashMap::new();
             for (cell_id, eid) in &cell_execution_ids {
                 let Some(eid) = eid.as_ref() else { continue };
-                let resolved_eid = resolve_save_execution_id(&snapshot, cell_id, eid);
-                let outputs = sd.get_outputs(&resolved_eid);
+                let Some(exec) = snapshot.executions.get(eid) else {
+                    continue;
+                };
+                let mut outputs = sd.get_outputs(eid);
+                let mut execution_count = exec.execution_count;
+                if outputs.is_empty() && matches!(exec.status.as_str(), "queued" | "running") {
+                    if let Some(previous_execution_id) = previous_visible_execution_ids.get(cell_id)
+                    {
+                        if let Some(previous_exec) = snapshot.executions.get(previous_execution_id)
+                        {
+                            let previous_outputs = sd.get_outputs(previous_execution_id);
+                            if !previous_outputs.is_empty()
+                                || previous_exec.execution_count.is_some()
+                            {
+                                outputs = previous_outputs;
+                                execution_count = previous_exec.execution_count;
+                            }
+                        }
+                    }
+                }
                 if !outputs.is_empty() {
                     outputs_map.insert(cell_id.clone(), outputs);
                 }
-                if let Some(exec) = snapshot.executions.get(&resolved_eid) {
-                    ec_map.insert(cell_id.clone(), exec.execution_count);
-                }
+                ec_map.insert(cell_id.clone(), execution_count);
             }
             (outputs_map, ec_map)
         })
@@ -382,40 +407,6 @@ pub(crate) async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canoni
         "[notebook-sync] Promoted untitled room {} to file-backed path {:?}",
         room.id, canonical
     );
-}
-
-/// Pick which execution_id save should read outputs from.
-///
-/// If the cell's current execution is queued or running with no outputs yet,
-/// fall back to the most recent done/error execution for the same cell. The
-/// fall-back applies only when the in-flight execution would yield empty
-/// outputs; once any output lands at the new id we use it (partial-but-live
-/// is preferred over stale-but-complete the moment the kernel speaks).
-fn resolve_save_execution_id(
-    snapshot: &runtime_doc::RuntimeState,
-    cell_id: &str,
-    current_eid: &str,
-) -> String {
-    let current = snapshot.executions.get(current_eid);
-    let in_flight_with_no_outputs = current
-        .map(|exec| {
-            (exec.status == "queued" || exec.status == "running") && exec.outputs.is_empty()
-        })
-        .unwrap_or(false);
-    if !in_flight_with_no_outputs {
-        return current_eid.to_string();
-    }
-    snapshot
-        .executions
-        .iter()
-        .filter(|(eid, exec)| {
-            eid.as_str() != current_eid
-                && exec.cell_id == cell_id
-                && (exec.status == "done" || exec.status == "error")
-        })
-        .max_by_key(|(_, exec)| exec.seq.unwrap_or(0))
-        .map(|(eid, _)| eid.clone())
-        .unwrap_or_else(|| current_eid.to_string())
 }
 
 /// Resolve a single cell output — handles both manifest hashes and raw JSON.

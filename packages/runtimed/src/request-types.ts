@@ -75,12 +75,21 @@ export type NotebookRequest =
       env_source: LaunchSpec;
       notebook_path?: string | null;
     }
-  | { type: "execute_cell"; cell_id: string }
-  | { type: "execute_cell_guarded"; cell_id: string; observed_heads: string[] }
+  | { type: "execute_cell"; cell_id: string; execution_id?: string | null }
+  | {
+      type: "execute_cell_guarded";
+      cell_id: string;
+      execution_id?: string | null;
+      observed_heads: string[];
+    }
   | { type: "interrupt_execution" }
   | { type: "shutdown_kernel" }
-  | { type: "run_all_cells" }
-  | { type: "run_all_cells_guarded"; observed_heads: string[] }
+  | { type: "run_all_cells"; cell_execution_ids?: Record<string, string> | null }
+  | {
+      type: "run_all_cells_guarded";
+      cell_execution_ids?: Record<string, string> | null;
+      observed_heads: string[];
+    }
   | { type: "send_comm"; message: CommRequestMessage }
   | {
       type: "get_history";
@@ -130,6 +139,8 @@ export interface CompletionItem {
   source?: string | null;
 }
 
+export type ExecutionIdRejectionReason = "malformed" | "already_exists" | "duplicate_in_request";
+
 export type NotebookResponse =
   | {
       result: "kernel_launched";
@@ -144,6 +155,11 @@ export type NotebookResponse =
       launched_config: LaunchedEnvConfig;
     }
   | { result: "cell_queued"; cell_id: string; execution_id: string }
+  | {
+      result: "execution_id_rejected";
+      execution_id: string;
+      reason: ExecutionIdRejectionReason;
+    }
   | { result: "interrupt_sent" }
   | { result: "kernel_shutting_down" }
   | { result: "no_kernel" }

@@ -1474,7 +1474,7 @@ mod tests {
             runtime_doc::RuntimeStateDoc::new_with_actor("runtimed-sync-panic-test");
         daemon_state
             .state_doc
-            .create_execution_with_source("exec-1", "cell-1", "x = 1", 1)
+            .create_execution_with_source("exec-1", "x = 1", 1)
             .expect("daemon creates queued execution");
         let (client_reply_writer, daemon_reply_reader) = tokio::io::duplex(4096);
         let mut writer = client_reply_writer;
@@ -1710,7 +1710,6 @@ mod tests {
                         .state_doc
                         .create_execution_with_source(
                             &format!("exec-{index}"),
-                            &format!("cell-{index}"),
                             &format!("print({index})"),
                             index as u64,
                         )
