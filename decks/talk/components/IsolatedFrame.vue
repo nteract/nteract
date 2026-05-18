@@ -32,9 +32,16 @@ const props = withDefaults(
     height?: string;
     /** Optional caption shown above the frame for slide narration. */
     label?: string;
+    /**
+     * Whether the renderer inside the iframe should use its dark theme.
+     * Defaults to false to match the seriph slide background; flip when
+     * the deck switches to a dark theme.
+     */
+    isDark?: boolean;
   }>(),
   {
     height: "360px",
+    isDark: false,
   },
 );
 
@@ -70,7 +77,7 @@ function startController() {
     iframe,
     rendererCode,
     rendererCss,
-    initialTheme: { isDark: true, colorTheme: null },
+    initialTheme: { isDark: props.isDark, colorTheme: null },
   });
 
   subs.push(
@@ -104,6 +111,13 @@ watch(
     controller?.render(buildPayload(next));
   },
   { deep: false },
+);
+
+watch(
+  () => props.isDark,
+  (isDark) => {
+    controller?.setTheme({ isDark, colorTheme: null });
+  },
 );
 
 onMounted(() => {
