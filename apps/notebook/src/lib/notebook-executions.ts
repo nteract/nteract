@@ -23,14 +23,24 @@ export interface ExecutionSnapshot {
   output_ids: string[];
 }
 
+export interface NotebookQueueProjectionSnapshot {
+  executing_cell_id: string | null;
+  queued_cell_ids: string[];
+}
+
 const _executionMap: Map<string, ExecutionSnapshot> = new Map();
 
 /** Per-cell reverse index: cell_id -> latest execution_id. */
 const _cellToExecution: Map<string, string> = new Map();
 const _executionToCell: Map<string, string> = new Map();
+let _notebookQueueProjection: NotebookQueueProjectionSnapshot = {
+  executing_cell_id: null,
+  queued_cell_ids: [],
+};
 
 const _subscribers = new Map<string, Set<() => void>>();
 const _cellExecutionSubscribers = new Map<string, Set<() => void>>();
+const _queueProjectionSubscribers = new Set<() => void>();
 
 function emitExecutionChange(execution_id: string): void {
   const subs = _subscribers.get(execution_id);
@@ -48,6 +58,14 @@ function emitCellExecutionPointerChange(cell_id: string): void {
   const subs = _cellExecutionSubscribers.get(cell_id);
   if (!subs) return;
   for (const cb of subs) {
+    try {
+      cb();
+    } catch {}
+  }
+}
+
+function emitQueueProjectionChange(): void {
+  for (const cb of _queueProjectionSubscribers) {
     try {
       cb();
     } catch {}
@@ -95,41 +113,11 @@ export function useCellExecutionId(cell_id: string): string | null {
   return useSyncExternalStore(subscribe, getSnapshot);
 }
 
-export function useCellExecutionPointers(
-  cell_ids: readonly string[],
-): ReadonlyMap<string, string> {
-  const cellIdsKey = JSON.stringify(cell_ids);
-  const stableCellIds = useMemo(() => [...cell_ids], [cellIdsKey]);
-  const subscribe = useMemo(
-    () => (callback: () => void) => {
-      const unsubscribers = stableCellIds.map((cell_id) =>
-        subscribeCellExecutionPointer(cell_id)(callback),
-      );
-      return () => {
-        for (const unsubscribe of unsubscribers) unsubscribe();
-      };
-    },
-    [stableCellIds],
+export function useNotebookQueueProjection(): NotebookQueueProjectionSnapshot {
+  return useSyncExternalStore(
+    subscribeNotebookQueueProjection,
+    getNotebookQueueProjection,
   );
-  const getSnapshot = useMemo(
-    () => () =>
-      JSON.stringify(
-        stableCellIds.map((cell_id) => [
-          cell_id,
-          _cellToExecution.get(cell_id) ?? null,
-        ]),
-      ),
-    [stableCellIds],
-  );
-  const snapshot = useSyncExternalStore(subscribe, getSnapshot);
-  return useMemo(() => {
-    const pointers = new Map<string, string>();
-    for (const cell_id of stableCellIds) {
-      const execution_id = _cellToExecution.get(cell_id);
-      if (execution_id !== undefined) pointers.set(cell_id, execution_id);
-    }
-    return pointers;
-  }, [stableCellIds, snapshot]);
 }
 
 // ── Subscription helpers ────────────────────────────────────────────────
@@ -180,6 +168,17 @@ function getCellExecutionIdGetter(cell_id: string): () => string | null {
   return () => _cellToExecution.get(cell_id) ?? null;
 }
 
+function subscribeNotebookQueueProjection(callback: () => void): () => void {
+  _queueProjectionSubscribers.add(callback);
+  return () => {
+    _queueProjectionSubscribers.delete(callback);
+  };
+}
+
+export function getNotebookQueueProjection(): NotebookQueueProjectionSnapshot {
+  return _notebookQueueProjection;
+}
+
 // ── Write operations ────────────────────────────────────────────────────
 
 /**
@@ -222,6 +221,22 @@ export function setCellExecutionPointer(
     _executionToCell.set(execution_id, cell_id);
   }
   emitCellExecutionPointerChange(cell_id);
+}
+
+export function setNotebookQueueProjection(
+  projection: NotebookQueueProjectionSnapshot,
+): void {
+  if (
+    _notebookQueueProjection.executing_cell_id === projection.executing_cell_id &&
+    stringArraysEqual(_notebookQueueProjection.queued_cell_ids, projection.queued_cell_ids)
+  ) {
+    return;
+  }
+  _notebookQueueProjection = {
+    executing_cell_id: projection.executing_cell_id,
+    queued_cell_ids: [...projection.queued_cell_ids],
+  };
+  emitQueueProjectionChange();
 }
 
 /**
@@ -269,6 +284,19 @@ export function resetNotebookExecutions(): void {
   _executionMap.clear();
   _cellToExecution.clear();
   _executionToCell.clear();
+  _notebookQueueProjection = {
+    executing_cell_id: null,
+    queued_cell_ids: [],
+  };
   for (const eid of eids) emitExecutionChange(eid);
   for (const cid of cells) emitCellExecutionPointerChange(cid);
+  emitQueueProjectionChange();
+}
+
+function stringArraysEqual(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }

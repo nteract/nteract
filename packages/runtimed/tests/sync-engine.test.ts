@@ -53,6 +53,7 @@ function syncAppliedEvent(
     changeset?: CellChangeset;
     reply?: number[];
     attributions?: FrameEvent["attributions"];
+    executionViewChangeset?: FrameEvent["execution_view_changeset"];
   } = {},
 ): FrameEvent {
   return {
@@ -61,6 +62,7 @@ function syncAppliedEvent(
     changeset: opts.changeset,
     reply: opts.reply,
     attributions: opts.attributions,
+    execution_view_changeset: opts.executionViewChangeset,
   };
 }
 
@@ -72,8 +74,16 @@ function presenceEvent(payload: unknown): FrameEvent {
   return { type: "presence", payload };
 }
 
-function runtimeStateSyncEvent(state: RuntimeState): FrameEvent {
-  return { type: "runtime_state_sync_applied", changed: true, state };
+function runtimeStateSyncEvent(
+  state: RuntimeState,
+  executionViewChangeset?: FrameEvent["execution_view_changeset"],
+): FrameEvent {
+  return {
+    type: "runtime_state_sync_applied",
+    changed: true,
+    state,
+    execution_view_changeset: executionViewChangeset,
+  };
 }
 
 function sessionStatusEvent(status: SessionStatus): FrameEvent {
@@ -811,6 +821,155 @@ describe("SyncEngine", () => {
       expect(received[0]).toHaveLength(1);
       expect(received[0][0].kind).toBe("started");
       expect(received[0][0].execution_id).toBe("exec-1");
+      engine.stop();
+    });
+  });
+
+  describe("executionViewChanges$", () => {
+    it("emits notebook pointer changes from sync_applied events", () => {
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        syncAppliedEvent({
+          changed: true,
+          executionViewChangeset: {
+            cell_pointer_changes: [["cell-1", "exec-1"]],
+          },
+        }),
+      ]);
+
+      const engine = createEngine();
+      engine.start();
+
+      const received: NonNullable<FrameEvent["execution_view_changeset"]>[] = [];
+      engine.executionViewChanges$.subscribe((changeset) => received.push(changeset));
+
+      transport.deliver(Array.from([0x00, 1]));
+
+      expect(received).toEqual([
+        {
+          cell_pointer_changes: [["cell-1", "exec-1"]],
+        },
+      ]);
+      engine.stop();
+    });
+
+    it("emits runtime execution upserts and removals from runtime-state events", () => {
+      const state = makeRuntimeState({
+        "exec-1": { status: "running", execution_count: 1, success: null },
+      });
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        runtimeStateSyncEvent(state, {
+          execution_upserts: [
+            [
+              "exec-1",
+              {
+                execution_count: 1,
+                status: "running",
+                success: null,
+                output_ids: ["out-1"],
+              },
+            ],
+          ],
+          removed_execution_ids: ["exec-old"],
+          queue: {
+            executing_execution_id: "exec-1",
+            queued_execution_ids: [],
+          },
+        }),
+      ]);
+
+      const engine = createEngine();
+      engine.start();
+
+      const received: NonNullable<FrameEvent["execution_view_changeset"]>[] = [];
+      engine.executionViewChanges$.subscribe((changeset) => received.push(changeset));
+
+      transport.deliver(Array.from([0x05, 1]));
+
+      expect(received).toEqual([
+        {
+          execution_upserts: [
+            [
+              "exec-1",
+              {
+                execution_count: 1,
+                status: "running",
+                success: null,
+                output_ids: ["out-1"],
+              },
+            ],
+          ],
+          removed_execution_ids: ["exec-old"],
+          queue: {
+            executing_execution_id: "exec-1",
+            queued_execution_ids: [],
+          },
+        },
+      ]);
+      engine.stop();
+    });
+
+    it("emits recovered runtime-state execution view changes from sync errors", () => {
+      const state = makeRuntimeState({
+        "exec-1": { status: "running", execution_count: 1, success: null },
+      });
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        {
+          type: "runtime_state_sync_error",
+          changed: true,
+          state,
+          execution_view_changeset: {
+            queue: {
+              executing_execution_id: "exec-1",
+              queued_execution_ids: ["exec-2"],
+              notebook: {
+                executing_cell_id: "cell-1",
+                queued_cell_ids: ["cell-2"],
+              },
+            },
+          },
+        },
+      ]);
+
+      const engine = createEngine();
+      engine.start();
+
+      const received: NonNullable<FrameEvent["execution_view_changeset"]>[] = [];
+      engine.executionViewChanges$.subscribe((changeset) => received.push(changeset));
+
+      transport.deliver(Array.from([0x05, 1]));
+
+      expect(received).toEqual([
+        {
+          queue: {
+            executing_execution_id: "exec-1",
+            queued_execution_ids: ["exec-2"],
+            notebook: {
+              executing_cell_id: "cell-1",
+              queued_cell_ids: ["cell-2"],
+            },
+          },
+        },
+      ]);
+      engine.stop();
+    });
+
+    it("does not emit empty execution-view changesets", () => {
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        syncAppliedEvent({
+          changed: true,
+          executionViewChangeset: {},
+        }),
+      ]);
+
+      const engine = createEngine();
+      engine.start();
+
+      const received: NonNullable<FrameEvent["execution_view_changeset"]>[] = [];
+      engine.executionViewChanges$.subscribe((changeset) => received.push(changeset));
+
+      transport.deliver(Array.from([0x00, 1]));
+
+      expect(received).toEqual([]);
       engine.stop();
     });
   });

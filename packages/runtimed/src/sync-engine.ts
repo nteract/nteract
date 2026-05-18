@@ -41,7 +41,13 @@ import {
   detectUnresolvedOutputs,
   diffComms,
 } from "./comm-diff";
-import type { FrameEvent, InitialLoadPhase, SessionStatus, SyncableHandle } from "./handle";
+import type {
+  ExecutionViewChangeset,
+  FrameEvent,
+  InitialLoadPhase,
+  SessionStatus,
+  SyncableHandle,
+} from "./handle";
 import type { PoolState } from "./pool-state";
 import {
   type ExecutionTransition,
@@ -319,6 +325,9 @@ export class SyncEngine {
     removed_ids: string[];
   }>;
 
+  /** Cross-document execution materialized-view changes emitted by WASM. */
+  readonly executionViewChanges$: Observable<ExecutionViewChangeset>;
+
   // ── Typed broadcast observables ──────────────────────────────────
 
   /** Custom comm messages (buttons, model.send()). */
@@ -362,6 +371,7 @@ export class SyncEngine {
     changed: Array<[string, unknown]>;
     removed_ids: string[];
   }>();
+  private readonly _executionViewChanges$ = new Subject<ExecutionViewChangeset>();
 
   constructor(opts: SyncEngineOptions) {
     this.opts = {
@@ -382,6 +392,7 @@ export class SyncEngine {
     this.initialSyncComplete$ = this._initialSyncComplete$.asObservable();
     this.commChanges$ = this._commChanges$.asObservable();
     this.outputIdChanges$ = this._outputIdChanges$.asObservable();
+    this.executionViewChanges$ = this._executionViewChanges$.asObservable();
 
     // Typed broadcast sub-observables (derived from broadcasts$)
     this.commBroadcasts$ = this.broadcasts$.pipe(filter(isCommBroadcast));
@@ -530,6 +541,7 @@ export class SyncEngine {
               }
               materialize$.next(cs ?? null);
             }
+            this.emitExecutionViewChanges(e.execution_view_changeset);
             return EMPTY;
           }),
         )
@@ -637,6 +649,7 @@ export class SyncEngine {
           const transitions = diffExecutions(this.prevExecutions, state.executions);
           this.prevExecutions = state.executions;
           this._runtimeState$.next(state);
+          this.emitExecutionViewChanges(e.execution_view_changeset);
           if (transitions.length > 0) {
             this._executionTransitions$.next(transitions);
           }
@@ -664,6 +677,7 @@ export class SyncEngine {
               );
 
               this._runtimeState$.next(state);
+              this.emitExecutionViewChanges(e.execution_view_changeset);
               if (transitions.length > 0) {
                 this._executionTransitions$.next(transitions);
               }
@@ -930,6 +944,15 @@ export class SyncEngine {
       .catch((err) => {
         log.warn("[sync-engine] comm emission failed:", err);
       });
+  }
+
+  private emitExecutionViewChanges(changeset: ExecutionViewChangeset | undefined): void {
+    if (!changeset) return;
+    const cellChanges = changeset.cell_pointer_changes?.length ?? 0;
+    const upserts = changeset.execution_upserts?.length ?? 0;
+    const removals = changeset.removed_execution_ids?.length ?? 0;
+    if (cellChanges === 0 && upserts === 0 && removals === 0 && !changeset.queue) return;
+    this._executionViewChanges$.next(changeset);
   }
 
   // ── Outbound sync ────────────────────────────────────────────────

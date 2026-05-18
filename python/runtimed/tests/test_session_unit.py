@@ -333,10 +333,11 @@ class TestNotebookTrustMethods:
 
 
 class _ExecutionEntry:
-    def __init__(self, status="queued", success=None, execution_count=None):
+    def __init__(self, status="queued", success=None, execution_count=None, cell_id=None):
         self.status = status
         self.success = success
         self.execution_count = execution_count
+        self.cell_id = cell_id
 
 
 class _RuntimeState:
@@ -389,6 +390,30 @@ class TestExecutionHandle:
         assert execution.execution_count == 12
         assert execution.done is True
         assert "status=done" in repr(execution)
+
+    @pytest.mark.asyncio
+    async def test_execution_handle_uses_supplied_cell_id_not_runtime_entry_metadata(self):
+        from runtimed._execution import Execution
+
+        session = _ExecutionSession(
+            {
+                "exec-1": _ExecutionEntry(
+                    status="done",
+                    success=True,
+                    execution_count=12,
+                    cell_id="stale-runtime-cell",
+                )
+            }
+        )
+        execution = Execution(session, "cell-from-notebook-doc", "exec-1")  # ty: ignore[invalid-argument-type]
+
+        assert execution.status == "done"
+        assert execution.cell_id == "cell-from-notebook-doc"
+
+        result = await execution.result(timeout_secs=1.0)
+
+        assert result == "execution-result"
+        assert session.wait_calls == [("cell-from-notebook-doc", "exec-1", 1.0)]
 
     def test_execution_properties_degrade_to_unknown_when_state_is_missing(self):
         from runtimed._execution import Execution
@@ -469,6 +494,35 @@ class TestExecutionHandle:
 
         with pytest.raises(TimeoutError, match="status=running"):
             await execution.wait(timeout_secs=0.0)
+
+
+class _QueueAllEntry:
+    def __init__(self, cell_id, execution_id):
+        self.cell_id = cell_id
+        self.execution_id = execution_id
+
+
+class _QueueAllSession:
+    notebook_id = "queue-all-notebook"
+
+    async def queue_all_cells(self):
+        return [
+            _QueueAllEntry("cell-1", "exec-1"),
+            _QueueAllEntry("cell-2", "exec-2"),
+        ]
+
+
+class TestNotebookQueueAll:
+    @pytest.mark.asyncio
+    async def test_queue_all_returns_execution_id_handles_without_runtime_cell_lookup(self):
+        from runtimed._notebook import Notebook
+
+        notebook = Notebook(_QueueAllSession())  # ty: ignore[invalid-argument-type]
+
+        executions = await notebook.queue_all()
+
+        assert [execution.execution_id for execution in executions] == ["exec-1", "exec-2"]
+        assert [execution.cell_id for execution in executions] == ["cell-1", "cell-2"]
 
 
 if __name__ == "__main__":

@@ -7,7 +7,6 @@ import {
   isDisplayCapableJupyterOutput,
   isInitialLoadFailed,
   isInitialLoadStreaming,
-  planCellPointerRefresh,
 } from "runtimed";
 import { concatMap, from, Observable, switchMap } from "rxjs";
 import { needsPlugin, preWarmForMimes } from "@/components/isolated/iframe-libraries";
@@ -33,23 +32,17 @@ import {
   useCellIds,
 } from "../lib/notebook-cells";
 import {
+  applyExecutionViewChangeset,
   applyOutputChangeset,
-  projectRuntimeStateToExecutions,
   resetRuntimeStoresProjection,
   seedOutputStoresFromHandle,
-  updateCellExecutionPointersFromHandle,
 } from "../lib/project-runtime-stores";
 import { updateOutputsByDisplayId } from "../lib/notebook-outputs";
 import { cloneNotebookFile, openNotebookFile, saveNotebook } from "../lib/notebook-file-ops";
 import { emitBroadcast, emitPresence } from "../lib/notebook-frame-bus";
 import { notifyMetadataChanged, setNotebookHandle } from "../lib/notebook-metadata";
 import { type PoolState, resetPoolState, setPoolState } from "../lib/pool-state";
-import {
-  getRuntimeState,
-  resetRuntimeState,
-  setRuntimeState,
-  useRuntimeState,
-} from "../lib/runtime-state";
+import { resetRuntimeState, setRuntimeState, useRuntimeState } from "../lib/runtime-state";
 import type { JupyterOutput, NotebookCell } from "../types";
 import init, {
   encode_heartbeat_presence,
@@ -66,6 +59,22 @@ const PRESENCE_HEARTBEAT_INTERVAL_MS = 15_000;
 const wasmReady: Promise<void> = init().then(() => {
   logger.info("[automerge-notebook] WASM initialized");
 });
+
+let warnedMissingExecutionViewProjector = false;
+
+function projectExecutionViewChangeset(handle: NotebookHandle) {
+  const projector = (handle as unknown as SyncableHandle).project_execution_view_changeset;
+  if (typeof projector !== "function") {
+    if (!warnedMissingExecutionViewProjector) {
+      warnedMissingExecutionViewProjector = true;
+      logger.warn(
+        "[automerge-notebook] WASM handle is missing project_execution_view_changeset; rebuild runtimed-wasm so execution view stores stay current",
+      );
+    }
+    return undefined;
+  }
+  return projector.call(handle);
+}
 
 // ---------------------------------------------------------------------------
 // Hook
@@ -207,6 +216,7 @@ export function useAutomergeNotebook() {
       }
       if (!mutate(handle)) return false;
       rematerializeCellsSync(handle);
+      applyExecutionViewChangeset(projectExecutionViewChangeset(handle));
       engine.flush();
       return true;
     },
@@ -304,11 +314,12 @@ export function useAutomergeNotebook() {
         materializeCells(handle)
           .then(() => {
             interactiveReadyRef.current = true;
-            // Seed the cell -> execution_id pointer store from the doc.
-            // Seed pointers for the current snapshot once the daemon says
-            // the notebook replica is interactive.
             const cellIdList = [...handle.get_cell_ids()];
-            updateCellExecutionPointersFromHandle(handle, cellIdList);
+            // Seed the shared execution view from WASM. The projector reads
+            // NotebookDoc pointers and whichever RuntimeStateDoc snapshot has
+            // already arrived, so the browser store does not need a separate
+            // materialization pass.
+            applyExecutionViewChangeset(projectExecutionViewChangeset(handle));
             // Seed the outputs / executions stores straight from the
             // notebook doc. `initialSyncComplete$` fires when the
             // notebook doc is interactive, not when RuntimeStateDoc is
@@ -317,11 +328,6 @@ export function useAutomergeNotebook() {
             // runtime-state projection lands.
             seedOutputStoresFromHandle(handle, cellIdList);
             refreshCanAcceptCellMutations(handle);
-            // Project whatever RuntimeState snapshot has landed so far
-            // on top. If the runtime-state frame arrived first this is
-            // the authoritative pass; otherwise it's a no-op that the
-            // runtimeState$ subscription will redo on the next tick.
-            projectRuntimeStateToExecutions(getRuntimeState());
             const status = latestSessionStatusRef.current;
             setIsLoading(status ? isInitialLoadStreaming(status.initial_load) : false);
             notifyMetadataChanged();
@@ -350,19 +356,10 @@ export function useAutomergeNotebook() {
               outputCache: outputCacheRef.current,
             })
               .then(() => {
-                // After cells update, refresh per-cell execution_id pointers
-                // from the canonical notebook doc so <CellLabel> / future
-                // Out[N] readers see the current execution, not whatever
-                // RuntimeStateDoc entry happened to land last.
                 const handle = handleHost.current;
                 if (!handle) return;
                 refreshCanAcceptCellMutations(handle);
-                const pointerRefresh = planCellPointerRefresh(changeset);
-                if (pointerRefresh.kind === "touched") {
-                  updateCellExecutionPointersFromHandle(handle, pointerRefresh.cell_ids);
-                } else if (pointerRefresh.kind === "all") {
-                  updateCellExecutionPointersFromHandle(handle, [...handle.get_cell_ids()]);
-                }
+                applyExecutionViewChangeset(projectExecutionViewChangeset(handle));
               })
               .catch((err: unknown) =>
                 logger.warn("[automerge-notebook] materialize changeset failed:", err),
@@ -378,13 +375,14 @@ export function useAutomergeNotebook() {
     // Presence → frame bus.
     const presenceSub = engine.presence$.subscribe((payload) => emitPresence(payload));
 
-    // Runtime state → store + executions projection. The executions store
-    // is a narrow per-execution_id projection that lets <CellLabel> /
-    // <OutputArea> subscribe at execution granularity instead of at the
-    // cell granularity. See lib/notebook-executions.ts.
+    // Runtime state → broad runtime store. The narrow execution and cell
+    // pointer stores are fed separately by SyncEngine.executionViewChanges$.
     const runtimeStateSub = engine.runtimeState$.subscribe((state) => {
       setRuntimeState(state);
-      projectRuntimeStateToExecutions(state);
+    });
+
+    const executionViewSub = engine.executionViewChanges$.subscribe((changeset) => {
+      applyExecutionViewChangeset(changeset);
     });
 
     // Per-output changes → outputs store. WASM narrows each manifest
@@ -479,6 +477,7 @@ export function useAutomergeNotebook() {
       broadcastsSub.unsubscribe();
       presenceSub.unsubscribe();
       runtimeStateSub.unsubscribe();
+      executionViewSub.unsubscribe();
       outputIdChangesSub.unsubscribe();
       poolStateSub.unsubscribe();
       lifecycleSub.unsubscribe();
@@ -604,7 +603,7 @@ export function useAutomergeNotebook() {
       if (!changed) return false;
 
       rematerializeCellsSync(handle);
-      updateCellExecutionPointersFromHandle(handle, ids);
+      applyExecutionViewChangeset(projectExecutionViewChangeset(handle));
       engine.flush();
       return true;
     },
