@@ -8,7 +8,7 @@ interface DependencyHeaderProps {
   loading: boolean;
   onAdd: (pkg: string) => Promise<void>;
   onRemove: (pkg: string) => Promise<void>;
-  onSetRequiresPython?: (version: string | null) => Promise<void>;
+  onSetRequiresPython: (version: string | null) => Promise<void>;
   // Environment sync state
   syncState?: EnvSyncState | null;
   onSyncNow?: () => Promise<boolean>;
@@ -66,7 +66,6 @@ export function DependencyHeader({
   );
 
   const commitPythonSpec = useCallback(async () => {
-    if (!onSetRequiresPython) return;
     const next = pythonSpec.trim();
     const current = requiresPython ?? "";
     if (next === current) return;
@@ -241,7 +240,7 @@ export function DependencyHeader({
               placeholder=">=3.13"
               data-testid="uv-python-input"
               className="w-40 rounded border bg-background px-2 py-1 font-mono text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-              disabled={loading || !onSetRequiresPython}
+              disabled={loading}
               autoComplete="off"
               spellCheck={false}
             />

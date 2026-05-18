@@ -1,0 +1,45 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vite-plus/test";
+import { DependencyHeader } from "../DependencyHeader";
+
+function renderDependencyHeader(props: Partial<Parameters<typeof DependencyHeader>[0]> = {}) {
+  const defaults = {
+    dependencies: [],
+    requiresPython: null,
+    loading: false,
+    onAdd: vi.fn().mockResolvedValue(undefined),
+    onRemove: vi.fn().mockResolvedValue(undefined),
+    onSetRequiresPython: vi.fn().mockResolvedValue(undefined),
+  };
+
+  return render(<DependencyHeader {...defaults} {...props} />);
+}
+
+describe("DependencyHeader", () => {
+  it("commits a trimmed Python constraint on Enter", async () => {
+    const user = userEvent.setup();
+    const onSetRequiresPython = vi.fn().mockResolvedValue(undefined);
+    renderDependencyHeader({ onSetRequiresPython });
+
+    await user.type(screen.getByTestId("uv-python-input"), "  >=3.12,<3.13  {Enter}");
+
+    await waitFor(() => {
+      expect(onSetRequiresPython).toHaveBeenCalledWith(">=3.12,<3.13");
+    });
+  });
+
+  it("clears the Python constraint when the field is emptied", async () => {
+    const user = userEvent.setup();
+    const onSetRequiresPython = vi.fn().mockResolvedValue(undefined);
+    renderDependencyHeader({ requiresPython: ">=3.13", onSetRequiresPython });
+
+    const input = screen.getByTestId("uv-python-input");
+    await user.clear(input);
+    fireEvent.blur(input);
+
+    await waitFor(() => {
+      expect(onSetRequiresPython).toHaveBeenCalledWith(null);
+    });
+  });
+});
