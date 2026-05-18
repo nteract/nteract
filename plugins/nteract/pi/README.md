@@ -10,6 +10,8 @@ Run Python in a real IPython runtime. State (variables, imports, matplotlib figu
   
 - **`python_add_dependencies`** — Install packages mid-session without restarting the kernel. Or pass `dependencies` on the first `python_repl` call to pre-install before kernel start.
 
+- **`python_session_status`** — Inspect the active notebook session without starting a new kernel. Shows runtime lifecycle, queued/running execution IDs, and recent execution handles.
+
 - **`python_save_notebook`** — Save your session as an `.ipynb` file you can open in Jupyter or nteract.
 
 - **`/python-reset`** — Start fresh: new kernel, clean slate.

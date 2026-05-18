@@ -44,6 +44,18 @@ export interface ExecutionViewChangeset {
   queue?: ExecutionQueueProjection;
 }
 
+export interface ExecutionView {
+  /**
+   * Current non-null NotebookDoc cell -> execution_id pointers.
+   *
+   * Cleared or deleted cells are omitted. Subscribe to `executionViewChanges$`
+   * when null pointer transitions matter.
+   */
+  cell_execution_ids: Record<string, string>;
+  executions: Record<string, ExecutionViewSnapshot>;
+  queue: ExecutionQueueProjection | null;
+}
+
 export type RuntimeState = Record<string, unknown>;
 
 export type RuntimeKind = "python" | "deno" | (string & {});
@@ -228,6 +240,7 @@ export class Session {
   removeDependencies(packages: string[], options?: DependencyEditOptions): Promise<number>;
   getDependencyStatus(): Promise<DependencyStatus>;
   getRuntimeStatus(): Promise<RuntimeStatus>;
+  getExecutionView(): ExecutionView;
   dependencyFingerprint(): Promise<string | null>;
   approveTrust(observedHeads?: string[]): Promise<void>;
   syncEnvironment(): Promise<void>;

@@ -14,6 +14,7 @@ const { Session } = require("../src/session.cjs") as {
         unsubscribe: () => void;
       };
     };
+    getExecutionView: () => unknown;
     runCell: (source: string, options?: Record<string, unknown>) => Promise<unknown>;
     close: () => Promise<void>;
   };
@@ -115,6 +116,144 @@ describe("@runtimed/node Session wrapper", () => {
         },
       },
     ]);
+    expect(session.getExecutionView()).toEqual({
+      cell_execution_ids: {
+        "cell-1": "exec-1",
+      },
+      executions: {
+        "exec-1": {
+          execution_count: 1,
+          status: "running",
+          success: null,
+          output_ids: ["out-1"],
+        },
+      },
+      queue: {
+        executing_execution_id: "exec-1",
+        queued_execution_ids: [],
+        notebook: {
+          executing_cell_id: "cell-1",
+          queued_cell_ids: [],
+        },
+      },
+    });
+  });
+
+  it("materializes execution view updates and returns defensive snapshots", () => {
+    let viewCallback: ((json: string) => void) | null = null;
+    const native = {
+      notebookId: "nb-1",
+      onExecutionViewChange: vi.fn((callback: (json: string) => void) => {
+        viewCallback = callback;
+        return { dispose: vi.fn() };
+      }),
+      close: vi.fn(async () => {}),
+    };
+    const session = new Session(native);
+
+    viewCallback?.(
+      JSON.stringify({
+        cell_pointer_changes: [
+          ["cell-1", "exec-1"],
+          ["cell-2", "exec-2"],
+        ],
+        execution_upserts: [
+          [
+            "exec-1",
+            {
+              execution_count: 1,
+              status: "done",
+              success: true,
+              output_ids: ["out-1"],
+            },
+          ],
+          [
+            "exec-2",
+            {
+              execution_count: 2,
+              status: "queued",
+              success: null,
+              output_ids: [],
+            },
+          ],
+        ],
+        queue: {
+          executing_execution_id: null,
+          queued_execution_ids: ["exec-2"],
+          notebook: {
+            executing_cell_id: null,
+            queued_cell_ids: ["cell-2"],
+          },
+        },
+      }),
+    );
+    viewCallback?.(
+      JSON.stringify({
+        cell_pointer_changes: [["cell-1", null]],
+        removed_execution_ids: ["exec-1"],
+        queue: {
+          executing_execution_id: "exec-2",
+          queued_execution_ids: [],
+          notebook: {
+            executing_cell_id: "cell-2",
+            queued_cell_ids: [],
+          },
+        },
+      }),
+    );
+
+    const view = session.getExecutionView() as {
+      cell_execution_ids: Record<string, string>;
+      executions: Record<string, { output_ids: string[] }>;
+      queue: { queued_execution_ids: string[] };
+    };
+    expect(view).toEqual({
+      cell_execution_ids: {
+        "cell-2": "exec-2",
+      },
+      executions: {
+        "exec-2": {
+          execution_count: 2,
+          status: "queued",
+          success: null,
+          output_ids: [],
+        },
+      },
+      queue: {
+        executing_execution_id: "exec-2",
+        queued_execution_ids: [],
+        notebook: {
+          executing_cell_id: "cell-2",
+          queued_cell_ids: [],
+        },
+      },
+    });
+
+    view.cell_execution_ids["cell-3"] = "exec-3";
+    view.executions["exec-2"].output_ids.push("mutated");
+    view.queue.queued_execution_ids.push("exec-3");
+
+    expect(session.getExecutionView()).toEqual({
+      cell_execution_ids: {
+        "cell-2": "exec-2",
+      },
+      executions: {
+        "exec-2": {
+          execution_count: 2,
+          status: "queued",
+          success: null,
+          output_ids: [],
+        },
+      },
+      queue: {
+        executing_execution_id: "exec-2",
+        queued_execution_ids: [],
+        notebook: {
+          executing_cell_id: "cell-2",
+          queued_cell_ids: [],
+        },
+      },
+    });
   });
 
   it("runCell with progress waits on the queued execution id", async () => {

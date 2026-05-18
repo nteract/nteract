@@ -303,16 +303,39 @@ class of bootstrap drift, but they do not replace a compatibility handshake.
 8. RuntimeStateDoc trimming moved to notebook-aware request coordination, with
    queued/running and cell-referenced execution IDs preserved.
 
+## Implemented Follow-Up: Shared Execution View
+
+Subsequent follow-up PRs moved the NotebookDoc + RuntimeStateDoc materialized
+execution view into shared Rust projection code. That projection keeps
+RuntimeStateDoc execution-ID-only while giving consumers a single derived view
+over document pointers, runtime executions, and queue state.
+
+The shared view now exposes:
+
+- `cell_pointer_changes`: document adapter pointer deltas such as
+  `cell_id -> execution_id | null` for NotebookDoc.
+- `execution_upserts`: snapshots keyed by `execution_id`, including execution
+  count, status, success, and ordered output IDs.
+- `removed_execution_ids`: runtime executions trimmed from RuntimeStateDoc.
+- `queue`: an execution-ID-first queue projection, plus an optional
+  NotebookDoc adapter join for `executing_cell_id` and `queued_cell_ids`.
+
+The browser WASM path emits this shape on sync frame events. Native consumers
+share the same Rust projector instead of reimplementing the join:
+
+- `@runtimed/node` exposes `Session.executionViewChanges$` for deltas and
+  `Session.getExecutionView()` for the current materialized snapshot.
+- `runtimed-py` exposes a snapshot-style execution view from the same shared
+  projector.
+- Pi consumes the Node snapshot/changeset surface for session status and
+  execution prompt tracking without reading notebook cells itself.
+
 ## Remaining Follow-Up
 
 - Broaden direct execution APIs so non-notebook clients can submit by
   execution ID without requiring a cell pointer.
 - Decide whether Python and node high-level APIs should expose caller-supplied
   execution IDs, matching the TypeScript client.
-- Move the NotebookDoc + RuntimeStateDoc execution materialized view into a
-  shared Rust/WASM session projection so TypeScript, node, Python, and future
-  document adapters consume the same derived cell/execution/queue state instead
-  of each reimplementing the cross-document join.
 - Add remote-client schema negotiation and typed mismatch errors before Swift
   or web clients are allowed to drift independently from the daemon.
 - Extend trimming preservation discovery beyond the notebook room adapter
