@@ -24,18 +24,15 @@ fn execution_id_rejected(
 fn validate_requested_execution_ids(
     requested_execution_ids: Option<&HashMap<String, String>>,
     existing_execution_ids: &HashSet<String>,
-) -> Result<HashSet<String>, NotebookResponse> {
+) -> Result<HashSet<String>, (String, ExecutionIdRejectionReason)> {
     let mut supplied = HashSet::new();
     if let Some(requested_execution_ids) = requested_execution_ids {
         for execution_id in requested_execution_ids.values() {
             if uuid::Uuid::parse_str(execution_id).is_err() {
-                return Err(execution_id_rejected(
-                    execution_id.clone(),
-                    ExecutionIdRejectionReason::Malformed,
-                ));
+                return Err((execution_id.clone(), ExecutionIdRejectionReason::Malformed));
             }
             if !supplied.insert(execution_id.clone()) {
-                return Err(execution_id_rejected(
+                return Err((
                     execution_id.clone(),
                     ExecutionIdRejectionReason::DuplicateInRequest,
                 ));
@@ -45,7 +42,7 @@ fn validate_requested_execution_ids(
 
     for execution_id in &supplied {
         if existing_execution_ids.contains(execution_id) {
-            return Err(execution_id_rejected(
+            return Err((
                 execution_id.clone(),
                 ExecutionIdRejectionReason::AlreadyExists,
             ));
@@ -126,7 +123,9 @@ async fn handle_inner(
                     &existing_execution_ids,
                 ) {
                     Ok(supplied) => supplied,
-                    Err(response) => return response,
+                    Err((execution_id, reason)) => {
+                        return execution_id_rejected(execution_id, reason);
+                    }
                 };
 
                 // Pre-compute execution entries while holding the doc write
@@ -164,37 +163,54 @@ async fn handle_inner(
                 // Write RuntimeStateDoc entries first; on failure bail
                 // before stamping NotebookDoc so cell→execution_id pointers
                 // cannot dangle. Any single failure aborts the whole batch.
-                if let Err(e) = room.state.with_doc(|sd| {
+                let mut created_execution_ids = Vec::new();
+                match room.state.with_doc(|sd| {
                     for (execution_id, _, source, seq) in &entries {
-                        sd.create_execution_with_source(execution_id, source, *seq)?;
+                        if sd.create_execution_with_source(execution_id, source, *seq)? {
+                            created_execution_ids.push(execution_id.clone());
+                        } else {
+                            return Ok(Some(execution_id.clone()));
+                        }
                     }
-                    Ok(())
+                    Ok(None)
                 }) {
-                    let rollback_ids: Vec<String> = entries
-                        .iter()
-                        .map(|(execution_id, _, _, _)| execution_id.clone())
-                        .collect();
-                    let _ = room.state.with_doc(|sd| {
-                        sd.remove_executions(&rollback_ids)?;
-                        Ok(())
-                    });
-                    warn!(
-                        "[notebook-sync] Failed to create_execution_with_source: {}",
-                        e
-                    );
-                    return NotebookResponse::Error {
-                        error: format!("failed to queue execution: {e}"),
-                    };
+                    Ok(None) => {}
+                    Ok(Some(execution_id)) => {
+                        let _ = room.state.with_doc(|sd| {
+                            sd.remove_executions(&created_execution_ids)?;
+                            Ok(())
+                        });
+                        return execution_id_rejected(
+                            execution_id,
+                            ExecutionIdRejectionReason::AlreadyExists,
+                        );
+                    }
+                    Err(e) => {
+                        let _ = room.state.with_doc(|sd| {
+                            sd.remove_executions(&created_execution_ids)?;
+                            Ok(())
+                        });
+                        warn!(
+                            "[notebook-sync] Failed to create_execution_with_source: {}",
+                            e
+                        );
+                        return NotebookResponse::Error {
+                            error: format!("failed to queue execution: {e}"),
+                        };
+                    }
                 }
 
+                let previous_execution_ids: Vec<(String, String)> = entries
+                    .iter()
+                    .filter_map(|(_, cell_id, _, _)| {
+                        doc.get_execution_id(cell_id)
+                            .map(|previous| (cell_id.clone(), previous))
+                    })
+                    .collect();
                 for (execution_id, cell_id, _, _) in &entries {
                     if let Err(e) = doc.set_execution_id(cell_id, Some(execution_id)) {
-                        let rollback_ids: Vec<String> = entries
-                            .iter()
-                            .map(|(execution_id, _, _, _)| execution_id.clone())
-                            .collect();
                         let _ = room.state.with_doc(|sd| {
-                            sd.remove_executions(&rollback_ids)?;
+                            sd.remove_executions(&created_execution_ids)?;
                             Ok(())
                         });
                         warn!(
@@ -205,6 +221,10 @@ async fn handle_inner(
                             error: format!("failed to stamp execution pointer: {e}"),
                         };
                     }
+                }
+                for (cell_id, previous_execution_id) in previous_execution_ids {
+                    room.persistence
+                        .remember_previous_visible_execution(&cell_id, &previous_execution_id);
                 }
                 trim_runtime_executions_for_doc(room, &doc);
                 let _ = room.broadcasts.changed_tx.send(());
@@ -233,24 +253,24 @@ mod tests {
 
     #[test]
     fn validate_requested_execution_ids_rejects_malformed_uuid() {
-        let response = validate_requested_execution_ids(
+        let rejection = validate_requested_execution_ids(
             Some(&ids(&[("cell-1", "not-a-uuid")])),
             &HashSet::new(),
         )
         .expect_err("malformed client id should be rejected");
-        assert!(matches!(
-            response,
-            NotebookResponse::ExecutionIdRejected {
-                execution_id,
-                reason: ExecutionIdRejectionReason::Malformed,
-            } if execution_id == "not-a-uuid"
-        ));
+        assert_eq!(
+            rejection,
+            (
+                "not-a-uuid".to_string(),
+                ExecutionIdRejectionReason::Malformed
+            )
+        );
     }
 
     #[test]
     fn validate_requested_execution_ids_rejects_duplicate_ids_in_request() {
         let execution_id = uuid::Uuid::new_v4().to_string();
-        let response = validate_requested_execution_ids(
+        let rejection = validate_requested_execution_ids(
             Some(&ids(&[
                 ("cell-1", &execution_id),
                 ("cell-2", &execution_id),
@@ -258,29 +278,29 @@ mod tests {
             &HashSet::new(),
         )
         .expect_err("duplicate client id should be rejected");
-        assert!(matches!(
-            response,
-            NotebookResponse::ExecutionIdRejected {
-                execution_id: rejected,
-                reason: ExecutionIdRejectionReason::DuplicateInRequest,
-            } if rejected == execution_id
-        ));
+        assert_eq!(
+            rejection,
+            (
+                execution_id.clone(),
+                ExecutionIdRejectionReason::DuplicateInRequest
+            )
+        );
     }
 
     #[test]
     fn validate_requested_execution_ids_rejects_existing_id() {
         let execution_id = uuid::Uuid::new_v4().to_string();
         let existing = HashSet::from([execution_id.clone()]);
-        let response =
+        let rejection =
             validate_requested_execution_ids(Some(&ids(&[("cell-1", &execution_id)])), &existing)
                 .expect_err("existing client id should be rejected");
-        assert!(matches!(
-            response,
-            NotebookResponse::ExecutionIdRejected {
-                execution_id: rejected,
-                reason: ExecutionIdRejectionReason::AlreadyExists,
-            } if rejected == execution_id
-        ));
+        assert_eq!(
+            rejection,
+            (
+                execution_id.clone(),
+                ExecutionIdRejectionReason::AlreadyExists
+            )
+        );
     }
 
     #[test]

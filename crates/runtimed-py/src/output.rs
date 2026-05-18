@@ -584,12 +584,16 @@ impl CompletionResult {
 }
 
 /// Current state of the execution queue.
-/// An entry in the execution queue, pairing a cell with its execution.
+/// An entry in the execution queue.
 #[pyclass(get_all, skip_from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyQueueEntry {
-    /// Cell ID
-    pub cell_id: String,
+    /// Cell ID when this entry came from a cell-scoped request response.
+    ///
+    /// RuntimeStateDoc v2 queue snapshots are execution-ID-only, so runtime
+    /// state reads expose `None` here. Prefer `execution_id` for durable
+    /// queue/result handles.
+    pub cell_id: Option<String>,
     /// Execution ID (UUID)
     pub execution_id: String,
 }
@@ -597,10 +601,13 @@ pub struct PyQueueEntry {
 #[pymethods]
 impl PyQueueEntry {
     fn __repr__(&self) -> String {
-        format!(
-            "QueueEntry(cell_id={}, execution_id={})",
-            self.cell_id, self.execution_id
-        )
+        match &self.cell_id {
+            Some(cell_id) => format!(
+                "QueueEntry(cell_id={}, execution_id={})",
+                cell_id, self.execution_id
+            ),
+            None => format!("QueueEntry(execution_id={})", self.execution_id),
+        }
     }
 
     fn __await__(&self) -> PyResult<()> {
@@ -625,7 +632,7 @@ impl QueueState {
         match &self.executing {
             Some(entry) => format!(
                 "QueueState(executing={}, queued={})",
-                entry.cell_id,
+                entry.cell_id.as_deref().unwrap_or(&entry.execution_id),
                 self.queued.len()
             ),
             None => format!("QueueState(idle, queued={})", self.queued.len()),
@@ -1138,7 +1145,10 @@ impl PyRuntimeState {
             "RuntimeState(kernel={}, queue={}, env={}, comms={})",
             self.kernel.status,
             match &self.queue.executing {
-                Some(entry) => format!("executing={}", entry.cell_id),
+                Some(entry) => format!(
+                    "executing={}",
+                    entry.cell_id.as_deref().unwrap_or(&entry.execution_id)
+                ),
                 None => format!("idle, queued={}", self.queue.queued.len()),
             },
             if self.env.in_sync {
@@ -1179,7 +1189,7 @@ impl From<runtime_doc::RuntimeState> for PyRuntimeState {
             },
             queue: QueueState {
                 executing: rs.queue.executing.map(|e| PyQueueEntry {
-                    cell_id: String::new(),
+                    cell_id: None,
                     execution_id: e.execution_id,
                 }),
                 queued: rs
@@ -1187,7 +1197,7 @@ impl From<runtime_doc::RuntimeState> for PyRuntimeState {
                     .queued
                     .into_iter()
                     .map(|e| PyQueueEntry {
-                        cell_id: String::new(),
+                        cell_id: None,
                         execution_id: e.execution_id,
                     })
                     .collect(),

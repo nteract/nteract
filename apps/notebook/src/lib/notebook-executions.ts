@@ -27,6 +27,7 @@ const _executionMap: Map<string, ExecutionSnapshot> = new Map();
 
 /** Per-cell reverse index: cell_id -> latest execution_id. */
 const _cellToExecution: Map<string, string> = new Map();
+const _executionToCell: Map<string, string> = new Map();
 
 const _subscribers = new Map<string, Set<() => void>>();
 const _cellExecutionSubscribers = new Map<string, Set<() => void>>();
@@ -174,10 +175,14 @@ export function setCellExecutionPointer(
 ): void {
   const prev = _cellToExecution.get(cell_id) ?? null;
   if (prev === execution_id) return;
+  if (prev !== null && _executionToCell.get(prev) === cell_id) {
+    _executionToCell.delete(prev);
+  }
   if (execution_id === null) {
     _cellToExecution.delete(cell_id);
   } else {
     _cellToExecution.set(cell_id, execution_id);
+    _executionToCell.set(execution_id, cell_id);
   }
   emitCellExecutionPointerChange(cell_id);
 }
@@ -194,11 +199,11 @@ export function deleteExecutions(execution_ids: Iterable<string>): void {
   for (const eid of execution_ids) {
     if (!_executionMap.delete(eid)) continue;
     emitExecutionChange(eid);
-    for (const [cellId, executionId] of [..._cellToExecution.entries()]) {
-      if (executionId === eid) {
-        _cellToExecution.delete(cellId);
-        emitCellExecutionPointerChange(cellId);
-      }
+    const cellId = _executionToCell.get(eid);
+    _executionToCell.delete(eid);
+    if (cellId !== undefined && _cellToExecution.get(cellId) === eid) {
+      _cellToExecution.delete(cellId);
+      emitCellExecutionPointerChange(cellId);
     }
   }
 }
@@ -217,10 +222,7 @@ export function getCellExecutionId(cell_id: string): string | null {
 
 /** Read the current cell id for an execution pointer without subscribing. */
 export function getCellIdForExecutionId(execution_id: string): string | null {
-  for (const [cellId, executionId] of _cellToExecution.entries()) {
-    if (executionId === execution_id) return cellId;
-  }
-  return null;
+  return _executionToCell.get(execution_id) ?? null;
 }
 
 /** Reset the entire store. Called on notebook switch or full reset. */
@@ -229,6 +231,7 @@ export function resetNotebookExecutions(): void {
   const cells = [..._cellToExecution.keys()];
   _executionMap.clear();
   _cellToExecution.clear();
+  _executionToCell.clear();
   for (const eid of eids) emitExecutionChange(eid);
   for (const cid of cells) emitCellExecutionPointerChange(cid);
 }

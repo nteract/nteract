@@ -7680,8 +7680,11 @@ async fn test_save_preserves_outputs_when_execution_in_flight() {
         doc.set_execution_id("cell1", Some(old_eid)).unwrap();
     }
 
-    // Simulate `queue_cell_if_current`: rewrite cell.execution_id to a new
-    // queued execution that has not produced outputs yet.
+    // Simulate `queue_cell_if_current`: remember the previous visible
+    // execution, then rewrite cell.execution_id to a new queued execution
+    // that has not produced outputs yet.
+    room.persistence
+        .remember_previous_visible_execution("cell1", old_eid);
     room.state
         .with_doc(|sd| {
             sd.create_execution_with_source(new_eid, "print('hello')", 2)?;

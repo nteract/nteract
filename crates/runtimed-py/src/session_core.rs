@@ -1526,7 +1526,7 @@ pub(crate) async fn queue_all_cells(
             Ok(queued
                 .into_iter()
                 .map(|entry| PyQueueEntry {
-                    cell_id: entry.cell_id,
+                    cell_id: Some(entry.cell_id),
                     execution_id: entry.execution_id,
                 })
                 .collect())
@@ -2194,7 +2194,7 @@ pub(crate) async fn get_queue_state(state: &Arc<Mutex<SessionState>>) -> PyResul
         .map_err(|e| to_py_err(format!("{}", e)))?;
     Ok(QueueState {
         executing: runtime.queue.executing.map(|e| PyQueueEntry {
-            cell_id: String::new(),
+            cell_id: None,
             execution_id: e.execution_id,
         }),
         queued: runtime
@@ -2202,7 +2202,7 @@ pub(crate) async fn get_queue_state(state: &Arc<Mutex<SessionState>>) -> PyResul
             .queued
             .into_iter()
             .map(|e| PyQueueEntry {
-                cell_id: String::new(),
+                cell_id: None,
                 execution_id: e.execution_id,
             })
             .collect(),

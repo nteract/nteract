@@ -349,6 +349,12 @@ pub struct RoomPersistence {
     /// live CRDT) to distinguish our own autosave writes from genuine external
     /// changes (git pull, external editor).
     pub last_save_sources: RwLock<HashMap<String, String>>,
+    /// Previous visible execution_id per cell, captured just before a new
+    /// execution pointer replaces it. This is intentionally daemon-local
+    /// persistence bookkeeping, not RuntimeStateDoc schema: it lets Save keep
+    /// the last visible outputs on disk while a re-execution is still queued
+    /// or running with no outputs yet.
+    previous_visible_executions: std::sync::Mutex<HashMap<String, String>>,
     /// Timestamp (ms since epoch) of last self-write to the .ipynb file.
     /// Used to skip file watcher events triggered by our own saves.
     pub last_self_write: AtomicU64,
@@ -376,6 +382,7 @@ impl RoomPersistence {
         Self {
             debouncer: std::sync::Mutex::new(None),
             last_save_sources: RwLock::new(HashMap::new()),
+            previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
             is_loading: AtomicBool::new(false),
         }
@@ -392,8 +399,28 @@ impl RoomPersistence {
                 flush_request_tx,
             })),
             last_save_sources: RwLock::new(HashMap::new()),
+            previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
             is_loading: AtomicBool::new(false),
+        }
+    }
+
+    pub fn remember_previous_visible_execution(&self, cell_id: &str, execution_id: &str) {
+        if let Ok(mut previous) = self.previous_visible_executions.lock() {
+            previous.insert(cell_id.to_string(), execution_id.to_string());
+        }
+    }
+
+    pub fn previous_visible_execution(&self, cell_id: &str) -> Option<String> {
+        self.previous_visible_executions
+            .lock()
+            .ok()
+            .and_then(|previous| previous.get(cell_id).cloned())
+    }
+
+    pub fn clear_previous_visible_execution(&self, cell_id: &str) {
+        if let Ok(mut previous) = self.previous_visible_executions.lock() {
+            previous.remove(cell_id);
         }
     }
 

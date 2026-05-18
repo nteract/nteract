@@ -95,12 +95,24 @@ pub(crate) async fn save_notebook_to_disk(
         (cells, metadata_snapshot, eids)
     };
 
+    let previous_visible_execution_ids: HashMap<String, String> = cells
+        .iter()
+        .filter_map(|cell| {
+            room.persistence
+                .previous_visible_execution(&cell.id)
+                .map(|execution_id| (cell.id.clone(), execution_id))
+        })
+        .collect();
+
     // Read outputs and execution_count from RuntimeStateDoc keyed by execution_id.
     //
     // NotebookDoc owns the cell -> execution pointer, while RuntimeStateDoc v2
-    // stores executions without durable cell identity. Saves therefore use the
-    // current cell pointer directly. Cleared cells (`execution_id = None`) write
-    // empty outputs.
+    // stores executions without durable cell identity. Saves use the current
+    // cell pointer directly except for the re-execution window where that
+    // pointer already targets a queued/running execution with no outputs yet;
+    // in that case daemon-local persistence hints preserve the previous
+    // visible outputs on disk. Cleared cells (`execution_id = None`) still
+    // write empty outputs.
     let (cell_outputs, cell_execution_counts): (
         HashMap<String, Vec<serde_json::Value>>,
         HashMap<String, Option<i64>>,
@@ -112,13 +124,33 @@ pub(crate) async fn save_notebook_to_disk(
             let mut ec_map = HashMap::new();
             for (cell_id, eid) in &cell_execution_ids {
                 let Some(eid) = eid.as_ref() else { continue };
-                let outputs = sd.get_outputs(eid);
+                let Some(exec) = snapshot.executions.get(eid) else {
+                    continue;
+                };
+                let mut outputs = sd.get_outputs(eid);
+                let mut execution_count = exec.execution_count;
+                if outputs.is_empty()
+                    && execution_count.is_none()
+                    && matches!(exec.status.as_str(), "queued" | "running")
+                {
+                    if let Some(previous_execution_id) = previous_visible_execution_ids.get(cell_id)
+                    {
+                        if let Some(previous_exec) = snapshot.executions.get(previous_execution_id)
+                        {
+                            let previous_outputs = sd.get_outputs(previous_execution_id);
+                            if !previous_outputs.is_empty()
+                                || previous_exec.execution_count.is_some()
+                            {
+                                outputs = previous_outputs;
+                                execution_count = previous_exec.execution_count;
+                            }
+                        }
+                    }
+                }
                 if !outputs.is_empty() {
                     outputs_map.insert(cell_id.clone(), outputs);
                 }
-                if let Some(exec) = snapshot.executions.get(eid) {
-                    ec_map.insert(cell_id.clone(), exec.execution_count);
-                }
+                ec_map.insert(cell_id.clone(), execution_count);
             }
             (outputs_map, ec_map)
         })

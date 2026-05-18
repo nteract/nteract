@@ -28,18 +28,12 @@ fn execution_id_rejected(
 fn validate_requested_execution_id(
     execution_id: &str,
     already_exists: bool,
-) -> Result<(), NotebookResponse> {
+) -> Result<(), ExecutionIdRejectionReason> {
     if uuid::Uuid::parse_str(execution_id).is_err() {
-        return Err(execution_id_rejected(
-            execution_id,
-            ExecutionIdRejectionReason::Malformed,
-        ));
+        return Err(ExecutionIdRejectionReason::Malformed);
     }
     if already_exists {
-        return Err(execution_id_rejected(
-            execution_id,
-            ExecutionIdRejectionReason::AlreadyExists,
-        ));
+        return Err(ExecutionIdRejectionReason::AlreadyExists);
     }
     Ok(())
 }
@@ -173,12 +167,11 @@ async fn queue_cell_if_current(
     observed_heads: Option<&[String]>,
 ) -> QueueCellResult {
     if let Some(execution_id) = requested_execution_id {
-        let already_exists = room
-            .state
-            .read(|sd| sd.get_execution(execution_id).is_some())
-            .unwrap_or(false);
-        if let Err(response) = validate_requested_execution_id(execution_id, already_exists) {
-            return QueueCellResult::Response(Box::new(response));
+        if let Err(reason) = validate_requested_execution_id(execution_id, false) {
+            return QueueCellResult::Response(Box::new(execution_id_rejected(
+                execution_id,
+                reason,
+            )));
         }
     }
 
@@ -217,7 +210,7 @@ async fn queue_cell_if_current(
     }
 
     let current_execution_id = doc.get_execution_id(cell_id);
-    if let Some(eid) = current_execution_id {
+    if let Some(eid) = current_execution_id.as_ref() {
         let is_active = room
             .state
             .read(|sd| {
@@ -231,7 +224,9 @@ async fn queue_cell_if_current(
                     error: format!("Cell already has an active execution: {}", eid),
                 }));
             }
-            return QueueCellResult::AlreadyActive { execution_id: eid };
+            return QueueCellResult::AlreadyActive {
+                execution_id: eid.clone(),
+            };
         }
     }
 
@@ -291,6 +286,10 @@ async fn queue_cell_if_current(
             error: format!("failed to stamp execution pointer: {e}"),
         }));
     }
+    if let Some(previous_execution_id) = current_execution_id.as_deref() {
+        room.persistence
+            .remember_previous_visible_execution(cell_id, previous_execution_id);
+    }
     trim_runtime_executions_for_doc(room, &doc);
     let format_heads = doc.get_heads();
     let _ = room.broadcasts.changed_tx.send(());
@@ -308,29 +307,19 @@ mod tests {
 
     #[test]
     fn validate_requested_execution_id_rejects_malformed_uuid() {
-        let response = validate_requested_execution_id("not-a-uuid", false)
-            .expect_err("malformed client id should be rejected");
-        assert!(matches!(
-            response,
-            NotebookResponse::ExecutionIdRejected {
-                execution_id,
-                reason: ExecutionIdRejectionReason::Malformed,
-            } if execution_id == "not-a-uuid"
-        ));
+        assert_eq!(
+            validate_requested_execution_id("not-a-uuid", false),
+            Err(ExecutionIdRejectionReason::Malformed)
+        );
     }
 
     #[test]
     fn validate_requested_execution_id_rejects_existing_uuid() {
         let execution_id = uuid::Uuid::new_v4().to_string();
-        let response = validate_requested_execution_id(&execution_id, true)
-            .expect_err("duplicate client id should be rejected");
-        assert!(matches!(
-            response,
-            NotebookResponse::ExecutionIdRejected {
-                execution_id: rejected,
-                reason: ExecutionIdRejectionReason::AlreadyExists,
-            } if rejected == execution_id
-        ));
+        assert_eq!(
+            validate_requested_execution_id(&execution_id, true),
+            Err(ExecutionIdRejectionReason::AlreadyExists)
+        );
     }
 
     #[test]
