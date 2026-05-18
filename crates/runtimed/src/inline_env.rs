@@ -14,6 +14,14 @@ use kernel_env::progress::{EnvProgressPhase, ProgressHandler};
 use runtime_doc::RuntimeStateHandle;
 
 const CRDT_PROGRESS_MIN_INTERVAL: Duration = Duration::from_millis(250);
+const DEFAULT_INLINE_UV_REQUIRES_PYTHON: &str = ">=3.13";
+
+fn inline_uv_requires_python(requires_python: Option<&str>) -> &str {
+    requires_python
+        .map(str::trim)
+        .filter(|spec| !spec.is_empty())
+        .unwrap_or(DEFAULT_INLINE_UV_REQUIRES_PYTHON)
+}
 
 #[derive(Default)]
 struct CrdtProgressWriteState {
@@ -179,12 +187,13 @@ pub(crate) fn inline_deps_with_conda_required_packages(deps: &[String]) -> Vec<S
 ///
 pub async fn prepare_uv_inline_env(
     deps: &[String],
+    requires_python: Option<&str>,
     prerelease: Option<&str>,
     handler: Arc<dyn ProgressHandler>,
 ) -> Result<PreparedEnv> {
     let uv_deps = kernel_env::UvDependencies {
         dependencies: inline_deps_with_required_packages(deps),
-        requires_python: Some(">=3.13".to_string()),
+        requires_python: Some(inline_uv_requires_python(requires_python).to_string()),
         prerelease: prerelease.map(|s| s.to_string()),
     };
 
@@ -242,16 +251,18 @@ pub async fn prepare_conda_inline_env(
 pub async fn claim_pool_env_for_uv_inline_cache(
     env: &mut crate::PooledEnv,
     deps: &[String],
+    requires_python: Option<&str>,
     prerelease: Option<&str>,
 ) {
     let uv_deps = kernel_env::UvDependencies {
         dependencies: inline_deps_with_required_packages(deps),
-        requires_python: Some(">=3.13".to_string()),
+        requires_python: Some(inline_uv_requires_python(requires_python).to_string()),
         prerelease: prerelease.map(|s| s.to_string()),
     };
     let hash = kernel_env::uv::compute_env_hash(&uv_deps, None);
     let target = inline_cache_dir().join(&hash);
     rename_env_to_target(&mut env.venv_path, &mut env.python_path, target).await;
+    kernel_env::gc::touch_last_used(&env.venv_path).await;
 }
 
 /// Rename a pool-derived Conda env to the inline-cache hash location. See
@@ -569,12 +580,13 @@ pub fn compare_deps_to_pool(inline_deps: &[String], pool_packages: &[String]) ->
 /// today's layout before the kernel boots.
 pub async fn check_uv_inline_cache(
     deps: &[String],
+    requires_python: Option<&str>,
     prerelease: Option<&str>,
     bootstrap_dx: bool,
 ) -> Option<PreparedEnv> {
     let uv_deps = kernel_env::UvDependencies {
         dependencies: inline_deps_with_required_packages(deps),
-        requires_python: Some(">=3.13".to_string()),
+        requires_python: Some(inline_uv_requires_python(requires_python).to_string()),
         prerelease: prerelease.map(|s| s.to_string()),
     };
 

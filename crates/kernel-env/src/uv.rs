@@ -159,6 +159,15 @@ pub fn compute_env_hash(deps: &UvDependencies, env_id: Option<&str>) -> String {
     hex::encode(hash)[..16].to_string()
 }
 
+fn uv_python_request(requires_python: &str) -> Option<String> {
+    let request = requires_python.trim();
+    if request.is_empty() {
+        None
+    } else {
+        Some(request.to_string())
+    }
+}
+
 /// Prepare a virtual environment with the given dependencies.
 ///
 /// Uses cached environments when possible (keyed by dependency hash).
@@ -245,11 +254,8 @@ pub async fn prepare_environment_in(
     venv_cmd.current_dir(cache_dir);
 
     if let Some(ref py_version) = deps.requires_python {
-        let version = py_version
-            .trim_start_matches(|c: char| !c.is_ascii_digit())
-            .to_string();
-        if !version.is_empty() {
-            venv_cmd.arg("--python").arg(&version);
+        if let Some(version) = uv_python_request(py_version) {
+            venv_cmd.arg("--python").arg(version);
         }
     }
 
@@ -487,11 +493,8 @@ pub async fn prepare_environment_unified(
     venv_cmd.current_dir(cache_dir);
 
     if let Some(ref py_version) = deps.requires_python {
-        let version = py_version
-            .trim_start_matches(|c: char| !c.is_ascii_digit())
-            .to_string();
-        if !version.is_empty() {
-            venv_cmd.arg("--python").arg(&version);
+        if let Some(version) = uv_python_request(py_version) {
+            venv_cmd.arg("--python").arg(version);
         }
     }
 
@@ -1190,6 +1193,16 @@ mod tests {
             s.contains("runt-nightly") || s.contains("runt"),
             "got {s:?}"
         );
+    }
+
+    #[test]
+    fn uv_python_request_preserves_version_constraints() {
+        assert_eq!(uv_python_request("3.12").as_deref(), Some("3.12"));
+        assert_eq!(
+            uv_python_request(">=3.12,<3.13").as_deref(),
+            Some(">=3.12,<3.13")
+        );
+        assert_eq!(uv_python_request("   "), None);
     }
 
     #[test]

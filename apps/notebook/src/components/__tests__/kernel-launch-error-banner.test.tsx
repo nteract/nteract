@@ -61,6 +61,27 @@ describe("KernelLaunchErrorBanner", () => {
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
+  it("copies the launch details", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+
+    render(
+      <KernelLaunchErrorBanner
+        errorDetails={STDERR_TAIL}
+        onRetry={() => {}}
+        onDismiss={() => {}}
+      />,
+    );
+
+    await user.click(screen.getByTestId("copy-kernel-launch-error"));
+    expect(writeText).toHaveBeenCalledWith(STDERR_TAIL);
+    expect(screen.getByText("Copied")).toBeInTheDocument();
+  });
+
   it("invokes onDismiss when the X is clicked", async () => {
     const user = userEvent.setup();
     const onDismiss = vi.fn();

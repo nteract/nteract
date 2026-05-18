@@ -1,5 +1,5 @@
 import { Check, Download, FileText, Info, Plus, RefreshCw, X } from "lucide-react";
-import { type KeyboardEvent, useCallback, useState } from "react";
+import { type KeyboardEvent, useCallback, useEffect, useState } from "react";
 import type { EnvSyncState, PyProjectDeps, PyProjectInfo } from "../hooks/useDependencies";
 
 interface DependencyHeaderProps {
@@ -8,6 +8,7 @@ interface DependencyHeaderProps {
   loading: boolean;
   onAdd: (pkg: string) => Promise<void>;
   onRemove: (pkg: string) => Promise<void>;
+  onSetRequiresPython?: (version: string | null) => Promise<void>;
   // Environment sync state
   syncState?: EnvSyncState | null;
   onSyncNow?: () => Promise<boolean>;
@@ -30,6 +31,7 @@ export function DependencyHeader({
   loading,
   onAdd,
   onRemove,
+  onSetRequiresPython,
   syncState,
   onSyncNow,
   pyprojectInfo,
@@ -40,6 +42,11 @@ export function DependencyHeader({
   justSynced,
 }: DependencyHeaderProps) {
   const [newDep, setNewDep] = useState("");
+  const [pythonSpec, setPythonSpec] = useState(requiresPython ?? "");
+
+  useEffect(() => {
+    setPythonSpec(requiresPython ?? "");
+  }, [requiresPython]);
 
   const handleAdd = useCallback(async () => {
     if (newDep.trim()) {
@@ -56,6 +63,24 @@ export function DependencyHeader({
       }
     },
     [handleAdd],
+  );
+
+  const commitPythonSpec = useCallback(async () => {
+    if (!onSetRequiresPython) return;
+    const next = pythonSpec.trim();
+    const current = requiresPython ?? "";
+    if (next === current) return;
+    await onSetRequiresPython(next || null);
+  }, [onSetRequiresPython, pythonSpec, requiresPython]);
+
+  const handlePythonKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commitPythonSpec();
+      }
+    },
+    [commitPythonSpec],
   );
 
   return (
@@ -198,10 +223,29 @@ export function DependencyHeader({
         )}
 
         {/* Python version */}
-        {requiresPython && (
-          <div className="mb-2 text-xs text-muted-foreground">
-            Python: <span className="font-mono">{requiresPython}</span>
-          </div>
+        {isUsingProjectEnv ? (
+          requiresPython && (
+            <div className="mb-2 text-xs text-muted-foreground">
+              Python: <span className="font-mono">{requiresPython}</span>
+            </div>
+          )
+        ) : (
+          <label className="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="shrink-0">Python</span>
+            <input
+              type="text"
+              value={pythonSpec}
+              onChange={(e) => setPythonSpec(e.target.value)}
+              onBlur={commitPythonSpec}
+              onKeyDown={handlePythonKeyDown}
+              placeholder=">=3.13"
+              data-testid="uv-python-input"
+              className="w-40 rounded border bg-background px-2 py-1 font-mono text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              disabled={loading || !onSetRequiresPython}
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </label>
         )}
 
         {/* Dependencies list (read-only when using project env) */}

@@ -1,4 +1,5 @@
-import { AlertCircle, RotateCw, X } from "lucide-react";
+import { AlertCircle, Check, Copy, RotateCw, X } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 import { KERNEL_ERROR_REASON, type RuntimeLifecycle } from "runtimed";
 import { Button } from "@/components/ui/button";
 
@@ -66,6 +67,17 @@ export function KernelLaunchErrorBanner({
   onRetry,
   onDismiss,
 }: KernelLaunchErrorBannerProps) {
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    setCopied(false);
+  }, [errorDetails]);
+
+  const copyDetails = useCallback(async () => {
+    await navigator.clipboard.writeText(errorDetails);
+    setCopied(true);
+  }, [errorDetails]);
+
   return (
     <div className="flex items-start gap-3 border-b border-red-600/50 bg-red-600/10 px-3 py-2 text-xs text-red-900 dark:text-red-200">
       <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5 text-red-600 dark:text-red-400" />
@@ -76,6 +88,16 @@ export function KernelLaunchErrorBanner({
         </pre>
       </div>
       <div className="flex flex-shrink-0 items-center gap-1">
+        <Button
+          size="sm"
+          variant="secondary"
+          className="h-6 px-2 text-xs bg-red-100 text-red-900 hover:bg-red-200 dark:bg-red-900/40 dark:text-red-100 dark:hover:bg-red-900/60"
+          onClick={copyDetails}
+          data-testid="copy-kernel-launch-error"
+        >
+          {copied ? <Check className="h-3 w-3 mr-1" /> : <Copy className="h-3 w-3 mr-1" />}
+          {copied ? "Copied" : "Copy"}
+        </Button>
         <Button
           size="sm"
           variant="secondary"
