@@ -41,6 +41,29 @@ export interface TextAttribution {
   actors: string[];
 }
 
+export interface ExecutionViewSnapshot {
+  execution_count: number | null;
+  status: "queued" | "running" | "done" | "error";
+  success: boolean | null;
+  output_ids: string[];
+}
+
+export interface ExecutionQueueProjection {
+  executing_execution_id?: string | null;
+  queued_execution_ids: string[];
+  notebook?: {
+    executing_cell_id?: string | null;
+    queued_cell_ids: string[];
+  } | null;
+}
+
+export interface ExecutionViewChangeset {
+  cell_pointer_changes?: Array<[cell_id: string, execution_id: string | null]>;
+  execution_upserts?: Array<[execution_id: string, snapshot: ExecutionViewSnapshot]>;
+  removed_execution_ids?: string[];
+  queue?: ExecutionQueueProjection;
+}
+
 /**
  * Typed event returned by WASM `receive_frame()`.
  *
@@ -77,6 +100,11 @@ export interface FrameEvent {
     changed?: Array<[string, unknown]>;
     removed?: string[];
   };
+  /**
+   * Cross-document execution view diff produced by WASM. NotebookDoc owns
+   * cell -> execution_id pointers; RuntimeStateDoc owns execution snapshots.
+   */
+  execution_view_changeset?: ExecutionViewChangeset;
 }
 
 // ── SyncableHandle ───────────────────────────────────────────────────
@@ -167,4 +195,13 @@ export interface SyncableHandle {
         text_paths?: string[][];
       }
     | undefined;
+
+  /**
+   * Project pending execution-view changes after local notebook mutations or
+   * initial materialization. Same shape as FrameEvent.execution_view_changeset.
+   *
+   * Optional so tests and non-WASM handles can omit it until they consume the
+   * shared projection.
+   */
+  project_execution_view_changeset?(): ExecutionViewChangeset | undefined;
 }

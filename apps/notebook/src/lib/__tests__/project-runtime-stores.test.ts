@@ -1,100 +1,131 @@
-import { DEFAULT_RUNTIME_STATE, type RuntimeState } from "runtimed";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
   getCellExecutionId,
   getExecutionById,
+  getNotebookQueueProjection,
   setCellExecutionPointer,
 } from "../notebook-executions";
 import { getOutputById } from "../notebook-outputs";
 import {
-  projectRuntimeStateToExecutions,
+  applyExecutionViewChangeset,
   resetRuntimeStoresProjection,
+  seedOutputStoresFromHandle,
 } from "../project-runtime-stores";
 
 afterEach(() => {
   resetRuntimeStoresProjection();
 });
 
-function stateWith(
-  executions: RuntimeState["executions"],
-): RuntimeState {
-  return { ...DEFAULT_RUNTIME_STATE, executions };
-}
+describe("applyExecutionViewChangeset", () => {
+  it("upserts execution snapshots from the WASM materialized view", () => {
+    applyExecutionViewChangeset({
+      execution_upserts: [
+        [
+          "exec-1",
+          {
+            execution_count: 1,
+            status: "running",
+            success: null,
+            output_ids: ["out-1"],
+          },
+        ],
+      ],
+    });
 
-describe("projectRuntimeStateToExecutions", () => {
-  it("captures same-length output_id replacements (e.g. clear_output(wait=True))", () => {
-    projectRuntimeStateToExecutions(
-      stateWith({
-        "exec-1": {
-          execution_count: 1,
-          status: "running",
-          success: null,
-          outputs: [
-            { output_id: "old", output_type: "stream", name: "stdout", text: "a" },
-          ],
-        },
-      }),
-    );
-    expect(getExecutionById("exec-1")?.output_ids).toEqual(["old"]);
-
-    // Second tick: same length, different output_id - must not be skipped
-    // by the scalar fingerprint.
-    projectRuntimeStateToExecutions(
-      stateWith({
-        "exec-1": {
-          execution_count: 1,
-          status: "running",
-          success: null,
-          outputs: [
-            { output_id: "new", output_type: "stream", name: "stdout", text: "b" },
-          ],
-        },
-      }),
-    );
-    expect(getExecutionById("exec-1")?.output_ids).toEqual(["new"]);
+    expect(getExecutionById("exec-1")).toEqual({
+      execution_count: 1,
+      status: "running",
+      success: null,
+      output_ids: ["out-1"],
+    });
   });
 
-  it("drops outputs with empty output_id from the execution snapshot", () => {
-    // Daemon invariant: `create_manifest` (and the error-path fallback in
-    // `outputs_to_manifest_refs`) always stamp an `output_id`. If an
-    // un-stamped manifest ever reaches the frontend, the projection
-    // filters it out rather than inventing a synthetic key.
-    projectRuntimeStateToExecutions(
-      stateWith({
-        "exec-legacy": {
-          execution_count: 1,
-          status: "done",
-          success: true,
-          outputs: [
-            { output_id: "", output_type: "stream", name: "stdout", text: "x" },
-            { output_id: "real-id", output_type: "stream", name: "stdout", text: "y" },
-          ],
-        },
-      }),
-    );
+  it("applies cell execution pointer changes from NotebookDoc", () => {
+    applyExecutionViewChangeset({
+      cell_pointer_changes: [["cell-1", "exec-1"]],
+    });
+    expect(getCellExecutionId("cell-1")).toBe("exec-1");
 
-    const snap = getExecutionById("exec-legacy");
-    expect(snap?.output_ids).toEqual(["real-id"]);
-    expect(getOutputById("real-id")).toBeUndefined();
+    applyExecutionViewChangeset({
+      cell_pointer_changes: [["cell-1", null]],
+    });
+    expect(getCellExecutionId("cell-1")).toBeNull();
   });
 
-  it("evicts trimmed executions on the next tick", () => {
-    projectRuntimeStateToExecutions(
-      stateWith({
-        "exec-1": {
-          execution_count: 1,
-          status: "done",
-          success: true,
-          outputs: [],
-        },
-      }),
-    );
+  it("evicts trimmed executions and clears matching cell pointers", () => {
+    applyExecutionViewChangeset({
+      execution_upserts: [
+        [
+          "exec-1",
+          {
+            execution_count: 1,
+            status: "done",
+            success: true,
+            output_ids: [],
+          },
+        ],
+      ],
+    });
     setCellExecutionPointer("cell-1", "exec-1");
     expect(getExecutionById("exec-1")).toBeTruthy();
 
-    // Tick with the execution removed
-    projectRuntimeStateToExecutions(stateWith({}));
+    applyExecutionViewChangeset({
+      removed_execution_ids: ["exec-1"],
+    });
     expect(getExecutionById("exec-1")).toBeUndefined();
     expect(getCellExecutionId("cell-1")).toBeNull();
+  });
+
+  it("applies notebook queue projection when WASM provides the adapter join", () => {
+    applyExecutionViewChangeset({
+      queue: {
+        executing_execution_id: "exec-1",
+        queued_execution_ids: ["exec-2"],
+        notebook: {
+          executing_cell_id: "cell-1",
+          queued_cell_ids: ["cell-2"],
+        },
+      },
+    });
+
+    expect(getNotebookQueueProjection()).toEqual({
+      executing_cell_id: "cell-1",
+      queued_cell_ids: ["cell-2"],
+    });
+  });
+
+  it("does not let eager notebook-output seeding overwrite runtime execution snapshots", () => {
+    applyExecutionViewChangeset({
+      execution_upserts: [
+        [
+          "exec-1",
+          {
+            execution_count: 7,
+            status: "running",
+            success: null,
+            output_ids: ["out-runtime"],
+          },
+        ],
+      ],
+    });
+
+    seedOutputStoresFromHandle(
+      {
+        get_cell_execution_id: () => "exec-1",
+        get_cell_outputs: () => [{ output_id: "out-notebook", output_type: "stream" }],
+      } as Parameters<typeof seedOutputStoresFromHandle>[0],
+      ["cell-1"],
+    );
+
+    expect(getExecutionById("exec-1")).toEqual({
+      execution_count: 7,
+      status: "running",
+      success: null,
+      output_ids: ["out-runtime"],
+    });
+    expect(getOutputById("out-notebook")).toEqual({
+      output_id: "out-notebook",
+      output_type: "stream",
+    });
   });
 });

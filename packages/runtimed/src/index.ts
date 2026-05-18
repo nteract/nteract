@@ -38,6 +38,9 @@ export {
 
 // Handle
 export type {
+  ExecutionQueueProjection,
+  ExecutionViewChangeset,
+  ExecutionViewSnapshot,
   SyncableHandle,
   FrameEvent,
   InitialLoadPhase,
@@ -79,18 +82,6 @@ export {
   planCellChangesetProjection,
   summarizeChangedFields,
 } from "./cell-changeset";
-
-// Execution projection
-export {
-  buildRuntimeExecutionSnapshot,
-  collectExecutionOutputIds,
-  collectOutputIds,
-  executionFingerprint,
-  extractOutputId,
-  RuntimeExecutionProjector,
-  type RuntimeExecutionProjection,
-  type RuntimeExecutionSnapshot,
-} from "./execution-projection";
 
 // Runtime state
 export {

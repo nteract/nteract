@@ -2,12 +2,16 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
   deleteExecutions,
   getCellExecutionId,
+  getCellIdForExecutionId,
+  getNotebookQueueProjection,
   getExecutionById,
   resetNotebookExecutions,
   setCellExecutionPointer,
   setExecution,
+  setNotebookQueueProjection,
   useCellExecutionId,
   useExecution,
+  useNotebookQueueProjection,
   type ExecutionSnapshot,
 } from "../notebook-executions";
 
@@ -47,6 +51,19 @@ describe("notebook-executions store", () => {
     setExecution("exec-2", snap({ execution_count: 2 }));
     setCellExecutionPointer("cell-1", "exec-2");
     expect(getCellExecutionId("cell-1")).toBe("exec-2");
+    expect(getCellIdForExecutionId("exec-2")).toBe("cell-1");
+    expect(getCellIdForExecutionId("exec-1")).toBeNull();
+  });
+
+  it("stores notebook queue projection separately from runtime queue ids", () => {
+    setNotebookQueueProjection({
+      executing_cell_id: "cell-1",
+      queued_cell_ids: ["cell-2", "cell-3"],
+    });
+    expect(getNotebookQueueProjection()).toEqual({
+      executing_cell_id: "cell-1",
+      queued_cell_ids: ["cell-2", "cell-3"],
+    });
   });
 
   it("is idempotent when writing the same snapshot shape", () => {
@@ -102,6 +119,7 @@ describe("notebook-executions store", () => {
     // Compile-time guard; React hook testing lives in the component suites.
     expect(typeof useExecution).toBe("function");
     expect(typeof useCellExecutionId).toBe("function");
+    expect(typeof useNotebookQueueProjection).toBe("function");
   });
 
   it("resets the entire store", () => {
@@ -112,5 +130,9 @@ describe("notebook-executions store", () => {
     expect(getExecutionById("exec-2")).toBeUndefined();
     expect(getCellExecutionId("cell-1")).toBeNull();
     expect(getCellExecutionId("cell-2")).toBeNull();
+    expect(getNotebookQueueProjection()).toEqual({
+      executing_cell_id: null,
+      queued_cell_ids: [],
+    });
   });
 });

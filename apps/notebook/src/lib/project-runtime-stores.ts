@@ -12,11 +12,7 @@
  * there is no synthetic `legacy:<eid>:<idx>` key in these stores.
  */
 
-import {
-  collectOutputIds,
-  RuntimeExecutionProjector,
-  type RuntimeState,
-} from "runtimed";
+import type { ExecutionViewChangeset } from "runtimed";
 import type { HostBlobResolver } from "@nteract/notebook-host";
 import type { JupyterOutput } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
@@ -30,9 +26,11 @@ import {
 import { isOutputManifest } from "./materialize-cells";
 import {
   deleteExecutions,
+  getExecutionById,
   resetNotebookExecutions,
   setCellExecutionPointer,
   setExecution,
+  setNotebookQueueProjection,
 } from "./notebook-executions";
 import {
   deleteOutputs,
@@ -41,33 +39,38 @@ import {
   setOutput,
 } from "./notebook-outputs";
 
-// ── Executions store projection ──────────────────────────────────────
-
-const executionProjector = new RuntimeExecutionProjector();
-
 /**
- * Project the current RuntimeState into the executions store.
+ * Apply the cross-document execution materialized-view changeset emitted by
+ * WASM.
  *
- * Runs on every `runtimeState$` tick. Uses a cheap per-execution scalar
- * fingerprint to skip executions that haven't moved — without this, long
- * sessions pay O(total_outputs) JS work on every stream append because
- * the snapshot list is rebuilt from scratch each time.
- *
- * The cell -> execution pointer is NOT derived here. `RuntimeStateDoc`
- * keeps historical executions for each cell, and the iteration order of
- * a JS object built from a Rust `HashMap` is not the execution order.
- * The notebook doc's `cells.{id}.execution_id` is the canonical pointer;
- * it flows through a separate path (see
- * `updateCellExecutionPointersFromHandle`).
+ * Rust owns the diff between NotebookDoc cell pointers and RuntimeStateDoc
+ * execution entries. The React stores are intentionally thin subscription
+ * containers; they no longer rescan RuntimeStateDoc snapshots or ask the
+ * handle to refresh every cell pointer after each sync tick.
  */
-export function projectRuntimeStateToExecutions(state: RuntimeState): void {
-  const projection = executionProjector.project(state);
-  for (const [execution_id, snapshot] of projection.upserts) {
+export function applyExecutionViewChangeset(
+  changeset: ExecutionViewChangeset | null | undefined,
+): void {
+  if (!changeset) return;
+
+  for (const [execution_id, snapshot] of changeset.execution_upserts ?? []) {
     setExecution(execution_id, snapshot);
   }
 
-  if (projection.removed_execution_ids.length > 0) {
-    deleteExecutions(projection.removed_execution_ids);
+  const removedExecutionIds = changeset.removed_execution_ids ?? [];
+  if (removedExecutionIds.length > 0) {
+    deleteExecutions(removedExecutionIds);
+  }
+
+  for (const [cell_id, execution_id] of changeset.cell_pointer_changes ?? []) {
+    setCellExecutionPointer(cell_id, execution_id);
+  }
+
+  if (changeset.queue?.notebook) {
+    setNotebookQueueProjection({
+      executing_cell_id: changeset.queue.notebook.executing_cell_id ?? null,
+      queued_cell_ids: changeset.queue.notebook.queued_cell_ids,
+    });
   }
 }
 
@@ -75,11 +78,9 @@ export function projectRuntimeStateToExecutions(state: RuntimeState): void {
  * Seed the outputs / executions stores directly from the WASM handle.
  *
  * `initialSyncComplete$` can fire before the RuntimeStateDoc sync frame
- * lands, so `projectRuntimeStateToExecutions` alone may run against an
- * empty snapshot on notebook open. Walking the handle for each cell's
- * current `execution_id` fills the gap - any outputs already stored in
- * the notebook doc show up in `useCellOutputs` immediately rather than
- * waiting for the runtime-state catch-up tick.
+ * lands. Walking the handle for each cell's current `execution_id` keeps
+ * any outputs already stored in the notebook doc visible immediately rather
+ * than waiting for the runtime-state catch-up tick.
  */
 export function seedOutputStoresFromHandle(
   handle: NotebookHandle,
@@ -94,17 +95,18 @@ export function seedOutputStoresFromHandle(
     const output_ids = collectOutputIds(rawOutputs);
     if (output_ids.length === 0) continue;
 
-    // Build a minimal execution snapshot. We don't have status / success
-    // in the notebook doc (those live in RuntimeStateDoc) - fill them in
-    // as defaults so `useExecution` resolves to something; the runtime-
-    // state projection will overwrite with authoritative values when the
-    // doc's sync frame lands.
-    setExecution(executionId, {
-      execution_count: null,
-      status: "done",
-      success: null,
-      output_ids,
-    });
+    // Build a minimal execution snapshot only when Rust has not already
+    // projected the authoritative RuntimeStateDoc entry. Runtime sync can
+    // arrive before notebook interactive materialization; the eager seed path
+    // must not downgrade a real running/done/error snapshot to a placeholder.
+    if (!getExecutionById(executionId)) {
+      setExecution(executionId, {
+        execution_count: null,
+        status: "done",
+        success: null,
+        output_ids,
+      });
+    }
 
     // Populate the outputs store for each output. Plain JupyterOutputs
     // (already resolved by full materialization) go in directly;
@@ -119,23 +121,6 @@ export function seedOutputStoresFromHandle(
       const sync = tryResolveSync(output, getBlobResolver());
       if (sync) setOutput(oid, sync);
     }
-  }
-}
-
-/**
- * Re-read every cell's canonical `execution_id` pointer from the WASM
- * handle and update the per-cell pointer store. Call this whenever the
- * notebook doc heads move so `useCellExecutionId(cellId)` reflects the
- * cell's actual current execution rather than whichever RuntimeStateDoc
- * entry happened to land in the store last.
- */
-export function updateCellExecutionPointersFromHandle(
-  handle: NotebookHandle,
-  cell_ids: string[],
-): void {
-  for (const cellId of cell_ids) {
-    const eid = handle.get_cell_execution_id(cellId) ?? null;
-    setCellExecutionPointer(cellId, eid);
   }
 }
 
@@ -217,7 +202,19 @@ function tryResolveSync(
 }
 
 export function resetRuntimeStoresProjection(): void {
-  executionProjector.reset();
   resetNotebookExecutions();
   resetNotebookOutputs();
+}
+
+function collectOutputIds(outputs: readonly unknown[] | undefined): string[] {
+  const ids: string[] = [];
+  if (!outputs) return ids;
+  for (const output of outputs) {
+    if (!output || typeof output !== "object") continue;
+    const oid = (output as { output_id?: unknown }).output_id;
+    if (typeof oid === "string" && oid.length > 0) {
+      ids.push(oid);
+    }
+  }
+  return ids;
 }
