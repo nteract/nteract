@@ -39,11 +39,10 @@ jobs:
           shared-key: ubuntu-wasm
 
       - name: Install wasm-pack
-        # Pin to 0.14.0+ for `--profile <NAME>` support; see comment in
-        # `.github/workflows/build.yml`.
+        # Pin to match the runtime-artifact builder.
         uses: ./.github/actions/install-wasm-pack
         with:
-          version: 0.14.0
+          version: 0.15.0
 
       - name: Build sift-wasm
         run: wasm-pack build crates/sift-wasm --target web --release

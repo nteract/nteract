@@ -1,6 +1,6 @@
 {
   "name": "nteract",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "Skills for working with nteract notebooks",
   "repository": "https://github.com/nteract/nteract"
 }
