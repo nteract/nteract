@@ -1,0 +1,26 @@
+{
+  "name": "talk",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "slidev --open",
+    "build": "slidev build",
+    "export": "slidev export"
+  },
+  "dependencies": {
+    "@nteract/notebook-host": "link:../../packages/notebook-host",
+    "@slidev/cli": "^52.15.2",
+    "@slidev/theme-seriph": "latest",
+    "runtimed": "link:../../packages/runtimed",
+    "rxjs": "^7.8.2",
+    "vue": "^3.5.33",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1",
+    "typescript": "~5.8.3",
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.1.16",
+    "vite-plus": "0.1.16"
+  }
+}
