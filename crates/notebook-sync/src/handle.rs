@@ -540,7 +540,7 @@ impl DocHandle {
     /// This is the notebook adapter input for the shared execution-view
     /// projector. It intentionally returns only document-native pointers; the
     /// runtime execution entries stay in RuntimeStateDoc.
-    pub fn get_cell_execution_pointers(&self) -> Vec<(String, Option<String>)> {
+    pub fn get_cell_execution_pointers(&self) -> Result<Vec<(String, Option<String>)>, SyncError> {
         let cell_ids: Vec<String> = self
             .snapshot_rx
             .borrow()
@@ -549,20 +549,15 @@ impl DocHandle {
             .map(|cell| cell.id.clone())
             .collect();
 
-        let Ok(state) = self.doc.lock() else {
-            return cell_ids
-                .into_iter()
-                .map(|cell_id| (cell_id, None))
-                .collect();
-        };
+        let state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
 
-        cell_ids
+        Ok(cell_ids
             .into_iter()
             .map(|cell_id| {
                 let execution_id = read_execution_id(&state.doc, &cell_id);
                 (cell_id, execution_id)
             })
-            .collect()
+            .collect())
     }
 
     /// Get a single cell's execution count (e.g. "5" or "null").
