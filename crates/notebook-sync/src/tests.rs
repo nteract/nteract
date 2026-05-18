@@ -579,6 +579,34 @@ mod tests {
     }
 
     #[test]
+    fn cell_execution_pointers_report_poisoned_lock() {
+        let (handle, _changed_rx, _cmd_rx) = test_handle();
+
+        handle.add_cell_after("cell-1", "code", None).unwrap();
+        handle
+            .with_doc(|doc| {
+                let mut nd = notebook_doc::NotebookDoc::wrap(std::mem::take(doc));
+                nd.set_execution_id("cell-1", Some("exec-1")).unwrap();
+                *doc = nd.into_inner();
+            })
+            .unwrap();
+
+        let shared = handle.shared_state().clone();
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let _ = std::panic::catch_unwind(move || {
+            let _guard = shared.lock().unwrap();
+            panic!("poison shared doc state");
+        });
+        std::panic::set_hook(previous_hook);
+
+        assert!(matches!(
+            handle.get_cell_execution_pointers(),
+            Err(SyncError::LockPoisoned)
+        ));
+    }
+
+    #[test]
     fn test_convenience_set_metadata_snapshot() {
         let (handle, _changed_rx, _cmd_rx) = test_handle();
 

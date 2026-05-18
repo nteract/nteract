@@ -552,7 +552,10 @@ impl Session {
         let task = spawn_event_task(async move {
             let mut projector = ExecutionViewProjector::default();
             let state = runtime_rx.borrow().clone();
-            let changeset = projector.project_all(handle.get_cell_execution_pointers(), &state);
+            let changeset = match handle.get_cell_execution_pointers() {
+                Ok(cell_pointers) => projector.project_all(cell_pointers, &state),
+                Err(_) => projector.project_runtime(&state),
+            };
             if !changeset.is_empty() {
                 emit_json(&tsfn, &changeset);
             }
@@ -563,8 +566,14 @@ impl Session {
                         if changed.is_err() {
                             break;
                         }
-                        let state = runtime_rx.borrow().clone();
-                        let changeset = projector.project_all(handle.get_cell_execution_pointers(), &state);
+                        let state = runtime_rx.borrow_and_update().clone();
+                        let changeset = match handle.get_cell_execution_pointers() {
+                            Ok(cell_pointers) => projector.project_all(cell_pointers, &state),
+                            Err(_) => {
+                                projector.reset();
+                                projector.project_runtime(&state)
+                            }
+                        };
                         if !changeset.is_empty() {
                             emit_json(&tsfn, &changeset);
                         }

@@ -89,8 +89,29 @@ type QueuedExecution = {
   executionId: string;
 };
 
+type ExecutionViewSnapshot = {
+  execution_count: number | null;
+  status: string;
+  success: boolean | null;
+  output_ids: string[];
+};
+
+type ExecutionViewChangeset = {
+  execution_upserts?: Array<[executionId: string, snapshot: ExecutionViewSnapshot]>;
+};
+
+type SubscriptionLike = {
+  unsubscribe?: () => void;
+  dispose?: () => void;
+};
+
+type ObservableLike<T> = {
+  subscribe(next: (value: T) => void): SubscriptionLike;
+};
+
 type Session = {
   readonly notebookId: string;
+  readonly executionViewChanges$?: ObservableLike<ExecutionViewChangeset>;
   runCell(
     source: string,
     opts?: { timeoutMs?: number; cellType?: string; onUpdate?: (progress: CellResult) => void },
@@ -649,6 +670,27 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
   let session: Session | null = null;
   let opening: Promise<Session> | null = null;
   let nextExecCount: number | null = 1;
+  let executionViewSubscription: SubscriptionLike | null = null;
+
+  function disposeExecutionViewTracking(): void {
+    const sub = executionViewSubscription;
+    executionViewSubscription = null;
+    sub?.unsubscribe?.();
+    sub?.dispose?.();
+  }
+
+  function trackExecutionView(sess: Session): void {
+    disposeExecutionViewTracking();
+    executionViewSubscription =
+      sess.executionViewChanges$?.subscribe((changeset) => {
+        for (const [, snapshot] of changeset.execution_upserts ?? []) {
+          const count = snapshot.execution_count;
+          if (typeof count === "number") {
+            nextExecCount = Math.max(nextExecCount ?? 1, count + 1);
+          }
+        }
+      }) ?? null;
+  }
 
   async function addDependenciesAndSync(sess: Session, packages: string[]): Promise<void> {
     const unique = Array.from(new Set(packages.map((pkg) => pkg.trim()).filter(Boolean)));
@@ -689,6 +731,7 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
         description: "pi Python REPL",
         dependencies,
       });
+      trackExecutionView(session);
       return session;
     })();
     try {
@@ -951,6 +994,7 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
       const old = session;
       session = null;
       nextExecCount = 1;
+      disposeExecutionViewTracking();
       if (old) {
         try {
           if (old.shutdownNotebook) {
@@ -968,6 +1012,7 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
+    disposeExecutionViewTracking();
     if (session) {
       try {
         if (session.shutdownNotebook) {

@@ -1481,10 +1481,11 @@ impl AsyncSession {
         let rs = handle
             .get_runtime_state()
             .map_err(|e| to_py_err(format!("{}", e)))?;
+        let cell_pointers = handle
+            .get_cell_execution_pointers()
+            .map_err(|e| to_py_err(format!("{}", e)))?;
         let mut projector = runtime_doc::ExecutionViewProjector::default();
-        Ok(projector
-            .project_all(handle.get_cell_execution_pointers(), &rs)
-            .into())
+        Ok(projector.project_all(cell_pointers, &rs).into())
     }
 
     /// Whether the session is connected (sync read — no future needed).
