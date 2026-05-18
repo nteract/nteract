@@ -105,6 +105,10 @@ sessions.
   `Session.executionViewChanges$`, `Session.cellChanges$`, `Session.broadcasts$`,
   and `Session.sessionStatus$` expose the same projected event families used by
   the browser sync engine.
+- `Session.getExecutionView()` returns the current materialized execution view:
+  non-null notebook cell pointers, execution snapshots keyed by `execution_id`,
+  and the execution-ID-first queue projection. Use this for status surfaces;
+  use `executionViewChanges$` when you need every pointer-clear transition.
 - `Session.addDependency(spec, { packageManager })` /
   `Session.addDependencies(specs, { packageManager })` and
   `Session.removeDependency(spec, { packageManager })` /
