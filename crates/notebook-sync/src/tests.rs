@@ -747,7 +747,7 @@ mod tests {
     fn set_execution(
         shared: &Arc<Mutex<SharedDocState>>,
         execution_id: &str,
-        cell_id: &str,
+        _cell_id: &str,
         status: &str,
         outputs: &[serde_json::Value],
         execution_count: Option<i64>,
@@ -755,7 +755,7 @@ mod tests {
         set_execution_with_seq(
             shared,
             execution_id,
-            cell_id,
+            _cell_id,
             status,
             outputs,
             execution_count,
@@ -766,7 +766,7 @@ mod tests {
     fn set_execution_with_seq(
         shared: &Arc<Mutex<SharedDocState>>,
         execution_id: &str,
-        cell_id: &str,
+        _cell_id: &str,
         status: &str,
         outputs: &[serde_json::Value],
         execution_count: Option<i64>,
@@ -774,7 +774,7 @@ mod tests {
     ) {
         let mut st = shared.lock().unwrap();
         st.state_doc
-            .create_execution_with_source(execution_id, cell_id, "x = 1", seq)
+            .create_execution_with_source(execution_id, "x = 1", seq)
             .unwrap();
         st.state_doc.set_execution_running(execution_id).unwrap();
         if let Some(count) = execution_count {
@@ -1166,14 +1166,15 @@ mod integration_tests {
         let response = handle
             .send_request(NotebookRequest::ExecuteCell {
                 cell_id: "cell-exec".into(),
+                execution_id: None,
             })
             .await
             .expect("execute");
 
-        match response {
-            NotebookResponse::CellQueued { .. } => {}
+        let execution_id = match response {
+            NotebookResponse::CellQueued { execution_id, .. } => execution_id,
             other => panic!("Expected CellQueued, got: {:?}", other),
-        }
+        };
 
         // Poll RuntimeStateDoc until the cell leaves the queue. Lifecycle
         // signals (ExecutionDone, KernelError) are no longer broadcast —
@@ -1188,8 +1189,12 @@ mod integration_tests {
                 .queue
                 .executing
                 .as_ref()
-                .is_some_and(|e| e.cell_id == "cell-exec");
-            let in_queued = rs.queue.queued.iter().any(|e| e.cell_id == "cell-exec");
+                .is_some_and(|e| e.execution_id == execution_id);
+            let in_queued = rs
+                .queue
+                .queued
+                .iter()
+                .any(|e| e.execution_id == execution_id);
             if !in_executing && !in_queued {
                 got_done = true;
                 break;

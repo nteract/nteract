@@ -47,6 +47,7 @@ export const NOTEBOOK_RESPONSE_RESULTS = [
   "kernel_launched",
   "kernel_already_running",
   "cell_queued",
+  "execution_id_rejected",
   "interrupt_sent",
   "kernel_shutting_down",
   "no_kernel",

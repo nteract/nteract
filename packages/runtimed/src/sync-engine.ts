@@ -666,35 +666,6 @@ export class SyncEngine {
               this._runtimeState$.next(state);
               if (transitions.length > 0) {
                 this._executionTransitions$.next(transitions);
-
-                // Inject synthetic changesets on execution lifecycle transitions
-                // so the materialization pipeline stays in sync with the CRDT.
-                //
-                // "started": execution_id changed on the cell — WASM facade
-                //   returns empty outputs for the new execution_id.
-                // "done"/"error": reconcile the store with the final state.
-                for (const t of transitions) {
-                  if (t.kind === "started") {
-                    log.debug(
-                      `[sync-engine] execution started for ${t.cell_id.slice(0, 8)} — clearing outputs`,
-                    );
-                  } else {
-                    log.debug(
-                      `[sync-engine] execution ${t.kind} for ${t.cell_id.slice(0, 8)} — reconciling outputs`,
-                    );
-                  }
-                  materialize$.next({
-                    changed: [
-                      {
-                        cell_id: t.cell_id,
-                        fields: { outputs: true, execution_count: true },
-                      },
-                    ],
-                    added: [],
-                    removed: [],
-                    order_changed: false,
-                  });
-                }
               }
 
               // Per-output-id projection. Feeds the outputs store so single
@@ -709,40 +680,6 @@ export class SyncEngine {
                   changed: changedPairs,
                   removed_ids: removedOutputIds,
                 });
-              }
-
-              // Output changes detected by WASM-side diff of RuntimeStateDoc.
-              // The WASM compares output hash lists before/after sync and
-              // reports cell IDs that need re-materialization.
-              //
-              // This is the ONLY source of `fields.outputs = true` in the
-              // materialization pipeline. The `diff_doc` in notebook-doc
-              // walks NotebookDoc only, and NotebookDoc never carries cell
-              // outputs — they live exclusively in RuntimeStateDoc. If this
-              // synthesis goes away, outputs stop re-rendering on kernel
-              // IOPub.
-              //
-              // See `crates/notebook-doc/src/diff.rs` (diff_doc docstring)
-              // for the other half of the contract.
-              const outputChangedCells: string[] = e.output_changed_cells ?? [];
-              if (outputChangedCells.length > 0) {
-                // Deduplicate against cells already handled by transitions
-                const transitionCells = new Set(transitions.map((t) => t.cell_id));
-                const newOutputCells = outputChangedCells.filter((c) => !transitionCells.has(c));
-                if (newOutputCells.length > 0) {
-                  log.debug(
-                    `[sync-engine] output changes for ${newOutputCells.length} cells from RuntimeStateDoc`,
-                  );
-                  materialize$.next({
-                    changed: newOutputCells.map((cell_id) => ({
-                      cell_id,
-                      fields: { outputs: true },
-                    })),
-                    added: [],
-                    removed: [],
-                    order_changed: false,
-                  });
-                }
               }
 
               // ── Comm state projection ──────────────────────────────

@@ -8,7 +8,7 @@
 //! task handles, request/response infrastructure, process lifecycle.  Does
 //! **not** hold queue, executing cell, or status — those live in `KernelState`.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -308,9 +308,9 @@ pub struct JupyterKernel {
     comm_coalesce_tx: Option<mpsc::UnboundedSender<(String, serde_json::Value)>>,
     /// Handle to the coalescing task for comm state CRDT writes.
     comm_coalesce_task: Option<JoinHandle<()>>,
-    /// Mapping from execution_id -> cell_id for routing iopub messages.
+    /// Execution IDs sent through this kernel.
     /// With msg_id = execution_id, parent_header.msg_id IS the execution_id.
-    cell_id_map: Arc<StdMutex<HashMap<String, String>>>,
+    registered_execution_ids: Arc<StdMutex<HashSet<String>>>,
     /// Work command sender for iopub/shell tasks.
     work_cmd_tx: Option<mpsc::Sender<QueueCommand>>,
     /// Lifecycle command sender for iopub/shell tasks.
@@ -1224,8 +1224,8 @@ impl KernelConnection for JupyterKernel {
         let (lifecycle_cmd_tx, work_cmd_tx, command_receivers) = queue_command_channels(100);
 
         // Shared state refs for spawned tasks
-        let cell_id_map: Arc<StdMutex<HashMap<String, String>>> =
-            Arc::new(StdMutex::new(HashMap::new()));
+        let registered_execution_ids: Arc<StdMutex<HashSet<String>>> =
+            Arc::new(StdMutex::new(HashSet::new()));
         let comm_seq = Arc::new(AtomicU64::new(0));
         let pending_history: Arc<StdMutex<HashMap<String, oneshot::Sender<Vec<HistoryEntry>>>>> =
             Arc::new(StdMutex::new(HashMap::new()));
@@ -1261,7 +1261,7 @@ impl KernelConnection for JupyterKernel {
         // ── IOPub listener task ──────────────────────────────────────────
 
         let broadcast_tx = shared.broadcast_tx.clone();
-        let iopub_cell_id_map = cell_id_map.clone();
+        let iopub_registered_execution_ids = registered_execution_ids.clone();
         let iopub_lifecycle_tx = lifecycle_cmd_tx.clone();
         let iopub_work_tx = work_cmd_tx.clone();
         let blob_store = shared.blob_store.clone();
@@ -1327,12 +1327,15 @@ impl KernelConnection for JupyterKernel {
                             );
 
                             // parent_header.msg_id IS the execution_id (set in execute()).
-                            // Look up cell_id from the execution_id -> cell_id map.
                             let execution_id =
                                 message.parent_header.as_ref().map(|h| h.msg_id.clone());
-                            let cell_id = execution_id
-                                .as_ref()
-                                .and_then(|eid| iopub_cell_id_map.lock().ok()?.get(eid).cloned());
+                            let is_registered_execution =
+                                execution_id.as_ref().is_some_and(|eid| {
+                                    iopub_registered_execution_ids
+                                        .lock()
+                                        .map(|ids| ids.contains(eid))
+                                        .unwrap_or(false)
+                                });
 
                             // Handle different message types
                             match &message.content {
@@ -1366,10 +1369,10 @@ impl KernelConnection for JupyterKernel {
 
                                     if let Some(update) = update {
                                         // Non-execute messages (kernel_info, completions) have a
-                                        // parent_header.msg_id that isn't in our execute map.
-                                        // cell_id is None for those — treat activity flips from
-                                        // those as transient (they don't reflect user code state).
-                                        let is_transient_activity = cell_id.is_none()
+                                        // parent_header.msg_id that isn't in our registered
+                                        // execution set. Treat activity flips from those as
+                                        // transient (they don't reflect user code state).
+                                        let is_transient_activity = !is_registered_execution
                                             && matches!(update, IoPubStateUpdate::Activity(_));
 
                                         if !is_transient_activity {
@@ -1415,27 +1418,23 @@ impl KernelConnection for JupyterKernel {
 
                                         display_update_committer.flush_for_ordering().await;
 
-                                        if let (Some(cid), Some(eid)) =
-                                            (cell_id.clone(), execution_id.clone())
+                                        if let Some(eid) =
+                                            execution_id.clone().filter(|_| is_registered_execution)
                                         {
                                             stream_committer.flush_then_signal(
                                                 final_stream_flushes,
-                                                QueueCommand::ExecutionDone {
-                                                    cell_id: cid,
-                                                    execution_id: eid,
-                                                },
+                                                QueueCommand::ExecutionDone { execution_id: eid },
                                             );
                                         } else {
                                             stream_committer.request_flushes(final_stream_flushes);
                                         }
-                                        if execution_id.is_some() && cell_id.is_none() {
+                                        if execution_id.is_some() && !is_registered_execution {
                                             // Status=Idle with a parent execution_id but no
-                                            // cell_id means the cell_id_map lookup failed —
-                                            // either the map is poisoned or the execution_id
-                                            // wasn't registered (non-execute request like
-                                            // kernel_info). Only warn for execute-range IDs.
+                                            // registered execution means this is a non-execute
+                                            // request like kernel_info, or the id arrived after
+                                            // shutdown cleared our local registry.
                                             debug!(
-                                                "[jupyter-kernel] Status=Idle with execution_id={:?} but no cell_id (non-execute or map miss)",
+                                                "[jupyter-kernel] Status=Idle with unregistered execution_id={:?}",
                                                 execution_id
                                             );
                                         }
@@ -1443,7 +1442,7 @@ impl KernelConnection for JupyterKernel {
                                 }
 
                                 JupyterMessageContent::ExecuteInput(input) => {
-                                    if let Some(_cid) = cell_id {
+                                    if is_registered_execution {
                                         let execution_count = input.execution_count.0 as i64;
 
                                         if let Some(ref eid) = execution_id {
@@ -1560,7 +1559,7 @@ impl KernelConnection for JupyterKernel {
                                         continue;
                                     }
 
-                                    if let Some(_cid) = cell_id {
+                                    if is_registered_execution {
                                         let stream_name = match stream.name {
                                             jupyter_protocol::Stdio::Stdout => "stdout",
                                             jupyter_protocol::Stdio::Stderr => "stderr",
@@ -1697,7 +1696,7 @@ impl KernelConnection for JupyterKernel {
                                         continue;
                                     }
 
-                                    if let Some(cid) = cell_id.as_ref() {
+                                    if is_registered_execution {
                                         let _output_type = match &message.content {
                                             JupyterMessageContent::DisplayData(_) => "display_data",
                                             JupyterMessageContent::ExecuteResult(_) => {
@@ -1705,7 +1704,9 @@ impl KernelConnection for JupyterKernel {
                                             }
                                             _ => "unknown",
                                         };
-                                        let eid = execution_id.clone().unwrap_or_default();
+                                        let Some(eid) = execution_id.clone() else {
+                                            continue;
+                                        };
 
                                         let boundary_flushes = stream_flushes
                                             .flush_execution(&eid, std::time::Instant::now());
@@ -1789,13 +1790,12 @@ impl KernelConnection for JupyterKernel {
                                         ) {
                                             if let Err(e) =
                                                 iopub_lifecycle_tx.send(QueueCommand::CellError {
-                                                    cell_id: cid.clone(),
                                                     execution_id: eid.clone(),
                                                 })
                                             {
                                                 warn!(
-                                                    "[jupyter-kernel] CellError (rich traceback) signal lost for cell={} execution={} because runtime agent receiver closed: {}",
-                                                    cid, eid, e
+                                                    "[jupyter-kernel] CellError (rich traceback) signal lost for execution={} because runtime agent receiver closed: {}",
+                                                    eid, e
                                                 );
                                             }
                                         }
@@ -1915,8 +1915,10 @@ impl KernelConnection for JupyterKernel {
                                         continue;
                                     }
 
-                                    if let Some(ref cid) = cell_id {
-                                        let eid = execution_id.clone().unwrap_or_default();
+                                    if is_registered_execution {
+                                        let Some(eid) = execution_id.clone() else {
+                                            continue;
+                                        };
 
                                         let boundary_flushes = stream_flushes
                                             .flush_execution(&eid, std::time::Instant::now());
@@ -1979,13 +1981,12 @@ impl KernelConnection for JupyterKernel {
 
                                         if let Err(e) =
                                             iopub_lifecycle_tx.send(QueueCommand::CellError {
-                                                cell_id: cid.clone(),
                                                 execution_id: eid.clone(),
                                             })
                                         {
                                             warn!(
-                                                "[jupyter-kernel] CellError signal lost for cell={} execution={} because runtime agent receiver closed: {}",
-                                                cid, eid, e
+                                                "[jupyter-kernel] CellError signal lost for execution={} because runtime agent receiver closed: {}",
+                                                eid, e
                                             );
                                         }
                                     }
@@ -2418,7 +2419,7 @@ impl KernelConnection for JupyterKernel {
         // ── Shell reader task ────────────────────────────────────────────
 
         let _shell_broadcast_tx = shared.broadcast_tx.clone();
-        let shell_cell_id_map = cell_id_map.clone();
+        let shell_registered_execution_ids = registered_execution_ids.clone();
         let shell_pending_history = pending_history.clone();
         let shell_pending_completions = pending_completions.clone();
         let shell_state = shared.state.clone();
@@ -2440,12 +2441,16 @@ impl KernelConnection for JupyterKernel {
                                 JupyterMessageContent::ExecuteReply(ref reply) => {
                                     let execution_id =
                                         msg.parent_header.as_ref().map(|h| h.msg_id.clone());
-                                    let cell_id = execution_id.as_ref().and_then(|eid| {
-                                        shell_cell_id_map.lock().ok()?.get(eid).cloned()
-                                    });
+                                    let is_registered_execution =
+                                        execution_id.as_ref().is_some_and(|eid| {
+                                            shell_registered_execution_ids
+                                                .lock()
+                                                .map(|ids| ids.contains(eid))
+                                                .unwrap_or(false)
+                                        });
 
                                     // Process page payloads
-                                    if let Some(_cid) = cell_id {
+                                    if is_registered_execution {
                                         for payload in &reply.payload {
                                             if let jupyter_protocol::Payload::Page {
                                                 data, ..
@@ -2810,7 +2815,7 @@ impl KernelConnection for JupyterKernel {
             heartbeat_task: Some(heartbeat_task),
             comm_coalesce_tx: Some(coalesce_tx),
             comm_coalesce_task: Some(comm_coalesce_task),
-            cell_id_map,
+            registered_execution_ids,
             work_cmd_tx: Some(work_cmd_tx),
             lifecycle_cmd_tx: Some(lifecycle_cmd_tx),
             comm_seq,
@@ -2826,7 +2831,7 @@ impl KernelConnection for JupyterKernel {
 
     // ── Execute ──────────────────────────────────────────────────────────
 
-    async fn execute(&mut self, cell_id: &str, execution_id: &str, source: &str) -> Result<()> {
+    async fn execute(&mut self, execution_id: &str, source: &str) -> Result<()> {
         let shell = self
             .shell_writer
             .as_mut()
@@ -2839,19 +2844,18 @@ impl KernelConnection for JupyterKernel {
         let mut message: JupyterMessage = request.into();
         message.header.msg_id = execution_id.to_string();
 
-        // Register execution_id -> cell_id BEFORE sending.
-        // Remove any old mappings for this cell_id first.
+        // Register execution_id BEFORE sending so IOPub can identify replies
+        // without depending on notebook cell identity.
         {
-            let mut map = self.cell_id_map.lock().unwrap();
-            map.retain(|_, cid| cid != cell_id);
-            map.insert(execution_id.to_string(), cell_id.to_string());
+            let mut ids = self.registered_execution_ids.lock().unwrap();
+            ids.insert(execution_id.to_string());
         }
 
         shell.send(message).await?;
         self.history_cache.clear();
         info!(
-            "[jupyter-kernel] Sent execute_request: cell_id={} execution_id={}",
-            cell_id, execution_id
+            "[jupyter-kernel] Sent execute_request: execution_id={}",
+            execution_id
         );
 
         Ok(())
@@ -2971,7 +2975,7 @@ impl KernelConnection for JupyterKernel {
 
         self.connection_info = None;
         self.connection_file = None;
-        self.cell_id_map.lock().unwrap().clear();
+        self.registered_execution_ids.lock().unwrap().clear();
         self.work_cmd_tx = None;
         self.lifecycle_cmd_tx = None;
 

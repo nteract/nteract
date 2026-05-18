@@ -25,7 +25,7 @@ import {
 } from "runtimed";
 import { refreshBlobPort, resetBlobPort } from "../lib/blob-port";
 import { logger } from "../lib/logger";
-import { getCellExecutionId } from "../lib/notebook-executions";
+import { getCellExecutionId, getCellIdForExecutionId } from "../lib/notebook-executions";
 import { subscribeBroadcast } from "../lib/notebook-frame-bus";
 import {
   diffExecutions,
@@ -154,11 +154,11 @@ export function useDaemonKernel({
   useEffect(() => {
     const prev = prevQueueRef.current;
     prevQueueRef.current = queueState;
-    const executingChanged = prev.executing?.cell_id !== queueState.executing?.cell_id;
+    const executingChanged = prev.executing?.execution_id !== queueState.executing?.execution_id;
     let queuedChanged = prev.queued.length !== queueState.queued.length;
     if (!queuedChanged) {
       for (let i = 0; i < prev.queued.length; i++) {
-        if (prev.queued[i]?.cell_id !== queueState.queued[i]?.cell_id) {
+        if (prev.queued[i]?.execution_id !== queueState.queued[i]?.execution_id) {
           queuedChanged = true;
           break;
         }
@@ -182,16 +182,18 @@ export function useDaemonKernel({
 
     const transitions = diffExecutions(prev, curr);
     for (const t of transitions) {
+      const cellId = getCellIdForExecutionId(t.execution_id);
+      if (!cellId) continue;
       if (t.kind === "started") {
         // Only forward when the kernel has actually reported the count
         // (arrives via execute_input, after the queued→running transition).
         // Materialization reads execution_count from RuntimeState directly,
         // so skipping null here avoids a brief flash of "0".
-        if (t.execution_count != null && getCellExecutionId(t.cell_id) === t.execution_id) {
-          callbacksRef.current.onExecutionCount(t.cell_id, t.execution_count);
+        if (t.execution_count != null && getCellExecutionId(cellId) === t.execution_id) {
+          callbacksRef.current.onExecutionCount(cellId, t.execution_count);
         }
       } else {
-        callbacksRef.current.onExecutionDone(t.cell_id);
+        callbacksRef.current.onExecutionDone(cellId);
       }
     }
   }, [runtimeState.executions]);
@@ -332,9 +334,15 @@ export function useDaemonKernel({
     runAllCells,
     runAllCellsGuarded,
     sendCommMessage,
-    isCellExecuting: (cellId: string) => queueState.executing?.cell_id === cellId,
-    isCellQueued: (cellId: string) =>
-      queueState.executing?.cell_id === cellId ||
-      queueState.queued.some((entry) => entry.cell_id === cellId),
+    isCellExecuting: (cellId: string) =>
+      queueState.executing?.execution_id === getCellExecutionId(cellId),
+    isCellQueued: (cellId: string) => {
+      const executionId = getCellExecutionId(cellId);
+      return (
+        executionId !== null &&
+        (queueState.executing?.execution_id === executionId ||
+          queueState.queued.some((entry) => entry.execution_id === executionId))
+      );
+    },
   };
 }

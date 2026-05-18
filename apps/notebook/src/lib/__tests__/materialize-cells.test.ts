@@ -569,19 +569,17 @@ describe("cellSnapshotsToNotebookCells", () => {
         ...DEFAULT_RUNTIME_STATE,
         executions: {
           old: {
-            cell_id: "c1",
             status: "done",
             execution_count: 9,
             success: true,
-            output_ids: [],
+            outputs: [],
             seq: 1,
           },
           current: {
-            cell_id: "c1",
             status: "running",
             execution_count: 2,
             success: null,
-            output_ids: [],
+            outputs: [],
             seq: 2,
           },
         },

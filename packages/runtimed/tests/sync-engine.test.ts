@@ -13,10 +13,10 @@ import { SyncEngine } from "../src/sync-engine";
 import { DirectTransport } from "../src/direct-transport";
 import { FrameType } from "../src/transport";
 import { mergeChangesets } from "../src/cell-changeset";
-import { diffExecutions, getExecutionCountForCell } from "../src/runtime-state";
+import { diffExecutions } from "../src/runtime-state";
 import type { SessionStatus, SyncableHandle, FrameEvent } from "../src/handle";
 import type { CellChangeset } from "../src/cell-changeset";
-import type { RuntimeLifecycle, RuntimeState } from "../src/runtime-state";
+import type { RuntimeState } from "../src/runtime-state";
 
 // ── Mock factories ──────────────────────────────────────────────────
 
@@ -100,7 +100,6 @@ function makeRuntimeState(
   executions: Record<
     string,
     {
-      cell_id: string;
       status: string;
       execution_count: number | null;
       success: boolean | null;
@@ -788,7 +787,6 @@ describe("SyncEngine", () => {
         last_saved: null,
         executions: {
           "exec-1": {
-            cell_id: "c1",
             status: "running",
             execution_count: 1,
             success: null,
@@ -812,7 +810,6 @@ describe("SyncEngine", () => {
       expect(received).toHaveLength(1);
       expect(received[0]).toHaveLength(1);
       expect(received[0][0].kind).toBe("started");
-      expect(received[0][0].cell_id).toBe("c1");
       expect(received[0][0].execution_id).toBe("exec-1");
       engine.stop();
     });
@@ -1273,9 +1270,9 @@ describe("SyncEngine", () => {
     });
   });
 
-  // ── Execution lifecycle changesets ─────────────────────────────
+  // ── Execution lifecycle transitions ────────────────────────────
 
-  describe("execution lifecycle changesets", () => {
+  describe("execution lifecycle transitions", () => {
     // Registry to map frame bytes → FrameEvents for runtime state frames
     let runtimeStateFrameRegistry: Map<string, FrameEvent[]>;
     let runtimeStateFrameCounter: number;
@@ -1326,143 +1323,143 @@ describe("SyncEngine", () => {
       return engine;
     }
 
-    it("started transition injects clear changeset into cellChanges$", () => {
+    it("started transition emits execution transition without touching cellChanges$", () => {
       const engine = setupWithInitialSync();
 
-      const emissions: (CellChangeset | null)[] = [];
-      engine.cellChanges$.subscribe((cs) => emissions.push(cs));
+      const cellEmissions: (CellChangeset | null)[] = [];
+      const transitionEmissions: import("../src/runtime-state").ExecutionTransition[][] = [];
+      engine.cellChanges$.subscribe((cs) => cellEmissions.push(cs));
+      engine.executionTransitions$.subscribe((transitions) =>
+        transitionEmissions.push(transitions),
+      );
 
       // Deliver runtime state with a new "running" execution
       deliverRuntimeState(
         makeRuntimeState({
-          e1: { cell_id: "c1", status: "running", execution_count: 1, success: null },
+          e1: { status: "running", execution_count: 1, success: null },
         }),
       );
 
       // Flush scheduler past coalescing window
       advanceBy(scheduler, 50);
 
-      expect(emissions).toHaveLength(1);
-      expect(emissions[0]).not.toBeNull();
-      const cs = emissions[0]!;
-      expect(cs.changed).toHaveLength(1);
-      expect(cs.changed[0].cell_id).toBe("c1");
-      expect(cs.changed[0].fields.outputs).toBe(true);
-      expect(cs.changed[0].fields.execution_count).toBe(true);
+      expect(cellEmissions).toHaveLength(0);
+      expect(transitionEmissions).toHaveLength(1);
+      expect(transitionEmissions[0]).toEqual([
+        { execution_id: "e1", kind: "started", execution_count: 1 },
+      ]);
       engine.stop();
     });
 
-    it("done transition injects reconciliation changeset", () => {
+    it("done transition emits execution transition", () => {
       const engine = setupWithInitialSync();
 
       // Deliver "running" first to establish prev state
       deliverRuntimeState(
         makeRuntimeState({
-          e1: { cell_id: "c1", status: "running", execution_count: 1, success: null },
+          e1: { status: "running", execution_count: 1, success: null },
         }),
       );
 
       // Flush past coalescing to clear the "started" emission
       advanceBy(scheduler, 50);
 
-      const emissions: (CellChangeset | null)[] = [];
-      engine.cellChanges$.subscribe((cs) => emissions.push(cs));
+      const transitionEmissions: import("../src/runtime-state").ExecutionTransition[][] = [];
+      engine.executionTransitions$.subscribe((transitions) =>
+        transitionEmissions.push(transitions),
+      );
 
       // Now deliver "done"
       deliverRuntimeState(
         makeRuntimeState({
-          e1: { cell_id: "c1", status: "done", execution_count: 1, success: true },
+          e1: { status: "done", execution_count: 1, success: true },
         }),
       );
 
       advanceBy(scheduler, 50);
 
-      expect(emissions).toHaveLength(1);
-      expect(emissions[0]).not.toBeNull();
-      const cs = emissions[0]!;
-      expect(cs.changed).toHaveLength(1);
-      expect(cs.changed[0].cell_id).toBe("c1");
-      expect(cs.changed[0].fields.outputs).toBe(true);
-      expect(cs.changed[0].fields.execution_count).toBe(true);
+      expect(transitionEmissions).toHaveLength(1);
+      expect(transitionEmissions[0]).toEqual([
+        { execution_id: "e1", kind: "done", execution_count: 1 },
+      ]);
       engine.stop();
     });
 
-    it("error transition injects reconciliation changeset", () => {
+    it("error transition emits execution transition", () => {
       const engine = setupWithInitialSync();
 
       // Deliver "running" first to establish prev state
       deliverRuntimeState(
         makeRuntimeState({
-          e1: { cell_id: "c1", status: "running", execution_count: 1, success: null },
+          e1: { status: "running", execution_count: 1, success: null },
         }),
       );
 
       // Flush past coalescing
       advanceBy(scheduler, 50);
 
-      const emissions: (CellChangeset | null)[] = [];
-      engine.cellChanges$.subscribe((cs) => emissions.push(cs));
+      const transitionEmissions: import("../src/runtime-state").ExecutionTransition[][] = [];
+      engine.executionTransitions$.subscribe((transitions) =>
+        transitionEmissions.push(transitions),
+      );
 
       // Now deliver "error"
       deliverRuntimeState(
         makeRuntimeState({
-          e1: { cell_id: "c1", status: "error", execution_count: 1, success: false },
+          e1: { status: "error", execution_count: 1, success: false },
         }),
       );
 
       advanceBy(scheduler, 50);
 
-      expect(emissions).toHaveLength(1);
-      expect(emissions[0]).not.toBeNull();
-      const cs = emissions[0]!;
-      expect(cs.changed).toHaveLength(1);
-      expect(cs.changed[0].cell_id).toBe("c1");
-      expect(cs.changed[0].fields.outputs).toBe(true);
-      expect(cs.changed[0].fields.execution_count).toBe(true);
+      expect(transitionEmissions).toHaveLength(1);
+      expect(transitionEmissions[0]).toEqual([
+        { execution_id: "e1", kind: "error", execution_count: 1 },
+      ]);
       engine.stop();
     });
 
-    it("multiple transitions in one update coalesce into single emission", () => {
+    it("multiple transitions in one update emit as one transition batch", () => {
       const engine = setupWithInitialSync();
 
       // Set up prev state with e2 running
       deliverRuntimeState(
         makeRuntimeState({
-          e2: { cell_id: "c2", status: "running", execution_count: 1, success: null },
+          e2: { status: "running", execution_count: 1, success: null },
         }),
       );
 
       // Flush past coalescing
       advanceBy(scheduler, 50);
 
-      const emissions: (CellChangeset | null)[] = [];
-      engine.cellChanges$.subscribe((cs) => emissions.push(cs));
+      const transitionEmissions: import("../src/runtime-state").ExecutionTransition[][] = [];
+      engine.executionTransitions$.subscribe((transitions) =>
+        transitionEmissions.push(transitions),
+      );
 
       // Deliver update with e1 newly started and e2 done
       deliverRuntimeState(
         makeRuntimeState({
-          e1: { cell_id: "c1", status: "running", execution_count: 2, success: null },
-          e2: { cell_id: "c2", status: "done", execution_count: 1, success: true },
+          e1: { status: "running", execution_count: 2, success: null },
+          e2: { status: "done", execution_count: 1, success: true },
         }),
       );
 
       advanceBy(scheduler, 50);
 
-      // Should get a single coalesced emission covering both cells
-      expect(emissions).toHaveLength(1);
-      expect(emissions[0]).not.toBeNull();
-      const cs = emissions[0]!;
-      expect(cs.changed).toHaveLength(2);
-      const cellIds = cs.changed.map((c) => c.cell_id).sort();
-      expect(cellIds).toEqual(["c1", "c2"]);
+      expect(transitionEmissions).toHaveLength(1);
+      expect(transitionEmissions[0]).toEqual([
+        { execution_id: "e1", kind: "started", execution_count: 2 },
+        { execution_id: "e2", kind: "done", execution_count: 1 },
+      ]);
       engine.stop();
     });
 
-    it("unchanged runtime state does not inject changesets", () => {
+    it("unchanged runtime state does not emit transitions", () => {
       const engine = setupWithInitialSync();
 
       const state = makeRuntimeState({
-        e1: { cell_id: "c1", status: "running", execution_count: 1, success: null },
+        e1: { status: "running", execution_count: 1, success: null },
       });
 
       // Deliver state first time
@@ -1471,15 +1468,17 @@ describe("SyncEngine", () => {
       // Flush past coalescing to process the first emission
       advanceBy(scheduler, 50);
 
-      const emissions: (CellChangeset | null)[] = [];
-      engine.cellChanges$.subscribe((cs) => emissions.push(cs));
+      const transitionEmissions: import("../src/runtime-state").ExecutionTransition[][] = [];
+      engine.executionTransitions$.subscribe((transitions) =>
+        transitionEmissions.push(transitions),
+      );
 
-      // Deliver same state again — no transitions, no changeset
+      // Deliver same state again — no transitions
       deliverRuntimeState(state);
 
       advanceBy(scheduler, 50);
 
-      expect(emissions).toHaveLength(0);
+      expect(transitionEmissions).toHaveLength(0);
       engine.stop();
     });
 
@@ -1505,22 +1504,25 @@ describe("SyncEngine", () => {
       // Deliver a sync frame that does NOT complete initial sync
       transport.deliver(Array.from([0x00, 1]));
 
-      const cellEmissions: (CellChangeset | null)[] = [];
-      engine.cellChanges$.subscribe((cs) => cellEmissions.push(cs));
+      const transitionEmissions: import("../src/runtime-state").ExecutionTransition[][] = [];
+      engine.executionTransitions$.subscribe((transitions) =>
+        transitionEmissions.push(transitions),
+      );
 
-      // Deliver runtime state with a transition — this should still inject into cellChanges$
+      // Deliver runtime state with a transition — this should still flow through.
       deliverRuntimeState(
         makeRuntimeState({
-          e1: { cell_id: "c1", status: "running", execution_count: 1, success: null },
+          e1: { status: "running", execution_count: 1, success: null },
         }),
       );
 
       advanceBy(scheduler, 50);
 
-      // Runtime state lifecycle changesets are NOT gated by initial sync
-      expect(cellEmissions).toHaveLength(1);
-      expect(cellEmissions[0]).not.toBeNull();
-      expect(cellEmissions[0]!.changed[0].cell_id).toBe("c1");
+      // Runtime state lifecycle transitions are NOT gated by initial sync.
+      expect(transitionEmissions).toHaveLength(1);
+      expect(transitionEmissions[0]).toEqual([
+        { execution_id: "e1", kind: "started", execution_count: 1 },
+      ]);
       engine.stop();
     });
   });
@@ -1611,7 +1613,7 @@ describe("SyncEngine", () => {
 
     it("publishes runtime state on runtime_state_sync_error with changed=true", () => {
       const state = makeRuntimeState({
-        e1: { cell_id: "c1", status: "running", execution_count: 1, success: null },
+        e1: { status: "running", execution_count: 1, success: null },
       });
       handle = createMockHandle({
         receive_frame: vi.fn(() => [
@@ -2177,7 +2179,7 @@ describe("diffExecutions", () => {
   it("detects started transition", () => {
     const prev = {};
     const curr = {
-      e1: { cell_id: "c1", status: "running" as const, execution_count: 1, success: null },
+      e1: { status: "running" as const, execution_count: 1, success: null },
     };
     const transitions = diffExecutions(prev, curr);
     expect(transitions).toHaveLength(1);
@@ -2186,10 +2188,10 @@ describe("diffExecutions", () => {
 
   it("detects done transition", () => {
     const prev = {
-      e1: { cell_id: "c1", status: "running" as const, execution_count: 1, success: null },
+      e1: { status: "running" as const, execution_count: 1, success: null },
     };
     const curr = {
-      e1: { cell_id: "c1", status: "done" as const, execution_count: 1, success: true },
+      e1: { status: "done" as const, execution_count: 1, success: true },
     };
     const transitions = diffExecutions(prev, curr);
     expect(transitions).toHaveLength(1);
@@ -2198,10 +2200,10 @@ describe("diffExecutions", () => {
 
   it("detects error transition", () => {
     const prev = {
-      e1: { cell_id: "c1", status: "queued" as const, execution_count: null, success: null },
+      e1: { status: "queued" as const, execution_count: null, success: null },
     };
     const curr = {
-      e1: { cell_id: "c1", status: "error" as const, execution_count: null, success: false },
+      e1: { status: "error" as const, execution_count: null, success: false },
     };
     const transitions = diffExecutions(prev, curr);
     expect(transitions).toHaveLength(1);
@@ -2210,7 +2212,7 @@ describe("diffExecutions", () => {
 
   it("returns empty for no change", () => {
     const state = {
-      e1: { cell_id: "c1", status: "running" as const, execution_count: 1, success: null },
+      e1: { status: "running" as const, execution_count: 1, success: null },
     };
     const transitions = diffExecutions(state, state);
     expect(transitions).toHaveLength(0);
@@ -2218,10 +2220,10 @@ describe("diffExecutions", () => {
 
   it("detects execution_count arriving while still running", () => {
     const prev = {
-      e1: { cell_id: "c1", status: "running" as const, execution_count: null, success: null },
+      e1: { status: "running" as const, execution_count: null, success: null },
     };
     const curr = {
-      e1: { cell_id: "c1", status: "running" as const, execution_count: 5, success: null },
+      e1: { status: "running" as const, execution_count: 5, success: null },
     };
     const transitions = diffExecutions(prev, curr);
     expect(transitions).toHaveLength(1);
@@ -2231,164 +2233,12 @@ describe("diffExecutions", () => {
 
   it("ignores execution_count change when not running", () => {
     const prev = {
-      e1: { cell_id: "c1", status: "done" as const, execution_count: null, success: true },
+      e1: { status: "done" as const, execution_count: null, success: true },
     };
     const curr = {
-      e1: { cell_id: "c1", status: "done" as const, execution_count: 5, success: true },
+      e1: { status: "done" as const, execution_count: 5, success: true },
     };
     const transitions = diffExecutions(prev, curr);
     expect(transitions).toHaveLength(0);
-  });
-});
-
-// ── getExecutionCountForCell ────────────────────────────────────
-
-describe("getExecutionCountForCell", () => {
-  const baseState = {
-    kernel: {
-      lifecycle: { lifecycle: "Running", activity: "Idle" } as RuntimeLifecycle,
-      error_reason: null,
-      name: "",
-      language: "",
-      env_source: "",
-    },
-    queue: { executing: null, queued: [] },
-    env: {
-      in_sync: true,
-      added: [],
-      removed: [],
-      channels_changed: false,
-      deno_changed: false,
-      prewarmed_packages: [],
-      progress: null,
-    },
-    trust: {
-      status: "trusted",
-      needs_approval: false,
-      approved_uv_dependencies: [],
-      approved_conda_dependencies: [],
-      approved_conda_channels: [],
-      approved_pixi_dependencies: [],
-      approved_pixi_pypi_dependencies: [],
-      approved_pixi_channels: [],
-    },
-    last_saved: null,
-    comms: {},
-  };
-
-  it("returns null when no executions exist", () => {
-    const state = { ...baseState, executions: {} };
-    expect(getExecutionCountForCell(state, "c1")).toBeNull();
-  });
-
-  it("returns the count for a matching cell", () => {
-    const state = {
-      ...baseState,
-      executions: {
-        e1: { cell_id: "c1", status: "done" as const, execution_count: 3, success: true },
-      },
-    };
-    expect(getExecutionCountForCell(state, "c1")).toBe(3);
-  });
-
-  it("returns the latest count by sequence when multiple executions exist", () => {
-    const state = {
-      ...baseState,
-      executions: {
-        e1: {
-          cell_id: "c1",
-          status: "done" as const,
-          execution_count: 12,
-          success: true,
-          seq: 1,
-        },
-        e2: {
-          cell_id: "c1",
-          status: "done" as const,
-          execution_count: 1,
-          success: true,
-          seq: 2,
-        },
-        e3: {
-          cell_id: "c1",
-          status: "running" as const,
-          execution_count: null,
-          success: null,
-          seq: 3,
-        },
-      },
-    };
-    expect(getExecutionCountForCell(state, "c1")).toBe(1);
-  });
-
-  it("falls back to the highest count for legacy executions without sequence", () => {
-    const state = {
-      ...baseState,
-      executions: {
-        e1: { cell_id: "c1", status: "done" as const, execution_count: 2, success: true },
-        e2: { cell_id: "c1", status: "done" as const, execution_count: 5, success: true },
-      },
-    };
-    expect(getExecutionCountForCell(state, "c1")).toBe(5);
-  });
-
-  it("prefers seq zero over a legacy execution without sequence", () => {
-    const state = {
-      ...baseState,
-      executions: {
-        legacy: { cell_id: "c1", status: "done" as const, execution_count: 12, success: true },
-        current: {
-          cell_id: "c1",
-          status: "done" as const,
-          execution_count: 1,
-          success: true,
-          seq: 0,
-        },
-      },
-    };
-    expect(getExecutionCountForCell(state, "c1")).toBe(1);
-  });
-
-  it("prefers any sequence over a legacy execution without sequence", () => {
-    const state = {
-      ...baseState,
-      executions: {
-        legacy: { cell_id: "c1", status: "done" as const, execution_count: 100, success: true },
-        current: {
-          cell_id: "c1",
-          status: "done" as const,
-          execution_count: 1,
-          success: true,
-          seq: 5,
-        },
-      },
-    };
-    expect(getExecutionCountForCell(state, "c1")).toBe(1);
-  });
-
-  it("returns null when matching executions have no counts yet", () => {
-    const state = {
-      ...baseState,
-      executions: {
-        e1: {
-          cell_id: "c1",
-          status: "running" as const,
-          execution_count: null,
-          success: null,
-          seq: 1,
-        },
-      },
-    };
-    expect(getExecutionCountForCell(state, "c1")).toBeNull();
-  });
-
-  it("ignores executions for other cells", () => {
-    const state = {
-      ...baseState,
-      executions: {
-        e1: { cell_id: "c2", status: "done" as const, execution_count: 10, success: true },
-      },
-    };
-    expect(getExecutionCountForCell(state, "c1")).toBeNull();
   });
 });

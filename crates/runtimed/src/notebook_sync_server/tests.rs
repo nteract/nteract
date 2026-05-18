@@ -1325,7 +1325,7 @@ async fn test_save_notebook_to_disk_with_outputs() {
                 "name": "stdout",
                 "text": ["hello\n"]
             });
-            sd.create_execution(eid, "cell1")?;
+            sd.create_execution(eid)?;
             sd.set_execution_count(eid, 1)?;
             sd.set_outputs(eid, &[output])?;
             sd.set_execution_done(eid, true)?;
@@ -1409,7 +1409,7 @@ async fn test_redacted_output_manifests_do_not_leak_to_state_or_saved_nbformat()
 
     room.state
         .with_doc(|sd| {
-            sd.create_execution(eid, "cell1")?;
+            sd.create_execution(eid)?;
             sd.set_execution_count(eid, 1)?;
             sd.set_outputs(eid, &output_values)?;
             sd.set_execution_done(eid, false)?;
@@ -1465,7 +1465,7 @@ async fn test_save_notebook_to_disk_produces_sorted_stable_output() {
                 "text": ["ok\n"],
                 "output_id": "runtime-only-uuid",
             });
-            sd.create_execution(eid, "cell-alpha")?;
+            sd.create_execution(eid)?;
             sd.set_execution_count(eid, 1)?;
             sd.set_outputs(eid, &[output])?;
             sd.set_execution_done(eid, true)?;
@@ -1911,7 +1911,7 @@ async fn test_apply_ipynb_changes_preserves_execution_count_when_kernel_running(
     }
     room.state
         .with_doc(|sd| {
-            sd.create_execution(eid, "cell-1")?;
+            sd.create_execution(eid)?;
             sd.set_execution_count(eid, 10)?;
             sd.set_execution_done(eid, true)?;
             Ok(())
@@ -7668,7 +7668,7 @@ async fn test_save_preserves_outputs_when_execution_in_flight() {
                 "name": "stdout",
                 "text": ["hello\n"]
             });
-            sd.create_execution_with_source(old_eid, "cell1", "print('hello')", 1)?;
+            sd.create_execution_with_source(old_eid, "print('hello')", 1)?;
             sd.set_outputs(old_eid, &[output])?;
             sd.set_execution_count(old_eid, 1)?;
             sd.set_execution_done(old_eid, true)?;
@@ -7684,7 +7684,7 @@ async fn test_save_preserves_outputs_when_execution_in_flight() {
     // queued execution that has not produced outputs yet.
     room.state
         .with_doc(|sd| {
-            sd.create_execution_with_source(new_eid, "cell1", "print('hello')", 2)?;
+            sd.create_execution_with_source(new_eid, "print('hello')", 2)?;
             Ok(())
         })
         .unwrap();
@@ -7734,7 +7734,7 @@ async fn test_save_writes_empty_outputs_when_cell_execution_id_cleared() {
                 "name": "stdout",
                 "text": ["hello\n"]
             });
-            sd.create_execution_with_source(eid, "cell1", "print('hello')", 1)?;
+            sd.create_execution_with_source(eid, "print('hello')", 1)?;
             sd.set_outputs(eid, &[output])?;
             sd.set_execution_count(eid, 1)?;
             sd.set_execution_done(eid, true)?;
@@ -7788,7 +7788,7 @@ async fn test_autosave_fires_on_runtime_file_dirty_without_self_loop() {
     }
     room.state
         .with_doc(|sd| {
-            sd.create_execution_with_source(eid, "cell1", "print('hi')", 1)?;
+            sd.create_execution_with_source(eid, "print('hi')", 1)?;
             Ok(())
         })
         .unwrap();

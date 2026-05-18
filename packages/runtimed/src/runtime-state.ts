@@ -103,7 +103,6 @@ export interface KernelState {
 }
 
 export interface QueueEntry {
-  cell_id: string;
   execution_id: string;
 }
 
@@ -178,7 +177,6 @@ export interface TrustState {
 }
 
 export interface ExecutionState {
-  cell_id: string;
   status: "queued" | "running" | "done" | "error";
   execution_count: number | null;
   success: boolean | null;
@@ -209,7 +207,6 @@ export interface CommDocEntry {
 /** A detected status transition for a single execution. */
 export interface ExecutionTransition {
   execution_id: string;
-  cell_id: string;
   kind: "started" | "done" | "error";
   execution_count: number | null;
 }
@@ -369,7 +366,6 @@ export function diffExecutions(
       ) {
         transitions.push({
           execution_id: eid,
-          cell_id: entry.cell_id,
           kind: "started",
           execution_count: entry.execution_count,
         });
@@ -381,14 +377,12 @@ export function diffExecutions(
     if (currStatus === "done") {
       transitions.push({
         execution_id: eid,
-        cell_id: entry.cell_id,
         kind: "done",
         execution_count: entry.execution_count,
       });
     } else if (currStatus === "error") {
       transitions.push({
         execution_id: eid,
-        cell_id: entry.cell_id,
         kind: "error",
         execution_count: entry.execution_count,
       });
@@ -396,7 +390,6 @@ export function diffExecutions(
       // Started (queued→running or new→running)
       transitions.push({
         execution_id: eid,
-        cell_id: entry.cell_id,
         kind: "started",
         execution_count: entry.execution_count,
       });
@@ -404,33 +397,4 @@ export function diffExecutions(
   }
 
   return transitions;
-}
-
-/**
- * Resolve the most recent execution_count for a cell from RuntimeState.
- *
- * RuntimeStateDoc is the live source of truth. NotebookDoc may carry a
- * persisted nbformat-history fallback when runtime state is unavailable.
- * This mirrors runt-mcp's get_cell_execution_count_from_runtime: find
- * the most recent execution for the cell that has a count set.
- */
-export function getExecutionCountForCell(state: RuntimeState, cellId: string): number | null {
-  let best: { count: number; seq: number | null } | null = null;
-  for (const exec of Object.values(state.executions)) {
-    if (exec.cell_id === cellId && exec.execution_count != null) {
-      const seq = exec.seq ?? null;
-      // Keep in sync with RuntimeState::execution_count_for_cell in runtime-doc.
-      if (
-        best === null ||
-        (seq !== null &&
-          (best.seq === null ||
-            seq > best.seq ||
-            (seq === best.seq && exec.execution_count > best.count))) ||
-        (seq === null && best.seq === null && exec.execution_count > best.count)
-      ) {
-        best = { count: exec.execution_count, seq };
-      }
-    }
-  }
-  return best?.count ?? null;
 }

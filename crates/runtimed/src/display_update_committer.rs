@@ -296,7 +296,7 @@ mod tests {
         let manifest_json = manifest.to_json();
         state
             .with_doc(|sd| {
-                sd.create_execution("exec-1", "cell-1")?;
+                sd.create_execution("exec-1")?;
                 sd.append_output("exec-1", &manifest_json)?;
                 Ok(())
             })

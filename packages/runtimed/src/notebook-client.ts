@@ -63,6 +63,14 @@ export interface NotebookClientOptions {
   flushBeforeRequiredHeadsRequest?: () => void;
 }
 
+export interface ExecuteCellOptions {
+  executionId?: string | null;
+}
+
+export interface RunAllCellsOptions {
+  cellExecutionIds?: Record<string, string> | null;
+}
+
 export class NotebookClient {
   private readonly transport: NotebookTransport;
   private readonly log: SyncEngineLogger;
@@ -114,13 +122,14 @@ export class NotebookClient {
   }
 
   /** Execute a cell (daemon reads source from synced document). */
-  async executeCell(cellId: string): Promise<NotebookResponse> {
+  async executeCell(cellId: string, options: ExecuteCellOptions = {}): Promise<NotebookResponse> {
     this.log.debug("[notebook-client] Executing cell:", cellId);
     try {
       return await this.sendRequest(
         {
           type: "execute_cell",
           cell_id: cellId,
+          execution_id: options.executionId ?? null,
         },
         this.requiredHeadsOptions(),
       );
@@ -134,12 +143,14 @@ export class NotebookClient {
   async executeCellGuarded(
     cellId: string,
     provenance: GuardedNotebookProvenance,
+    options: ExecuteCellOptions = {},
   ): Promise<NotebookResponse> {
     this.log.debug("[notebook-client] Executing guarded cell:", cellId);
     try {
       return await this.sendRequest({
         type: "execute_cell_guarded",
         cell_id: cellId,
+        execution_id: options.executionId ?? null,
         observed_heads: provenance.observed_heads,
       });
     } catch (e) {
@@ -212,10 +223,16 @@ export class NotebookClient {
   }
 
   /** Run all code cells (daemon reads from synced doc). */
-  async runAllCells(): Promise<NotebookResponse> {
+  async runAllCells(options: RunAllCellsOptions = {}): Promise<NotebookResponse> {
     this.log.debug("[notebook-client] Running all cells");
     try {
-      return await this.sendRequest({ type: "run_all_cells" }, this.requiredHeadsOptions());
+      return await this.sendRequest(
+        {
+          type: "run_all_cells",
+          cell_execution_ids: options.cellExecutionIds ?? null,
+        },
+        this.requiredHeadsOptions(),
+      );
     } catch (e) {
       this.log.error("[notebook-client] Run all cells failed:", e);
       throw e;
@@ -223,11 +240,15 @@ export class NotebookClient {
   }
 
   /** Run all code cells only if they still match the observed trust-dialog state. */
-  async runAllCellsGuarded(provenance: GuardedNotebookProvenance): Promise<NotebookResponse> {
+  async runAllCellsGuarded(
+    provenance: GuardedNotebookProvenance,
+    options: RunAllCellsOptions = {},
+  ): Promise<NotebookResponse> {
     this.log.debug("[notebook-client] Running all cells with guard");
     try {
       return await this.sendRequest({
         type: "run_all_cells_guarded",
+        cell_execution_ids: options.cellExecutionIds ?? null,
         observed_heads: provenance.observed_heads,
       });
     } catch (e) {

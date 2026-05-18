@@ -17,8 +17,7 @@ use notebook_doc::presence;
 use notebook_doc::{CellSnapshot, NotebookDoc};
 use notebook_wire::{frame_types, SessionControlMessage, SessionSyncStatusWire};
 use runtime_doc::{
-    diff_execution_outputs, diff_output_ids, output_ids_for_execution, ExecutionState,
-    RuntimeState, RuntimeStateDoc,
+    diff_output_ids, output_ids_for_execution, ExecutionState, RuntimeState, RuntimeStateDoc,
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -140,9 +139,6 @@ pub enum FrameEvent {
         /// Includes outputs inline in each ExecutionState entry.
         #[serde(skip_serializing_if = "Option::is_none")]
         state: Option<Box<RuntimeState>>,
-        /// Cell IDs whose outputs changed in this sync frame.
-        #[serde(skip_serializing_if = "Vec::is_empty")]
-        output_changed_cells: Vec<String>,
         /// Per-output diff for this sync frame. Added or modified outputs
         /// arrive here with their narrowed manifest inline; the frontend's
         /// outputs store can write them straight in with no second
@@ -219,13 +215,8 @@ pub struct NotebookHandle {
     /// Runtime state doc — daemon-authoritative, synced read-only.
     state_doc: RuntimeStateDoc,
     state_sync_state: sync::State,
-    /// Previous outputs per execution_id for diffing. Extracted from
-    /// `state.executions[eid].outputs` on each sync frame to detect
-    /// mid-execution output changes (stream append, display update, error).
-    prev_execution_outputs: std::collections::HashMap<String, Vec<serde_json::Value>>,
-    /// Previous per-`output_id` manifest snapshot. Used alongside
-    /// `prev_execution_outputs` to produce the finer-grained per-output
-    /// diff emitted on `RuntimeStateSyncApplied.output_changeset`.
+    /// Previous per-`output_id` manifest snapshot. Used to produce the
+    /// per-output diff emitted on `RuntimeStateSyncApplied.output_changeset`.
     prev_output_by_id: std::collections::HashMap<String, serde_json::Value>,
     /// Pool state doc — daemon-authoritative, global, synced read-only.
     pool_doc: PoolDoc,
@@ -449,7 +440,6 @@ impl NotebookHandle {
             state_doc: RuntimeStateDoc::try_new_empty()
                 .map_err(|e| JsError::new(&format!("create runtime state doc failed: {}", e)))?,
             state_sync_state: sync::State::new(),
-            prev_execution_outputs: std::collections::HashMap::new(),
             prev_output_by_id: std::collections::HashMap::new(),
             pool_doc: PoolDoc::new_empty(),
             pool_sync_state: sync::State::new(),
@@ -470,7 +460,6 @@ impl NotebookHandle {
             state_doc: RuntimeStateDoc::try_new_empty()
                 .map_err(|e| JsError::new(&format!("create runtime state doc failed: {}", e)))?,
             state_sync_state: sync::State::new(),
-            prev_execution_outputs: std::collections::HashMap::new(),
             prev_output_by_id: std::collections::HashMap::new(),
             pool_doc: PoolDoc::new_empty(),
             pool_sync_state: sync::State::new(),
@@ -505,7 +494,6 @@ impl NotebookHandle {
             state_doc: RuntimeStateDoc::try_new_empty()
                 .map_err(|e| JsError::new(&format!("create runtime state doc failed: {}", e)))?,
             state_sync_state: sync::State::new(),
-            prev_execution_outputs: std::collections::HashMap::new(),
             prev_output_by_id: std::collections::HashMap::new(),
             pool_doc: PoolDoc::new_empty(),
             pool_sync_state: sync::State::new(),
@@ -664,7 +652,7 @@ impl NotebookHandle {
     /// Return a summary of the execution for the given `execution_id`, or
     /// `undefined` when that execution is unknown.
     ///
-    /// Shape: `{ cell_id, execution_count, status, success, output_ids }`.
+    /// Shape: `{ execution_count, status, success, output_ids }`.
     /// `output_ids` preserves the daemon's emission order. Full output
     /// manifests are available via `get_output_by_id(output_id)` — this
     /// method intentionally keeps the payload small so execution-level
@@ -675,14 +663,12 @@ impl NotebookHandle {
         };
         let output_ids = output_ids_for_execution(&exec);
         let ExecutionState {
-            cell_id,
             status,
             execution_count,
             success,
             ..
         } = exec;
         let summary = serde_json::json!({
-            "cell_id": cell_id,
             "execution_count": execution_count,
             "status": status,
             "success": success,
@@ -1852,45 +1838,30 @@ impl NotebookHandle {
                     None
                 };
 
-                // Diff outputs inline in executions — detect mid-execution
-                // changes (stream append, display update, error). `state` is
-                // Some iff `changed` is true, so this also covers the
-                // `changed` branch without a separate check.
-                let (output_changed_cells, output_changeset) =
-                    if let Some(current_state) = state.as_ref() {
-                        let (changed_cells, new_snapshot) = diff_execution_outputs(
-                            &self.prev_execution_outputs,
-                            &current_state.executions,
-                        );
-                        self.prev_execution_outputs = new_snapshot;
+                let output_changeset = if let Some(current_state) = state.as_ref() {
+                    let (id_diff, new_id_snapshot) =
+                        diff_output_ids(&self.prev_output_by_id, &current_state.executions);
+                    self.prev_output_by_id = new_id_snapshot;
 
-                        let (id_diff, new_id_snapshot) =
-                            diff_output_ids(&self.prev_output_by_id, &current_state.executions);
-                        self.prev_output_by_id = new_id_snapshot;
-
-                        // Narrow each changed manifest inline so the frontend
-                        // writes directly into the outputs store with no
-                        // second snapshot walk.
-                        let changed: Vec<(String, serde_json::Value)> = id_diff
-                            .changed
-                            .into_iter()
-                            .map(|(id, manifest)| (id, self.narrow_output_data(manifest)))
-                            .collect();
-                        (
-                            changed_cells,
-                            OutputChangeset {
-                                changed,
-                                removed: id_diff.removed_output_ids,
-                            },
-                        )
-                    } else {
-                        (Vec::new(), OutputChangeset::default())
-                    };
+                    // Narrow each changed manifest inline so the frontend
+                    // writes directly into the outputs store with no
+                    // second snapshot walk.
+                    let changed: Vec<(String, serde_json::Value)> = id_diff
+                        .changed
+                        .into_iter()
+                        .map(|(id, manifest)| (id, self.narrow_output_data(manifest)))
+                        .collect();
+                    OutputChangeset {
+                        changed,
+                        removed: id_diff.removed_output_ids,
+                    }
+                } else {
+                    OutputChangeset::default()
+                };
 
                 events.push(FrameEvent::RuntimeStateSyncApplied {
                     changed,
                     state,
-                    output_changed_cells,
                     output_changeset,
                 });
             }

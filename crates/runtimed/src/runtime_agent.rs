@@ -462,21 +462,20 @@ pub async fn run_runtime_agent(
                                                     if let Some(ref source) = exec.source {
                                                         if let Some(ref mut k) = kernel {
                                                             match kernel_state.queue_cell(
-                                                                exec.cell_id.clone(),
                                                                 eid.clone(),
                                                                 source.clone(),
                                                                 k,
                                                             ).await {
                                                                 Ok(_) => {
                                                                     info!(
-                                                                        "[runtime-agent] Queued cell {} (execution {})",
-                                                                        exec.cell_id, eid
+                                                                        "[runtime-agent] Queued execution {}",
+                                                                        eid
                                                                     );
                                                                 }
                                                                 Err(e) => {
                                                                     warn!(
-                                                                        "[runtime-agent] Failed to queue cell {}: {}",
-                                                                        exec.cell_id, e
+                                                                        "[runtime-agent] Failed to queue execution {}: {}",
+                                                                        eid, e
                                                                     );
                                                                 }
                                                             }
@@ -914,7 +913,7 @@ async fn handle_runtime_agent_request(
 
             // Capture in-flight executions before shutdown so we can mark them
             // as failed in RuntimeStateDoc (the old kernel can't finish them).
-            let interrupted_eid = state.executing_cell().map(|(_, eid)| eid.clone());
+            let interrupted_eid = state.executing_cell().cloned();
             let stale_queue: Vec<_> = state
                 .queued_entries()
                 .iter()
@@ -1333,16 +1332,10 @@ async fn handle_queue_command(
     state: &mut KernelState,
 ) -> anyhow::Result<()> {
     match command {
-        QueueCommand::ExecutionDone {
-            cell_id,
-            execution_id,
-        } => {
-            debug!(
-                "[runtime-agent] ExecutionDone for {} ({})",
-                cell_id, execution_id
-            );
+        QueueCommand::ExecutionDone { execution_id } => {
+            debug!("[runtime-agent] ExecutionDone for {}", execution_id);
             if let Some(ref mut k) = kernel {
-                if let Err(e) = state.execution_done(&cell_id, &execution_id, k).await {
+                if let Err(e) = state.execution_done(&execution_id, k).await {
                     warn!("[runtime-agent] execution_done error: {}", e);
                 }
             }
@@ -1356,15 +1349,9 @@ async fn handle_queue_command(
             }
         }
 
-        QueueCommand::CellError {
-            cell_id,
-            execution_id,
-        } => {
-            debug!(
-                "[runtime-agent] CellError: cell={} execution={}",
-                cell_id, execution_id
-            );
-            if state.mark_execution_error(&cell_id, &execution_id) {
+        QueueCommand::CellError { execution_id } => {
+            debug!("[runtime-agent] CellError: execution={}", execution_id);
+            if state.mark_execution_error(&execution_id) {
                 let cleared = state.clear_queue();
                 if let Err(e) = ctx.state.with_doc(|sd| {
                     for entry in &cleared {
@@ -1386,7 +1373,7 @@ async fn handle_queue_command(
             *kernel = None;
             let (interrupted, cleared) = state.kernel_died();
             if let Err(e) = ctx.state.with_doc(|sd| {
-                if let Some((_, ref eid)) = interrupted {
+                if let Some(ref eid) = interrupted {
                     sd.set_execution_done(eid, false)?;
                 }
                 for entry in &cleared {
@@ -1725,7 +1712,7 @@ mod tests {
         ) -> Result<(Self, QueueCommandReceivers)> {
             unimplemented!()
         }
-        async fn execute(&mut self, _: &str, _: &str, _: &str) -> Result<()> {
+        async fn execute(&mut self, _: &str, _: &str) -> Result<()> {
             Ok(())
         }
         async fn interrupt(&mut self) -> Result<()> {
@@ -1819,11 +1806,11 @@ mod tests {
 
         // Queue two cells: c1 starts executing, c2 stays queued
         state
-            .queue_cell("c1".into(), "e1".into(), "x=1".into(), &mut mock)
+            .queue_cell("e1".into(), "x=1".into(), &mut mock)
             .await
             .unwrap();
         state
-            .queue_cell("c2".into(), "e2".into(), "x=2".into(), &mut mock)
+            .queue_cell("e2".into(), "x=2".into(), &mut mock)
             .await
             .unwrap();
 
@@ -1929,12 +1916,7 @@ mod tests {
 
         // Cell A is executing via the normal queue path
         state
-            .queue_cell(
-                "cA".into(),
-                "eA".into(),
-                "while True: pass".into(),
-                &mut mock,
-            )
+            .queue_cell("eA".into(), "while True: pass".into(), &mut mock)
             .await
             .unwrap();
         assert!(state.executing_cell().is_some());
@@ -1943,7 +1925,7 @@ mod tests {
         // execution entry directly to RuntimeStateDoc, but CRDT sync hasn't
         // delivered it to the runtime agent's local queue yet.
         handle
-            .with_doc(|sd| sd.create_execution_with_source("eB", "cB", "1 + 1", 1))
+            .with_doc(|sd| sd.create_execution_with_source("eB", "1 + 1", 1))
             .unwrap();
 
         // Verify eB is "queued" in the doc but NOT in the local queue
@@ -1990,16 +1972,11 @@ mod tests {
 
         // Queue cell A (executing) and cell B (queued)
         state
-            .queue_cell(
-                "cA".into(),
-                "eA".into(),
-                "while True: pass".into(),
-                &mut mock,
-            )
+            .queue_cell("eA".into(), "while True: pass".into(), &mut mock)
             .await
             .unwrap();
         state
-            .queue_cell("cB".into(), "eB".into(), "1 + 1".into(), &mut mock)
+            .queue_cell("eB".into(), "1 + 1".into(), &mut mock)
             .await
             .unwrap();
 
@@ -2010,13 +1987,12 @@ mod tests {
             Some("eA")
         );
         assert_eq!(cleared.len(), 1); // cB
-        assert_eq!(cleared[0].cell_id, "cB");
+        assert_eq!(cleared[0].execution_id, "eB");
         mark_interrupted_executions_failed(&handle, interrupted.as_ref(), &cleared);
 
         // Now simulate CellError from the interrupted cell A
         handle_queue_command(
             QueueCommand::CellError {
-                cell_id: "cA".to_string(),
                 execution_id: "eA".to_string(),
             },
             &ctx,
@@ -2035,13 +2011,13 @@ mod tests {
         // A stale CellError from eA must not poison the next execution.
         let mut mock = MockKernel;
         state
-            .queue_cell("cC".into(), "eC".into(), "1 + 1".into(), &mut mock)
+            .queue_cell("eC".into(), "1 + 1".into(), &mut mock)
             .await
             .unwrap();
         assert!(state.executing_cell().is_none());
         assert_eq!(state.queued_entries().len(), 1);
         state.kernel_idle(Some("eA"), &mut mock).await.unwrap();
-        state.execution_done("cC", "eC", &mut mock).await.unwrap();
+        state.execution_done("eC", &mut mock).await.unwrap();
         let ec = handle.read(|sd| sd.get_execution("eC").unwrap()).unwrap();
         assert_eq!(ec.status, "done");
         assert_eq!(ec.success, Some(true));

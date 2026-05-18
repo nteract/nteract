@@ -1369,6 +1369,7 @@ pub(crate) async fn queue_cell(
         .send_request_after_heads(
             NotebookRequest::ExecuteCell {
                 cell_id: cell_id.to_string(),
+                execution_id: None,
             },
             required_heads,
         )
@@ -1493,7 +1494,12 @@ pub(crate) async fn queue_all_cells(
     let required_heads = handle.current_heads_hex().map_err(to_py_err)?;
 
     let response = handle
-        .send_request_after_heads(NotebookRequest::RunAllCells {}, required_heads)
+        .send_request_after_heads(
+            NotebookRequest::RunAllCells {
+                cell_execution_ids: None,
+            },
+            required_heads,
+        )
         .await
         .map_err(to_py_err)?;
 
@@ -2188,7 +2194,7 @@ pub(crate) async fn get_queue_state(state: &Arc<Mutex<SessionState>>) -> PyResul
         .map_err(|e| to_py_err(format!("{}", e)))?;
     Ok(QueueState {
         executing: runtime.queue.executing.map(|e| PyQueueEntry {
-            cell_id: e.cell_id,
+            cell_id: String::new(),
             execution_id: e.execution_id,
         }),
         queued: runtime
@@ -2196,7 +2202,7 @@ pub(crate) async fn get_queue_state(state: &Arc<Mutex<SessionState>>) -> PyResul
             .queued
             .into_iter()
             .map(|e| PyQueueEntry {
-                cell_id: e.cell_id,
+                cell_id: String::new(),
                 execution_id: e.execution_id,
             })
             .collect(),

@@ -52,7 +52,7 @@ impl ExecutionRecord {
             context_kind: context_kind.into(),
             context_id: context_id.into(),
             notebook_path,
-            cell_id: Some(exec.cell_id.clone()),
+            cell_id: None,
             status: exec.status.clone(),
             success: exec.success,
             execution_count: exec.execution_count,

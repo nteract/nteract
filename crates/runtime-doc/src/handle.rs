@@ -240,13 +240,13 @@ mod tests {
 
         handle
             .transact_at_current_heads(Some("rt:kernel:test"), "handle-transaction-a", |sd| {
-                sd.create_execution("exec-a", "cell-a")?;
+                sd.create_execution("exec-a")?;
                 Ok(())
             })
             .unwrap();
         handle
             .transact_at_current_heads(Some("rt:kernel:test"), "handle-transaction-b", |sd| {
-                sd.create_execution("exec-b", "cell-b")?;
+                sd.create_execution("exec-b")?;
                 Ok(())
             })
             .unwrap();
@@ -254,8 +254,8 @@ mod tests {
         assert!(rx.try_recv().is_ok());
         assert!(rx.try_recv().is_ok());
         let state = handle.read(|sd| sd.read_state()).unwrap();
-        assert_eq!(state.executions["exec-a"].cell_id, "cell-a");
-        assert_eq!(state.executions["exec-b"].cell_id, "cell-b");
+        assert!(state.executions.contains_key("exec-a"));
+        assert!(state.executions.contains_key("exec-b"));
     }
 
     #[test]

@@ -404,7 +404,6 @@ pub(crate) fn apply_display_manifest_updates(
 /// A cell queued for execution.
 #[derive(Debug, Clone)]
 pub struct QueuedCell {
-    pub cell_id: String,
     pub execution_id: String,
     pub code: String,
 }
@@ -449,17 +448,11 @@ impl std::fmt::Display for KernelStatus {
 #[derive(Debug)]
 pub enum QueueCommand {
     /// A cell finished executing (received status=idle from kernel)
-    ExecutionDone {
-        cell_id: String,
-        execution_id: String,
-    },
+    ExecutionDone { execution_id: String },
     /// The kernel reported idle. Used to release execution after interrupt.
     KernelIdle { execution_id: Option<String> },
     /// A cell produced an error (for stop-on-error behavior)
-    CellError {
-        cell_id: String,
-        execution_id: String,
-    },
+    CellError { execution_id: String },
     /// The kernel process died (iopub connection lost).
     /// Unblocks the execution queue and notifies the frontend.
     KernelDied,
@@ -697,8 +690,8 @@ mod tests {
         let mut state_doc = RuntimeStateDoc::new();
 
         // Two executions, both with the same display_id (simulates re-running a cell)
-        state_doc.create_execution("exec-1", "cell-a").unwrap();
-        state_doc.create_execution("exec-2", "cell-a").unwrap();
+        state_doc.create_execution("exec-1").unwrap();
+        state_doc.create_execution("exec-2").unwrap();
         insert_display_output(&mut state_doc, "exec-1", "progress", "old", &store).await;
         insert_display_output(&mut state_doc, "exec-2", "progress", "old", &store).await;
 
@@ -733,7 +726,7 @@ mod tests {
         let store = test_blob_store(&dir);
         let mut state_doc = RuntimeStateDoc::new();
 
-        state_doc.create_execution("exec-1", "cell-a").unwrap();
+        state_doc.create_execution("exec-1").unwrap();
         insert_display_output(&mut state_doc, "exec-1", "progress", "hello", &store).await;
 
         let new_data = serde_json::json!({ "text/plain": "updated" });
@@ -763,8 +756,8 @@ mod tests {
         let store = test_blob_store(&dir);
         let mut state_doc = RuntimeStateDoc::new();
 
-        state_doc.create_execution("exec-1", "cell-a").unwrap();
-        state_doc.create_execution("exec-2", "cell-b").unwrap();
+        state_doc.create_execution("exec-1").unwrap();
+        state_doc.create_execution("exec-2").unwrap();
         insert_display_output(&mut state_doc, "exec-1", "progress", "match-me", &store).await;
         insert_display_output(&mut state_doc, "exec-2", "other-id", "leave-me", &store).await;
 

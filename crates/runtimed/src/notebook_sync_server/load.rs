@@ -527,7 +527,7 @@ where
         let _ = room.state.with_doc(|sd| {
             for (_idx, cell, output_refs, _resolved_assets, _attachment_refs) in &batch {
                 if let Some(execution) = cell_executions.get(&cell.id) {
-                    let _ = sd.create_execution(&execution.execution_id, &cell.id);
+                    let _ = sd.create_execution(&execution.execution_id);
                     let _ = sd.set_outputs(&execution.execution_id, output_refs);
                     if let Ok(ec) = cell.execution_count.parse::<i64>() {
                         let _ = sd.set_execution_count(&execution.execution_id, ec);
@@ -718,7 +718,7 @@ pub(crate) async fn load_notebook_from_disk_with_state_doc_and_execution_store(
                 &output_refs,
             );
             if let Some(ref mut sd) = state_doc {
-                let _ = sd.create_execution(&execution.execution_id, &cell.id);
+                let _ = sd.create_execution(&execution.execution_id);
                 if has_outputs {
                     sd.set_outputs(&execution.execution_id, &output_refs)
                         .map_err(|e| format!("Failed to set outputs in state doc: {}", e))?;
@@ -1101,7 +1101,6 @@ pub(crate) async fn apply_ipynb_changes(
     // guard is not held across state_doc `.await` (deadlock prevention).
     struct DeferredExecution<'a> {
         synthetic_eid: String,
-        cell_id: String,
         outputs: &'a [serde_json::Value],
         execution_count: Option<i64>,
     }
@@ -1178,7 +1177,6 @@ pub(crate) async fn apply_ipynb_changes(
                                             .set_execution_id(&ext_cell.id, Some(&synthetic_eid));
                                         deferred.push(DeferredExecution {
                                             synthetic_eid,
-                                            cell_id: ext_cell.id.clone(),
                                             outputs: ext_outputs,
                                             execution_count: parsed_ec,
                                         });
@@ -1196,7 +1194,6 @@ pub(crate) async fn apply_ipynb_changes(
                                         doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
                                     deferred.push(DeferredExecution {
                                         synthetic_eid,
-                                        cell_id: ext_cell.id.clone(),
                                         outputs: ext_outputs,
                                         execution_count: parsed_ec,
                                     });
@@ -1230,7 +1227,7 @@ pub(crate) async fn apply_ipynb_changes(
         if !deferred_executions.is_empty() {
             let _ = room.state.with_doc(|sd| {
                 for de in &deferred_executions {
-                    let _ = sd.create_execution(&de.synthetic_eid, &de.cell_id);
+                    let _ = sd.create_execution(&de.synthetic_eid);
                     if !de.outputs.is_empty() {
                         let _ = sd.set_outputs(&de.synthetic_eid, de.outputs);
                     }
@@ -1415,7 +1412,6 @@ pub(crate) async fn apply_ipynb_changes(
                                         doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
                                     deferred_execs.push(DeferredExecution {
                                         synthetic_eid,
-                                        cell_id: ext_cell.id.clone(),
                                         outputs: ext_outputs,
                                         execution_count: parsed_ec,
                                     });
@@ -1468,7 +1464,6 @@ pub(crate) async fn apply_ipynb_changes(
                                 let _ = doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
                                 deferred_execs.push(DeferredExecution {
                                     synthetic_eid,
-                                    cell_id: ext_cell.id.clone(),
                                     outputs: ext_outputs,
                                     execution_count: parsed_ec,
                                 });
@@ -1505,7 +1500,7 @@ pub(crate) async fn apply_ipynb_changes(
     if !deferred_execs.is_empty() {
         let _ = room.state.with_doc(|sd| {
             for de in &deferred_execs {
-                let _ = sd.create_execution(&de.synthetic_eid, &de.cell_id);
+                let _ = sd.create_execution(&de.synthetic_eid);
                 if !de.outputs.is_empty() {
                     let _ = sd.set_outputs(&de.synthetic_eid, de.outputs);
                 }

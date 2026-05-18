@@ -14,7 +14,6 @@ import { useMemo, useSyncExternalStore } from "react";
 // ---------------------------------------------------------------------------
 
 export interface ExecutionSnapshot {
-  cell_id: string;
   execution_count: number | null;
   /** "queued" | "running" | "done" | "error" */
   status: string;
@@ -57,7 +56,6 @@ function emitCellExecutionPointerChange(cell_id: string): void {
 function snapshotsEqual(a: ExecutionSnapshot, b: ExecutionSnapshot): boolean {
   if (a === b) return true;
   if (
-    a.cell_id !== b.cell_id ||
     a.execution_count !== b.execution_count ||
     a.status !== b.status ||
     a.success !== b.success
@@ -194,12 +192,13 @@ export function setCellExecutionPointer(
  */
 export function deleteExecutions(execution_ids: Iterable<string>): void {
   for (const eid of execution_ids) {
-    const snap = _executionMap.get(eid);
     if (!_executionMap.delete(eid)) continue;
     emitExecutionChange(eid);
-    if (snap && _cellToExecution.get(snap.cell_id) === eid) {
-      _cellToExecution.delete(snap.cell_id);
-      emitCellExecutionPointerChange(snap.cell_id);
+    for (const [cellId, executionId] of [..._cellToExecution.entries()]) {
+      if (executionId === eid) {
+        _cellToExecution.delete(cellId);
+        emitCellExecutionPointerChange(cellId);
+      }
     }
   }
 }
@@ -214,6 +213,14 @@ export function getExecutionById(
 /** Read the cell's current execution_id without subscribing. */
 export function getCellExecutionId(cell_id: string): string | null {
   return _cellToExecution.get(cell_id) ?? null;
+}
+
+/** Read the current cell id for an execution pointer without subscribing. */
+export function getCellIdForExecutionId(execution_id: string): string | null {
+  for (const [cellId, executionId] of _cellToExecution.entries()) {
+    if (executionId === execution_id) return cellId;
+  }
+  return null;
 }
 
 /** Reset the entire store. Called on notebook switch or full reset. */

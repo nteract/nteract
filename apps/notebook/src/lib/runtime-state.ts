@@ -23,7 +23,6 @@ export type {
 export {
   DEFAULT_RUNTIME_STATE,
   diffExecutions,
-  getExecutionCountForCell,
 } from "runtimed";
 
 import { DEFAULT_RUNTIME_STATE, type RuntimeState } from "runtimed";

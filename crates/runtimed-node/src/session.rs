@@ -1840,6 +1840,7 @@ async fn queue_existing_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) ->
         .send_request_after_heads(
             NotebookRequest::ExecuteCell {
                 cell_id: cell_id.to_string(),
+                execution_id: None,
             },
             required_heads,
         )
@@ -1950,8 +1951,8 @@ async fn cell_result_from_record(
     let (blob_base_url, blob_store_path) =
         runtimed_client::daemon_paths::get_blob_paths_async(socket_path).await;
     let execution_id = record.execution_id.clone();
+    let fallback_cell_id = record.cell_id.clone();
     let exec = runtime_doc::ExecutionState {
-        cell_id: record.cell_id.unwrap_or_default(),
         status: record.status,
         execution_count: record.execution_count,
         success: record.success,
@@ -1961,7 +1962,7 @@ async fn cell_result_from_record(
     };
     cell_result_from_execution_state(
         &execution_id,
-        None,
+        fallback_cell_id.as_deref(),
         &exec,
         None,
         &blob_base_url,
@@ -1978,11 +1979,7 @@ async fn cell_result_from_execution_state(
     blob_base_url: &Option<String>,
     blob_store_path: &Option<PathBuf>,
 ) -> Result<CellResult> {
-    let cell_id = if state.cell_id.is_empty() {
-        fallback_cell_id.unwrap_or_default()
-    } else {
-        state.cell_id.as_str()
-    };
+    let cell_id = fallback_cell_id.unwrap_or_default();
     let success = state.success.unwrap_or(true);
     cell_result_from_output_manifests(
         ExecutionResultParts {
@@ -2273,7 +2270,6 @@ mod tests {
     #[tokio::test]
     async fn execution_state_result_includes_execution_id_and_terminal_fields() {
         let state = runtime_doc::ExecutionState {
-            cell_id: "cell-1".to_string(),
             status: "done".to_string(),
             execution_count: Some(3),
             success: Some(true),
@@ -2282,9 +2278,10 @@ mod tests {
             seq: Some(9),
         };
 
-        let result = cell_result_from_execution_state("exec-1", None, &state, None, &None, &None)
-            .await
-            .unwrap();
+        let result =
+            cell_result_from_execution_state("exec-1", Some("cell-1"), &state, None, &None, &None)
+                .await
+                .unwrap();
 
         assert_eq!(result.cell_id, "cell-1");
         assert_eq!(result.execution_id, "exec-1");
@@ -2309,7 +2306,6 @@ mod tests {
     #[tokio::test]
     async fn execution_record_result_recovers_required_execution_id() {
         let state = runtime_doc::ExecutionState {
-            cell_id: "cell-from-record".to_string(),
             status: "done".to_string(),
             execution_count: Some(5),
             success: Some(true),
@@ -2329,7 +2325,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result.cell_id, "cell-from-record");
+        assert_eq!(result.cell_id, "");
         assert_eq!(result.execution_id, "exec-from-store");
         assert_eq!(result.execution_count, Some(5));
         assert!(result.success);

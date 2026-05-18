@@ -49,7 +49,6 @@ describe("useCellOutputs", () => {
       setOutput("out-a", a);
       setOutput("out-b", b);
       setExecution("exec-1", {
-        cell_id: "cell-1",
         execution_count: 1,
         status: "running",
         success: null,
@@ -69,7 +68,6 @@ describe("useCellOutputs", () => {
       setOutput("out-a", a);
       setOutput("out-b", b);
       setExecution("exec-1", {
-        cell_id: "cell-1",
         execution_count: 1,
         status: "running",
         success: null,
@@ -98,7 +96,6 @@ describe("useCellOutputs", () => {
     act(() => {
       setOutput("out-a", a);
       setExecution("exec-1", {
-        cell_id: "cell-1",
         execution_count: 1,
         status: "running",
         success: null,
@@ -114,7 +111,6 @@ describe("useCellOutputs", () => {
     // while keeping the pointer in place.
     act(() => {
       setExecution("exec-1", {
-        cell_id: "cell-1",
         execution_count: 1,
         status: "running",
         success: null,
@@ -128,7 +124,6 @@ describe("useCellOutputs", () => {
   it("returns the empty singleton when execution exists with no outputs", () => {
     act(() => {
       setExecution("exec-1", {
-        cell_id: "cell-1",
         execution_count: null,
         status: "queued",
         success: null,

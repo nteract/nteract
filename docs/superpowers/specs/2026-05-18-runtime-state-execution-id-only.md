@@ -7,9 +7,11 @@ runtime execution state. Notebook cells, markdown blocks, slides, or any future
 document-specific structure should point at executions from their own document
 models instead of being embedded into the runtime-state schema.
 
-This is a design-only proposal. It does not change the current wire protocol,
-schema artifacts, daemon queueing, generated bindings, or web sync architecture
-plan.
+This PR implements the core RuntimeStateDoc v2 contract for the bundled
+desktop deployment. It changes the runtime-state schema, daemon queueing,
+generated protocol bindings, WASM/TypeScript projections, and native bindings.
+It intentionally does not update
+`docs/architecture/web-sync-engine-architecture.md`.
 
 ## Current Problem
 
@@ -87,7 +89,7 @@ type RuntimeQueueStateV2 = {
 };
 
 type ExecutionStateV2 = {
-  status: "queued" | "running" | "idle" | "done" | "error" | "interrupted";
+  status: "queued" | "running" | "done" | "error";
   execution_count: number | null;
   success: boolean | null;
   source: string | null;
@@ -173,7 +175,9 @@ The notebook execution path should become:
 1. The client records or sends the required NotebookDoc heads for the source it
    wants to execute.
 2. The client may generate a crypto-random UUID early, using platform-native
-   secure randomness such as `crypto.randomUUID()` in web JavaScript.
+   secure randomness such as `crypto.randomUUID()` in web JavaScript. The
+   TypeScript `NotebookClient` exposes this as an optional request parameter;
+   existing app callers can continue to let the daemon generate IDs.
 3. The client sends `ExecuteCell { cell_id, execution_id?, required_heads? }`.
 4. The daemon validates the optional execution ID or generates one.
 5. The daemon waits for required heads and snapshots the cell source from
@@ -246,6 +250,8 @@ model and RuntimeStateDoc together. For notebooks, the preservation set is:
 
 - `queue.executing_execution_id`, when present.
 - Every ID in `queue.queued_execution_ids`.
+- Every execution whose RuntimeStateDoc status is `queued` or `running`, which
+  covers the window before the runtime agent has projected the queue map.
 - Every `cells/{cell_id}.execution_id` currently referenced by NotebookDoc.
 - Any implementation-defined recent-history window for user experience.
 - Any execution IDs with outstanding direct result waiters, if the daemon keeps
@@ -260,13 +266,14 @@ must preserve it.
 
 ## Schema Bump
 
-The implementation should create a RuntimeStateDoc v2 schema artifact:
+The implementation creates a RuntimeStateDoc v2 schema artifact:
 
-- Add `runtime_state_genesis_v2.am`.
-- Update RuntimeStateDoc schema/version constants to v2.
-- Update generated Rust, WASM, TypeScript, Python, MCP, and node bindings after
-  the core contract settles.
-- Keep the scaffold drift alarm for the frozen genesis artifact.
+- Adds `runtime_state_genesis_v2.am`.
+- Updates RuntimeStateDoc schema/version constants to v2.
+- Updates generated Rust/WASM/TypeScript protocol bindings.
+- Updates Python, MCP, and node projection/binding surfaces so RuntimeStateDoc
+  executions no longer carry `cell_id`.
+- Keeps the scaffold drift alarm for the frozen genesis artifact.
 
 No v1 compatibility migration is required for bundled desktop deployment. The
 daemon and app currently ship together, and this should land before web or Swift
@@ -276,20 +283,35 @@ For future remote clients, v2 should still be paired with protocol-level schema
 version negotiation and typed mismatch errors. Frozen genesis bytes prevent one
 class of bootstrap drift, but they do not replace a compatibility handshake.
 
-## Follow-Up Implementation Sequence
+## Implemented In This PR
 
-1. Add RuntimeStateDoc schema v2 and frozen `runtime_state_genesis_v2.am`.
-2. Update notebook protocol request, response, and error types for optional
-   execution IDs and duplicate-ID conflict errors.
-3. Change daemon queueing to validate duplicate IDs, create execution records
-   by execution ID, and roll back by execution ID.
-4. Clean up runtime-agent and kernel-state lifecycle routing so execution ID is
-   the only runtime correlation key.
-5. Clean up WASM and TypeScript projections by removing
-   `ExecutionState.cell_id` and changed-cell output diffs while keeping
-   output-ID changesets.
-6. Update Python, MCP, and node bindings after the core contract and generated
-   bindings stabilize.
+1. RuntimeStateDoc schema v2 and frozen `runtime_state_genesis_v2.am`.
+2. Notebook protocol request, response, and error types for optional execution
+   IDs and duplicate-ID conflict errors.
+3. Daemon queueing validation for malformed IDs, existing IDs, and duplicate
+   IDs within run-all.
+4. Execution records created and rolled back by execution ID rather than cell
+   ID.
+5. Runtime-agent, kernel-state, Jupyter message, stream, display-update, and
+   output-prep routing by execution ID.
+6. WASM and TypeScript projection cleanup: no `ExecutionState.cell_id`, no
+   changed-cell output diffs, output-ID changesets retained.
+7. Python, MCP, and node bindings updated for execution-ID-only runtime-state
+   projection.
+8. RuntimeStateDoc trimming moved to notebook-aware request coordination, with
+   queued/running and cell-referenced execution IDs preserved.
+
+## Remaining Follow-Up
+
+- Broaden direct execution APIs so non-notebook clients can submit by
+  execution ID without requiring a cell pointer.
+- Decide whether Python and node high-level APIs should expose caller-supplied
+  execution IDs, matching the TypeScript client.
+- Add remote-client schema negotiation and typed mismatch errors before Swift
+  or web clients are allowed to drift independently from the daemon.
+- Revisit durable execution result records if a future reload path needs to
+  recover cell-to-execution provenance from the sidecar store rather than
+  NotebookDoc pointers.
 
 ## Test Plan
 
@@ -299,7 +321,7 @@ Runtime-doc tests should prove:
 - Saved RuntimeStateDoc v2 state contains no execution `cell_id`.
 - Queue state contains `executing_execution_id` and `queued_execution_ids`.
 
-Protocol tests should cover:
+Protocol and request tests should cover:
 
 - Daemon-generated execution IDs when the request omits one.
 - Accepted client-provided UUIDs.

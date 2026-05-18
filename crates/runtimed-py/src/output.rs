@@ -1039,8 +1039,6 @@ impl PyEnvState {
 #[pyclass(name = "ExecutionState", get_all, skip_from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyExecutionState {
-    /// Cell that was executed.
-    pub cell_id: String,
     /// Current status: "queued", "running", "done", "error".
     pub status: String,
     /// Kernel execution count (set when execution starts).
@@ -1053,8 +1051,8 @@ pub struct PyExecutionState {
 impl PyExecutionState {
     fn __repr__(&self) -> String {
         format!(
-            "ExecutionState(cell_id={}, status={}, success={:?})",
-            self.cell_id, self.status, self.success
+            "ExecutionState(status={}, success={:?})",
+            self.status, self.success
         )
     }
 
@@ -1181,7 +1179,7 @@ impl From<runtime_doc::RuntimeState> for PyRuntimeState {
             },
             queue: QueueState {
                 executing: rs.queue.executing.map(|e| PyQueueEntry {
-                    cell_id: e.cell_id,
+                    cell_id: String::new(),
                     execution_id: e.execution_id,
                 }),
                 queued: rs
@@ -1189,7 +1187,7 @@ impl From<runtime_doc::RuntimeState> for PyRuntimeState {
                     .queued
                     .into_iter()
                     .map(|e| PyQueueEntry {
-                        cell_id: e.cell_id,
+                        cell_id: String::new(),
                         execution_id: e.execution_id,
                     })
                     .collect(),
@@ -1211,7 +1209,6 @@ impl From<runtime_doc::RuntimeState> for PyRuntimeState {
                     (
                         eid,
                         PyExecutionState {
-                            cell_id: es.cell_id,
                             status: es.status,
                             execution_count: es.execution_count,
                             success: es.success,
@@ -1328,7 +1325,6 @@ mod tests {
         executions.insert(
             "exec-1".to_string(),
             ExecutionState {
-                cell_id: "cell-1".to_string(),
                 status: "done".to_string(),
                 execution_count: Some(12),
                 success: Some(true),
@@ -1364,11 +1360,9 @@ mod tests {
             },
             queue: RuntimeQueueState {
                 executing: Some(QueueEntry {
-                    cell_id: "cell-1".to_string(),
                     execution_id: "exec-1".to_string(),
                 }),
                 queued: vec![QueueEntry {
-                    cell_id: "cell-2".to_string(),
                     execution_id: "exec-2".to_string(),
                 }],
             },
@@ -1402,7 +1396,7 @@ mod tests {
             py_state.queue.executing.as_ref().unwrap().execution_id,
             "exec-1"
         );
-        assert_eq!(py_state.queue.queued[0].cell_id, "cell-2");
+        assert_eq!(py_state.queue.queued[0].execution_id, "exec-2");
         assert!(!py_state.env.in_sync);
         assert_eq!(py_state.env.added, vec!["pandas".to_string()]);
         assert_eq!(
@@ -1415,7 +1409,7 @@ mod tests {
         );
         assert_eq!(
             py_state.executions["exec-1"].__repr__(),
-            "ExecutionState(cell_id=cell-1, status=done, success=Some(true))"
+            "ExecutionState(status=done, success=Some(true))"
         );
         assert_eq!(py_state.comms["comm-1"].model_name, "IntSliderModel");
         assert_eq!(

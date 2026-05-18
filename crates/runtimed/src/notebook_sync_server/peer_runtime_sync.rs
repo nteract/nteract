@@ -19,7 +19,6 @@ pub(super) struct RuntimeFileSaveFingerprint {
 #[derive(Debug, Clone, PartialEq)]
 struct RuntimeExecutionSaveFingerprint {
     execution_id: String,
-    cell_id: String,
     phase: RuntimeExecutionSavePhase,
     execution_count: Option<i64>,
     seq: Option<u64>,
@@ -53,7 +52,6 @@ pub(super) fn runtime_file_save_fingerprint(
             };
             RuntimeExecutionSaveFingerprint {
                 execution_id,
-                cell_id: exec.cell_id,
                 phase,
                 execution_count: exec.execution_count,
                 seq: exec.seq,

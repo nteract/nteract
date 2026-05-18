@@ -345,7 +345,7 @@ mod tests {
     fn create_execution(state: &RuntimeStateHandle) {
         state
             .with_doc(|sd| {
-                sd.create_execution("exec-1", "cell-1")?;
+                sd.create_execution("exec-1")?;
                 Ok(())
             })
             .expect("execution entry");
@@ -380,7 +380,6 @@ mod tests {
                 stream_name: "stdout".to_string(),
             }],
             QueueCommand::ExecutionDone {
-                cell_id: "cell-1".to_string(),
                 execution_id: "exec-1".to_string(),
             },
         );
@@ -476,7 +475,6 @@ mod tests {
         handle.flush_then_signal(
             Vec::new(),
             QueueCommand::ExecutionDone {
-                cell_id: "cell-1".to_string(),
                 execution_id: "exec-1".to_string(),
             },
         );
@@ -485,9 +483,8 @@ mod tests {
         assert!(matches!(
             received,
             QueueCommand::ExecutionDone {
-                cell_id,
                 execution_id
-            } if cell_id == "cell-1" && execution_id == "exec-1"
+            } if execution_id == "exec-1"
         ));
     }
 

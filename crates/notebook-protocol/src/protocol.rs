@@ -245,6 +245,18 @@ pub enum SaveErrorKind {
     Io { message: String },
 }
 
+/// Why a caller-provided execution id was rejected.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionIdRejectionReason {
+    /// The provided id was not a valid UUID string.
+    Malformed,
+    /// The id already exists in RuntimeStateDoc.
+    AlreadyExists,
+    /// The same id appeared more than once in a single batch request.
+    DuplicateInRequest,
+}
+
 /// Structured blob-upload error reasons.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -442,12 +454,18 @@ pub enum NotebookRequest {
     },
 
     /// Execute a cell by reading its source from the automerge doc.
-    ExecuteCell { cell_id: String },
+    ExecuteCell {
+        cell_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution_id: Option<String>,
+    },
 
     /// Execute a cell only if it still matches the frontend-observed state
     /// captured when a trust gate opened.
     ExecuteCellGuarded {
         cell_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution_id: Option<String>,
         observed_heads: Vec<String>,
     },
 
@@ -459,11 +477,18 @@ pub enum NotebookRequest {
 
     /// Run all code cells from the synced document.
     /// Daemon reads cell sources from the Automerge doc and queues them.
-    RunAllCells {},
+    RunAllCells {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cell_execution_ids: Option<std::collections::HashMap<String, String>>,
+    },
 
     /// Run all code cells only if the current code-cell list still matches
     /// the frontend-observed state captured when a trust gate opened.
-    RunAllCellsGuarded { observed_heads: Vec<String> },
+    RunAllCellsGuarded {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cell_execution_ids: Option<std::collections::HashMap<String, String>>,
+        observed_heads: Vec<String>,
+    },
 
     /// Send a comm message to the kernel (widget interactions).
     /// Accepts the full Jupyter message envelope to preserve header/session.
@@ -605,6 +630,12 @@ pub enum NotebookResponse {
     CellQueued {
         cell_id: String,
         execution_id: String,
+    },
+
+    /// Caller-provided execution id was rejected before queueing.
+    ExecutionIdRejected {
+        execution_id: String,
+        reason: ExecutionIdRejectionReason,
     },
 
     /// Interrupt sent to kernel.
@@ -1008,6 +1039,7 @@ mod tests {
             required_heads: vec!["a".repeat(64)],
             request: NotebookRequest::ExecuteCell {
                 cell_id: "cell-42".into(),
+                execution_id: None,
             },
         };
         let json = serde_json::to_value(&env).expect("serialize");
@@ -1020,7 +1052,7 @@ mod tests {
         assert_eq!(parsed.required_heads, vec!["a".repeat(64)]);
         assert!(matches!(
             parsed.request,
-            NotebookRequest::ExecuteCell { cell_id } if cell_id == "cell-42"
+            NotebookRequest::ExecuteCell { cell_id, execution_id } if cell_id == "cell-42" && execution_id.is_none()
         ));
     }
 
@@ -1047,9 +1079,11 @@ mod tests {
         let cases = vec![
             NotebookRequest::ExecuteCellGuarded {
                 cell_id: "cell-1".to_string(),
+                execution_id: None,
                 observed_heads: observed_heads.clone(),
             },
             NotebookRequest::RunAllCellsGuarded {
+                cell_execution_ids: None,
                 observed_heads: observed_heads.clone(),
             },
             NotebookRequest::SyncEnvironment {

@@ -187,12 +187,12 @@ where
             Ok(initial_load_phase)
         }
         Err(e) => {
-            let cell_ids = {
+            let execution_ids = {
                 let mut doc = room.doc.write().await;
-                let cell_ids = doc
+                let execution_ids = doc
                     .get_cells()
                     .into_iter()
-                    .map(|cell| cell.id)
+                    .filter_map(|cell| doc.get_execution_id(&cell.id))
                     .collect::<Vec<_>>();
                 if let Err(err) = doc.clear_all_cells() {
                     warn!(
@@ -201,12 +201,12 @@ where
                         err
                     );
                 }
-                cell_ids
+                execution_ids
             };
-            if !cell_ids.is_empty() {
+            if !execution_ids.is_empty() {
                 if let Err(err) = room
                     .state
-                    .with_doc(|state_doc| state_doc.remove_executions_for_cells(&cell_ids))
+                    .with_doc(|state_doc| state_doc.remove_executions(&execution_ids))
                 {
                     warn!(
                         "[notebook-sync] Failed to remove partial load executions for {}: {}",
@@ -754,13 +754,19 @@ mod tests {
         .await
         .expect("valid notebook should stream successfully");
 
+        let execution_id = room
+            .doc
+            .read()
+            .await
+            .get_execution_id("loaded-cell")
+            .expect("loaded code cell should point at an execution");
+
         room.state
             .with_doc(|state_doc| {
                 let state = state_doc.read_state();
                 let execution = state
                     .executions
-                    .values()
-                    .find(|execution| execution.cell_id == "loaded-cell")
+                    .get(&execution_id)
                     .expect("loaded code cell should have an execution record");
                 assert_eq!(execution.execution_count, Some(7));
                 Ok(())

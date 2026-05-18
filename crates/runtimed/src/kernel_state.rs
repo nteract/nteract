@@ -1,6 +1,6 @@
 //! Execution state machine for the runtime agent.
 //!
-//! `KernelState` owns the execution queue, currently-executing cell, and
+//! `KernelState` owns the execution queue, currently-executing id, and
 //! kernel lifecycle status. It is designed to be held as a plain local
 //! variable in the runtime agent's `select!` loop — no mutex needed.
 //!
@@ -19,19 +19,11 @@ use crate::output_prep::{KernelStatus, QueuedCell};
 use crate::protocol::QueueEntry;
 use runtime_doc::QueueEntry as DocQueueEntry;
 
-/// Maximum execution entries retained in the RuntimeStateDoc.
-///
-/// Matches the constant in `output_prep.rs`. `trim_executions` preserves the
-/// latest execution per cell, so the actual count can exceed this if the
-/// notebook has more unique cells than this limit.
-const MAX_EXECUTION_ENTRIES: usize = 64;
-
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /// Convert a protocol `QueueEntry` to a `RuntimeStateDoc` `QueueEntry`.
 fn to_doc_entry(e: &QueueEntry) -> DocQueueEntry {
     DocQueueEntry {
-        cell_id: e.cell_id.clone(),
         execution_id: e.execution_id.clone(),
     }
 }
@@ -50,8 +42,8 @@ fn to_doc_entries(entries: &[QueueEntry]) -> Vec<DocQueueEntry> {
 pub struct KernelState {
     /// Cells pending execution.
     queue: VecDeque<QueuedCell>,
-    /// `(cell_id, execution_id)` of the currently running cell.
-    executing: Option<(String, String)>,
+    /// Execution id of the currently running request.
+    executing: Option<String>,
     /// Whether the current execution produced an error output.
     /// Read by `execution_done` to record success/failure in the state doc.
     execution_had_error: bool,
@@ -97,7 +89,7 @@ impl KernelState {
 
     // ── Queue operations ───────────────────────────────────────────────
 
-    /// Queue a cell for execution.
+    /// Queue code for execution.
     ///
     /// Idempotent: if the cell is already executing or queued, returns the
     /// existing `execution_id` instead of generating a new one.
@@ -106,38 +98,30 @@ impl KernelState {
     /// currently running.
     pub async fn queue_cell(
         &mut self,
-        cell_id: String,
         execution_id: String,
         source: String,
         conn: &mut impl KernelConnection,
     ) -> Result<String> {
         // Idempotent: return existing execution_id if already executing or queued
-        if let Some((ref cid, ref eid)) = self.executing {
-            if cid == &cell_id {
-                info!(
-                    "[kernel-state] Cell {} already executing ({}), skipping",
-                    cell_id, eid
-                );
-                return Ok(eid.clone());
-            }
-        }
-        if let Some(existing) = self.queue.iter().find(|c| c.cell_id == cell_id) {
+        if self.executing.as_deref() == Some(execution_id.as_str()) {
             info!(
-                "[kernel-state] Cell {} already queued ({}), skipping",
-                cell_id, existing.execution_id
+                "[kernel-state] Execution {} already running, skipping",
+                execution_id
+            );
+            return Ok(execution_id);
+        }
+        if let Some(existing) = self.queue.iter().find(|c| c.execution_id == execution_id) {
+            info!(
+                "[kernel-state] Execution {} already queued, skipping",
+                existing.execution_id
             );
             return Ok(existing.execution_id.clone());
         }
 
-        info!(
-            "[kernel-state] Queuing cell: {} (execution_id={})",
-            cell_id, execution_id
-        );
+        info!("[kernel-state] Queuing execution: {}", execution_id);
 
-        // Add to queue (clone cell_id before move for state_doc write below)
-        let cell_id_ref = cell_id.clone();
+        // Add to queue.
         self.queue.push_back(QueuedCell {
-            cell_id,
             execution_id: execution_id.clone(),
             code: source,
         });
@@ -147,7 +131,7 @@ impl KernelState {
             let doc_exec = self.executing_entry().as_ref().map(to_doc_entry);
             let doc_queued = to_doc_entries(&self.queued_entries());
             if let Err(e) = self.state.with_doc(|sd| {
-                sd.create_execution(&execution_id, &cell_id_ref)?;
+                sd.create_execution(&execution_id)?;
                 sd.set_queue(doc_exec.as_ref(), &doc_queued)?;
                 Ok(())
             }) {
@@ -162,17 +146,16 @@ impl KernelState {
 
     /// Mark a cell execution as complete and process the next queued cell.
     ///
-    /// Only acts if `cell_id` matches the currently executing cell.
+    /// Only acts if `execution_id` matches the currently executing cell.
     pub async fn execution_done(
         &mut self,
-        cell_id: &str,
         execution_id: &str,
         conn: &mut impl KernelConnection,
     ) -> Result<()> {
         let matches = self
             .executing
             .as_ref()
-            .is_some_and(|(cid, eid)| cid == cell_id && eid == execution_id);
+            .is_some_and(|eid| eid == execution_id);
         if matches {
             let success = !self.execution_had_error;
             self.executing = None;
@@ -185,25 +168,6 @@ impl KernelState {
                 if let Err(e) = self.state.with_doc(|sd| {
                     sd.set_execution_done(execution_id, success)?;
                     sd.set_queue(None, &doc_queued)?;
-                    match sd.trim_executions(MAX_EXECUTION_ENTRIES) {
-                        Ok(trimmed) if trimmed > 0 => {
-                            match sd.rebuild_from_save() {
-                                Ok(()) => {
-                                    debug!(
-                                        "[kernel-state] Compacted RuntimeStateDoc after trimming {} executions",
-                                        trimmed
-                                    );
-                                }
-                                Err(err) => {
-                                    warn!("[runtime-state] Failed to compact RuntimeStateDoc: {}", err);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!("[runtime-state] {}", e);
-                        }
-                        _ => {}
-                    }
                     Ok(())
                 }) {
                     warn!("[runtime-state] {}", e);
@@ -220,17 +184,17 @@ impl KernelState {
     ///
     /// Called before `execution_done` so it can determine success/failure.
     /// Returns `false` for stale errors from an already-interrupted execution.
-    pub fn mark_execution_error(&mut self, cell_id: &str, execution_id: &str) -> bool {
+    pub fn mark_execution_error(&mut self, execution_id: &str) -> bool {
         let is_current = self
             .executing
             .as_ref()
-            .is_some_and(|(cid, eid)| cid == cell_id && eid == execution_id);
+            .is_some_and(|eid| eid == execution_id);
         if is_current {
             self.execution_had_error = true;
         } else {
             debug!(
-                "[kernel-state] Ignoring stale CellError for cell={} execution={}",
-                cell_id, execution_id
+                "[kernel-state] Ignoring stale CellError for execution={}",
+                execution_id
             );
         }
         is_current
@@ -243,13 +207,10 @@ impl KernelState {
     /// stale events, while `interrupt_pending` prevents sending new execute
     /// requests until the kernel reports a real idle state.
     pub fn interrupt(&mut self) -> (Option<QueueEntry>, Vec<QueueEntry>) {
-        let interrupted = self
-            .executing
-            .take()
-            .map(|(cell_id, execution_id)| QueueEntry {
-                cell_id,
-                execution_id,
-            });
+        let interrupted = self.executing.take().map(|execution_id| QueueEntry {
+            cell_id: String::new(),
+            execution_id,
+        });
         self.interrupt_pending = interrupted.as_ref().map(|entry| entry.execution_id.clone());
         let cleared = self.clear_queue();
         self.execution_had_error = false;
@@ -288,7 +249,7 @@ impl KernelState {
             .queue
             .drain(..)
             .map(|c| QueueEntry {
-                cell_id: c.cell_id,
+                cell_id: String::new(),
                 execution_id: c.execution_id,
             })
             .collect();
@@ -304,7 +265,7 @@ impl KernelState {
     ///
     /// Idempotent — multiple calls (e.g., from both process watcher and
     /// heartbeat monitor) are safe.
-    pub fn kernel_died(&mut self) -> (Option<(String, String)>, Vec<QueueEntry>) {
+    pub fn kernel_died(&mut self) -> (Option<String>, Vec<QueueEntry>) {
         // Idempotent: if already dead, don't re-broadcast
         if self.status == KernelStatus::Dead {
             debug!("[kernel-state] kernel_died called but already dead, ignoring");
@@ -357,7 +318,7 @@ impl KernelState {
             return Ok(());
         };
 
-        self.executing = Some((cell.cell_id.clone(), cell.execution_id.clone()));
+        self.executing = Some(cell.execution_id.clone());
         self.status = KernelStatus::Busy;
 
         // Write to state doc
@@ -374,12 +335,11 @@ impl KernelState {
         }
 
         // Send execute request via the connection
-        conn.execute(&cell.cell_id, &cell.execution_id, &cell.code)
-            .await?;
+        conn.execute(&cell.execution_id, &cell.code).await?;
 
         info!(
-            "[kernel-state] Sent execute_request: cell_id={} execution_id={}",
-            cell.cell_id, cell.execution_id
+            "[kernel-state] Sent execute_request: execution_id={}",
+            cell.execution_id
         );
 
         Ok(())
@@ -397,8 +357,8 @@ impl KernelState {
         !matches!(self.status, KernelStatus::Dead | KernelStatus::ShuttingDown)
     }
 
-    /// The `(cell_id, execution_id)` of the currently executing cell, if any.
-    pub fn executing_cell(&self) -> Option<&(String, String)> {
+    /// The currently executing id, if any.
+    pub fn executing_cell(&self) -> Option<&String> {
         self.executing.as_ref()
     }
 
@@ -407,7 +367,7 @@ impl KernelState {
         self.queue
             .iter()
             .map(|c| QueueEntry {
-                cell_id: c.cell_id.clone(),
+                cell_id: String::new(),
                 execution_id: c.execution_id.clone(),
             })
             .collect()
@@ -415,8 +375,8 @@ impl KernelState {
 
     /// The currently executing entry as a protocol `QueueEntry`, if any.
     pub fn executing_entry(&self) -> Option<QueueEntry> {
-        self.executing.as_ref().map(|(cid, eid)| QueueEntry {
-            cell_id: cid.clone(),
+        self.executing.as_ref().map(|eid| QueueEntry {
+            cell_id: String::new(),
             execution_id: eid.clone(),
         })
     }
@@ -449,7 +409,7 @@ mod tests {
 
     /// Minimal mock that records execute calls and succeeds.
     struct MockKernel {
-        executes: Vec<(String, String)>,
+        executes: Vec<String>,
     }
 
     impl MockKernel {
@@ -468,14 +428,8 @@ mod tests {
             unimplemented!("tests create MockKernel directly")
         }
 
-        async fn execute(
-            &mut self,
-            cell_id: &str,
-            execution_id: &str,
-            _source: &str,
-        ) -> Result<()> {
-            self.executes
-                .push((cell_id.to_string(), execution_id.to_string()));
+        async fn execute(&mut self, execution_id: &str, _source: &str) -> Result<()> {
+            self.executes.push(execution_id.to_string());
             Ok(())
         }
 
@@ -549,11 +503,11 @@ mod tests {
 
         // Queue two cells — first starts executing, second stays queued
         state
-            .queue_cell("c1".into(), "e1".into(), "x=1".into(), &mut mock)
+            .queue_cell("e1".into(), "x=1".into(), &mut mock)
             .await
             .unwrap();
         state
-            .queue_cell("c2".into(), "e2".into(), "x=2".into(), &mut mock)
+            .queue_cell("e2".into(), "x=2".into(), &mut mock)
             .await
             .unwrap();
 
@@ -562,14 +516,11 @@ mod tests {
 
         let (interrupted, cleared) = state.kernel_died();
 
-        // Should return the executing cell
-        let (cid, eid) = interrupted.unwrap();
-        assert_eq!(cid, "c1");
-        assert_eq!(eid, "e1");
+        // Should return the executing id
+        assert_eq!(interrupted.unwrap(), "e1");
 
         // Should return the cleared queued entry
         assert_eq!(cleared.len(), 1);
-        assert_eq!(cleared[0].cell_id, "c2");
         assert_eq!(cleared[0].execution_id, "e2");
 
         // State should be cleared
@@ -584,7 +535,7 @@ mod tests {
         state.set_idle();
 
         state
-            .queue_cell("c1".into(), "e1".into(), "x=1".into(), &mut mock)
+            .queue_cell("e1".into(), "x=1".into(), &mut mock)
             .await
             .unwrap();
 
@@ -617,11 +568,11 @@ mod tests {
         state.set_idle();
 
         state
-            .queue_cell("c1".into(), "e1".into(), "x=1".into(), &mut mock)
+            .queue_cell("e1".into(), "x=1".into(), &mut mock)
             .await
             .unwrap();
         state
-            .queue_cell("c2".into(), "e2".into(), "x=2".into(), &mut mock)
+            .queue_cell("e2".into(), "x=2".into(), &mut mock)
             .await
             .unwrap();
 
