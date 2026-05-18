@@ -278,6 +278,15 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       [autoHeight, maxHeight, minHeight],
     );
 
+    // Mirror the latest clamping callback into a ref so the controller
+    // subscriptions can call it without forcing the controller-creation
+    // effect to re-run on height-policy prop changes. If the controller
+    // tore down whenever `autoHeight`/`maxHeight`/`minHeight` changed,
+    // the new instance would never see another `ready` from the
+    // already-loaded iframe and stay stuck in `booting`.
+    const applyMeasuredHeightRef = useRef(applyMeasuredHeight);
+    applyMeasuredHeightRef.current = applyMeasuredHeight;
+
     // Re-apply height when clamping props change.
     useEffect(() => {
       applyMeasuredHeight(measuredHeightRef.current);
@@ -335,12 +344,12 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
           }
         }),
         controller.resize$.subscribe(({ height: h }) => {
-          applyMeasuredHeight(h);
+          applyMeasuredHeightRef.current(h);
         }),
         controller.renderComplete$.subscribe(({ height: h }) => {
           if (h != null) {
             setIsContentRendered(true);
-            applyMeasuredHeight(h);
+            applyMeasuredHeightRef.current(h);
           } else {
             setIsContentRendered(true);
           }
@@ -370,11 +379,13 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         controller.dispose();
         controllerRef.current = null;
       };
-      // initialContent/theme are read at construction time; we don't
-      // re-instantiate on every change. The setTheme effect below propagates
-      // theme changes through the live controller instead.
+      // Effect is keyed to `frameDocument` only — the controller is one
+      // per iframe element. `initialContent`, `darkMode`, `colorTheme`,
+      // `allowWheelBoundaryScroll` are read at construction; live changes
+      // propagate through the dedicated effects below, not by recreating
+      // the controller (which would orphan the loaded iframe).
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [frameDocument, applyMeasuredHeight]);
+    }, [frameDocument]);
 
     // Hand the renderer bundle to the controller as soon as it resolves.
     useEffect(() => {

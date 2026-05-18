@@ -217,14 +217,15 @@ export const ISOLATED_FRAME_SANDBOX =
 // ── Controller ───────────────────────────────────────────────────────
 
 /**
- * Internal queued message. Keeps the legacy `{ type, payload }` shape so
- * the flush path can pick the right transport (JSON-RPC if the bundle is
- * up, raw postMessage otherwise).
+ * Internal queued message. JSON-RPC sends carry a `method`/`params` pair
+ * and are flushed via `rpc.notify()`. Legacy sends carry a `raw` message
+ * (any `ParentToIframeMessage` that has no canonical JSON-RPC method,
+ * e.g. `interaction_state`) and are flushed via raw postMessage so the
+ * iframe-side legacy handler picks them up.
  */
-interface QueuedSend {
-  method: string;
-  params?: unknown;
-}
+type QueuedSend =
+  | { kind: "rpc"; method: string; params?: unknown }
+  | { kind: "raw"; message: ParentToIframeMessage };
 
 export class IsolatedFrameController {
   private readonly iframe: HTMLIFrameElement;
@@ -306,13 +307,17 @@ export class IsolatedFrameController {
    */
   send(message: ParentToIframeMessage): void {
     const method = TYPE_TO_METHOD[message.type];
-    const params = "payload" in message ? message.payload : undefined;
-    if (!method) {
-      // Unknown type — fall back to a raw postMessage if the iframe is up.
-      this.iframe.contentWindow?.postMessage(message, "*");
+    if (method) {
+      const params = "payload" in message ? message.payload : undefined;
+      this.enqueue(method, params);
       return;
     }
-    this.enqueue(method, params);
+    // No canonical JSON-RPC method (e.g. `interaction_state`). Queue as a
+    // legacy postMessage and flush after the renderer is ready so the
+    // iframe-side legacy handler picks it up. Without this gate, an early
+    // `interaction_state` would land on the bootstrap-only listener and
+    // get dropped.
+    this.enqueueRaw(message);
   }
 
   render(payload: RenderPayload): void {
@@ -407,10 +412,18 @@ export class IsolatedFrameController {
 
   private enqueue(method: string, params: unknown): void {
     if (this.state !== "ready" || !this.rpc) {
-      this.pending.push({ method, params });
+      this.pending.push({ kind: "rpc", method, params });
       return;
     }
     this.rpc.notify(method, params);
+  }
+
+  private enqueueRaw(message: ParentToIframeMessage): void {
+    if (this.state !== "ready") {
+      this.pending.push({ kind: "raw", message });
+      return;
+    }
+    this.iframe.contentWindow?.postMessage(message, "*");
   }
 
   private flushPending(): void {
@@ -418,7 +431,11 @@ export class IsolatedFrameController {
     const drain = this.pending;
     this.pending = [];
     for (const item of drain) {
-      this.rpc.notify(item.method, item.params);
+      if (item.kind === "rpc") {
+        this.rpc.notify(item.method, item.params);
+      } else {
+        this.iframe.contentWindow?.postMessage(item.message, "*");
+      }
     }
   }
 

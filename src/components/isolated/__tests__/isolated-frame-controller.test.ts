@@ -137,6 +137,36 @@ describe("IsolatedFrameController", () => {
   });
 
   describe("send queue", () => {
+    it("queues an unknown legacy message (interaction_state) until ready", () => {
+      const controller = new IsolatedFrameController({
+        iframe: iframe.element,
+        rendererCode: "/*code*/",
+        rendererCss: "body{}",
+      });
+      // Pre-ready: legacy message must not slip through immediately.
+      controller.send({ type: "interaction_state", payload: { active: true } });
+      const preReadyInteraction = iframe.posts.filter(
+        (p) => (p.message as { type?: string }).type === "interaction_state",
+      );
+      expect(preReadyInteraction).toHaveLength(0);
+
+      dispatchFromIframe(iframe, { type: "ready" });
+      dispatchFromIframe(iframe, {
+        jsonrpc: "2.0",
+        method: NTERACT_RENDERER_READY,
+        params: {},
+      });
+      const postReadyInteraction = iframe.posts.filter(
+        (p) => (p.message as { type?: string }).type === "interaction_state",
+      );
+      expect(postReadyInteraction).toHaveLength(1);
+      expect(postReadyInteraction[0].message).toEqual({
+        type: "interaction_state",
+        payload: { active: true },
+      });
+      controller.dispose();
+    });
+
     it("queues render until ready, then flushes via JSON-RPC", () => {
       const controller = new IsolatedFrameController({
         iframe: iframe.element,
