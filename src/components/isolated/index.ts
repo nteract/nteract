@@ -31,5 +31,22 @@ export { FRAME_HTML, generateFrameHtml } from "./frame-html";
 export { IsolationTest } from "./IsolationTest";
 export type { IsolatedFrameHandle, IsolatedFrameProps } from "./isolated-frame";
 export { IsolatedFrame } from "./isolated-frame";
+// Framework-agnostic controller and helpers
+export type {
+  FrameError,
+  FrameLifecycleState,
+  FrameLinkClickEvent,
+  FrameRenderCompleteEvent,
+  FrameResizeEvent,
+  FrameSource,
+  FrameThemePayload,
+  FrameWidgetUpdateEvent,
+  IsolatedFrameControllerOptions,
+} from "./isolated-frame-controller";
+export {
+  ISOLATED_FRAME_SANDBOX,
+  IsolatedFrameController,
+  resolveFrameSource,
+} from "./isolated-frame-controller";
 // Provider and hook for renderer bundle
 export { IsolatedRendererProvider, useIsolatedRenderer } from "./isolated-renderer-context";
