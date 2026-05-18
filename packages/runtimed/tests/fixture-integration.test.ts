@@ -24,7 +24,7 @@ import { VirtualAction, VirtualTimeScheduler } from "rxjs";
 import { describe, expect, it } from "vite-plus/test";
 import type { NotebookHandle } from "../../../apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm";
 import { DirectTransport, type ServerHandle } from "../src/direct-transport";
-import type { SyncableHandle } from "../src/handle";
+import type { ExecutionViewChangeset, SyncableHandle } from "../src/handle";
 import { SyncEngine } from "../src/sync-engine";
 import { initWasm } from "./wasm-harness";
 
@@ -312,6 +312,52 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
       expect(h.client.get_cell_source("cell-3")).toBe("# Results");
 
       h.dispose();
+    });
+
+    it("projects execution-view changesets from real WASM fixture docs", async () => {
+      const Handle = await initWasm();
+      const client = Handle.load(loadDocBytes("multi_cell_execution"));
+      client.load_state_doc(loadStateDocBytes("multi_cell_execution")!);
+
+      const changeset = (
+        client as unknown as {
+          project_execution_view_changeset(): ExecutionViewChangeset;
+        }
+      ).project_execution_view_changeset();
+
+      const cell1ExecutionId = client.get_cell_execution_id("cell-1");
+      const cell2ExecutionId = client.get_cell_execution_id("cell-2");
+      expect(cell1ExecutionId).toBe("exec-001");
+      expect(cell2ExecutionId).toBe("exec-002");
+
+      const pointerChanges = changeset.cell_pointer_changes ?? [];
+      expect(pointerChanges).toContainEqual(["cell-1", cell1ExecutionId]);
+      expect(pointerChanges).toContainEqual(["cell-2", cell2ExecutionId]);
+
+      const upserts = new Map(changeset.execution_upserts ?? []);
+      expect(upserts.get(cell1ExecutionId!)).toEqual({
+        execution_count: null,
+        status: "done",
+        success: true,
+        output_ids: [],
+      });
+      expect(upserts.get(cell2ExecutionId!)).toEqual({
+        execution_count: null,
+        status: "done",
+        success: true,
+        output_ids: ["8f359d50-e5a4-5243-a71a-120209c0adb1"],
+      });
+
+      expect(changeset.queue).toEqual({
+        executing_execution_id: null,
+        queued_execution_ids: [],
+        notebook: {
+          executing_cell_id: null,
+          queued_cell_ids: [],
+        },
+      });
+
+      client.free();
     });
   });
 

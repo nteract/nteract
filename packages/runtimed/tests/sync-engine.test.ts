@@ -907,6 +907,71 @@ describe("SyncEngine", () => {
       ]);
       engine.stop();
     });
+
+    it("emits recovered runtime-state execution view changes from sync errors", () => {
+      const state = makeRuntimeState({
+        "exec-1": { status: "running", execution_count: 1, success: null },
+      });
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        {
+          type: "runtime_state_sync_error",
+          changed: true,
+          state,
+          execution_view_changeset: {
+            queue: {
+              executing_execution_id: "exec-1",
+              queued_execution_ids: ["exec-2"],
+              notebook: {
+                executing_cell_id: "cell-1",
+                queued_cell_ids: ["cell-2"],
+              },
+            },
+          },
+        },
+      ]);
+
+      const engine = createEngine();
+      engine.start();
+
+      const received: NonNullable<FrameEvent["execution_view_changeset"]>[] = [];
+      engine.executionViewChanges$.subscribe((changeset) => received.push(changeset));
+
+      transport.deliver(Array.from([0x05, 1]));
+
+      expect(received).toEqual([
+        {
+          queue: {
+            executing_execution_id: "exec-1",
+            queued_execution_ids: ["exec-2"],
+            notebook: {
+              executing_cell_id: "cell-1",
+              queued_cell_ids: ["cell-2"],
+            },
+          },
+        },
+      ]);
+      engine.stop();
+    });
+
+    it("does not emit empty execution-view changesets", () => {
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        syncAppliedEvent({
+          changed: true,
+          executionViewChangeset: {},
+        }),
+      ]);
+
+      const engine = createEngine();
+      engine.start();
+
+      const received: NonNullable<FrameEvent["execution_view_changeset"]>[] = [];
+      engine.executionViewChanges$.subscribe((changeset) => received.push(changeset));
+
+      transport.deliver(Array.from([0x00, 1]));
+
+      expect(received).toEqual([]);
+      engine.stop();
+    });
   });
 
   // ── Inline sync reply ─────────────────────────────────────────
