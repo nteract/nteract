@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import type { FrameLifecycleState } from "../isolated-frame-controller";
 import { IsolatedFrameController } from "../isolated-frame-controller";
 import {
+  NTERACT_INTERACTION_STATE,
   NTERACT_LINK_CLICK,
   NTERACT_RENDERER_READY,
   NTERACT_RENDER_OUTPUT,
@@ -137,18 +138,18 @@ describe("IsolatedFrameController", () => {
   });
 
   describe("send queue", () => {
-    it("queues a non-JSON-RPC message (interaction_state) until ready", () => {
+    it("queues interaction_state until ready, then flushes via JSON-RPC", () => {
       const controller = new IsolatedFrameController({
         iframe: iframe.element,
         rendererCode: "/*code*/",
         rendererCss: "body{}",
       });
-      // Pre-ready: raw postMessage must not slip through immediately.
+      // Pre-ready: nothing must slip through immediately.
       controller.send({ type: "interaction_state", payload: { active: true } });
-      const preReadyInteraction = iframe.posts.filter(
-        (p) => (p.message as { type?: string }).type === "interaction_state",
+      const preReady = iframe.posts.filter(
+        (p) => (p.message as { method?: string }).method === NTERACT_INTERACTION_STATE,
       );
-      expect(preReadyInteraction).toHaveLength(0);
+      expect(preReady).toHaveLength(0);
 
       dispatchFromIframe(iframe, { type: "ready" });
       dispatchFromIframe(iframe, {
@@ -156,14 +157,23 @@ describe("IsolatedFrameController", () => {
         method: NTERACT_RENDERER_READY,
         params: {},
       });
-      const postReadyInteraction = iframe.posts.filter(
-        (p) => (p.message as { type?: string }).type === "interaction_state",
+      const postReady = iframe.posts.filter(
+        (p) => (p.message as { method?: string }).method === NTERACT_INTERACTION_STATE,
       );
-      expect(postReadyInteraction).toHaveLength(1);
-      expect(postReadyInteraction[0].message).toEqual({
-        type: "interaction_state",
-        payload: { active: true },
+      expect(postReady).toHaveLength(1);
+      expect((postReady[0].message as { params: unknown }).params).toEqual({ active: true });
+      controller.dispose();
+    });
+
+    it("throws on send() with a type that has no JSON-RPC method", () => {
+      const controller = new IsolatedFrameController({
+        iframe: iframe.element,
+        rendererCode: "/*code*/",
+        rendererCss: "body{}",
       });
+      expect(() =>
+        controller.send({ type: "unknown" as never, payload: {} as never } as never),
+      ).toThrow(/no JSON-RPC method/);
       controller.dispose();
     });
 

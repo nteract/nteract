@@ -22,6 +22,7 @@ import { JsonRpcTransport } from "@/components/isolated/jsonrpc-transport";
 import {
   NTERACT_CLEAR_OUTPUTS,
   NTERACT_INSTALL_RENDERER,
+  NTERACT_INTERACTION_STATE,
   NTERACT_RENDER_BATCH,
   NTERACT_RENDER_OUTPUT,
   NTERACT_RENDERER_READY,
@@ -250,6 +251,9 @@ function setupMessageListener() {
   });
   rpcTransport.onNotification(NTERACT_THEME, (params) => {
     messageHandler?.("theme", params);
+  });
+  rpcTransport.onNotification(NTERACT_INTERACTION_STATE, (params) => {
+    messageHandler?.("interaction_state", params);
   });
   rpcTransport.onNotification(NTERACT_INSTALL_RENDERER, (params) => {
     const { code, css } = params as { code: string; css?: string };
