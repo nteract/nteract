@@ -1070,6 +1070,137 @@ impl PyExecutionState {
     }
 }
 
+/// One execution snapshot from the shared execution materialized view.
+#[pyclass(name = "ExecutionViewSnapshot", get_all, skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct PyExecutionViewSnapshot {
+    pub execution_count: Option<i64>,
+    pub status: String,
+    pub success: Option<bool>,
+    pub output_ids: Vec<String>,
+}
+
+#[pymethods]
+impl PyExecutionViewSnapshot {
+    fn __repr__(&self) -> String {
+        format!(
+            "ExecutionViewSnapshot(status={}, outputs={})",
+            self.status,
+            self.output_ids.len()
+        )
+    }
+}
+
+/// Cell pointer change from the shared execution materialized view.
+#[pyclass(name = "CellExecutionPointer", get_all, skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct PyCellExecutionPointer {
+    pub cell_id: String,
+    pub execution_id: Option<String>,
+}
+
+/// Execution upsert from the shared execution materialized view.
+#[pyclass(name = "ExecutionViewUpsert", get_all, skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct PyExecutionViewUpsert {
+    pub execution_id: String,
+    pub snapshot: PyExecutionViewSnapshot,
+}
+
+/// Notebook-specific queue join layered on top of execution-id queue state.
+#[pyclass(name = "NotebookQueueProjection", get_all, skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct PyNotebookQueueProjection {
+    pub executing_cell_id: Option<String>,
+    pub queued_cell_ids: Vec<String>,
+}
+
+/// Queue state from the shared execution materialized view.
+#[pyclass(name = "ExecutionQueueProjection", get_all, skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct PyExecutionQueueProjection {
+    pub executing_execution_id: Option<String>,
+    pub queued_execution_ids: Vec<String>,
+    pub notebook: Option<PyNotebookQueueProjection>,
+}
+
+/// Shared execution materialized-view changeset.
+#[pyclass(name = "ExecutionViewChangeset", get_all, skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct PyExecutionViewChangeset {
+    pub cell_pointer_changes: Vec<PyCellExecutionPointer>,
+    pub execution_upserts: Vec<PyExecutionViewUpsert>,
+    pub removed_execution_ids: Vec<String>,
+    pub queue: Option<PyExecutionQueueProjection>,
+}
+
+#[pymethods]
+impl PyExecutionViewChangeset {
+    fn __repr__(&self) -> String {
+        format!(
+            "ExecutionViewChangeset(pointers={}, upserts={}, removed={})",
+            self.cell_pointer_changes.len(),
+            self.execution_upserts.len(),
+            self.removed_execution_ids.len()
+        )
+    }
+}
+
+impl From<runtime_doc::ExecutionViewSnapshot> for PyExecutionViewSnapshot {
+    fn from(snapshot: runtime_doc::ExecutionViewSnapshot) -> Self {
+        Self {
+            execution_count: snapshot.execution_count,
+            status: snapshot.status,
+            success: snapshot.success,
+            output_ids: snapshot.output_ids,
+        }
+    }
+}
+
+impl From<runtime_doc::NotebookQueueProjection> for PyNotebookQueueProjection {
+    fn from(projection: runtime_doc::NotebookQueueProjection) -> Self {
+        Self {
+            executing_cell_id: projection.executing_cell_id,
+            queued_cell_ids: projection.queued_cell_ids,
+        }
+    }
+}
+
+impl From<runtime_doc::QueueProjection> for PyExecutionQueueProjection {
+    fn from(projection: runtime_doc::QueueProjection) -> Self {
+        Self {
+            executing_execution_id: projection.executing_execution_id,
+            queued_execution_ids: projection.queued_execution_ids,
+            notebook: projection.notebook.map(Into::into),
+        }
+    }
+}
+
+impl From<runtime_doc::ExecutionViewChangeset> for PyExecutionViewChangeset {
+    fn from(changeset: runtime_doc::ExecutionViewChangeset) -> Self {
+        Self {
+            cell_pointer_changes: changeset
+                .cell_pointer_changes
+                .into_iter()
+                .map(|(cell_id, execution_id)| PyCellExecutionPointer {
+                    cell_id,
+                    execution_id,
+                })
+                .collect(),
+            execution_upserts: changeset
+                .execution_upserts
+                .into_iter()
+                .map(|(execution_id, snapshot)| PyExecutionViewUpsert {
+                    execution_id,
+                    snapshot: snapshot.into(),
+                })
+                .collect(),
+            removed_execution_ids: changeset.removed_execution_ids,
+            queue: changeset.queue.map(Into::into),
+        }
+    }
+}
+
 /// A single widget comm entry from the RuntimeStateDoc.
 ///
 /// Widget state is stored as a native Automerge map. The `state` property

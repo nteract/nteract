@@ -62,6 +62,16 @@ class Notebook:
         return self._session.get_runtime_state_sync()
 
     @property
+    def execution_view(self):
+        """Shared execution materialized view read from the local replica.
+
+        Returns an ``ExecutionViewChangeset`` projected from NotebookDoc cell
+        pointers plus RuntimeStateDoc execution entries. This is the same
+        execution-id-first view used by browser and Node consumers.
+        """
+        return self._session.get_execution_view_sync()
+
+    @property
     def _widgets(self) -> dict:
         """Private snapshot of active ipywidget comms keyed by comm_id.
 
@@ -133,7 +143,14 @@ class Notebook:
         by execution later.
         """
         entries = await self._session.queue_all_cells()
-        return [Execution(self._session, entry.cell_id, entry.execution_id) for entry in entries]
+        executions: list[Execution] = []
+        for entry in entries:
+            if entry.cell_id is None:
+                raise RuntimeError(
+                    f"queue_all_cells returned execution {entry.execution_id} without a cell_id"
+                )
+            executions.append(Execution(self._session, entry.cell_id, entry.execution_id))
+        return executions
 
     async def disconnect(self) -> None:
         """Disconnect from the notebook session."""

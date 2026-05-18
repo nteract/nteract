@@ -39,6 +39,15 @@ class TestModuleExports:
         assert hasattr(runtimed, "KernelState")
         assert hasattr(runtimed, "EnvState")
 
+    def test_execution_view_types_exported(self):
+        """Execution materialized-view types use clean names."""
+        assert hasattr(runtimed, "ExecutionViewChangeset")
+        assert hasattr(runtimed, "ExecutionViewSnapshot")
+        assert hasattr(runtimed, "ExecutionViewUpsert")
+        assert hasattr(runtimed, "ExecutionQueueProjection")
+        assert hasattr(runtimed, "NotebookQueueProjection")
+        assert hasattr(runtimed, "CellExecutionPointer")
+
     def test_deprecated_types_removed(self):
         """Removed types are no longer exported."""
         assert not hasattr(runtimed, "DaemonClient")
@@ -197,6 +206,24 @@ class _RuntimeStateSession:
 
     def get_runtime_state_sync(self):
         return _WidgetRuntimeState()
+
+
+class _ExecutionViewSession:
+    notebook_id = "execution-view-notebook"
+
+    def get_execution_view_sync(self):
+        return "execution-view"
+
+
+class TestExecutionViewSnapshot:
+    """Shared execution view reads through the native session adapter."""
+
+    def test_notebook_execution_view_reads_session_projection(self):
+        from runtimed._notebook import Notebook
+
+        notebook = Notebook(_ExecutionViewSession())  # ty: ignore[invalid-argument-type]
+
+        assert notebook.execution_view == "execution-view"
 
 
 class TestPrivateWidgetSnapshot:

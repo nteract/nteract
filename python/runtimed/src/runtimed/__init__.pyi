@@ -9,11 +9,17 @@ from runtimed._constants import KernelErrorReasonKey as KernelErrorReasonKey
 from runtimed._constants import KernelStatusKey as KernelStatusKey
 from runtimed._execution import Execution as Execution
 from runtimed._internals import Cell as Cell
+from runtimed._internals import CellExecutionPointer as CellExecutionPointer
 from runtimed._internals import EnvState as EnvState
 from runtimed._internals import ExecutionEvent as ExecutionEvent
 from runtimed._internals import ExecutionProgress as ExecutionProgress
+from runtimed._internals import ExecutionQueueProjection as ExecutionQueueProjection
 from runtimed._internals import ExecutionResult as ExecutionResult
+from runtimed._internals import ExecutionViewChangeset as ExecutionViewChangeset
+from runtimed._internals import ExecutionViewSnapshot as ExecutionViewSnapshot
+from runtimed._internals import ExecutionViewUpsert as ExecutionViewUpsert
 from runtimed._internals import KernelState as KernelState
+from runtimed._internals import NotebookQueueProjection as NotebookQueueProjection
 from runtimed._internals import Output as Output
 from runtimed._internals import RuntimedError as RuntimedError
 from runtimed._internals import RuntimeState as RuntimeState

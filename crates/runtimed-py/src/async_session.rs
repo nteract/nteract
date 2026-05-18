@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::error::to_py_err;
-use crate::output::{Cell, PyRuntimeState};
+use crate::output::{Cell, PyExecutionViewChangeset, PyRuntimeState};
 use crate::session_core::{self, SessionState};
 
 /// An async session for executing code via the runtimed daemon.
@@ -1469,6 +1469,22 @@ impl AsyncSession {
             .get_runtime_state()
             .map_err(|e| to_py_err(format!("{}", e)))?;
         Ok(rs.into())
+    }
+
+    /// Get the shared execution materialized view (sync read from local docs).
+    fn get_execution_view_sync(&self) -> PyResult<PyExecutionViewChangeset> {
+        let st = self.state.blocking_lock();
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
+        let rs = handle
+            .get_runtime_state()
+            .map_err(|e| to_py_err(format!("{}", e)))?;
+        let mut projector = runtime_doc::ExecutionViewProjector::default();
+        Ok(projector
+            .project_all(handle.get_cell_execution_pointers(), &rs)
+            .into())
     }
 
     /// Whether the session is connected (sync read — no future needed).

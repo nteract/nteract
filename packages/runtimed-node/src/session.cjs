@@ -9,11 +9,13 @@ class Session {
     this._subscriptions = [];
     this._runtimeStateSubject = new Subject();
     this._executionTransitionsSubject = new Subject();
+    this._executionViewChangesSubject = new Subject();
     this._cellChangesSubject = new Subject();
     this._broadcastsSubject = new Subject();
     this._sessionStatusSubject = new Subject();
     this.runtimeState$ = this._runtimeStateSubject.asObservable();
     this.executionTransitions$ = this._executionTransitionsSubject.asObservable();
+    this.executionViewChanges$ = this._executionViewChangesSubject.asObservable();
     this.cellChanges$ = this._cellChangesSubject.asObservable();
     this.broadcasts$ = this._broadcastsSubject.asObservable();
     this.sessionStatus$ = this._sessionStatusSubject.asObservable();
@@ -46,6 +48,13 @@ class Session {
       this._subscriptions.push(
         nativeSession.onExecutionTransition((json) =>
           this._executionTransitionsSubject.next(parseJsonEvent(json)),
+        ),
+      );
+    }
+    if (typeof nativeSession.onExecutionViewChange === "function") {
+      this._subscriptions.push(
+        nativeSession.onExecutionViewChange((json) =>
+          this._executionViewChangesSubject.next(parseJsonEvent(json)),
         ),
       );
     }
@@ -191,6 +200,7 @@ class Session {
     }
     this._runtimeStateSubject.complete();
     this._executionTransitionsSubject.complete();
+    this._executionViewChangesSubject.complete();
     this._cellChangesSubject.complete();
     this._broadcastsSubject.complete();
     this._sessionStatusSubject.complete();
