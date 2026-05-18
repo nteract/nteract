@@ -7575,10 +7575,18 @@ async fn reset_starting_state_error_variant_writes_details() {
 }
 
 #[tokio::test]
-async fn publish_environment_launch_error_writes_kernel_and_env_progress() {
+async fn publish_environment_launch_error_writes_kernel_error_and_clears_env_progress() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, _) = test_room_with_path(&tmp, "env-prepare-failure.ipynb");
     let details = "Failed to prepare conda inline environment: no candidates for pywidget";
+    room.state
+        .with_doc(|sd| {
+            sd.set_env_progress(
+                "conda",
+                &serde_json::json!({ "phase": "solving", "spec_count": 5 }),
+            )
+        })
+        .unwrap();
 
     publish_environment_launch_error(
         &room,
@@ -7600,14 +7608,7 @@ async fn publish_environment_launch_error_writes_kernel_and_env_progress() {
     assert_eq!(state.kernel.error_details.as_deref(), Some(details));
     assert_eq!(state.kernel.language, "python");
     assert_eq!(state.kernel.env_source, "conda:inline");
-    assert_eq!(
-        state.env.progress,
-        Some(serde_json::json!({
-            "env_type": "conda",
-            "phase": "error",
-            "message": details,
-        }))
-    );
+    assert_eq!(state.env.progress, None);
 }
 
 #[test]

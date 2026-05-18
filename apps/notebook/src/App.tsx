@@ -319,6 +319,7 @@ function AppContent() {
     loading: depsLoading,
     addDependency,
     removeDependency,
+    setRequiresPython,
     clearAllDependencies: clearAllUvDeps,
     pyprojectInfo,
     pyprojectDeps,
@@ -1756,6 +1757,7 @@ function AppContent() {
               loading={depsLoading}
               onAdd={addDependency}
               onRemove={removeDependency}
+              onSetRequiresPython={setRequiresPython}
               syncState={uvDerivedSyncState}
               onSyncNow={handleSyncDeps}
               pyprojectInfo={pyprojectInfo}

@@ -30,12 +30,13 @@ use crate::notebook_sync_server::{
     captured_env_source_override, check_and_broadcast_sync_state, check_inline_deps,
     extract_pixi_toml_deps, format_conda_env_yml_build_details, get_inline_conda_channels,
     get_inline_conda_deps, get_inline_conda_python, get_inline_uv_deps, get_inline_uv_prerelease,
-    missing_conda_env_yml_decision, project_environment_build_approved,
-    promote_inline_deps_to_project, publish_environment_launch_error,
-    publish_kernel_state_presence, reset_starting_state, reset_starting_state_with_outcome,
-    resolve_metadata_snapshot, send_runtime_agent_request_with_kernel_ports,
-    try_conda_pool_for_inline_deps, try_uv_pool_for_inline_deps, unified_env_on_disk,
-    CapturedEnvRuntime, NotebookRoom, ResetOutcome,
+    get_inline_uv_requires_python, missing_conda_env_yml_decision,
+    project_environment_build_approved, promote_inline_deps_to_project,
+    publish_environment_launch_error, publish_kernel_state_presence, reset_starting_state,
+    reset_starting_state_with_outcome, resolve_metadata_snapshot,
+    send_runtime_agent_request_with_kernel_ports, try_conda_pool_for_inline_deps,
+    try_uv_pool_for_inline_deps, unified_env_on_disk, CapturedEnvRuntime, NotebookRoom,
+    ResetOutcome,
 };
 use crate::protocol::NotebookResponse;
 use crate::requests::guarded;
@@ -698,6 +699,7 @@ pub(crate) async fn handle(
             match crate::inline_env::prepare_uv_inline_env(
                 &deps,
                 None,
+                None,
                 launch_progress_handler.clone(),
             )
             .await
@@ -747,14 +749,21 @@ pub(crate) async fn handle(
             let prerelease = metadata_snapshot
                 .as_ref()
                 .and_then(get_inline_uv_prerelease);
+            let requires_python = metadata_snapshot
+                .as_ref()
+                .and_then(get_inline_uv_requires_python);
 
             // Fast path: check inline env cache first (instant on hit).
             // `check_uv_inline_cache` re-vendors the launcher on hit when
             // bootstrap_dx is on, so stale pre-0.2.0 envs are brought up
             // to today's layout before the kernel boots.
-            if let Some(cached) =
-                crate::inline_env::check_uv_inline_cache(&deps, prerelease.as_deref(), bootstrap_dx)
-                    .await
+            if let Some(cached) = crate::inline_env::check_uv_inline_cache(
+                &deps,
+                requires_python.as_deref(),
+                prerelease.as_deref(),
+                bootstrap_dx,
+            )
+            .await
             {
                 info!(
                     "[notebook-sync] LaunchKernel: UV inline cache hit at {:?}",
@@ -771,6 +780,7 @@ pub(crate) async fn handle(
                 // Try pool reuse for bare deps without prerelease
                 match try_uv_pool_for_inline_deps(
                     &deps,
+                    requires_python.as_deref(),
                     daemon,
                     room,
                     launch_progress_handler.clone(),
@@ -790,6 +800,7 @@ pub(crate) async fn handle(
                         );
                         match crate::inline_env::prepare_uv_inline_env(
                             &deps,
+                            requires_python.as_deref(),
                             prerelease.as_deref(),
                             launch_progress_handler.clone(),
                         )
@@ -827,6 +838,7 @@ pub(crate) async fn handle(
                 );
                 match crate::inline_env::prepare_uv_inline_env(
                     &deps,
+                    requires_python.as_deref(),
                     prerelease.as_deref(),
                     launch_progress_handler.clone(),
                 )

@@ -226,6 +226,18 @@ pub(crate) fn get_inline_uv_deps(snapshot: &NotebookMetadataSnapshot) -> Option<
     None
 }
 
+/// Extract UV Python version constraint from a metadata snapshot.
+pub(crate) fn get_inline_uv_requires_python(snapshot: &NotebookMetadataSnapshot) -> Option<String> {
+    snapshot
+        .runt
+        .uv
+        .as_ref()
+        .and_then(|uv| uv.requires_python.as_deref())
+        .map(str::trim)
+        .filter(|spec| !spec.is_empty())
+        .map(str::to_string)
+}
+
 /// Extract UV prerelease strategy from a metadata snapshot.
 pub(crate) fn get_inline_uv_prerelease(snapshot: &NotebookMetadataSnapshot) -> Option<String> {
     snapshot
@@ -2307,25 +2319,17 @@ pub(crate) async fn reset_starting_state(
         .await;
 }
 
-fn env_progress_type_for_source(env_source: &str) -> &'static str {
-    // Current environment-prepare failures are Python package-manager paths.
-    // Keep unknown/legacy Python sources on the UV rail, which is also the
-    // historical fallback package manager.
-    if env_source.starts_with("conda:") {
-        "conda"
-    } else if env_source.starts_with("pixi:") {
-        "pixi"
-    } else {
-        "uv"
-    }
-}
-
 /// Publish a pre-spawn environment preparation failure into RuntimeStateDoc.
 ///
 /// Request callers already receive an error response, but the UI's persistent
-/// state comes from RuntimeStateDoc. Without this write, clients stay in a
-/// starting lifecycle after a solver/install failure and render only
+/// state comes from RuntimeStateDoc. Without the kernel-state write, clients
+/// stay in a starting lifecycle after a solver/install failure and render only
 /// "Initializing".
+///
+/// Clear `env.progress` instead of also writing an error progress event: the
+/// kernel error details are the durable failure surface, and duplicating the
+/// same text through progress creates a second banner for the same launch
+/// failure.
 ///
 /// Current call sites are Python environment preparation paths, so this writes
 /// Python kernel info. Other runtime families should add a runtime-aware
@@ -2336,14 +2340,10 @@ pub(crate) fn publish_environment_launch_error(
     reason: Option<KernelErrorReason>,
     details: &str,
 ) {
-    let progress_value = serde_json::json!({
-        "phase": "error",
-        "message": details,
-    });
     if let Err(e) = room.state.with_doc(|sd| {
         sd.set_lifecycle_with_error_details(&RuntimeLifecycle::Error, reason, Some(details))?;
         sd.set_kernel_info("python", "python", env_source)?;
-        sd.set_env_progress(env_progress_type_for_source(env_source), &progress_value)?;
+        sd.clear_env_progress()?;
         Ok(())
     }) {
         error!(
@@ -2436,11 +2436,20 @@ pub(crate) fn sync_environment_agent_communication_error_response(
 /// Returns `Ok((PooledEnv, actual_packages))` on success, `Err(())` on failure.
 pub(crate) async fn try_uv_pool_for_inline_deps(
     deps: &[String],
+    requires_python: Option<&str>,
     daemon: &std::sync::Arc<crate::daemon::Daemon>,
     room: &NotebookRoom,
     progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler>,
 ) -> Result<(crate::PooledEnv, Vec<String>), ()> {
     let effective_deps = crate::inline_env::inline_deps_with_required_packages(deps);
+
+    if requires_python
+        .map(str::trim)
+        .is_some_and(|spec| !spec.is_empty())
+    {
+        debug!("[notebook-sync] UV inline deps pin Python, skipping pool reuse");
+        return Err(());
+    }
 
     // Quick pre-check: if any dep has version specifiers, skip pool entirely
     // (avoids consuming a pool env we'd have to discard)
@@ -2482,7 +2491,13 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
             // before releasing the lease — otherwise the sweep races
             // with the launch handler's later `runtime_agent_env_path`
             // write and can delete the env mid-launch.
-            crate::inline_env::claim_pool_env_for_uv_inline_cache(&mut env, deps, None).await;
+            crate::inline_env::claim_pool_env_for_uv_inline_cache(
+                &mut env,
+                deps,
+                requires_python,
+                None,
+            )
+            .await;
             {
                 let mut ep = room.runtime_agent_env_path.write().await;
                 *ep = Some(env.venv_path.clone());
@@ -2510,8 +2525,13 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
                     // the next restart cache-hits. See #2089 / #2083.
                     // Same claim-best-effort caveat as the Subset arm —
                     // install runtime ownership before releasing.
-                    crate::inline_env::claim_pool_env_for_uv_inline_cache(&mut env, deps, None)
-                        .await;
+                    crate::inline_env::claim_pool_env_for_uv_inline_cache(
+                        &mut env,
+                        deps,
+                        requires_python,
+                        None,
+                    )
+                    .await;
                     {
                         let mut ep = room.runtime_agent_env_path.write().await;
                         *ep = Some(env.venv_path.clone());
@@ -3173,8 +3193,13 @@ pub(crate) async fn auto_launch_kernel(
                 "[notebook-sync] Preparing cached UV env for PEP 723 deps: {:?}",
                 deps
             );
-            match crate::inline_env::prepare_uv_inline_env(deps, None, progress_handler.clone())
-                .await
+            match crate::inline_env::prepare_uv_inline_env(
+                deps,
+                None,
+                None,
+                progress_handler.clone(),
+            )
+            .await
             {
                 Ok(prepared) => {
                     info!(
@@ -3210,14 +3235,21 @@ pub(crate) async fn auto_launch_kernel(
             let prerelease = metadata_snapshot
                 .as_ref()
                 .and_then(get_inline_uv_prerelease);
+            let requires_python = metadata_snapshot
+                .as_ref()
+                .and_then(get_inline_uv_requires_python);
 
             // Fast path: check inline env cache first (instant on hit).
             // `check_uv_inline_cache` re-vendors the launcher on hit when
             // bootstrap_dx is on, so a stale pre-0.2.0 cache entry is
             // brought up to today's layout before the kernel boots.
-            if let Some(cached) =
-                crate::inline_env::check_uv_inline_cache(&deps, prerelease.as_deref(), bootstrap_dx)
-                    .await
+            if let Some(cached) = crate::inline_env::check_uv_inline_cache(
+                &deps,
+                requires_python.as_deref(),
+                prerelease.as_deref(),
+                bootstrap_dx,
+            )
+            .await
             {
                 info!(
                     "[notebook-sync] UV inline cache hit at {:?}",
@@ -3232,8 +3264,14 @@ pub(crate) async fn auto_launch_kernel(
                 (env, Some(deps))
             } else if prerelease.is_none() {
                 // Try pool reuse for bare deps without prerelease
-                match try_uv_pool_for_inline_deps(&deps, &daemon, room, progress_handler.clone())
-                    .await
+                match try_uv_pool_for_inline_deps(
+                    &deps,
+                    requires_python.as_deref(),
+                    &daemon,
+                    room,
+                    progress_handler.clone(),
+                )
+                .await
                 {
                     Ok((env, pool_pkgs)) => {
                         let mut pooled = env;
@@ -3248,6 +3286,7 @@ pub(crate) async fn auto_launch_kernel(
                         );
                         match crate::inline_env::prepare_uv_inline_env(
                             &deps,
+                            requires_python.as_deref(),
                             prerelease.as_deref(),
                             progress_handler.clone(),
                         )
@@ -3290,6 +3329,7 @@ pub(crate) async fn auto_launch_kernel(
                 );
                 match crate::inline_env::prepare_uv_inline_env(
                     &deps,
+                    requires_python.as_deref(),
                     prerelease.as_deref(),
                     progress_handler.clone(),
                 )
