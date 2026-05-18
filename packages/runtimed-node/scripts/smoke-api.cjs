@@ -57,11 +57,24 @@ async function main() {
 
     const cellId = await session.createCell("x = 1");
     assert.match(cellId, /^cell-/, "createCell() returns a generated cell ID");
+    const secondCellId = await session.createCell("y = 2");
+    const prependedCellId = await session.createCell("# heading", {
+      cellType: "markdown",
+      index: 0,
+    });
 
     const cells = await session.listCells();
     assert(
       cells.some((cell) => cell.id === cellId),
       "created cell is listed",
+    );
+    const createdCells = cells.filter((cell) =>
+      [cellId, secondCellId, prependedCellId].includes(cell.id),
+    );
+    assert.deepEqual(
+      createdCells.map((cell) => cell.id),
+      [prependedCellId, cellId, secondCellId],
+      "createCell() appends by default and supports explicit prepend",
     );
 
     assert.equal(await session.setCell(cellId, { source: "x = 2" }), true);
@@ -76,6 +89,12 @@ async function main() {
 
     assert.equal(await session.deleteCell(cellId), true, "deleteCell() deletes existing cell");
     assert.equal(await session.getCell(cellId), null, "deleted cell is absent");
+    assert.equal(await session.deleteCell(secondCellId), true, "deleteCell() deletes second cell");
+    assert.equal(
+      await session.deleteCell(prependedCellId),
+      true,
+      "deleteCell() deletes prepended cell",
+    );
 
     assert.equal(await session.shutdownNotebook(), true, "shutdownNotebook() evicts room");
     const after = await rt.listActiveNotebooks();

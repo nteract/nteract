@@ -116,7 +116,7 @@ class Session {
   }
 
   moveCell(cellId, afterCellId) {
-    return this._native.moveCell(cellId, { afterCellId: afterCellId ?? null });
+    return this._native.moveCell(cellId, afterCellId == null ? undefined : { afterCellId });
   }
 
   executeCell(cellId, options) {

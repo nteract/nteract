@@ -87,15 +87,17 @@ sessions.
 - `Session.listCells()` and `Session.getCell(cellId)` inspect notebook cells.
 - `Session.createCell(source, options)`, `Session.setCell(cellId, options)`,
   `Session.deleteCell(cellId)`, and `Session.moveCell(cellId, options)` provide
-  direct notebook editing without MCP JSON round-trips.
+  direct notebook editing without MCP JSON round-trips. `createCell()` appends
+  by default; pass `index: 0` to prepend or `afterCellId` to insert after
+  another cell.
 - `Session.executeCell(cellId, options)` runs an existing code cell.
 - `Session.showNotebook()` opens the session in nteract Desktop when a display
   is available.
 - `Session.interruptKernel()`, `Session.shutdownKernel()`, and
   `Session.restartKernel()` manage the running kernel.
 - `Session.shutdownNotebook()` shuts down this notebook room and closes the session.
-- `Session.runCell(source, options)` creates, runs, and waits for a cell.
-- `Session.queueCell(source, options)` queues a cell and returns IDs.
+- `Session.runCell(source, options)` appends, runs, and waits for a cell.
+- `Session.queueCell(source, options)` appends a cell, queues it, and returns IDs.
 - `Session.waitForExecution(executionId, options)` waits for queued work.
   Pass `onUpdate(progress)` to receive resolved output snapshots while the
   execution is still running.
