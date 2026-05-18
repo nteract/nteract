@@ -309,6 +309,10 @@ class of bootstrap drift, but they do not replace a compatibility handshake.
   execution ID without requiring a cell pointer.
 - Decide whether Python and node high-level APIs should expose caller-supplied
   execution IDs, matching the TypeScript client.
+- Move the NotebookDoc + RuntimeStateDoc execution materialized view into a
+  shared Rust/WASM session projection so TypeScript, node, Python, and future
+  document adapters consume the same derived cell/execution/queue state instead
+  of each reimplementing the cross-document join.
 - Add remote-client schema negotiation and typed mismatch errors before Swift
   or web clients are allowed to drift independently from the daemon.
 - Extend trimming preservation discovery beyond the notebook room adapter

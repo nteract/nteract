@@ -211,10 +211,7 @@ export interface CompletionItem {{
   source?: string | null;
 }}
 
-export type ExecutionIdRejectionReason =
-  | "malformed"
-  | "already_exists"
-  | "duplicate_in_request";
+export type ExecutionIdRejectionReason = "malformed" | "already_exists" | "duplicate_in_request";
 
 export type NotebookResponse =
   | {{

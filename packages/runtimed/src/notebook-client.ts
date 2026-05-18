@@ -129,7 +129,7 @@ export class NotebookClient {
         {
           type: "execute_cell",
           cell_id: cellId,
-          execution_id: options.executionId ?? null,
+          ...(options.executionId != null ? { execution_id: options.executionId } : {}),
         },
         this.requiredHeadsOptions(),
       );
@@ -150,7 +150,7 @@ export class NotebookClient {
       return await this.sendRequest({
         type: "execute_cell_guarded",
         cell_id: cellId,
-        execution_id: options.executionId ?? null,
+        ...(options.executionId != null ? { execution_id: options.executionId } : {}),
         observed_heads: provenance.observed_heads,
       });
     } catch (e) {
@@ -229,7 +229,9 @@ export class NotebookClient {
       return await this.sendRequest(
         {
           type: "run_all_cells",
-          cell_execution_ids: options.cellExecutionIds ?? null,
+          ...(options.cellExecutionIds != null
+            ? { cell_execution_ids: options.cellExecutionIds }
+            : {}),
         },
         this.requiredHeadsOptions(),
       );
@@ -248,7 +250,9 @@ export class NotebookClient {
     try {
       return await this.sendRequest({
         type: "run_all_cells_guarded",
-        cell_execution_ids: options.cellExecutionIds ?? null,
+        ...(options.cellExecutionIds != null
+          ? { cell_execution_ids: options.cellExecutionIds }
+          : {}),
         observed_heads: provenance.observed_heads,
       });
     } catch (e) {
