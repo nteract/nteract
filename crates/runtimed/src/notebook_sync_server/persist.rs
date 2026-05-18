@@ -129,10 +129,7 @@ pub(crate) async fn save_notebook_to_disk(
                 };
                 let mut outputs = sd.get_outputs(eid);
                 let mut execution_count = exec.execution_count;
-                if outputs.is_empty()
-                    && execution_count.is_none()
-                    && matches!(exec.status.as_str(), "queued" | "running")
-                {
+                if outputs.is_empty() && matches!(exec.status.as_str(), "queued" | "running") {
                     if let Some(previous_execution_id) = previous_visible_execution_ids.get(cell_id)
                     {
                         if let Some(previous_exec) = snapshot.executions.get(previous_execution_id)

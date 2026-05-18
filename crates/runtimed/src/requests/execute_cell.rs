@@ -15,6 +15,8 @@ use crate::requests::trim_runtime_executions_for_doc;
 use crate::task_supervisor::spawn_best_effort;
 use notebook_protocol::protocol::ExecutionIdRejectionReason;
 
+const EXECUTION_ID_GENERATION_ATTEMPTS: usize = 16;
+
 fn execution_id_rejected(
     execution_id: impl Into<String>,
     reason: ExecutionIdRejectionReason,
@@ -214,7 +216,7 @@ async fn queue_cell_if_current(
         let is_active = room
             .state
             .read(|sd| {
-                sd.get_execution(&eid)
+                sd.get_execution(eid)
                     .is_some_and(|exec| exec.status == "queued" || exec.status == "running")
             })
             .unwrap_or(false);
@@ -233,6 +235,7 @@ async fn queue_cell_if_current(
     let mut execution_id = requested_execution_id
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let mut generated_retries = 0usize;
     let seq = room
         .next_queue_seq
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -246,6 +249,12 @@ async fn queue_cell_if_current(
         }) {
             Ok(true) => break,
             Ok(false) if requested_execution_id.is_none() => {
+                generated_retries += 1;
+                if generated_retries >= EXECUTION_ID_GENERATION_ATTEMPTS {
+                    return QueueCellResult::Response(Box::new(NotebookResponse::Error {
+                        error: "failed to allocate unique execution_id".to_string(),
+                    }));
+                }
                 execution_id = uuid::Uuid::new_v4().to_string();
             }
             Ok(false) => {

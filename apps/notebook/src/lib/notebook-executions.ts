@@ -95,6 +95,43 @@ export function useCellExecutionId(cell_id: string): string | null {
   return useSyncExternalStore(subscribe, getSnapshot);
 }
 
+export function useCellExecutionPointers(
+  cell_ids: readonly string[],
+): ReadonlyMap<string, string> {
+  const cellIdsKey = JSON.stringify(cell_ids);
+  const stableCellIds = useMemo(() => [...cell_ids], [cellIdsKey]);
+  const subscribe = useMemo(
+    () => (callback: () => void) => {
+      const unsubscribers = stableCellIds.map((cell_id) =>
+        subscribeCellExecutionPointer(cell_id)(callback),
+      );
+      return () => {
+        for (const unsubscribe of unsubscribers) unsubscribe();
+      };
+    },
+    [stableCellIds],
+  );
+  const getSnapshot = useMemo(
+    () => () =>
+      JSON.stringify(
+        stableCellIds.map((cell_id) => [
+          cell_id,
+          _cellToExecution.get(cell_id) ?? null,
+        ]),
+      ),
+    [stableCellIds],
+  );
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot);
+  return useMemo(() => {
+    const pointers = new Map<string, string>();
+    for (const cell_id of stableCellIds) {
+      const execution_id = _cellToExecution.get(cell_id);
+      if (execution_id !== undefined) pointers.set(cell_id, execution_id);
+    }
+    return pointers;
+  }, [stableCellIds, snapshot]);
+}
+
 // ── Subscription helpers ────────────────────────────────────────────────
 
 function subscribeExecutionById(

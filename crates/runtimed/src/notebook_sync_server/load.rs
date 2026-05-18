@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use super::*;
 
 pub(crate) struct ParsedIpynbCells {
@@ -508,6 +510,7 @@ where
         // matching terminal record exists, otherwise mint synthetic IDs.
         // Collect (cell_id, execution) pairs for linking below.
         let mut cell_executions: HashMap<String, LoadedExecution> = HashMap::new();
+        let mut claimed_execution_ids = HashSet::new();
         for (_idx, cell, output_refs, _resolved_assets, _attachment_refs) in &batch {
             if output_refs.is_empty() {
                 continue;
@@ -515,12 +518,15 @@ where
             let parsed_ec = cell.execution_count.parse::<i64>().ok();
             let execution = durable_or_synthetic_execution(
                 &durable_records,
-                &context_id,
-                notebook_path.as_deref(),
-                &cell.id,
-                &cell.source,
-                parsed_ec,
-                output_refs,
+                &mut claimed_execution_ids,
+                DurableExecutionLookup {
+                    context_id: &context_id,
+                    notebook_path: notebook_path.as_deref(),
+                    cell_id: &cell.id,
+                    source: &cell.source,
+                    execution_count: parsed_ec,
+                    outputs: output_refs,
+                },
             );
             cell_executions.insert(cell.id.clone(), execution);
         }
@@ -680,6 +686,7 @@ pub(crate) async fn load_notebook_from_disk_with_state_doc_and_execution_store(
         .ok_or_else(|| "Failed to parse cells from notebook".to_string())?;
     let context_id = path.to_string_lossy().to_string();
     let durable_records = durable_execution_records(execution_store, &context_id).await;
+    let mut claimed_execution_ids = HashSet::new();
 
     // Populate cells in the doc
     for (i, cell) in cells.iter().enumerate() {
@@ -710,12 +717,15 @@ pub(crate) async fn load_notebook_from_disk_with_state_doc_and_execution_store(
             };
             let execution = durable_or_synthetic_execution(
                 &durable_records,
-                &context_id,
-                Some(&context_id),
-                &cell.id,
-                &cell.source,
-                parsed_ec,
-                &output_refs,
+                &mut claimed_execution_ids,
+                DurableExecutionLookup {
+                    context_id: &context_id,
+                    notebook_path: Some(&context_id),
+                    cell_id: &cell.id,
+                    source: &cell.source,
+                    execution_count: parsed_ec,
+                    outputs: &output_refs,
+                },
             );
             if let Some(ref mut sd) = state_doc {
                 let _ = sd.create_execution(&execution.execution_id);
@@ -755,6 +765,15 @@ struct LoadedExecution {
     success: bool,
 }
 
+struct DurableExecutionLookup<'a> {
+    context_id: &'a str,
+    notebook_path: Option<&'a str>,
+    cell_id: &'a str,
+    source: &'a str,
+    execution_count: Option<i64>,
+    outputs: &'a [serde_json::Value],
+}
+
 async fn durable_execution_records(
     execution_store: Option<&runtimed_client::execution_store::ExecutionStore>,
     context_id: &str,
@@ -767,23 +786,21 @@ async fn durable_execution_records(
 
 fn durable_or_synthetic_execution(
     durable_records: &[runtimed_client::execution_store::ExecutionRecord],
-    context_id: &str,
-    notebook_path: Option<&str>,
-    cell_id: &str,
-    source: &str,
-    execution_count: Option<i64>,
-    outputs: &[serde_json::Value],
+    claimed_execution_ids: &mut HashSet<String>,
+    lookup: DurableExecutionLookup<'_>,
 ) -> LoadedExecution {
     if let Some(record) = durable_records.iter().find(|record| {
-        record.matches_notebook_cell(
-            context_id,
-            notebook_path,
-            cell_id,
-            source,
-            execution_count,
-            outputs,
-        )
+        !claimed_execution_ids.contains(&record.execution_id)
+            && record.matches_notebook_cell(
+                lookup.context_id,
+                lookup.notebook_path,
+                lookup.cell_id,
+                lookup.source,
+                lookup.execution_count,
+                lookup.outputs,
+            )
     }) {
+        claimed_execution_ids.insert(record.execution_id.clone());
         return LoadedExecution {
             execution_id: record.execution_id.clone(),
             success: record.terminal_success(),

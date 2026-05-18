@@ -7688,6 +7688,8 @@ async fn test_save_preserves_outputs_when_execution_in_flight() {
     room.state
         .with_doc(|sd| {
             sd.create_execution_with_source(new_eid, "print('hello')", 2)?;
+            sd.set_execution_running(new_eid)?;
+            sd.set_execution_count(new_eid, 2)?;
             Ok(())
         })
         .unwrap();

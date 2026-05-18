@@ -68,7 +68,7 @@ import { type PendingTrustAction } from "./lib/trust-actions";
 import { useObservable } from "./lib/use-observable";
 import { logger } from "./lib/logger";
 import { getNotebookCellsSnapshot } from "./lib/notebook-cells";
-import { getCellExecutionId } from "./lib/notebook-executions";
+import { useCellExecutionPointers } from "./lib/notebook-executions";
 import { useDetectRuntime } from "./lib/notebook-metadata";
 import { useNotebookHost } from "@nteract/notebook-host";
 import { startWindowFocusHandler } from "./lib/window-focus";
@@ -586,17 +586,18 @@ function AppContent() {
   }, [blobPort, getEngine]);
 
   // Split queue state into executing (currently running) and queued (waiting).
+  const cellExecutionPointers = useCellExecutionPointers(cellIds);
   const executingExecutionId = queueState.executing?.execution_id ?? null;
   const queuedExecutionIds = new Set(queueState.queued.map((e) => e.execution_id));
   const executingCellIds = new Set(
     executingExecutionId
-      ? cellIds.filter((cellId) => getCellExecutionId(cellId) === executingExecutionId)
+      ? cellIds.filter((cellId) => cellExecutionPointers.get(cellId) === executingExecutionId)
       : [],
   );
   const queuedCellIds = new Set(
     cellIds.filter((cellId) => {
-      const executionId = getCellExecutionId(cellId);
-      return executionId !== null && queuedExecutionIds.has(executionId);
+      const executionId = cellExecutionPointers.get(cellId);
+      return executionId !== undefined && queuedExecutionIds.has(executionId);
     }),
   );
 

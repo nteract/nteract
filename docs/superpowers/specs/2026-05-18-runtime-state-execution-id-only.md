@@ -253,6 +253,8 @@ model and RuntimeStateDoc together. For notebooks, the preservation set is:
 - Every execution whose RuntimeStateDoc status is `queued` or `running`, which
   covers the window before the runtime agent has projected the queue map.
 - Every `cells/{cell_id}.execution_id` currently referenced by NotebookDoc.
+- The daemon-local previous visible execution for a cell while that cell points
+  at a queued/running execution that has not produced replacement outputs yet.
 - Any implementation-defined recent-history window for user experience.
 - Any execution IDs with outstanding direct result waiters, if the daemon keeps
   request-local waiter state.
@@ -309,9 +311,9 @@ class of bootstrap drift, but they do not replace a compatibility handshake.
   execution IDs, matching the TypeScript client.
 - Add remote-client schema negotiation and typed mismatch errors before Swift
   or web clients are allowed to drift independently from the daemon.
-- Revisit durable execution result records if a future reload path needs to
-  recover cell-to-execution provenance from the sidecar store rather than
-  NotebookDoc pointers.
+- Extend trimming preservation discovery beyond the notebook room adapter
+  before Slidev or markdown documents can hold execution references outside
+  NotebookDoc cell pointers.
 
 ## Test Plan
 

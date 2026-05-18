@@ -11,6 +11,8 @@ use crate::requests::guarded;
 use crate::requests::trim_runtime_executions_for_doc;
 use notebook_protocol::protocol::ExecutionIdRejectionReason;
 
+const EXECUTION_ID_GENERATION_ATTEMPTS: usize = 16;
+
 fn execution_id_rejected(
     execution_id: impl Into<String>,
     reason: ExecutionIdRejectionReason,
@@ -50,6 +52,16 @@ fn validate_requested_execution_ids(
     }
 
     Ok(supplied)
+}
+
+fn allocate_daemon_execution_id(allocated_execution_ids: &mut HashSet<String>) -> Option<String> {
+    for _ in 0..EXECUTION_ID_GENERATION_ATTEMPTS {
+        let candidate = uuid::Uuid::new_v4().to_string();
+        if allocated_execution_ids.insert(candidate.clone()) {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 pub(crate) async fn handle(
@@ -136,15 +148,20 @@ async fn handle_inner(
                 let mut allocated_execution_ids = existing_execution_ids;
                 allocated_execution_ids.extend(supplied);
                 for cell in &code_cells {
-                    let execution_id = requested_execution_ids
+                    let execution_id = match requested_execution_ids
                         .as_ref()
                         .and_then(|ids| ids.get(&cell.id).cloned())
-                        .unwrap_or_else(|| loop {
-                            let candidate = uuid::Uuid::new_v4().to_string();
-                            if allocated_execution_ids.insert(candidate.clone()) {
-                                break candidate;
+                    {
+                        Some(execution_id) => execution_id,
+                        None => match allocate_daemon_execution_id(&mut allocated_execution_ids) {
+                            Some(execution_id) => execution_id,
+                            None => {
+                                return NotebookResponse::Error {
+                                    error: "failed to allocate unique execution_id".to_string(),
+                                };
                             }
-                        });
+                        },
+                    };
                     let seq = room
                         .next_queue_seq
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

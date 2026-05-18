@@ -50,11 +50,15 @@ pub(crate) fn trim_runtime_executions_for_doc(
     room: &NotebookRoom,
     doc: &notebook_doc::NotebookDoc,
 ) {
-    let preserve_execution_ids: HashSet<String> = doc
-        .get_cells()
-        .into_iter()
-        .filter_map(|cell| doc.get_execution_id(&cell.id))
-        .collect();
+    let mut preserve_execution_ids = HashSet::new();
+    for cell in doc.get_cells() {
+        if let Some(execution_id) = doc.get_execution_id(&cell.id) {
+            preserve_execution_ids.insert(execution_id);
+        }
+        if let Some(previous_execution_id) = room.persistence.previous_visible_execution(&cell.id) {
+            preserve_execution_ids.insert(previous_execution_id);
+        }
+    }
 
     if let Err(e) = room.state.with_doc(|state_doc| {
         match state_doc.trim_executions_preserving(
