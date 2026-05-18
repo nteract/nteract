@@ -195,8 +195,11 @@ pub struct RunCellOptions {
 pub struct CreateCellOptions {
     /// Cell source type: `"code"` (default), `"markdown"`, or `"raw"`.
     pub cell_type: Option<String>,
-    /// Insert after this cell, or omit to insert at the beginning.
+    /// Insert after this cell, or omit to append at the end.
     pub after_cell_id: Option<String>,
+    /// Position to insert at. Omit to append; 0 prepends; out-of-range appends.
+    /// Cannot be combined with `afterCellId`.
+    pub index: Option<i64>,
 }
 
 /// Options for `Session.setCell()`.
@@ -881,9 +884,10 @@ impl Session {
         let opts = options.unwrap_or_default();
         let cell_type = normalize_cell_type(opts.cell_type)?;
         let (handle, peer_label) = session_handle_and_label(&self.state).await?;
+        let after_cell_id = insertion_anchor(&handle, opts.after_cell_id.as_deref(), opts.index)?;
         let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
         handle
-            .add_cell_with_source(&cell_id, &cell_type, opts.after_cell_id.as_deref(), &source)
+            .add_cell_with_source(&cell_id, &cell_type, after_cell_id.as_deref(), &source)
             .map_err(to_napi_err)?;
         notebook_sync::presence::emit_cursor_at_end(&handle, &cell_id, &source, Some(&peer_label))
             .await;
@@ -1625,11 +1629,60 @@ async fn add_source_cell(
 ) -> Result<String> {
     let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
     let (handle, peer_label) = session_handle_and_label(state).await?;
+    let after_cell_id = insertion_anchor(&handle, None, None)?;
     handle
-        .add_cell_with_source(&cell_id, cell_type, None, source)
+        .add_cell_with_source(&cell_id, cell_type, after_cell_id.as_deref(), source)
         .map_err(to_napi_err)?;
     notebook_sync::presence::emit_cursor_at_end(&handle, &cell_id, source, Some(&peer_label)).await;
     Ok(cell_id)
+}
+
+fn insertion_anchor(
+    handle: &DocHandle,
+    after_cell_id: Option<&str>,
+    index: Option<i64>,
+) -> Result<Option<String>> {
+    if after_cell_id.is_some() && index.is_some() {
+        return Err(Error::from_reason(
+            "index and afterCellId cannot both be set",
+        ));
+    }
+
+    if let Some(after_cell_id) = after_cell_id {
+        return Ok(Some(after_cell_id.to_string()));
+    }
+
+    if index.is_some() {
+        return insertion_anchor_from_order(&handle.get_cell_ids(), None, index);
+    }
+
+    Ok(handle.last_cell_id())
+}
+
+fn insertion_anchor_from_order(
+    cell_ids: &[String],
+    after_cell_id: Option<&str>,
+    index: Option<i64>,
+) -> Result<Option<String>> {
+    if after_cell_id.is_some() && index.is_some() {
+        return Err(Error::from_reason(
+            "index and afterCellId cannot both be set",
+        ));
+    }
+
+    if let Some(after_cell_id) = after_cell_id {
+        return Ok(Some(after_cell_id.to_string()));
+    }
+
+    if let Some(index) = index {
+        if index <= 0 {
+            return Ok(None);
+        }
+        let clamped = (index as usize).min(cell_ids.len());
+        return Ok(cell_ids.get(clamped.saturating_sub(1)).cloned());
+    }
+
+    Ok(cell_ids.last().cloned())
 }
 
 fn dependency_fingerprint_for_handle(handle: &DocHandle) -> Option<String> {
@@ -2086,6 +2139,41 @@ mod tests {
         let err = normalize_cell_type(Some("sql".to_string())).unwrap_err();
         assert!(err.reason.contains("Invalid cell_type"));
         assert!(err.reason.contains("code, markdown, raw"));
+    }
+
+    #[test]
+    fn insertion_anchor_defaults_to_append() {
+        let cells = vec!["cell-1".to_string(), "cell-2".to_string()];
+        assert_eq!(
+            insertion_anchor_from_order(&cells, None, None)
+                .unwrap()
+                .as_deref(),
+            Some("cell-2"),
+        );
+        assert_eq!(
+            insertion_anchor_from_order(&cells, Some("cell-1"), None)
+                .unwrap()
+                .as_deref(),
+            Some("cell-1"),
+        );
+        assert!(insertion_anchor_from_order(&cells, None, Some(0))
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            insertion_anchor_from_order(&cells, None, Some(1))
+                .unwrap()
+                .as_deref(),
+            Some("cell-1"),
+        );
+        assert_eq!(
+            insertion_anchor_from_order(&cells, None, Some(99))
+                .unwrap()
+                .as_deref(),
+            Some("cell-2"),
+        );
+
+        let err = insertion_anchor_from_order(&cells, Some("cell-1"), Some(0)).unwrap_err();
+        assert!(err.reason.contains("cannot both be set"));
     }
 
     #[test]

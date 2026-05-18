@@ -129,7 +129,12 @@ export interface CellSnapshot {
 
 export interface CreateCellOptions {
   cellType?: "code" | "markdown" | "raw";
-  afterCellId?: string | null;
+  /** Omit to append at the end. 0 prepends; out-of-range values append. */
+  index?: number;
+  /**
+   * Insert after this cell. Cannot be combined with index.
+   */
+  afterCellId?: string;
 }
 
 export interface SetCellOptions {
