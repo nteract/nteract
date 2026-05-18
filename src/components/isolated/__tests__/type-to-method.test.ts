@@ -1,9 +1,10 @@
 /**
- * Tests for TYPE_TO_METHOD mapping in isolated-frame.tsx.
+ * Tests for the TYPE_TO_METHOD mapping in `IsolatedFrameController`.
  *
- * Verifies that every legacy message type that goes through send()
- * has a corresponding JSON-RPC method mapping, and that the mapping
- * values match the constants in rpc-methods.ts.
+ * Verifies that every `ParentToIframeMessage.type` value has a JSON-RPC
+ * method mapping, and that the values match the constants in
+ * `rpc-methods.ts`. The table is duplicated here so the test catches
+ * drift between the controller's mapping and the canonical method names.
  */
 
 import { describe, expect, it } from "vite-plus/test";
@@ -13,19 +14,20 @@ import {
   NTERACT_COMM_CLOSE,
   NTERACT_COMM_MSG,
   NTERACT_COMM_OPEN,
-  NTERACT_WIDGET_SNAPSHOT,
   NTERACT_EVAL,
   NTERACT_INSTALL_RENDERER,
+  NTERACT_INTERACTION_STATE,
   NTERACT_PING,
   NTERACT_RENDER_OUTPUT,
   NTERACT_SEARCH,
   NTERACT_SEARCH_NAVIGATE,
   NTERACT_THEME,
+  NTERACT_WIDGET_SNAPSHOT,
   NTERACT_WIDGET_STATE,
 } from "../rpc-methods";
 
-// Duplicated from isolated-frame.tsx to test in isolation
-// If this gets out of sync, the test will fail and remind us to update
+// Duplicated from isolated-frame-controller.ts to test in isolation.
+// If this gets out of sync, the test will fail and remind us to update.
 const TYPE_TO_METHOD: Record<string, string> = {
   render: NTERACT_RENDER_OUTPUT,
   theme: NTERACT_THEME,
@@ -41,11 +43,11 @@ const TYPE_TO_METHOD: Record<string, string> = {
   widget_snapshot: NTERACT_WIDGET_SNAPSHOT,
   bridge_ready: NTERACT_BRIDGE_READY,
   widget_state: NTERACT_WIDGET_STATE,
+  interaction_state: NTERACT_INTERACTION_STATE,
 };
 
 describe("TYPE_TO_METHOD mapping", () => {
-  it("maps all host→iframe legacy types to JSON-RPC methods", () => {
-    // Every legacy type that CommBridgeManager or IsolatedFrame.send() uses
+  it("covers every host→iframe message type", () => {
     const requiredTypes = [
       "render",
       "theme",
@@ -61,10 +63,11 @@ describe("TYPE_TO_METHOD mapping", () => {
       "widget_snapshot",
       "bridge_ready",
       "widget_state",
+      "interaction_state",
     ];
 
     for (const type of requiredTypes) {
-      expect(TYPE_TO_METHOD[type], `Missing mapping for legacy type "${type}"`).toBeDefined();
+      expect(TYPE_TO_METHOD[type], `Missing mapping for type "${type}"`).toBeDefined();
     }
   });
 
@@ -88,6 +91,7 @@ describe("TYPE_TO_METHOD mapping", () => {
     expect(TYPE_TO_METHOD.widget_snapshot).toBe("nteract/widgetSnapshot");
     expect(TYPE_TO_METHOD.bridge_ready).toBe("nteract/bridgeReady");
     expect(TYPE_TO_METHOD.widget_state).toBe("nteract/widgetState");
+    expect(TYPE_TO_METHOD.interaction_state).toBe("nteract/interactionState");
   });
 
   it("has no duplicate method values", () => {

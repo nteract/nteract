@@ -35,6 +35,7 @@ export const NTERACT_WIDGET_STATE = "nteract/widgetState" as const;
 // Host → Iframe (Notifications) — additional
 export const NTERACT_THEME = "nteract/theme" as const;
 export const NTERACT_PING = "nteract/ping" as const;
+export const NTERACT_INTERACTION_STATE = "nteract/interactionState" as const;
 
 // Iframe → Host (Notifications)
 export const NTERACT_READY = "nteract/ready" as const;
@@ -100,6 +101,11 @@ export interface NteractRenderBatchParams {
 
 export interface NteractSearchNavigateParams {
   matchIndex: number;
+}
+
+export interface NteractInteractionStateParams {
+  /** Whether the parent wrapper has handed pointer/wheel interaction to the iframe. */
+  active: boolean;
 }
 
 export interface NteractCommOpenParams {

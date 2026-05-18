@@ -50,6 +50,7 @@ import {
   NTERACT_EVAL,
   NTERACT_EVAL_RESULT,
   NTERACT_INSTALL_RENDERER,
+  NTERACT_INTERACTION_STATE,
   NTERACT_LINK_CLICK,
   NTERACT_MOUSE_DOWN,
   NTERACT_PING,
@@ -93,6 +94,7 @@ const TYPE_TO_METHOD: Record<string, string> = {
   widget_snapshot: NTERACT_WIDGET_SNAPSHOT,
   bridge_ready: NTERACT_BRIDGE_READY,
   widget_state: NTERACT_WIDGET_STATE,
+  interaction_state: NTERACT_INTERACTION_STATE,
 };
 
 // ── Public types ─────────────────────────────────────────────────────
@@ -218,15 +220,15 @@ export const ISOLATED_FRAME_SANDBOX =
 // ── Controller ───────────────────────────────────────────────────────
 
 /**
- * Internal queued message. JSON-RPC sends carry a `method`/`params` pair
- * and are flushed via `rpc.notify()`. Raw sends carry the original
- * `ParentToIframeMessage` (for types with no JSON-RPC method, e.g.
- * `interaction_state`) and are flushed via postMessage so the iframe-side
- * bootstrap handler picks them up.
+ * Internal queued message. Every entry is a JSON-RPC notification; the
+ * controller drains them through `rpc.notify()` once the renderer reports
+ * ready. There is no raw-postMessage queue because every member of
+ * `ParentToIframeMessage` has a JSON-RPC method in `TYPE_TO_METHOD`.
  */
-type QueuedSend =
-  | { kind: "rpc"; method: string; params?: unknown }
-  | { kind: "raw"; message: ParentToIframeMessage };
+interface QueuedSend {
+  method: string;
+  params?: unknown;
+}
 
 export class IsolatedFrameController {
   private readonly iframe: HTMLIFrameElement;
@@ -297,9 +299,7 @@ export class IsolatedFrameController {
 
   /**
    * Generic outbound send. Maps `{ type, payload }` shapes onto their
-   * JSON-RPC method names. Types with no JSON-RPC method (currently
-   * `interaction_state`) are queued and flushed as raw postMessages once
-   * the renderer reports ready.
+   * JSON-RPC method names and queues the notification.
    *
    * Prefer the typed helpers (`render`, `setTheme`, etc.) over this; the
    * generic path exists for adapters that need to forward an
@@ -307,17 +307,16 @@ export class IsolatedFrameController {
    */
   send(message: ParentToIframeMessage): void {
     const method = TYPE_TO_METHOD[message.type];
-    if (method) {
-      const params = "payload" in message ? message.payload : undefined;
-      this.enqueue(method, params);
-      return;
+    if (!method) {
+      // Every member of `ParentToIframeMessage` is in `TYPE_TO_METHOD`. If
+      // this fires, a new message type was added to the union without a
+      // matching method entry.
+      throw new Error(
+        `IsolatedFrameController.send: no JSON-RPC method for type "${message.type}"`,
+      );
     }
-    // No JSON-RPC method (e.g. `interaction_state`). Queue as a raw
-    // postMessage and flush after the renderer is ready so the iframe-side
-    // handler picks it up. Without this gate, an early `interaction_state`
-    // would land before the renderer-bundle listener is installed and get
-    // dropped.
-    this.enqueueRaw(message);
+    const params = "payload" in message ? message.payload : undefined;
+    this.enqueue(method, params);
   }
 
   render(payload: RenderPayload): void {
@@ -412,18 +411,10 @@ export class IsolatedFrameController {
 
   private enqueue(method: string, params: unknown): void {
     if (this.state !== "ready" || !this.rpc) {
-      this.pending.push({ kind: "rpc", method, params });
+      this.pending.push({ method, params });
       return;
     }
     this.rpc.notify(method, params);
-  }
-
-  private enqueueRaw(message: ParentToIframeMessage): void {
-    if (this.state !== "ready") {
-      this.pending.push({ kind: "raw", message });
-      return;
-    }
-    this.iframe.contentWindow?.postMessage(message, "*");
   }
 
   private flushPending(): void {
@@ -431,11 +422,7 @@ export class IsolatedFrameController {
     const drain = this.pending;
     this.pending = [];
     for (const item of drain) {
-      if (item.kind === "rpc") {
-        this.rpc.notify(item.method, item.params);
-      } else {
-        this.iframe.contentWindow?.postMessage(item.message, "*");
-      }
+      this.rpc.notify(item.method, item.params);
     }
   }
 
