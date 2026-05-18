@@ -39,5 +39,5 @@ if ! command -v clang >/dev/null 2>&1; then
 fi
 
 if ! command -v wasm-pack >/dev/null 2>&1; then
-  cargo install --locked wasm-pack
+  cargo install --locked wasm-pack --version 0.15.0
 fi

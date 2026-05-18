@@ -357,7 +357,7 @@ fn require_cargo_subcommand(name: &str, install_hint: &str) {
 
 const PNPM_INSTALL: &str = "brew install pnpm  (or: npm install -g pnpm)";
 const TAURI_INSTALL: &str = "cargo install tauri-cli";
-const WASM_PACK_INSTALL: &str = "cargo install wasm-pack";
+const WASM_PACK_INSTALL: &str = "cargo install wasm-pack --version 0.15.0 --locked";
 
 fn require_pnpm() {
     require_tool(pnpm_bin(), PNPM_INSTALL);
