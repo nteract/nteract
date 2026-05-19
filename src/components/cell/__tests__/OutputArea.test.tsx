@@ -155,6 +155,33 @@ describe("OutputArea iframe theme sync", () => {
     });
   });
 
+  it("installs the markdown renderer plugin before rendering markdown outputs", async () => {
+    vi.mocked(needsPlugin).mockImplementation((mime) => mime === "text/markdown");
+
+    render(<OutputArea outputs={makeMarkdownOutput()} isolated />);
+
+    await waitFor(() => {
+      expect(injectPluginsForMimes).toHaveBeenCalledWith(
+        mockFrameHandle,
+        new Set(["text/markdown"]),
+        expect.any(Set),
+      );
+    });
+
+    await waitFor(() => {
+      expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
+        expect.objectContaining({
+          mimeType: "text/markdown",
+          data: "```python\nprint('hello')\n```",
+        }),
+      ]);
+    });
+
+    expect(vi.mocked(injectPluginsForMimes).mock.invocationCallOrder[0]).toBeLessThan(
+      mockFrameHandle.renderBatch.mock.invocationCallOrder[0],
+    );
+  });
+
   it("renders a contained fallback when an isolated renderer plugin fails to load", async () => {
     vi.mocked(needsPlugin).mockReturnValue(true);
     vi.mocked(injectPluginsForMimes).mockRejectedValue(new Error("chunk failed"));

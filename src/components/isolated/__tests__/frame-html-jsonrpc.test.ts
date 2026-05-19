@@ -30,7 +30,14 @@ describe("bootstrap HTML JSON-RPC support", () => {
 
   it("routes nteract/eval to handleEval", () => {
     expect(source).toContain("case 'nteract/eval':");
-    expect(html).toContain("handleEval(params)");
+    expect(html).toContain("handleEval(params, event)");
+  });
+
+  it("passes the MessageEvent into eval without relying on a global event", () => {
+    expect(html).toContain("handleEval(params, event)");
+    expect(html).toContain("handleEval(payload, event)");
+    expect(html).toContain("function handleEval(payload, messageEvent)");
+    expect(html).toContain("window.currentMessage = messageEvent");
   });
 
   it("routes nteract/renderOutput with React gate", () => {
