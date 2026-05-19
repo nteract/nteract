@@ -717,13 +717,22 @@ export function OutputArea({
       }
     });
 
+    console.debug("[OutputArea] isolated render batch", {
+      cellId,
+      outputs: outputs.length,
+      batch: batch.length,
+      mimes: batch.map((item) => item.mimeType),
+      pluginMimes: [...pluginMimes],
+      hasWidgets,
+      hasSiftOutputs,
+    });
     frameRef.current.renderBatch(batch);
 
     // Re-apply search highlights after rendering new content
     if (searchQueryRef.current) {
       frameRef.current?.search(searchQueryRef.current);
     }
-  }, [outputs, priority, shouldUseBridge, widgetContext]);
+  }, [outputs, priority, shouldUseBridge, widgetContext, cellId, hasWidgets, hasSiftOutputs]);
 
   // Clean up bridge on unmount
   useEffect(() => {

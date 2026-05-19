@@ -43,6 +43,7 @@ import {
   NTERACT_COMM_CLOSE,
   NTERACT_COMM_MSG,
   NTERACT_COMM_OPEN,
+  NTERACT_DIAGNOSTIC,
   NTERACT_DOUBLE_CLICK,
   NTERACT_ERROR,
   NTERACT_EVAL,
@@ -69,6 +70,7 @@ import {
   type NteractCommCloseParams,
   type NteractCommMsgParams,
   type NteractCommOpenParams,
+  type NteractDiagnosticParams,
   type NteractHostToIframeMethod,
   type NteractHostToIframeParams,
   type NteractRenderOutputParams,
@@ -404,6 +406,13 @@ export class IsolatedFrameController {
   private enqueue(method: NteractHostToIframeMethod, params?: unknown): void {
     if (this.state !== "ready" || !this.rpc) {
       this.pending.push({ method, params });
+      if (method === NTERACT_RENDER_OUTPUT || method === NTERACT_RENDER_BATCH) {
+        this.log("debug", "queued-render-command", {
+          method,
+          state: this.state,
+          pending: this.pending.length,
+        });
+      }
       return;
     }
     this.rpc.notify(method, params);
@@ -424,9 +433,33 @@ export class IsolatedFrameController {
     if (!this.rpc) return;
     const drain = this.pending;
     this.pending = [];
+    if (drain.length > 0) {
+      this.log("debug", "flushing-pending-commands", {
+        count: drain.length,
+        methods: drain.map((item) => item.method),
+      });
+    }
     for (const item of drain) {
       this.rpc.notify(item.method, item.params);
     }
+  }
+
+  private log(
+    level: NteractDiagnosticParams["level"],
+    event: string,
+    details?: Record<string, unknown>,
+  ): void {
+    const method = level === "error" ? "error" : level === "warn" ? "warn" : level;
+    console[method]("[isolated-frame]", event, details ?? {});
+  }
+
+  private logRendererDiagnostic(params: unknown): void {
+    const diagnostic = params as NteractDiagnosticParams | undefined;
+    if (!diagnostic?.event) return;
+    this.log(diagnostic.level ?? "info", diagnostic.event, {
+      source: diagnostic.source,
+      ...diagnostic.details,
+    });
   }
 
   // ── Internal: lifecycle ─────────────────────────────────────────
@@ -507,6 +540,12 @@ export class IsolatedFrameController {
   private handleBootstrapReady(): void {
     const isReload = this.hasReceivedReady;
     this.hasReceivedReady = true;
+    this.log("info", "bootstrap-ready", {
+      isReload,
+      frameName: this.iframe.name || null,
+      hasRendererBundle: Boolean(this.rendererCode && this.rendererCss),
+      pending: this.pending.length,
+    });
 
     if (isReload) {
       // Iframe was reloaded (e.g., DOM move tore it down). Discard any
@@ -533,6 +572,7 @@ export class IsolatedFrameController {
     const win = this.iframe.contentWindow;
     if (!win) return;
     const transport = new JsonRpcTransport(win, win);
+    transport.onNotification(NTERACT_DIAGNOSTIC, (params) => this.logRendererDiagnostic(params));
     transport.onNotification(NTERACT_RENDERER_READY, () => this.handleRendererReady());
     transport.onNotification(NTERACT_RESIZE, (params) => {
       const p = params as { height?: number } | undefined;
@@ -543,6 +583,9 @@ export class IsolatedFrameController {
         | { outputId?: string; cellId?: string; outputIndex?: number; height?: number }
         | undefined;
       if (p?.height != null) this._resize$.next({ height: p.height });
+      if (p?.height != null && p.height <= 1) {
+        this.log("warn", "render-complete-small-height", p as Record<string, unknown>);
+      }
       this._renderComplete$.next({
         outputId: p?.outputId,
         cellId: p?.cellId,
@@ -568,11 +611,15 @@ export class IsolatedFrameController {
     });
     transport.onNotification(NTERACT_ERROR, (params) => {
       const p = params as { message?: string; stack?: string } | undefined;
-      if (p?.message) this._errors$.next({ message: p.message, stack: p.stack });
+      if (p?.message) {
+        this.log("error", "renderer-error", { message: p.message, stack: p.stack });
+        this._errors$.next({ message: p.message, stack: p.stack });
+      }
     });
     transport.onNotification(NTERACT_EVAL_RESULT, (params) => {
       const p = params as { success?: boolean; error?: string } | undefined;
       if (p?.success === false) {
+        this.log("error", "eval-failed", { error: p.error ?? "unknown" });
         this._errors$.next({ message: `Bundle eval failed: ${p.error ?? "unknown"}` });
       }
     });
@@ -611,10 +658,18 @@ export class IsolatedFrameController {
       // observe raw and JSON-RPC messages, but the renderer stays
       // uninstalled until `setRendererBundle()` lands and re-enters this
       // path.
+      this.log("info", "renderer-bundle-pending", {
+        hasRendererCode: Boolean(this.rendererCode),
+        hasRendererCss: Boolean(this.rendererCss),
+      });
       return;
     }
     this.bootstrapping = true;
     this._state$.next("installing");
+    this.log("info", "injecting-renderer-bundle", {
+      cssBytes: this.rendererCss.length,
+      jsBytes: this.rendererCode.length,
+    });
 
     // CSS first; idempotent thanks to the iframe-side guard flag.
     const cssCode =
@@ -642,6 +697,11 @@ export class IsolatedFrameController {
 
   private handleRendererReady(): void {
     if (this.state === "ready") return; // Idempotent.
+    this.log("info", "renderer-ready", {
+      previousState: this.state,
+      pending: this.pending.length,
+      hasInitialContent: Boolean(this.initialContent),
+    });
     this._state$.next("ready");
     this.flushPending();
     if (this.initialContent && this.rpc) {

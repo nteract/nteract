@@ -14,6 +14,7 @@ import {
   NTERACT_COMM_CLOSE,
   NTERACT_COMM_MSG,
   NTERACT_COMM_OPEN,
+  NTERACT_DIAGNOSTIC,
   NTERACT_WIDGET_SNAPSHOT,
   NTERACT_DOUBLE_CLICK,
   NTERACT_ERROR,
@@ -68,6 +69,7 @@ describe("nteract JSON-RPC method constants", () => {
     NTERACT_WHEEL_BOUNDARY,
     NTERACT_DOUBLE_CLICK,
     NTERACT_ERROR,
+    NTERACT_DIAGNOSTIC,
     NTERACT_WIDGET_READY,
     NTERACT_WIDGET_COMM_MSG,
     NTERACT_WIDGET_COMM_CLOSE,
@@ -113,5 +115,6 @@ describe("nteract JSON-RPC method constants", () => {
     expect(NTERACT_WIDGET_UPDATE).toBe("nteract/widgetUpdate");
     expect(NTERACT_WIDGET_STATE).toBe("nteract/widgetState");
     expect(NTERACT_SEARCH_NAVIGATE).toBe("nteract/searchNavigate");
+    expect(NTERACT_DIAGNOSTIC).toBe("nteract/diagnostic");
   });
 });
