@@ -366,11 +366,8 @@ jobs:
       - name: Clippy (notebook crate)
         run: cargo clippy -p notebook --all-targets -- -D warnings
 
-      - name: Install cargo-binstall
-        run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
-
       - name: Install tauri-cli
-        run: cargo binstall tauri-cli --no-confirm --locked --force
+        uses: ./.github/actions/install-tauri-cli
 
       - name: Upload Linux Rust binaries
         uses: actions/upload-artifact@v7
