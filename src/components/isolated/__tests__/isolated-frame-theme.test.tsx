@@ -1,14 +1,9 @@
 import { render, waitFor } from "@testing-library/react";
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import {
-  NTERACT_EVAL,
-  NTERACT_RENDERER_READY,
-  NTERACT_RESIZE,
-  NTERACT_THEME,
-} from "../rpc-methods";
+import { NTERACT_RENDERER_READY, NTERACT_RESIZE, NTERACT_THEME } from "../rpc-methods";
 
-const { MockJsonRpcTransport, rendererContextState } = vi.hoisted(() => {
+const { MockJsonRpcTransport } = vi.hoisted(() => {
   class MockJsonRpcTransport {
     static instances: MockJsonRpcTransport[] = [];
 
@@ -29,15 +24,7 @@ const { MockJsonRpcTransport, rendererContextState } = vi.hoisted(() => {
     }
   }
 
-  return {
-    MockJsonRpcTransport,
-    rendererContextState: {
-      rendererCode: undefined as string | undefined,
-      rendererCss: undefined as string | undefined,
-      isLoading: false,
-      error: null as Error | null,
-    },
-  };
+  return { MockJsonRpcTransport };
 });
 
 vi.mock("../jsonrpc-transport", () => ({
@@ -49,7 +36,12 @@ vi.mock("../frame-html", () => ({
 }));
 
 vi.mock("../isolated-renderer-context", () => ({
-  useIsolatedRenderer: () => rendererContextState,
+  useIsolatedRenderer: () => ({
+    rendererCode: undefined,
+    rendererCss: undefined,
+    isLoading: false,
+    error: null,
+  }),
 }));
 
 import { IsolatedFrame } from "../isolated-frame";
@@ -68,10 +60,6 @@ function dispatchIframeReady(iframeWindow: Window) {
 describe("IsolatedFrame theme updates", () => {
   beforeEach(() => {
     MockJsonRpcTransport.instances = [];
-    rendererContextState.rendererCode = undefined;
-    rendererContextState.rendererCss = undefined;
-    rendererContextState.isLoading = false;
-    rendererContextState.error = null;
   });
 
   afterEach(() => {
@@ -103,29 +91,6 @@ describe("IsolatedFrame theme updates", () => {
         colorTheme: "cream",
       });
     });
-  });
-
-  it("keeps the same JSON-RPC transport across autoHeight/min/max prop changes", async () => {
-    const { container, rerender } = render(
-      <IsolatedFrame darkMode={false} maxHeight={1000} minHeight={20} autoHeight={false} />,
-    );
-    const iframe = container.querySelector("iframe") as HTMLIFrameElement;
-    const iframeWindow = iframe.contentWindow as Window;
-
-    dispatchIframeReady(iframeWindow);
-    expect(MockJsonRpcTransport.instances).toHaveLength(1);
-    const initialTransport = MockJsonRpcTransport.instances[0];
-
-    // Flip every height-policy prop. The iframe never refires `ready`, so
-    // tearing the controller down here would strand the new instance in
-    // `booting` and drop every future message.
-    rerender(<IsolatedFrame darkMode={false} maxHeight={3000} minHeight={20} autoHeight={false} />);
-    rerender(<IsolatedFrame darkMode={false} maxHeight={3000} minHeight={40} autoHeight={false} />);
-    rerender(<IsolatedFrame darkMode={false} maxHeight={3000} minHeight={40} autoHeight />);
-
-    expect(MockJsonRpcTransport.instances).toHaveLength(1);
-    expect(MockJsonRpcTransport.instances[0]).toBe(initialTransport);
-    expect(initialTransport.stop).not.toHaveBeenCalled();
   });
 
   it("re-applies the last measured content height when autoHeight changes", async () => {
@@ -166,31 +131,6 @@ describe("IsolatedFrame theme updates", () => {
 
     expect(iframe.getAttribute("srcdoc")).toContain("<!DOCTYPE html>");
     expect(iframe.getAttribute("src")).toBeNull();
-  });
-
-  it("injects the renderer bundle even when the CSS artifact is empty", async () => {
-    rendererContextState.rendererCode = "window.__TEST_RENDERER_LOADED__ = true;";
-    rendererContextState.rendererCss = "";
-
-    const { container } = render(<IsolatedFrame darkMode={false} />);
-    const iframe = container.querySelector("iframe") as HTMLIFrameElement;
-    const iframeWindow = iframe.contentWindow as Window;
-    const postMessage = vi.spyOn(iframeWindow, "postMessage");
-
-    dispatchIframeReady(iframeWindow);
-
-    await waitFor(() => {
-      expect(postMessage).toHaveBeenCalledWith(
-        expect.objectContaining({
-          jsonrpc: "2.0",
-          method: NTERACT_EVAL,
-          params: expect.objectContaining({
-            code: expect.stringContaining("__ISOLATED_RENDERER_LOADED__"),
-          }),
-        }),
-        "*",
-      );
-    });
   });
 
   it("uses nteract-frame://localhost/ src in Tauri runtime", () => {

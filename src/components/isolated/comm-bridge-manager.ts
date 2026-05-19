@@ -1,12 +1,12 @@
 import type { WidgetStore } from "@/components/widgets/widget-store";
-import type { IframeToParentMessage } from "./frame-bridge";
-import type { IsolatedFrameHandle } from "./isolated-frame";
 import type {
-  NteractCommCloseParams,
-  NteractCommMsgParams,
-  NteractCommOpenParams,
-  NteractWidgetSnapshotParams,
-} from "./rpc-methods";
+  CommCloseMessage,
+  CommMsgMessage,
+  CommOpenMessage,
+  WidgetSnapshotMessage,
+  IframeToParentMessage,
+} from "./frame-bridge";
+import type { IsolatedFrameHandle } from "./isolated-frame";
 
 /**
  * Narrow a full-state `bufferPaths` list to only the entries rooted at one of
@@ -47,11 +47,6 @@ interface CommBridgeManagerOptions {
   closeComm: CloseComm;
 }
 
-type BufferedWidgetMessage =
-  | { kind: "comm_open"; params: NteractCommOpenParams }
-  | { kind: "comm_msg"; params: NteractCommMsgParams }
-  | { kind: "comm_close"; params: NteractCommCloseParams };
-
 /**
  * Comm Bridge Manager for proxying widget communication to an isolated iframe.
  *
@@ -69,7 +64,7 @@ export class CommBridgeManager {
   private closeCommWithKernel: CloseComm;
 
   private isWidgetReady = false;
-  private messageBuffer: BufferedWidgetMessage[] = [];
+  private messageBuffer: Array<CommOpenMessage | CommMsgMessage | CommCloseMessage> = [];
   private storeUnsubscribe: (() => void) | null = null;
 
   // Track which models have been sent to avoid duplicate sends
@@ -101,7 +96,7 @@ export class CommBridgeManager {
 
     // Signal to iframe that parent bridge is ready
     // Iframe will respond with widget_ready to trigger widget_snapshot
-    this.frame.bridgeReady();
+    this.frame.send({ type: "bridge_ready" });
   }
 
   /**
@@ -134,22 +129,25 @@ export class CommBridgeManager {
     state: Record<string, unknown>,
     bufferPaths?: string[][],
   ): void {
-    const params: NteractCommOpenParams = {
-      commId,
-      targetName,
-      state,
-      bufferPaths,
+    const msg: CommOpenMessage = {
+      type: "comm_open",
+      payload: {
+        commId,
+        targetName,
+        state,
+        bufferPaths,
+      },
     };
 
     if (this.isWidgetReady) {
       try {
-        this.frame.commOpen(params);
+        this.frame.send(msg);
         this.sentModels.add(commId);
       } catch (e) {
         console.warn(`[CommBridge] Skipping non-cloneable comm_open for ${commId}:`, e);
       }
     } else {
-      this.messageBuffer.push({ kind: "comm_open", params });
+      this.messageBuffer.push(msg);
     }
   }
 
@@ -166,18 +164,21 @@ export class CommBridgeManager {
     data: Record<string, unknown>,
     opts: { bufferPaths?: string[][]; buffers?: ArrayBuffer[] } = {},
   ): void {
-    const params: NteractCommMsgParams = {
-      commId,
-      method,
-      data,
-      bufferPaths: opts.bufferPaths,
-      buffers: opts.buffers,
+    const msg: CommMsgMessage = {
+      type: "comm_msg",
+      payload: {
+        commId,
+        method,
+        data,
+        bufferPaths: opts.bufferPaths,
+        buffers: opts.buffers,
+      },
     };
 
     if (this.isWidgetReady) {
-      this.frame.commMsg(params);
+      this.frame.send(msg);
     } else {
-      this.messageBuffer.push({ kind: "comm_msg", params });
+      this.messageBuffer.push(msg);
     }
   }
 
@@ -186,13 +187,16 @@ export class CommBridgeManager {
    * Called when the kernel closes a widget.
    */
   sendCommClose(commId: string): void {
-    const params: NteractCommCloseParams = { commId };
+    const msg: CommCloseMessage = {
+      type: "comm_close",
+      payload: { commId },
+    };
 
     if (this.isWidgetReady) {
-      this.frame.commClose(params);
+      this.frame.send(msg);
       this.sentModels.delete(commId);
     } else {
-      this.messageBuffer.push({ kind: "comm_close", params });
+      this.messageBuffer.push(msg);
     }
   }
 
@@ -222,7 +226,7 @@ export class CommBridgeManager {
 
     // Send widget_snapshot with all existing models
     const models = this.store.getSnapshot();
-    const modelArray: NteractWidgetSnapshotParams["models"] = [];
+    const modelArray: WidgetSnapshotMessage["payload"]["models"] = [];
 
     for (const [commId, model] of models) {
       modelArray.push({
@@ -239,8 +243,12 @@ export class CommBridgeManager {
     }
 
     if (modelArray.length > 0) {
+      const syncMsg: WidgetSnapshotMessage = {
+        type: "widget_snapshot",
+        payload: { models: modelArray },
+      };
       try {
-        this.frame.widgetSnapshot({ models: modelArray });
+        this.frame.send(syncMsg);
       } catch (e) {
         // Batch send failed (likely a non-cloneable value in one model).
         // Fall back to sending models individually so one bad model
@@ -251,7 +259,10 @@ export class CommBridgeManager {
         );
         for (const model of modelArray) {
           try {
-            this.frame.widgetSnapshot({ models: [model] });
+            this.frame.send({
+              type: "widget_snapshot",
+              payload: { models: [model] },
+            } as WidgetSnapshotMessage);
           } catch (perModelError) {
             console.warn(
               `[CommBridge] Skipping non-cloneable model ${model.commId}:`,
@@ -264,28 +275,14 @@ export class CommBridgeManager {
 
     // Flush buffered messages
     for (const msg of this.messageBuffer) {
-      this.sendBufferedMessage(msg);
-      if (msg.kind === "comm_open") {
-        this.sentModels.add(msg.params.commId);
-      } else if (msg.kind === "comm_close") {
-        this.sentModels.delete(msg.params.commId);
+      this.frame.send(msg);
+      if (msg.type === "comm_open") {
+        this.sentModels.add(msg.payload.commId);
+      } else if (msg.type === "comm_close") {
+        this.sentModels.delete(msg.payload.commId);
       }
     }
     this.messageBuffer = [];
-  }
-
-  private sendBufferedMessage(msg: BufferedWidgetMessage): void {
-    switch (msg.kind) {
-      case "comm_open":
-        this.frame.commOpen(msg.params);
-        break;
-      case "comm_msg":
-        this.frame.commMsg(msg.params);
-        break;
-      case "comm_close":
-        this.frame.commClose(msg.params);
-        break;
-    }
   }
 
   private handleWidgetCommMsg(payload: {

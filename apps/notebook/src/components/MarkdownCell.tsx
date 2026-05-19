@@ -1,12 +1,23 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
 import { Pencil } from "lucide-react";
-import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  type PointerEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
-import { OutputArea, type JupyterOutput } from "@/components/cell/OutputArea";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
 import { textAttributionExtension } from "@/components/editor/text-attribution";
+import { IsolatedFrame, type IsolatedFrameHandle } from "@/components/isolated";
+import { injectPluginsForMimes } from "@/components/isolated/iframe-libraries";
+import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
@@ -20,11 +31,19 @@ import {
 } from "../lib/cell-ui-state";
 import { onEditorRegistered, onEditorUnregistered } from "../lib/cursor-registry";
 import { registerCellEditor, unregisterCellEditor } from "../lib/editor-registry";
+import { logger } from "../lib/logger";
 import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";
 import { openUrl } from "../lib/open-url";
 import { presenceSenderExtension } from "../lib/presence-sender";
 import type { MarkdownCell as MarkdownCellType } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
+
+const handleIframeError = (err: { message: string; stack?: string }) =>
+  logger.error("[MarkdownCell] iframe error:", err);
+
+function formatPluginLoadError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 interface MarkdownCellProps {
   cell: MarkdownCellType;
@@ -129,7 +148,10 @@ export const MarkdownCell = memo(function MarkdownCell({
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const presence = usePresenceContext();
   const { extension: crdtBridgeExt } = useCrdtBridge(cell.id);
+  const frameRef = useRef<IsolatedFrameHandle>(null);
+  const injectedLibsRef = useRef(new Set<string>());
   const viewRef = useRef<HTMLDivElement>(null);
+  const [previewFrameInteractionActive, setPreviewFrameInteractionActive] = useState(false);
 
   // Register EditorView with the cursor registry when in edit mode.
   const registeredViewRef = useRef<EditorView | null>(null);
@@ -182,11 +204,44 @@ export const MarkdownCell = memo(function MarkdownCell({
     };
   }, [cell.id, editing]);
 
+  const darkMode = useDarkMode();
+  const colorTheme = useColorTheme();
+  const darkModeRef = useRef(darkMode);
+  darkModeRef.current = darkMode;
+  const colorThemeRef = useRef(colorTheme);
+  colorThemeRef.current = colorTheme;
+
   const blobResolver = useBlobResolver();
 
   const handleDoubleClick = useCallback(() => {
     setEditing(true);
   }, []);
+
+  const activatePreviewFrameInteraction = useCallback(() => {
+    setPreviewFrameInteractionActive(true);
+    onFocus();
+  }, [onFocus]);
+
+  const deactivatePreviewFrameInteractionWhenIdle = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      if (
+        event.relatedTarget instanceof Node &&
+        event.currentTarget.contains(event.relatedTarget)
+      ) {
+        return;
+      }
+      if (!(event.buttons > 0)) {
+        setPreviewFrameInteractionActive(false);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!isFocused || editing) {
+      setPreviewFrameInteractionActive(false);
+    }
+  }, [isFocused, editing]);
 
   const handleBlur = useCallback(() => {
     if (cell.source.trim()) {
@@ -194,18 +249,69 @@ export const MarkdownCell = memo(function MarkdownCell({
     }
   }, [cell.source]);
 
-  const markdownOutputs = useMemo<JupyterOutput[]>(() => {
-    if (!cell.source) return [];
-    return [
-      {
-        output_type: "display_data",
-        data: {
-          "text/markdown": rewriteMarkdownAssetRefs(cell.source, cell.resolvedAssets, blobResolver),
-        },
-        metadata: {},
-      },
-    ];
-  }, [cell.source, cell.resolvedAssets, blobResolver]);
+  // Render markdown content when iframe is ready
+  const handleFrameReady = useCallback(async () => {
+    if (!frameRef.current || !cell.source) return;
+    // Ensure theme is in sync before re-rendering (fixes theme drift after cell moves)
+    frameRef.current.setTheme(darkModeRef.current, colorThemeRef.current ?? null);
+    // Clear injected set — a reloaded iframe has a fresh renderer registry
+    injectedLibsRef.current.clear();
+    // Inject markdown renderer plugin before rendering (idempotent, cached after first load)
+    try {
+      await injectPluginsForMimes(frameRef.current, ["text/markdown"], injectedLibsRef.current);
+    } catch (error) {
+      logger.warn("[MarkdownCell] Failed to load markdown renderer plugin:", error);
+      frameRef.current.render({
+        mimeType: "text/plain",
+        data: `Failed to load markdown renderer: ${formatPluginLoadError(error)}`,
+        cellId: cell.id,
+        replace: true,
+      });
+      return;
+    }
+    const processedSource = rewriteMarkdownAssetRefs(
+      cell.source,
+      cell.resolvedAssets,
+      blobResolver,
+    );
+    frameRef.current.render({
+      mimeType: "text/markdown",
+      data: processedSource,
+      cellId: cell.id,
+      replace: true,
+    });
+  }, [cell.source, cell.id, cell.resolvedAssets, blobResolver]);
+
+  // Sync markdown to iframe whenever source or resolved assets change (supports RTC updates)
+  useEffect(() => {
+    if (frameRef.current?.isReady && cell.source) {
+      const frame = frameRef.current;
+      // Inject markdown renderer plugin (idempotent) then render
+      injectPluginsForMimes(frame, ["text/markdown"], injectedLibsRef.current)
+        .then(() => {
+          const processedSource = rewriteMarkdownAssetRefs(
+            cell.source,
+            cell.resolvedAssets,
+            blobResolver,
+          );
+          frame.render({
+            mimeType: "text/markdown",
+            data: processedSource,
+            cellId: cell.id,
+            replace: true,
+          });
+        })
+        .catch((error) => {
+          logger.warn("[MarkdownCell] Failed to load markdown renderer plugin:", error);
+          frame.render({
+            mimeType: "text/plain",
+            data: `Failed to load markdown renderer: ${formatPluginLoadError(error)}`,
+            cellId: cell.id,
+            replace: true,
+          });
+        });
+    }
+  }, [cell.source, cell.id, cell.resolvedAssets, blobResolver]);
 
   // Handle link clicks from iframe - open in system browser
   const handleLinkClick = useCallback((url: string) => {
@@ -358,6 +464,13 @@ export const MarkdownCell = memo(function MarkdownCell({
     }
   }, [editing]);
 
+  // Forward search query to the markdown iframe
+  useEffect(() => {
+    if (!editing && frameRef.current?.isReady) {
+      frameRef.current.search(searchQuery || "");
+    }
+  }, [searchQuery, editing]);
+
   // Focus view section when cell becomes focused but not editing
   useEffect(() => {
     if (isFocused && !editing) {
@@ -430,19 +543,30 @@ export const MarkdownCell = memo(function MarkdownCell({
             onDoubleClick={handleDoubleClick}
             onKeyDown={handleViewKeyDown}
           >
-            {!editing && cell.source && (
-              <div onDoubleClick={handleDoubleClick}>
-                <OutputArea
-                  outputs={markdownOutputs}
-                  cellId={cell.id}
-                  className="!pl-0 !pr-0"
-                  isolated
-                  onLinkClick={handleLinkClick}
-                  onIframeMouseDown={onFocus}
-                  searchQuery={searchQuery}
-                />
-              </div>
-            )}
+            {/* Always render IsolatedFrame to preload it (hidden when no content) */}
+            <div
+              className={cell.source ? undefined : "hidden"}
+              onPointerDown={activatePreviewFrameInteraction}
+              onPointerOut={deactivatePreviewFrameInteractionWhenIdle}
+            >
+              <IsolatedFrame
+                ref={frameRef}
+                name={`md-${cell.id}`}
+                darkMode={darkMode}
+                colorTheme={colorTheme}
+                minHeight={24}
+                autoHeight
+                scrollPassthrough={!previewFrameInteractionActive}
+                allowWheelBoundaryScroll={previewFrameInteractionActive}
+                revealOnRender
+                onReady={handleFrameReady}
+                onLinkClick={handleLinkClick}
+                onMouseDown={activatePreviewFrameInteraction}
+                onDoubleClick={handleDoubleClick}
+                onError={handleIframeError}
+                className="w-full"
+              />
+            </div>
             {!cell.source && <p className="text-muted-foreground italic">Double-click to edit</p>}
           </div>
         </>

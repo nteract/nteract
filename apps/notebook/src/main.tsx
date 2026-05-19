@@ -44,21 +44,6 @@ const originalConsoleInfo = console.info.bind(console);
 const originalConsoleDebug = console.debug.bind(console);
 const originalConsoleLog = console.log.bind(console);
 
-const DIAGNOSTIC_CONSOLE_PREFIXES = [
-  "[isolated-frame]",
-  "[isolated-renderer]",
-  "[IsolatedRendererProvider]",
-  "[OutputArea]",
-] as const;
-
-function shouldForwardDiagnosticConsole(args: unknown[]): boolean {
-  const first = args[0];
-  return (
-    typeof first === "string" &&
-    DIAGNOSTIC_CONSOLE_PREFIXES.some((prefix) => first.startsWith(prefix))
-  );
-}
-
 async function createNotebookHost(): Promise<NotebookHost> {
   if (isTauriRuntime()) {
     const { createTauriHost } = await import("@nteract/notebook-host/tauri");
@@ -134,33 +119,6 @@ async function boot() {
       logger.error(...args);
     } catch {
       // Never let the forwarding path break the original error.
-    }
-  };
-  console.warn = (...args: unknown[]) => {
-    originalConsoleWarn(...args);
-    if (!shouldForwardDiagnosticConsole(args)) return;
-    try {
-      logger.warn(...args);
-    } catch {
-      // Never let diagnostic forwarding break the original console call.
-    }
-  };
-  console.info = (...args: unknown[]) => {
-    originalConsoleInfo(...args);
-    if (!shouldForwardDiagnosticConsole(args)) return;
-    try {
-      logger.info(...args);
-    } catch {
-      // Never let diagnostic forwarding break the original console call.
-    }
-  };
-  console.debug = (...args: unknown[]) => {
-    originalConsoleDebug(...args);
-    if (!shouldForwardDiagnosticConsole(args)) return;
-    try {
-      logger.debug(...args);
-    } catch {
-      // Never let diagnostic forwarding break the original console call.
     }
   };
 

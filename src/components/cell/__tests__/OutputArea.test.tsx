@@ -7,17 +7,11 @@ let mockDarkMode = false;
 let mockColorTheme: string | undefined;
 
 const mockFrameHandle = {
-  notify: vi.fn(),
+  send: vi.fn(),
   render: vi.fn(),
   renderBatch: vi.fn(),
   eval: vi.fn(),
   installRenderer: vi.fn(),
-  bridgeReady: vi.fn(),
-  commOpen: vi.fn(),
-  commMsg: vi.fn(),
-  commClose: vi.fn(),
-  widgetSnapshot: vi.fn(),
-  setInteractionState: vi.fn(),
   setTheme: vi.fn(),
   clear: vi.fn(),
   search: vi.fn(),
@@ -125,12 +119,11 @@ describe("OutputArea iframe theme sync", () => {
     });
     mockDarkMode = false;
     mockColorTheme = undefined;
-    mockFrameHandle.notify.mockClear();
+    mockFrameHandle.send.mockClear();
     mockFrameHandle.render.mockClear();
     mockFrameHandle.renderBatch.mockClear();
     mockFrameHandle.eval.mockClear();
     mockFrameHandle.installRenderer.mockClear();
-    mockFrameHandle.setInteractionState.mockClear();
     mockFrameHandle.setTheme.mockClear();
     mockFrameHandle.clear.mockClear();
     mockFrameHandle.search.mockClear();
@@ -160,33 +153,6 @@ describe("OutputArea iframe theme sync", () => {
         }),
       ]);
     });
-  });
-
-  it("installs the markdown renderer plugin before rendering markdown outputs", async () => {
-    vi.mocked(needsPlugin).mockImplementation((mime) => mime === "text/markdown");
-
-    render(<OutputArea outputs={makeMarkdownOutput()} isolated />);
-
-    await waitFor(() => {
-      expect(injectPluginsForMimes).toHaveBeenCalledWith(
-        mockFrameHandle,
-        new Set(["text/markdown"]),
-        expect.any(Set),
-      );
-    });
-
-    await waitFor(() => {
-      expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
-        expect.objectContaining({
-          mimeType: "text/markdown",
-          data: "```python\nprint('hello')\n```",
-        }),
-      ]);
-    });
-
-    expect(vi.mocked(injectPluginsForMimes).mock.invocationCallOrder[0]).toBeLessThan(
-      mockFrameHandle.renderBatch.mock.invocationCallOrder[0],
-    );
   });
 
   it("renders a contained fallback when an isolated renderer plugin fails to load", async () => {

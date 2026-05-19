@@ -101,8 +101,8 @@ describe("iframe reload detection state machine", () => {
   it("drops pending messages on reload", () => {
     const state = initialState();
     handleReady(state);
-    state.pendingMessages.push({ method: "nteract/renderOutput", params: "old" });
-    state.pendingMessages.push({ method: "nteract/theme", params: { isDark: true } });
+    state.pendingMessages.push({ type: "render", payload: "old" });
+    state.pendingMessages.push({ type: "theme", dark: true });
 
     handleReady(state); // reload
 
@@ -153,7 +153,7 @@ describe("iframe reload detection state machine", () => {
     expect(state.isReady).toBe(true);
 
     // Reload 3
-    state.pendingMessages.push({ method: "nteract/renderOutput" });
+    state.pendingMessages.push({ type: "render" });
     handleReady(state);
     expect(state.pendingMessages).toHaveLength(0);
   });
@@ -203,12 +203,12 @@ describe("send gating", () => {
     handleReady(state);
     handleRendererReady(state);
 
-    expect(simulateSend(state, { method: "nteract/renderOutput" })).toBe("sent");
+    expect(simulateSend(state, { type: "render" })).toBe("sent");
   });
 
   it("queues messages before initial ready", () => {
     const state = initialState();
-    expect(simulateSend(state, { method: "nteract/renderOutput" })).toBe("queued");
+    expect(simulateSend(state, { type: "render" })).toBe("queued");
     expect(state.pendingMessages).toHaveLength(1);
   });
 
@@ -218,7 +218,7 @@ describe("send gating", () => {
     handleRendererReady(state);
 
     handleReady(state); // reload — isReady becomes false
-    expect(simulateSend(state, { method: "nteract/renderOutput" })).toBe("queued");
+    expect(simulateSend(state, { type: "render" })).toBe("queued");
   });
 
   it("sends again after reload recovery", () => {
@@ -229,6 +229,6 @@ describe("send gating", () => {
     handleReady(state); // reload
     handleRendererReady(state); // recovered
 
-    expect(simulateSend(state, { method: "nteract/renderOutput" })).toBe("sent");
+    expect(simulateSend(state, { type: "render" })).toBe("sent");
   });
 });

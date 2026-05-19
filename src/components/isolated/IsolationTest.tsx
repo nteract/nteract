@@ -345,16 +345,8 @@ export function IsolationTest() {
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       const { type, payload } = event.data || {};
-      const { method, params } = event.data?.jsonrpc === "2.0" ? event.data : {};
       const fromSchemeFrame = event.source === schemeIframeRef.current?.contentWindow;
       const fromBlobFrame = event.source === iframeRef.current?.contentWindow;
-
-      if (fromSchemeFrame && method === "nteract/evalResult") {
-        if (params?.success) {
-          setSchemeTestResult(JSON.parse(params.result));
-        }
-        return;
-      }
 
       switch (type) {
         case "isolation_test_result":
@@ -364,9 +356,8 @@ export function IsolationTest() {
           if (fromSchemeFrame) {
             schemeIframeRef.current?.contentWindow?.postMessage(
               {
-                jsonrpc: "2.0",
-                method: "nteract/eval",
-                params: {
+                type: "eval",
+                payload: {
                   code: `JSON.stringify({
                     hasTauri: typeof window.__TAURI__ !== 'undefined',
                     hasInvoke: typeof window.__TAURI_INTERNALS__?.invoke === 'function' ||
