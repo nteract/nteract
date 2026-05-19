@@ -888,7 +888,7 @@ jobs:
         # VIRTUAL_ENV plus `uv run --active` pins maturin to this same .venv
         # so the bindings land where pytest will look.
         run: |
-          uv sync --no-default-groups \
+          uv sync --locked --no-default-groups \
             --package runtimed \
             --package dx \
             --package nteract \
@@ -995,7 +995,7 @@ jobs:
 
       - name: Sync workspace
         run: |
-          uv sync --no-default-groups \
+          uv sync --locked --no-default-groups \
             --package runtimed \
             --package dx \
             --package prewarm \
