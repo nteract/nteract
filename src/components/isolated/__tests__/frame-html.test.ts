@@ -61,8 +61,8 @@ describe("generateFrameHtml", () => {
   });
 
   it("sends ready message on load", () => {
-    // Ready uses legacy format (bootstrap signal before JSON-RPC transport exists)
-    expect(source).toContain("sendLegacy('ready'");
+    // Ready uses a raw bootstrap signal before JSON-RPC transport exists.
+    expect(source).toContain("sendBootstrap('ready'");
     expect(html).toContain("postMessage");
   });
 

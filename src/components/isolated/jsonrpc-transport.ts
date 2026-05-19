@@ -6,8 +6,8 @@
  * ArrayBuffer instances as transferables for zero-copy transfer of
  * widget buffers (e.g., Apache Arrow tables).
  *
- * Silently ignores non-JSON-RPC messages (legacy `{ type, payload }` format)
- * so both formats can coexist during migration.
+ * Silently ignores non-JSON-RPC messages so it can coexist with bootstrap
+ * lifecycle signals such as the raw `ready` postMessage.
  */
 
 // ── Types ───────────────────────────────────────────────────────────

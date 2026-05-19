@@ -1,12 +1,21 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
-import type { IframeToParentMessage, ParentToIframeMessage, RenderPayload } from "./frame-bridge";
+import type { IframeToParentMessage } from "./frame-bridge";
 import {
   ISOLATED_FRAME_SANDBOX,
   IsolatedFrameController,
+  type RenderPayload,
   resolveFrameSource,
 } from "./isolated-frame-controller";
 import type { FrameSource } from "./isolated-frame-controller";
 import { useIsolatedRenderer } from "./isolated-renderer-context";
+import type {
+  NteractCommCloseParams,
+  NteractCommMsgParams,
+  NteractCommOpenParams,
+  NteractHostToIframeMethod,
+  NteractHostToIframeParams,
+  NteractWidgetSnapshotParams,
+} from "./rpc-methods";
 
 export interface IsolatedFrameProps {
   /**
@@ -131,9 +140,12 @@ export interface IsolatedFrameProps {
 
 export interface IsolatedFrameHandle {
   /**
-   * Send a message to the iframe.
+   * Send a JSON-RPC notification to the iframe.
    */
-  send: (message: ParentToIframeMessage) => void;
+  notify: <M extends NteractHostToIframeMethod>(
+    method: M,
+    params?: NteractHostToIframeParams[M],
+  ) => void;
 
   /**
    * Send content to render in the iframe.
@@ -158,6 +170,28 @@ export interface IsolatedFrameHandle {
    * then calls install() with a registration API for MIME types.
    */
   installRenderer: (code: string, css?: string) => void;
+
+  /**
+   * Notify the iframe that the parent widget bridge is ready.
+   */
+  bridgeReady: () => void;
+
+  /**
+   * Forward widget comm traffic to the iframe.
+   */
+  commOpen: (params: NteractCommOpenParams) => void;
+  commMsg: (params: NteractCommMsgParams) => void;
+  commClose: (params: NteractCommCloseParams) => void;
+
+  /**
+   * Sync the current widget model snapshot into the iframe.
+   */
+  widgetSnapshot: (params: NteractWidgetSnapshotParams) => void;
+
+  /**
+   * Tell the iframe whether parent-side interaction has been handed off.
+   */
+  setInteractionState: (active: boolean) => void;
 
   /**
    * Update theme settings in the iframe.
@@ -410,15 +444,20 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     useImperativeHandle(
       ref,
       () => ({
-        send: (message: ParentToIframeMessage) => controllerRef.current?.send(message),
+        notify: (method, params) => controllerRef.current?.notify(method, params),
         render: (payload: RenderPayload) => controllerRef.current?.render(payload),
         renderBatch: (outputs: RenderPayload[]) => controllerRef.current?.renderBatch(outputs),
-        eval: (code: string) => controllerRef.current?.send({ type: "eval", payload: { code } }),
+        eval: (code: string) => controllerRef.current?.eval(code),
         installRenderer: (code: string, css?: string) =>
-          controllerRef.current?.send({
-            type: "install_renderer",
-            payload: { code, css },
-          }),
+          controllerRef.current?.installRenderer(code, css),
+        bridgeReady: () => controllerRef.current?.bridgeReady(),
+        commOpen: (params: NteractCommOpenParams) => controllerRef.current?.commOpen(params),
+        commMsg: (params: NteractCommMsgParams) => controllerRef.current?.commMsg(params),
+        commClose: (params: NteractCommCloseParams) => controllerRef.current?.commClose(params),
+        widgetSnapshot: (params: NteractWidgetSnapshotParams) =>
+          controllerRef.current?.widgetSnapshot(params),
+        setInteractionState: (active: boolean) =>
+          controllerRef.current?.setInteractionState(active),
         setTheme: (isDark: boolean, theme?: string | null) =>
           controllerRef.current?.setTheme({ isDark, colorTheme: theme ?? null }),
         clear: () => controllerRef.current?.clear(),

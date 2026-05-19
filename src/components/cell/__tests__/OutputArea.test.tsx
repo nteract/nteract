@@ -7,11 +7,17 @@ let mockDarkMode = false;
 let mockColorTheme: string | undefined;
 
 const mockFrameHandle = {
-  send: vi.fn(),
+  notify: vi.fn(),
   render: vi.fn(),
   renderBatch: vi.fn(),
   eval: vi.fn(),
   installRenderer: vi.fn(),
+  bridgeReady: vi.fn(),
+  commOpen: vi.fn(),
+  commMsg: vi.fn(),
+  commClose: vi.fn(),
+  widgetSnapshot: vi.fn(),
+  setInteractionState: vi.fn(),
   setTheme: vi.fn(),
   clear: vi.fn(),
   search: vi.fn(),
@@ -119,11 +125,12 @@ describe("OutputArea iframe theme sync", () => {
     });
     mockDarkMode = false;
     mockColorTheme = undefined;
-    mockFrameHandle.send.mockClear();
+    mockFrameHandle.notify.mockClear();
     mockFrameHandle.render.mockClear();
     mockFrameHandle.renderBatch.mockClear();
     mockFrameHandle.eval.mockClear();
     mockFrameHandle.installRenderer.mockClear();
+    mockFrameHandle.setInteractionState.mockClear();
     mockFrameHandle.setTheme.mockClear();
     mockFrameHandle.clear.mockClear();
     mockFrameHandle.search.mockClear();

@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import type { FrameLifecycleState } from "../isolated-frame-controller";
 import { IsolatedFrameController } from "../isolated-frame-controller";
 import {
+  NTERACT_EVAL,
   NTERACT_INTERACTION_STATE,
   NTERACT_LINK_CLICK,
   NTERACT_RENDERER_READY,
@@ -145,7 +146,7 @@ describe("IsolatedFrameController", () => {
         rendererCss: "body{}",
       });
       // Pre-ready: nothing must slip through immediately.
-      controller.send({ type: "interaction_state", payload: { active: true } });
+      controller.setInteractionState(true);
       const preReady = iframe.posts.filter(
         (p) => (p.message as { method?: string }).method === NTERACT_INTERACTION_STATE,
       );
@@ -165,18 +166,6 @@ describe("IsolatedFrameController", () => {
       controller.dispose();
     });
 
-    it("throws on send() with a type that has no JSON-RPC method", () => {
-      const controller = new IsolatedFrameController({
-        iframe: iframe.element,
-        rendererCode: "/*code*/",
-        rendererCss: "body{}",
-      });
-      expect(() =>
-        controller.send({ type: "unknown" as never, payload: {} as never } as never),
-      ).toThrow(/no JSON-RPC method/);
-      controller.dispose();
-    });
-
     it("queues render until ready, then flushes via JSON-RPC", () => {
       const controller = new IsolatedFrameController({
         iframe: iframe.element,
@@ -185,8 +174,7 @@ describe("IsolatedFrameController", () => {
       });
 
       controller.render({ mimeType: "text/plain", data: "hi" });
-      // Nothing JSON-RPC was posted yet (only theme via raw postMessage
-      // would be in the post queue, and that only after `ready`).
+      // Nothing render-related was posted yet.
       const renderPosts = iframe.posts.filter(
         (p) => (p.message as { method?: string }).method === NTERACT_RENDER_OUTPUT,
       );
@@ -249,7 +237,7 @@ describe("IsolatedFrameController", () => {
   });
 
   describe("theme application", () => {
-    it("posts a theme message on bootstrap", () => {
+    it("posts a theme notification on bootstrap", () => {
       const controller = new IsolatedFrameController({
         iframe: iframe.element,
         rendererCode: "/*code*/",
@@ -258,9 +246,11 @@ describe("IsolatedFrameController", () => {
       });
       dispatchFromIframe(iframe, { type: "ready" });
 
-      const themePost = iframe.posts.find((p) => (p.message as { type?: string }).type === "theme");
+      const themePost = iframe.posts.find(
+        (p) => (p.message as { method?: string }).method === NTERACT_THEME,
+      );
       expect(themePost).toBeDefined();
-      expect((themePost!.message as { payload: unknown }).payload).toEqual({
+      expect((themePost!.message as { params: unknown }).params).toEqual({
         isDark: false,
         colorTheme: "cream",
       });
@@ -358,9 +348,9 @@ describe("IsolatedFrameController", () => {
       });
       dispatchFromIframe(iframe, { type: "ready" });
 
-      // No eval posts yet — only the bootstrap theme message.
+      // No eval posts yet — only the bootstrap theme notification.
       const evalPosts = iframe.posts.filter(
-        (p) => (p.message as { type?: string }).type === "eval",
+        (p) => (p.message as { method?: string }).method === NTERACT_EVAL,
       );
       expect(evalPosts).toHaveLength(0);
       // State is bootstrapped, not installing, because the bundle is missing.
@@ -368,7 +358,7 @@ describe("IsolatedFrameController", () => {
 
       controller.setRendererBundle("/*code*/", "body{}");
       const evalPostsAfter = iframe.posts.filter(
-        (p) => (p.message as { type?: string }).type === "eval",
+        (p) => (p.message as { method?: string }).method === NTERACT_EVAL,
       );
       // Two eval posts: CSS then JS wrapper
       expect(evalPostsAfter).toHaveLength(2);

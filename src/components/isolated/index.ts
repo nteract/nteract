@@ -1,27 +1,16 @@
 export { CommBridgeManager, createCommBridgeManager } from "./comm-bridge-manager";
-// Message protocol types
+// Raw iframe-to-parent message protocol types
 export type {
-  ClearMessage,
-  EvalMessage,
   EvalResultMessage,
   IframeErrorMessage,
-  // Utilities
   IframeMessage,
-  // Iframe → Parent
   IframeToParentMessage,
   LinkClickMessage,
   MessageType,
-  // Parent → Iframe
-  ParentToIframeMessage,
-  PingMessage,
   PongMessage,
   ReadyMessage,
   RenderCompleteMessage,
-  RenderMessage,
-  RenderPayload,
   ResizeMessage,
-  ThemeMessage,
-  WidgetStateMessage,
   WidgetUpdateMessage,
 } from "./frame-bridge";
 export { isIframeMessage, isMessageType } from "./frame-bridge";
@@ -42,6 +31,7 @@ export type {
   FrameThemePayload,
   FrameWidgetUpdateEvent,
   IsolatedFrameControllerOptions,
+  RenderPayload,
 } from "./isolated-frame-controller";
 export {
   ISOLATED_FRAME_SANDBOX,
