@@ -18,14 +18,12 @@ describe("isIframeMessage", () => {
     "render_complete",
     "resize",
     "link_click",
-    "dblclick",
     "widget_update",
     "error",
     "renderer_ready",
     "widget_ready",
     "widget_comm_msg",
     "widget_comm_close",
-    "search_results",
   ] as const;
 
   it.each(validMessageTypes)('returns true for valid message type "%s"', (type) => {
@@ -63,7 +61,7 @@ describe("isIframeMessage", () => {
     expect(isIframeMessage({ type: "Ready" })).toBe(false);
   });
 
-  // Legacy host-to-iframe command types should NOT pass
+  // Parent-to-iframe message types should NOT pass
   const parentMessageTypes = [
     "render",
     "theme",
@@ -118,14 +116,12 @@ describe("message type whitelist completeness", () => {
       "render_complete",
       "resize",
       "link_click",
-      "dblclick",
       "widget_update",
       "error",
       "renderer_ready",
       "widget_ready",
       "widget_comm_msg",
       "widget_comm_close",
-      "search_results",
     ];
 
     for (const type of allIframeMessageTypes) {

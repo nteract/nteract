@@ -1,6 +1,266 @@
-// JSON-RPC method and payload definitions live in `rpc-methods.ts`.
-// This module intentionally only models the bootstrap/raw messages that the
-// iframe may still emit before or around transport setup.
+export interface EvalMessage {
+  type: "eval";
+  payload: {
+    /** JavaScript code to evaluate in the iframe context */
+    code: string;
+  };
+}
+
+/**
+ * Render output content in the iframe.
+ */
+export interface RenderMessage {
+  type: "render";
+  payload: RenderPayload;
+}
+
+export interface RenderPayload {
+  /** MIME type of the content (e.g., "text/html", "text/markdown") */
+  mimeType: string;
+  /** The content data (format depends on MIME type) */
+  data: unknown;
+  /** Optional metadata for the output */
+  metadata?: Record<string, unknown>;
+  /**
+   * Stable daemon-stamped UUID for this output. When present, the iframe
+   * uses it as the React key so display_update and reorder operations
+   * don't re-mount sibling outputs. Falls back to `cellId`+`outputIndex`
+   * for payloads that don't carry one (e.g. markdown cell render paths).
+   */
+  outputId?: string;
+  /** Cell ID this output belongs to (for routing) */
+  cellId?: string;
+  /** Output index within the cell */
+  outputIndex?: number;
+  /** If true, append to existing outputs instead of replacing */
+  append?: boolean;
+  /** If true, replace all existing outputs with this single output */
+  replace?: boolean;
+}
+
+/**
+ * Atomically replace all outputs in the iframe with a batch.
+ * Uses stable IDs from cellId + outputIndex for React reconciliation,
+ * avoiding DOM teardown on updates (e.g., interactive widget slider changes).
+ */
+export interface RenderBatchMessage {
+  type: "render_batch";
+  payload: {
+    outputs: RenderPayload[];
+  };
+}
+
+/**
+ * Update widget state in the iframe.
+ */
+export interface WidgetStateMessage {
+  type: "widget_state";
+  payload: {
+    /** Comm ID of the widget */
+    commId: string;
+    /** Updated state to merge */
+    state: Record<string, unknown>;
+    /** Optional buffers (base64 encoded) */
+    buffers?: string[];
+  };
+}
+
+/**
+ * Sync theme with the iframe.
+ */
+export interface ThemeMessage {
+  type: "theme";
+  payload: {
+    /** Whether dark mode is active */
+    isDark: boolean;
+    /** Color theme name (e.g., "classic", "cream") */
+    colorTheme?: string | null;
+    /** Optional CSS variables to inject */
+    cssVariables?: Record<string, string>;
+  };
+}
+
+/**
+ * Ping the iframe (for health checks and latency measurement).
+ */
+export interface PingMessage {
+  type: "ping";
+  payload?: {
+    sentAt: number;
+  };
+}
+
+/**
+ * Install a renderer plugin in the iframe.
+ *
+ * The plugin code is a CJS module that exports an `install(ctx)` function.
+ * The iframe loads it via a custom `require` shim that provides the shared
+ * React instance, then calls `install()` with a registration API.
+ * Registered components handle rendering for their declared MIME types.
+ */
+export interface InstallRendererMessage {
+  type: "install_renderer";
+  payload: {
+    /** CJS module code exporting an install(ctx) function */
+    code: string;
+    /** Optional CSS to inject (e.g., KaTeX styles) */
+    css?: string;
+  };
+}
+
+/**
+ * Clear all rendered content in the iframe.
+ */
+export interface ClearMessage {
+  type: "clear";
+}
+
+// --- Widget Comm Protocol: Parent → Iframe ---
+
+/**
+ * Forward a comm_open message to the iframe.
+ * Sent when a widget model is created by the kernel.
+ */
+export interface CommOpenMessage {
+  type: "comm_open";
+  payload: {
+    /** Comm ID of the widget */
+    commId: string;
+    /** Target name (e.g., "jupyter.widget") */
+    targetName: string;
+    /**
+     * Widget state. Binary blobs appear as blob URL strings; the iframe
+     * fetches them and installs a DataView at each `bufferPaths` position.
+     */
+    state: Record<string, unknown>;
+    /** JSON paths in `state` where binary blob URLs live. */
+    bufferPaths?: string[][];
+  };
+}
+
+/**
+ * Forward a comm_msg to the iframe.
+ * Sent for state updates and custom messages from kernel.
+ */
+export interface CommMsgMessage {
+  type: "comm_msg";
+  payload: {
+    /** Comm ID of the widget */
+    commId: string;
+    /** Message method: "update" or "custom" */
+    method: "update" | "custom";
+    /** State patch (for update) or custom content (for custom) */
+    data: Record<string, unknown>;
+    /**
+     * JSON paths in `data` where binary blob URLs live. Only populated for
+     * `method: "update"` — custom-method messages carry their own transient
+     * `buffers` payload instead.
+     */
+    bufferPaths?: string[][];
+    /**
+     * Transient binary buffers for `method: "custom"` (e.g. ipycanvas draw
+     * commands, quak row batches). Event payload, not CRDT state.
+     */
+    buffers?: ArrayBuffer[];
+  };
+}
+
+/**
+ * Forward a comm_close message to the iframe.
+ * Sent when a widget is destroyed by the kernel.
+ */
+export interface CommCloseMessage {
+  type: "comm_close";
+  payload: {
+    /** Comm ID of the widget to close */
+    commId: string;
+  };
+}
+
+/**
+ * Sync all existing widget models to the iframe.
+ * Sent on iframe ready to bootstrap existing widgets.
+ */
+export interface WidgetSnapshotMessage {
+  type: "widget_snapshot";
+  payload: {
+    /** Array of existing models to sync */
+    models: Array<{
+      commId: string;
+      targetName: string;
+      state: Record<string, unknown>;
+      /** JSON paths in `state` where binary blob URLs live. */
+      bufferPaths?: string[][];
+    }>;
+  };
+}
+
+/**
+ * Signal that the parent's comm bridge is ready.
+ * Iframe should respond with widget_ready to trigger widget_snapshot.
+ */
+export interface BridgeReadyMessage {
+  type: "bridge_ready";
+}
+
+// --- Global Find: Parent → Iframe ---
+
+/**
+ * Search for text within the iframe's rendered content.
+ * The iframe should highlight all matches and report the count.
+ */
+export interface SearchMessage {
+  type: "search";
+  payload: {
+    /** The search query string (empty string clears search) */
+    query: string;
+    /** Whether the search should be case-sensitive */
+    caseSensitive?: boolean;
+  };
+}
+
+/**
+ * Navigate to a specific match in the iframe's search results.
+ */
+export interface SearchNavigateMessage {
+  type: "search_navigate";
+  payload: {
+    /** The index of the match to navigate to (0-based) */
+    matchIndex: number;
+  };
+}
+
+/**
+ * Parent-side interaction state for iframe outputs.
+ */
+export interface InteractionStateMessage {
+  type: "interaction_state";
+  payload: {
+    /** Whether the parent wrapper has handed pointer/wheel interaction to the iframe. */
+    active: boolean;
+  };
+}
+
+/**
+ * All message types that can be sent from parent to iframe.
+ */
+export type ParentToIframeMessage =
+  | EvalMessage
+  | InstallRendererMessage
+  | RenderMessage
+  | RenderBatchMessage
+  | WidgetStateMessage
+  | ThemeMessage
+  | PingMessage
+  | ClearMessage
+  | CommOpenMessage
+  | CommMsgMessage
+  | CommCloseMessage
+  | WidgetSnapshotMessage
+  | BridgeReadyMessage
+  | SearchMessage
+  | SearchNavigateMessage
+  | InteractionStateMessage;
 
 // --- Message Types: Iframe → Parent ---
 
@@ -191,9 +451,9 @@ export type IframeToParentMessage =
 // --- Utility Types ---
 
 /**
- * All raw message types (for generic handling).
+ * All message types (for generic handling).
  */
-export type IframeMessage = IframeToParentMessage;
+export type IframeMessage = ParentToIframeMessage | IframeToParentMessage;
 
 /**
  * Extract the message type string.

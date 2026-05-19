@@ -82,7 +82,7 @@ The iframe's message handler rejects anything whose `event.source !== window.par
 | `WidgetBridgeClient` | `src/isolated-renderer/widget-bridge-client.ts` | Iframe-side widget bridge (`createWidgetBridgeClient`) |
 | `frame.html` | `src/components/isolated/frame.html` | Bootstrap HTML served by Tauri and mounted by browser dev |
 | `frame-html.ts` | `src/components/isolated/frame-html.ts` | Raw HTML import and `generateFrameHtml()` wrapper |
-| `frame-bridge.ts` | `src/components/isolated/frame-bridge.ts` | Bootstrap iframe-to-parent message types and guards |
+| `frame-bridge.ts` | `src/components/isolated/frame-bridge.ts` | Legacy frame-message types and guards |
 
 The core renderer bundle is built inline by `apps/notebook/vite-plugin-isolated-renderer.ts` and supplied through `IsolatedRendererProvider` (read via `useIsolatedRenderer()`). No HTTP fetch, no separate build step.
 
@@ -166,13 +166,10 @@ export function install(ctx: {
 
 ## Message protocol
 
-Host-to-iframe commands use JSON-RPC 2.0 notifications over `postMessage`,
-wired by `jsonrpc-transport.ts` and `rpc-methods.ts`. The only raw
-iframe-to-parent bootstrap message is `ready`, because the host constructs the
-transport in response to that load signal. Other iframe-to-parent events use
-JSON-RPC notifications where the renderer bundle is active, with
-`frame-bridge.ts` retaining guards for bootstrap/lifecycle messages that can
-arrive before transport setup.
+Two layers coexist:
+
+1. **Frame bootstrap/render** in `frame-bridge.ts` — `eval`, `render`, `theme`, `clear`, `resize`, `link_click`, search flow.
+2. **Widget sync** — JSON-RPC 2.0 over `postMessage`, wired by `jsonrpc-transport.ts` and `rpc-methods.ts`.
 
 JSON-RPC widget methods:
 
@@ -184,8 +181,8 @@ JSON-RPC widget methods:
 ```
 1. IsolatedFrame mounts
 2. Iframe → ready
-3. Parent → `nteract/eval` (React bundle)
-4. Iframe → `nteract/rendererReady`
+3. Parent → eval (React bundle)
+4. Iframe → renderer_ready
 5. CommBridgeManager → nteract/bridgeReady
 6. Iframe → nteract/widgetReady
 7. CommBridgeManager → nteract/widgetSnapshot (all existing models)
@@ -200,7 +197,7 @@ Review these carefully on every change:
 1. **Sandbox configuration** — `isolated-frame.tsx` / `SANDBOX_ATTRS`.
 2. **Source validation** — `frame.html` / `event.source !== window.parent`.
 3. **Custom message forwarding** — `comm-bridge-manager.ts` / `subscribeToModelCustomMessages` (required for anywidgets like quak).
-4. **Type-guard whitelist** — `frame-bridge.ts` / `isIframeMessage` for bootstrap iframe-to-parent messages; JSON-RPC methods live in `rpc-methods.ts`.
+4. **Type-guard whitelist** — `frame-bridge.ts` / `isIframeMessage` for legacy frame-bridge types; JSON-RPC methods live in `rpc-methods.ts`.
 
 ## Review checklist
 
@@ -229,4 +226,4 @@ Manual smoke test: open `crates/notebook/fixtures/audit-test/1-vanilla.ipynb`, a
 
 **Widget not receiving updates.** Check that `subscribeToModelCustomMessages` is firing and that kernel comm traffic is being translated into `nteract/commMsg` notifications with the correct `commId`.
 
-**Theme not syncing.** Confirm the `nteract/theme` notification fires on mode change, the root element sets `color-scheme`, and widgets relying on `@media (prefers-color-scheme)` see the updated value.
+**Theme not syncing.** Confirm the `theme` message fires on mode change, the root element sets `color-scheme`, and widgets relying on `@media (prefers-color-scheme)` see the updated value.

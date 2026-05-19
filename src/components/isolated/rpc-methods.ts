@@ -15,11 +15,12 @@
 
 // ── Method Constants ────────────────────────────────────────────────
 
-// Host → Iframe (notifications; some methods emit separate result notifications)
+// Host → Iframe (Requests — expect a response)
 export const NTERACT_EVAL = "nteract/eval" as const;
 export const NTERACT_INSTALL_RENDERER = "nteract/installRenderer" as const;
 export const NTERACT_SEARCH = "nteract/search" as const;
 
+// Host → Iframe (Notifications — fire-and-forget)
 export const NTERACT_RENDER_OUTPUT = "nteract/renderOutput" as const;
 export const NTERACT_RENDER_BATCH = "nteract/renderBatch" as const;
 export const NTERACT_CLEAR_OUTPUTS = "nteract/clearOutputs" as const;
@@ -34,7 +35,6 @@ export const NTERACT_WIDGET_STATE = "nteract/widgetState" as const;
 // Host → Iframe (Notifications) — additional
 export const NTERACT_THEME = "nteract/theme" as const;
 export const NTERACT_PING = "nteract/ping" as const;
-export const NTERACT_INTERACTION_STATE = "nteract/interactionState" as const;
 
 // Iframe → Host (Notifications)
 export const NTERACT_READY = "nteract/ready" as const;
@@ -44,7 +44,6 @@ export const NTERACT_RESIZE = "nteract/resize" as const;
 export const NTERACT_LINK_CLICK = "nteract/linkClick" as const;
 export const NTERACT_DOUBLE_CLICK = "nteract/doubleClick" as const;
 export const NTERACT_ERROR = "nteract/error" as const;
-export const NTERACT_DIAGNOSTIC = "nteract/diagnostic" as const;
 export const NTERACT_WIDGET_READY = "nteract/widgetReady" as const;
 export const NTERACT_WIDGET_COMM_MSG = "nteract/widgetCommMsg" as const;
 export const NTERACT_WIDGET_COMM_CLOSE = "nteract/widgetCommClose" as const;
@@ -89,12 +88,6 @@ export interface NteractRenderOutputParams {
   mimeType: string;
   data: unknown;
   metadata?: Record<string, unknown>;
-  /**
-   * Stable daemon-stamped UUID for this output. When present, the iframe
-   * uses it as the React key so display_update and reorder operations
-   * don't re-mount sibling outputs.
-   */
-  outputId?: string;
   cellId?: string;
   outputIndex?: number;
   append?: boolean;
@@ -107,11 +100,6 @@ export interface NteractRenderBatchParams {
 
 export interface NteractSearchNavigateParams {
   matchIndex: number;
-}
-
-export interface NteractInteractionStateParams {
-  /** Whether the parent wrapper has handed pointer/wheel interaction to the iframe. */
-  active: boolean;
 }
 
 export interface NteractCommOpenParams {
@@ -139,7 +127,6 @@ export interface NteractWidgetSnapshotParams {
     commId: string;
     targetName: string;
     state: Record<string, unknown>;
-    bufferPaths?: string[][];
     buffers?: ArrayBuffer[];
   }>;
 }
@@ -177,37 +164,3 @@ export interface NteractWidgetUpdateParams {
 export interface NteractWheelBoundaryParams {
   deltaY?: number;
 }
-
-export interface NteractDiagnosticParams {
-  source: "host" | "renderer" | "bootstrap";
-  level: "debug" | "info" | "warn" | "error";
-  event: string;
-  details?: Record<string, unknown>;
-}
-
-export interface NteractThemeParams {
-  isDark: boolean;
-  colorTheme?: string | null;
-  cssVariables?: Record<string, string>;
-}
-
-export type NteractHostToIframeParams = {
-  [NTERACT_EVAL]: NteractEvalParams;
-  [NTERACT_INSTALL_RENDERER]: NteractInstallRendererParams;
-  [NTERACT_SEARCH]: NteractSearchParams;
-  [NTERACT_RENDER_OUTPUT]: NteractRenderOutputParams;
-  [NTERACT_RENDER_BATCH]: NteractRenderBatchParams;
-  [NTERACT_CLEAR_OUTPUTS]: undefined;
-  [NTERACT_SEARCH_NAVIGATE]: NteractSearchNavigateParams;
-  [NTERACT_COMM_OPEN]: NteractCommOpenParams;
-  [NTERACT_COMM_MSG]: NteractCommMsgParams;
-  [NTERACT_COMM_CLOSE]: NteractCommCloseParams;
-  [NTERACT_WIDGET_SNAPSHOT]: NteractWidgetSnapshotParams;
-  [NTERACT_BRIDGE_READY]: undefined;
-  [NTERACT_WIDGET_STATE]: NteractWidgetStateParams;
-  [NTERACT_THEME]: NteractThemeParams;
-  [NTERACT_PING]: { sentAt: number } | undefined;
-  [NTERACT_INTERACTION_STATE]: NteractInteractionStateParams;
-};
-
-export type NteractHostToIframeMethod = keyof NteractHostToIframeParams;

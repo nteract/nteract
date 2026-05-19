@@ -65,17 +65,9 @@ function createMockFrame(): {
 } {
   const sendCalls: unknown[] = [];
   const frame: IsolatedFrameHandle = {
-    notify: vi.fn((method, params) => sendCalls.push({ method, params })),
+    send: vi.fn((msg) => sendCalls.push(msg)),
     render: vi.fn(),
-    renderBatch: vi.fn(),
     eval: vi.fn(),
-    installRenderer: vi.fn(),
-    bridgeReady: vi.fn(() => sendCalls.push({ type: "bridge_ready" })),
-    commOpen: vi.fn((params) => sendCalls.push({ type: "comm_open", payload: params })),
-    commMsg: vi.fn((params) => sendCalls.push({ type: "comm_msg", payload: params })),
-    commClose: vi.fn((params) => sendCalls.push({ type: "comm_close", payload: params })),
-    widgetSnapshot: vi.fn((params) => sendCalls.push({ type: "widget_snapshot", payload: params })),
-    setInteractionState: vi.fn(),
     setTheme: vi.fn(),
     clear: vi.fn(),
     search: vi.fn(),
@@ -130,8 +122,9 @@ describe("CommBridgeManager", () => {
     it("sends bridge_ready on construction", () => {
       createManager();
 
-      expect(mockFrame.frame.bridgeReady).toHaveBeenCalled();
-      expect(mockFrame.sendCalls[0]).toEqual({ type: "bridge_ready" });
+      expect(mockFrame.frame.send).toHaveBeenCalledWith({
+        type: "bridge_ready",
+      });
     });
 
     it("subscribes to store changes", () => {
@@ -219,6 +212,7 @@ describe("CommBridgeManager", () => {
           commId: "comm-2",
           targetName: "jupyter.widget",
           state: { value: 10 },
+          buffers: undefined,
         },
       });
     });

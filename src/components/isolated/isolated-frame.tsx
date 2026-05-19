@@ -1,21 +1,41 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
-import type { IframeToParentMessage } from "./frame-bridge";
-import {
-  ISOLATED_FRAME_SANDBOX,
-  IsolatedFrameController,
-  type RenderPayload,
-  resolveFrameSource,
-} from "./isolated-frame-controller";
-import type { FrameSource } from "./isolated-frame-controller";
+import type { IframeToParentMessage, ParentToIframeMessage, RenderPayload } from "./frame-bridge";
+import { isIframeMessage } from "./frame-bridge";
+import { generateFrameHtml } from "./frame-html";
 import { useIsolatedRenderer } from "./isolated-renderer-context";
-import type {
-  NteractCommCloseParams,
-  NteractCommMsgParams,
-  NteractCommOpenParams,
-  NteractHostToIframeMethod,
-  NteractHostToIframeParams,
-  NteractWidgetSnapshotParams,
+import { JsonRpcTransport } from "./jsonrpc-transport";
+import {
+  NTERACT_BRIDGE_READY,
+  NTERACT_CLEAR_OUTPUTS,
+  NTERACT_COMM_CLOSE,
+  NTERACT_COMM_MSG,
+  NTERACT_COMM_OPEN,
+  NTERACT_WIDGET_SNAPSHOT,
+  NTERACT_DOUBLE_CLICK,
+  NTERACT_ERROR,
+  NTERACT_EVAL,
+  NTERACT_EVAL_RESULT,
+  NTERACT_INSTALL_RENDERER,
+  NTERACT_LINK_CLICK,
+  NTERACT_PING,
+  NTERACT_RENDER_BATCH,
+  NTERACT_RENDER_COMPLETE,
+  NTERACT_RENDER_OUTPUT,
+  NTERACT_RENDERER_READY,
+  NTERACT_RESIZE,
+  NTERACT_SEARCH,
+  NTERACT_SEARCH_NAVIGATE,
+  NTERACT_SEARCH_RESULTS,
+  NTERACT_THEME,
+  NTERACT_MOUSE_DOWN,
+  NTERACT_WIDGET_COMM_CLOSE,
+  NTERACT_WIDGET_COMM_MSG,
+  NTERACT_WIDGET_READY,
+  NTERACT_WIDGET_STATE,
+  NTERACT_WIDGET_UPDATE,
+  NTERACT_WHEEL_BOUNDARY,
 } from "./rpc-methods";
+import { scrollFrameWheelBoundary } from "./scroll-boundary";
 
 export interface IsolatedFrameProps {
   /**
@@ -140,12 +160,9 @@ export interface IsolatedFrameProps {
 
 export interface IsolatedFrameHandle {
   /**
-   * Send a JSON-RPC notification to the iframe.
+   * Send a message to the iframe.
    */
-  notify: <M extends NteractHostToIframeMethod>(
-    method: M,
-    params?: NteractHostToIframeParams[M],
-  ) => void;
+  send: (message: ParentToIframeMessage) => void;
 
   /**
    * Send content to render in the iframe.
@@ -170,28 +187,6 @@ export interface IsolatedFrameHandle {
    * then calls install() with a registration API for MIME types.
    */
   installRenderer: (code: string, css?: string) => void;
-
-  /**
-   * Notify the iframe that the parent widget bridge is ready.
-   */
-  bridgeReady: () => void;
-
-  /**
-   * Forward widget comm traffic to the iframe.
-   */
-  commOpen: (params: NteractCommOpenParams) => void;
-  commMsg: (params: NteractCommMsgParams) => void;
-  commClose: (params: NteractCommCloseParams) => void;
-
-  /**
-   * Sync the current widget model snapshot into the iframe.
-   */
-  widgetSnapshot: (params: NteractWidgetSnapshotParams) => void;
-
-  /**
-   * Tell the iframe whether parent-side interaction has been handed off.
-   */
-  setInteractionState: (active: boolean) => void;
 
   /**
    * Update theme settings in the iframe.
@@ -227,15 +222,80 @@ export interface IsolatedFrameHandle {
   isIframeReady: boolean;
 }
 
+const TYPE_TO_METHOD: Record<string, string> = {
+  render: NTERACT_RENDER_OUTPUT,
+  render_batch: NTERACT_RENDER_BATCH,
+  theme: NTERACT_THEME,
+  clear: NTERACT_CLEAR_OUTPUTS,
+  eval: NTERACT_EVAL,
+  install_renderer: NTERACT_INSTALL_RENDERER,
+  ping: NTERACT_PING,
+  search: NTERACT_SEARCH,
+  search_navigate: NTERACT_SEARCH_NAVIGATE,
+  comm_open: NTERACT_COMM_OPEN,
+  comm_msg: NTERACT_COMM_MSG,
+  comm_close: NTERACT_COMM_CLOSE,
+  widget_snapshot: NTERACT_WIDGET_SNAPSHOT,
+  bridge_ready: NTERACT_BRIDGE_READY,
+  widget_state: NTERACT_WIDGET_STATE,
+};
+
 /**
- * IsolatedFrame - thin React shell over IsolatedFrameController.
+ * Sandbox attributes for the isolated iframe.
  *
- * The component owns nothing but the iframe element, the height/visibility
- * state, and the imperative-handle bridge. All lifecycle, transport, and
- * message routing live in `IsolatedFrameController` so the same orchestration
- * can be reused from Vue, vanilla JS, or any other host.
+ * CRITICAL: Do NOT include 'allow-same-origin' - this would give the iframe
+ * access to the parent's origin and Tauri APIs.
+ */
+const SANDBOX_ATTRS = [
+  "allow-scripts", // Required for rendering interactive content
+  "allow-downloads", // Allow file downloads (e.g., from widgets)
+  "allow-forms", // Allow form submissions
+  "allow-pointer-lock", // For interactive visualizations
+  // Fullscreen for sift maximize, maps, 3D, etc. is enabled via the
+  // separate `allowFullScreen` iframe attribute (not a sandbox flag).
+].join(" ");
+
+type FrameDocument = { kind: "src"; url: string } | { kind: "srcdoc"; html: string };
+
+function isTauriRuntime(): boolean {
+  const globalWindow = window as Window & {
+    __TAURI__?: unknown;
+    __TAURI_INTERNALS__?: unknown;
+  };
+  return "__TAURI_INTERNALS__" in globalWindow || "__TAURI__" in globalWindow;
+}
+
+/**
+ * IsolatedFrame component - Renders untrusted content in a secure iframe.
  *
- * Requires `IsolatedRendererProvider` to be present in the component tree.
+ * Uses sandbox restrictions to ensure the iframe content cannot access Tauri
+ * APIs or the parent DOM. Tauri loads the iframe from the nteract-frame custom
+ * scheme so the frame receives its own CSP. Communication happens via postMessage.
+ *
+ * **Requires** `IsolatedRendererProvider` to be present in the component tree.
+ *
+ * @example
+ * ```tsx
+ * // In your app root or layout:
+ * <IsolatedRendererProvider basePath="/isolated">
+ *   <App />
+ * </IsolatedRendererProvider>
+ *
+ * // Then use IsolatedFrame anywhere:
+ * const frameRef = useRef<IsolatedFrameHandle>(null);
+ *
+ * <IsolatedFrame
+ *   ref={frameRef}
+ *   darkMode={true}
+ *   onReady={() => {
+ *     frameRef.current?.render({
+ *       mimeType: "text/html",
+ *       data: "<h1>Hello from isolated frame!</h1>"
+ *     });
+ *   }}
+ *   onResize={(height) => console.log("New height:", height)}
+ * />
+ * ```
  */
 export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>(
   function IsolatedFrame(
@@ -263,25 +323,40 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     },
     ref,
   ) {
+    // Get renderer bundle from context (provided by IsolatedRendererProvider)
     const {
       rendererCode,
       rendererCss,
       isLoading: providerLoading,
       error: providerError,
     } = useIsolatedRenderer();
-
     const iframeRef = useRef<HTMLIFrameElement>(null);
-    const controllerRef = useRef<IsolatedFrameController | null>(null);
-    const [frameDocument, setFrameDocument] = useState<FrameSource | null>(null);
-
+    const rpcRef = useRef<JsonRpcTransport | null>(null);
+    const [frameDocument, setFrameDocument] = useState<FrameDocument | null>(null);
+    // Track iframe ready (bootstrap HTML loaded)
     const [isIframeReady, setIsIframeReady] = useState(false);
+    // Track renderer ready (React bundle initialized)
     const [isReady, setIsReady] = useState(false);
-    const [isReloading, setIsReloading] = useState(false);
-    const [isContentRendered, setIsContentRendered] = useState(false);
+    // Use ref to track ready state for send callback (avoids stale closure)
+    const isReadyRef = useRef(false);
     const [height, setHeight] = useState(minHeight);
     const measuredHeightRef = useRef(minHeight);
+    // Track if content has been rendered (for revealOnRender mode)
+    const [isContentRendered, setIsContentRendered] = useState(false);
+    // Track if the iframe is reloading (DOM move caused browser to tear down)
+    // Used to hide the iframe during reload to prevent white flash
+    const [isReloading, setIsReloading] = useState(false);
 
-    // Stable refs for callback props — survive controller re-subscription.
+    // Queue messages until iframe is ready
+    const pendingMessagesRef = useRef<ParentToIframeMessage[]>([]);
+    // Track if we've started bootstrapping to avoid double-fetch
+    const bootstrappingRef = useRef(false);
+    // Track whether the iframe has sent a "ready" message before.
+    // Any subsequent "ready" is a reload that needs the toggle trick.
+    const hasReceivedReadyRef = useRef(false);
+
+    // Stable refs for callback props — avoids tearing down the message
+    // handler when callers pass unstable (inline) callbacks.
     const onReadyRef = useRef(onReady);
     const onResizeRef = useRef(onResize);
     const onLinkClickRef = useRef(onLinkClick);
@@ -290,7 +365,9 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     const onWidgetUpdateRef = useRef(onWidgetUpdate);
     const onErrorRef = useRef(onError);
     const onMessageRef = useRef(onMessage);
+    const allowWheelBoundaryScrollRef = useRef(allowWheelBoundaryScroll);
 
+    // Sync refs during render so effects always see the latest callbacks.
     onReadyRef.current = onReady;
     onResizeRef.current = onResize;
     onLinkClickRef.current = onLinkClick;
@@ -299,39 +376,54 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     onWidgetUpdateRef.current = onWidgetUpdate;
     onErrorRef.current = onError;
     onMessageRef.current = onMessage;
+    allowWheelBoundaryScrollRef.current = allowWheelBoundaryScroll;
 
     const applyMeasuredHeight = useCallback(
       (contentHeight: number) => {
         measuredHeightRef.current = contentHeight;
-        const clamped = autoHeight
+        const newHeight = autoHeight
           ? Math.max(minHeight, contentHeight)
           : Math.max(minHeight, Math.min(maxHeight, contentHeight));
-        setHeight(clamped);
-        onResizeRef.current?.(clamped);
+        setHeight(newHeight);
+        onResizeRef.current?.(newHeight);
       },
       [autoHeight, maxHeight, minHeight],
     );
 
-    // Mirror the latest clamping callback into a ref so the controller
-    // subscriptions can call it without forcing the controller-creation
-    // effect to re-run on height-policy prop changes. If the controller
-    // tore down whenever `autoHeight`/`maxHeight`/`minHeight` changed,
-    // the new instance would never see another `ready` from the
-    // already-loaded iframe and stay stuck in `booting`.
-    const applyMeasuredHeightRef = useRef(applyMeasuredHeight);
-    applyMeasuredHeightRef.current = applyMeasuredHeight;
-
-    // Re-apply height when clamping props change.
     useEffect(() => {
       applyMeasuredHeight(measuredHeightRef.current);
     }, [applyMeasuredHeight]);
 
-    // Resolve frame source once on mount.
+    // Create frame document on mount. Tauri loads from a custom scheme so the
+    // iframe receives its own CSP; browser-only dev keeps srcDoc.
     useEffect(() => {
-      setFrameDocument(resolveFrameSource());
+      if (isTauriRuntime()) {
+        setFrameDocument({ kind: "src", url: "nteract-frame://localhost/" });
+      } else {
+        setFrameDocument({ kind: "srcdoc", html: generateFrameHtml() });
+      }
     }, []);
 
-    // Surface provider errors to consumers.
+    // Send theme as soon as iframe is ready (before renderer bootstrap).
+    // Once the renderer transport is active, prefer JSON-RPC so live theme
+    // changes follow the same path as other renderer updates.
+    useEffect(() => {
+      if (isIframeReady && iframeRef.current?.contentWindow) {
+        const payload = { isDark: darkMode, colorTheme: colorTheme ?? null };
+        if (rpcRef.current && isReadyRef.current) {
+          rpcRef.current.notify(NTERACT_THEME, payload);
+        } else {
+          iframeRef.current.contentWindow.postMessage({ type: "theme", payload }, "*");
+        }
+      }
+    }, [darkMode, colorTheme, isIframeReady, isReady]);
+
+    // Keep ref in sync with state (ref avoids stale closures in callbacks)
+    useEffect(() => {
+      isReadyRef.current = isReady;
+    }, [isReady]);
+
+    // Surface provider errors to consumers
     useEffect(() => {
       if (providerError && !providerLoading) {
         onErrorRef.current?.({
@@ -341,137 +433,373 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       }
     }, [providerError, providerLoading]);
 
-    // Instantiate the controller once the iframe is mounted. The bundle is
-    // fed in via `setRendererBundle` once the provider resolves; until then
-    // the controller's transport is up (so `ready` etc. land) but the
-    // renderer injection is deferred.
+    // Send a message to the iframe
+    // Uses ref to check ready state to avoid stale closure issues
+    const send = useCallback(
+      (message: ParentToIframeMessage) => {
+        if (!isReadyRef.current) {
+          // Queue message until ready
+          pendingMessagesRef.current.push(message);
+          return;
+        }
+
+        // Translate to JSON-RPC if transport is available
+        const method = TYPE_TO_METHOD[message.type];
+        if (method && rpcRef.current) {
+          const params = "payload" in message ? message.payload : undefined;
+          rpcRef.current.notify(method, params);
+        } else if (iframeRef.current?.contentWindow) {
+          // Fallback to legacy format
+          iframeRef.current.contentWindow.postMessage(message, "*");
+        }
+      },
+      [], // No deps - uses ref instead of state
+    );
+
+    // Flush pending messages when ready
     useEffect(() => {
-      const iframe = iframeRef.current;
-      if (!iframe || !frameDocument) return;
-
-      const controller = new IsolatedFrameController({
-        iframe,
-        initialContent,
-        initialTheme: { isDark: darkMode, colorTheme: colorTheme ?? null },
-        forwardWheelBoundary: allowWheelBoundaryScroll,
-      });
-      controllerRef.current = controller;
-
-      const subs = [
-        controller.state$.subscribe((state) => {
-          // `bootstrapped` and later means the iframe HTML is loaded.
-          const iframeReady = state !== "booting";
-          setIsIframeReady(iframeReady);
-
-          const ready = state === "ready";
-          setIsReady((prev) => {
-            if (prev === ready) return prev;
-            if (ready) onReadyRef.current?.();
-            return ready;
-          });
-
-          if (state === "reloading") {
-            setIsReloading(true);
-            setIsContentRendered(false);
-          } else if (state === "ready") {
-            setIsReloading(false);
+      if (isReady && pendingMessagesRef.current.length > 0) {
+        const pending = pendingMessagesRef.current;
+        pendingMessagesRef.current = [];
+        pending.forEach((msg) => {
+          const method = TYPE_TO_METHOD[msg.type];
+          if (method && rpcRef.current) {
+            const params = "payload" in msg ? msg.payload : undefined;
+            rpcRef.current.notify(method, params);
+          } else if (iframeRef.current?.contentWindow) {
+            iframeRef.current.contentWindow.postMessage(msg, "*");
           }
-        }),
-        controller.resize$.subscribe(({ height: h }) => {
-          applyMeasuredHeightRef.current(h);
-        }),
-        controller.renderComplete$.subscribe(({ height: h }) => {
-          if (h != null) {
-            setIsContentRendered(true);
-            applyMeasuredHeightRef.current(h);
-          } else {
-            setIsContentRendered(true);
-          }
-        }),
-        controller.linkClicks$.subscribe(({ url, newTab }) => {
-          onLinkClickRef.current?.(url, newTab);
-        }),
-        controller.mouseDowns$.subscribe(() => {
-          onMouseDownRef.current?.();
-        }),
-        controller.doubleClicks$.subscribe(() => {
-          onDoubleClickRef.current?.();
-        }),
-        controller.widgetUpdates$.subscribe(({ commId, state }) => {
-          onWidgetUpdateRef.current?.(commId, state);
-        }),
-        controller.errors$.subscribe((err) => {
-          onErrorRef.current?.(err);
-        }),
-        controller.messages$.subscribe((msg) => {
-          onMessageRef.current?.(msg);
-        }),
-      ];
-
-      return () => {
-        for (const sub of subs) sub.unsubscribe();
-        controller.dispose();
-        controllerRef.current = null;
-      };
-      // Effect is keyed to `frameDocument` only — the controller is one
-      // per iframe element. `initialContent`, `darkMode`, `colorTheme`,
-      // `allowWheelBoundaryScroll` are read at construction; live changes
-      // propagate through the dedicated effects below, not by recreating
-      // the controller (which would orphan the loaded iframe).
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [frameDocument]);
-
-    // Hand the renderer bundle to the controller as soon as it resolves.
-    useEffect(() => {
-      if (rendererCode && rendererCss) {
-        controllerRef.current?.setRendererBundle(rendererCode, rendererCss);
+        });
       }
-    }, [rendererCode, rendererCss]);
+    }, [isReady]);
 
-    // Live theme updates.
+    // Handle messages from iframe
     useEffect(() => {
-      controllerRef.current?.setTheme({
-        isDark: darkMode,
-        colorTheme: colorTheme ?? null,
-      });
-    }, [darkMode, colorTheme]);
+      const handleMessage = (event: MessageEvent) => {
+        // Verify the message is from our iframe
+        if (event.source !== iframeRef.current?.contentWindow) {
+          return;
+        }
 
-    // Live wheel-boundary forwarding toggle.
+        const data = event.data;
+
+        // Skip JSON-RPC messages — the transport handles them
+        if (
+          typeof data === "object" &&
+          data !== null &&
+          (data as { jsonrpc?: unknown }).jsonrpc === "2.0"
+        ) {
+          return;
+        }
+
+        if (!isIframeMessage(data)) {
+          return;
+        }
+
+        // Call generic message handler
+        onMessageRef.current?.(data);
+
+        // Handle specific message types
+        switch (data.type) {
+          case "ready": {
+            // Iframe bootstrap HTML is loaded.
+            // Any "ready" after the first is a reload (e.g., DOM move caused
+            // the browser to tear down and reload the iframe).
+            const isReload = hasReceivedReadyRef.current;
+            hasReceivedReadyRef.current = true;
+
+            if (isReload) {
+              // Reset bootstrap state so the renderer gets re-injected.
+              bootstrappingRef.current = false;
+              // Keep the imperative readiness ref in sync with state so that
+              // synchronous send() calls don't treat the frame as ready during
+              // a reload window.
+              isReadyRef.current = false;
+              // Pending messages were targeted at the old iframe instance; drop
+              // them so they don't get delivered to the reloaded frame.
+              pendingMessagesRef.current.length = 0;
+              setIsReady(false);
+              // Reset content rendered state for revealOnRender mode
+              setIsContentRendered(false);
+              // Hide iframe during reload to prevent white flash from blank
+              // iframe document before blob HTML loads
+              setIsReloading(true);
+            }
+
+            if (isReload) {
+              // Reload: isIframeReady may already be true, so toggle to
+              // force effects that depend on it (theme sync, renderer
+              // injection) to re-run.
+              setIsIframeReady(false);
+              setTimeout(() => {
+                setIsIframeReady(true);
+              }, 0);
+            } else {
+              // Initial load: a single transition from false→true is
+              // sufficient.
+              setIsIframeReady(true);
+            }
+
+            // Create JSON-RPC transport for this iframe instance
+            if (iframeRef.current?.contentWindow) {
+              // Clean up previous transport on reload
+              if (rpcRef.current) {
+                rpcRef.current.stop();
+              }
+              const transport = new JsonRpcTransport(
+                iframeRef.current.contentWindow,
+                iframeRef.current.contentWindow,
+              );
+              // Register handlers for JSON-RPC messages from iframe
+              transport.onNotification(NTERACT_RENDERER_READY, () => {
+                setIsReady(true);
+                setIsReloading(false);
+                onReadyRef.current?.();
+                if (initialContent) {
+                  transport.notify(NTERACT_RENDER_OUTPUT, initialContent);
+                }
+              });
+              transport.onNotification(NTERACT_RESIZE, (params) => {
+                const p = params as { height?: number };
+                if (p.height != null) {
+                  applyMeasuredHeight(p.height);
+                }
+              });
+              transport.onNotification(NTERACT_RENDER_COMPLETE, (params) => {
+                const p = params as { height?: number };
+                if (p.height != null) {
+                  setIsContentRendered(true);
+                  applyMeasuredHeight(p.height);
+                }
+              });
+              transport.onNotification(NTERACT_LINK_CLICK, (params) => {
+                const p = params as { url: string; newTab?: boolean };
+                if (p.url) {
+                  onLinkClickRef.current?.(p.url, p.newTab ?? false);
+                }
+              });
+              transport.onNotification(NTERACT_MOUSE_DOWN, () => {
+                onMouseDownRef.current?.();
+              });
+              transport.onNotification(NTERACT_WHEEL_BOUNDARY, (params) => {
+                if (!allowWheelBoundaryScrollRef.current) {
+                  return;
+                }
+                scrollFrameWheelBoundary(iframeRef.current, params as { deltaY?: number });
+              });
+              transport.onNotification(NTERACT_DOUBLE_CLICK, () => {
+                onDoubleClickRef.current?.();
+              });
+              transport.onNotification(NTERACT_WIDGET_UPDATE, (params) => {
+                const p = params as { commId: string; state: Record<string, unknown> };
+                if (p.commId && p.state) {
+                  onWidgetUpdateRef.current?.(p.commId, p.state);
+                }
+              });
+              transport.onNotification(NTERACT_ERROR, (params) => {
+                const p = params as { message: string; stack?: string };
+                if (p.message) {
+                  onErrorRef.current?.(p);
+                }
+              });
+              transport.onNotification(NTERACT_EVAL_RESULT, (params) => {
+                const p = params as { success: boolean; error?: string };
+                if (p.success === false) {
+                  console.error("[IsolatedFrame] Bundle eval failed:", p.error);
+                  onErrorRef.current?.({ message: `Bundle eval failed: ${p.error}` });
+                }
+              });
+              transport.onNotification(NTERACT_SEARCH_RESULTS, (params) => {
+                const p = params as { count: number };
+                // Forward to onMessage for OutputArea's search count tracking
+                onMessageRef.current?.({
+                  type: "search_results",
+                  payload: p,
+                } as IframeToParentMessage);
+              });
+              transport.onNotification(NTERACT_WIDGET_READY, () => {
+                onMessageRef.current?.({ type: "widget_ready" } as IframeToParentMessage);
+              });
+              transport.onNotification(NTERACT_WIDGET_COMM_MSG, (params) => {
+                onMessageRef.current?.({
+                  type: "widget_comm_msg",
+                  payload: params,
+                } as IframeToParentMessage);
+              });
+              transport.onNotification(NTERACT_WIDGET_COMM_CLOSE, (params) => {
+                onMessageRef.current?.({
+                  type: "widget_comm_close",
+                  payload: params,
+                } as IframeToParentMessage);
+              });
+              transport.start();
+              rpcRef.current = transport;
+            }
+            break;
+          }
+
+          case "renderer_ready":
+            // React renderer bundle is initialized
+            setIsReady(true);
+            setIsReloading(false);
+            onReadyRef.current?.();
+            // Render initial content if provided
+            if (initialContent) {
+              iframeRef.current?.contentWindow?.postMessage(
+                { type: "render", payload: initialContent },
+                "*",
+              );
+            }
+            break;
+
+          case "resize":
+            if (data.payload?.height != null) {
+              applyMeasuredHeight(data.payload.height);
+            }
+            break;
+
+          case "render_complete":
+            // Content has been rendered - reveal iframe if in revealOnRender mode
+            if (data.payload?.height != null) {
+              setIsContentRendered(true);
+              applyMeasuredHeight(data.payload.height);
+            }
+            break;
+
+          case "link_click":
+            if (data.payload?.url) {
+              onLinkClickRef.current?.(data.payload.url, data.payload.newTab ?? false);
+            }
+            break;
+
+          case "dblclick":
+            onDoubleClickRef.current?.();
+            break;
+
+          case "widget_update":
+            if (data.payload?.commId && data.payload?.state) {
+              onWidgetUpdateRef.current?.(data.payload.commId, data.payload.state);
+            }
+            break;
+
+          case "error":
+            if (data.payload) {
+              onErrorRef.current?.(data.payload);
+            }
+            break;
+
+          case "eval_result":
+            // Surface bundle eval failures to help diagnose injection issues
+            if (data.payload?.success === false) {
+              console.error("[IsolatedFrame] Bundle eval failed:", data.payload.error);
+              onErrorRef.current?.({
+                message: `Bundle eval failed: ${data.payload.error}`,
+              });
+            }
+            break;
+        }
+      };
+
+      window.addEventListener("message", handleMessage);
+      return () => window.removeEventListener("message", handleMessage);
+    }, [initialContent, applyMeasuredHeight]);
+
+    // Clean up JSON-RPC transport on unmount
     useEffect(() => {
-      controllerRef.current?.setWheelBoundaryForwarding(allowWheelBoundaryScroll);
-    }, [allowWheelBoundaryScroll]);
+      return () => {
+        rpcRef.current?.stop();
+      };
+    }, []);
 
+    // Inject renderer when iframe is ready AND bundle props are available
+    useEffect(() => {
+      if (
+        isIframeReady &&
+        !isReady &&
+        !bootstrappingRef.current &&
+        rendererCode &&
+        rendererCss &&
+        iframeRef.current?.contentWindow
+      ) {
+        bootstrappingRef.current = true;
+
+        // Inject CSS first (idempotent - checks if already loaded)
+        const cssCode = `
+        (function() {
+          if (window.__ISOLATED_CSS_LOADED__) return;
+          window.__ISOLATED_CSS_LOADED__ = true;
+          var style = document.createElement('style');
+          style.textContent = ${JSON.stringify(rendererCss)};
+          document.head.appendChild(style);
+        })();
+      `;
+        iframeRef.current.contentWindow.postMessage(
+          { type: "eval", payload: { code: cssCode } },
+          "*",
+        );
+        // Then inject JS bundle (idempotent - checks if already loaded)
+        // Use string concatenation instead of template literal to avoid issues
+        // with backticks or ${} in the bundled code
+        const jsWrapper =
+          "(function() {" +
+          "if (window.__ISOLATED_RENDERER_LOADED__) return;" +
+          "window.__ISOLATED_RENDERER_LOADED__ = true;" +
+          rendererCode +
+          "})();";
+        iframeRef.current.contentWindow.postMessage(
+          { type: "eval", payload: { code: jsWrapper } },
+          "*",
+        );
+      }
+    }, [isIframeReady, isReady, rendererCode, rendererCss]);
+
+    // Expose imperative API
     useImperativeHandle(
       ref,
       () => ({
-        notify: (method, params) => controllerRef.current?.notify(method, params),
-        render: (payload: RenderPayload) => controllerRef.current?.render(payload),
-        renderBatch: (outputs: RenderPayload[]) => controllerRef.current?.renderBatch(outputs),
-        eval: (code: string) => controllerRef.current?.eval(code),
+        send,
+        render: (payload: RenderPayload) => send({ type: "render", payload }),
+        renderBatch: (outputs: RenderPayload[]) =>
+          send({ type: "render_batch", payload: { outputs } }),
+        eval: (code: string) => send({ type: "eval", payload: { code } }),
         installRenderer: (code: string, css?: string) =>
-          controllerRef.current?.installRenderer(code, css),
-        bridgeReady: () => controllerRef.current?.bridgeReady(),
-        commOpen: (params: NteractCommOpenParams) => controllerRef.current?.commOpen(params),
-        commMsg: (params: NteractCommMsgParams) => controllerRef.current?.commMsg(params),
-        commClose: (params: NteractCommCloseParams) => controllerRef.current?.commClose(params),
-        widgetSnapshot: (params: NteractWidgetSnapshotParams) =>
-          controllerRef.current?.widgetSnapshot(params),
-        setInteractionState: (active: boolean) =>
-          controllerRef.current?.setInteractionState(active),
-        setTheme: (isDark: boolean, theme?: string | null) =>
-          controllerRef.current?.setTheme({ isDark, colorTheme: theme ?? null }),
-        clear: () => controllerRef.current?.clear(),
-        search: (query: string, caseSensitive?: boolean) =>
-          controllerRef.current?.search(query, caseSensitive),
-        searchNavigate: (matchIndex: number) => controllerRef.current?.searchNavigate(matchIndex),
+          send({ type: "install_renderer", payload: { code, css } }),
+        setTheme: (isDark: boolean, colorTheme?: string | null) =>
+          send({ type: "theme", payload: { isDark, colorTheme } }),
+        clear: () => send({ type: "clear" }),
+        search: (query: string, caseSensitive?: boolean) => {
+          // Search handler is in bootstrap HTML, so send directly when iframe is loaded
+          // (bypasses the isReady queue which waits for the React renderer)
+          if (rpcRef.current) {
+            rpcRef.current.notify(NTERACT_SEARCH, { query, caseSensitive });
+          } else if (iframeRef.current?.contentWindow) {
+            iframeRef.current.contentWindow.postMessage(
+              { type: "search", payload: { query, caseSensitive } },
+              "*",
+            );
+          }
+        },
+        searchNavigate: (matchIndex: number) => {
+          if (rpcRef.current) {
+            rpcRef.current.notify(NTERACT_SEARCH_NAVIGATE, { matchIndex });
+          } else if (iframeRef.current?.contentWindow) {
+            iframeRef.current.contentWindow.postMessage(
+              { type: "search_navigate", payload: { matchIndex } },
+              "*",
+            );
+          }
+        },
         isReady,
         isIframeReady,
       }),
-      [isReady, isIframeReady],
+      [send, isReady, isIframeReady],
     );
 
-    if (!frameDocument) return null;
+    if (!frameDocument) {
+      return null;
+    }
 
+    // Compute display values for revealOnRender mode
     const displayHeight = revealOnRender && !isContentRendered ? 0 : height;
     const displayOpacity = revealOnRender && !isContentRendered ? 0 : 1;
 
@@ -482,7 +810,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         name={name}
         src={frameDocument.kind === "src" ? frameDocument.url : undefined}
         srcDoc={frameDocument.kind === "srcdoc" ? frameDocument.html : undefined}
-        sandbox={ISOLATED_FRAME_SANDBOX}
+        sandbox={SANDBOX_ATTRS}
         allowFullScreen
         allow="fullscreen *"
         className={className}
@@ -498,8 +826,8 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
           WebkitUserSelect: "none",
           background: "transparent",
           colorScheme: darkMode ? "dark" : "light",
-          // visibility:hidden during reload preserves layout while hiding the
-          // blank iframe document mid-tear-down/re-init.
+          // Hide iframe during reload to prevent white flash from blank document.
+          // visibility:hidden preserves layout (keeps height) while hiding content.
           visibility: isReloading ? "hidden" : "visible",
           transition: revealOnRender ? "height 150ms ease-out, opacity 150ms ease-out" : undefined,
         }}

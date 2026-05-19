@@ -16,7 +16,6 @@ import {
   type IframeToParentMessage,
   IsolatedFrame,
   type IsolatedFrameHandle,
-  type RenderPayload,
 } from "@/components/isolated";
 import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe-libraries";
 import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-output";
@@ -496,7 +495,10 @@ export function OutputArea({
 
   useEffect(() => {
     if (!hasSiftOutputs) return;
-    frameRef.current?.setInteractionState(staticFrameInteractionActive);
+    frameRef.current?.send({
+      type: "interaction_state",
+      payload: { active: staticFrameInteractionActive },
+    });
   }, [hasSiftOutputs, staticFrameInteractionActive]);
 
   useEffect(() => {
@@ -652,7 +654,7 @@ export function OutputArea({
     // Build batch of render payloads and send atomically.
     // This avoids the clear+re-render cycle that causes DOM thrashing
     // (visible as flickering when interactive widgets update rapidly).
-    const batch: RenderPayload[] = [];
+    const batch: import("@/components/isolated/frame-bridge").RenderPayload[] = [];
 
     outputs.forEach((output, index) => {
       // output_id is the daemon-stamped UUID (non-empty invariant). Threading
@@ -717,22 +719,13 @@ export function OutputArea({
       }
     });
 
-    console.debug("[OutputArea] isolated render batch", {
-      cellId,
-      outputs: outputs.length,
-      batch: batch.length,
-      mimes: batch.map((item) => item.mimeType),
-      pluginMimes: [...pluginMimes],
-      hasWidgets,
-      hasSiftOutputs,
-    });
     frameRef.current.renderBatch(batch);
 
     // Re-apply search highlights after rendering new content
     if (searchQueryRef.current) {
       frameRef.current?.search(searchQueryRef.current);
     }
-  }, [outputs, priority, shouldUseBridge, widgetContext, cellId, hasWidgets, hasSiftOutputs]);
+  }, [outputs, priority, shouldUseBridge, widgetContext]);
 
   // Clean up bridge on unmount
   useEffect(() => {

@@ -229,16 +229,6 @@
           var doc = document.documentElement;
           var body = document.body;
           var rootRectBottom = root ? root.getBoundingClientRect().bottom : 0;
-          if (root) {
-            var walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
-            var node;
-            while ((node = walker.nextNode())) {
-              var rect = node.getBoundingClientRect();
-              var style = window.getComputedStyle(node);
-              var marginBottom = parseFloat(style.marginBottom) || 0;
-              rootRectBottom = Math.max(rootRectBottom, rect.bottom + marginBottom);
-            }
-          }
           return (
             Math.ceil(
               Math.max(
@@ -254,7 +244,7 @@
 
         // --- Message Handler ---
         // Note: When the React renderer bundle is loaded, it sets window.__REACT_RENDERER_ACTIVE__
-        // and the inline handlers should defer to React for render/theme/clear notifications.
+        // and the inline handlers should defer to React for render/theme/clear messages.
         window.addEventListener("message", function (event) {
           // Only accept messages from our parent window
           if (event.source !== window.parent) {
@@ -264,45 +254,99 @@
           var data = event.data;
           if (!data || typeof data !== "object") return;
 
-          if (data.jsonrpc !== "2.0") return;
+          // Handle JSON-RPC 2.0 messages
+          if (data.jsonrpc === "2.0") {
+            var method = data.method;
+            var params = data.params || {};
+            try {
+              switch (method) {
+                case "nteract/eval":
+                  handleEval(params);
+                  break;
+                case "nteract/renderOutput":
+                  if (window.__REACT_RENDERER_ACTIVE__) return;
+                  handleRender(params);
+                  break;
+                case "nteract/theme":
+                  if (window.__REACT_RENDERER_ACTIVE__) return;
+                  handleTheme(params);
+                  break;
+                case "nteract/clearOutputs":
+                  if (window.__REACT_RENDERER_ACTIVE__) return;
+                  handleClear();
+                  break;
+                case "nteract/ping":
+                  handlePing(params);
+                  break;
+                case "nteract/search":
+                  handleSearch(params);
+                  break;
+                case "nteract/searchNavigate":
+                  handleSearchNavigate(params);
+                  break;
+                case "nteract/widgetState":
+                  handleWidgetState(params);
+                  break;
+                // Comm bridge messages — handled by widget-bridge-client.ts via transport
+                case "nteract/bridgeReady":
+                case "nteract/commOpen":
+                case "nteract/commMsg":
+                case "nteract/commClose":
+                case "nteract/widgetSnapshot":
+                  break;
+              }
+            } catch (err) {
+              sendError(err);
+            }
+            return;
+          }
 
-          var method = data.method;
-          var params = data.params || {};
+          // Legacy { type, payload } format (fallback)
+          var type = data.type;
+          var payload = data.payload;
+
           try {
-            switch (method) {
-              case "nteract/eval":
-                handleEval(params, event);
+            switch (type) {
+              case "ping":
+                handlePing(payload);
                 break;
-              case "nteract/renderOutput":
+
+              case "eval":
+                handleEval(payload);
+                break;
+
+              case "render":
                 if (window.__REACT_RENDERER_ACTIVE__) return;
-                handleRender(params);
+                handleRender(payload);
                 break;
-              case "nteract/theme":
+
+              case "theme":
                 if (window.__REACT_RENDERER_ACTIVE__) return;
-                handleTheme(params);
+                handleTheme(payload);
                 break;
-              case "nteract/clearOutputs":
+
+              case "clear":
                 if (window.__REACT_RENDERER_ACTIVE__) return;
                 handleClear();
                 break;
-              case "nteract/ping":
-                handlePing(params);
+
+              case "widget_state":
+                handleWidgetState(payload);
                 break;
-              case "nteract/search":
-                handleSearch(params);
+
+              case "search":
+                handleSearch(payload);
                 break;
-              case "nteract/searchNavigate":
-                handleSearchNavigate(params);
+
+              case "search_navigate":
+                handleSearchNavigate(payload);
                 break;
-              case "nteract/widgetState":
-                handleWidgetState(params);
-                break;
-              // Comm bridge messages are handled by widget-bridge-client.ts via transport.
-              case "nteract/bridgeReady":
-              case "nteract/commOpen":
-              case "nteract/commMsg":
-              case "nteract/commClose":
-              case "nteract/widgetSnapshot":
+
+              case "bridge_ready":
+              case "comm_open":
+              case "comm_msg":
+              case "comm_close":
+              case "widget_snapshot":
                 break;
             }
           } catch (err) {
@@ -319,7 +363,7 @@
           });
         }
 
-        function handleEval(payload, messageEvent) {
+        function handleEval(payload) {
           const { code } = payload || {};
           if (!code) {
             sendRpc("nteract/evalResult", { success: false, error: "No code provided" });
@@ -327,7 +371,7 @@
           }
 
           // Store the current message for access during eval
-          window.currentMessage = messageEvent;
+          window.currentMessage = event;
           try {
             const result = eval.call(null, code);
             sendRpc("nteract/evalResult", { success: true, result: String(result ?? "undefined") });
@@ -558,9 +602,9 @@
 
         // --- Utilities ---
 
-        // Raw bootstrap signal. The host creates the transport in response,
-        // so JSON-RPC isn't available for this first load notification yet.
-        function sendBootstrap(type, payload) {
+        // Legacy format — only used for the bootstrap 'ready' signal
+        // (host creates the transport in response, so JSON-RPC isn't available yet)
+        function sendLegacy(type, payload) {
           window.parent.postMessage({ type: type, payload: payload }, "*");
         }
 
@@ -719,7 +763,7 @@
 
         // --- Ready Signal ---
         isReady = true;
-        sendBootstrap("ready", null);
+        sendLegacy("ready", null);
       })();
     </script>
   </body>
