@@ -47,40 +47,43 @@ That iframe is served by the per-worktree daemon's blob HTTP server. The deck re
 
 ---
 
-## Sift via the real plugin pipeline
+## What the agent actually sees
 
 <NteractSiftCell
-  label="cell-2a7d7f8b as application/vnd.nteract.arrow-stream-manifest+json"
+  label="10,000 problems from ShadenA/MathNet · application/vnd.nteract.arrow-stream-manifest+json"
   :manifest='{
     "version": 1,
     "content_type": "application/vnd.apache.arrow.stream",
     "schema": {
-      "hash": "0ab849774153ab8c1f72aad6470c161f0c5f926dc59f6d06ba942ebbc6ecc836",
+      "hash": "6071d37f232e31698fc68eeef2806c62e9f4d20bd666512a4fe74cee52b43e08",
       "content_type": "application/vnd.apache.arrow.schema",
-      "fields": 4,
+      "fields": 7,
       "columns": [
-        {"name": "ticker", "type": "large_string", "nullable": true},
-        {"name": "price",  "type": "double",       "nullable": true},
-        {"name": "volume", "type": "int64",        "nullable": true},
-        {"name": "sector", "type": "large_string", "nullable": true}
+        {"name": "id",               "type": "large_string", "nullable": true},
+        {"name": "country",          "type": "large_string", "nullable": true},
+        {"name": "competition",      "type": "large_string", "nullable": true},
+        {"name": "language",         "type": "large_string", "nullable": true},
+        {"name": "problem_type",     "type": "large_string", "nullable": true},
+        {"name": "final_answer",     "type": "large_string", "nullable": true},
+        {"name": "problem_markdown", "type": "large_string", "nullable": true}
       ],
       "metadata": {"pandas": true, "huggingface": false}
     },
     "chunks": [
       {
         "index": 0,
-        "hash": "73d60bf8f0076e2284f9be8f09e297c57b9db187377f9a088e5734512eb2d1f4",
-        "size": 1688,
-        "row_count": 6,
+        "hash": "252df7112c629958981b26d8bdab8d67cfd33bbdb772433bc960ed1c08b027c1",
+        "size": 4475968,
+        "row_count": 10000,
         "encoding": "arrow-ipc-stream"
       }
     ],
     "complete": true,
-    "summary": {"total_rows": 6, "included_rows": 6, "sampled": false, "sample_strategy": "none"}
+    "summary": {"total_rows": 10000, "included_rows": 10000, "sampled": false, "sample_strategy": "none"}
   }'
 />
 
-Same isolated iframe and same prebuilt plugin bundle as `apps/notebook`. The deck rewrites chunk hashes to blob-server URLs against the relay's advertised port; everything else flows through the existing render pipeline.
+Same isolated iframe and same plugin bundle as `apps/notebook`. Without this surface, the agent gets `<DataFrame 10000x7>` repr and burns turns reasoning about a shape it can't see. With it, the agent crossfilters `country=Russia, problem_type=Geometry` and reads `problem_markdown` directly.
 
 ---
 
