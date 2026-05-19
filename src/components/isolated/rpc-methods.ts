@@ -15,12 +15,11 @@
 
 // ── Method Constants ────────────────────────────────────────────────
 
-// Host → Iframe (Requests — expect a response)
+// Host → Iframe (notifications; some methods emit separate result notifications)
 export const NTERACT_EVAL = "nteract/eval" as const;
 export const NTERACT_INSTALL_RENDERER = "nteract/installRenderer" as const;
 export const NTERACT_SEARCH = "nteract/search" as const;
 
-// Host → Iframe (Notifications — fire-and-forget)
 export const NTERACT_RENDER_OUTPUT = "nteract/renderOutput" as const;
 export const NTERACT_RENDER_BATCH = "nteract/renderBatch" as const;
 export const NTERACT_CLEAR_OUTPUTS = "nteract/clearOutputs" as const;
@@ -89,6 +88,12 @@ export interface NteractRenderOutputParams {
   mimeType: string;
   data: unknown;
   metadata?: Record<string, unknown>;
+  /**
+   * Stable daemon-stamped UUID for this output. When present, the iframe
+   * uses it as the React key so display_update and reorder operations
+   * don't re-mount sibling outputs.
+   */
+  outputId?: string;
   cellId?: string;
   outputIndex?: number;
   append?: boolean;
@@ -133,6 +138,7 @@ export interface NteractWidgetSnapshotParams {
     commId: string;
     targetName: string;
     state: Record<string, unknown>;
+    bufferPaths?: string[][];
     buffers?: ArrayBuffer[];
   }>;
 }
@@ -170,3 +176,30 @@ export interface NteractWidgetUpdateParams {
 export interface NteractWheelBoundaryParams {
   deltaY?: number;
 }
+
+export interface NteractThemeParams {
+  isDark: boolean;
+  colorTheme?: string | null;
+  cssVariables?: Record<string, string>;
+}
+
+export type NteractHostToIframeParams = {
+  [NTERACT_EVAL]: NteractEvalParams;
+  [NTERACT_INSTALL_RENDERER]: NteractInstallRendererParams;
+  [NTERACT_SEARCH]: NteractSearchParams;
+  [NTERACT_RENDER_OUTPUT]: NteractRenderOutputParams;
+  [NTERACT_RENDER_BATCH]: NteractRenderBatchParams;
+  [NTERACT_CLEAR_OUTPUTS]: undefined;
+  [NTERACT_SEARCH_NAVIGATE]: NteractSearchNavigateParams;
+  [NTERACT_COMM_OPEN]: NteractCommOpenParams;
+  [NTERACT_COMM_MSG]: NteractCommMsgParams;
+  [NTERACT_COMM_CLOSE]: NteractCommCloseParams;
+  [NTERACT_WIDGET_SNAPSHOT]: NteractWidgetSnapshotParams;
+  [NTERACT_BRIDGE_READY]: undefined;
+  [NTERACT_WIDGET_STATE]: NteractWidgetStateParams;
+  [NTERACT_THEME]: NteractThemeParams;
+  [NTERACT_PING]: { sentAt: number } | undefined;
+  [NTERACT_INTERACTION_STATE]: NteractInteractionStateParams;
+};
+
+export type NteractHostToIframeMethod = keyof NteractHostToIframeParams;

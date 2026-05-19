@@ -4,7 +4,7 @@
  * Verifies:
  * 1. Method constants have correct "nteract/" namespace prefix
  * 2. All method constants are unique
- * 3. Request vs notification method categorization
+ * 3. Host/iframe notification method names
  */
 
 import { describe, expect, it } from "vite-plus/test";
@@ -19,12 +19,14 @@ import {
   NTERACT_ERROR,
   NTERACT_EVAL,
   NTERACT_EVAL_RESULT,
+  NTERACT_INSTALL_RENDERER,
   NTERACT_LINK_CLICK,
   NTERACT_MOUSE_DOWN,
   NTERACT_PING,
   NTERACT_PONG,
   NTERACT_READY,
   NTERACT_RENDER_COMPLETE,
+  NTERACT_RENDER_BATCH,
   NTERACT_RENDER_OUTPUT,
   NTERACT_RENDERER_READY,
   NTERACT_RESIZE,
@@ -43,8 +45,10 @@ import {
 describe("nteract JSON-RPC method constants", () => {
   const ALL_METHODS = [
     NTERACT_EVAL,
+    NTERACT_INSTALL_RENDERER,
     NTERACT_SEARCH,
     NTERACT_RENDER_OUTPUT,
+    NTERACT_RENDER_BATCH,
     NTERACT_CLEAR_OUTPUTS,
     NTERACT_SEARCH_NAVIGATE,
     NTERACT_COMM_OPEN,
@@ -84,13 +88,15 @@ describe("nteract JSON-RPC method constants", () => {
     expect(unique.size).toBe(ALL_METHODS.length);
   });
 
-  it("request methods return expected names", () => {
+  it("host-to-iframe methods return expected names", () => {
     expect(NTERACT_EVAL).toBe("nteract/eval");
+    expect(NTERACT_INSTALL_RENDERER).toBe("nteract/installRenderer");
     expect(NTERACT_SEARCH).toBe("nteract/search");
   });
 
   it("notification methods return expected names", () => {
     expect(NTERACT_RENDER_OUTPUT).toBe("nteract/renderOutput");
+    expect(NTERACT_RENDER_BATCH).toBe("nteract/renderBatch");
     expect(NTERACT_CLEAR_OUTPUTS).toBe("nteract/clearOutputs");
     expect(NTERACT_COMM_OPEN).toBe("nteract/commOpen");
     expect(NTERACT_COMM_MSG).toBe("nteract/commMsg");

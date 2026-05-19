@@ -1,9 +1,10 @@
 /**
  * Tests for JSON-RPC message handling in the bootstrap HTML.
  *
- * The bootstrap HTML's inline script handles both legacy { type, payload }
- * and JSON-RPC 2.0 { jsonrpc: "2.0", method, params } formats. These tests
- * verify the JSON-RPC routing path works correctly.
+ * The bootstrap HTML's inline script accepts JSON-RPC 2.0
+ * { jsonrpc: "2.0", method, params } commands from the host. Bootstrap
+ * readiness is the only raw message left because the host creates the
+ * transport in response to it.
  */
 
 import { describe, expect, it } from "vite-plus/test";
@@ -13,9 +14,10 @@ describe("bootstrap HTML JSON-RPC support", () => {
   const html = generateFrameHtml();
   const source = html.replace(/"/g, "'");
 
-  it("checks for jsonrpc 2.0 format before legacy format", () => {
-    // The handler should check data.jsonrpc === '2.0' early
-    expect(source).toContain("data.jsonrpc === '2.0'");
+  it("requires jsonrpc 2.0 format", () => {
+    expect(source).toContain("if (data.jsonrpc !== '2.0') return");
+    expect(source).not.toContain("var type = data.type");
+    expect(source).not.toContain("var payload = data.payload");
   });
 
   it("routes nteract/search to handleSearch", () => {
@@ -35,7 +37,6 @@ describe("bootstrap HTML JSON-RPC support", () => {
 
   it("passes the MessageEvent into eval without relying on a global event", () => {
     expect(html).toContain("handleEval(params, event)");
-    expect(html).toContain("handleEval(payload, event)");
     expect(html).toContain("function handleEval(payload, messageEvent)");
     expect(html).toContain("window.currentMessage = messageEvent");
   });
@@ -62,10 +63,10 @@ describe("bootstrap HTML JSON-RPC support", () => {
     expect(source).toContain("jsonrpc: '2.0'");
   });
 
-  it("sends ready in legacy format via sendLegacy", () => {
-    // Ready must stay legacy (host creates transport in response)
-    expect(source).toContain("sendLegacy('ready'");
-    expect(html).toContain("function sendLegacy(type, payload)");
+  it("sends ready as a raw bootstrap signal", () => {
+    // Ready stays raw because the host creates transport in response.
+    expect(source).toContain("sendBootstrap('ready'");
+    expect(html).toContain("function sendBootstrap(type, payload)");
   });
 
   it("sends search_results as JSON-RPC", () => {
@@ -92,10 +93,10 @@ describe("bootstrap HTML JSON-RPC support", () => {
     expect(source).toContain("sendRpc('nteract/evalResult'");
   });
 
-  it("preserves legacy handler as fallback", () => {
-    // Legacy switch should still exist after the JSON-RPC block
-    expect(source).toContain("case 'search':");
-    expect(source).toContain("case 'eval':");
-    expect(source).toContain("case 'render':");
+  it("does not accept legacy host command types", () => {
+    expect(source).not.toContain("case 'search':");
+    expect(source).not.toContain("case 'eval':");
+    expect(source).not.toContain("case 'render':");
+    expect(source).not.toContain("case 'install_renderer':");
   });
 });

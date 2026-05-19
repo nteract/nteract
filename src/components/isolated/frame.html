@@ -254,7 +254,7 @@
 
         // --- Message Handler ---
         // Note: When the React renderer bundle is loaded, it sets window.__REACT_RENDERER_ACTIVE__
-        // and the inline handlers should defer to React for render/theme/clear messages.
+        // and the inline handlers should defer to React for render/theme/clear notifications.
         window.addEventListener("message", function (event) {
           // Only accept messages from our parent window
           if (event.source !== window.parent) {
@@ -264,99 +264,45 @@
           var data = event.data;
           if (!data || typeof data !== "object") return;
 
-          // Handle JSON-RPC 2.0 messages
-          if (data.jsonrpc === "2.0") {
-            var method = data.method;
-            var params = data.params || {};
-            try {
-              switch (method) {
-                case "nteract/eval":
-                  handleEval(params, event);
-                  break;
-                case "nteract/renderOutput":
-                  if (window.__REACT_RENDERER_ACTIVE__) return;
-                  handleRender(params);
-                  break;
-                case "nteract/theme":
-                  if (window.__REACT_RENDERER_ACTIVE__) return;
-                  handleTheme(params);
-                  break;
-                case "nteract/clearOutputs":
-                  if (window.__REACT_RENDERER_ACTIVE__) return;
-                  handleClear();
-                  break;
-                case "nteract/ping":
-                  handlePing(params);
-                  break;
-                case "nteract/search":
-                  handleSearch(params);
-                  break;
-                case "nteract/searchNavigate":
-                  handleSearchNavigate(params);
-                  break;
-                case "nteract/widgetState":
-                  handleWidgetState(params);
-                  break;
-                // Comm bridge messages — handled by widget-bridge-client.ts via transport
-                case "nteract/bridgeReady":
-                case "nteract/commOpen":
-                case "nteract/commMsg":
-                case "nteract/commClose":
-                case "nteract/widgetSnapshot":
-                  break;
-              }
-            } catch (err) {
-              sendError(err);
-            }
-            return;
-          }
+          if (data.jsonrpc !== "2.0") return;
 
-          // Legacy { type, payload } format (fallback)
-          var type = data.type;
-          var payload = data.payload;
-
+          var method = data.method;
+          var params = data.params || {};
           try {
-            switch (type) {
-              case "ping":
-                handlePing(payload);
+            switch (method) {
+              case "nteract/eval":
+                handleEval(params, event);
                 break;
-
-              case "eval":
-                handleEval(payload, event);
-                break;
-
-              case "render":
+              case "nteract/renderOutput":
                 if (window.__REACT_RENDERER_ACTIVE__) return;
-                handleRender(payload);
+                handleRender(params);
                 break;
-
-              case "theme":
+              case "nteract/theme":
                 if (window.__REACT_RENDERER_ACTIVE__) return;
-                handleTheme(payload);
+                handleTheme(params);
                 break;
-
-              case "clear":
+              case "nteract/clearOutputs":
                 if (window.__REACT_RENDERER_ACTIVE__) return;
                 handleClear();
                 break;
-
-              case "widget_state":
-                handleWidgetState(payload);
+              case "nteract/ping":
+                handlePing(params);
                 break;
-
-              case "search":
-                handleSearch(payload);
+              case "nteract/search":
+                handleSearch(params);
                 break;
-
-              case "search_navigate":
-                handleSearchNavigate(payload);
+              case "nteract/searchNavigate":
+                handleSearchNavigate(params);
                 break;
-
-              case "bridge_ready":
-              case "comm_open":
-              case "comm_msg":
-              case "comm_close":
-              case "widget_snapshot":
+              case "nteract/widgetState":
+                handleWidgetState(params);
+                break;
+              // Comm bridge messages are handled by widget-bridge-client.ts via transport.
+              case "nteract/bridgeReady":
+              case "nteract/commOpen":
+              case "nteract/commMsg":
+              case "nteract/commClose":
+              case "nteract/widgetSnapshot":
                 break;
             }
           } catch (err) {
@@ -612,9 +558,9 @@
 
         // --- Utilities ---
 
-        // Legacy format — only used for the bootstrap 'ready' signal
-        // (host creates the transport in response, so JSON-RPC isn't available yet)
-        function sendLegacy(type, payload) {
+        // Raw bootstrap signal. The host creates the transport in response,
+        // so JSON-RPC isn't available for this first load notification yet.
+        function sendBootstrap(type, payload) {
           window.parent.postMessage({ type: type, payload: payload }, "*");
         }
 
@@ -773,7 +719,7 @@
 
         // --- Ready Signal ---
         isReady = true;
-        sendLegacy("ready", null);
+        sendBootstrap("ready", null);
       })();
     </script>
   </body>

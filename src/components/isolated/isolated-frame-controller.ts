@@ -7,14 +7,13 @@
  *     with reload transitions back to bootstrapped)
  *   - the JSON-RPC transport lifecycle (creation on bootstrap, teardown on
  *     reload/dispose)
- *   - the renderer-bundle injection sequence (CSS + JS sent as `eval`
- *     postMessages handled by the bootstrap script, guarded by the
+ *   - the renderer-bundle injection sequence (CSS + JS sent as
+ *     `nteract/eval` notifications handled by the bootstrap script, guarded by the
  *     iframe-side `__ISOLATED_*_LOADED__` flags)
  *   - the outbound send queue (render/theme/clear calls before the renderer
  *     bundle finishes installing get queued and flushed on `ready`)
- *   - message routing from the iframe (raw `{ type, payload }` from the
- *     bootstrap script, JSON-RPC from the renderer bundle) into typed RxJS
- *     observables
+ *   - message routing from the iframe (bootstrap lifecycle messages plus
+ *     JSON-RPC notifications) into typed RxJS observables
  *   - wheel-boundary forwarding (so wheel events that hit a scroll boundary
  *     inside the iframe scroll the nearest parent)
  *
@@ -34,8 +33,7 @@
  */
 
 import { BehaviorSubject, Observable, Subject } from "rxjs";
-import type { CommBridgeManager } from "./comm-bridge-manager";
-import type { IframeToParentMessage, ParentToIframeMessage, RenderPayload } from "./frame-bridge";
+import type { IframeToParentMessage } from "./frame-bridge";
 import { isIframeMessage } from "./frame-bridge";
 import { generateFrameHtml } from "./frame-html";
 import { JsonRpcTransport } from "./jsonrpc-transport";
@@ -53,7 +51,6 @@ import {
   NTERACT_INTERACTION_STATE,
   NTERACT_LINK_CLICK,
   NTERACT_MOUSE_DOWN,
-  NTERACT_PING,
   NTERACT_RENDER_BATCH,
   NTERACT_RENDER_COMPLETE,
   NTERACT_RENDER_OUTPUT,
@@ -68,34 +65,18 @@ import {
   NTERACT_WIDGET_COMM_MSG,
   NTERACT_WIDGET_READY,
   NTERACT_WIDGET_SNAPSHOT,
-  NTERACT_WIDGET_STATE,
   NTERACT_WIDGET_UPDATE,
+  type NteractCommCloseParams,
+  type NteractCommMsgParams,
+  type NteractCommOpenParams,
+  type NteractHostToIframeMethod,
+  type NteractHostToIframeParams,
+  type NteractRenderOutputParams,
+  type NteractWidgetSnapshotParams,
 } from "./rpc-methods";
 import { scrollFrameWheelBoundary } from "./scroll-boundary";
 
-/**
- * Maps `ParentToIframeMessage.type` values to their JSON-RPC method
- * names. Kept here so any caller using `send()` gets the same routing
- * the React shell used to perform inline.
- */
-const TYPE_TO_METHOD: Record<string, string> = {
-  render: NTERACT_RENDER_OUTPUT,
-  render_batch: NTERACT_RENDER_BATCH,
-  theme: NTERACT_THEME,
-  clear: NTERACT_CLEAR_OUTPUTS,
-  eval: NTERACT_EVAL,
-  install_renderer: NTERACT_INSTALL_RENDERER,
-  ping: NTERACT_PING,
-  search: NTERACT_SEARCH,
-  search_navigate: NTERACT_SEARCH_NAVIGATE,
-  comm_open: NTERACT_COMM_OPEN,
-  comm_msg: NTERACT_COMM_MSG,
-  comm_close: NTERACT_COMM_CLOSE,
-  widget_snapshot: NTERACT_WIDGET_SNAPSHOT,
-  bridge_ready: NTERACT_BRIDGE_READY,
-  widget_state: NTERACT_WIDGET_STATE,
-  interaction_state: NTERACT_INTERACTION_STATE,
-};
+export type RenderPayload = NteractRenderOutputParams;
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -222,11 +203,12 @@ export const ISOLATED_FRAME_SANDBOX =
 /**
  * Internal queued message. Every entry is a JSON-RPC notification; the
  * controller drains them through `rpc.notify()` once the renderer reports
- * ready. There is no raw-postMessage queue because every member of
- * `ParentToIframeMessage` has a JSON-RPC method in `TYPE_TO_METHOD`.
+ * ready. Bootstrap-only commands such as renderer-bundle evals bypass the
+ * queue through `postJsonRpcNotification()` because the inline bootstrap
+ * script handles them before the React renderer reports ready.
  */
 interface QueuedSend {
-  method: string;
+  method: NteractHostToIframeMethod;
   params?: unknown;
 }
 
@@ -243,12 +225,6 @@ export class IsolatedFrameController {
   private hasReceivedReady = false;
   private bootstrapping = false;
   private pending: QueuedSend[] = [];
-
-  // Reserved for future routing of comm_open/comm_msg/comm_close through the
-  // controller. The bridge currently wires events from IsolatedFrame.tsx
-  // directly; this slot lets a caller register one for the migration.
-  // @ts-expect-error - intentionally held without read access yet.
-  private commBridge: CommBridgeManager | null = null;
 
   private readonly _state$ = new BehaviorSubject<FrameLifecycleState>("booting");
   private readonly _resize$ = new Subject<FrameResizeEvent>();
@@ -298,49 +274,72 @@ export class IsolatedFrameController {
   // ── Public commands ─────────────────────────────────────────────
 
   /**
-   * Generic outbound send. Maps `{ type, payload }` shapes onto their
-   * JSON-RPC method names and queues the notification.
+   * Queue a JSON-RPC notification for the iframe renderer.
    *
-   * Prefer the typed helpers (`render`, `setTheme`, etc.) over this; the
-   * generic path exists for adapters that need to forward an
-   * already-shaped `ParentToIframeMessage` (e.g., from a comm bridge).
+   * This is the extension point for non-React embeddings: they can stay on
+   * the same nteract/* method contract without constructing legacy
+   * `{ type, payload }` envelopes.
    */
-  send(message: ParentToIframeMessage): void {
-    const method = TYPE_TO_METHOD[message.type];
-    if (!method) {
-      // Every member of `ParentToIframeMessage` is in `TYPE_TO_METHOD`. If
-      // this fires, a new message type was added to the union without a
-      // matching method entry.
-      throw new Error(
-        `IsolatedFrameController.send: no JSON-RPC method for type "${message.type}"`,
-      );
-    }
-    const params = "payload" in message ? message.payload : undefined;
+  notify<M extends NteractHostToIframeMethod>(
+    method: M,
+    params?: NteractHostToIframeParams[M],
+  ): void {
     this.enqueue(method, params);
   }
 
   render(payload: RenderPayload): void {
-    this.enqueue(NTERACT_RENDER_OUTPUT, payload);
+    this.notify(NTERACT_RENDER_OUTPUT, payload);
   }
 
   renderBatch(payloads: RenderPayload[]): void {
-    this.enqueue(NTERACT_RENDER_BATCH, { outputs: payloads });
+    this.notify(NTERACT_RENDER_BATCH, { outputs: payloads });
   }
 
   clear(): void {
-    this.enqueue(NTERACT_CLEAR_OUTPUTS, undefined);
+    this.notify(NTERACT_CLEAR_OUTPUTS);
+  }
+
+  eval(code: string): void {
+    this.notify(NTERACT_EVAL, { code });
+  }
+
+  installRenderer(code: string, css?: string): void {
+    this.notify(NTERACT_INSTALL_RENDERER, { code, css });
+  }
+
+  setInteractionState(active: boolean): void {
+    this.notify(NTERACT_INTERACTION_STATE, { active });
+  }
+
+  bridgeReady(): void {
+    this.notify(NTERACT_BRIDGE_READY);
+  }
+
+  commOpen(params: NteractCommOpenParams): void {
+    this.notify(NTERACT_COMM_OPEN, params);
+  }
+
+  commMsg(params: NteractCommMsgParams): void {
+    this.notify(NTERACT_COMM_MSG, params);
+  }
+
+  commClose(params: NteractCommCloseParams): void {
+    this.notify(NTERACT_COMM_CLOSE, params);
+  }
+
+  widgetSnapshot(params: NteractWidgetSnapshotParams): void {
+    this.notify(NTERACT_WIDGET_SNAPSHOT, params);
   }
 
   setTheme(theme: FrameThemePayload): void {
     this.theme = theme;
-    // Theme can be applied before the renderer bundle is up — the iframe's
-    // bootstrap script handles `theme` postMessages directly. Once the
+    // Theme can be applied before the renderer bundle is up. Once the
     // renderer transport is alive, prefer JSON-RPC so live theme changes
     // follow the same path as everything else.
     if (this.rpc && this.state === "ready") {
       this.rpc.notify(NTERACT_THEME, theme);
     } else if (this.iframe.contentWindow) {
-      this.iframe.contentWindow.postMessage({ type: "theme", payload: theme }, "*");
+      this.postJsonRpcNotification(NTERACT_THEME, theme);
     }
   }
 
@@ -351,7 +350,7 @@ export class IsolatedFrameController {
     if (this.rpc) {
       this.rpc.notify(NTERACT_SEARCH, params);
     } else if (this.iframe.contentWindow) {
-      this.iframe.contentWindow.postMessage({ type: "search", payload: params }, "*");
+      this.postJsonRpcNotification(NTERACT_SEARCH, params);
     }
   }
 
@@ -360,7 +359,7 @@ export class IsolatedFrameController {
     if (this.rpc) {
       this.rpc.notify(NTERACT_SEARCH_NAVIGATE, params);
     } else if (this.iframe.contentWindow) {
-      this.iframe.contentWindow.postMessage({ type: "search_navigate", payload: params }, "*");
+      this.postJsonRpcNotification(NTERACT_SEARCH_NAVIGATE, params);
     }
   }
 
@@ -375,13 +374,6 @@ export class IsolatedFrameController {
     if (this.state === "bootstrapped" && !this.bootstrapping) {
       this.injectRendererBundle();
     }
-  }
-
-  attachCommBridge(manager: CommBridgeManager): void {
-    this.commBridge = manager;
-    // Future: forward comm_open/comm_msg/comm_close routing here. The bridge
-    // currently subscribes to events directly from `IsolatedFrame.tsx`;
-    // moving that wiring into the controller is a follow-up.
   }
 
   setWheelBoundaryForwarding(enabled: boolean): void {
@@ -409,12 +401,23 @@ export class IsolatedFrameController {
 
   // ── Internal: send queue ─────────────────────────────────────────
 
-  private enqueue(method: string, params: unknown): void {
+  private enqueue(method: NteractHostToIframeMethod, params?: unknown): void {
     if (this.state !== "ready" || !this.rpc) {
       this.pending.push({ method, params });
       return;
     }
     this.rpc.notify(method, params);
+  }
+
+  private postJsonRpcNotification(method: NteractHostToIframeMethod, params?: unknown): void {
+    this.iframe.contentWindow?.postMessage(
+      {
+        jsonrpc: "2.0",
+        method,
+        params: params ?? {},
+      },
+      "*",
+    );
   }
 
   private flushPending(): void {
@@ -519,10 +522,8 @@ export class IsolatedFrameController {
     this._state$.next("bootstrapped");
 
     // Apply theme as soon as we're bootstrapped, before the renderer bundle
-    // takes over — the bootstrap script handles `theme` postMessages.
-    if (this.iframe.contentWindow) {
-      this.iframe.contentWindow.postMessage({ type: "theme", payload: this.theme }, "*");
-    }
+    // takes over — the bootstrap script handles `nteract/theme` notifications.
+    this.postJsonRpcNotification(NTERACT_THEME, this.theme);
 
     this.attachTransport();
     this.injectRendererBundle();
@@ -626,7 +627,7 @@ export class IsolatedFrameController {
       ";" +
       "document.head.appendChild(style);" +
       "})();";
-    this.iframe.contentWindow.postMessage({ type: "eval", payload: { code: cssCode } }, "*");
+    this.postJsonRpcNotification(NTERACT_EVAL, { code: cssCode });
 
     // Then the JS bundle. String concat (not template literal) avoids
     // accidental backtick / ${} interactions with the renderer source.
@@ -636,7 +637,7 @@ export class IsolatedFrameController {
       "window.__ISOLATED_RENDERER_LOADED__ = true;" +
       this.rendererCode +
       "})();";
-    this.iframe.contentWindow.postMessage({ type: "eval", payload: { code: jsWrapper } }, "*");
+    this.postJsonRpcNotification(NTERACT_EVAL, { code: jsWrapper });
   }
 
   private handleRendererReady(): void {

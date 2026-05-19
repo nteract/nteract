@@ -17,16 +17,19 @@ import * as jsxRuntime from "react/jsx-runtime";
 // Import styles (Tailwind + theme variables)
 import "./styles.css";
 
-import type { RenderPayload } from "@/components/isolated/frame-bridge";
 import { JsonRpcTransport } from "@/components/isolated/jsonrpc-transport";
 import {
   NTERACT_CLEAR_OUTPUTS,
+  NTERACT_ERROR,
   NTERACT_INSTALL_RENDERER,
   NTERACT_INTERACTION_STATE,
   NTERACT_RENDER_BATCH,
+  NTERACT_RENDER_COMPLETE,
   NTERACT_RENDER_OUTPUT,
   NTERACT_RENDERER_READY,
+  NTERACT_RESIZE,
   NTERACT_THEME,
+  type NteractRenderOutputParams,
 } from "@/components/isolated/rpc-methods";
 // Import output components directly (not through MediaRouter's lazy loading)
 // This ensures all components are bundled inline for the isolated iframe
@@ -115,7 +118,7 @@ function installRendererPlugin(code: string, css?: string) {
 
 interface OutputEntry {
   id: string;
-  payload: RenderPayload;
+  payload: NteractRenderOutputParams;
 }
 
 interface RendererState {
@@ -204,14 +207,8 @@ let messageHandler: MessageHandler | null = null;
 const LAYOUT_PULSE_DELAYS_MS = [0, 160, 600];
 let layoutPulseTimers: number[] = [];
 
-function postMeasuredHeight(type: "resize" | "render_complete"): void {
-  window.parent.postMessage(
-    {
-      type,
-      payload: { height: measureDocumentHeight() },
-    },
-    "*",
-  );
+function postMeasuredHeight(method: typeof NTERACT_RESIZE | typeof NTERACT_RENDER_COMPLETE): void {
+  rpcTransport?.notify(method, { height: measureDocumentHeight() });
 }
 
 function pulseRendererLayout(): void {
@@ -219,7 +216,7 @@ function pulseRendererLayout(): void {
   window.dispatchEvent(new Event("scroll"));
   document.dispatchEvent(new Event("scroll"));
   document.body?.dispatchEvent(new Event("scroll"));
-  postMeasuredHeight("resize");
+  postMeasuredHeight(NTERACT_RESIZE);
 }
 
 function scheduleRendererLayoutPulses(): void {
@@ -264,30 +261,6 @@ function setupMessageListener() {
     }
   });
   rpcTransport.start();
-
-  // Legacy listener for any { type, payload } messages that arrive
-  // (e.g., during bootstrap before transport is set up on host side)
-  window.addEventListener("message", (event) => {
-    if (event.source !== window.parent) return;
-
-    const data = event.data;
-    // Skip JSON-RPC messages — the transport handles them
-    if (data?.jsonrpc === "2.0") return;
-
-    const { type, payload } = data || {};
-    // Handle install_renderer directly (doesn't need React message handler)
-    if (type === "install_renderer" && payload?.code) {
-      try {
-        installRendererPlugin(payload.code, payload.css);
-      } catch (err) {
-        console.error("[renderer-plugin] install failed:", err);
-      }
-      return;
-    }
-    if (messageHandler) {
-      messageHandler(type, payload);
-    }
-  });
 }
 
 // --- React App ---
@@ -303,7 +276,7 @@ function IsolatedRendererApp() {
   const handleMessage = useCallback((type: string, payload: unknown) => {
     switch (type) {
       case "render": {
-        const renderPayload = payload as RenderPayload;
+        const renderPayload = payload as NteractRenderOutputParams;
 
         // Prefer the daemon-stamped output_id when available — it is stable
         // across display_update, stream appends, and cell reorders, so
@@ -330,18 +303,18 @@ function IsolatedRendererApp() {
 
         // Notify parent of render completion after next paint
         requestAnimationFrame(() => {
-          postMeasuredHeight("render_complete");
+          postMeasuredHeight(NTERACT_RENDER_COMPLETE);
         });
         scheduleRendererLayoutPulses();
         break;
       }
 
       case "renderBatch": {
-        const batchPayload = payload as { outputs: RenderPayload[] };
+        const batchPayload = payload as { outputs: NteractRenderOutputParams[] };
         const entries: OutputEntry[] = (batchPayload.outputs ?? []).map((p, i) => ({
           // Prefer daemon-stamped output_id (stable across stream append /
           // display_update / reorder). Fall back to positional key only for
-          // payloads without an id (legacy render paths).
+          // payloads without an id.
           id: p.outputId
             ? p.outputId
             : p.cellId
@@ -352,7 +325,7 @@ function IsolatedRendererApp() {
         setState((prev) => ({ ...prev, outputs: entries }));
 
         requestAnimationFrame(() => {
-          postMeasuredHeight("render_complete");
+          postMeasuredHeight(NTERACT_RENDER_COMPLETE);
         });
         scheduleRendererLayoutPulses();
         break;
@@ -361,7 +334,7 @@ function IsolatedRendererApp() {
       case "clear":
         setState((prev) => ({ ...prev, outputs: [] }));
         requestAnimationFrame(() => {
-          postMeasuredHeight("render_complete");
+          postMeasuredHeight(NTERACT_RENDER_COMPLETE);
         });
         scheduleRendererLayoutPulses();
         break;
@@ -421,7 +394,7 @@ function OutputRenderer({
   payload,
   interactionActive,
 }: {
-  payload: RenderPayload;
+  payload: NteractRenderOutputParams;
   interactionActive: boolean;
 }) {
   const { mimeType, data, metadata } = payload;
@@ -570,7 +543,7 @@ export function init() {
   // Set up message listener
   setupMessageListener();
 
-  // Theme is controlled by parent's theme message (sent when iframe is ready)
+  // Theme is controlled by the parent's nteract/theme notification.
   // Don't set a default here to avoid flash when parent sends different theme
 
   // Create root element if needed
@@ -601,7 +574,7 @@ export function init() {
     resizeRafPending = true;
     requestAnimationFrame(() => {
       resizeRafPending = false;
-      postMeasuredHeight("resize");
+      postMeasuredHeight(NTERACT_RESIZE);
     });
   });
   resizeObserver.observe(document.body);
@@ -625,8 +598,9 @@ if (typeof window !== "undefined") {
     // Report error back to parent
     window.parent.postMessage(
       {
-        type: "error",
-        payload: {
+        jsonrpc: "2.0",
+        method: NTERACT_ERROR,
+        params: {
           message: `Renderer init failed: ${error.message}`,
           stack: error.stack,
         },

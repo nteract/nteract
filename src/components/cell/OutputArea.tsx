@@ -16,6 +16,7 @@ import {
   type IframeToParentMessage,
   IsolatedFrame,
   type IsolatedFrameHandle,
+  type RenderPayload,
 } from "@/components/isolated";
 import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe-libraries";
 import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-output";
@@ -495,10 +496,7 @@ export function OutputArea({
 
   useEffect(() => {
     if (!hasSiftOutputs) return;
-    frameRef.current?.send({
-      type: "interaction_state",
-      payload: { active: staticFrameInteractionActive },
-    });
+    frameRef.current?.setInteractionState(staticFrameInteractionActive);
   }, [hasSiftOutputs, staticFrameInteractionActive]);
 
   useEffect(() => {
@@ -654,7 +652,7 @@ export function OutputArea({
     // Build batch of render payloads and send atomically.
     // This avoids the clear+re-render cycle that causes DOM thrashing
     // (visible as flickering when interactive widgets update rapidly).
-    const batch: import("@/components/isolated/frame-bridge").RenderPayload[] = [];
+    const batch: RenderPayload[] = [];
 
     outputs.forEach((output, index) => {
       // output_id is the daemon-stamped UUID (non-empty invariant). Threading
