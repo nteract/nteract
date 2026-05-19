@@ -365,6 +365,22 @@ describe("IsolatedFrameController", () => {
       expect(controller.state).toBe("installing");
       controller.dispose();
     });
+
+    it("accepts an empty CSS artifact as a loaded renderer bundle", () => {
+      const controller = new IsolatedFrameController({
+        iframe: iframe.element,
+      });
+      dispatchFromIframe(iframe, { type: "ready" });
+
+      controller.setRendererBundle("/*code*/", "");
+
+      const evalPostsAfter = iframe.posts.filter(
+        (p) => (p.message as { method?: string }).method === NTERACT_EVAL,
+      );
+      expect(evalPostsAfter).toHaveLength(2);
+      expect(controller.state).toBe("installing");
+      controller.dispose();
+    });
   });
 
   describe("dispose", () => {

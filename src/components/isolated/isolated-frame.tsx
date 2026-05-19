@@ -280,6 +280,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     const [isContentRendered, setIsContentRendered] = useState(false);
     const [height, setHeight] = useState(minHeight);
     const measuredHeightRef = useRef(minHeight);
+    const readyNotifiedRef = useRef(false);
 
     // Stable refs for callback props — survive controller re-subscription.
     const onReadyRef = useRef(onReady);
@@ -364,11 +365,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
           setIsIframeReady(iframeReady);
 
           const ready = state === "ready";
-          setIsReady((prev) => {
-            if (prev === ready) return prev;
-            if (ready) onReadyRef.current?.();
-            return ready;
-          });
+          setIsReady(ready);
 
           if (state === "reloading") {
             setIsReloading(true);
@@ -421,12 +418,22 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [frameDocument]);
 
+    useEffect(() => {
+      if (!isReady) {
+        readyNotifiedRef.current = false;
+        return;
+      }
+      if (readyNotifiedRef.current) return;
+      readyNotifiedRef.current = true;
+      onReadyRef.current?.();
+    }, [isReady]);
+
     // Hand the renderer bundle to the controller as soon as it resolves.
     useEffect(() => {
-      if (rendererCode && rendererCss) {
+      if (rendererCode !== undefined && rendererCss !== undefined) {
         controllerRef.current?.setRendererBundle(rendererCode, rendererCss);
       }
-    }, [rendererCode, rendererCss]);
+    }, [frameDocument, rendererCode, rendererCss]);
 
     // Live theme updates.
     useEffect(() => {

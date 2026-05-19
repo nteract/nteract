@@ -543,7 +543,7 @@ export class IsolatedFrameController {
     this.log("info", "bootstrap-ready", {
       isReload,
       frameName: this.iframe.name || null,
-      hasRendererBundle: Boolean(this.rendererCode && this.rendererCss),
+      hasRendererBundle: this.rendererCode !== undefined && this.rendererCss !== undefined,
       pending: this.pending.length,
     });
 
@@ -653,14 +653,14 @@ export class IsolatedFrameController {
   private injectRendererBundle(): void {
     if (this.bootstrapping) return;
     if (!this.iframe.contentWindow) return;
-    if (!this.rendererCode || !this.rendererCss) {
+    if (this.rendererCode === undefined || this.rendererCss === undefined) {
       // Bundle not yet available. The transport is up so callers can
       // observe raw and JSON-RPC messages, but the renderer stays
       // uninstalled until `setRendererBundle()` lands and re-enters this
       // path.
       this.log("info", "renderer-bundle-pending", {
-        hasRendererCode: Boolean(this.rendererCode),
-        hasRendererCss: Boolean(this.rendererCss),
+        hasRendererCode: this.rendererCode !== undefined,
+        hasRendererCss: this.rendererCss !== undefined,
       });
       return;
     }
