@@ -229,6 +229,16 @@
           var doc = document.documentElement;
           var body = document.body;
           var rootRectBottom = root ? root.getBoundingClientRect().bottom : 0;
+          if (root) {
+            var walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+            var node;
+            while ((node = walker.nextNode())) {
+              var rect = node.getBoundingClientRect();
+              var style = window.getComputedStyle(node);
+              var marginBottom = parseFloat(style.marginBottom) || 0;
+              rootRectBottom = Math.max(rootRectBottom, rect.bottom + marginBottom);
+            }
+          }
           return (
             Math.ceil(
               Math.max(
@@ -261,7 +271,7 @@
             try {
               switch (method) {
                 case "nteract/eval":
-                  handleEval(params);
+                  handleEval(params, event);
                   break;
                 case "nteract/renderOutput":
                   if (window.__REACT_RENDERER_ACTIVE__) return;
@@ -312,7 +322,7 @@
                 break;
 
               case "eval":
-                handleEval(payload);
+                handleEval(payload, event);
                 break;
 
               case "render":
@@ -363,7 +373,7 @@
           });
         }
 
-        function handleEval(payload) {
+        function handleEval(payload, messageEvent) {
           const { code } = payload || {};
           if (!code) {
             sendRpc("nteract/evalResult", { success: false, error: "No code provided" });
@@ -371,7 +381,7 @@
           }
 
           // Store the current message for access during eval
-          window.currentMessage = event;
+          window.currentMessage = messageEvent;
           try {
             const result = eval.call(null, code);
             sendRpc("nteract/evalResult", { success: true, result: String(result ?? "undefined") });
