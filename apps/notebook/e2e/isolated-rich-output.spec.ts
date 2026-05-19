@@ -43,16 +43,21 @@ test.describe("isolated rich output rendering", () => {
     await waitForKernelStatus(page, "idle", 120_000);
 
     const frame = cell.frameLocator('[data-slot="isolated-frame"]');
-    await expect(frame.locator("body")).toContainText("stream before", { timeout: 60_000 });
-    await expect(frame.locator("body")).toContainText(/2 DOM rows|a#1|b#3/i, {
-      timeout: 60_000,
-    });
+    const frameBody = frame.locator("body");
+    await expect(frameBody).toContainText("stream before", { timeout: 60_000 });
+    await expect
+      .poll(async () => normalizeOutputText(await frameBody.innerText()), { timeout: 60_000 })
+      .toMatch(/a\s*#\s*1|b\s*#\s*3|a b 0 1 3 1 2 4/i);
     await expect.poll(() => isolatedRootHeight(cell), { timeout: 30_000 }).toBeGreaterThan(20);
 
     expect(isolatedLogs.join("\n")).not.toContain("rendered-empty-after-paint");
     expect(isolatedLogs.join("\n")).not.toContain("renderer-error");
   });
 });
+
+function normalizeOutputText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
 
 async function isolatedRootHeight(cell: Locator): Promise<number> {
   const root = cell.frameLocator('[data-slot="isolated-frame"]').locator("#root");
