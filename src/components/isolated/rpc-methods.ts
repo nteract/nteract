@@ -44,6 +44,7 @@ export const NTERACT_RESIZE = "nteract/resize" as const;
 export const NTERACT_LINK_CLICK = "nteract/linkClick" as const;
 export const NTERACT_DOUBLE_CLICK = "nteract/doubleClick" as const;
 export const NTERACT_ERROR = "nteract/error" as const;
+export const NTERACT_DIAGNOSTIC = "nteract/diagnostic" as const;
 export const NTERACT_WIDGET_READY = "nteract/widgetReady" as const;
 export const NTERACT_WIDGET_COMM_MSG = "nteract/widgetCommMsg" as const;
 export const NTERACT_WIDGET_COMM_CLOSE = "nteract/widgetCommClose" as const;
@@ -175,6 +176,13 @@ export interface NteractWidgetUpdateParams {
 
 export interface NteractWheelBoundaryParams {
   deltaY?: number;
+}
+
+export interface NteractDiagnosticParams {
+  source: "host" | "renderer" | "bootstrap";
+  level: "debug" | "info" | "warn" | "error";
+  event: string;
+  details?: Record<string, unknown>;
 }
 
 export interface NteractThemeParams {

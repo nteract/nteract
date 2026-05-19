@@ -20,6 +20,7 @@ import "./styles.css";
 import { JsonRpcTransport } from "@/components/isolated/jsonrpc-transport";
 import {
   NTERACT_CLEAR_OUTPUTS,
+  NTERACT_DIAGNOSTIC,
   NTERACT_ERROR,
   NTERACT_INSTALL_RENDERER,
   NTERACT_INTERACTION_STATE,
@@ -29,6 +30,7 @@ import {
   NTERACT_RENDERER_READY,
   NTERACT_RESIZE,
   NTERACT_THEME,
+  type NteractDiagnosticParams,
   type NteractRenderOutputParams,
 } from "@/components/isolated/rpc-methods";
 // Import output components directly (not through MediaRouter's lazy loading)
@@ -207,8 +209,59 @@ let messageHandler: MessageHandler | null = null;
 const LAYOUT_PULSE_DELAYS_MS = [0, 160, 600];
 let layoutPulseTimers: number[] = [];
 
+function diagnosticDetailsForOutputs(outputs: OutputEntry[]): Record<string, unknown> {
+  return {
+    count: outputs.length,
+    mimes: outputs.map((entry) => entry.payload.mimeType),
+    outputIds: outputs.map((entry) => entry.payload.outputId ?? entry.id),
+  };
+}
+
+function sendDiagnostic(
+  level: NteractDiagnosticParams["level"],
+  event: string,
+  details?: Record<string, unknown>,
+): void {
+  const method = level === "error" ? "error" : level === "warn" ? "warn" : level;
+  console[method]("[isolated-renderer]", event, details ?? {});
+  rpcTransport?.notify(NTERACT_DIAGNOSTIC, {
+    source: "renderer",
+    level,
+    event,
+    details,
+  } satisfies NteractDiagnosticParams);
+}
+
 function postMeasuredHeight(method: typeof NTERACT_RESIZE | typeof NTERACT_RENDER_COMPLETE): void {
   rpcTransport?.notify(method, { height: measureDocumentHeight() });
+}
+
+function rootSnapshot(): Record<string, unknown> {
+  const rootEl = document.getElementById("root");
+  return {
+    height: measureDocumentHeight(),
+    bodyTextLength: document.body?.innerText?.length ?? 0,
+    bodyChildCount: document.body?.childElementCount ?? 0,
+    rootChildCount: rootEl?.childElementCount ?? 0,
+    rootHtmlLength: rootEl?.innerHTML.length ?? 0,
+  };
+}
+
+function reportRenderPaint(outputs: OutputEntry[], reason: "render" | "renderBatch" | "clear") {
+  const height = measureDocumentHeight();
+  rpcTransport?.notify(NTERACT_RENDER_COMPLETE, { height });
+
+  if (outputs.length === 0 || height > 1) return;
+
+  window.setTimeout(() => {
+    const snapshot = rootSnapshot();
+    if (typeof snapshot.height === "number" && snapshot.height > 1) return;
+    sendDiagnostic("warn", "rendered-empty-after-paint", {
+      reason,
+      ...diagnosticDetailsForOutputs(outputs),
+      ...snapshot,
+    });
+  }, 300);
 }
 
 function pulseRendererLayout(): void {
@@ -238,9 +291,22 @@ function setupMessageListener() {
 
   // Route JSON-RPC notifications to the React message handler
   rpcTransport.onNotification(NTERACT_RENDER_OUTPUT, (params) => {
+    const renderPayload = params as NteractRenderOutputParams;
+    sendDiagnostic("debug", "render-output-received", {
+      mimeType: renderPayload.mimeType,
+      outputId: renderPayload.outputId,
+      cellId: renderPayload.cellId,
+      outputIndex: renderPayload.outputIndex,
+    });
     messageHandler?.("render", params);
   });
   rpcTransport.onNotification(NTERACT_RENDER_BATCH, (params) => {
+    const batch = params as { outputs?: NteractRenderOutputParams[] };
+    sendDiagnostic("debug", "render-batch-received", {
+      count: batch.outputs?.length ?? 0,
+      mimes: batch.outputs?.map((output) => output.mimeType) ?? [],
+      outputIds: batch.outputs?.map((output) => output.outputId ?? null) ?? [],
+    });
     messageHandler?.("renderBatch", params);
   });
   rpcTransport.onNotification(NTERACT_CLEAR_OUTPUTS, () => {
@@ -256,11 +322,21 @@ function setupMessageListener() {
     const { code, css } = params as { code: string; css?: string };
     try {
       installRendererPlugin(code, css);
+      sendDiagnostic("info", "renderer-plugin-installed", {
+        codeBytes: code.length,
+        hasCss: Boolean(css),
+        cssBytes: css?.length ?? 0,
+      });
     } catch (err) {
       console.error("[renderer-plugin] install failed:", err);
+      sendDiagnostic("error", "renderer-plugin-install-failed", {
+        message: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+      });
     }
   });
   rpcTransport.start();
+  sendDiagnostic("info", "transport-started");
 }
 
 // --- React App ---
@@ -303,7 +379,7 @@ function IsolatedRendererApp() {
 
         // Notify parent of render completion after next paint
         requestAnimationFrame(() => {
-          postMeasuredHeight(NTERACT_RENDER_COMPLETE);
+          reportRenderPaint([{ id, payload: renderPayload }], "render");
         });
         scheduleRendererLayoutPulses();
         break;
@@ -325,7 +401,7 @@ function IsolatedRendererApp() {
         setState((prev) => ({ ...prev, outputs: entries }));
 
         requestAnimationFrame(() => {
-          postMeasuredHeight(NTERACT_RENDER_COMPLETE);
+          reportRenderPaint(entries, "renderBatch");
         });
         scheduleRendererLayoutPulses();
         break;
@@ -334,7 +410,7 @@ function IsolatedRendererApp() {
       case "clear":
         setState((prev) => ({ ...prev, outputs: [] }));
         requestAnimationFrame(() => {
-          postMeasuredHeight(NTERACT_RENDER_COMPLETE);
+          reportRenderPaint([], "clear");
         });
         scheduleRendererLayoutPulses();
         break;
@@ -542,6 +618,9 @@ export function init() {
 
   // Set up message listener
   setupMessageListener();
+  sendDiagnostic("info", "init-started", {
+    hasExistingRoot: Boolean(document.getElementById("root")),
+  });
 
   // Theme is controlled by the parent's nteract/theme notification.
   // Don't set a default here to avoid flash when parent sends different theme
@@ -582,6 +661,22 @@ export function init() {
 
   document.addEventListener("fullscreenchange", scheduleRendererLayoutPulses);
   document.addEventListener("webkitfullscreenchange", scheduleRendererLayoutPulses);
+
+  window.addEventListener("error", (event) => {
+    sendDiagnostic("error", "window-error", {
+      message: event.message,
+      filename: event.filename,
+      lineno: event.lineno,
+      colno: event.colno,
+    });
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    const reason = event.reason;
+    sendDiagnostic("error", "unhandled-rejection", {
+      message: reason instanceof Error ? reason.message : String(reason),
+      stack: reason instanceof Error ? reason.stack : undefined,
+    });
+  });
 
   // Note: "renderer_ready" is sent from the React component's useEffect
   // to ensure the message handler is registered before parent sends messages
