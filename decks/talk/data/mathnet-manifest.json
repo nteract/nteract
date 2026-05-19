@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "content_type": "application/vnd.apache.arrow.stream",
+  "schema": {
+    "hash": "1b9604acdd6055bf94729e04b4822b3b5ecf2955cac311f29b3fc96046c65329",
+    "content_type": "application/vnd.apache.arrow.schema",
+    "fields": 7,
+    "columns": [
+      {"name": "id", "type": "string", "nullable": true},
+      {"name": "problem_markdown", "type": "string", "nullable": true},
+      {"name": "country", "type": "string", "nullable": true},
+      {"name": "competition", "type": "string", "nullable": true},
+      {"name": "language", "type": "string", "nullable": true},
+      {"name": "problem_type", "type": "string", "nullable": true},
+      {"name": "final_answer", "type": "string", "nullable": true}
+    ],
+    "metadata": {"pandas": false, "huggingface": true}
+  },
+  "chunks": [
+    {
+      "index": 0,
+      "hash": "68a3df888cad2c215de40684c8d8abb91bb9049d0418a1da7f2663946a89cb3c",
+      "size": 54840,
+      "row_count": 100,
+      "encoding": "arrow-ipc-stream"
+    }
+  ],
+  "complete": true,
+  "summary": {"total_rows": 100, "included_rows": 100, "sampled": false, "sample_strategy": "none"}
+}

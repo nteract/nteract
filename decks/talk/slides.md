@@ -49,41 +49,16 @@ That iframe is served by the per-worktree daemon's blob HTTP server. The deck re
 
 ## What the agent actually sees
 
+<script setup>
+import mathnetManifest from "./data/mathnet-manifest.json";
+</script>
+
 <NteractSiftCell
-  label="10,000 problems from ShadenA/MathNet · application/vnd.nteract.arrow-stream-manifest+json"
-  :manifest='{
-    "version": 1,
-    "content_type": "application/vnd.apache.arrow.stream",
-    "schema": {
-      "hash": "6071d37f232e31698fc68eeef2806c62e9f4d20bd666512a4fe74cee52b43e08",
-      "content_type": "application/vnd.apache.arrow.schema",
-      "fields": 7,
-      "columns": [
-        {"name": "id",               "type": "large_string", "nullable": true},
-        {"name": "country",          "type": "large_string", "nullable": true},
-        {"name": "competition",      "type": "large_string", "nullable": true},
-        {"name": "language",         "type": "large_string", "nullable": true},
-        {"name": "problem_type",     "type": "large_string", "nullable": true},
-        {"name": "final_answer",     "type": "large_string", "nullable": true},
-        {"name": "problem_markdown", "type": "large_string", "nullable": true}
-      ],
-      "metadata": {"pandas": true, "huggingface": false}
-    },
-    "chunks": [
-      {
-        "index": 0,
-        "hash": "252df7112c629958981b26d8bdab8d67cfd33bbdb772433bc960ed1c08b027c1",
-        "size": 4475968,
-        "row_count": 10000,
-        "encoding": "arrow-ipc-stream"
-      }
-    ],
-    "complete": true,
-    "summary": {"total_rows": 10000, "included_rows": 10000, "sampled": false, "sample_strategy": "none"}
-  }'
+  label="100 problems from ShadenA/MathNet · loaded as a datasets.Dataset"
+  :manifest="mathnetManifest"
 />
 
-Same isolated iframe and same plugin bundle as `apps/notebook`. Without this surface, the agent gets `<DataFrame 10000x7>` repr and burns turns reasoning about a shape it can't see. With it, the agent crossfilters `country=Russia, problem_type=Geometry` and reads `problem_markdown` directly.
+Loaded as a `datasets.Dataset` (not `.to_pandas()`'d), so the `huggingface` schema metadata survives and sift's rich-type detection is in play. The full dataset has 18.8% problems with `images` columns (geometry diagrams); we trim them here for slide weight, not because the wire can't carry them.
 
 ---
 
