@@ -279,11 +279,8 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
-      - name: Install cargo-binstall
-        run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
-
       - name: Install Tauri CLI
-        run: cargo binstall tauri-cli --no-confirm --locked --force
+        uses: ./.github/actions/install-tauri-cli
 
       - name: Import Apple signing certificate
         env:
@@ -456,11 +453,8 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
-      - name: Install cargo-binstall
-        run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
-
       - name: Install Tauri CLI
-        run: cargo binstall tauri-cli --no-confirm --locked --force
+        uses: ./.github/actions/install-tauri-cli
 
       - name: Import Apple signing certificate
         env:
@@ -638,12 +632,9 @@ jobs:
         run: pnpm build
 
       - name: Install cargo-binstall
-        shell: pwsh
-        env:
-          BINSTALL_VERSION: v1.18.1
-        run: |
-          Set-ExecutionPolicy Unrestricted -Scope Process -Force
-          iex (iwr "https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.ps1").Content
+        uses: cargo-bins/cargo-binstall@v1.19.1
+        with:
+          version: "v1.18.1"
 
       - name: Install Tauri CLI
         uses: ./.github/actions/install-tauri-cli
@@ -820,11 +811,8 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
-      - name: Install cargo-binstall
-        run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
-
       - name: Install Tauri CLI
-        run: cargo binstall tauri-cli --no-confirm --locked --force
+        uses: ./.github/actions/install-tauri-cli
 
       - name: Set version in tauri.conf.json
         run: |
