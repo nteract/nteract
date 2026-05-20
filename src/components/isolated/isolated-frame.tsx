@@ -531,9 +531,9 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       [colorTheme, containerDimensions, darkMode, hostContext, imperativeHostContext],
     );
 
-    // Send theme and host context as soon as iframe is ready (before renderer
-    // bootstrap). Once the renderer transport is active, prefer JSON-RPC so
-    // live changes follow the same path as other renderer updates.
+    // Send theme and host context as soon as iframe bootstrap is ready. Before
+    // renderer-ready these stay on the legacy bootstrap path; live changes move
+    // to JSON-RPC once the renderer transport is active.
     useEffect(() => {
       if (isIframeReady && iframeRef.current?.contentWindow) {
         const runtime = runtimeRef.current;

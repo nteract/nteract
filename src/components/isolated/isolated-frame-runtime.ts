@@ -105,6 +105,9 @@ function diagnosticLevelFromMcpLog(level: string | undefined): IsolatedFrameRunt
 }
 
 function stableHostContextKey(value: unknown): string {
+  // Host-context patches can arrive with equivalent object content but different
+  // key insertion order. Use a stable key for delivery deduping instead of
+  // JSON.stringify's insertion-order-dependent output.
   if (Array.isArray(value)) {
     return `[${value.map(stableHostContextKey).join(",")}]`;
   }
@@ -136,6 +139,7 @@ export class IsolatedFrameRuntime {
   private ready = false;
   private iframeReady = false;
   private lastHostContextDelivery: { channel: "legacy" | "rpc"; key: string } | null = null;
+  private disposed = false;
 
   generation = 0;
 
@@ -154,6 +158,9 @@ export class IsolatedFrameRuntime {
   }
 
   send(message: ParentToIframeMessage): void {
+    if (this.disposed) {
+      return;
+    }
     if (!this.ready) {
       this.pendingMessages.push(message);
       return;
@@ -188,10 +195,21 @@ export class IsolatedFrameRuntime {
   }
 
   setTheme(isDark: boolean, colorTheme?: string | null): void {
-    this.deliver({ type: "theme", payload: { isDark, colorTheme } });
+    if (this.disposed) {
+      return;
+    }
+    const message: ParentToIframeMessage = { type: "theme", payload: { isDark, colorTheme } };
+    if (this.transport && this.ready) {
+      this.deliver(message);
+    } else {
+      this.postLegacy(message);
+    }
   }
 
   notifyHostContext(context: NteractEmbedHostContext): void {
+    if (this.disposed) {
+      return;
+    }
     const channel = this.transport && this.ready ? "rpc" : "legacy";
     const key = stableHostContextKey(context);
     const lastDelivery = this.lastHostContextDelivery;
@@ -212,14 +230,21 @@ export class IsolatedFrameRuntime {
   }
 
   search(query: string, caseSensitive?: boolean): void {
+    // The bootstrap document owns search handlers before the React renderer is
+    // ready, so search commands bypass the renderer-ready queue.
     this.deliver({ type: "search", payload: { query, caseSensitive } });
   }
 
   searchNavigate(matchIndex: number): void {
+    // The bootstrap document owns search navigation before the React renderer is
+    // ready, so search commands bypass the renderer-ready queue.
     this.deliver({ type: "search_navigate", payload: { matchIndex } });
   }
 
   handleWindowMessage(event: MessageEvent, bundle: IsolatedFrameRendererBundle): boolean {
+    if (this.disposed) {
+      return false;
+    }
     if (event.source !== this.getFrameWindow()) {
       return false;
     }
@@ -262,7 +287,7 @@ export class IsolatedFrameRuntime {
 
   injectRendererBundle(bundle: Required<IsolatedFrameRendererBundle>): boolean {
     const frameWindow = this.getFrameWindow();
-    if (!this.iframeReady || this.ready || this.bootstrapping || !frameWindow) {
+    if (this.disposed || !this.iframeReady || this.ready || this.bootstrapping || !frameWindow) {
       return false;
     }
 
@@ -298,6 +323,10 @@ export class IsolatedFrameRuntime {
   }
 
   dispose(): void {
+    if (this.disposed) {
+      return;
+    }
+    this.disposed = true;
     const transport = this.transport;
     this.transport = null;
     this.ready = false;
@@ -326,6 +355,9 @@ export class IsolatedFrameRuntime {
   }
 
   private deliver(message: ParentToIframeMessage): void {
+    if (this.disposed) {
+      return;
+    }
     const method = TYPE_TO_METHOD[message.type];
     if (method && this.transport) {
       const params = "payload" in message ? message.payload : undefined;
@@ -413,6 +445,9 @@ export class IsolatedFrameRuntime {
   }
 
   private handleBootstrapReady(bundle: IsolatedFrameRendererBundle): void {
+    if (this.disposed) {
+      return;
+    }
     const isReload = this.hasReceivedReady;
     this.hasReceivedReady = true;
     this.generation += 1;
@@ -434,6 +469,9 @@ export class IsolatedFrameRuntime {
   }
 
   private createTransport(): void {
+    if (this.disposed) {
+      return;
+    }
     const frameWindow = this.getFrameWindow();
     if (!frameWindow) {
       return;
@@ -559,6 +597,9 @@ export class IsolatedFrameRuntime {
   }
 
   private handleRendererReady(channel: "legacy" | "rpc", transport = this.transport): void {
+    if (this.disposed || this.ready || (channel === "rpc" && transport !== this.transport)) {
+      return;
+    }
     this.callbacks.onDiagnostic("renderer-ready");
     this.ready = true;
     this.callbacks.onRendererReady();
