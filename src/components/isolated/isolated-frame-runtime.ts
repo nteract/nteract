@@ -83,6 +83,7 @@ export interface IsolatedFrameRuntimeCallbacks {
 export interface IsolatedFrameRuntimeOptions {
   getFrameWindow: () => Window | null | undefined;
   getInitialContent?: () => RenderPayload | undefined;
+  rendererBundle?: IsolatedFrameRendererBundle;
   callbacks: IsolatedFrameRuntimeCallbacks;
 }
 
@@ -141,6 +142,7 @@ export class IsolatedFrameRuntime {
   private lastHostContextDelivery: { channel: "legacy" | "rpc"; key: string } | null = null;
   private disposed = false;
   private rendererReadyChannels = new Set<"legacy" | "rpc">();
+  private rendererBundle: IsolatedFrameRendererBundle;
 
   generation = 0;
 
@@ -148,6 +150,7 @@ export class IsolatedFrameRuntime {
     this.getFrameWindow = options.getFrameWindow;
     this.getInitialContent = options.getInitialContent ?? (() => undefined);
     this.callbacks = options.callbacks;
+    this.rendererBundle = options.rendererBundle ?? {};
   }
 
   get isReady(): boolean {
@@ -206,6 +209,10 @@ export class IsolatedFrameRuntime {
     this.send({ type: "install_renderer", payload: { code, css } });
   }
 
+  setRendererBundle(bundle: IsolatedFrameRendererBundle): void {
+    this.rendererBundle = bundle;
+  }
+
   setTheme(isDark: boolean, colorTheme?: string | null): void {
     if (this.disposed) {
       return;
@@ -254,7 +261,7 @@ export class IsolatedFrameRuntime {
     this.deliver({ type: "search_navigate", payload: { matchIndex } });
   }
 
-  handleWindowMessage(event: MessageEvent, bundle: IsolatedFrameRendererBundle): boolean {
+  handleWindowMessage(event: MessageEvent): boolean {
     if (this.disposed) {
       return false;
     }
@@ -271,34 +278,39 @@ export class IsolatedFrameRuntime {
     }
 
     this.callbacks.onMessage(data);
-    this.handleLegacyMessage(data, bundle);
+    this.handleLegacyMessage(data);
     return true;
   }
 
-  waitingForRendererBundle(bundle: IsolatedFrameRendererBundle): boolean {
+  waitingForRendererBundle(): boolean {
     return (
       this.iframeReady &&
       !this.ready &&
       !this.bootstrapping &&
-      (bundle.rendererCode === undefined || bundle.rendererCss === undefined)
+      (this.rendererBundle.rendererCode === undefined ||
+        this.rendererBundle.rendererCss === undefined)
     );
   }
 
-  reportRendererBundlePending(
-    bundle: IsolatedFrameRendererBundle,
-    provider: { providerLoading: boolean; providerError?: Error | null },
-  ): void {
-    if (!this.waitingForRendererBundle(bundle)) {
+  reportRendererBundlePending(provider: {
+    providerLoading: boolean;
+    providerError?: Error | null;
+  }): void {
+    if (!this.waitingForRendererBundle()) {
       return;
     }
     this.callbacks.onDiagnostic("renderer-bundle-pending", {
       providerLoading: provider.providerLoading,
       providerError: provider.providerError?.message ?? null,
-      ...rendererBundleDetails(bundle.rendererCode, bundle.rendererCss),
+      ...rendererBundleDetails(this.rendererBundle.rendererCode, this.rendererBundle.rendererCss),
     });
   }
 
-  injectRendererBundle(bundle: Required<IsolatedFrameRendererBundle>): boolean {
+  injectRendererBundle(): boolean {
+    const completeBundle = this.completeRendererBundle();
+    if (!completeBundle) {
+      return false;
+    }
     const frameWindow = this.getFrameWindow();
     if (this.disposed || !this.iframeReady || this.ready || this.bootstrapping || !frameWindow) {
       return false;
@@ -307,7 +319,7 @@ export class IsolatedFrameRuntime {
     this.bootstrapping = true;
     this.callbacks.onDiagnostic(
       "renderer-bundle-injecting",
-      rendererBundleDetails(bundle.rendererCode, bundle.rendererCss),
+      rendererBundleDetails(completeBundle.rendererCode, completeBundle.rendererCss),
     );
 
     const cssCode = `
@@ -315,7 +327,7 @@ export class IsolatedFrameRuntime {
           if (window.__ISOLATED_CSS_LOADED__) return;
           window.__ISOLATED_CSS_LOADED__ = true;
           var style = document.createElement('style');
-          style.textContent = ${JSON.stringify(bundle.rendererCss)};
+          style.textContent = ${JSON.stringify(completeBundle.rendererCss)};
           document.head.appendChild(style);
         })();
       `;
@@ -325,12 +337,12 @@ export class IsolatedFrameRuntime {
       "(function() {" +
       "if (window.__ISOLATED_RENDERER_LOADED__) return;" +
       "window.__ISOLATED_RENDERER_LOADED__ = true;" +
-      bundle.rendererCode +
+      completeBundle.rendererCode +
       "})();";
     frameWindow.postMessage({ type: "eval", payload: { code: jsWrapper } }, "*");
     this.callbacks.onDiagnostic(
       "renderer-bundle-injected",
-      rendererBundleDetails(bundle.rendererCode, bundle.rendererCss),
+      rendererBundleDetails(completeBundle.rendererCode, completeBundle.rendererCss),
     );
     return true;
   }
@@ -376,6 +388,14 @@ export class IsolatedFrameRuntime {
     return this.ready ? this.transport : null;
   }
 
+  private completeRendererBundle(): Required<IsolatedFrameRendererBundle> | null {
+    const { rendererCode, rendererCss } = this.rendererBundle;
+    if (rendererCode === undefined || rendererCss === undefined) {
+      return null;
+    }
+    return { rendererCode, rendererCss };
+  }
+
   private deliver(message: ParentToIframeMessage): void {
     if (this.disposed) {
       return;
@@ -402,13 +422,10 @@ export class IsolatedFrameRuntime {
     pending.forEach((message) => this.deliver(message));
   }
 
-  private handleLegacyMessage(
-    data: IframeToParentMessage,
-    bundle: IsolatedFrameRendererBundle,
-  ): void {
+  private handleLegacyMessage(data: IframeToParentMessage): void {
     switch (data.type) {
       case "ready":
-        this.handleBootstrapReady(bundle);
+        this.handleBootstrapReady();
         break;
 
       case "renderer_ready":
@@ -466,7 +483,7 @@ export class IsolatedFrameRuntime {
     }
   }
 
-  private handleBootstrapReady(bundle: IsolatedFrameRendererBundle): void {
+  private handleBootstrapReady(): void {
     if (this.disposed) {
       return;
     }
@@ -478,7 +495,7 @@ export class IsolatedFrameRuntime {
     this.rendererReadyChannels.clear();
     this.callbacks.onDiagnostic("bootstrap-ready", {
       isReload,
-      ...rendererBundleDetails(bundle.rendererCode, bundle.rendererCss),
+      ...rendererBundleDetails(this.rendererBundle.rendererCode, this.rendererBundle.rendererCss),
     });
 
     if (isReload) {
