@@ -19,19 +19,8 @@ vi.mock("../isolated-renderer-context", () => ({
   }),
 }));
 
+import { ISOLATED_FRAME_SANDBOX_ATTRS } from "../frame-config";
 import { IsolatedFrame } from "../isolated-frame";
-
-/**
- * The sandbox attributes string from isolated-frame.tsx.
- * We duplicate it here to test against - if the source changes,
- * this test will catch discrepancies.
- */
-const EXPECTED_SANDBOX_ATTRS = [
-  "allow-scripts",
-  "allow-downloads",
-  "allow-forms",
-  "allow-pointer-lock",
-].join(" ");
 
 describe("iframe sandbox security", () => {
   /**
@@ -45,7 +34,7 @@ describe("iframe sandbox security", () => {
    * This would completely break the security model.
    */
   it("sandbox does NOT include allow-same-origin", () => {
-    expect(EXPECTED_SANDBOX_ATTRS).not.toContain("allow-same-origin");
+    expect(ISOLATED_FRAME_SANDBOX_ATTRS).not.toContain("allow-same-origin");
   });
 
   it("rendered iframe sandbox does NOT include allow-same-origin", () => {
@@ -58,39 +47,39 @@ describe("iframe sandbox security", () => {
   });
 
   it("sandbox includes allow-scripts (required for widgets)", () => {
-    expect(EXPECTED_SANDBOX_ATTRS).toContain("allow-scripts");
+    expect(ISOLATED_FRAME_SANDBOX_ATTRS).toContain("allow-scripts");
   });
 
   it("sandbox does NOT include allow-popups", () => {
-    expect(EXPECTED_SANDBOX_ATTRS).not.toContain("allow-popups");
+    expect(ISOLATED_FRAME_SANDBOX_ATTRS).not.toContain("allow-popups");
   });
 
   it("sandbox does NOT include allow-modals", () => {
-    expect(EXPECTED_SANDBOX_ATTRS).not.toContain("allow-modals");
+    expect(ISOLATED_FRAME_SANDBOX_ATTRS).not.toContain("allow-modals");
   });
 
   /**
    * Verify we're not accidentally including dangerous permissions.
    */
   it("sandbox does NOT include allow-top-navigation", () => {
-    expect(EXPECTED_SANDBOX_ATTRS).not.toContain("allow-top-navigation");
+    expect(ISOLATED_FRAME_SANDBOX_ATTRS).not.toContain("allow-top-navigation");
   });
 
   it("sandbox does NOT include allow-top-navigation-by-user-activation", () => {
-    expect(EXPECTED_SANDBOX_ATTRS).not.toContain("allow-top-navigation-by-user-activation");
+    expect(ISOLATED_FRAME_SANDBOX_ATTRS).not.toContain("allow-top-navigation-by-user-activation");
   });
 });
 
 describe("sandbox attribute format", () => {
   it("is a space-separated string", () => {
-    const parts = EXPECTED_SANDBOX_ATTRS.split(" ");
+    const parts = ISOLATED_FRAME_SANDBOX_ATTRS.split(" ");
     expect(parts.length).toBeGreaterThan(0);
     // No empty parts (no double spaces)
     expect(parts.every((p) => p.length > 0)).toBe(true);
   });
 
   it("all parts start with 'allow-'", () => {
-    const parts = EXPECTED_SANDBOX_ATTRS.split(" ");
+    const parts = ISOLATED_FRAME_SANDBOX_ATTRS.split(" ");
     expect(parts.every((p) => p.startsWith("allow-"))).toBe(true);
   });
 });

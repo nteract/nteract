@@ -9,7 +9,12 @@ import {
 } from "react";
 import type { IframeToParentMessage, ParentToIframeMessage, RenderPayload } from "./frame-bridge";
 import { logIsolatedDiagnostic } from "./diagnostics";
-import { generateFrameHtml } from "./frame-html";
+import {
+  createIsolatedFrameDocument,
+  ISOLATED_FRAME_ALLOW_ATTR,
+  ISOLATED_FRAME_SANDBOX_ATTRS,
+  type IsolatedFrameDocument,
+} from "./frame-config";
 import type { NteractEmbedContainerDimensions, NteractEmbedHostContextPatch } from "./host-context";
 import { createNteractEmbedHostContext, mergeNteractEmbedHostContext } from "./host-context";
 import { IsolatedFrameRuntime } from "./isolated-frame-runtime";
@@ -213,31 +218,6 @@ export interface IsolatedFrameHandle {
   isIframeReady: boolean;
 }
 
-/**
- * Sandbox attributes for the isolated iframe.
- *
- * CRITICAL: Do NOT include 'allow-same-origin' - this would give the iframe
- * access to the parent's origin and Tauri APIs.
- */
-const SANDBOX_ATTRS = [
-  "allow-scripts", // Required for rendering interactive content
-  "allow-downloads", // Allow file downloads (e.g., from widgets)
-  "allow-forms", // Allow form submissions
-  "allow-pointer-lock", // For interactive visualizations
-  // Fullscreen for sift maximize, maps, 3D, etc. is enabled via the
-  // separate `allowFullScreen` iframe attribute (not a sandbox flag).
-].join(" ");
-
-type FrameDocument = { kind: "src"; url: string } | { kind: "srcdoc"; html: string };
-
-function isTauriRuntime(): boolean {
-  const globalWindow = window as Window & {
-    __TAURI__?: unknown;
-    __TAURI_INTERNALS__?: unknown;
-  };
-  return "__TAURI_INTERNALS__" in globalWindow || "__TAURI__" in globalWindow;
-}
-
 function iframeContainerDimensions(
   iframe: HTMLIFrameElement | null,
   autoHeight: boolean,
@@ -336,7 +316,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     const runtimeRef = useRef<IsolatedFrameRuntime | null>(null);
     const initialContentRef = useRef(initialContent);
     const applyMeasuredHeightRef = useRef<(contentHeight: number) => void>(() => {});
-    const [frameDocument, setFrameDocument] = useState<FrameDocument | null>(null);
+    const [frameDocument, setFrameDocument] = useState<IsolatedFrameDocument | null>(null);
     // Track iframe ready (bootstrap HTML loaded)
     const [isIframeReady, setIsIframeReady] = useState(false);
     // Track renderer ready (React bundle initialized)
@@ -485,14 +465,10 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       applyMeasuredHeight(measuredHeightRef.current);
     }, [applyMeasuredHeight]);
 
-    // Create frame document on mount. Tauri loads from a custom scheme so the
-    // iframe receives its own CSP; browser-only dev keeps srcDoc.
+    // Create frame document on mount. The shared config keeps React, future
+    // non-React adapters, and tests on the same source/sandbox contract.
     useEffect(() => {
-      if (isTauriRuntime()) {
-        setFrameDocument({ kind: "src", url: "nteract-frame://localhost/" });
-      } else {
-        setFrameDocument({ kind: "srcdoc", html: generateFrameHtml() });
-      }
+      setFrameDocument(createIsolatedFrameDocument());
     }, []);
 
     useEffect(() => {
@@ -644,9 +620,9 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         name={name}
         src={frameDocument.kind === "src" ? frameDocument.url : undefined}
         srcDoc={frameDocument.kind === "srcdoc" ? frameDocument.html : undefined}
-        sandbox={SANDBOX_ATTRS}
+        sandbox={ISOLATED_FRAME_SANDBOX_ATTRS}
         allowFullScreen
-        allow="fullscreen *"
+        allow={ISOLATED_FRAME_ALLOW_ATTR}
         className={className}
         data-slot="isolated-frame"
         style={{

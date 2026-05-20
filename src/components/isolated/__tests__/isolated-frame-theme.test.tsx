@@ -40,6 +40,7 @@ vi.mock("../jsonrpc-transport", () => ({
 }));
 
 vi.mock("../frame-html", () => ({
+  FRAME_HTML: "<!DOCTYPE html><html><body></body></html>",
   generateFrameHtml: vi.fn(() => "<!DOCTYPE html><html><body></body></html>"),
 }));
 
