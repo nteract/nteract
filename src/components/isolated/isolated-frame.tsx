@@ -11,7 +11,11 @@ import type { IframeToParentMessage, ParentToIframeMessage, RenderPayload } from
 import { isIframeMessage } from "./frame-bridge";
 import { logIsolatedDiagnostic, rendererBundleDetails } from "./diagnostics";
 import { generateFrameHtml } from "./frame-html";
-import type { NteractEmbedContainerDimensions, NteractEmbedHostContext } from "./host-context";
+import type {
+  NteractEmbedContainerDimensions,
+  NteractEmbedHostContext,
+  NteractEmbedHostContextPatch,
+} from "./host-context";
 import { createNteractEmbedHostContext, mergeNteractEmbedHostContext } from "./host-context";
 import { useIsolatedRenderer } from "./isolated-renderer-context";
 import { JsonRpcTransport } from "./jsonrpc-transport";
@@ -87,7 +91,7 @@ export interface IsolatedFrameProps {
    * mirrors MCP Apps HostContext so external hosts can embed nteract with
    * minimal theming and sizing glue.
    */
-  hostContext?: Partial<NteractEmbedHostContext>;
+  hostContext?: NteractEmbedHostContextPatch;
 
   /**
    * Minimum height of the iframe in pixels.
@@ -219,7 +223,7 @@ export interface IsolatedFrameHandle {
   /**
    * Merge host-context fields into the iframe's current embed context.
    */
-  setHostContext: (hostContext: Partial<NteractEmbedHostContext>) => void;
+  setHostContext: (hostContext: NteractEmbedHostContextPatch) => void;
 
   /**
    * Clear all content in the iframe.
@@ -334,6 +338,21 @@ function diagnosticLevelFromMcpLog(level: string | undefined): "debug" | "info" 
   return "debug";
 }
 
+function stableHostContextKey(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableHostContextKey).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, entryValue]) => entryValue !== undefined)
+      .sort(([a], [b]) => a.localeCompare(b));
+    return `{${entries
+      .map(([key, entryValue]) => `${JSON.stringify(key)}:${stableHostContextKey(entryValue)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 /**
  * IsolatedFrame component - Renders untrusted content in a secure iframe.
  *
@@ -415,9 +434,12 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     const [containerDimensions, setContainerDimensions] = useState<
       NteractEmbedContainerDimensions | undefined
     >(undefined);
-    const [imperativeHostContext, setImperativeHostContext] = useState<
-      Partial<NteractEmbedHostContext>
-    >({});
+    const [imperativeHostContext, setImperativeHostContext] =
+      useState<NteractEmbedHostContextPatch>({});
+    const lastHostContextDeliveryRef = useRef<{
+      channel: "legacy" | "rpc";
+      key: string;
+    } | null>(null);
     // Track if content has been rendered (for revealOnRender mode)
     const [isContentRendered, setIsContentRendered] = useState(false);
     // Track if the iframe is reloading (DOM move caused browser to tear down)
@@ -554,6 +576,14 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
 
     const notifyHostContext = useCallback(
       (context: NteractEmbedHostContext) => {
+        const channel = rpcRef.current && isReadyRef.current ? "rpc" : "legacy";
+        const key = stableHostContextKey(context);
+        const lastDelivery = lastHostContextDeliveryRef.current;
+        if (lastDelivery?.channel === channel && lastDelivery.key === key) {
+          return;
+        }
+        lastHostContextDeliveryRef.current = { channel, key };
+
         if (rpcRef.current && isReadyRef.current) {
           rpcRef.current.notify(MCP_UI_HOST_CONTEXT_CHANGED, context);
         } else {
@@ -673,6 +703,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
             const isReload = hasReceivedReadyRef.current;
             hasReceivedReadyRef.current = true;
             frameGenerationRef.current += 1;
+            lastHostContextDeliveryRef.current = null;
             logFrameDiagnostic("bootstrap-ready", {
               isReload,
               ...rendererBundleDetails(rendererCode, rendererCss),
@@ -1068,7 +1099,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         },
         setTheme: (isDark: boolean, colorTheme?: string | null) =>
           send({ type: "theme", payload: { isDark, colorTheme } }),
-        setHostContext: (nextHostContext: Partial<NteractEmbedHostContext>) => {
+        setHostContext: (nextHostContext: NteractEmbedHostContextPatch) => {
           setImperativeHostContext((prev) => mergeNteractEmbedHostContext(prev, nextHostContext));
         },
         clear: () => send({ type: "clear" }),

@@ -38,6 +38,7 @@ export type {
   NteractEmbedDeviceCapabilities,
   NteractEmbedDisplayMode,
   NteractEmbedHostContext,
+  NteractEmbedHostContextPatch,
   NteractEmbedPlatform,
   NteractEmbedSafeAreaInsets,
   NteractEmbedTheme,

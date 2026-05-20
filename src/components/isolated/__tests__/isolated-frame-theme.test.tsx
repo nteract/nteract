@@ -179,6 +179,50 @@ describe("IsolatedFrame theme updates", () => {
     });
   });
 
+  it("does not resend an unchanged host context when parent prop identity changes", async () => {
+    const makeHostContext = (color: string) => ({
+      styles: {
+        variables: {
+          "--nteract-test-token": color,
+        },
+      },
+    });
+    const { container, rerender } = render(
+      <IsolatedFrame darkMode={false} hostContext={makeHostContext("same")} />,
+    );
+    const iframe = container.querySelector("iframe") as HTMLIFrameElement;
+    const iframeWindow = iframe.contentWindow as Window;
+
+    dispatchIframeReady(iframeWindow);
+
+    const transport = MockJsonRpcTransport.instances[0];
+    expect(transport).toBeDefined();
+
+    act(() => {
+      transport.notificationHandlers.get(NTERACT_RENDERER_READY)?.({});
+    });
+
+    await waitFor(() => {
+      expect(
+        transport.notify.mock.calls.filter(([method]) => method === MCP_UI_HOST_CONTEXT_CHANGED),
+      ).toHaveLength(1);
+    });
+
+    rerender(<IsolatedFrame darkMode={false} hostContext={makeHostContext("same")} />);
+
+    expect(
+      transport.notify.mock.calls.filter(([method]) => method === MCP_UI_HOST_CONTEXT_CHANGED),
+    ).toHaveLength(1);
+
+    rerender(<IsolatedFrame darkMode={false} hostContext={makeHostContext("changed")} />);
+
+    await waitFor(() => {
+      expect(
+        transport.notify.mock.calls.filter(([method]) => method === MCP_UI_HOST_CONTEXT_CHANGED),
+      ).toHaveLength(2);
+    });
+  });
+
   it("keeps the JSON-RPC transport alive when frame diagnostics props change", () => {
     const { container, rerender, unmount } = render(
       <IsolatedFrame darkMode={false} name="code-Out[*]" />,

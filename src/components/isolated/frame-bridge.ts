@@ -1,4 +1,4 @@
-import type { NteractEmbedHostContext } from "./host-context";
+import type { NteractEmbedHostContextPatch } from "./host-context";
 
 export interface EvalMessage {
   type: "eval";
@@ -88,7 +88,7 @@ export interface ThemeMessage {
  */
 export interface HostContextMessage {
   type: "host_context";
-  payload: Partial<NteractEmbedHostContext>;
+  payload: NteractEmbedHostContextPatch;
 }
 
 /**

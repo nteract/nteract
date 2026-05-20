@@ -78,4 +78,27 @@ describe("nteract embed host context", () => {
     });
     expect(merged.styles?.css?.fonts).toContain("font-family: Test");
   });
+
+  it("fills partial safe-area patches with prior values and zero defaults", () => {
+    const merged = mergeNteractEmbedHostContext(
+      {
+        safeAreaInsets: {
+          top: 12,
+          bottom: 4,
+        },
+      },
+      {
+        safeAreaInsets: {
+          left: 8,
+        },
+      },
+    );
+
+    expect(merged.safeAreaInsets).toEqual({
+      top: 12,
+      right: 0,
+      bottom: 4,
+      left: 8,
+    });
+  });
 });

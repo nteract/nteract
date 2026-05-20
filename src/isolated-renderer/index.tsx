@@ -22,7 +22,11 @@ import {
   logIsolatedDiagnostic,
   type IsolatedDiagnosticLevel,
 } from "@/components/isolated/diagnostics";
-import type { NteractEmbedHostContext } from "@/components/isolated/host-context";
+import type {
+  NteractEmbedHostContext,
+  NteractEmbedHostContextPatch,
+} from "@/components/isolated/host-context";
+import { mergeNteractEmbedHostContext } from "@/components/isolated/host-context";
 import { JsonRpcTransport } from "@/components/isolated/jsonrpc-transport";
 import {
   MCP_UI_HOST_CONTEXT_CHANGED,
@@ -197,35 +201,8 @@ function updateDocumentTheme(isDark: boolean, colorTheme?: string | null) {
 let currentHostContext: NteractEmbedHostContext = {};
 let hostFontStyle: HTMLStyleElement | null = null;
 
-function applyHostContext(contextPatch: Partial<NteractEmbedHostContext>) {
-  currentHostContext = {
-    ...currentHostContext,
-    ...contextPatch,
-    styles: {
-      ...currentHostContext.styles,
-      ...contextPatch.styles,
-      variables: {
-        ...currentHostContext.styles?.variables,
-        ...contextPatch.styles?.variables,
-      },
-      css: {
-        ...currentHostContext.styles?.css,
-        ...contextPatch.styles?.css,
-      },
-    },
-    nteract: {
-      ...currentHostContext.nteract,
-      ...contextPatch.nteract,
-    },
-    deviceCapabilities: {
-      ...currentHostContext.deviceCapabilities,
-      ...contextPatch.deviceCapabilities,
-    },
-    safeAreaInsets: {
-      ...currentHostContext.safeAreaInsets,
-      ...contextPatch.safeAreaInsets,
-    } as NteractEmbedHostContext["safeAreaInsets"],
-  };
+function applyHostContext(contextPatch: NteractEmbedHostContextPatch) {
+  currentHostContext = mergeNteractEmbedHostContext(currentHostContext, contextPatch);
 
   const isDark =
     currentHostContext.theme === "dark"
@@ -247,6 +224,8 @@ function applyHostContext(contextPatch: Partial<NteractEmbedHostContext>) {
   }
 
   const fonts = currentHostContext.styles?.css?.fonts;
+  // Keep font-style handling in sync with the bootstrap implementation in
+  // src/components/isolated/frame.html for pre-React renderer delivery.
   if (fonts && fonts.length > 0) {
     if (!hostFontStyle) {
       hostFontStyle = document.createElement("style");
@@ -273,6 +252,9 @@ function applyHostContext(contextPatch: Partial<NteractEmbedHostContext>) {
     root.style.setProperty("--nteract-host-max-height", `${dimensions.maxHeight}px`);
   }
 
+  // Renderer plugins may size themselves from host-context CSS variables.
+  // Parent-side height and width guards are load-bearing: this resize must not
+  // create an unbounded host-context <-> size-changed feedback loop.
   window.dispatchEvent(new Event("resize"));
 }
 
@@ -591,7 +573,7 @@ function IsolatedRendererApp() {
         break;
       }
       case "hostContext": {
-        const hostContext = payload as Partial<NteractEmbedHostContext>;
+        const hostContext = payload as NteractEmbedHostContextPatch;
         applyHostContext(hostContext);
         if (hostContext.theme === "light" || hostContext.theme === "dark") {
           setState((prev) => ({
