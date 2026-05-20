@@ -519,11 +519,14 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       };
 
       updateContainerDimensions();
-      const observer = new ResizeObserver(updateContainerDimensions);
-      observer.observe(iframe);
+      const observer =
+        typeof ResizeObserver === "undefined"
+          ? null
+          : new ResizeObserver(updateContainerDimensions);
+      observer?.observe(iframe);
       window.addEventListener("resize", updateContainerDimensions);
       return () => {
-        observer.disconnect();
+        observer?.disconnect();
         window.removeEventListener("resize", updateContainerDimensions);
       };
     }, [autoHeight, frameDocument, maxHeight]);
