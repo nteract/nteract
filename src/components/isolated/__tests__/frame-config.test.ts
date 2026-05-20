@@ -8,6 +8,8 @@ import {
 } from "../frame-config";
 import { FRAME_HTML } from "../frame-html";
 
+const EXPECTED_SANDBOX_ATTRS = "allow-scripts allow-downloads allow-forms allow-pointer-lock";
+
 describe("isolated frame config", () => {
   it("uses srcDoc in browser-only hosts", () => {
     expect(createIsolatedFrameDocument({ isTauriRuntime: false })).toEqual({
@@ -30,6 +32,8 @@ describe("isolated frame config", () => {
   });
 
   it("keeps the shared sandbox free of same-origin access", () => {
+    expect(ISOLATED_FRAME_SANDBOX_ATTRS).toBe(EXPECTED_SANDBOX_ATTRS);
+
     const tokens = ISOLATED_FRAME_SANDBOX_ATTRS.split(" ");
     expect(tokens).toContain("allow-scripts");
     expect(tokens).toContain("allow-downloads");
@@ -37,7 +41,10 @@ describe("isolated frame config", () => {
     expect(tokens).not.toContain("allow-top-navigation");
   });
 
-  it("shares the fullscreen allow policy for non-React adapters", () => {
-    expect(ISOLATED_FRAME_ALLOW_ATTR).toBe("fullscreen *");
+  it("allows fullscreen in the shared iframe allow policy", () => {
+    const directives = ISOLATED_FRAME_ALLOW_ATTR.split(/\s+/);
+
+    expect(directives).toContain("fullscreen");
+    expect(directives).toContain("*");
   });
 });

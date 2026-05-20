@@ -1,4 +1,4 @@
-import { generateFrameHtml } from "./frame-html";
+import { FRAME_HTML } from "./frame-html";
 
 /**
  * Physical frame resource used by the Tauri app.
@@ -48,5 +48,5 @@ export function createIsolatedFrameDocument(options?: {
   if (options?.isTauriRuntime ?? isTauriFrameRuntime()) {
     return { kind: "src", url: NTERACT_FRAME_URL };
   }
-  return { kind: "srcdoc", html: generateFrameHtml() };
+  return { kind: "srcdoc", html: FRAME_HTML };
 }
