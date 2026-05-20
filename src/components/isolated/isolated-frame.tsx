@@ -404,6 +404,9 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       runtimeRef.current = new IsolatedFrameRuntime({
         getFrameWindow: () => iframeRef.current?.contentWindow,
         getInitialContent: () => initialContentRef.current,
+        // Seed the runtime before passive effects so an early iframe bootstrap
+        // message can report the current bundle state.
+        rendererBundle: { rendererCode, rendererCss },
         callbacks: {
           onBootstrapReady: ({ isReload }) => {
             if (isReload) {
@@ -537,15 +540,19 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       runtimeRef.current?.send(message);
     }, []);
 
+    useEffect(() => {
+      runtimeRef.current?.setRendererBundle({ rendererCode, rendererCss });
+    }, [rendererCode, rendererCss]);
+
     // Handle messages from iframe
     useEffect(() => {
       const handleMessage = (event: MessageEvent) => {
-        runtimeRef.current?.handleWindowMessage(event, { rendererCode, rendererCss });
+        runtimeRef.current?.handleWindowMessage(event);
       };
 
       window.addEventListener("message", handleMessage);
       return () => window.removeEventListener("message", handleMessage);
-    }, [rendererCode, rendererCss]);
+    }, []);
 
     // Clean up JSON-RPC transport on unmount
     useEffect(() => {
@@ -558,26 +565,22 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     useEffect(() => {
       if (!isIframeReady) return;
       const runtime = runtimeRef.current;
-      if (!runtime?.waitingForRendererBundle({ rendererCode, rendererCss })) return;
+      if (!runtime?.waitingForRendererBundle()) return;
       const timer = window.setTimeout(() => {
-        runtime.reportRendererBundlePending(
-          { rendererCode, rendererCss },
-          {
-            providerLoading,
-            providerError,
-          },
-        );
+        runtime.reportRendererBundlePending({
+          providerLoading,
+          providerError,
+        });
       }, 1500);
 
       return () => window.clearTimeout(timer);
     }, [isIframeReady, isReady, rendererCode, rendererCss, providerLoading, providerError]);
 
-    // Inject renderer when iframe is ready AND bundle props are available
+    // Inject renderer when iframe is ready. The runtime returns false until
+    // both bundle parts are available.
     useEffect(() => {
       if (!isIframeReady) return;
-      if (rendererCode !== undefined && rendererCss !== undefined) {
-        runtimeRef.current?.injectRendererBundle({ rendererCode, rendererCss });
-      }
+      runtimeRef.current?.injectRendererBundle();
     }, [isIframeReady, isReady, rendererCode, rendererCss]);
 
     // Expose imperative API

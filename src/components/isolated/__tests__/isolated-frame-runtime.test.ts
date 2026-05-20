@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { IsolatedFrameRuntime } from "../isolated-frame-runtime";
+import type { IsolatedFrameRendererBundle } from "../isolated-frame-runtime";
 import {
   MCP_UI_HOST_CONTEXT_CHANGED,
   MCP_UI_RESOURCE_TEARDOWN,
@@ -45,7 +46,10 @@ function frameMessage(source: Window, data: unknown): MessageEvent {
   });
 }
 
-function createRuntime(initialContent?: RenderPayload) {
+function createRuntime(
+  initialContent?: RenderPayload,
+  rendererBundle?: IsolatedFrameRendererBundle,
+) {
   const frameWindow = {
     postMessage: vi.fn(),
   } as unknown as Window;
@@ -66,6 +70,7 @@ function createRuntime(initialContent?: RenderPayload) {
   const runtime = new IsolatedFrameRuntime({
     getFrameWindow: () => frameWindow,
     getInitialContent: () => initialContent,
+    rendererBundle,
     callbacks,
   });
 
@@ -88,7 +93,7 @@ describe("IsolatedFrameRuntime", () => {
     runtime.render(payload);
     expect(frameWindow.postMessage).not.toHaveBeenCalled();
 
-    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }), {});
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
     const transport = MockJsonRpcTransport.instances[0];
     expect(transport).toBeDefined();
     expect(transport.notify).not.toHaveBeenCalledWith(NTERACT_RENDER_OUTPUT, payload);
@@ -125,7 +130,7 @@ describe("IsolatedFrameRuntime", () => {
       "*",
     );
 
-    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }), {});
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
     const transport = MockJsonRpcTransport.instances[0];
     transport.notificationHandlers.get(NTERACT_RENDERER_READY)?.({});
 
@@ -137,7 +142,7 @@ describe("IsolatedFrameRuntime", () => {
   it("sends theme over JSON-RPC once the bootstrap transport is available", () => {
     const { frameWindow, runtime } = createRuntime();
 
-    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }), {});
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
     const transport = MockJsonRpcTransport.instances[0];
 
     runtime.setTheme(true, "dark-theme");
@@ -155,12 +160,12 @@ describe("IsolatedFrameRuntime", () => {
   it("recreates transport and reports reloads on a second bootstrap ready", () => {
     const { callbacks, frameWindow, runtime } = createRuntime();
 
-    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }), {});
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
     const firstTransport = MockJsonRpcTransport.instances[0];
     firstTransport.notificationHandlers.get(NTERACT_RENDERER_READY)?.({});
     expect(runtime.isReady).toBe(true);
 
-    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }), {});
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
 
     expect(firstTransport.stop).toHaveBeenCalled();
     expect(MockJsonRpcTransport.instances).toHaveLength(2);
@@ -179,9 +184,9 @@ describe("IsolatedFrameRuntime", () => {
     };
     const { frameWindow, runtime } = createRuntime();
 
-    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }), {});
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
     runtime.render(stalePayload);
-    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }), {});
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
     const reloadedTransport = MockJsonRpcTransport.instances[1];
 
     reloadedTransport.notificationHandlers.get(NTERACT_RENDERER_READY)?.({});
@@ -192,7 +197,7 @@ describe("IsolatedFrameRuntime", () => {
   it("ignores duplicate renderer-ready notifications for the current generation", () => {
     const { callbacks, frameWindow, runtime } = createRuntime();
 
-    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }), {});
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
     const transport = MockJsonRpcTransport.instances[0];
 
     transport.notificationHandlers.get(NTERACT_RENDERER_READY)?.({});
@@ -208,11 +213,10 @@ describe("IsolatedFrameRuntime", () => {
     };
     const { callbacks, frameWindow, runtime } = createRuntime(initialContent);
 
-    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }), {});
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
     const transport = MockJsonRpcTransport.instances[0];
     runtime.handleWindowMessage(
       frameMessage(frameWindow, { type: "renderer_ready", payload: null }),
-      {},
     );
 
     expect(callbacks.onRendererReady).toHaveBeenCalledTimes(1);
@@ -230,9 +234,9 @@ describe("IsolatedFrameRuntime", () => {
   it("ignores stale renderer-ready notifications from a previous reload generation", () => {
     const { callbacks, frameWindow, runtime } = createRuntime();
 
-    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }), {});
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
     const firstTransport = MockJsonRpcTransport.instances[0];
-    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }), {});
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
     const secondTransport = MockJsonRpcTransport.instances[1];
 
     firstTransport.notificationHandlers.get(NTERACT_RENDERER_READY)?.({});
@@ -249,20 +253,14 @@ describe("IsolatedFrameRuntime", () => {
   it("injects renderer CSS and JS once per bootstrap generation", () => {
     const { callbacks, frameWindow, runtime } = createRuntime();
 
-    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }), {});
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
+    runtime.setRendererBundle({
+      rendererCode: "window.__renderer = true;",
+      rendererCss: "body { color: red; }",
+    });
 
-    expect(
-      runtime.injectRendererBundle({
-        rendererCode: "window.__renderer = true;",
-        rendererCss: "body { color: red; }",
-      }),
-    ).toBe(true);
-    expect(
-      runtime.injectRendererBundle({
-        rendererCode: "window.__renderer = true;",
-        rendererCss: "body { color: red; }",
-      }),
-    ).toBe(false);
+    expect(runtime.injectRendererBundle()).toBe(true);
+    expect(runtime.injectRendererBundle()).toBe(false);
 
     expect(frameWindow.postMessage).toHaveBeenCalledTimes(2);
     expect(callbacks.onDiagnostic).toHaveBeenCalledWith(
@@ -275,10 +273,97 @@ describe("IsolatedFrameRuntime", () => {
     );
   });
 
+  it("uses the retained renderer bundle for bootstrap diagnostics and injection", () => {
+    const { callbacks, frameWindow, runtime } = createRuntime(undefined, {
+      rendererCode: "window.__storedRenderer = true;",
+      rendererCss: "body { color: blue; }",
+    });
+
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
+
+    expect(callbacks.onDiagnostic).toHaveBeenCalledWith(
+      "bootstrap-ready",
+      expect.objectContaining({ hasRendererCode: true, hasRendererCss: true }),
+    );
+    expect(runtime.waitingForRendererBundle()).toBe(false);
+    expect(runtime.injectRendererBundle()).toBe(true);
+    expect(frameWindow.postMessage).toHaveBeenNthCalledWith(
+      1,
+      {
+        type: "eval",
+        payload: { code: expect.stringContaining("body { color: blue; }") },
+      },
+      "*",
+    );
+    expect(frameWindow.postMessage).toHaveBeenNthCalledWith(
+      2,
+      {
+        type: "eval",
+        payload: { code: expect.stringContaining("window.__storedRenderer = true;") },
+      },
+      "*",
+    );
+  });
+
+  it("replaces the retained renderer bundle rather than merging it", () => {
+    const { frameWindow, runtime } = createRuntime();
+
+    runtime.setRendererBundle({
+      rendererCode: "window.__oldRenderer = true;",
+      rendererCss: "body { color: orange; }",
+    });
+    runtime.setRendererBundle({
+      rendererCode: "window.__newRenderer = true;",
+      rendererCss: "body { color: green; }",
+    });
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
+
+    expect(runtime.injectRendererBundle()).toBe(true);
+    expect(frameWindow.postMessage).toHaveBeenNthCalledWith(
+      1,
+      {
+        type: "eval",
+        payload: { code: expect.stringContaining("body { color: green; }") },
+      },
+      "*",
+    );
+    expect(frameWindow.postMessage).toHaveBeenNthCalledWith(
+      2,
+      {
+        type: "eval",
+        payload: { code: expect.stringContaining("window.__newRenderer = true;") },
+      },
+      "*",
+    );
+    expect(frameWindow.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({ code: expect.stringContaining("__oldRenderer") }),
+      }),
+      "*",
+    );
+  });
+
+  it("reports pending renderer bundles from retained state", () => {
+    const { callbacks, frameWindow, runtime } = createRuntime();
+
+    runtime.setRendererBundle({ rendererCode: "window.__renderer = true;" });
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
+    runtime.reportRendererBundlePending({ providerLoading: true });
+
+    expect(callbacks.onDiagnostic).toHaveBeenCalledWith(
+      "renderer-bundle-pending",
+      expect.objectContaining({
+        providerLoading: true,
+        hasRendererCode: true,
+        hasRendererCss: false,
+      }),
+    );
+  });
+
   it("requests resource teardown before stopping the active transport", () => {
     const { frameWindow, runtime } = createRuntime();
 
-    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }), {});
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
     const transport = MockJsonRpcTransport.instances[0];
 
     runtime.dispose();
@@ -291,9 +376,9 @@ describe("IsolatedFrameRuntime", () => {
   it("does not recreate transport from queued messages after dispose", () => {
     const { callbacks, frameWindow, runtime } = createRuntime();
 
-    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }), {});
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
     runtime.dispose();
-    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }), {});
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
 
     expect(MockJsonRpcTransport.instances).toHaveLength(1);
     expect(callbacks.onBootstrapReady).toHaveBeenCalledTimes(1);
@@ -310,7 +395,7 @@ describe("IsolatedFrameRuntime", () => {
 
     runtime.dispose();
     runtime.activate();
-    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }), {});
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
 
     expect(MockJsonRpcTransport.instances).toHaveLength(1);
     expect(callbacks.onBootstrapReady).toHaveBeenCalledWith({
