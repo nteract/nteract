@@ -3,9 +3,35 @@ import { IsolatedRendererProvider } from "@/components/isolated/isolated-rendere
 import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe-libraries";
 import { createRoot } from "react-dom/client";
 import { useCallback, useRef, useState } from "react";
-import { fixtures, type Fixture } from "./fixtures";
+import { fixtures, getFixtureOutputs, markdownFixture, type Fixture } from "./fixtures";
 
-function FixtureCard({ fixture, index }: { fixture: Fixture; index: number }) {
+type RendererLoader = () => Promise<{ rendererCode: string; rendererCss: string }>;
+
+const defaultRendererLoader: RendererLoader = () => import("virtual:isolated-renderer");
+
+const delayedRendererLoader = async () => {
+  await new Promise((resolve) => window.setTimeout(resolve, 300));
+  return await import("virtual:isolated-renderer");
+};
+
+const emptyCssRendererLoader = async () => {
+  const bundle = await import("virtual:isolated-renderer");
+  return { rendererCode: bundle.rendererCode, rendererCss: "" };
+};
+
+function FixtureCard({
+  fixture,
+  index,
+  statusTestId,
+  frameTestId,
+  onRendered,
+}: {
+  fixture: Fixture;
+  index: number;
+  statusTestId?: string;
+  frameTestId?: string;
+  onRendered?: () => void;
+}) {
   const frameRef = useRef<IsolatedFrameHandle>(null);
   const injectedRef = useRef(new Set<string>());
   const [ready, setReady] = useState(false);
@@ -15,21 +41,38 @@ function FixtureCard({ fixture, index }: { fixture: Fixture; index: number }) {
     const frame = frameRef.current;
     if (!frame) return;
 
-    // Install plugin if this MIME type needs one
-    if (needsPlugin(fixture.mimeType)) {
-      await injectPluginsForMimes(frame, [fixture.mimeType], injectedRef.current);
+    const outputs = getFixtureOutputs(fixture);
+    const pluginMimes = outputs
+      .map((output) => output.mimeType)
+      .filter((mimeType) => needsPlugin(mimeType));
+    if (pluginMimes.length > 0) {
+      await injectPluginsForMimes(frame, pluginMimes, injectedRef.current);
     }
 
-    // Send the render message
-    frame.render({
-      mimeType: fixture.mimeType,
-      data: fixture.data,
-      cellId: `fixture-${index}`,
-      outputIndex: 0,
-    });
+    if (outputs.length === 1) {
+      const [output] = outputs;
+      frame.render({
+        mimeType: output.mimeType,
+        data: output.data,
+        metadata: output.metadata,
+        cellId: `fixture-${index}`,
+        outputIndex: 0,
+      });
+    } else {
+      frame.renderBatch(
+        outputs.map((output, outputIndex) => ({
+          mimeType: output.mimeType,
+          data: output.data,
+          metadata: output.metadata,
+          cellId: `fixture-${index}`,
+          outputIndex,
+        })),
+      );
+    }
 
     setReady(true);
-  }, [fixture, index]);
+    onRendered?.();
+  }, [fixture, index, onRendered]);
 
   return (
     <div
@@ -53,7 +96,7 @@ function FixtureCard({ fixture, index }: { fixture: Fixture; index: number }) {
         }}
       >
         <span
-          data-testid={`fixture-status-${index}`}
+          data-testid={statusTestId ?? `fixture-status-${index}`}
           data-ready={ready}
           style={{
             width: 8,
@@ -66,7 +109,7 @@ function FixtureCard({ fixture, index }: { fixture: Fixture; index: number }) {
         <code style={{ color: "#6b7280", fontSize: 11 }}>{fixture.mimeType}</code>
         {error && <span style={{ color: "#ef4444", fontSize: 11 }}>{error}</span>}
       </div>
-      <div data-testid={`fixture-frame-${index}`}>
+      <div data-testid={frameTestId ?? `fixture-frame-${index}`}>
         <IsolatedFrame
           ref={frameRef}
           id={`fixture-${index}`}
@@ -80,9 +123,9 @@ function FixtureCard({ fixture, index }: { fixture: Fixture; index: number }) {
   );
 }
 
-function App() {
+function FixtureListApp({ loader = defaultRendererLoader }: { loader?: RendererLoader }) {
   return (
-    <IsolatedRendererProvider loader={() => import("virtual:isolated-renderer")}>
+    <IsolatedRendererProvider loader={loader}>
       <div
         style={{
           maxWidth: 900,
@@ -101,6 +144,60 @@ function App() {
       </div>
     </IsolatedRendererProvider>
   );
+}
+
+function SingleFixtureApp({ fixture, loader }: { fixture: Fixture; loader: RendererLoader }) {
+  return (
+    <IsolatedRendererProvider loader={loader}>
+      <div style={{ maxWidth: 900, margin: "0 auto", padding: "24px 16px" }}>
+        <FixtureCard fixture={fixture} index={0} />
+      </div>
+    </IsolatedRendererProvider>
+  );
+}
+
+function RemountScenarioApp() {
+  const [version, setVersion] = useState(0);
+  const [readyCount, setReadyCount] = useState(0);
+
+  const handleRendered = useCallback(() => {
+    setReadyCount((count) => {
+      const next = count + 1;
+      if (next === 1) {
+        window.setTimeout(() => setVersion(1), 100);
+      }
+      return next;
+    });
+  }, []);
+
+  return (
+    <IsolatedRendererProvider loader={defaultRendererLoader}>
+      <div style={{ maxWidth: 900, margin: "0 auto", padding: "24px 16px" }}>
+        <div data-testid="remount-status" data-ready-count={readyCount} />
+        <FixtureCard
+          key={version}
+          fixture={markdownFixture}
+          index={0}
+          frameTestId="remount-frame"
+          onRendered={handleRendered}
+        />
+      </div>
+    </IsolatedRendererProvider>
+  );
+}
+
+function App() {
+  const scenario = new URLSearchParams(window.location.search).get("scenario");
+  if (scenario === "delayed-bundle") {
+    return <SingleFixtureApp fixture={markdownFixture} loader={delayedRendererLoader} />;
+  }
+  if (scenario === "empty-css") {
+    return <SingleFixtureApp fixture={fixtures[0]!} loader={emptyCssRendererLoader} />;
+  }
+  if (scenario === "remount") {
+    return <RemountScenarioApp />;
+  }
+  return <FixtureListApp />;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);
