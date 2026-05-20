@@ -158,6 +158,13 @@ export class IsolatedFrameRuntime {
     return this.iframeReady;
   }
 
+  /**
+   * Marks this runtime as live for an adapter mount.
+   *
+   * React dev StrictMode can run effect cleanup and setup again without
+   * discarding refs. Adapters should call activate() during mount/setup before
+   * letting frame messages reach the runtime, then dispose() during cleanup.
+   */
   activate(): void {
     this.disposed = false;
   }
@@ -212,7 +219,11 @@ export class IsolatedFrameRuntime {
     if (this.disposed) {
       return;
     }
-    const channel = this.transport && this.ready ? "rpc" : "legacy";
+    // Host context waits for the React renderer because the bootstrap document
+    // handles only the simple theme/style subset. The renderer owns the richer
+    // MCP Apps-shaped context application.
+    const transport = this.rendererTransport();
+    const channel = transport ? "rpc" : "legacy";
     const key = stableHostContextKey(context);
     const lastDelivery = this.lastHostContextDelivery;
     if (lastDelivery?.channel === channel && lastDelivery.key === key) {
@@ -220,8 +231,8 @@ export class IsolatedFrameRuntime {
     }
     this.lastHostContextDelivery = { channel, key };
 
-    if (this.transport && this.ready) {
-      this.transport.notify(MCP_UI_HOST_CONTEXT_CHANGED, context);
+    if (transport) {
+      transport.notify(MCP_UI_HOST_CONTEXT_CHANGED, context);
     } else {
       this.postLegacy({ type: "host_context", payload: context });
     }
@@ -324,6 +335,10 @@ export class IsolatedFrameRuntime {
     return true;
   }
 
+  /**
+   * Gracefully tears down the active iframe resource and stops message
+   * delivery. Safe to call more than once.
+   */
   dispose(): void {
     if (this.disposed) {
       return;
@@ -355,6 +370,10 @@ export class IsolatedFrameRuntime {
       })
       .finally(stopTransport);
     window.setTimeout(stopTransport, 100);
+  }
+
+  private rendererTransport(): JsonRpcTransport | null {
+    return this.ready ? this.transport : null;
   }
 
   private deliver(message: ParentToIframeMessage): void {
@@ -604,6 +623,8 @@ export class IsolatedFrameRuntime {
     if (
       this.disposed ||
       this.rendererReadyChannels.has(channel) ||
+      // RPC ready is tied to a specific transport generation. A delayed
+      // notification from an old iframe must not mark the current iframe ready.
       (channel === "rpc" && transport !== this.transport)
     ) {
       return;
@@ -620,6 +641,9 @@ export class IsolatedFrameRuntime {
     }
 
     const initialContent = this.getInitialContent();
+    // Initial content is sent on the first ready channel, then sent again if
+    // JSON-RPC arrives after legacy ready so the React renderer takes over from
+    // the bootstrap renderer with the same content.
     if (initialContent && (!wasReady || channel === "rpc")) {
       if (channel === "rpc" && transport) {
         transport.notify(NTERACT_RENDER_OUTPUT, initialContent);
@@ -628,6 +652,8 @@ export class IsolatedFrameRuntime {
       }
     }
     if (!wasReady) {
+      // Pending messages are flushed only for the first ready channel. After
+      // that, send() delivers directly through the active channel.
       this.flushPending();
     }
   }

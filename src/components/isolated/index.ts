@@ -26,6 +26,14 @@ export type {
   WidgetUpdateMessage,
 } from "./frame-bridge";
 export { isIframeMessage, isMessageType } from "./frame-bridge";
+export {
+  createIsolatedFrameDocument,
+  ISOLATED_FRAME_ALLOW_ATTR,
+  ISOLATED_FRAME_SANDBOX_ATTRS,
+  isTauriFrameRuntime,
+  NTERACT_FRAME_URL,
+} from "./frame-config";
+export type { IsolatedFrameDocument } from "./frame-config";
 // HTML template generator
 export { FRAME_HTML, generateFrameHtml } from "./frame-html";
 export {
