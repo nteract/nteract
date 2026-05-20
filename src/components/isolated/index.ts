@@ -62,5 +62,23 @@ export type {
   IsolatedFrameRuntimeDiagnosticLevel,
   IsolatedFrameRuntimeOptions,
 } from "./isolated-frame-runtime";
+export { createNteractOutputEmbed } from "./output-embed";
+export type {
+  NteractOutputEmbedDiagnosticHandler,
+  NteractOutputEmbedHandle,
+  NteractOutputEmbedOptions,
+  NteractOutputRendererBundleProvider,
+} from "./output-embed";
+export { isOutputManifest, resolveManifest, resolveManifestSync } from "./output-manifest";
+export type {
+  BlobResolverInput,
+  ContentRef,
+  OutputBlobRef,
+  OutputBlobResolver,
+  OutputManifest,
+  ResolvedJupyterOutput,
+} from "./output-manifest";
+export { resolveEmbeddableOutputs } from "./embeddable-output";
+export type { NteractEmbeddableOutput, ResolveEmbeddableOutputsOptions } from "./embeddable-output";
 // Provider and hook for renderer bundle
 export { IsolatedRendererProvider, useIsolatedRenderer } from "./isolated-renderer-context";
