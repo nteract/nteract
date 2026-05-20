@@ -17,6 +17,16 @@
         --accent-color: #3b82f6;
         --error-color: #ef4444;
         --success-color: #22c55e;
+        --color-background-primary: var(--bg-primary);
+        --color-background-secondary: var(--bg-secondary);
+        --color-text-primary: var(--text-primary);
+        --color-text-secondary: var(--text-secondary);
+        --color-border-primary: var(--border-color);
+        --color-ring-primary: var(--accent-color);
+        --color-text-danger: var(--error-color);
+        --color-text-success: var(--success-color);
+        --font-sans: var(--output-ui-font);
+        --font-mono: var(--output-mono-font);
         --output-ui-font:
           system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         --output-mono-font: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
@@ -223,6 +233,7 @@
         // --- State ---
         let isReady = false;
         const root = document.getElementById("root");
+        let hostFontStyle = null;
         const IFRAME_HEIGHT_FUDGE_PX = 2;
 
         function measureDocumentHeight() {
@@ -270,6 +281,10 @@
                 case "nteract/theme":
                   if (window.__REACT_RENDERER_ACTIVE__) return;
                   handleTheme(params);
+                  break;
+                case "ui/notifications/host-context-changed":
+                  if (window.__REACT_RENDERER_ACTIVE__) return;
+                  handleHostContext(params);
                   break;
                 case "nteract/clearOutputs":
                   if (window.__REACT_RENDERER_ACTIVE__) return;
@@ -323,6 +338,11 @@
               case "theme":
                 if (window.__REACT_RENDERER_ACTIVE__) return;
                 handleTheme(payload);
+                break;
+
+              case "host_context":
+                if (window.__REACT_RENDERER_ACTIVE__) return;
+                handleHostContext(payload);
                 break;
 
               case "clear":
@@ -450,7 +470,9 @@
 
           // Notify completion
           requestAnimationFrame(function () {
-            sendRpc("nteract/renderComplete", { height: measureDocumentHeight() });
+            var height = measureDocumentHeight();
+            sendRpc("nteract/renderComplete", { height: height });
+            sendSizeChanged(height);
           });
         }
 
@@ -507,9 +529,73 @@
           }
         }
 
+        function handleHostContext(payload) {
+          var context = payload || {};
+          var theme = context.theme;
+          var colorTheme = context.nteract && context.nteract.colorTheme;
+          if (theme === "light" || theme === "dark" || colorTheme !== undefined) {
+            handleTheme({
+              isDark: theme === "dark" ? true : theme === "light" ? false : undefined,
+              colorTheme: colorTheme === undefined ? undefined : colorTheme,
+            });
+          }
+
+          var variables = context.styles && context.styles.variables;
+          if (variables) {
+            Object.entries(variables).forEach(function ([key, value]) {
+              if (typeof value === "string") {
+                document.documentElement.style.setProperty(key, value);
+              }
+            });
+          }
+
+          var fonts = context.styles && context.styles.css && context.styles.css.fonts;
+          if (typeof fonts === "string" && fonts.length > 0) {
+            if (!hostFontStyle) {
+              hostFontStyle = document.createElement("style");
+              hostFontStyle.setAttribute("data-nteract-host-fonts", "true");
+              document.head.appendChild(hostFontStyle);
+            }
+            hostFontStyle.textContent = fonts;
+          } else if (fonts === "" && hostFontStyle) {
+            hostFontStyle.remove();
+            hostFontStyle = null;
+          }
+
+          var dimensions = context.containerDimensions || {};
+          if (dimensions.width) {
+            document.documentElement.style.setProperty(
+              "--nteract-host-width",
+              dimensions.width + "px",
+            );
+          }
+          if (dimensions.maxWidth) {
+            document.documentElement.style.setProperty(
+              "--nteract-host-max-width",
+              dimensions.maxWidth + "px",
+            );
+          }
+          if (dimensions.height) {
+            document.documentElement.style.setProperty(
+              "--nteract-host-height",
+              dimensions.height + "px",
+            );
+          }
+          if (dimensions.maxHeight) {
+            document.documentElement.style.setProperty(
+              "--nteract-host-max-height",
+              dimensions.maxHeight + "px",
+            );
+          }
+
+          window.dispatchEvent(new Event("resize"));
+        }
+
         function handleClear() {
           root.innerHTML = "";
-          sendRpc("nteract/renderComplete", { height: measureDocumentHeight() });
+          var height = measureDocumentHeight();
+          sendRpc("nteract/renderComplete", { height: height });
+          sendSizeChanged(height);
         }
 
         function handleWidgetState(payload) {
@@ -613,6 +699,15 @@
           window.parent.postMessage({ jsonrpc: "2.0", method: method, params: params || {} }, "*");
         }
 
+        function sendSizeChanged(height) {
+          sendRpc("ui/notifications/size-changed", {
+            width: Math.ceil(
+              document.documentElement.scrollWidth || document.body.scrollWidth || 0,
+            ),
+            height: height,
+          });
+        }
+
         function sendError(err) {
           sendRpc("nteract/error", {
             message: err.message || String(err),
@@ -636,6 +731,7 @@
             if (window.__REACT_RENDERER_ACTIVE__) return;
             var height = measureDocumentHeight();
             sendRpc("nteract/resize", { height: height });
+            sendSizeChanged(height);
           });
         });
         resizeObserver.observe(document.body);

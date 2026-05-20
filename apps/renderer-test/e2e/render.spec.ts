@@ -106,4 +106,41 @@ test.describe("Renderer plugin fixtures", () => {
     const body = page.frameLocator('[data-testid="remount-frame"] iframe').locator("body");
     await expect(body).toContainText("Markdown Plugin", { timeout: 30_000 });
   });
+
+  test("host context reaches the iframe and updates after mount", async ({ page }) => {
+    await page.goto("/?scenario=host-context");
+    await expect(page.getByTestId("host-context-status")).toHaveAttribute("data-ready", "true", {
+      timeout: 30_000,
+    });
+    await expect(page.getByTestId("host-context-status")).toHaveAttribute(
+      "data-dark-mode",
+      "true",
+      {
+        timeout: 30_000,
+      },
+    );
+
+    const frame = page.frameLocator('[data-testid="host-context-frame"] iframe');
+    await expect(frame.locator("#host-context-probe")).toContainText("Host context probe", {
+      timeout: 30_000,
+    });
+
+    const contextDetails = await frame.locator("html").evaluate((html) => {
+      const style = getComputedStyle(html);
+      return {
+        theme: html.getAttribute("data-theme"),
+        probe: style.getPropertyValue("--nteract-host-context-probe").trim(),
+        hostWidth: style.getPropertyValue("--nteract-host-width").trim(),
+        hostMaxHeight: style.getPropertyValue("--nteract-host-max-height").trim(),
+      };
+    });
+
+    expect(contextDetails).toMatchObject({
+      theme: "dark",
+      probe: "#123456",
+      hostMaxHeight: "420px",
+    });
+    expect(contextDetails.hostWidth).toMatch(/^\d+px$/);
+    expect(Number.parseInt(contextDetails.hostWidth, 10)).toBeGreaterThan(0);
+  });
 });

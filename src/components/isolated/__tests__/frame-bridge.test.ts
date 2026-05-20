@@ -66,6 +66,7 @@ describe("isIframeMessage", () => {
     "render",
     "theme",
     "clear",
+    "host_context",
     "ping",
     "eval",
     "bridge_ready",

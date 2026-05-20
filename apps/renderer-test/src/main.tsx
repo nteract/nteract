@@ -2,7 +2,7 @@ import { IsolatedFrame, type IsolatedFrameHandle } from "@/components/isolated/i
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe-libraries";
 import { createRoot } from "react-dom/client";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fixtures, getFixtureOutputs, markdownFixture, type Fixture } from "./fixtures";
 
 type RendererLoader = () => Promise<{ rendererCode: string; rendererCss: string }>;
@@ -186,6 +186,72 @@ function RemountScenarioApp() {
   );
 }
 
+function HostContextScenarioApp() {
+  const frameRef = useRef<IsolatedFrameHandle>(null);
+  const [ready, setReady] = useState(false);
+  const [darkMode, setDarkMode] = useState(false);
+  const [height, setHeight] = useState(0);
+
+  const hostContext = useMemo(
+    () => ({
+      styles: {
+        variables: {
+          "--nteract-host-context-probe": darkMode ? "#123456" : "#654321",
+        },
+        css: {
+          fonts: "",
+        },
+      },
+      locale: "en-US",
+      timeZone: "America/Los_Angeles",
+      userAgent: "renderer-test",
+      platform: "web" as const,
+    }),
+    [darkMode],
+  );
+
+  const onReady = useCallback(() => {
+    frameRef.current?.render({
+      mimeType: "text/html",
+      data: '<div id="host-context-probe" style="color: var(--nteract-host-context-probe); font-family: var(--font-sans);">Host context probe</div>',
+      cellId: "host-context",
+      outputIndex: 0,
+    });
+    setReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!ready) return;
+    const timer = window.setTimeout(() => setDarkMode(true), 100);
+    return () => window.clearTimeout(timer);
+  }, [ready]);
+
+  return (
+    <IsolatedRendererProvider loader={defaultRendererLoader}>
+      <div style={{ maxWidth: 900, margin: "0 auto", padding: "24px 16px" }}>
+        <div
+          data-testid="host-context-status"
+          data-ready={ready}
+          data-height={height}
+          data-dark-mode={darkMode}
+        />
+        <div data-testid="host-context-frame">
+          <IsolatedFrame
+            ref={frameRef}
+            id="host-context"
+            darkMode={darkMode}
+            hostContext={hostContext}
+            minHeight={40}
+            maxHeight={420}
+            onReady={onReady}
+            onResize={setHeight}
+          />
+        </div>
+      </div>
+    </IsolatedRendererProvider>
+  );
+}
+
 function App() {
   const scenario = new URLSearchParams(window.location.search).get("scenario");
   if (scenario === "delayed-bundle") {
@@ -196,6 +262,9 @@ function App() {
   }
   if (scenario === "remount") {
     return <RemountScenarioApp />;
+  }
+  if (scenario === "host-context") {
+    return <HostContextScenarioApp />;
   }
   return <FixtureListApp />;
 }

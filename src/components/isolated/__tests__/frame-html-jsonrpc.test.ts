@@ -41,6 +41,11 @@ describe("bootstrap HTML JSON-RPC support", () => {
     expect(source).toContain("case 'nteract/theme':");
   });
 
+  it("routes MCP Apps host-context changes with React gate", () => {
+    expect(source).toContain("case 'ui/notifications/host-context-changed':");
+    expect(html).toContain("handleHostContext(params)");
+  });
+
   it("routes nteract/clearOutputs with React gate", () => {
     expect(source).toContain("case 'nteract/clearOutputs':");
   });
@@ -73,6 +78,10 @@ describe("bootstrap HTML JSON-RPC support", () => {
     expect(source).toContain("sendRpc('nteract/resize'");
   });
 
+  it("sends MCP Apps size changes as JSON-RPC", () => {
+    expect(source).toContain("sendRpc('ui/notifications/size-changed'");
+  });
+
   it("sends link_click as JSON-RPC", () => {
     expect(source).toContain("sendRpc('nteract/linkClick'");
   });
@@ -90,5 +99,6 @@ describe("bootstrap HTML JSON-RPC support", () => {
     expect(source).toContain("case 'search':");
     expect(source).toContain("case 'eval':");
     expect(source).toContain("case 'render':");
+    expect(source).toContain("case 'host_context':");
   });
 });

@@ -7,6 +7,8 @@
  * Standard MCP Apps methods (handled by the SDK):
  * - ui/notifications/host-context-changed → theme sync
  * - ui/notifications/size-changed → resize
+ * - ui/resource-teardown → disposal
+ * - notifications/message → iframe logs
  * - ui/open-link → link clicks
  * - ping → health check
  *
@@ -54,6 +56,13 @@ export const NTERACT_PONG = "nteract/pong" as const;
 export const NTERACT_SEARCH_RESULTS = "nteract/searchResults" as const;
 export const NTERACT_MOUSE_DOWN = "nteract/mouseDown" as const;
 export const NTERACT_WHEEL_BOUNDARY = "nteract/wheelBoundary" as const;
+
+// MCP Apps-compatible methods used by embedders. Notebook rendering commands
+// remain in the nteract/* namespace.
+export const MCP_UI_HOST_CONTEXT_CHANGED = "ui/notifications/host-context-changed" as const;
+export const MCP_UI_SIZE_CHANGED = "ui/notifications/size-changed" as const;
+export const MCP_UI_RESOURCE_TEARDOWN = "ui/resource-teardown" as const;
+export const MCP_NOTIFICATIONS_MESSAGE = "notifications/message" as const;
 
 // ── Host → Iframe: Request Params & Results ─────────────────────────
 
@@ -171,4 +180,19 @@ export interface NteractDiagnosticParams {
   phase: string;
   level?: "debug" | "info" | "warn" | "error";
   details?: Record<string, unknown>;
+}
+
+export interface McpUiSizeChangedParams {
+  width?: number;
+  height?: number;
+}
+
+export interface McpUiResourceTeardownParams {
+  reason?: string;
+}
+
+export interface McpNotificationMessageParams {
+  level?: "debug" | "info" | "notice" | "warning" | "error" | "critical" | "alert" | "emergency";
+  logger?: string;
+  data?: unknown;
 }
