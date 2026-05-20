@@ -534,7 +534,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
           stack: providerError.stack,
         });
       }
-    }, [providerError, providerLoading]);
+    }, [logFrameDiagnostic, providerError, providerLoading]);
 
     const send = useCallback((message: ParentToIframeMessage) => {
       runtimeRef.current?.send(message);
@@ -594,7 +594,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         installRenderer: (code: string, css?: string) =>
           runtimeRef.current?.installRenderer(code, css),
         setTheme: (isDark: boolean, colorTheme?: string | null) =>
-          send({ type: "theme", payload: { isDark, colorTheme } }),
+          runtimeRef.current?.setTheme(isDark, colorTheme),
         setHostContext: (nextHostContext: NteractEmbedHostContextPatch) => {
           setImperativeHostContext((prev) => mergeNteractEmbedHostContext(prev, nextHostContext));
         },

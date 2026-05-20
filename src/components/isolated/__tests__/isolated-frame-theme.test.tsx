@@ -180,6 +180,35 @@ describe("IsolatedFrame theme updates", () => {
     });
   });
 
+  it("delivers imperative theme changes through the bootstrap transport before renderer-ready", () => {
+    const frameRef = { current: null as IsolatedFrameHandle | null };
+    const { container } = render(
+      <IsolatedFrame
+        ref={(handle) => {
+          frameRef.current = handle;
+        }}
+        darkMode={false}
+      />,
+    );
+    const iframe = container.querySelector("iframe") as HTMLIFrameElement;
+    const iframeWindow = iframe.contentWindow as Window;
+
+    dispatchIframeReady(iframeWindow);
+
+    const transport = MockJsonRpcTransport.instances[0];
+    expect(transport).toBeDefined();
+    transport.notify.mockClear();
+
+    act(() => {
+      frameRef.current?.setTheme(true, "imperative-dark");
+    });
+
+    expect(transport.notify).toHaveBeenCalledWith(NTERACT_THEME, {
+      isDark: true,
+      colorTheme: "imperative-dark",
+    });
+  });
+
   it("does not resend an unchanged host context when parent prop identity changes", async () => {
     const makeHostContext = (color: string) => ({
       styles: {

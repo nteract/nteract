@@ -95,4 +95,10 @@ describe("resolveEmbeddableOutputs", () => {
 
     await expect(resolveEmbeddableOutputs(manifest)).rejects.toThrow("A blobResolver is required");
   });
+
+  it("reports invalid stringified output with an embeddable-output error", async () => {
+    await expect(resolveEmbeddableOutputs("not json")).rejects.toThrow(
+      "Failed to parse embeddable output JSON",
+    );
+  });
 });

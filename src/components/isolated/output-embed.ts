@@ -205,6 +205,15 @@ export function createNteractOutputEmbed(
     options.onError?.({ message });
   }
 
+  function reportOutputResolutionError(error: unknown) {
+    const details =
+      error instanceof Error
+        ? { message: error.message, stack: error.stack }
+        : { message: String(error) };
+    options.onDiagnostic?.("output-resolution-error", details, "error", "isolated-frame");
+    options.onError?.(details);
+  }
+
   function loadAndInjectRendererBundle() {
     void ensureRendererBundle()
       .then(() => {
@@ -257,7 +266,7 @@ export function createNteractOutputEmbed(
   notifyHostContext();
   loadAndInjectRendererBundle();
   if (options.output) {
-    void resolveAndRender(options.output);
+    void resolveAndRender(options.output).catch(reportOutputResolutionError);
   }
 
   return {

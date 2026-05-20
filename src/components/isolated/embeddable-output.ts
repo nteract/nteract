@@ -32,11 +32,16 @@ async function resolveOneEmbeddableOutput(
   }
 
   if (typeof output === "string") {
-    return resolveOneEmbeddableOutput(
-      JSON.parse(output) as NteractEmbeddableOutput,
-      outputIndex,
-      options,
-    );
+    try {
+      return resolveOneEmbeddableOutput(
+        JSON.parse(output) as NteractEmbeddableOutput,
+        outputIndex,
+        options,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to parse embeddable output JSON: ${message}`);
+    }
   }
 
   if (isOutputManifest(output)) {

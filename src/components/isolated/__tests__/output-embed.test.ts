@@ -155,4 +155,35 @@ describe("createNteractOutputEmbed", () => {
     );
     expect(onError).toHaveBeenCalledWith({ message: "bundle failed" });
   });
+
+  it("reports initial output resolution failures", async () => {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const onDiagnostic = vi.fn();
+    const onError = vi.fn();
+
+    createNteractOutputEmbed({
+      target,
+      output: "not json",
+      rendererBundle: { rendererCode: "", rendererCss: "" },
+      onDiagnostic,
+      onError,
+    });
+
+    await flushAsyncWork();
+
+    expect(onDiagnostic).toHaveBeenCalledWith(
+      "output-resolution-error",
+      expect.objectContaining({
+        message: expect.stringContaining("Failed to parse embeddable output JSON"),
+      }),
+      "error",
+      "isolated-frame",
+    );
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining("Failed to parse embeddable output JSON"),
+      }),
+    );
+  });
 });
