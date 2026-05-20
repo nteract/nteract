@@ -1,3 +1,5 @@
+import type { NteractEmbedHostContext } from "./host-context";
+
 export interface EvalMessage {
   type: "eval";
   payload: {
@@ -78,6 +80,15 @@ export interface ThemeMessage {
     /** Optional CSS variables to inject */
     cssVariables?: Record<string, string>;
   };
+}
+
+/**
+ * Sync embed host context with the iframe. This mirrors MCP Apps
+ * HostContext while keeping notebook commands in the nteract namespace.
+ */
+export interface HostContextMessage {
+  type: "host_context";
+  payload: Partial<NteractEmbedHostContext>;
 }
 
 /**
@@ -251,6 +262,7 @@ export type ParentToIframeMessage =
   | RenderBatchMessage
   | WidgetStateMessage
   | ThemeMessage
+  | HostContextMessage
   | PingMessage
   | ClearMessage
   | CommOpenMessage

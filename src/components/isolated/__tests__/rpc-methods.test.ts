@@ -9,6 +9,10 @@
 
 import { describe, expect, it } from "vite-plus/test";
 import {
+  MCP_NOTIFICATIONS_MESSAGE,
+  MCP_UI_HOST_CONTEXT_CHANGED,
+  MCP_UI_RESOURCE_TEARDOWN,
+  MCP_UI_SIZE_CHANGED,
   NTERACT_BRIDGE_READY,
   NTERACT_CLEAR_OUTPUTS,
   NTERACT_COMM_CLOSE,
@@ -72,6 +76,12 @@ describe("nteract JSON-RPC method constants", () => {
     NTERACT_PONG,
     NTERACT_SEARCH_RESULTS,
   ];
+  const MCP_UI_METHODS = [
+    MCP_UI_HOST_CONTEXT_CHANGED,
+    MCP_UI_SIZE_CHANGED,
+    MCP_UI_RESOURCE_TEARDOWN,
+    MCP_NOTIFICATIONS_MESSAGE,
+  ];
 
   it("all methods have nteract/ namespace prefix", () => {
     for (const method of ALL_METHODS) {
@@ -82,6 +92,16 @@ describe("nteract JSON-RPC method constants", () => {
   it("all method constants are unique", () => {
     const unique = new Set(ALL_METHODS);
     expect(unique.size).toBe(ALL_METHODS.length);
+  });
+
+  it("MCP Apps-compatible method constants keep their standard names", () => {
+    expect(MCP_UI_HOST_CONTEXT_CHANGED).toBe("ui/notifications/host-context-changed");
+    expect(MCP_UI_SIZE_CHANGED).toBe("ui/notifications/size-changed");
+    expect(MCP_UI_RESOURCE_TEARDOWN).toBe("ui/resource-teardown");
+    expect(MCP_NOTIFICATIONS_MESSAGE).toBe("notifications/message");
+
+    const unique = new Set([...ALL_METHODS, ...MCP_UI_METHODS]);
+    expect(unique.size).toBe(ALL_METHODS.length + MCP_UI_METHODS.length);
   });
 
   it("request methods return expected names", () => {

@@ -4,6 +4,7 @@ export type {
   ClearMessage,
   EvalMessage,
   EvalResultMessage,
+  HostContextMessage,
   IframeErrorMessage,
   // Utilities
   IframeMessage,
@@ -27,6 +28,20 @@ export type {
 export { isIframeMessage, isMessageType } from "./frame-bridge";
 // HTML template generator
 export { FRAME_HTML, generateFrameHtml } from "./frame-html";
+export {
+  createNteractEmbedHostContext,
+  createNteractThemeVariables,
+  mergeNteractEmbedHostContext,
+} from "./host-context";
+export type {
+  NteractEmbedContainerDimensions,
+  NteractEmbedDeviceCapabilities,
+  NteractEmbedDisplayMode,
+  NteractEmbedHostContext,
+  NteractEmbedPlatform,
+  NteractEmbedSafeAreaInsets,
+  NteractEmbedTheme,
+} from "./host-context";
 // Security testing component
 export { IsolationTest } from "./IsolationTest";
 export type { IsolatedFrameHandle, IsolatedFrameProps } from "./isolated-frame";

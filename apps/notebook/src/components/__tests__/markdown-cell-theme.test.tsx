@@ -15,6 +15,7 @@ const mockFrameHandle = {
   eval: vi.fn(),
   installRenderer: vi.fn(),
   setTheme: vi.fn(),
+  setHostContext: vi.fn(),
   clear: vi.fn(),
   search: vi.fn(),
   searchNavigate: vi.fn(),

@@ -22,8 +22,12 @@ import {
   logIsolatedDiagnostic,
   type IsolatedDiagnosticLevel,
 } from "@/components/isolated/diagnostics";
+import type { NteractEmbedHostContext } from "@/components/isolated/host-context";
 import { JsonRpcTransport } from "@/components/isolated/jsonrpc-transport";
 import {
+  MCP_UI_HOST_CONTEXT_CHANGED,
+  MCP_UI_RESOURCE_TEARDOWN,
+  MCP_UI_SIZE_CHANGED,
   NTERACT_CLEAR_OUTPUTS,
   NTERACT_DIAGNOSTIC,
   NTERACT_INSTALL_RENDERER,
@@ -190,6 +194,88 @@ function updateDocumentTheme(isDark: boolean, colorTheme?: string | null) {
   }
 }
 
+let currentHostContext: NteractEmbedHostContext = {};
+let hostFontStyle: HTMLStyleElement | null = null;
+
+function applyHostContext(contextPatch: Partial<NteractEmbedHostContext>) {
+  currentHostContext = {
+    ...currentHostContext,
+    ...contextPatch,
+    styles: {
+      ...currentHostContext.styles,
+      ...contextPatch.styles,
+      variables: {
+        ...currentHostContext.styles?.variables,
+        ...contextPatch.styles?.variables,
+      },
+      css: {
+        ...currentHostContext.styles?.css,
+        ...contextPatch.styles?.css,
+      },
+    },
+    nteract: {
+      ...currentHostContext.nteract,
+      ...contextPatch.nteract,
+    },
+    deviceCapabilities: {
+      ...currentHostContext.deviceCapabilities,
+      ...contextPatch.deviceCapabilities,
+    },
+    safeAreaInsets: {
+      ...currentHostContext.safeAreaInsets,
+      ...contextPatch.safeAreaInsets,
+    } as NteractEmbedHostContext["safeAreaInsets"],
+  };
+
+  const isDark =
+    currentHostContext.theme === "dark"
+      ? true
+      : currentHostContext.theme === "light"
+        ? false
+        : undefined;
+  const colorTheme = currentHostContext.nteract?.colorTheme;
+  if (isDark !== undefined || colorTheme !== undefined) {
+    updateDocumentTheme(isDark ?? document.documentElement.classList.contains("dark"), colorTheme);
+  }
+
+  const root = document.documentElement;
+  const variables = currentHostContext.styles?.variables;
+  if (variables) {
+    for (const [key, value] of Object.entries(variables)) {
+      root.style.setProperty(key, value);
+    }
+  }
+
+  const fonts = currentHostContext.styles?.css?.fonts;
+  if (fonts && fonts.length > 0) {
+    if (!hostFontStyle) {
+      hostFontStyle = document.createElement("style");
+      hostFontStyle.setAttribute("data-nteract-host-fonts", "true");
+      document.head.appendChild(hostFontStyle);
+    }
+    hostFontStyle.textContent = fonts;
+  } else if (fonts === "" && hostFontStyle) {
+    hostFontStyle.remove();
+    hostFontStyle = null;
+  }
+
+  const dimensions = currentHostContext.containerDimensions;
+  if (dimensions?.width) {
+    root.style.setProperty("--nteract-host-width", `${dimensions.width}px`);
+  }
+  if (dimensions?.maxWidth) {
+    root.style.setProperty("--nteract-host-max-width", `${dimensions.maxWidth}px`);
+  }
+  if (dimensions?.height) {
+    root.style.setProperty("--nteract-host-height", `${dimensions.height}px`);
+  }
+  if (dimensions?.maxHeight) {
+    root.style.setProperty("--nteract-host-max-height", `${dimensions.maxHeight}px`);
+  }
+
+  window.dispatchEvent(new Event("resize"));
+}
+
 // --- Message Handling ---
 
 // Global transport for JSON-RPC communication with host
@@ -240,6 +326,19 @@ function renderedRootDetails(expectedOutputCount?: number): Record<string, unkno
   };
 }
 
+function measureDocumentWidth(): number {
+  const doc = document.documentElement;
+  const body = document.body;
+  return Math.ceil(
+    Math.max(
+      body ? body.scrollWidth : 0,
+      body ? body.offsetWidth : 0,
+      doc ? doc.scrollWidth : 0,
+      doc ? doc.offsetWidth : 0,
+    ),
+  );
+}
+
 function emitPostPaintRenderDiagnostic(expectedOutputCount?: number): void {
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
@@ -268,6 +367,10 @@ function postMeasuredHeight(
     },
     "*",
   );
+  rpcTransport?.notify(MCP_UI_SIZE_CHANGED, {
+    width: measureDocumentWidth(),
+    height,
+  });
   if (type === "render_complete") {
     emitPostPaintRenderDiagnostic(expectedOutputCount);
   }
@@ -310,6 +413,21 @@ function setupMessageListener() {
   });
   rpcTransport.onNotification(NTERACT_THEME, (params) => {
     messageHandler?.("theme", params);
+  });
+  rpcTransport.onNotification(MCP_UI_HOST_CONTEXT_CHANGED, (params) => {
+    messageHandler?.("hostContext", params);
+  });
+  rpcTransport.onRequest(MCP_UI_RESOURCE_TEARDOWN, (params) => {
+    const reason =
+      typeof params === "object" && params && "reason" in params
+        ? String((params as { reason?: unknown }).reason ?? "unknown")
+        : "unknown";
+    emitRendererDiagnostic("resource-teardown", { reason, protocol: "mcp-ui" });
+    for (const timer of layoutPulseTimers) {
+      window.clearTimeout(timer);
+    }
+    layoutPulseTimers = [];
+    return {};
   });
   rpcTransport.onNotification(NTERACT_INSTALL_RENDERER, (params) => {
     const { code, css } = params as { code: string; css?: string };
@@ -366,6 +484,10 @@ function setupMessageListener() {
           "error",
         );
       }
+      return;
+    }
+    if (type === "host_context") {
+      messageHandler?.("hostContext", payload);
       return;
     }
     if (messageHandler) {
@@ -461,7 +583,21 @@ function IsolatedRendererApp() {
             ...prev,
             isDark: themePayload.isDark ?? prev.isDark,
           }));
-          updateDocumentTheme(themePayload.isDark ?? state.isDark, themePayload.colorTheme);
+          updateDocumentTheme(
+            themePayload.isDark ?? document.documentElement.classList.contains("dark"),
+            themePayload.colorTheme,
+          );
+        }
+        break;
+      }
+      case "hostContext": {
+        const hostContext = payload as Partial<NteractEmbedHostContext>;
+        applyHostContext(hostContext);
+        if (hostContext.theme === "light" || hostContext.theme === "dark") {
+          setState((prev) => ({
+            ...prev,
+            isDark: hostContext.theme === "dark",
+          }));
         }
         break;
       }

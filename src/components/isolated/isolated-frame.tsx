@@ -1,11 +1,25 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { IframeToParentMessage, ParentToIframeMessage, RenderPayload } from "./frame-bridge";
 import { isIframeMessage } from "./frame-bridge";
 import { logIsolatedDiagnostic, rendererBundleDetails } from "./diagnostics";
 import { generateFrameHtml } from "./frame-html";
+import type { NteractEmbedContainerDimensions, NteractEmbedHostContext } from "./host-context";
+import { createNteractEmbedHostContext, mergeNteractEmbedHostContext } from "./host-context";
 import { useIsolatedRenderer } from "./isolated-renderer-context";
 import { JsonRpcTransport } from "./jsonrpc-transport";
 import {
+  MCP_NOTIFICATIONS_MESSAGE,
+  MCP_UI_HOST_CONTEXT_CHANGED,
+  MCP_UI_RESOURCE_TEARDOWN,
+  MCP_UI_SIZE_CHANGED,
   NTERACT_BRIDGE_READY,
   NTERACT_CLEAR_OUTPUTS,
   NTERACT_COMM_CLOSE,
@@ -67,6 +81,13 @@ export interface IsolatedFrameProps {
    * Passed to the iframe as `data-color-theme` attribute.
    */
   colorTheme?: string;
+
+  /**
+   * Additional host context to expose to the iframe. Shape intentionally
+   * mirrors MCP Apps HostContext so external hosts can embed nteract with
+   * minimal theming and sizing glue.
+   */
+  hostContext?: Partial<NteractEmbedHostContext>;
 
   /**
    * Minimum height of the iframe in pixels.
@@ -196,6 +217,11 @@ export interface IsolatedFrameHandle {
   setTheme: (isDark: boolean, colorTheme?: string | null) => void;
 
   /**
+   * Merge host-context fields into the iframe's current embed context.
+   */
+  setHostContext: (hostContext: Partial<NteractEmbedHostContext>) => void;
+
+  /**
    * Clear all content in the iframe.
    */
   clear: () => void;
@@ -267,6 +293,47 @@ function isTauriRuntime(): boolean {
   return "__TAURI_INTERNALS__" in globalWindow || "__TAURI__" in globalWindow;
 }
 
+function iframeContainerDimensions(
+  iframe: HTMLIFrameElement | null,
+  autoHeight: boolean,
+  maxHeight: number,
+): NteractEmbedContainerDimensions | undefined {
+  const dimensions: NteractEmbedContainerDimensions = {};
+  const width = iframe ? Math.round(iframe.getBoundingClientRect().width) : 0;
+  if (width > 0) {
+    dimensions.width = width;
+  }
+  if (!autoHeight && Number.isFinite(maxHeight)) {
+    dimensions.maxHeight = maxHeight;
+  }
+  return Object.keys(dimensions).length > 0 ? dimensions : undefined;
+}
+
+function sameContainerDimensions(
+  a: NteractEmbedContainerDimensions | undefined,
+  b: NteractEmbedContainerDimensions | undefined,
+): boolean {
+  return (
+    (a?.width ?? null) === (b?.width ?? null) &&
+    (a?.maxWidth ?? null) === (b?.maxWidth ?? null) &&
+    (a?.height ?? null) === (b?.height ?? null) &&
+    (a?.maxHeight ?? null) === (b?.maxHeight ?? null)
+  );
+}
+
+function diagnosticLevelFromMcpLog(level: string | undefined): "debug" | "info" | "warn" | "error" {
+  if (level === "error" || level === "critical" || level === "alert" || level === "emergency") {
+    return "error";
+  }
+  if (level === "warning") {
+    return "warn";
+  }
+  if (level === "notice" || level === "info") {
+    return "info";
+  }
+  return "debug";
+}
+
 /**
  * IsolatedFrame component - Renders untrusted content in a secure iframe.
  *
@@ -307,6 +374,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       initialContent,
       darkMode = true,
       colorTheme,
+      hostContext,
       minHeight = 24,
       maxHeight = 2000,
       autoHeight = false,
@@ -342,7 +410,14 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     // Use ref to track ready state for send callback (avoids stale closure)
     const isReadyRef = useRef(false);
     const [height, setHeight] = useState(minHeight);
+    const displayHeightRef = useRef(minHeight);
     const measuredHeightRef = useRef(minHeight);
+    const [containerDimensions, setContainerDimensions] = useState<
+      NteractEmbedContainerDimensions | undefined
+    >(undefined);
+    const [imperativeHostContext, setImperativeHostContext] = useState<
+      Partial<NteractEmbedHostContext>
+    >({});
     // Track if content has been rendered (for revealOnRender mode)
     const [isContentRendered, setIsContentRendered] = useState(false);
     // Track if the iframe is reloading (DOM move caused browser to tear down)
@@ -390,6 +465,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       },
       [id, name],
     );
+    const logFrameDiagnosticRef = useRef(logFrameDiagnostic);
 
     // Sync refs during render so effects always see the latest callbacks.
     onReadyRef.current = onReady;
@@ -401,6 +477,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     onErrorRef.current = onError;
     onMessageRef.current = onMessage;
     allowWheelBoundaryScrollRef.current = allowWheelBoundaryScroll;
+    logFrameDiagnosticRef.current = logFrameDiagnostic;
 
     const applyMeasuredHeight = useCallback(
       (contentHeight: number) => {
@@ -408,6 +485,10 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         const newHeight = autoHeight
           ? Math.max(minHeight, contentHeight)
           : Math.max(minHeight, Math.min(maxHeight, contentHeight));
+        if (displayHeightRef.current === newHeight) {
+          return;
+        }
+        displayHeightRef.current = newHeight;
         setHeight(newHeight);
         onResizeRef.current?.(newHeight);
       },
@@ -428,9 +509,60 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       }
     }, []);
 
-    // Send theme as soon as iframe is ready (before renderer bootstrap).
-    // Once the renderer transport is active, prefer JSON-RPC so live theme
-    // changes follow the same path as other renderer updates.
+    useEffect(() => {
+      const iframe = iframeRef.current;
+      if (!iframe) return;
+
+      const updateContainerDimensions = () => {
+        const next = iframeContainerDimensions(iframe, autoHeight, maxHeight);
+        setContainerDimensions((prev) => (sameContainerDimensions(prev, next) ? prev : next));
+      };
+
+      updateContainerDimensions();
+      const observer = new ResizeObserver(updateContainerDimensions);
+      observer.observe(iframe);
+      window.addEventListener("resize", updateContainerDimensions);
+      return () => {
+        observer.disconnect();
+        window.removeEventListener("resize", updateContainerDimensions);
+      };
+    }, [autoHeight, frameDocument, maxHeight]);
+
+    const resolvedHostContext = useMemo(
+      () =>
+        mergeNteractEmbedHostContext(
+          createNteractEmbedHostContext({
+            isDark: darkMode,
+            colorTheme: colorTheme ?? null,
+            containerDimensions,
+          }),
+          hostContext,
+          imperativeHostContext,
+        ),
+      [colorTheme, containerDimensions, darkMode, hostContext, imperativeHostContext],
+    );
+
+    const postLegacyHostContext = useCallback((context: NteractEmbedHostContext) => {
+      iframeRef.current?.contentWindow?.postMessage(
+        { type: "host_context", payload: context },
+        "*",
+      );
+    }, []);
+
+    const notifyHostContext = useCallback(
+      (context: NteractEmbedHostContext) => {
+        if (rpcRef.current && isReadyRef.current) {
+          rpcRef.current.notify(MCP_UI_HOST_CONTEXT_CHANGED, context);
+        } else {
+          postLegacyHostContext(context);
+        }
+      },
+      [postLegacyHostContext],
+    );
+
+    // Send theme and host context as soon as iframe is ready (before renderer
+    // bootstrap). Once the renderer transport is active, prefer JSON-RPC so
+    // live changes follow the same path as other renderer updates.
     useEffect(() => {
       if (isIframeReady && iframeRef.current?.contentWindow) {
         const payload = { isDark: darkMode, colorTheme: colorTheme ?? null };
@@ -439,8 +571,9 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         } else {
           iframeRef.current.contentWindow.postMessage({ type: "theme", payload }, "*");
         }
+        notifyHostContext(resolvedHostContext);
       }
-    }, [darkMode, colorTheme, isIframeReady, isReady]);
+    }, [darkMode, colorTheme, isIframeReady, isReady, notifyHostContext, resolvedHostContext]);
 
     // Keep ref in sync with state (ref avoids stale closures in callbacks)
     useEffect(() => {
@@ -587,6 +720,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
               // Register handlers for JSON-RPC messages from iframe
               transport.onNotification(NTERACT_RENDERER_READY, () => {
                 logFrameDiagnostic("renderer-ready");
+                isReadyRef.current = true;
                 setIsReady(true);
                 setIsReloading(false);
                 onReadyRef.current?.();
@@ -596,6 +730,17 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
               });
               transport.onNotification(NTERACT_RESIZE, (params) => {
                 const p = params as { height?: number };
+                if (p.height != null) {
+                  applyMeasuredHeight(p.height);
+                }
+              });
+              transport.onNotification(MCP_UI_SIZE_CHANGED, (params) => {
+                const p = params as { height?: number; width?: number };
+                logFrameDiagnostic("size-changed", {
+                  height: p.height ?? null,
+                  width: p.width ?? null,
+                  protocol: "mcp-ui",
+                });
                 if (p.height != null) {
                   applyMeasuredHeight(p.height);
                 }
@@ -689,6 +834,22 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
                   },
                 });
               });
+              transport.onNotification(MCP_NOTIFICATIONS_MESSAGE, (params) => {
+                const p = params as {
+                  level?: string;
+                  logger?: string;
+                  data?: unknown;
+                };
+                logFrameDiagnostic(
+                  "iframe-log-message",
+                  {
+                    logger: p.logger ?? null,
+                    data: p.data ?? null,
+                    protocol: "mcp-ui",
+                  },
+                  diagnosticLevelFromMcpLog(p.level),
+                );
+              });
               transport.start();
               rpcRef.current = transport;
             }
@@ -698,6 +859,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
           case "renderer_ready":
             // React renderer bundle is initialized
             logFrameDiagnostic("renderer-ready");
+            isReadyRef.current = true;
             setIsReady(true);
             setIsReloading(false);
             onReadyRef.current?.();
@@ -779,7 +941,28 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     // Clean up JSON-RPC transport on unmount
     useEffect(() => {
       return () => {
-        rpcRef.current?.stop();
+        const transport = rpcRef.current;
+        rpcRef.current = null;
+        if (!transport) return;
+
+        let stopped = false;
+        const stopTransport = () => {
+          if (stopped) return;
+          stopped = true;
+          transport.stop();
+        };
+
+        transport
+          .request(MCP_UI_RESOURCE_TEARDOWN, { reason: "unmount" })
+          .catch((err) => {
+            logFrameDiagnosticRef.current(
+              "resource-teardown-failed",
+              { message: err instanceof Error ? err.message : String(err) },
+              "debug",
+            );
+          })
+          .finally(stopTransport);
+        window.setTimeout(stopTransport, 100);
       };
     }, []);
 
@@ -882,6 +1065,9 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         },
         setTheme: (isDark: boolean, colorTheme?: string | null) =>
           send({ type: "theme", payload: { isDark, colorTheme } }),
+        setHostContext: (nextHostContext: Partial<NteractEmbedHostContext>) => {
+          setImperativeHostContext((prev) => mergeNteractEmbedHostContext(prev, nextHostContext));
+        },
         clear: () => send({ type: "clear" }),
         search: (query: string, caseSensitive?: boolean) => {
           // Search handler is in bootstrap HTML, so send directly when iframe is loaded
