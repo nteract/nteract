@@ -16,6 +16,7 @@
  */
 
 import type { IsolatedFrameHandle } from "@/components/isolated/isolated-frame";
+import { logIsolatedDiagnostic } from "@/components/isolated/diagnostics";
 import { isVegaMimeType } from "@/components/outputs/vega-mime";
 
 interface PluginModule {
@@ -104,9 +105,16 @@ export async function injectPluginsForMimes(
     if (injectedSet.has(mime)) continue;
     const plugin = await loadPluginForMime(mime);
     if (!plugin) continue;
-    console.debug(
-      `[iframe-libraries] installing renderer plugin for "${mime}" (${(plugin.code.length / 1024).toFixed(0)}KB)`,
-    );
+    logIsolatedDiagnostic({
+      source: "iframe-libraries",
+      phase: "renderer-plugin-install-dispatch",
+      details: {
+        mime,
+        codeLength: plugin.code.length,
+        hasCss: plugin.css !== undefined,
+        cssLength: plugin.css?.length ?? 0,
+      },
+    });
     frame.installRenderer(plugin.code, plugin.css);
     injectedSet.add(mime);
   }

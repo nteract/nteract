@@ -1,6 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { IframeToParentMessage, ParentToIframeMessage, RenderPayload } from "./frame-bridge";
 import { isIframeMessage } from "./frame-bridge";
+import { logIsolatedDiagnostic, rendererBundleDetails } from "./diagnostics";
 import { generateFrameHtml } from "./frame-html";
 import { useIsolatedRenderer } from "./isolated-renderer-context";
 import { JsonRpcTransport } from "./jsonrpc-transport";
@@ -10,6 +11,7 @@ import {
   NTERACT_COMM_CLOSE,
   NTERACT_COMM_MSG,
   NTERACT_COMM_OPEN,
+  NTERACT_DIAGNOSTIC,
   NTERACT_WIDGET_SNAPSHOT,
   NTERACT_DOUBLE_CLICK,
   NTERACT_ERROR,
@@ -351,6 +353,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     const pendingMessagesRef = useRef<ParentToIframeMessage[]>([]);
     // Track if we've started bootstrapping to avoid double-fetch
     const bootstrappingRef = useRef(false);
+    const frameGenerationRef = useRef(0);
     // Track whether the iframe has sent a "ready" message before.
     // Any subsequent "ready" is a reload that needs the toggle trick.
     const hasReceivedReadyRef = useRef(false);
@@ -366,6 +369,27 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     const onErrorRef = useRef(onError);
     const onMessageRef = useRef(onMessage);
     const allowWheelBoundaryScrollRef = useRef(allowWheelBoundaryScroll);
+
+    const logFrameDiagnostic = useCallback(
+      (
+        phase: string,
+        details: Record<string, unknown> = {},
+        level: "debug" | "info" | "warn" | "error" = "debug",
+      ) => {
+        logIsolatedDiagnostic({
+          source: "isolated-frame",
+          phase,
+          level,
+          details: {
+            frameId: id ?? null,
+            frameName: name ?? null,
+            generation: frameGenerationRef.current,
+            ...details,
+          },
+        });
+      },
+      [id, name],
+    );
 
     // Sync refs during render so effects always see the latest callbacks.
     onReadyRef.current = onReady;
@@ -426,6 +450,11 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     // Surface provider errors to consumers
     useEffect(() => {
       if (providerError && !providerLoading) {
+        logFrameDiagnostic(
+          "renderer-bundle-provider-error",
+          { message: providerError.message, stack: providerError.stack },
+          "error",
+        );
         onErrorRef.current?.({
           message: providerError.message,
           stack: providerError.stack,
@@ -507,6 +536,11 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
             // the browser to tear down and reload the iframe).
             const isReload = hasReceivedReadyRef.current;
             hasReceivedReadyRef.current = true;
+            frameGenerationRef.current += 1;
+            logFrameDiagnostic("bootstrap-ready", {
+              isReload,
+              ...rendererBundleDetails(rendererCode, rendererCss),
+            });
 
             if (isReload) {
               // Reset bootstrap state so the renderer gets re-injected.
@@ -552,6 +586,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
               );
               // Register handlers for JSON-RPC messages from iframe
               transport.onNotification(NTERACT_RENDERER_READY, () => {
+                logFrameDiagnostic("renderer-ready");
                 setIsReady(true);
                 setIsReloading(false);
                 onReadyRef.current?.();
@@ -567,6 +602,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
               });
               transport.onNotification(NTERACT_RENDER_COMPLETE, (params) => {
                 const p = params as { height?: number };
+                logFrameDiagnostic("render-complete", { height: p.height ?? null });
                 if (p.height != null) {
                   setIsContentRendered(true);
                   applyMeasuredHeight(p.height);
@@ -599,6 +635,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
               transport.onNotification(NTERACT_ERROR, (params) => {
                 const p = params as { message: string; stack?: string };
                 if (p.message) {
+                  logFrameDiagnostic("renderer-error", p, "error");
                   onErrorRef.current?.(p);
                 }
               });
@@ -632,6 +669,26 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
                   payload: params,
                 } as IframeToParentMessage);
               });
+              transport.onNotification(NTERACT_DIAGNOSTIC, (params) => {
+                const p = params as {
+                  source?: "isolated-frame" | "isolated-renderer" | "iframe-libraries";
+                  phase?: string;
+                  level?: "debug" | "info" | "warn" | "error";
+                  details?: Record<string, unknown>;
+                };
+                if (!p.phase) return;
+                logIsolatedDiagnostic({
+                  source: p.source ?? "isolated-renderer",
+                  phase: p.phase,
+                  level: p.level,
+                  details: {
+                    frameId: id ?? null,
+                    frameName: name ?? null,
+                    generation: frameGenerationRef.current,
+                    ...p.details,
+                  },
+                });
+              });
               transport.start();
               rpcRef.current = transport;
             }
@@ -640,6 +697,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
 
           case "renderer_ready":
             // React renderer bundle is initialized
+            logFrameDiagnostic("renderer-ready");
             setIsReady(true);
             setIsReloading(false);
             onReadyRef.current?.();
@@ -661,6 +719,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
           case "render_complete":
             // Content has been rendered - reveal iframe if in revealOnRender mode
             if (data.payload?.height != null) {
+              logFrameDiagnostic("render-complete", { height: data.payload.height });
               setIsContentRendered(true);
               applyMeasuredHeight(data.payload.height);
             }
@@ -692,6 +751,11 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
             // Surface bundle eval failures to help diagnose injection issues
             if (data.payload?.success === false) {
               console.error("[IsolatedFrame] Bundle eval failed:", data.payload.error);
+              logFrameDiagnostic(
+                "renderer-bundle-eval-failed",
+                { error: data.payload.error },
+                "error",
+              );
               onErrorRef.current?.({
                 message: `Bundle eval failed: ${data.payload.error}`,
               });
@@ -702,7 +766,15 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
 
       window.addEventListener("message", handleMessage);
       return () => window.removeEventListener("message", handleMessage);
-    }, [initialContent, applyMeasuredHeight]);
+    }, [
+      initialContent,
+      applyMeasuredHeight,
+      id,
+      name,
+      rendererCode,
+      rendererCss,
+      logFrameDiagnostic,
+    ]);
 
     // Clean up JSON-RPC transport on unmount
     useEffect(() => {
@@ -711,17 +783,43 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       };
     }, []);
 
+    useEffect(() => {
+      if (!isIframeReady || isReady || bootstrappingRef.current) return;
+      if (rendererCode !== undefined && rendererCss !== undefined) return;
+      const timer = window.setTimeout(() => {
+        logFrameDiagnostic("renderer-bundle-pending", {
+          providerLoading,
+          providerError: providerError?.message ?? null,
+          ...rendererBundleDetails(rendererCode, rendererCss),
+        });
+      }, 1500);
+
+      return () => window.clearTimeout(timer);
+    }, [
+      isIframeReady,
+      isReady,
+      rendererCode,
+      rendererCss,
+      providerLoading,
+      providerError,
+      logFrameDiagnostic,
+    ]);
+
     // Inject renderer when iframe is ready AND bundle props are available
     useEffect(() => {
       if (
         isIframeReady &&
         !isReady &&
         !bootstrappingRef.current &&
-        rendererCode &&
-        rendererCss &&
+        rendererCode !== undefined &&
+        rendererCss !== undefined &&
         iframeRef.current?.contentWindow
       ) {
         bootstrappingRef.current = true;
+        logFrameDiagnostic(
+          "renderer-bundle-injecting",
+          rendererBundleDetails(rendererCode, rendererCss),
+        );
 
         // Inject CSS first (idempotent - checks if already loaded)
         const cssCode = `
@@ -750,20 +848,38 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
           { type: "eval", payload: { code: jsWrapper } },
           "*",
         );
+        logFrameDiagnostic(
+          "renderer-bundle-injected",
+          rendererBundleDetails(rendererCode, rendererCss),
+        );
       }
-    }, [isIframeReady, isReady, rendererCode, rendererCss]);
+    }, [isIframeReady, isReady, rendererCode, rendererCss, logFrameDiagnostic]);
 
     // Expose imperative API
     useImperativeHandle(
       ref,
       () => ({
         send,
-        render: (payload: RenderPayload) => send({ type: "render", payload }),
-        renderBatch: (outputs: RenderPayload[]) =>
-          send({ type: "render_batch", payload: { outputs } }),
+        render: (payload: RenderPayload) => {
+          logFrameDiagnostic("render-dispatched", { mimeType: payload.mimeType });
+          send({ type: "render", payload });
+        },
+        renderBatch: (outputs: RenderPayload[]) => {
+          logFrameDiagnostic("render-batch-dispatched", {
+            outputCount: outputs.length,
+            mimes: outputs.map((output) => output.mimeType),
+          });
+          send({ type: "render_batch", payload: { outputs } });
+        },
         eval: (code: string) => send({ type: "eval", payload: { code } }),
-        installRenderer: (code: string, css?: string) =>
-          send({ type: "install_renderer", payload: { code, css } }),
+        installRenderer: (code: string, css?: string) => {
+          logFrameDiagnostic("renderer-plugin-dispatched", {
+            codeLength: code.length,
+            hasCss: css !== undefined,
+            cssLength: css?.length ?? 0,
+          });
+          send({ type: "install_renderer", payload: { code, css } });
+        },
         setTheme: (isDark: boolean, colorTheme?: string | null) =>
           send({ type: "theme", payload: { isDark, colorTheme } }),
         clear: () => send({ type: "clear" }),
@@ -792,7 +908,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         isReady,
         isIframeReady,
       }),
-      [send, isReady, isIframeReady],
+      [send, isReady, isIframeReady, logFrameDiagnostic],
     );
 
     if (!frameDocument) {

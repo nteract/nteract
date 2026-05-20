@@ -35,6 +35,7 @@ export const NTERACT_WIDGET_STATE = "nteract/widgetState" as const;
 // Host → Iframe (Notifications) — additional
 export const NTERACT_THEME = "nteract/theme" as const;
 export const NTERACT_PING = "nteract/ping" as const;
+export const NTERACT_DIAGNOSTIC = "nteract/diagnostic" as const;
 
 // Iframe → Host (Notifications)
 export const NTERACT_READY = "nteract/ready" as const;
@@ -163,4 +164,11 @@ export interface NteractWidgetUpdateParams {
 
 export interface NteractWheelBoundaryParams {
   deltaY?: number;
+}
+
+export interface NteractDiagnosticParams {
+  source?: "isolated-frame" | "isolated-renderer" | "iframe-libraries";
+  phase: string;
+  level?: "debug" | "info" | "warn" | "error";
+  details?: Record<string, unknown>;
 }

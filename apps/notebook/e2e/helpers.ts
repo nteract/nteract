@@ -40,6 +40,15 @@ export async function ensureCodeCell(page: Page): Promise<Locator> {
   return existing;
 }
 
+export async function ensureMarkdownCell(page: Page): Promise<Locator> {
+  const existing = page.locator('[data-cell-type="markdown"]').first();
+  if ((await existing.count()) > 0) return existing;
+
+  await page.getByTestId("add-markdown-cell-button").click();
+  await expect(existing).toBeVisible({ timeout: 10_000 });
+  return existing;
+}
+
 export async function setCellSource(cell: Locator, source: string) {
   await cell.locator('.cm-content[contenteditable="true"]').evaluate((node, text) => {
     const content = node as HTMLElement & {

@@ -18,9 +18,14 @@ import * as jsxRuntime from "react/jsx-runtime";
 import "./styles.css";
 
 import type { RenderPayload } from "@/components/isolated/frame-bridge";
+import {
+  logIsolatedDiagnostic,
+  type IsolatedDiagnosticLevel,
+} from "@/components/isolated/diagnostics";
 import { JsonRpcTransport } from "@/components/isolated/jsonrpc-transport";
 import {
   NTERACT_CLEAR_OUTPUTS,
+  NTERACT_DIAGNOSTIC,
   NTERACT_INSTALL_RENDERER,
   NTERACT_RENDER_BATCH,
   NTERACT_RENDER_OUTPUT,
@@ -94,8 +99,7 @@ function installRendererPlugin(code: string, css?: string) {
     | undefined;
 
   if (typeof install !== "function") {
-    console.error("[renderer-plugin] Plugin does not export an install() function");
-    return;
+    throw new Error("[renderer-plugin] Plugin does not export an install() function");
   }
 
   install({
@@ -191,6 +195,29 @@ function updateDocumentTheme(isDark: boolean, colorTheme?: string | null) {
 // Global transport for JSON-RPC communication with host
 let rpcTransport: JsonRpcTransport | null = null;
 
+function emitRendererDiagnostic(
+  phase: string,
+  details: Record<string, unknown> = {},
+  level: IsolatedDiagnosticLevel = "debug",
+) {
+  if (rpcTransport) {
+    rpcTransport.notify(NTERACT_DIAGNOSTIC, {
+      source: "isolated-renderer",
+      phase,
+      level,
+      details,
+    });
+    return;
+  }
+
+  logIsolatedDiagnostic({
+    source: "isolated-renderer",
+    phase,
+    level,
+    details,
+  });
+}
+
 /** Get the shared transport instance (available after init()) */
 export function getTransport(): JsonRpcTransport | null {
   return rpcTransport;
@@ -203,14 +230,47 @@ let messageHandler: MessageHandler | null = null;
 const LAYOUT_PULSE_DELAYS_MS = [0, 160, 600];
 let layoutPulseTimers: number[] = [];
 
-function postMeasuredHeight(type: "resize" | "render_complete"): void {
+function renderedRootDetails(expectedOutputCount?: number): Record<string, unknown> {
+  const rootEl = document.getElementById("root");
+  return {
+    expectedOutputCount: expectedOutputCount ?? null,
+    rootChildCount: rootEl?.childElementCount ?? 0,
+    rootHtmlLength: rootEl?.innerHTML.length ?? 0,
+    measuredHeight: measureDocumentHeight(),
+  };
+}
+
+function emitPostPaintRenderDiagnostic(expectedOutputCount?: number): void {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const details = renderedRootDetails(expectedOutputCount);
+      const expectedCount = expectedOutputCount ?? 0;
+      const rootChildCount = Number(details.rootChildCount);
+      const measuredHeight = Number(details.measuredHeight);
+      if (expectedCount > 0 && (rootChildCount <= 0 || measuredHeight <= 1)) {
+        emitRendererDiagnostic("rendered-empty-after-paint", details, "warn");
+      } else {
+        emitRendererDiagnostic("rendered-after-paint", details);
+      }
+    });
+  });
+}
+
+function postMeasuredHeight(
+  type: "resize" | "render_complete",
+  expectedOutputCount?: number,
+): void {
+  const height = measureDocumentHeight();
   window.parent.postMessage(
     {
       type,
-      payload: { height: measureDocumentHeight() },
+      payload: { height },
     },
     "*",
   );
+  if (type === "render_complete") {
+    emitPostPaintRenderDiagnostic(expectedOutputCount);
+  }
 }
 
 function pulseRendererLayout(): void {
@@ -253,13 +313,29 @@ function setupMessageListener() {
   });
   rpcTransport.onNotification(NTERACT_INSTALL_RENDERER, (params) => {
     const { code, css } = params as { code: string; css?: string };
+    emitRendererDiagnostic("renderer-plugin-install-start", {
+      codeLength: code.length,
+      hasCss: css !== undefined,
+      cssLength: css?.length ?? 0,
+    });
     try {
       installRendererPlugin(code, css);
+      emitRendererDiagnostic("renderer-plugin-install-success", {
+        codeLength: code.length,
+        hasCss: css !== undefined,
+        cssLength: css?.length ?? 0,
+      });
     } catch (err) {
       console.error("[renderer-plugin] install failed:", err);
+      emitRendererDiagnostic(
+        "renderer-plugin-install-failed",
+        { message: err instanceof Error ? err.message : String(err) },
+        "error",
+      );
     }
   });
   rpcTransport.start();
+  emitRendererDiagnostic("renderer-transport-ready");
 
   // Legacy listener for any { type, payload } messages that arrive
   // (e.g., during bootstrap before transport is set up on host side)
@@ -273,10 +349,22 @@ function setupMessageListener() {
     const { type, payload } = data || {};
     // Handle install_renderer directly (doesn't need React message handler)
     if (type === "install_renderer" && payload?.code) {
+      emitRendererDiagnostic("renderer-plugin-install-start", {
+        codeLength: String(payload.code).length,
+        hasCss: payload.css !== undefined,
+        cssLength: typeof payload.css === "string" ? payload.css.length : 0,
+        legacy: true,
+      });
       try {
         installRendererPlugin(payload.code, payload.css);
+        emitRendererDiagnostic("renderer-plugin-install-success", { legacy: true });
       } catch (err) {
         console.error("[renderer-plugin] install failed:", err);
+        emitRendererDiagnostic(
+          "renderer-plugin-install-failed",
+          { legacy: true, message: err instanceof Error ? err.message : String(err) },
+          "error",
+        );
       }
       return;
     }
@@ -326,7 +414,7 @@ function IsolatedRendererApp() {
 
         // Notify parent of render completion after next paint
         requestAnimationFrame(() => {
-          postMeasuredHeight("render_complete");
+          postMeasuredHeight("render_complete", 1);
         });
         scheduleRendererLayoutPulses();
         break;
@@ -346,9 +434,13 @@ function IsolatedRendererApp() {
           payload: p,
         }));
         setState((prev) => ({ ...prev, outputs: entries }));
+        emitRendererDiagnostic("render-batch-received", {
+          outputCount: entries.length,
+          mimes: entries.map((entry) => entry.payload.mimeType),
+        });
 
         requestAnimationFrame(() => {
-          postMeasuredHeight("render_complete");
+          postMeasuredHeight("render_complete", entries.length);
         });
         scheduleRendererLayoutPulses();
         break;
@@ -357,7 +449,7 @@ function IsolatedRendererApp() {
       case "clear":
         setState((prev) => ({ ...prev, outputs: [] }));
         requestAnimationFrame(() => {
-          postMeasuredHeight("render_complete");
+          postMeasuredHeight("render_complete", 0);
         });
         scheduleRendererLayoutPulses();
         break;
@@ -559,6 +651,7 @@ declare global {
 }
 
 export function init() {
+  emitRendererDiagnostic("renderer-init-start");
   // Signal to the inline handler that React is taking over
   // This prevents the inline handler from processing render/theme/clear messages
   window.__REACT_RENDERER_ACTIVE__ = true;
@@ -605,6 +698,7 @@ export function init() {
 
   document.addEventListener("fullscreenchange", scheduleRendererLayoutPulses);
   document.addEventListener("webkitfullscreenchange", scheduleRendererLayoutPulses);
+  emitRendererDiagnostic("renderer-init-complete");
 
   // Note: "renderer_ready" is sent from the React component's useEffect
   // to ensure the message handler is registered before parent sends messages
