@@ -1,6 +1,7 @@
 import { expect, test, type Locator } from "@playwright/test";
 import {
   ensureCodeCell,
+  ensureMarkdownCell,
   executeCell,
   openNotebookRoom,
   setCellSource,
@@ -51,7 +52,75 @@ test.describe("isolated rich output rendering", () => {
     await expect.poll(() => isolatedRootHeight(cell), { timeout: 30_000 }).toBeGreaterThan(20);
 
     expect(isolatedLogs.join("\n")).not.toContain("rendered-empty-after-paint");
+    expect(isolatedLogs.join("\n")).not.toContain("renderer-bundle-pending");
     expect(isolatedLogs.join("\n")).not.toContain("renderer-error");
+  });
+
+  test("renders markdown cells and markdown outputs in isolated iframes", async ({ page }) => {
+    test.setTimeout(180_000);
+
+    const isolatedLogs: string[] = [];
+    page.on("console", (message) => {
+      const text = message.text();
+      if (
+        text.includes("[isolated-frame]") ||
+        text.includes("[isolated-renderer]") ||
+        text.includes("[iframe-libraries]") ||
+        text.includes("[MarkdownCell]") ||
+        text.includes("[OutputArea]")
+      ) {
+        isolatedLogs.push(`[${message.type()}] ${text}`);
+      }
+    });
+
+    const notebookId = crypto.randomUUID();
+    await openNotebookRoom(page, notebookId);
+    await waitForKernelStatus(page, "idle", 120_000);
+
+    const markdownCell = await ensureMarkdownCell(page);
+    await setCellSource(
+      markdownCell,
+      "# Rendered Markdown Cell\n\nThis is **bold** markdown.\n\n- cell item",
+    );
+    const markdownEditor = markdownCell.locator('.cm-content[contenteditable="true"]');
+    await markdownEditor.click();
+    await markdownEditor.press("Control+Enter");
+
+    const markdownFrame = markdownCell.frameLocator('[data-slot="isolated-frame"]');
+    await expect(markdownFrame.locator("body")).toContainText("Rendered Markdown Cell", {
+      timeout: 60_000,
+    });
+    await expect(markdownFrame.locator("body")).toContainText("cell item", {
+      timeout: 60_000,
+    });
+    await expect
+      .poll(() => isolatedRootHeight(markdownCell), { timeout: 30_000 })
+      .toBeGreaterThan(20);
+
+    const codeCell = await ensureCodeCell(page);
+    await setCellSource(
+      codeCell,
+      [
+        "from IPython.display import Markdown, display",
+        'display(Markdown("# Markdown Output\\n\\n- output item"))',
+      ].join("\n"),
+    );
+    await executeCell(codeCell);
+    await waitForKernelStatus(page, "idle", 120_000);
+
+    const outputFrame = codeCell.frameLocator('[data-slot="isolated-frame"]');
+    await expect(outputFrame.locator("body")).toContainText("Markdown Output", {
+      timeout: 60_000,
+    });
+    await expect(outputFrame.locator("body")).toContainText("output item", {
+      timeout: 60_000,
+    });
+    await expect.poll(() => isolatedRootHeight(codeCell), { timeout: 30_000 }).toBeGreaterThan(20);
+
+    const logs = isolatedLogs.join("\n");
+    expect(logs).not.toContain("rendered-empty-after-paint");
+    expect(logs).not.toContain("renderer-bundle-pending");
+    expect(logs).not.toContain("renderer-error");
   });
 });
 
