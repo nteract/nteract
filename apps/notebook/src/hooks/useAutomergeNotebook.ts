@@ -1,4 +1,4 @@
-import { useNotebookHost, type DaemonReadyPayload } from "@nteract/notebook-host";
+import { useNotebookHost } from "@nteract/notebook-host";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NotebookTransport, SessionStatus, SyncableHandle } from "runtimed";
 import {
@@ -8,7 +8,7 @@ import {
   isInitialLoadFailed,
   isInitialLoadStreaming,
 } from "runtimed";
-import { concatMap, from, Observable, switchMap } from "rxjs";
+import { concatMap, from, Observable } from "rxjs";
 import { needsPlugin, preWarmForMimes } from "@/components/isolated/iframe-libraries";
 import {
   getBlobPort,
@@ -43,6 +43,7 @@ import { emitBroadcast, emitPresence } from "../lib/notebook-frame-bus";
 import { notifyMetadataChanged, setNotebookHandle } from "../lib/notebook-metadata";
 import { type PoolState, resetPoolState, setPoolState } from "../lib/pool-state";
 import { resetRuntimeState, setRuntimeState, useRuntimeState } from "../lib/runtime-state";
+import { startRelayBootstrapCoordinator } from "../lib/relay-bootstrap";
 import type { JupyterOutput, NotebookCell } from "../types";
 import init, {
   encode_heartbeat_presence,
@@ -251,14 +252,7 @@ export function useAutomergeNotebook() {
 
   const notifyRelayReady = useCallback(
     (relayGeneration?: number) => {
-      if (relayGeneration === undefined) {
-        logger.debug(
-          "[automerge-notebook] Signaling relay ready without a relay generation; active gates will reject it",
-        );
-      }
-      return host.relay
-        .notifySyncReady(relayGeneration)
-        .catch((e: unknown) => logger.warn("[automerge-notebook] Failed to signal sync ready:", e));
+      return host.relay.notifySyncReady(relayGeneration);
     },
     [host.relay],
   );
@@ -398,65 +392,43 @@ export function useAutomergeNotebook() {
     // Pool state → store.
     const poolStateSub = engine.poolState$.subscribe((state) => setPoolState(state as PoolState));
 
-    // ── Bootstrap ─────────────────────────────────────────────────
+    // ── Bootstrap / daemon lifecycle ─────────────────────────────
 
-    setIsLoading(true);
-    void host.daemon
-      .getReadyInfo()
-      .catch(() => null)
-      .then((readyInfo) =>
-        bootstrap(() => cancelled).then((bootstrapped) => ({ bootstrapped, readyInfo })),
-      )
-      .then((bootstrapped) => {
-        if (!bootstrapped.bootstrapped || cancelled) return;
-        // Signal the Rust relay only after the WASM handle exists and the
-        // bootstrap reset has run. Otherwise buffered daemon frames can mark
-        // the session interactive, then resetForBootstrap() emits pending
-        // afterward with no later status frame to recover.
-        return notifyRelayReady(bootstrapped.readyInfo?.relay_generation);
-      })
-      .catch((error) => {
+    const relayBootstrap = startRelayBootstrapCoordinator({
+      onReady: host.daemonEvents.onReady,
+      requiresReadyGeneration: host.relay.requiresReadyGeneration,
+      beforeBootstrap: (trigger) => {
+        if (trigger.kind !== "ready") return;
+
+        logger.info("[automerge-notebook] daemon:ready — bootstrapping relay generation");
+        refreshBlobPort();
+        resetNotebookCells();
+        resetRuntimeState();
+        resetRuntimeStoresProjection();
+        resetPoolState();
+        setCanAcceptCellMutations(false);
+        outputCacheRef.current.clear();
+        setIsLoading(true);
+        setLoadError(null);
+      },
+      bootstrap: (isCancelled) => bootstrap(() => cancelled || isCancelled()),
+      notifyRelayReady,
+      onMissingGeneration: () => {
+        logger.debug(
+          "[automerge-notebook] daemon:ready payload had no relay generation; relay ack skipped",
+        );
+      },
+      onBootstrapError: (error) => {
         logger.error("[automerge-notebook] Bootstrap failed", error);
         if (!cancelled) {
           setLoadError(error instanceof Error ? error.message : String(error));
           setIsLoading(false);
         }
-      });
-
-    // ── Daemon lifecycle ─────────────────────────────────────────
-
-    const lifecycleSub = new Observable<DaemonReadyPayload>((subscriber) =>
-      host.daemonEvents.onReadyLive((payload) => subscriber.next(payload)),
-    )
-      .pipe(
-        switchMap((readyPayload) => {
-          logger.info("[automerge-notebook] daemon:ready — re-bootstrapping");
-          refreshBlobPort();
-          resetNotebookCells();
-          resetRuntimeState();
-          resetRuntimeStoresProjection();
-          resetPoolState();
-          setCanAcceptCellMutations(false);
-          outputCacheRef.current.clear();
-          setIsLoading(true);
-          setLoadError(null);
-          return from(
-            bootstrap(() => cancelled)
-              .then((bootstrapped) => {
-                if (!bootstrapped || cancelled) return;
-                return notifyRelayReady(readyPayload.relay_generation);
-              })
-              .catch((err: unknown) => {
-                logger.error("[automerge-notebook] lifecycle bootstrap failed:", err);
-                if (!cancelled) {
-                  setLoadError(err instanceof Error ? err.message : String(err));
-                  setIsLoading(false);
-                }
-              }),
-          );
-        }),
-      )
-      .subscribe();
+      },
+      onNotifyError: (error) => {
+        logger.warn("[automerge-notebook] Failed to signal sync ready:", error);
+      },
+    });
 
     return () => {
       cancelled = true;
@@ -480,7 +452,7 @@ export function useAutomergeNotebook() {
       executionViewSub.unsubscribe();
       outputIdChangesSub.unsubscribe();
       poolStateSub.unsubscribe();
-      lifecycleSub.unsubscribe();
+      relayBootstrap.stop();
 
       engineRef.current = null;
       transportRef.current = null;

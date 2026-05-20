@@ -476,6 +476,7 @@ export async function createBrowserHost(
       },
     },
     relay: {
+      requiresReadyGeneration: false,
       async notifySyncReady() {
         transport.releaseFrames();
       },

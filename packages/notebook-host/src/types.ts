@@ -195,6 +195,16 @@ export interface HostDaemonEvents {
  */
 export interface HostRelay {
   /**
+   * Whether `notifySyncReady` must carry the daemon's current relay generation.
+   *
+   * Tauri buffers frames behind a generation-specific gate so a stale webview
+   * cannot release frames for a newer daemon session. The browser dev relay has
+   * only a per-WebSocket local queue; its ready payload has no generation and
+   * the ack simply releases frames after the frontend bootstrap path is wired.
+   */
+  readonly requiresReadyGeneration: boolean;
+
+  /**
    * Signal that the JS frame listener is attached and the Tauri-side
    * relay may replay any buffered frames. Matches the existing
    * `notify_sync_ready` Tauri command. No-op in hosts where the main
