@@ -140,6 +140,7 @@ export class IsolatedFrameRuntime {
   private iframeReady = false;
   private lastHostContextDelivery: { channel: "legacy" | "rpc"; key: string } | null = null;
   private disposed = false;
+  private rendererReadyChannels = new Set<"legacy" | "rpc">();
 
   generation = 0;
 
@@ -155,6 +156,10 @@ export class IsolatedFrameRuntime {
 
   get isIframeReady(): boolean {
     return this.iframeReady;
+  }
+
+  activate(): void {
+    this.disposed = false;
   }
 
   send(message: ParentToIframeMessage): void {
@@ -198,12 +203,9 @@ export class IsolatedFrameRuntime {
     if (this.disposed) {
       return;
     }
-    const message: ParentToIframeMessage = { type: "theme", payload: { isDark, colorTheme } };
-    if (this.transport && this.ready) {
-      this.deliver(message);
-    } else {
-      this.postLegacy(message);
-    }
+    // The bootstrap document handles nteract/theme before the React renderer is
+    // active, so theme can use JSON-RPC as soon as the bootstrap transport exists.
+    this.deliver({ type: "theme", payload: { isDark, colorTheme } });
   }
 
   notifyHostContext(context: NteractEmbedHostContext): void {
@@ -332,6 +334,7 @@ export class IsolatedFrameRuntime {
     this.ready = false;
     this.iframeReady = false;
     this.pendingMessages.length = 0;
+    this.rendererReadyChannels.clear();
     if (!transport) return;
 
     let stopped = false;
@@ -453,6 +456,7 @@ export class IsolatedFrameRuntime {
     this.generation += 1;
     this.iframeReady = true;
     this.lastHostContextDelivery = null;
+    this.rendererReadyChannels.clear();
     this.callbacks.onDiagnostic("bootstrap-ready", {
       isReload,
       ...rendererBundleDetails(bundle.rendererCode, bundle.rendererCss),
@@ -597,20 +601,34 @@ export class IsolatedFrameRuntime {
   }
 
   private handleRendererReady(channel: "legacy" | "rpc", transport = this.transport): void {
-    if (this.disposed || this.ready || (channel === "rpc" && transport !== this.transport)) {
+    if (
+      this.disposed ||
+      this.rendererReadyChannels.has(channel) ||
+      (channel === "rpc" && transport !== this.transport)
+    ) {
       return;
     }
-    this.callbacks.onDiagnostic("renderer-ready");
-    this.ready = true;
-    this.callbacks.onRendererReady();
+    const wasReady = this.ready;
+    this.rendererReadyChannels.add(channel);
+
+    if (!wasReady) {
+      this.callbacks.onDiagnostic("renderer-ready", { channel });
+      this.ready = true;
+      this.callbacks.onRendererReady();
+    } else {
+      this.callbacks.onDiagnostic("renderer-ready-channel-upgrade", { channel });
+    }
+
     const initialContent = this.getInitialContent();
-    if (initialContent) {
+    if (initialContent && (!wasReady || channel === "rpc")) {
       if (channel === "rpc" && transport) {
         transport.notify(NTERACT_RENDER_OUTPUT, initialContent);
       } else {
         this.postLegacy({ type: "render", payload: initialContent });
       }
     }
-    this.flushPending();
+    if (!wasReady) {
+      this.flushPending();
+    }
   }
 }

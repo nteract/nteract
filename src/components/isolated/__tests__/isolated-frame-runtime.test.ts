@@ -134,7 +134,7 @@ describe("IsolatedFrameRuntime", () => {
     expect(transport.notify).toHaveBeenCalledWith(MCP_UI_HOST_CONTEXT_CHANGED, context);
   });
 
-  it("keeps theme on the legacy bootstrap path until the renderer is ready", () => {
+  it("sends theme over JSON-RPC once the bootstrap transport is available", () => {
     const { frameWindow, runtime } = createRuntime();
 
     runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }), {});
@@ -142,19 +142,14 @@ describe("IsolatedFrameRuntime", () => {
 
     runtime.setTheme(true, "dark-theme");
 
-    expect(transport.notify).not.toHaveBeenCalledWith(NTERACT_THEME, expect.anything());
-    expect(frameWindow.postMessage).toHaveBeenCalledWith(
+    expect(transport.notify).toHaveBeenCalledWith(NTERACT_THEME, {
+      isDark: true,
+      colorTheme: "dark-theme",
+    });
+    expect(frameWindow.postMessage).not.toHaveBeenCalledWith(
       { type: "theme", payload: { isDark: true, colorTheme: "dark-theme" } },
       "*",
     );
-
-    transport.notificationHandlers.get(NTERACT_RENDERER_READY)?.({});
-    runtime.setTheme(false, "light-theme");
-
-    expect(transport.notify).toHaveBeenCalledWith(NTERACT_THEME, {
-      isDark: false,
-      colorTheme: "light-theme",
-    });
   });
 
   it("recreates transport and reports reloads on a second bootstrap ready", () => {
@@ -204,6 +199,32 @@ describe("IsolatedFrameRuntime", () => {
     transport.notificationHandlers.get(NTERACT_RENDERER_READY)?.({});
 
     expect(callbacks.onRendererReady).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows JSON-RPC renderer-ready to deliver initial content after legacy ready", () => {
+    const initialContent: RenderPayload = {
+      mimeType: "text/markdown",
+      data: "# Initial content",
+    };
+    const { callbacks, frameWindow, runtime } = createRuntime(initialContent);
+
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }), {});
+    const transport = MockJsonRpcTransport.instances[0];
+    runtime.handleWindowMessage(
+      frameMessage(frameWindow, { type: "renderer_ready", payload: null }),
+      {},
+    );
+
+    expect(callbacks.onRendererReady).toHaveBeenCalledTimes(1);
+    expect(frameWindow.postMessage).toHaveBeenCalledWith(
+      { type: "render", payload: initialContent },
+      "*",
+    );
+
+    transport.notificationHandlers.get(NTERACT_RENDERER_READY)?.({});
+
+    expect(callbacks.onRendererReady).toHaveBeenCalledTimes(1);
+    expect(transport.notify).toHaveBeenCalledWith(NTERACT_RENDER_OUTPUT, initialContent);
   });
 
   it("ignores stale renderer-ready notifications from a previous reload generation", () => {
@@ -282,5 +303,19 @@ describe("IsolatedFrameRuntime", () => {
       { type: "render", payload: { mimeType: "text/plain", data: "after dispose" } },
       "*",
     );
+  });
+
+  it("can reactivate after a StrictMode-style effect cleanup before iframe ready", () => {
+    const { callbacks, frameWindow, runtime } = createRuntime();
+
+    runtime.dispose();
+    runtime.activate();
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }), {});
+
+    expect(MockJsonRpcTransport.instances).toHaveLength(1);
+    expect(callbacks.onBootstrapReady).toHaveBeenCalledWith({
+      isReload: false,
+      generation: 1,
+    });
   });
 });
