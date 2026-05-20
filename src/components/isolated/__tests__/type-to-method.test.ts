@@ -7,47 +7,14 @@
  */
 
 import { describe, expect, it } from "vite-plus/test";
-import {
-  NTERACT_BRIDGE_READY,
-  NTERACT_CLEAR_OUTPUTS,
-  NTERACT_COMM_CLOSE,
-  NTERACT_COMM_MSG,
-  NTERACT_COMM_OPEN,
-  NTERACT_WIDGET_SNAPSHOT,
-  NTERACT_EVAL,
-  NTERACT_INSTALL_RENDERER,
-  NTERACT_PING,
-  NTERACT_RENDER_OUTPUT,
-  NTERACT_SEARCH,
-  NTERACT_SEARCH_NAVIGATE,
-  NTERACT_THEME,
-  NTERACT_WIDGET_STATE,
-} from "../rpc-methods";
-
-// Duplicated from isolated-frame.tsx to test in isolation
-// If this gets out of sync, the test will fail and remind us to update
-const TYPE_TO_METHOD: Record<string, string> = {
-  render: NTERACT_RENDER_OUTPUT,
-  theme: NTERACT_THEME,
-  clear: NTERACT_CLEAR_OUTPUTS,
-  eval: NTERACT_EVAL,
-  install_renderer: NTERACT_INSTALL_RENDERER,
-  ping: NTERACT_PING,
-  search: NTERACT_SEARCH,
-  search_navigate: NTERACT_SEARCH_NAVIGATE,
-  comm_open: NTERACT_COMM_OPEN,
-  comm_msg: NTERACT_COMM_MSG,
-  comm_close: NTERACT_COMM_CLOSE,
-  widget_snapshot: NTERACT_WIDGET_SNAPSHOT,
-  bridge_ready: NTERACT_BRIDGE_READY,
-  widget_state: NTERACT_WIDGET_STATE,
-};
+import { TYPE_TO_METHOD } from "../isolated-frame-runtime";
 
 describe("TYPE_TO_METHOD mapping", () => {
   it("maps all host→iframe legacy types to JSON-RPC methods", () => {
     // Every legacy type that CommBridgeManager or IsolatedFrame.send() uses
     const requiredTypes = [
       "render",
+      "render_batch",
       "theme",
       "clear",
       "eval",
@@ -76,6 +43,7 @@ describe("TYPE_TO_METHOD mapping", () => {
 
   it("maps to correct JSON-RPC method names", () => {
     expect(TYPE_TO_METHOD.render).toBe("nteract/renderOutput");
+    expect(TYPE_TO_METHOD.render_batch).toBe("nteract/renderBatch");
     expect(TYPE_TO_METHOD.theme).toBe("nteract/theme");
     expect(TYPE_TO_METHOD.clear).toBe("nteract/clearOutputs");
     expect(TYPE_TO_METHOD.eval).toBe("nteract/eval");

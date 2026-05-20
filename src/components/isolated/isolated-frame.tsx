@@ -8,53 +8,12 @@ import {
   useState,
 } from "react";
 import type { IframeToParentMessage, ParentToIframeMessage, RenderPayload } from "./frame-bridge";
-import { isIframeMessage } from "./frame-bridge";
-import { logIsolatedDiagnostic, rendererBundleDetails } from "./diagnostics";
+import { logIsolatedDiagnostic } from "./diagnostics";
 import { generateFrameHtml } from "./frame-html";
-import type {
-  NteractEmbedContainerDimensions,
-  NteractEmbedHostContext,
-  NteractEmbedHostContextPatch,
-} from "./host-context";
+import type { NteractEmbedContainerDimensions, NteractEmbedHostContextPatch } from "./host-context";
 import { createNteractEmbedHostContext, mergeNteractEmbedHostContext } from "./host-context";
+import { IsolatedFrameRuntime } from "./isolated-frame-runtime";
 import { useIsolatedRenderer } from "./isolated-renderer-context";
-import { JsonRpcTransport } from "./jsonrpc-transport";
-import {
-  MCP_NOTIFICATIONS_MESSAGE,
-  MCP_UI_HOST_CONTEXT_CHANGED,
-  MCP_UI_RESOURCE_TEARDOWN,
-  MCP_UI_SIZE_CHANGED,
-  NTERACT_BRIDGE_READY,
-  NTERACT_CLEAR_OUTPUTS,
-  NTERACT_COMM_CLOSE,
-  NTERACT_COMM_MSG,
-  NTERACT_COMM_OPEN,
-  NTERACT_DIAGNOSTIC,
-  NTERACT_WIDGET_SNAPSHOT,
-  NTERACT_DOUBLE_CLICK,
-  NTERACT_ERROR,
-  NTERACT_EVAL,
-  NTERACT_EVAL_RESULT,
-  NTERACT_INSTALL_RENDERER,
-  NTERACT_LINK_CLICK,
-  NTERACT_PING,
-  NTERACT_RENDER_BATCH,
-  NTERACT_RENDER_COMPLETE,
-  NTERACT_RENDER_OUTPUT,
-  NTERACT_RENDERER_READY,
-  NTERACT_RESIZE,
-  NTERACT_SEARCH,
-  NTERACT_SEARCH_NAVIGATE,
-  NTERACT_SEARCH_RESULTS,
-  NTERACT_THEME,
-  NTERACT_MOUSE_DOWN,
-  NTERACT_WIDGET_COMM_CLOSE,
-  NTERACT_WIDGET_COMM_MSG,
-  NTERACT_WIDGET_READY,
-  NTERACT_WIDGET_STATE,
-  NTERACT_WIDGET_UPDATE,
-  NTERACT_WHEEL_BOUNDARY,
-} from "./rpc-methods";
 import { scrollFrameWheelBoundary } from "./scroll-boundary";
 
 export interface IsolatedFrameProps {
@@ -254,24 +213,6 @@ export interface IsolatedFrameHandle {
   isIframeReady: boolean;
 }
 
-const TYPE_TO_METHOD: Record<string, string> = {
-  render: NTERACT_RENDER_OUTPUT,
-  render_batch: NTERACT_RENDER_BATCH,
-  theme: NTERACT_THEME,
-  clear: NTERACT_CLEAR_OUTPUTS,
-  eval: NTERACT_EVAL,
-  install_renderer: NTERACT_INSTALL_RENDERER,
-  ping: NTERACT_PING,
-  search: NTERACT_SEARCH,
-  search_navigate: NTERACT_SEARCH_NAVIGATE,
-  comm_open: NTERACT_COMM_OPEN,
-  comm_msg: NTERACT_COMM_MSG,
-  comm_close: NTERACT_COMM_CLOSE,
-  widget_snapshot: NTERACT_WIDGET_SNAPSHOT,
-  bridge_ready: NTERACT_BRIDGE_READY,
-  widget_state: NTERACT_WIDGET_STATE,
-};
-
 /**
  * Sandbox attributes for the isolated iframe.
  *
@@ -323,34 +264,6 @@ function sameContainerDimensions(
     (a?.height ?? null) === (b?.height ?? null) &&
     (a?.maxHeight ?? null) === (b?.maxHeight ?? null)
   );
-}
-
-function diagnosticLevelFromMcpLog(level: string | undefined): "debug" | "info" | "warn" | "error" {
-  if (level === "error" || level === "critical" || level === "alert" || level === "emergency") {
-    return "error";
-  }
-  if (level === "warning") {
-    return "warn";
-  }
-  if (level === "notice" || level === "info") {
-    return "info";
-  }
-  return "debug";
-}
-
-function stableHostContextKey(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(stableHostContextKey).join(",")}]`;
-  }
-  if (value && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, entryValue]) => entryValue !== undefined)
-      .sort(([a], [b]) => a.localeCompare(b));
-    return `{${entries
-      .map(([key, entryValue]) => `${JSON.stringify(key)}:${stableHostContextKey(entryValue)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
 }
 
 /**
@@ -420,14 +333,14 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       error: providerError,
     } = useIsolatedRenderer();
     const iframeRef = useRef<HTMLIFrameElement>(null);
-    const rpcRef = useRef<JsonRpcTransport | null>(null);
+    const runtimeRef = useRef<IsolatedFrameRuntime | null>(null);
+    const initialContentRef = useRef(initialContent);
+    const applyMeasuredHeightRef = useRef<(contentHeight: number) => void>(() => {});
     const [frameDocument, setFrameDocument] = useState<FrameDocument | null>(null);
     // Track iframe ready (bootstrap HTML loaded)
     const [isIframeReady, setIsIframeReady] = useState(false);
     // Track renderer ready (React bundle initialized)
     const [isReady, setIsReady] = useState(false);
-    // Use ref to track ready state for send callback (avoids stale closure)
-    const isReadyRef = useRef(false);
     const [height, setHeight] = useState(minHeight);
     const displayHeightRef = useRef(minHeight);
     const measuredHeightRef = useRef(minHeight);
@@ -436,24 +349,11 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     >(undefined);
     const [imperativeHostContext, setImperativeHostContext] =
       useState<NteractEmbedHostContextPatch>({});
-    const lastHostContextDeliveryRef = useRef<{
-      channel: "legacy" | "rpc";
-      key: string;
-    } | null>(null);
     // Track if content has been rendered (for revealOnRender mode)
     const [isContentRendered, setIsContentRendered] = useState(false);
     // Track if the iframe is reloading (DOM move caused browser to tear down)
     // Used to hide the iframe during reload to prevent white flash
     const [isReloading, setIsReloading] = useState(false);
-
-    // Queue messages until iframe is ready
-    const pendingMessagesRef = useRef<ParentToIframeMessage[]>([]);
-    // Track if we've started bootstrapping to avoid double-fetch
-    const bootstrappingRef = useRef(false);
-    const frameGenerationRef = useRef(0);
-    // Track whether the iframe has sent a "ready" message before.
-    // Any subsequent "ready" is a reload that needs the toggle trick.
-    const hasReceivedReadyRef = useRef(false);
 
     // Stable refs for callback props — avoids tearing down the message
     // handler when callers pass unstable (inline) callbacks.
@@ -472,15 +372,16 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         phase: string,
         details: Record<string, unknown> = {},
         level: "debug" | "info" | "warn" | "error" = "debug",
+        source: "isolated-frame" | "isolated-renderer" | "iframe-libraries" = "isolated-frame",
       ) => {
         logIsolatedDiagnostic({
-          source: "isolated-frame",
+          source,
           phase,
           level,
           details: {
             frameId: id ?? null,
             frameName: name ?? null,
-            generation: frameGenerationRef.current,
+            generation: runtimeRef.current?.generation ?? 0,
             ...details,
           },
         });
@@ -499,6 +400,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     onErrorRef.current = onError;
     onMessageRef.current = onMessage;
     allowWheelBoundaryScrollRef.current = allowWheelBoundaryScroll;
+    initialContentRef.current = initialContent;
     logFrameDiagnosticRef.current = logFrameDiagnostic;
 
     const applyMeasuredHeight = useCallback(
@@ -516,6 +418,68 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       },
       [autoHeight, maxHeight, minHeight],
     );
+    applyMeasuredHeightRef.current = applyMeasuredHeight;
+
+    if (!runtimeRef.current) {
+      runtimeRef.current = new IsolatedFrameRuntime({
+        getFrameWindow: () => iframeRef.current?.contentWindow,
+        getInitialContent: () => initialContentRef.current,
+        callbacks: {
+          onBootstrapReady: ({ isReload }) => {
+            if (isReload) {
+              setIsReady(false);
+              setIsContentRendered(false);
+              setIsReloading(true);
+              setIsIframeReady(false);
+              window.setTimeout(() => {
+                setIsIframeReady(true);
+              }, 0);
+            } else {
+              setIsIframeReady(true);
+            }
+          },
+          onRendererReady: () => {
+            setIsReady(true);
+            setIsReloading(false);
+            onReadyRef.current?.();
+          },
+          onResize: (contentHeight) => {
+            applyMeasuredHeightRef.current(contentHeight);
+          },
+          onRenderComplete: (contentHeight) => {
+            setIsContentRendered(true);
+            applyMeasuredHeightRef.current(contentHeight);
+          },
+          onLinkClick: (url, newTab) => {
+            onLinkClickRef.current?.(url, newTab);
+          },
+          onMouseDown: () => {
+            onMouseDownRef.current?.();
+          },
+          onDoubleClick: () => {
+            onDoubleClickRef.current?.();
+          },
+          onWheelBoundary: (params) => {
+            if (!allowWheelBoundaryScrollRef.current) {
+              return;
+            }
+            scrollFrameWheelBoundary(iframeRef.current, params);
+          },
+          onWidgetUpdate: (commId, state) => {
+            onWidgetUpdateRef.current?.(commId, state);
+          },
+          onError: (error) => {
+            onErrorRef.current?.(error);
+          },
+          onMessage: (message) => {
+            onMessageRef.current?.(message);
+          },
+          onDiagnostic: (phase, details = {}, level = "debug", source = "isolated-frame") => {
+            logFrameDiagnosticRef.current(phase, details, level, source);
+          },
+        },
+      });
+    }
 
     useEffect(() => {
       applyMeasuredHeight(measuredHeightRef.current);
@@ -567,51 +531,16 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       [colorTheme, containerDimensions, darkMode, hostContext, imperativeHostContext],
     );
 
-    const postLegacyHostContext = useCallback((context: NteractEmbedHostContext) => {
-      iframeRef.current?.contentWindow?.postMessage(
-        { type: "host_context", payload: context },
-        "*",
-      );
-    }, []);
-
-    const notifyHostContext = useCallback(
-      (context: NteractEmbedHostContext) => {
-        const channel = rpcRef.current && isReadyRef.current ? "rpc" : "legacy";
-        const key = stableHostContextKey(context);
-        const lastDelivery = lastHostContextDeliveryRef.current;
-        if (lastDelivery?.channel === channel && lastDelivery.key === key) {
-          return;
-        }
-        lastHostContextDeliveryRef.current = { channel, key };
-
-        if (rpcRef.current && isReadyRef.current) {
-          rpcRef.current.notify(MCP_UI_HOST_CONTEXT_CHANGED, context);
-        } else {
-          postLegacyHostContext(context);
-        }
-      },
-      [postLegacyHostContext],
-    );
-
     // Send theme and host context as soon as iframe is ready (before renderer
     // bootstrap). Once the renderer transport is active, prefer JSON-RPC so
     // live changes follow the same path as other renderer updates.
     useEffect(() => {
       if (isIframeReady && iframeRef.current?.contentWindow) {
-        const payload = { isDark: darkMode, colorTheme: colorTheme ?? null };
-        if (rpcRef.current && isReadyRef.current) {
-          rpcRef.current.notify(NTERACT_THEME, payload);
-        } else {
-          iframeRef.current.contentWindow.postMessage({ type: "theme", payload }, "*");
-        }
-        notifyHostContext(resolvedHostContext);
+        const runtime = runtimeRef.current;
+        runtime?.setTheme(darkMode, colorTheme ?? null);
+        runtime?.notifyHostContext(resolvedHostContext);
       }
-    }, [darkMode, colorTheme, isIframeReady, isReady, notifyHostContext, resolvedHostContext]);
-
-    // Keep ref in sync with state (ref avoids stale closures in callbacks)
-    useEffect(() => {
-      isReadyRef.current = isReady;
-    }, [isReady]);
+    }, [darkMode, colorTheme, isIframeReady, isReady, resolvedHostContext]);
 
     // Surface provider errors to consumers
     useEffect(() => {
@@ -628,507 +557,75 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       }
     }, [providerError, providerLoading]);
 
-    // Send a message to the iframe
-    // Uses ref to check ready state to avoid stale closure issues
-    const send = useCallback(
-      (message: ParentToIframeMessage) => {
-        if (!isReadyRef.current) {
-          // Queue message until ready
-          pendingMessagesRef.current.push(message);
-          return;
-        }
-
-        // Translate to JSON-RPC if transport is available
-        const method = TYPE_TO_METHOD[message.type];
-        if (method && rpcRef.current) {
-          const params = "payload" in message ? message.payload : undefined;
-          rpcRef.current.notify(method, params);
-        } else if (iframeRef.current?.contentWindow) {
-          // Fallback to legacy format
-          iframeRef.current.contentWindow.postMessage(message, "*");
-        }
-      },
-      [], // No deps - uses ref instead of state
-    );
-
-    // Flush pending messages when ready
-    useEffect(() => {
-      if (isReady && pendingMessagesRef.current.length > 0) {
-        const pending = pendingMessagesRef.current;
-        pendingMessagesRef.current = [];
-        pending.forEach((msg) => {
-          const method = TYPE_TO_METHOD[msg.type];
-          if (method && rpcRef.current) {
-            const params = "payload" in msg ? msg.payload : undefined;
-            rpcRef.current.notify(method, params);
-          } else if (iframeRef.current?.contentWindow) {
-            iframeRef.current.contentWindow.postMessage(msg, "*");
-          }
-        });
-      }
-    }, [isReady]);
+    const send = useCallback((message: ParentToIframeMessage) => {
+      runtimeRef.current?.send(message);
+    }, []);
 
     // Handle messages from iframe
     useEffect(() => {
       const handleMessage = (event: MessageEvent) => {
-        // Verify the message is from our iframe
-        if (event.source !== iframeRef.current?.contentWindow) {
-          return;
-        }
-
-        const data = event.data;
-
-        // Skip JSON-RPC messages — the transport handles them
-        if (
-          typeof data === "object" &&
-          data !== null &&
-          (data as { jsonrpc?: unknown }).jsonrpc === "2.0"
-        ) {
-          return;
-        }
-
-        if (!isIframeMessage(data)) {
-          return;
-        }
-
-        // Call generic message handler
-        onMessageRef.current?.(data);
-
-        // Handle specific message types
-        switch (data.type) {
-          case "ready": {
-            // Iframe bootstrap HTML is loaded.
-            // Any "ready" after the first is a reload (e.g., DOM move caused
-            // the browser to tear down and reload the iframe).
-            const isReload = hasReceivedReadyRef.current;
-            hasReceivedReadyRef.current = true;
-            frameGenerationRef.current += 1;
-            lastHostContextDeliveryRef.current = null;
-            logFrameDiagnostic("bootstrap-ready", {
-              isReload,
-              ...rendererBundleDetails(rendererCode, rendererCss),
-            });
-
-            if (isReload) {
-              // Reset bootstrap state so the renderer gets re-injected.
-              bootstrappingRef.current = false;
-              // Keep the imperative readiness ref in sync with state so that
-              // synchronous send() calls don't treat the frame as ready during
-              // a reload window.
-              isReadyRef.current = false;
-              // Pending messages were targeted at the old iframe instance; drop
-              // them so they don't get delivered to the reloaded frame.
-              pendingMessagesRef.current.length = 0;
-              setIsReady(false);
-              // Reset content rendered state for revealOnRender mode
-              setIsContentRendered(false);
-              // Hide iframe during reload to prevent white flash from blank
-              // iframe document before blob HTML loads
-              setIsReloading(true);
-            }
-
-            if (isReload) {
-              // Reload: isIframeReady may already be true, so toggle to
-              // force effects that depend on it (theme sync, renderer
-              // injection) to re-run.
-              setIsIframeReady(false);
-              setTimeout(() => {
-                setIsIframeReady(true);
-              }, 0);
-            } else {
-              // Initial load: a single transition from false→true is
-              // sufficient.
-              setIsIframeReady(true);
-            }
-
-            // Create JSON-RPC transport for this iframe instance
-            if (iframeRef.current?.contentWindow) {
-              // Clean up previous transport on reload
-              if (rpcRef.current) {
-                rpcRef.current.stop();
-              }
-              const transport = new JsonRpcTransport(
-                iframeRef.current.contentWindow,
-                iframeRef.current.contentWindow,
-              );
-              // Register handlers for JSON-RPC messages from iframe
-              transport.onNotification(NTERACT_RENDERER_READY, () => {
-                logFrameDiagnostic("renderer-ready");
-                isReadyRef.current = true;
-                setIsReady(true);
-                setIsReloading(false);
-                onReadyRef.current?.();
-                if (initialContent) {
-                  transport.notify(NTERACT_RENDER_OUTPUT, initialContent);
-                }
-              });
-              transport.onNotification(NTERACT_RESIZE, (params) => {
-                const p = params as { height?: number };
-                if (p.height != null) {
-                  applyMeasuredHeight(p.height);
-                }
-              });
-              transport.onNotification(MCP_UI_SIZE_CHANGED, (params) => {
-                const p = params as { height?: number; width?: number };
-                logFrameDiagnostic("size-changed", {
-                  height: p.height ?? null,
-                  width: p.width ?? null,
-                  protocol: "mcp-ui",
-                });
-                if (p.height != null) {
-                  applyMeasuredHeight(p.height);
-                }
-              });
-              transport.onNotification(NTERACT_RENDER_COMPLETE, (params) => {
-                const p = params as { height?: number };
-                logFrameDiagnostic("render-complete", { height: p.height ?? null });
-                if (p.height != null) {
-                  setIsContentRendered(true);
-                  applyMeasuredHeight(p.height);
-                }
-              });
-              transport.onNotification(NTERACT_LINK_CLICK, (params) => {
-                const p = params as { url: string; newTab?: boolean };
-                if (p.url) {
-                  onLinkClickRef.current?.(p.url, p.newTab ?? false);
-                }
-              });
-              transport.onNotification(NTERACT_MOUSE_DOWN, () => {
-                onMouseDownRef.current?.();
-              });
-              transport.onNotification(NTERACT_WHEEL_BOUNDARY, (params) => {
-                if (!allowWheelBoundaryScrollRef.current) {
-                  return;
-                }
-                scrollFrameWheelBoundary(iframeRef.current, params as { deltaY?: number });
-              });
-              transport.onNotification(NTERACT_DOUBLE_CLICK, () => {
-                onDoubleClickRef.current?.();
-              });
-              transport.onNotification(NTERACT_WIDGET_UPDATE, (params) => {
-                const p = params as { commId: string; state: Record<string, unknown> };
-                if (p.commId && p.state) {
-                  onWidgetUpdateRef.current?.(p.commId, p.state);
-                }
-              });
-              transport.onNotification(NTERACT_ERROR, (params) => {
-                const p = params as { message: string; stack?: string };
-                if (p.message) {
-                  logFrameDiagnostic("renderer-error", p, "error");
-                  onErrorRef.current?.(p);
-                }
-              });
-              transport.onNotification(NTERACT_EVAL_RESULT, (params) => {
-                const p = params as { success: boolean; error?: string };
-                if (p.success === false) {
-                  console.error("[IsolatedFrame] Bundle eval failed:", p.error);
-                  onErrorRef.current?.({ message: `Bundle eval failed: ${p.error}` });
-                }
-              });
-              transport.onNotification(NTERACT_SEARCH_RESULTS, (params) => {
-                const p = params as { count: number };
-                // Forward to onMessage for OutputArea's search count tracking
-                onMessageRef.current?.({
-                  type: "search_results",
-                  payload: p,
-                } as IframeToParentMessage);
-              });
-              transport.onNotification(NTERACT_WIDGET_READY, () => {
-                onMessageRef.current?.({ type: "widget_ready" } as IframeToParentMessage);
-              });
-              transport.onNotification(NTERACT_WIDGET_COMM_MSG, (params) => {
-                onMessageRef.current?.({
-                  type: "widget_comm_msg",
-                  payload: params,
-                } as IframeToParentMessage);
-              });
-              transport.onNotification(NTERACT_WIDGET_COMM_CLOSE, (params) => {
-                onMessageRef.current?.({
-                  type: "widget_comm_close",
-                  payload: params,
-                } as IframeToParentMessage);
-              });
-              transport.onNotification(NTERACT_DIAGNOSTIC, (params) => {
-                const p = params as {
-                  source?: "isolated-frame" | "isolated-renderer" | "iframe-libraries";
-                  phase?: string;
-                  level?: "debug" | "info" | "warn" | "error";
-                  details?: Record<string, unknown>;
-                };
-                if (!p.phase) return;
-                logIsolatedDiagnostic({
-                  source: p.source ?? "isolated-renderer",
-                  phase: p.phase,
-                  level: p.level,
-                  details: {
-                    frameId: id ?? null,
-                    frameName: name ?? null,
-                    generation: frameGenerationRef.current,
-                    ...p.details,
-                  },
-                });
-              });
-              transport.onNotification(MCP_NOTIFICATIONS_MESSAGE, (params) => {
-                const p = params as {
-                  level?: string;
-                  logger?: string;
-                  data?: unknown;
-                };
-                logFrameDiagnostic(
-                  "iframe-log-message",
-                  {
-                    logger: p.logger ?? null,
-                    data: p.data ?? null,
-                    protocol: "mcp-ui",
-                  },
-                  diagnosticLevelFromMcpLog(p.level),
-                );
-              });
-              transport.start();
-              rpcRef.current = transport;
-            }
-            break;
-          }
-
-          case "renderer_ready":
-            // React renderer bundle is initialized
-            logFrameDiagnostic("renderer-ready");
-            isReadyRef.current = true;
-            setIsReady(true);
-            setIsReloading(false);
-            onReadyRef.current?.();
-            // Render initial content if provided
-            if (initialContent) {
-              iframeRef.current?.contentWindow?.postMessage(
-                { type: "render", payload: initialContent },
-                "*",
-              );
-            }
-            break;
-
-          case "resize":
-            if (data.payload?.height != null) {
-              applyMeasuredHeight(data.payload.height);
-            }
-            break;
-
-          case "render_complete":
-            // Content has been rendered - reveal iframe if in revealOnRender mode
-            if (data.payload?.height != null) {
-              logFrameDiagnostic("render-complete", { height: data.payload.height });
-              setIsContentRendered(true);
-              applyMeasuredHeight(data.payload.height);
-            }
-            break;
-
-          case "link_click":
-            if (data.payload?.url) {
-              onLinkClickRef.current?.(data.payload.url, data.payload.newTab ?? false);
-            }
-            break;
-
-          case "dblclick":
-            onDoubleClickRef.current?.();
-            break;
-
-          case "widget_update":
-            if (data.payload?.commId && data.payload?.state) {
-              onWidgetUpdateRef.current?.(data.payload.commId, data.payload.state);
-            }
-            break;
-
-          case "error":
-            if (data.payload) {
-              onErrorRef.current?.(data.payload);
-            }
-            break;
-
-          case "eval_result":
-            // Surface bundle eval failures to help diagnose injection issues
-            if (data.payload?.success === false) {
-              console.error("[IsolatedFrame] Bundle eval failed:", data.payload.error);
-              logFrameDiagnostic(
-                "renderer-bundle-eval-failed",
-                { error: data.payload.error },
-                "error",
-              );
-              onErrorRef.current?.({
-                message: `Bundle eval failed: ${data.payload.error}`,
-              });
-            }
-            break;
-        }
+        runtimeRef.current?.handleWindowMessage(event, { rendererCode, rendererCss });
       };
 
       window.addEventListener("message", handleMessage);
       return () => window.removeEventListener("message", handleMessage);
-    }, [
-      initialContent,
-      applyMeasuredHeight,
-      id,
-      name,
-      rendererCode,
-      rendererCss,
-      logFrameDiagnostic,
-    ]);
+    }, [rendererCode, rendererCss]);
 
     // Clean up JSON-RPC transport on unmount
     useEffect(() => {
       return () => {
-        const transport = rpcRef.current;
-        rpcRef.current = null;
-        if (!transport) return;
-
-        let stopped = false;
-        const stopTransport = () => {
-          if (stopped) return;
-          stopped = true;
-          transport.stop();
-        };
-
-        transport
-          .request(MCP_UI_RESOURCE_TEARDOWN, { reason: "unmount" })
-          .catch((err) => {
-            logFrameDiagnosticRef.current(
-              "resource-teardown-failed",
-              { message: err instanceof Error ? err.message : String(err) },
-              "debug",
-            );
-          })
-          .finally(stopTransport);
-        window.setTimeout(stopTransport, 100);
+        runtimeRef.current?.dispose();
       };
     }, []);
 
     useEffect(() => {
-      if (!isIframeReady || isReady || bootstrappingRef.current) return;
-      if (rendererCode !== undefined && rendererCss !== undefined) return;
+      if (!isIframeReady) return;
+      const runtime = runtimeRef.current;
+      if (!runtime?.waitingForRendererBundle({ rendererCode, rendererCss })) return;
       const timer = window.setTimeout(() => {
-        logFrameDiagnostic("renderer-bundle-pending", {
-          providerLoading,
-          providerError: providerError?.message ?? null,
-          ...rendererBundleDetails(rendererCode, rendererCss),
-        });
+        runtime.reportRendererBundlePending(
+          { rendererCode, rendererCss },
+          {
+            providerLoading,
+            providerError,
+          },
+        );
       }, 1500);
 
       return () => window.clearTimeout(timer);
-    }, [
-      isIframeReady,
-      isReady,
-      rendererCode,
-      rendererCss,
-      providerLoading,
-      providerError,
-      logFrameDiagnostic,
-    ]);
+    }, [isIframeReady, isReady, rendererCode, rendererCss, providerLoading, providerError]);
 
     // Inject renderer when iframe is ready AND bundle props are available
     useEffect(() => {
-      if (
-        isIframeReady &&
-        !isReady &&
-        !bootstrappingRef.current &&
-        rendererCode !== undefined &&
-        rendererCss !== undefined &&
-        iframeRef.current?.contentWindow
-      ) {
-        bootstrappingRef.current = true;
-        logFrameDiagnostic(
-          "renderer-bundle-injecting",
-          rendererBundleDetails(rendererCode, rendererCss),
-        );
-
-        // Inject CSS first (idempotent - checks if already loaded)
-        const cssCode = `
-        (function() {
-          if (window.__ISOLATED_CSS_LOADED__) return;
-          window.__ISOLATED_CSS_LOADED__ = true;
-          var style = document.createElement('style');
-          style.textContent = ${JSON.stringify(rendererCss)};
-          document.head.appendChild(style);
-        })();
-      `;
-        iframeRef.current.contentWindow.postMessage(
-          { type: "eval", payload: { code: cssCode } },
-          "*",
-        );
-        // Then inject JS bundle (idempotent - checks if already loaded)
-        // Use string concatenation instead of template literal to avoid issues
-        // with backticks or ${} in the bundled code
-        const jsWrapper =
-          "(function() {" +
-          "if (window.__ISOLATED_RENDERER_LOADED__) return;" +
-          "window.__ISOLATED_RENDERER_LOADED__ = true;" +
-          rendererCode +
-          "})();";
-        iframeRef.current.contentWindow.postMessage(
-          { type: "eval", payload: { code: jsWrapper } },
-          "*",
-        );
-        logFrameDiagnostic(
-          "renderer-bundle-injected",
-          rendererBundleDetails(rendererCode, rendererCss),
-        );
+      if (!isIframeReady) return;
+      if (rendererCode !== undefined && rendererCss !== undefined) {
+        runtimeRef.current?.injectRendererBundle({ rendererCode, rendererCss });
       }
-    }, [isIframeReady, isReady, rendererCode, rendererCss, logFrameDiagnostic]);
+    }, [isIframeReady, isReady, rendererCode, rendererCss]);
 
     // Expose imperative API
     useImperativeHandle(
       ref,
       () => ({
         send,
-        render: (payload: RenderPayload) => {
-          logFrameDiagnostic("render-dispatched", { mimeType: payload.mimeType });
-          send({ type: "render", payload });
-        },
-        renderBatch: (outputs: RenderPayload[]) => {
-          logFrameDiagnostic("render-batch-dispatched", {
-            outputCount: outputs.length,
-            mimes: outputs.map((output) => output.mimeType),
-          });
-          send({ type: "render_batch", payload: { outputs } });
-        },
-        eval: (code: string) => send({ type: "eval", payload: { code } }),
-        installRenderer: (code: string, css?: string) => {
-          logFrameDiagnostic("renderer-plugin-dispatched", {
-            codeLength: code.length,
-            hasCss: css !== undefined,
-            cssLength: css?.length ?? 0,
-          });
-          send({ type: "install_renderer", payload: { code, css } });
-        },
+        render: (payload: RenderPayload) => runtimeRef.current?.render(payload),
+        renderBatch: (outputs: RenderPayload[]) => runtimeRef.current?.renderBatch(outputs),
+        eval: (code: string) => runtimeRef.current?.eval(code),
+        installRenderer: (code: string, css?: string) =>
+          runtimeRef.current?.installRenderer(code, css),
         setTheme: (isDark: boolean, colorTheme?: string | null) =>
           send({ type: "theme", payload: { isDark, colorTheme } }),
         setHostContext: (nextHostContext: NteractEmbedHostContextPatch) => {
           setImperativeHostContext((prev) => mergeNteractEmbedHostContext(prev, nextHostContext));
         },
-        clear: () => send({ type: "clear" }),
-        search: (query: string, caseSensitive?: boolean) => {
-          // Search handler is in bootstrap HTML, so send directly when iframe is loaded
-          // (bypasses the isReady queue which waits for the React renderer)
-          if (rpcRef.current) {
-            rpcRef.current.notify(NTERACT_SEARCH, { query, caseSensitive });
-          } else if (iframeRef.current?.contentWindow) {
-            iframeRef.current.contentWindow.postMessage(
-              { type: "search", payload: { query, caseSensitive } },
-              "*",
-            );
-          }
-        },
-        searchNavigate: (matchIndex: number) => {
-          if (rpcRef.current) {
-            rpcRef.current.notify(NTERACT_SEARCH_NAVIGATE, { matchIndex });
-          } else if (iframeRef.current?.contentWindow) {
-            iframeRef.current.contentWindow.postMessage(
-              { type: "search_navigate", payload: { matchIndex } },
-              "*",
-            );
-          }
-        },
+        clear: () => runtimeRef.current?.clear(),
+        search: (query: string, caseSensitive?: boolean) =>
+          runtimeRef.current?.search(query, caseSensitive),
+        searchNavigate: (matchIndex: number) => runtimeRef.current?.searchNavigate(matchIndex),
         isReady,
         isIframeReady,
       }),
-      [send, isReady, isIframeReady, logFrameDiagnostic],
+      [send, isReady, isIframeReady],
     );
 
     if (!frameDocument) {

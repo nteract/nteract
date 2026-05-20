@@ -47,5 +47,12 @@ export type {
 export { IsolationTest } from "./IsolationTest";
 export type { IsolatedFrameHandle, IsolatedFrameProps } from "./isolated-frame";
 export { IsolatedFrame } from "./isolated-frame";
+export { IsolatedFrameRuntime, TYPE_TO_METHOD } from "./isolated-frame-runtime";
+export type {
+  IsolatedFrameRendererBundle,
+  IsolatedFrameRuntimeCallbacks,
+  IsolatedFrameRuntimeDiagnosticLevel,
+  IsolatedFrameRuntimeOptions,
+} from "./isolated-frame-runtime";
 // Provider and hook for renderer bundle
 export { IsolatedRendererProvider, useIsolatedRenderer } from "./isolated-renderer-context";
