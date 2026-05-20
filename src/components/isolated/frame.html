@@ -550,6 +550,8 @@
           }
 
           var fonts = context.styles && context.styles.css && context.styles.css.fonts;
+          // Keep font-style handling in sync with src/isolated-renderer/index.tsx
+          // for the React renderer path.
           if (typeof fonts === "string" && fonts.length > 0) {
             if (!hostFontStyle) {
               hostFontStyle = document.createElement("style");
@@ -588,6 +590,9 @@
             );
           }
 
+          // Renderer bundles may size themselves from host-context CSS variables.
+          // Parent-side height and width guards are load-bearing: this resize
+          // must not create an unbounded host-context <-> size-changed loop.
           window.dispatchEvent(new Event("resize"));
         }
 

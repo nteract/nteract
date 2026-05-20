@@ -43,6 +43,13 @@ export interface NteractEmbedHostContext {
   };
 }
 
+export type NteractEmbedHostContextPatch = Omit<
+  Partial<NteractEmbedHostContext>,
+  "safeAreaInsets"
+> & {
+  safeAreaInsets?: Partial<NteractEmbedSafeAreaInsets>;
+};
+
 export interface CreateNteractEmbedHostContextOptions {
   isDark: boolean;
   colorTheme?: string | null;
@@ -52,7 +59,7 @@ export interface CreateNteractEmbedHostContextOptions {
   userAgent?: string;
   platform?: NteractEmbedPlatform;
   deviceCapabilities?: NteractEmbedDeviceCapabilities;
-  safeAreaInsets?: NteractEmbedSafeAreaInsets;
+  safeAreaInsets?: Partial<NteractEmbedSafeAreaInsets>;
 }
 
 interface ThemePalette {
@@ -74,6 +81,12 @@ const OUTPUT_UI_FONT =
 const OUTPUT_MONO_FONT = 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace';
 const OUTPUT_DOCUMENT_FONT = "var(--output-ui-font)";
 const CREAM_DOCUMENT_FONT = 'KaTeX_Main, Georgia, "Times New Roman", serif';
+const DEFAULT_SAFE_AREA_INSETS: NteractEmbedSafeAreaInsets = {
+  top: 0,
+  right: 0,
+  bottom: 0,
+  left: 0,
+};
 
 function themePalette(isDark: boolean, colorTheme?: string | null): ThemePalette {
   const isCream = colorTheme === "cream";
@@ -157,6 +170,18 @@ function hostDeviceCapabilities(): NteractEmbedDeviceCapabilities {
   };
 }
 
+function mergeSafeAreaInsets(
+  previous: NteractEmbedSafeAreaInsets | undefined,
+  next: Partial<NteractEmbedSafeAreaInsets> | undefined,
+): NteractEmbedSafeAreaInsets {
+  return {
+    top: next?.top ?? previous?.top ?? DEFAULT_SAFE_AREA_INSETS.top,
+    right: next?.right ?? previous?.right ?? DEFAULT_SAFE_AREA_INSETS.right,
+    bottom: next?.bottom ?? previous?.bottom ?? DEFAULT_SAFE_AREA_INSETS.bottom,
+    left: next?.left ?? previous?.left ?? DEFAULT_SAFE_AREA_INSETS.left,
+  };
+}
+
 export function createNteractThemeVariables(
   isDark: boolean,
   colorTheme?: string | null,
@@ -225,7 +250,7 @@ export function createNteractEmbedHostContext({
     userAgent: userAgent ?? hostUserAgent(),
     platform: platform ?? hostPlatform(),
     deviceCapabilities: deviceCapabilities ?? hostDeviceCapabilities(),
-    safeAreaInsets: safeAreaInsets ?? { top: 0, right: 0, bottom: 0, left: 0 },
+    safeAreaInsets: mergeSafeAreaInsets(undefined, safeAreaInsets),
     nteract: {
       colorTheme: colorTheme ?? null,
     },
@@ -233,7 +258,7 @@ export function createNteractEmbedHostContext({
 }
 
 export function mergeNteractEmbedHostContext(
-  ...contexts: Array<Partial<NteractEmbedHostContext> | null | undefined>
+  ...contexts: Array<NteractEmbedHostContextPatch | null | undefined>
 ): NteractEmbedHostContext {
   const merged: NteractEmbedHostContext = {};
 
@@ -268,10 +293,7 @@ export function mergeNteractEmbedHostContext(
     }
 
     if (context.safeAreaInsets) {
-      merged.safeAreaInsets = {
-        ...previousSafeAreaInsets,
-        ...context.safeAreaInsets,
-      } as NteractEmbedSafeAreaInsets;
+      merged.safeAreaInsets = mergeSafeAreaInsets(previousSafeAreaInsets, context.safeAreaInsets);
     }
 
     if (context.nteract) {
