@@ -79,15 +79,16 @@ The validator's job does not change. What changes is that the room is no longer 
 
 The minimum v1 ACL is a flat `Vec<(Principal, Scope)>`. The specifics of ACL editing (which principals may add/remove others), inheritance from a containing org, group expansion, anonymous public-read, and ACL persistence are deferred to a follow-up ADR. The protocol shape locked here is: rooms have ACLs, ACLs reference principals, principals authenticate against the host's configured IdPs.
 
-## Decision 3: Authentication at connect, validation per frame
+## Decision 3: Authentication at connect, scope checks per frame
 
 Authentication is connection-scoped. The IdP (Identity Provider) is consulted at WebSocket open, never on the sync hot path.
 
 1. Connection opens. Listener extracts the credential (bearer JWT for OIDC/Anaconda, cookie/OAuth token for JupyterHub, peer creds for Unix socket).
 2. Identity provider validates the credential. One round-trip (JWKS fetch for OIDC is cached; `/hub/api/user` for JupyterHub; userinfo for Anaconda).
-3. Validation yields an `AuthenticatedConnection { principal, scope, allowed_operator_kinds }`.
-4. Handshake response includes the assembled actor label so the client knows what to author as.
-5. Every subsequent frame is validated against the in-memory `AuthenticatedConnection`. No IdP calls.
+3. Room-host looks the validated principal up in the room's ACL. If present, the connection inherits the ACL scope; if absent, the connection is rejected (or downgraded to `viewer` if the ACL has a public-read entry).
+4. Validation yields an `AuthenticatedConnection { principal, scope, allowed_operator_kinds }` in server memory, scoped to this socket.
+5. Handshake response includes the assembled actor label so the client knows what to author as.
+6. Every subsequent frame is checked against `AuthenticatedConnection.scope` for **scope-level legality** at the frame layer (frame type and emptiness of `Message.changes`). Actor labels *inside* accepted frames are not cryptographically validated in v1. See Limitations.
 
 If the credential expires while connected, the connection stays open. Revocation is future work: a server-pushed `SESSION_CONTROL` close frame ends affected connections when an out-of-band signal (admin revoke, plan downgrade, sign-out) arrives. v1 assumes that anyone who authenticated continues to have access for the connection's lifetime.
 
@@ -97,82 +98,27 @@ If the credential expires while connected, the connection stays open. Revocation
 
 Bearer-token replay is a separate, well-known property of bearer auth: if a user's JWT is stolen, the thief can open a new socket and obtain their own `AuthenticatedConnection`. The mitigation is at the credential layer, not the connection layer (e.g., DPoP / proof-of-possession tokens, short token lifetimes, mTLS for system-to-system). v1 inherits the bearer-token threat model; tightening it is future work.
 
-### Per-frame validator
+### Per-frame scope checks
 
-The validator runs inside the existing critical section in `peer_notebook_sync.rs::handle_notebook_doc_frame` between `sync::Message::decode` and `doc.receive_sync_message_recovering`. Same for `peer_runtime_sync.rs` and the presence ingress.
+The room-host enforces scope at frame ingress by inspecting frame type and emptiness. It does **not** parse Automerge change bytes or extract actor IDs in v1.
 
-The enforcement primitive must be **pre-apply**, i.e., it must enumerate the changes carried in the decoded `sync::Message` *before* they reach `doc.receive_sync_message_recovering`. The existing `extract_change_actors` in `crates/notebook-doc/src/diff.rs:439` is post-apply: it calls `doc.get_changes(before)` against an already-mutated `AutoCommit`, which would put the trust boundary on the wrong side of the merge.
+- **viewer** scope: any inbound `0x00` or `0x05` frame with non-empty `Message.changes` is rejected. Empty negotiation frames (heads/have/need with `ChunkList::empty()`) pass.
+- **runtime_peer** scope: any inbound `0x00` (NotebookDoc) frame with non-empty changes is rejected. `RuntimeStateDoc` writes are allowed.
+- **editor** scope: both `0x00` and `0x05` with non-empty changes are allowed. The widget-comm-state subtree convention from Decision 5 (`doc.comms/*/state/*`) is enforced client-side via the approved comm writer.
+- **owner** scope: same frame-level rules as `editor`, plus ACL-mutation requests are honored.
 
-What's actually on the wire is uncomfortable. `automerge::sync::Message.changes` is `ChunkList(Vec<Vec<u8>>)`; its `iter()` yields `&[u8]`, not parsed `Change`s. Two cases need handling:
+This is a one-byte-type-check plus a `ChunkList::is_empty()` check per frame. No Automerge parsing. No upstream hook required.
 
-1. **V1**: each chunk is one length-delimited `Change` blob. Parse each via `automerge::Change::try_from(&[u8])` to get an `ActorId` and a `ChangeHash`.
-2. **V2**: the `ChunkList` may contain a single chunk that is the output of `Automerge::save()` (a whole-document chunk), used when syncing a large slice of history. Parsing this as a single `Change` fails; it needs the document-chunk parser. See `automerge::sync::Message` docstring at sync.rs:523-528.
+What this does **not** enforce is the actor label *inside* an accepted frame. An authenticated editor connection can author a change whose actor claims a different operator (or even a different principal that is also in the ACL). The trust gate at the room boundary catches scope violations and unauthenticated access; it does not catch intra-room attribution forgery. The Limitations section below names this explicitly and tracks it as deferred hardening.
 
-The simplest safe approach is: load each chunk into a throwaway `Automerge` peer (`load_incremental`), enumerate the new `Change`s it now holds, and walk their actors. This is correct for both V1 and V2 but allocates a temporary doc per frame.
+### Schema-seed actors get principal-prefixed labels
 
-The cheaper approach for V1-only deployments is to parse each chunk directly as a `Change`. If we keep V1 as the default wire format for hosted rooms initially (which we can, since both sides are our code), the throwaway-peer path is the fallback for V2 capability negotiation.
+The frozen genesis actors today are not principal-prefixed:
 
-Either way, the validator must also **filter changes already present in the room by hash** before checking authorship. Heads/have negotiation should prevent re-sending known changes in normal sync, but a reconnecting peer or a peer-state reset can cause legitimate replays. Skipping known-hash changes avoids false rejections.
+- `nteract:notebook-schema:v4` (`crates/notebook-doc/src/lib.rs:79`)
+- `nteract:runtime-state-schema:v2` (`crates/runtime-doc/src/doc.rs:318`)
 
-### Prior art and why we still need a new helper
-
-Three adjacent efforts in the Automerge ecosystem are worth naming, because two of them are easy to confuse with this work and one is genuinely orthogonal.
-
-- **Automerge `filters` branch** (`origin/filters` in `automerge/automerge`, post-peer-review at the time of writing, see `rust/automerge/src/filter.rs`). Adds a persistent visibility filter with three rule types: `Allow`, `AllowUpTo { heads }`, `Deny`, scoped per-actor / per-author / document-default. **Critical semantic from the docstring:** "Changes that are rejected by the active filter are still ingested and synced to peers — only their effect on the rendered state is suppressed." This is subduction: changes stay in the merkle DAG, they just stop rendering. That is the right primitive for **revocation and audit** (the open follow-up below); it is not the right primitive for our trust gate, which needs to reject changes at the network boundary before they enter the doc at all. The two compose: pre-apply gate prevents storage of unauthorized changes; `Filter` (when it lands in main) gives us a way to hide previously-stored changes from a later-revoked principal without breaking causal integrity.
-- **automerge-repo `NetworkAdapter`** has no pre-apply authorization hook. `DocSynchronizer.receiveSyncMessage` applies the raw sync bytes directly. The `senderId` is available but unused for auth. If we adopt automerge-repo at any layer, the gate has to live above the synchronizer (a wrapper or a custom adapter), not inside it.
-- **Keyhive** ([inkandswitch/keyhive notebook](https://www.inkandswitch.com/keyhive/notebook/)) is orthogonal: capability-token access control and end-to-end encryption with signed changes. Our trust gate is connection-level (the server enforces who can author what); keyhive is change-level (the change itself carries a capability). They compose cleanly if we ever need E2EE or cross-host capability delegation, but neither replaces the other. v1 does not adopt keyhive.
-
-The pre-apply helper we need does not exist upstream. It is a candidate for an Automerge contribution (a hook on `receive_sync_message`, or a public `parse_change_chunks` that handles V1 and V2 chunk shapes safely). Until then, the helper lives in our tree:
-
-```rust
-// new helper, location TBD: notebook-doc::diff, runtime-doc, or nteract-room-host
-pub fn sync_message_new_changes(
-    msg: &automerge::sync::Message,
-    have_hashes: &std::collections::HashSet<automerge::ChangeHash>,
-) -> Result<Vec<(automerge::ActorId, automerge::ChangeHash)>, ParseError>;
-```
-
-The validator then runs strictly before `receive_sync_message_recovering`:
-
-```rust
-// inside nteract-room-host
-impl AuthenticatedConnection {
-    pub fn validate_sync_message(
-        &self,
-        msg: &automerge::sync::Message,
-        room_known_hashes: &HashSet<ChangeHash>,
-    ) -> Result<(), UnauthorizedActor> {
-        for (actor_id, _hash) in sync_message_new_changes(msg, room_known_hashes)? {
-            let label = ActorLabel::from_actor_id(&actor_id);
-            if label.is_genesis_schema_seed() {
-                return Err(UnauthorizedActor::ReservedGenesis(label));
-            }
-            if label.principal() != self.principal.as_str() {
-                return Err(UnauthorizedActor::PrincipalMismatch {
-                    expected: self.principal.clone(),
-                    got: label.principal().to_string(),
-                });
-            }
-        }
-        Ok(())
-    }
-}
-```
-
-`extract_change_actors` is kept for what it was built for (post-apply attribution into `TextAttribution`). It is **not** an enforcement primitive; the two helpers sit on different sides of the merge and have different signatures.
-
-### Frozen genesis actors
-
-The seed actors that establish the frozen genesis docs are not principal-prefixed:
-
-- `nteract:notebook-schema:v4` (defined at `crates/notebook-doc/src/lib.rs:79`)
-- `nteract:runtime-state-schema:v2` (defined at `crates/runtime-doc/src/doc.rs:318`)
-
-These predate this ADR. They appear only in the immutable genesis bytes that every room loads at construction; they are never authored by a live peer and should never travel inbound over a sync connection (Automerge sync's heads negotiation prevents peers from re-sending changes the room already has).
-
-The validator therefore **rejects** any inbound change whose actor is one of the known genesis labels. This is defensive: legitimate sync never carries them inbound; if one shows up it is either redundant or hostile, and rejecting it is safer than allowing it.
-
-As part of this work, we will make a schema bump (notebook v5, runtime-state v3, etc.) to adopt the new format and use `system/schema:notebook:v5` and `system/schema:runtime-state:v3` so the genesis actors are first-class within the principal model. Migration: regenerate frozen genesis bytes with the new labels at the schema-version bump; existing notebooks keep the legacy labels in their historical changes (immutable in the DAG, never validated inbound).
+As part of this work the schema bumps (notebook v5, runtime-state v3) and the new seed actors adopt the `system/schema:notebook:v5` and `system/schema:runtime-state:v3` form so they are first-class within the principal model. Existing notebooks keep the legacy labels in historical changes (immutable in the DAG); new rooms ship with the new genesis bytes from day one.
 
 ### Presence rewrite
 
@@ -345,6 +291,25 @@ Attribution after publish reflects what the destination can actually vouch for: 
 - **History is lost on publish.** Anyone who needs the pre-publish authorship trail keeps the source notebook around (it still lives in the source space). Re-publishing produces a new snapshot in the destination; old snapshots are immutable revisions.
 - **Future cryptographic verification.** When Automerge gains signed-change support (keyhive direction; see `https://www.inkandswitch.com/keyhive/notebook/`), historical authorship from a source space could be carried across publish if every historical change is signed by its claimed author. Until then, this ADR closes the door on cross-space attribution.
 
+## Limitations
+
+v1 enforces the trust gate at room ingress: bearer auth and ACL membership at connect, scope-based frame rejection per frame. It does **not** validate the Automerge actor labels *inside* accepted frames. An authenticated peer in a room can author changes claiming any operator suffix, or any principal that is also in the room's ACL. Within-room attribution is best-effort.
+
+The threat surface this leaves:
+
+| Attack | Mitigated by | Status |
+|--------|--------------|--------|
+| Unauthorized read | ACL check at connect | closed |
+| Unauthorized write at all | Bearer auth + ACL at connect | closed |
+| Scope escalation (viewer authoring, runtime_peer editing NotebookDoc) | Scope-based frame rejection | closed |
+| Cross-IdP forgery (e.g., a `local:*` actor showing up in an Anaconda room) | Publish-as-fresh-doc (Decision 6) | closed |
+| Bearer-token replay (stolen JWT opens a new socket) | DPoP / mTLS / short token lifetimes | deferred |
+| **Intra-room operator/principal spoofing** | None in v1 | **deferred** |
+
+The intra-room spoofing case is the one this ADR deliberately defers. Building a pre-apply validator would require either upstream Automerge work (a hook on `receive_sync_message` or a public `parse_change_chunks` that handles V1 + V2 chunk shapes safely; `automerge::sync::Message.changes` is `ChunkList(Vec<Vec<u8>>)` with chunks that are not pre-parsed `Change`s), another patch on our existing Automerge fork, or a throwaway-peer hack that allocates a temporary doc per frame. Combined with publish-as-fresh-doc closing the cross-space leak, the remaining risk surface is bounded: an attacker must already have legitimate edit access to the room.
+
+The upstream `filters` work (`origin/filters` branch on `automerge/automerge`, post-peer-review, `rust/automerge/src/filter.rs`) gives us a complementary subduction primitive once it lands in main: `Filter::Allow / AllowUpTo { heads } / Deny` per-actor or per-author. Filters do not reject changes pre-storage (rejected changes still ingest and sync) but they hide them from rendering, which is the right primitive for runtime revocation and post-hoc audit hiding. When filters lands, pairing them with a pre-apply validator becomes the natural next step. Keyhive ([inkandswitch/keyhive notebook](https://www.inkandswitch.com/keyhive/notebook/)) is orthogonal: change-level capability tokens with signed changes; composable later if needed.
+
 ## Migration
 
 The repo currently persists `.automerge` only for untitled ephemeral notebooks. No production-shipped notebook has long-lived Automerge actor labels in the legacy format. The new `<principal>/<operator>` format is adopted from day one of the change. Old in-memory actor labels in current sessions get replaced on next daemon restart; nothing on disk to migrate.
@@ -364,6 +329,7 @@ These follow-up ADRs and design decisions are tracked but not decided here:
 9. **ACL mechanics.** Editing semantics, owner transfer, group/org principals, anonymous public-read entries, persistence layout. Drafted in a separate ACL ADR (to be written).
 10. **Signed-change authorship across publish.** When Automerge gains signed changes (keyhive direction), publish flows could carry historical authorship across identity spaces with cryptographic verification. Until then, publish produces a fresh document in the destination space (see Decision 6).
 11. **Bearer-token replay mitigation.** DPoP / proof-of-possession tokens, mTLS for system-to-system, short token lifetimes. v1 inherits the bearer-token threat model; tightening it is future work.
+12. **Pre-apply actor-label validator.** Parsing `automerge::sync::Message.changes` chunks (V1 and V2) before merge to reject changes whose actor's principal doesn't match the connection's authenticated principal. Deferred because the chunk shapes are not directly inspectable without an upstream Automerge contribution, a fork patch, or a throwaway-peer hack. Pair with the Filters work above for full attribution integrity once both land.
 
 ## Worked examples
 
@@ -372,7 +338,7 @@ These follow-up ADRs and design decisions are tracked but not decided here:
 - Unix socket connect. Listener reads `SO_PEERCRED`, finds OS user `quill`. `IdentityProvider::Local(...)` returns principal `local:quill`, scope `owner`.
 - Desktop UI opens the notebook via the daemon. Daemon stands up a WASM peer with actor `local:quill/desktop:7f3a`.
 - Claude (via MCP) joins the same room from the same machine. Claude's MCP process connects on the same Unix socket; its principal is also `local:quill`. It picks operator `agent:claude:s1`. Actor label `local:quill/agent:claude:s1`.
-- Both connections write changes. Validator checks `principal == "local:quill"` on every incoming change. Passes for both.
+- Both connections write changes. The room-host enforces scope at frame ingress (both are `owner` scope so both can write NotebookDoc and RuntimeStateDoc). Actor labels are not validated per change in v1 (see Limitations).
 - Presence shows two operators under one principal. UI can render "quill (Desktop)" and "quill (Claude)" by reading the operator suffix.
 
 ### quill editing an Anaconda-hosted notebook
@@ -380,7 +346,7 @@ These follow-up ADRs and design decisions are tracked but not decided here:
 - quill's client opens an authenticated connection to the Anaconda-hosted room. The transport (browser-direct WebSocket, local-daemon proxy, native client, etc.) is a deployment-topology concern, separate from identity.
 - Anaconda's room-host validates the credential. Returns principal `user:anaconda:550e...`. Looks the principal up in the room's ACL, finds scope `editor`.
 - The client stands up a WASM peer in the hosted room with actor `user:anaconda:550e.../desktop:7f3a`.
-- Edits flow over the established connection. The room's validator checks `principal == "user:anaconda:550e..."` on every incoming change. Passes.
+- Edits flow over the established connection. Scope-level frame checks pass (editor may send `0x00` and `0x05` with changes). Actor labels are not validated per change in v1 (see Limitations).
 - The same process may simultaneously have an untitled local notebook open in a separate connection. That connection authenticates as `local:quill` against the local daemon. Two rooms, two ACLs, two separately authenticated connections.
 
 ### Claude editing the Anaconda-hosted notebook on quill's behalf
@@ -405,7 +371,7 @@ This section records the audit against Automerge and automerge-repo so the trust
 
 **Actor IDs are self-attested in Automerge.** An Automerge `Change` carries an `actor_id` set by the author at write time. Automerge does not cryptographically bind the actor to anything; it uses the actor only for change ordering and conflict resolution. Two clients must not use the same actor concurrently or `(actor_id, seq)` collisions break CRDT correctness. The `<principal>/<operator>` format includes a `<session-uuid>` in the operator suffix, so uniqueness is preserved when a single user runs multiple operators in parallel. Compatible.
 
-**Sync messages enumerate new changes pre-apply, with chunk parsing required.** `automerge::sync::Message.changes` is `ChunkList(Vec<Vec<u8>>)` (raw chunk bytes), not pre-parsed `Change`s. The validator parses each chunk (V1: one `Change` per chunk via `Change::try_from`; V2: whole-doc chunks may need `load_incremental` into a throwaway peer), subtracts changes already present in the room by hash, and only then walks the actor IDs of the genuinely new changes. The validator runs before `receive_sync_message`. Compatible with the underlying Automerge sync surface; the missing helper (`sync_message_new_changes`) is a candidate for upstream contribution.
+**No actor-label validation per change in v1.** `automerge::sync::Message.changes` is `ChunkList(Vec<Vec<u8>>)`, raw chunk bytes that are not pre-parsed `Change`s. Pre-apply actor-label enforcement would require parsing each chunk (V1: one `Change` per chunk via `Change::try_from`; V2: whole-doc chunks need `load_incremental` into a throwaway peer), filtering by known hashes, then walking actor IDs. We deliberately defer this work (see Limitations) and rely on connect-time auth + scope-based frame checks. The shape is compatible with the underlying Automerge sync surface for when we do add it; a pre-apply hook or a public `parse_change_chunks` would be the natural upstream contribution.
 
 **Hash-pinned history is immutable.** Each `Change` references its parents by hash. A peer cannot rewrite history without changing every downstream hash, which then fails the room's existing heads check. The validator only needs to guard *new* changes; historical changes are protected by hash chaining. Compatible.
 
@@ -422,7 +388,7 @@ This section records the audit against Automerge and automerge-repo so the trust
 - `crates/notebook-wire/AGENTS.md` - frame types and v4 wire details.
 - `crates/notebook-protocol/src/connection/handshake.rs` - handshake shape.
 - `crates/runtimed/src/notebook_sync_server/peer_notebook_sync.rs` - where the per-frame validator hooks in.
-- `crates/notebook-doc/src/diff.rs:439` - `extract_change_actors`, the post-apply attribution primitive feeding `TextAttribution`. Distinct from the pre-apply enforcement primitive this ADR specifies (`sync_message_new_changes`).
+- `crates/notebook-doc/src/diff.rs:439` - `extract_change_actors`, the post-apply attribution primitive feeding `TextAttribution`. The pre-apply enforcement equivalent is deferred (see Limitations).
 - `automerge::sync::Message` (rust/automerge/src/sync.rs:516-588) - the `ChunkList` wire shape backing per-frame validation.
 - `crates/notebook-doc/src/presence.rs` - presence frame shape.
 - intheloop `backend/auth.ts`, `backend/sync.ts` - bearer-JWT validation + connection-time auth model.
