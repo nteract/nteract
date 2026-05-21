@@ -12,7 +12,7 @@ import {
   applyOutputChangeset,
   seedOutputStoresFromHandle,
 } from "./project-runtime-stores";
-import { type PoolState, setPoolState } from "./pool-state";
+import { setPoolState } from "./pool-state";
 import { setRuntimeState } from "./runtime-state";
 
 type SyncEngineStoreStreams = Pick<
@@ -51,6 +51,7 @@ export function startNotebookSyncStoreBridge(
 ): NotebookSyncStoreBridge {
   let interactiveReady = false;
   let latestSessionStatus: SessionStatus | null = null;
+  let stopped = false;
   const subscription = new Subscription();
 
   const resetReadiness = () => {
@@ -89,8 +90,14 @@ export function startNotebookSyncStoreBridge(
       options
         .materializeCells(handle)
         .then(() => {
+          if (stopped) return;
           interactiveReady = true;
           const cellIdList = [...handle.get_cell_ids()];
+          // `initialSyncComplete$` fires when the notebook doc is interactive,
+          // not when RuntimeStateDoc has finished bootstrapping. Seeding the
+          // outputs/executions stores from the notebook handle here preserves
+          // eager output visibility until the authoritative runtime-state
+          // projection lands via `executionViewChanges$` / `outputIdChanges$`.
           applyExecutionViewChangeset(options.projectExecutionViewChangeset(handle));
           seedOutputStoresFromHandle(handle, cellIdList);
           options.refreshCanAcceptCellMutations(handle);
@@ -101,6 +108,7 @@ export function startNotebookSyncStoreBridge(
           logger.info("[automerge-notebook] Interactive materialization done");
         })
         .catch((err: unknown) => {
+          if (stopped) return;
           logger.warn("[automerge-notebook] initial materialize failed:", err);
           options.setLoadError(err instanceof Error ? err.message : String(err));
           options.setIsLoading(false);
@@ -108,6 +116,8 @@ export function startNotebookSyncStoreBridge(
     }),
   );
 
+  // `concatMap` serializes the async work: if a batch awaits blob resolution,
+  // subsequent batches queue rather than overlapping store writes.
   subscription.add(
     options.engine.cellChanges$
       .pipe(
@@ -119,14 +129,16 @@ export function startNotebookSyncStoreBridge(
               outputCache: options.outputCache,
             })
               .then(() => {
+                if (stopped) return;
                 const handle = options.getHandle();
                 if (!handle) return;
                 options.refreshCanAcceptCellMutations(handle);
                 applyExecutionViewChangeset(options.projectExecutionViewChangeset(handle));
               })
-              .catch((err: unknown) =>
-                logger.warn("[automerge-notebook] materialize changeset failed:", err),
-              ),
+              .catch((err: unknown) => {
+                if (stopped) return;
+                logger.warn("[automerge-notebook] materialize changeset failed:", err);
+              }),
           ),
         ),
       )
@@ -150,20 +162,18 @@ export function startNotebookSyncStoreBridge(
 
   subscription.add(
     options.engine.outputIdChanges$.subscribe(({ changed, removed_ids }) => {
-      if (changed.length === 0 && removed_ids.length === 0) return;
       void applyOutputChangeset(changed, removed_ids).catch((err) =>
         logger.warn("[automerge-notebook] output store projection failed:", err),
       );
     }),
   );
 
-  subscription.add(
-    options.engine.poolState$.subscribe((state) => setPoolState(state as PoolState)),
-  );
+  subscription.add(options.engine.poolState$.subscribe((state) => setPoolState(state)));
 
   return {
     resetReadiness,
     stop() {
+      stopped = true;
       subscription.unsubscribe();
     },
   };

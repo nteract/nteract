@@ -290,6 +290,7 @@ describe("startNotebookSyncStoreBridge", () => {
     await flushMicrotasks();
 
     expect(refreshCanAcceptCellMutations).toHaveBeenCalledWith(handle);
+    expect(refreshCanAcceptCellMutations).toHaveBeenCalledTimes(2);
     expect(projectExecutionViewChangeset).toHaveBeenCalledTimes(2);
     expect(mocks.applyExecutionViewChangeset).toHaveBeenCalledTimes(2);
 
@@ -344,6 +345,60 @@ describe("startNotebookSyncStoreBridge", () => {
     expect(setIsLoading).not.toHaveBeenCalled();
 
     bridge.stop();
+  });
+
+  it("ignores in-flight materializeCells result if stopped before it resolves", async () => {
+    const materialize = deferred();
+    const materializeCells = vi.fn(() => materialize.promise);
+    const { bridge, setIsLoading, setLoadError, subjects } = startBridge({ materializeCells });
+
+    subjects.initialSyncComplete$.next();
+    await flushMicrotasks();
+    setIsLoading.mockClear();
+    setLoadError.mockClear();
+
+    bridge.stop();
+    materialize.resolve();
+    await flushMicrotasks();
+
+    expect(mocks.applyExecutionViewChangeset).not.toHaveBeenCalled();
+    expect(mocks.seedOutputStoresFromHandle).not.toHaveBeenCalled();
+    expect(mocks.notifyMetadataChanged).not.toHaveBeenCalled();
+    expect(setIsLoading).not.toHaveBeenCalled();
+    expect(setLoadError).not.toHaveBeenCalled();
+  });
+
+  it("ignores in-flight materializeChangeset result if stopped before it resolves", async () => {
+    const work = deferred();
+    mocks.materializeChangeset.mockImplementationOnce(() => work.promise);
+    const { bridge, projectExecutionViewChangeset, refreshCanAcceptCellMutations, subjects } =
+      startBridge();
+
+    subjects.cellChanges$.next(null);
+    expect(mocks.materializeChangeset).toHaveBeenCalledTimes(1);
+
+    bridge.stop();
+    work.resolve();
+    await flushMicrotasks();
+
+    expect(refreshCanAcceptCellMutations).not.toHaveBeenCalled();
+    expect(projectExecutionViewChangeset).not.toHaveBeenCalled();
+    expect(mocks.applyExecutionViewChangeset).not.toHaveBeenCalled();
+  });
+
+  it("ignores in-flight materializeChangeset errors if stopped before rejection", async () => {
+    const work = deferred();
+    mocks.materializeChangeset.mockImplementationOnce(() => work.promise);
+    const { bridge, subjects } = startBridge();
+
+    subjects.cellChanges$.next(null);
+    expect(mocks.materializeChangeset).toHaveBeenCalledTimes(1);
+
+    bridge.stop();
+    work.reject(new Error("late materialize failure"));
+    await flushMicrotasks();
+
+    expect(mocks.logger.warn).not.toHaveBeenCalled();
   });
 
   it("unsubscribes all app-store routes when stopped", async () => {
