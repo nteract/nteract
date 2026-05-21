@@ -1,14 +1,8 @@
 import { startRelayBootstrapCoordinator, useNotebookHost } from "@nteract/notebook-host";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NotebookTransport, SessionStatus, SyncableHandle } from "runtimed";
-import {
-  NotebookHandleHost,
-  SyncEngine,
-  isDisplayCapableJupyterOutput,
-  isInitialLoadFailed,
-  isInitialLoadStreaming,
-} from "runtimed";
-import { concatMap, from, Observable } from "rxjs";
+import { NotebookHandleHost, SyncEngine, isDisplayCapableJupyterOutput } from "runtimed";
+import { Observable } from "rxjs";
 import { needsPlugin, preWarmForMimes } from "@/components/isolated/iframe-libraries";
 import {
   getBlobPort,
@@ -16,7 +10,6 @@ import {
   refreshBlobPort,
   refreshBlobResolver,
 } from "../lib/blob-port";
-import { materializeChangeset } from "../lib/frame-pipeline";
 import { logger } from "../lib/logger";
 import {
   type CellSnapshot,
@@ -33,16 +26,14 @@ import {
 } from "../lib/notebook-cells";
 import {
   applyExecutionViewChangeset,
-  applyOutputChangeset,
   resetRuntimeStoresProjection,
-  seedOutputStoresFromHandle,
 } from "../lib/project-runtime-stores";
 import { updateOutputsByDisplayId } from "../lib/notebook-outputs";
 import { cloneNotebookFile, openNotebookFile, saveNotebook } from "../lib/notebook-file-ops";
-import { emitBroadcast, emitPresence } from "../lib/notebook-frame-bus";
-import { notifyMetadataChanged, setNotebookHandle } from "../lib/notebook-metadata";
-import { type PoolState, resetPoolState, setPoolState } from "../lib/pool-state";
-import { resetRuntimeState, setRuntimeState, useRuntimeState } from "../lib/runtime-state";
+import { setNotebookHandle } from "../lib/notebook-metadata";
+import { resetPoolState } from "../lib/pool-state";
+import { resetRuntimeState, useRuntimeState } from "../lib/runtime-state";
+import { startNotebookSyncStoreBridge } from "../lib/notebook-sync-store-bridge";
 import type { JupyterOutput, NotebookCell } from "../types";
 import init, {
   encode_heartbeat_presence,
@@ -98,8 +89,6 @@ export function useAutomergeNotebook() {
   const handleRef = useRef<NotebookHandle | null>(null);
   const sessionIdRef = useRef(crypto.randomUUID().slice(0, 8));
   const outputCacheRef = useRef<Map<string, JupyterOutput>>(new Map());
-  const interactiveReadyRef = useRef(false);
-  const latestSessionStatusRef = useRef<SessionStatus | null>(null);
   const prevPathRef = useRef<string | null>(null);
 
   const [handleHost] = useState(
@@ -230,8 +219,6 @@ export function useAutomergeNotebook() {
       const bootstrapped = await handleHost.bootstrap(isCancelled);
       if (!bootstrapped) return false;
 
-      interactiveReadyRef.current = false;
-      latestSessionStatusRef.current = null;
       setCanAcceptCellMutations(false);
       setLoadError(null);
       setIsLoading(true);
@@ -280,116 +267,16 @@ export function useAutomergeNotebook() {
     // Start the engine (subscribes to transport frames).
     engine.start();
 
-    // ── Subscribe to SyncEngine observables ───────────────────────
-
-    const sessionStatusSub = engine.sessionStatus$.subscribe((status) => {
-      latestSessionStatusRef.current = status;
-
-      if (isInitialLoadFailed(status.initial_load)) {
-        logger.warn("[automerge-notebook] Initial load failed:", status.initial_load.reason);
-        setLoadError(status.initial_load.reason);
-        setIsLoading(false);
-        return;
-      }
-
-      setLoadError(null);
-      refreshCanAcceptCellMutations();
-      if (interactiveReadyRef.current) {
-        setIsLoading(isInitialLoadStreaming(status.initial_load));
-      }
+    const storeBridge = startNotebookSyncStoreBridge({
+      engine,
+      getHandle: () => handleHost.current,
+      materializeCells,
+      outputCache: outputCacheRef.current,
+      projectExecutionViewChangeset,
+      refreshCanAcceptCellMutations,
+      setIsLoading,
+      setLoadError,
     });
-
-    // Initial sync completion → full materialization.
-    const initialSyncSub = engine.initialSyncComplete$.subscribe(() => {
-      logger.info("[automerge-notebook] Notebook interactive, materializing");
-      const handle = handleHost.current;
-      if (handle) {
-        materializeCells(handle)
-          .then(() => {
-            interactiveReadyRef.current = true;
-            const cellIdList = [...handle.get_cell_ids()];
-            // Seed the shared execution view from WASM. The projector reads
-            // NotebookDoc pointers and whichever RuntimeStateDoc snapshot has
-            // already arrived, so the browser store does not need a separate
-            // materialization pass.
-            applyExecutionViewChangeset(projectExecutionViewChangeset(handle));
-            // Seed the outputs / executions stores straight from the
-            // notebook doc. `initialSyncComplete$` fires when the
-            // notebook doc is interactive, not when RuntimeStateDoc is
-            // necessarily finished bootstrapping, so this preserves
-            // existing eager output visibility until the authoritative
-            // runtime-state projection lands.
-            seedOutputStoresFromHandle(handle, cellIdList);
-            refreshCanAcceptCellMutations(handle);
-            const status = latestSessionStatusRef.current;
-            setIsLoading(status ? isInitialLoadStreaming(status.initial_load) : false);
-            notifyMetadataChanged();
-            logger.info("[automerge-notebook] Interactive materialization done");
-          })
-          .catch((err: unknown) => {
-            logger.warn("[automerge-notebook] initial materialize failed:", err);
-            setLoadError(err instanceof Error ? err.message : String(err));
-            setIsLoading(false);
-          });
-      } else {
-        setIsLoading(false);
-      }
-    });
-
-    // Steady-state cell changes → incremental materialization.
-    // concatMap serializes async work — if a batch awaits blob resolution,
-    // subsequent batches queue rather than overlapping store writes.
-    const cellChangesSub = engine.cellChanges$
-      .pipe(
-        concatMap((changeset) =>
-          from(
-            materializeChangeset(changeset, {
-              getHandle: () => handleHost.current,
-              materializeCells,
-              outputCache: outputCacheRef.current,
-            })
-              .then(() => {
-                const handle = handleHost.current;
-                if (!handle) return;
-                refreshCanAcceptCellMutations(handle);
-                applyExecutionViewChangeset(projectExecutionViewChangeset(handle));
-              })
-              .catch((err: unknown) =>
-                logger.warn("[automerge-notebook] materialize changeset failed:", err),
-              ),
-          ),
-        ),
-      )
-      .subscribe();
-
-    // Broadcasts → frame bus.
-    const broadcastsSub = engine.broadcasts$.subscribe((payload) => emitBroadcast(payload));
-
-    // Presence → frame bus.
-    const presenceSub = engine.presence$.subscribe((payload) => emitPresence(payload));
-
-    // Runtime state → broad runtime store. The narrow execution and cell
-    // pointer stores are fed separately by SyncEngine.executionViewChanges$.
-    const runtimeStateSub = engine.runtimeState$.subscribe((state) => {
-      setRuntimeState(state);
-    });
-
-    const executionViewSub = engine.executionViewChanges$.subscribe((changeset) => {
-      applyExecutionViewChangeset(changeset);
-    });
-
-    // Per-output changes → outputs store. WASM narrows each manifest
-    // before emitting, so stream appends only touch the affected
-    // output's subscribers and no second state-doc walk is needed.
-    const outputIdChangesSub = engine.outputIdChanges$.subscribe(({ changed, removed_ids }) => {
-      if (changed.length === 0 && removed_ids.length === 0) return;
-      void applyOutputChangeset(changed, removed_ids).catch((err) =>
-        logger.warn("[automerge-notebook] output store projection failed:", err),
-      );
-    });
-
-    // Pool state → store.
-    const poolStateSub = engine.poolState$.subscribe((state) => setPoolState(state as PoolState));
 
     // ── Bootstrap / daemon lifecycle ─────────────────────────────
 
@@ -400,6 +287,7 @@ export function useAutomergeNotebook() {
         if (trigger.kind !== "ready") return;
 
         logger.info("[automerge-notebook] daemon:ready — bootstrapping relay generation");
+        storeBridge.resetReadiness();
         refreshBlobPort();
         resetNotebookCells();
         resetRuntimeState();
@@ -442,15 +330,7 @@ export function useAutomergeNotebook() {
       // rehearsal unmount under React StrictMode. `engine.stop()` already
       // unsubscribes the frame listener this hook installed.
 
-      initialSyncSub.unsubscribe();
-      sessionStatusSub.unsubscribe();
-      cellChangesSub.unsubscribe();
-      broadcastsSub.unsubscribe();
-      presenceSub.unsubscribe();
-      runtimeStateSub.unsubscribe();
-      executionViewSub.unsubscribe();
-      outputIdChangesSub.unsubscribe();
-      poolStateSub.unsubscribe();
+      storeBridge.stop();
       relayBootstrap.stop();
 
       engineRef.current = null;
