@@ -23,7 +23,7 @@ Every Automerge actor label is a string of the form:
 <principal>/<operator>
 ```
 
-- **Principal**: the authenticated entity. Format: `<scheme>:<scheme-specific-id>`. Examples: `local:kylekelley`, `user:anaconda:550e8400-e29b-41d4-a716-446655440000`, `hub:hub.2i2c.mybinder.org/:rgbkrk-notebooks-i28hqg97`, `system`.
+- **Principal**: the authenticated entity. Format: `<scheme>:<scheme-specific-id>`. Examples: `local:quill`, `user:anaconda:550e8400-e29b-41d4-a716-446655440000`, `hub:hub.2i2c.mybinder.org/:rgbkrk-notebooks-i28hqg97`, `system`.
 - **Operator**: the actor doing the work right now, on behalf of the principal. Self-declared by the connecting client. Convention: `<kind>:<vendor?>:<session-uuid>`. Examples: `desktop:7f3a`, `tui:9d2b`, `agent:claude:s1`, `agent:codex:s2`, `runtime:py-3.12-s4`.
 
 Slash is the delimiter, taken on the first occurrence. If a principal ever contains a literal `/` it is percent-encoded; in practice this does not arise (UUIDs, hostnames, and usernames don't contain slashes).
@@ -34,31 +34,50 @@ Worked examples are at the end of this document.
 
 ### Why two layers
 
-The principal is what the trust gate enforces. The operator is what attribution distinguishes. Conflating them, as today's `agent:claude:abc123` does, makes "Claude on kylekelley's machine" indistinguishable from "Claude on someone else's machine" and forces the trust gate into either case-by-case rules or implicit trust of operator names.
+The principal is what the trust gate enforces. The operator is what attribution distinguishes. Conflating them, as today's `agent:claude:abc123` does, makes "Claude on quill's machine" indistinguishable from "Claude on someone else's machine" and forces the trust gate into either case-by-case rules or implicit trust of operator names.
 
 This is also how Unix works. Operators are processes and principals are accounts.
 
 This also lends us to better audit logging.
 
-## Decision 2: Identity space is per-room
+## Decision 2: Rooms are entities; access is a per-room ACL
 
-Each notebook room belongs to exactly one identity space, determined by its host:
+A notebook room is an entity in its own right, identified by a host-derived URI:
 
-- A room served by the local daemon: identity space is `local:*`. Principal derived from peer credentials on the listening socket.
-- A room served by Anaconda hosted: identity space is `user:anaconda:*` for human users, plus `system` for seed actors. Principal derived from validated Anaconda credential.
-- A room served by a JupyterHub-spawned host: identity space is `hub:<hub-domain>:*`. Principal derived from validated Hub token/cookie.
+- `local-daemon:<uuid>` or `local-daemon:<path>` for rooms served by the local daemon.
+- `runtimed.com/n/<uuid>` (or similar) for Anaconda-hosted rooms.
+- `hub.example.com/<user>/n/<uuid>` for JupyterHub-spawned rooms.
 
-A connection to a room is authenticated into that room's space. The principal returned by authentication is in the room's namespace, not the client's process namespace. **One client process can hold connections to many rooms in many spaces simultaneously; each connection's principal reflects which room and how it authenticated, not which host it lives on.**
+The URI says *where the room lives*, not *who can access it*. Access is governed by a **per-room ACL** that maps principals to scopes.
 
-The validator on a room only accepts NEW changes whose actor principal matches the connection's authenticated principal (or the system seed). Historical changes already in the doc are not re-validated. They're part of Automerge's merkle DAG and immutable.
+```
+room: runtimed.com/n/9f3a...
+acl:
+  - principal: user:anaconda:550e...           scope: owner
+  - principal: user:anaconda:6611...           scope: editor
+  - principal: hub:hub.2i2c.org:rgbkrk         scope: viewer
+```
 
-### Cross-space scenarios
+The ACL can reference principals from any identity provider the host is configured to validate against. v1 deployments will typically use a single IdP per host (Anaconda hosted only validates Anaconda credentials, etc.), but that is convention, not a protocol constraint. Federation (host A trusting host B's identity claims) is a separate open follow-up.
 
-When `quill` uses their desktop to edit an Anaconda-hosted notebook, their local daemon holds an Anaconda credential (an API key in the daemon's keyring). The daemon opens an authenticated WebSocket to the Anaconda room using that credential. Anaconda validates the key, returns "you are `user:anaconda:550e...`". The daemon stands up a WASM peer in that room with actor label `user:anaconda:550e.../desktop:<session>`.
+Three properties fall out:
 
-The desktop UI process is unaware that the room is remote. It receives frames from the daemon over the existing Tauri channel. When it asks the daemon "what's my actor for this room?", the daemon answers with the Anaconda-prefixed label. The UI's WASM peer authors changes under that label. From the Anaconda room's perspective, every edit quill's desktop sends is a valid `user:anaconda:550e.../*` actor.
+1. **Room URIs are stable across ownership changes.** Changing the owner principal mutates the ACL, not the URI. Existing links keep working.
+2. **Rooms can mix principals from multiple IdPs** when the host is configured to validate more than one. Cross-IdP collaboration (e.g., an Anaconda-hosted room shared with a JupyterHub user) is a deployment decision, not a protocol invention.
+3. **Future organizational principals** (`org:acme:engineering`, group memberships, etc.) slot into the ACL as additional principal kinds without changing the wire or the validator.
 
-The daemon is a **bridge**, not an identity terminator. It can be a peer in `local:*` rooms for quill's untitled scratch notebooks and a peer in `user:anaconda:*` rooms for hosted notebooks at the same time, in the same process.
+### How authentication interacts with the ACL
+
+1. Connection opens. Listener extracts a credential; the IdP validates it and yields a principal.
+2. Room-host looks up the principal in the ACL.
+3. If the principal is in the ACL, the connection inherits the ACL-stated scope. If not, the connection is rejected (or downgraded to anonymous `viewer` if the ACL has a public-read entry).
+4. The per-frame validator continues to enforce that change actors carry the connection's authenticated principal.
+
+The validator's job does not change. What changes is that the room is no longer implicitly scoped to one IdP's principal space.
+
+### ACL mechanics (deferred)
+
+The minimum v1 ACL is a flat `Vec<(Principal, Scope)>`. The specifics of ACL editing (which principals may add/remove others), inheritance from a containing org, group expansion, anonymous public-read, and ACL persistence are deferred to a follow-up ADR. The protocol shape locked here is: rooms have ACLs, ACLs reference principals, principals authenticate against the host's configured IdPs.
 
 ## Decision 3: Authentication at connect, validation per frame
 
@@ -71,6 +90,12 @@ Authentication is connection-scoped. The IdP (Identity Provider) is consulted at
 5. Every subsequent frame is validated against the in-memory `AuthenticatedConnection`. No IdP calls.
 
 If the credential expires while connected, the connection stays open. Revocation is future work: a server-pushed `SESSION_CONTROL` close frame ends affected connections when an out-of-band signal (admin revoke, plan downgrade, sign-out) arrives. v1 assumes that anyone who authenticated continues to have access for the connection's lifetime.
+
+### What `AuthenticatedConnection` is and is not
+
+`AuthenticatedConnection` is **server-side in-memory state**, owned by the room-host, scoped to exactly one WebSocket (or Unix-socket) connection. It is not a token. It is not transferable. It cannot be presented by a client. It is created when a socket completes authentication and dropped when that socket closes.
+
+Bearer-token replay is a separate, well-known property of bearer auth: if a user's JWT is stolen, the thief can open a new socket and obtain their own `AuthenticatedConnection`. The mitigation is at the credential layer, not the connection layer (e.g., DPoP / proof-of-possession tokens, short token lifetimes, mTLS for system-to-system). v1 inherits the bearer-token threat model; tightening it is future work.
 
 ### Per-frame validator
 
@@ -272,32 +297,53 @@ The extraction logic (parse subprotocol header, look up ticket, read cookie, que
 
 ## Decision 5: Four scopes
 
-A connection carries a scope determined by the identity provider:
+A connection carries exactly one scope, determined at authentication time. The four scopes are:
 
-- `viewer` - may send and receive sync, presence, and session-control frames. Automerge sync is bidirectional even when the client never authors: a read-only consumer still negotiates heads/have/need with the server, applies incoming changes from the server, and produces reply frames (see `crates/notebook-sync/src/sync_task.rs:680-724` for the current read-only RuntimeStateDoc client doing exactly this). The trust gate enforces viewer scope at **room ingress only**: any inbound `0x00` or `0x05` frame from a viewer-scope connection whose `Message.changes` is non-empty is rejected. Empty sync-negotiation frames (heads/have/need with `ChunkList::empty()`) are accepted. Request frames are limited to read-only operations. The server's outbound to the viewer is unrestricted; the viewer receives the doc normally.
-  - Note on the upstream Automerge `read_only` API: `State::new_read_only()` and `MessageFlags::READ_ONLY` are **not** the right primitive here. Upstream `read_only` means "the holder of this state will not apply incoming changes but will still send its own" (publish-only semantics; see `rust/automerge/src/sync.rs:408` and `rust/automerge/src/sync/state.rs:65-67` in upstream). That is the inverse of what a viewer needs. The viewer's read-only-ness is a server-side authorization policy enforced at ingress, not an Automerge sync-state mode.
+- `viewer` - read-only. May send and receive sync, presence, and session-control frames, **but inbound sync frames must carry no changes**. Automerge sync is bidirectional even when the client never authors: a read-only consumer still negotiates heads/have/need with the server, applies incoming changes from the server, and produces reply frames (see `crates/notebook-sync/src/sync_task.rs:680-724`). The trust gate rejects any inbound `0x00` or `0x05` frame from a viewer connection whose `Message.changes` is non-empty; empty negotiation frames pass. Request frames are limited to read-only operations. The server's outbound to the viewer is unrestricted.
+  - Note on the upstream Automerge `read_only` API: `State::new_read_only()` and `MessageFlags::READ_ONLY` are **not** the right primitive here. Upstream `read_only` means "the holder of this state will not apply incoming changes but will still send its own" (publish-only semantics; see `rust/automerge/src/sync.rs:408` and `rust/automerge/src/sync/state.rs:65-67`). The viewer's read-only-ness is a server-side authorization policy enforced at ingress, not an Automerge sync-state mode.
 - `editor` - full live edit. Today's desktop peer.
 - `runtime_peer` - permitted to write `RuntimeStateDoc` and emit kernel lifecycle broadcasts. Cannot edit `NotebookDoc`. Used by future remote-runtime services and by JupyterHub-spawned room-hosts when they connect a kernel.
-- `owner` - editor plus publish-revisions and manage-ACLs requests.
+- `owner` - editor plus publish-revisions and manage-ACL requests.
 
-Scope is determined by the IdP at authentication. It does not need to be conveyed on the wire today; it's enforced server-side. A future protocol extension may add a `connection_scope` field to the handshake response so the client can surface scope to the UI.
+### Where scope comes from
 
-## Decision 6: Publish is import, not transformation
+Scope is determined by intersecting two sources: what the IdP says about the user (claims/roles in the validated credential) and what the room's ACL says about the principal. The narrower of the two wins. A principal that the IdP marks as `editor` but the ACL marks as `viewer` is a viewer in that room. A principal not present in the ACL at all is rejected at connection time (or downgraded to anonymous viewer if the ACL contains a public-read entry).
 
-A publish operation copies a notebook from one identity space into another. The Automerge changes carry whatever actor labels were on them when authored. The destination room's validator does not re-validate historical changes; they're part of the merkle DAG and immutable.
+### Scope enforcement points
 
-Concretely: kylekelley publishes a local untitled notebook to Anaconda.
+Scope is enforced server-side at three points, each with a clear boundary:
 
-1. Daemon collects current `NotebookDoc` heads and `RuntimeStateDoc` heads from the local room.
-2. Daemon saves both docs, writes them to R2 under `n/<id>/snapshots/<headsHash>.am`.
-3. Walk blob references using the existing GC walker, upload missing blobs by SHA-256 hash.
-4. Insert a `notebook_revisions` row in D1, update `notebooks.latest_revision_id`.
-5. Anaconda's room for that notebook now exists. Its history contains changes with actor labels like `local:kylekelley/desktop:abc`. Those labels are preserved exactly.
-6. The first post-publish edit, made via Anaconda's room, uses actor `user:anaconda:550e.../desktop:def`.
+1. **Frame ingress** (in `peer_notebook_sync.rs::handle_notebook_doc_frame` and equivalents): the validator already runs here. Extend it to consult `AuthenticatedConnection.scope` and reject frames that exceed the scope (viewer with non-empty changes, editor sending a runtime-state change, runtime_peer sending a notebook-doc change).
+2. **Request dispatch**: each `NotebookRequest` variant declares its minimum required scope via an annotation or registry lookup. The request handler rejects with a typed `Unauthorized` response before any side effect. New scope-gated requests declare their requirement at the definition site; no scattered `if scope == ...` checks elsewhere.
+3. **ACL mutations** are owner-only. The room-host enforces this at the request-dispatch layer; no in-band ACL change is honored from a non-owner connection.
 
-Attribution naturally shows the transition: pre-publish edits attributed to `local:kylekelley`, post-publish edits attributed to `user:anaconda:550e...`. This is honest about when each edit was made and in which trust context.
+### Adding new scope-gated functionality
 
-An optional "squash on publish" mode (collapse to a single fresh-doc snapshot with one synthetic publisher actor) is a future feature, not a default.
+Every new request variant or frame type must specify its required scope at the definition site. A CI lint (or a small `#[derive]` macro) verifies that every variant has a scope annotation. This makes scope creep visible in code review and prevents the "wrong layer for enforcing it" failure mode.
+
+### What does and does not appear on the wire
+
+Scope is **not** sent on the wire today. The server is the only authority. A future protocol extension may add a `connection_scope` field to the handshake response so UIs can render "read-only" badges without inferring scope from request failures. That field would be advisory; the server still enforces.
+
+## Decision 6: Publish is a fresh document in the destination space
+
+A publish operation produces a **fresh Automerge document** in the destination's identity space. Historical actor labels from the source space are not carried across the boundary.
+
+The reason is the same one that makes git commits with arbitrary `Author:` lines untrustworthy without GPG: actor labels in Automerge are self-attested. If we copied `local:quill/desktop:abc` historical changes into an Anaconda-hosted room, the room would be vouching for authorship it has no way to verify. Anyone could fabricate a doc claiming any local-space attribution and publish it. Better to make the publish boundary explicit: history-of-edits stops at the boundary, and the destination space records who *published* the snapshot, not who authored each historical edit.
+
+Concretely: quill publishes a local untitled notebook to Anaconda.
+
+1. Desktop captures the current rendered state of the local `NotebookDoc` and `RuntimeStateDoc`: cells, metadata, outputs, blob references. This is essentially the `.ipynb`-equivalent plus output blobs.
+2. The destination creates a **new** Automerge document in its own identity space. A `system/schema:notebook:vN` seed actor establishes the schema; a fresh publisher actor (`user:anaconda:550e.../publisher:<timestamp>`) authors all the imported cells, metadata, and outputs as a single round of changes.
+3. Blob references are uploaded by SHA-256 hash. R2 dedupes; the destination room references them by the same hashes.
+4. The destination registers the room in its catalog (D1 row, latest revision pointer).
+5. Future edits in the destination room author under destination-space principals normally. There are no `local:*` actors in the doc.
+
+Attribution after publish reflects what the destination can actually vouch for: "this snapshot was published by `user:anaconda:550e...` on `<timestamp>`." Per-edit history of the source notebook is not preserved. Side effects:
+
+- **Trust is honest.** A hosted deployment never carries Automerge attribution outside its own scope. Cross-IdP forgery is impossible because the destination simply does not accept foreign actor labels.
+- **History is lost on publish.** Anyone who needs the pre-publish authorship trail keeps the source notebook around (it still lives in the source space). Re-publishing produces a new snapshot in the destination; old snapshots are immutable revisions.
+- **Future cryptographic verification.** When Automerge gains signed-change support (keyhive direction; see `https://www.inkandswitch.com/keyhive/notebook/`), historical authorship from a source space could be carried across publish if every historical change is signed by its claimed author. Until then, this ADR closes the door on cross-space attribution.
 
 ## Migration
 
@@ -314,42 +360,44 @@ These follow-up ADRs and design decisions are tracked but not decided here:
 5. **Connection-scope field on the wire.** Optional handshake response field so UIs can render "read-only" badges without inferring from request failures.
 6. **Federation.** A notebook host trusting another notebook host's identity claims (e.g., JupyterHub Anaconda interop). Not v1.
 7. **`runtime_peer` connection topology.** Whether the kernel sidecar connects to the room directly with its own `runtime_peer` scope credential, or whether a separate runtime-coordination protocol relays writes. Tied to the future remote-runtime work.
+8. **Deployment topology.** How clients reach rooms (browser-direct WebSocket, local-daemon proxy, native client), where kernels run, TLS/CORS, credential keyring placement. Drafted in `docs/architecture/deployment-topology.md`.
+9. **ACL mechanics.** Editing semantics, owner transfer, group/org principals, anonymous public-read entries, persistence layout. Drafted in a separate ACL ADR (to be written).
+10. **Signed-change authorship across publish.** When Automerge gains signed changes (keyhive direction), publish flows could carry historical authorship across identity spaces with cryptographic verification. Until then, publish produces a fresh document in the destination space (see Decision 6).
+11. **Bearer-token replay mitigation.** DPoP / proof-of-possession tokens, mTLS for system-to-system, short token lifetimes. v1 inherits the bearer-token threat model; tightening it is future work.
 
 ## Worked examples
 
-### kylekelley editing a local untitled notebook
+### quill editing a local untitled notebook
 
-- Unix socket connect. Listener reads `SO_PEERCRED`, finds OS user `kylekelley`. `IdentityProvider::Local(...)` returns principal `local:kylekelley`, scope `owner`.
-- Desktop UI opens the notebook via the daemon. Daemon stands up a WASM peer with actor `local:kylekelley/desktop:7f3a`.
-- Claude (via MCP) joins the same room from the same machine. Claude's MCP process connects on the same Unix socket; its principal is also `local:kylekelley`. It picks operator `agent:claude:s1`. Actor label `local:kylekelley/agent:claude:s1`.
-- Both connections write changes. Validator checks `principal == "local:kylekelley"` on every incoming change. Passes for both.
-- Presence shows two operators under one principal. UI can render "kylekelley (Desktop)" and "kylekelley (Claude)" by reading the operator suffix.
+- Unix socket connect. Listener reads `SO_PEERCRED`, finds OS user `quill`. `IdentityProvider::Local(...)` returns principal `local:quill`, scope `owner`.
+- Desktop UI opens the notebook via the daemon. Daemon stands up a WASM peer with actor `local:quill/desktop:7f3a`.
+- Claude (via MCP) joins the same room from the same machine. Claude's MCP process connects on the same Unix socket; its principal is also `local:quill`. It picks operator `agent:claude:s1`. Actor label `local:quill/agent:claude:s1`.
+- Both connections write changes. Validator checks `principal == "local:quill"` on every incoming change. Passes for both.
+- Presence shows two operators under one principal. UI can render "quill (Desktop)" and "quill (Claude)" by reading the operator suffix.
 
-### kylekelley editing an Anaconda-hosted notebook from desktop
+### quill editing an Anaconda-hosted notebook
 
-- Desktop UI requests `anaconda://runtimed.com/n/<id>`.
-- Daemon looks up the Anaconda credential for `runtimed.com` in its keyring. Finds an API key.
-- Daemon opens WebSocket to `wss://runtimed.com/n/<id>`. Presents the key as `Authorization: Bearer ...`.
-- Anaconda's room-host validates the key against Anaconda's userinfo. Returns principal `user:anaconda:550e...`, scope `editor`.
-- Daemon stands up a WASM peer in the hosted room with actor `user:anaconda:550e.../desktop:7f3a`.
-- Edits flow desktop UI -> daemon -> WebSocket -> Anaconda room. Anaconda's validator checks `principal == "user:anaconda:550e..."` on every incoming change. Passes.
-- Same desktop simultaneously has an untitled local notebook open under `local:kylekelley/desktop:abc`. Two rooms, two identity spaces, one process.
+- quill's client opens an authenticated connection to the Anaconda-hosted room. The transport (browser-direct WebSocket, local-daemon proxy, native client, etc.) is a deployment-topology concern, separate from identity.
+- Anaconda's room-host validates the credential. Returns principal `user:anaconda:550e...`. Looks the principal up in the room's ACL, finds scope `editor`.
+- The client stands up a WASM peer in the hosted room with actor `user:anaconda:550e.../desktop:7f3a`.
+- Edits flow over the established connection. The room's validator checks `principal == "user:anaconda:550e..."` on every incoming change. Passes.
+- The same process may simultaneously have an untitled local notebook open in a separate connection. That connection authenticates as `local:quill` against the local daemon. Two rooms, two ACLs, two separately authenticated connections.
 
-### Claude editing the Anaconda-hosted notebook on kylekelley's behalf
+### Claude editing the Anaconda-hosted notebook on quill's behalf
 
-- kylekelley's Claude (running locally) wants to edit the hosted notebook.
-- Two paths:
-  - Path A: Claude talks to the local runtimed daemon, which already holds the Anaconda credential. The daemon's hosted-room connection is shared; Claude joins as a second operator on the same daemon-side WASM peer? No - one operator per connection. Cleaner path:
-  - Path B: Claude's MCP process opens its own connection to the hosted room. It needs a credential. Options: re-use the daemon's keyring (the daemon mints a derived credential and hands it to Claude for the duration of the session), or Claude has its own keyring entry. Both are valid; default to re-using the daemon's via a local credential broker.
-- Either way, Claude's connection authenticates as `user:anaconda:550e...`, with operator `agent:claude:s1`. Edits flow as `user:anaconda:550e.../agent:claude:s1`. Same principal, different operator.
+- quill's Claude (running locally) connects to the hosted room.
+- Claude's MCP process authenticates against Anaconda using a credential quill made available to it (re-using quill's session, an Anaconda API key scoped for agents, or similar; the exact credential-delegation mechanic is out of scope here).
+- Anaconda validates, returns principal `user:anaconda:550e...` (same as quill), scope `editor` (as the ACL permits).
+- Claude's actor is `user:anaconda:550e.../agent:claude:s1`. Same principal as quill's desktop session, different operator. Attribution shows both clearly; the trust gate sees them as the same principal and authorizes both.
 
-### Publishing the local notebook to Anaconda
+### Publishing a local notebook to Anaconda
 
-- kylekelley triggers "publish to Anaconda" from desktop.
-- Daemon saves local `NotebookDoc` and `RuntimeStateDoc` bytes, computes blob references via the existing GC walker.
-- Daemon uses the Anaconda credential to push snapshots to R2 and metadata to D1 via Anaconda's publish API.
-- Historical changes in the snapshot carry `local:kylekelley/*` labels. They are preserved.
-- A new room is now visible at `runtimed.com/n/<id>`. Opening it from any client follows the "editing an Anaconda-hosted notebook" path. New edits use `user:anaconda:550e.../*`. The notebook's history shows the publish transition.
+- quill triggers "publish to Anaconda" from desktop.
+- Desktop captures the current rendered state of the local `NotebookDoc` and `RuntimeStateDoc`: cells, metadata, outputs, blob references.
+- The destination (Anaconda) creates a **new** Automerge document in its space: schema-seed actor for the genesis, then a fresh publisher actor (`user:anaconda:550e.../publisher:<timestamp>`) authoring all imported cells/metadata/outputs in one round.
+- Output blobs upload by SHA-256 hash; R2 dedupes.
+- A new room appears at `runtimed.com/n/<id>` with an ACL containing quill as `owner`. Opening it follows the previous example. New edits author under `user:anaconda:550e.../*`; the destination doc contains no `local:*` actors.
+- The original local notebook is unchanged. Pre-publish authorship history lives only in the source space.
 
 ## Compatibility with Automerge semantics
 
