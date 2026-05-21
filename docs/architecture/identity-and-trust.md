@@ -23,7 +23,7 @@ Every Automerge actor label is a string of the form:
 <principal>/<operator>
 ```
 
-- **Principal**: the authenticated entity. Format: `<scheme>:<scheme-specific-id>`. Examples: `local:quill`, `user:anaconda:550e8400-e29b-41d4-a716-446655440000`, `hub:hub.2i2c.mybinder.org/:rgbkrk-notebooks-i28hqg97`, `system`.
+- **Principal**: the authenticated entity. Format: `<scheme>:<scheme-specific-id>`. Examples: `local:quill`, `user:anaconda:550e8400-e29b-41d4-a716-446655440000`, `hub:hub.2i2c.mybinder.org:rgbkrk-notebooks-i28hqg97`, `system`.
 - **Operator**: the actor doing the work right now, on behalf of the principal. Self-declared by the connecting client. Convention: `<kind>:<vendor?>:<session-uuid>`. Examples: `desktop:7f3a`, `tui:9d2b`, `agent:claude:s1`, `agent:codex:s2`, `runtime:py-3.12-s4`.
 
 Slash is the delimiter, taken on the first occurrence. If a principal ever contains a literal `/` it is percent-encoded; in practice this does not arise (UUIDs, hostnames, and usernames don't contain slashes).
@@ -301,7 +301,7 @@ A connection carries exactly one scope, determined at authentication time. The f
 
 - `viewer` - read-only. May send and receive sync, presence, and session-control frames, **but inbound sync frames must carry no changes**. Automerge sync is bidirectional even when the client never authors: a read-only consumer still negotiates heads/have/need with the server, applies incoming changes from the server, and produces reply frames (see `crates/notebook-sync/src/sync_task.rs:680-724`). The trust gate rejects any inbound `0x00` or `0x05` frame from a viewer connection whose `Message.changes` is non-empty; empty negotiation frames pass. Request frames are limited to read-only operations. The server's outbound to the viewer is unrestricted.
   - Note on the upstream Automerge `read_only` API: `State::new_read_only()` and `MessageFlags::READ_ONLY` are **not** the right primitive here. Upstream `read_only` means "the holder of this state will not apply incoming changes but will still send its own" (publish-only semantics; see `rust/automerge/src/sync.rs:408` and `rust/automerge/src/sync/state.rs:65-67`). The viewer's read-only-ness is a server-side authorization policy enforced at ingress, not an Automerge sync-state mode.
-- `editor` - full live edit. Today's desktop peer.
+- `editor` - full live edit on `NotebookDoc`, plus a narrow allowed-write surface on `RuntimeStateDoc` for widget comm state. The widget surface is `doc.comms/*/state/*`, mediated client-side by the approved comm writer (`apps/notebook/src/App.tsx:465-477`, `set_comm_state_batch` + `triggerSync`). The daemon already accepts these writes (`crates/runtimed/src/notebook_sync_server/peer_runtime_sync.rs`). Outside that subtree, editor `RuntimeStateDoc` writes are rejected. v1 enforces the subtree client-side (via the comm-writer interface) and at the server only by scope; path-level server enforcement of the `doc.comms/*/state/*` subtree is future hardening.
 - `runtime_peer` - permitted to write `RuntimeStateDoc` and emit kernel lifecycle broadcasts. Cannot edit `NotebookDoc`. Used by future remote-runtime services and by JupyterHub-spawned room-hosts when they connect a kernel.
 - `owner` - editor plus publish-revisions and manage-ACL requests.
 
@@ -313,7 +313,7 @@ Scope is determined by intersecting two sources: what the IdP says about the use
 
 Scope is enforced server-side at three points, each with a clear boundary:
 
-1. **Frame ingress** (in `peer_notebook_sync.rs::handle_notebook_doc_frame` and equivalents): the validator already runs here. Extend it to consult `AuthenticatedConnection.scope` and reject frames that exceed the scope (viewer with non-empty changes, editor sending a runtime-state change, runtime_peer sending a notebook-doc change).
+1. **Frame ingress** (in `peer_notebook_sync.rs::handle_notebook_doc_frame` and equivalents): the validator already runs here. Extend it to consult `AuthenticatedConnection.scope` and reject frames that exceed the scope: viewer with non-empty changes on any doc, runtime_peer sending changes to `NotebookDoc`. Editor writes pass at the frame layer for both docs; the `RuntimeStateDoc` subtree restriction is enforced client-side via the comm-writer interface in v1 and is a candidate for server-side path enforcement later.
 2. **Request dispatch**: each `NotebookRequest` variant declares its minimum required scope via an annotation or registry lookup. The request handler rejects with a typed `Unauthorized` response before any side effect. New scope-gated requests declare their requirement at the definition site; no scattered `if scope == ...` checks elsewhere.
 3. **ACL mutations** are owner-only. The room-host enforces this at the request-dispatch layer; no in-band ACL change is honored from a non-owner connection.
 
