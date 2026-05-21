@@ -76,17 +76,36 @@ If the credential expires while connected, the connection stays open. Revocation
 
 The validator runs inside the existing critical section in `peer_notebook_sync.rs::handle_notebook_doc_frame` between `sync::Message::decode` and `doc.receive_sync_message_recovering`. Same for `peer_runtime_sync.rs` and the presence ingress.
 
+The enforcement primitive must be **pre-apply**, i.e., walk the changes carried in the decoded `sync::Message` without touching the document. The existing `extract_change_actors` in `crates/notebook-doc/src/diff.rs:439` is post-apply: it calls `doc.get_changes(before)` against an already-mutated `AutoCommit`, which would put the trust boundary on the wrong side of the merge. The validator needs a new helper that operates on the message itself:
+
+```rust
+// new helper in notebook-doc::diff (or nearby)
+pub fn sync_message_change_actors(
+    msg: &automerge::sync::Message,
+) -> impl Iterator<Item = automerge::ActorId> + '_ {
+    msg.changes.iter().map(|change| change.actor_id().clone())
+}
+```
+
+The validator then runs strictly before `receive_sync_message_recovering`:
+
 ```rust
 // inside nteract-room-host
 impl AuthenticatedConnection {
-    pub fn validate_sync_message(&self, msg: &sync::Message) -> Result<(), UnauthorizedActor> {
-        for change in msg.changes() {
-            let actor = ActorLabel::from_id(change.actor_id());
-            if actor.principal() == "system" { continue; }
-            if actor.principal() != self.principal.as_str() {
-                return Err(UnauthorizedActor {
+    pub fn validate_sync_message(
+        &self,
+        msg: &automerge::sync::Message,
+    ) -> Result<(), UnauthorizedActor> {
+        for actor_id in sync_message_change_actors(msg) {
+            let label = ActorLabel::from_actor_id(&actor_id);
+            if label.is_genesis_schema_seed() {
+                // Frozen schema-seed actors. See "Frozen genesis actors" below.
+                return Err(UnauthorizedActor::ReservedGenesis(label));
+            }
+            if label.principal() != self.principal.as_str() {
+                return Err(UnauthorizedActor::PrincipalMismatch {
                     expected: self.principal.clone(),
-                    got: actor.principal().to_string(),
+                    got: label.principal().to_string(),
                 });
             }
         }
@@ -95,7 +114,22 @@ impl AuthenticatedConnection {
 }
 ```
 
-`extract_change_actors` at `crates/notebook-doc/src/diff.rs:439` already walks the change actors for attribution. The validator is the same primitive used for enforcement instead of display. Cost is microseconds per frame, no I/O, no extra locks.
+Cost is microseconds per frame: one `Vec` walk, one `ActorId -> ActorLabel` parse per change, no I/O, no extra locks. The decoded `sync::Message` already exists from the line above the validator call.
+
+`extract_change_actors` is kept for what it was built for (post-apply attribution into `TextAttribution`). The two helpers are different boundaries and need different signatures.
+
+### Frozen genesis actors
+
+The seed actors that establish the frozen genesis docs are not principal-prefixed:
+
+- `nteract:notebook-schema:v4` (defined at `crates/notebook-doc/src/lib.rs:79`)
+- `nteract:runtime-state-schema:v2` (defined at `crates/runtime-doc/src/doc.rs:318`)
+
+These predate this ADR. They appear only in the immutable genesis bytes that every room loads at construction; they are never authored by a live peer and should never travel inbound over a sync connection (Automerge sync's heads negotiation prevents peers from re-sending changes the room already has).
+
+The validator therefore **rejects** any inbound change whose actor is one of the known genesis labels. This is defensive: legitimate sync never carries them inbound; if one shows up it is either redundant or hostile, and rejecting it is safer than allowing it.
+
+A future schema bump (notebook v5, runtime-state v3, etc.) should adopt the new format and use `system/schema:notebook:v5` and `system/schema:runtime-state:v3` so the genesis actors are first-class within the principal model. Migration: regenerate frozen genesis bytes with the new labels at the schema-version bump; existing notebooks keep the legacy labels in their historical changes (immutable in the DAG, never validated inbound).
 
 ### Presence rewrite
 
@@ -140,13 +174,29 @@ impl IdentityProvider {
 
 Each variant's inner provider exposes its own `authenticate` as RPITIT with `+ Send`, matching the repo's existing convention (`crates/runtimed/src/kernel_connection.rs:80-98`). No `async_trait` boxing.
 
-Implementations live in their own crates so the daemon and the Worker can each pick a subset:
+**Everything lives in one crate, `nteract-identity`.** Providers are modules, not separate crates:
 
-- `nteract-identity-local` (peer creds, used by the desktop daemon)
-- `nteract-identity-oidc` (JWKS bearer, configurable issuer / scope mapping; this is how Anaconda gets covered, since Anaconda is OIDC underneath with a specific issuer URL and scope translation)
-- `nteract-identity-jupyterhub` (Hub cookie/token validated against `/hub/api/user`)
+```
+nteract-identity/
+├── lib.rs            # ActorLabel, Principal, AuthenticatedUser, AuthError, Credential, IdentityProvider enum
+├── local.rs          # LocalProvider (peer creds)
+├── oidc.rs           # OidcProvider (JWKS bearer; configurable for Anaconda, Cloudflare Access, Clerk, Auth0, Okta, WorkOS, generic OIDC)
+└── jupyterhub.rs     # JupyterHubProvider (Hub cookie/token via /hub/api/user)
+```
 
-Each implementation crate is testable in isolation against fixture credentials and a fake IdP. None of them depend on `runtimed`, `kernel-env`, or any daemon internals.
+Multi-crate decomposition (`nteract-identity-local`, `-oidc`, `-jupyterhub`) would put `Credential`, `AuthenticatedUser`, and `AuthError` in `nteract-identity` while the implementor crates also need those types; the enum then has to depend back on its implementors, producing a Cargo cycle. One crate avoids it.
+
+Provider-specific dependencies (jose, jwks, openidconnect for OIDC; reqwest for JupyterHub) are gated by Cargo features so a build that only needs `LocalProvider` does not pull them in:
+
+```toml
+[features]
+default = ["local"]
+local = []
+oidc = ["dep:openidconnect", "dep:jose"]
+jupyterhub = ["dep:reqwest"]
+```
+
+Each provider module is testable in isolation against fixture credentials and a fake IdP. The crate has no dependency on `runtimed`, `kernel-env`, or any daemon internals.
 
 **Client-side: `Credential` keyring**
 
@@ -241,6 +291,24 @@ These follow-up ADRs and design decisions are tracked but not decided here:
 - Daemon uses the Anaconda credential to push snapshots to R2 and metadata to D1 via Anaconda's publish API.
 - Historical changes in the snapshot carry `local:kylekelley/*` labels. They are preserved.
 - A new room is now visible at `runtimed.com/n/<id>`. Opening it from any client follows the "editing an Anaconda-hosted notebook" path. New edits use `user:anaconda:550e.../*`. The notebook's history shows the publish transition.
+
+## Compatibility with Automerge semantics
+
+This section records the audit against Automerge and automerge-repo so the trust model does not surprise us downstream.
+
+**Actor IDs are self-attested in Automerge.** An Automerge `Change` carries an `actor_id` set by the author at write time. Automerge does not cryptographically bind the actor to anything; it uses the actor only for change ordering and conflict resolution. Two clients must not use the same actor concurrently or `(actor_id, seq)` collisions break CRDT correctness. The `<principal>/<operator>` format includes a `<session-uuid>` in the operator suffix, so uniqueness is preserved when a single user runs multiple operators in parallel. Compatible.
+
+**Sync messages enumerate new changes pre-apply.** `automerge::sync::Message` carries a `changes: Vec<Change>` field. The validator walks that vec before calling `receive_sync_message`. This is the same surface automerge-repo's network adapters operate on. Compatible.
+
+**Hash-pinned history is immutable.** Each `Change` references its parents by hash. A peer cannot rewrite history without changing every downstream hash, which then fails the room's existing heads check. The validator only needs to guard *new* changes; historical changes are protected by hash chaining. Compatible.
+
+**automerge-repo's transport-layer trust model matches ours.** automerge-repo network adapters (WebSocket, BroadcastChannel, etc.) treat identity as a transport concern; the document layer assumes peers handed up by the adapter are legitimate. Per-room identity, connect-time auth, and per-frame actor validation slot in at the adapter/listener boundary. Compatible.
+
+**Ephemeral messages stay separate.** automerge-repo's ephemeral messages (presence-like) are out-of-band from doc state. Our presence frames (`0x04`) follow the same shape. The per-ingress rewrite of the principal prefix in presence is a server-side policy, not a CRDT operation; it does not enter the Automerge DAG. Compatible.
+
+**`set_actor` mid-session is allowed by Automerge but discouraged by us.** Automerge supports calling `set_actor` to change the actor used for subsequent changes. The trust model treats actor labels as a per-connection invariant: the operator suffix is fixed at WASM-peer construction time and not changed for the connection's life. Clients that want to write under a new operator open a new connection. This is a discipline, not an Automerge limitation.
+
+**One place where Automerge defaults differ from ours.** Out of the box, Automerge generates a random `ActorId` per `AutoCommit`. Our code overrides this with a human-readable label (`crates/notebook-doc/src/lib.rs:486-505`). The trust model continues that override and extends the label format. No change to Automerge's wire shape.
 
 ## References
 
