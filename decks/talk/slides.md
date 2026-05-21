@@ -27,11 +27,11 @@ Rich notebook outputs, embedded in a deck, without leaving the talk.
 layout: center
 ---
 
-## Dev relay status
+## Dev daemon relay status
 
 <RelayStatus />
 
-The relay is optional for these fixtures. It becomes useful when a slide needs live daemon blobs or a later notebook/session layer.
+The table slide uses the real Sift renderer path. Slidev serves the MathNet Arrow chunk; Sift WASM comes from the worktree daemon blob server.
 
 ---
 
@@ -49,7 +49,7 @@ The stream and markdown output are not decoration. They are the agent's working 
 ## What the agent actually sees
 
 <NteractOutput
-  label="ShadenA/MathNet · sample as DataFrame HTML"
+  label="ShadenA/MathNet · Arrow stream through Sift"
   fixture="mathnet-table"
 />
 

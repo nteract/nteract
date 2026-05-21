@@ -1,9 +1,11 @@
 import type { NteractEmbeddableOutput } from "../../../src/components/isolated/embeddable-output";
+import { ARROW_STREAM_MANIFEST_MIME } from "../../../src/components/isolated/output-manifest";
 import type {
   OutputBlobRef,
   OutputBlobResolver,
   OutputManifest,
 } from "../../../src/components/isolated/output-manifest";
+import { MATHNET_ARROW_BLOB, MATHNET_ARROW_PATH, MATHNET_ARROW_ROW_COUNT } from "./mathnet-arrow";
 
 const blobFixtures: Record<string, { body: string; mediaType: string }> = {
   "mathnet-problem-card": {
@@ -48,6 +50,9 @@ const blobFixtures: Record<string, { body: string; mediaType: string }> = {
 
 export const demoBlobResolver: OutputBlobResolver = {
   url(ref: OutputBlobRef) {
+    if (ref.blob === MATHNET_ARROW_BLOB && typeof window !== "undefined") {
+      return new URL(MATHNET_ARROW_PATH, window.location.origin).toString();
+    }
     return `https://example.invalid/nteract-output/${encodeURIComponent(ref.blob)}`;
   },
   async fetch(ref: OutputBlobRef) {
@@ -92,84 +97,28 @@ export const agentReplOutputs: NteractEmbeddableOutput[] = [
   } as NteractEmbeddableOutput,
 ];
 
-export const mathnetDataFrameOutput: NteractEmbeddableOutput = {
+export const mathnetDataFrameOutput: OutputManifest = {
   output_type: "execute_result",
   execution_count: 12,
   data: {
-    "text/plain":
-      "              id country competition language problem_type final_answer\\n0  mathnet-00017     USA         AMC       en      algebra           42\\n1  mathnet-00042   China         CMO       zh     geometry         4/25\\n2  mathnet-00083  Brazil         OBM       pt   combinatorics        120",
-    "text/html": `
-<style>
-  table.mathnet {
-    border-collapse: collapse;
-    font-family: var(--font-sans, system-ui, sans-serif);
-    width: 100%;
-  }
-  table.mathnet th,
-  table.mathnet td {
-    border-bottom: 1px solid color-mix(in srgb, currentColor 14%, transparent);
-    padding: 0.42rem 0.6rem;
-    text-align: left;
-    vertical-align: top;
-  }
-  table.mathnet th:first-child,
-  table.mathnet td:first-child {
-    color: #6b7280;
-    width: 2.5rem;
-  }
-  table.mathnet td.problem {
-    max-width: 30rem;
-  }
-  table.mathnet .tag {
-    background: rgb(37 99 235 / 0.08);
-    border-radius: 999px;
-    color: #1d4ed8;
-    display: inline-block;
-    font-size: 0.75rem;
-    padding: 0.1rem 0.45rem;
-  }
-</style>
-<table border="1" class="mathnet">
-  <thead>
-    <tr>
-      <th></th>
-      <th>problem_markdown</th>
-      <th>country</th>
-      <th>competition</th>
-      <th>type</th>
-      <th>final_answer</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <th>0</th>
-      <td class="problem">Find all positive integers n such that n^2 + 1 is divisible by 2n + 1.</td>
-      <td>USA</td>
-      <td>AMC</td>
-      <td><span class="tag">algebra</span></td>
-      <td>none</td>
-    </tr>
-    <tr>
-      <th>1</th>
-      <td class="problem">In triangle ABC, D and E lie on AB and AC. If DE is parallel to BC and AD:DB = 2:3, find [ADE]/[ABC].</td>
-      <td>China</td>
-      <td>CMO</td>
-      <td><span class="tag">geometry</span></td>
-      <td>4/25</td>
-    </tr>
-    <tr>
-      <th>2</th>
-      <td class="problem">How many arrangements of five students around a round table avoid adjacent twins?</td>
-      <td>Brazil</td>
-      <td>OBM</td>
-      <td><span class="tag">combinatorics</span></td>
-      <td>120</td>
-    </tr>
-  </tbody>
-</table>`,
+    [ARROW_STREAM_MANIFEST_MIME]: {
+      inline: JSON.stringify({
+        version: 1,
+        content_type: "application/vnd.apache.arrow.stream",
+        chunks: [
+          {
+            index: 0,
+            hash: MATHNET_ARROW_BLOB,
+            size: 0,
+            row_count: MATHNET_ARROW_ROW_COUNT,
+          },
+        ],
+        complete: true,
+      }),
+    },
   },
   metadata: {},
-} as NteractEmbeddableOutput;
+};
 
 export const mathnetProblemManifest: OutputManifest = {
   output_type: "display_data",

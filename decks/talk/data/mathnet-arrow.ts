@@ -1,0 +1,162 @@
+import { tableFromArrays, tableToIPC } from "apache-arrow";
+
+const mathnetRows = [
+  {
+    id: "mathnet-00017",
+    problem_markdown: "Find all positive integers n such that n^2 + 1 is divisible by 2n + 1.",
+    country: "USA",
+    competition: "AMC",
+    language: "en",
+    problem_type: "algebra",
+    final_answer: "none",
+    difficulty: 2.4,
+    has_diagram: false,
+  },
+  {
+    id: "mathnet-00042",
+    problem_markdown:
+      "In triangle ABC, D and E lie on AB and AC. If DE is parallel to BC and AD:DB = 2:3, find [ADE]/[ABC].",
+    country: "China",
+    competition: "CMO",
+    language: "zh",
+    problem_type: "geometry",
+    final_answer: "4/25",
+    difficulty: 3.1,
+    has_diagram: true,
+  },
+  {
+    id: "mathnet-00083",
+    problem_markdown:
+      "How many arrangements of five students around a round table avoid adjacent twins?",
+    country: "Brazil",
+    competition: "OBM",
+    language: "pt",
+    problem_type: "combinatorics",
+    final_answer: "120",
+    difficulty: 2.9,
+    has_diagram: false,
+  },
+  {
+    id: "mathnet-00104",
+    problem_markdown: "Let f(x) = x^2 - 5x + 6. Determine all real x for which f(f(x)) = 0.",
+    country: "India",
+    competition: "RMO",
+    language: "en",
+    problem_type: "algebra",
+    final_answer: "{2,3,?}",
+    difficulty: 2.7,
+    has_diagram: false,
+  },
+  {
+    id: "mathnet-00137",
+    problem_markdown:
+      "A circle is tangent to all three sides of a right triangle with legs 6 and 8. Find the radius.",
+    country: "USA",
+    competition: "AIME",
+    language: "en",
+    problem_type: "geometry",
+    final_answer: "2",
+    difficulty: 1.8,
+    has_diagram: true,
+  },
+  {
+    id: "mathnet-00162",
+    problem_markdown:
+      "Prove that among any seven integers there are two whose difference is divisible by 6.",
+    country: "Vietnam",
+    competition: "VMO",
+    language: "vi",
+    problem_type: "number theory",
+    final_answer: "pigeonhole",
+    difficulty: 2.2,
+    has_diagram: false,
+  },
+  {
+    id: "mathnet-00195",
+    problem_markdown: "If a_1 = 1 and a_{n+1} = 2a_n + 1, find a closed form for a_n.",
+    country: "Korea",
+    competition: "KMO",
+    language: "ko",
+    problem_type: "sequence",
+    final_answer: "2^n - 1",
+    difficulty: 1.6,
+    has_diagram: false,
+  },
+  {
+    id: "mathnet-00221",
+    problem_markdown:
+      "A quadrilateral has perpendicular diagonals of lengths 10 and 14. What is its area?",
+    country: "Poland",
+    competition: "OM",
+    language: "pl",
+    problem_type: "geometry",
+    final_answer: "70",
+    difficulty: 2.0,
+    has_diagram: true,
+  },
+  {
+    id: "mathnet-00260",
+    problem_markdown: "How many subsets of {1,2,...,10} have a sum divisible by 5?",
+    country: "Canada",
+    competition: "CMO",
+    language: "en",
+    problem_type: "combinatorics",
+    final_answer: "204",
+    difficulty: 3.4,
+    has_diagram: false,
+  },
+  {
+    id: "mathnet-00301",
+    problem_markdown: "Find all integer pairs (x,y) satisfying x^2 - y^2 = 45.",
+    country: "Mexico",
+    competition: "OMM",
+    language: "es",
+    problem_type: "number theory",
+    final_answer: "factor pairs",
+    difficulty: 2.5,
+    has_diagram: false,
+  },
+  {
+    id: "mathnet-00348",
+    problem_markdown:
+      "In a regular hexagon of side length 1, find the distance between two opposite vertices.",
+    country: "France",
+    competition: "OFM",
+    language: "fr",
+    problem_type: "geometry",
+    final_answer: "2",
+    difficulty: 1.2,
+    has_diagram: true,
+  },
+  {
+    id: "mathnet-00390",
+    problem_markdown:
+      "A polynomial with integer coefficients has roots 2 and 3. What must divide its constant term?",
+    country: "Romania",
+    competition: "RMM",
+    language: "ro",
+    problem_type: "algebra",
+    final_answer: "6",
+    difficulty: 2.1,
+    has_diagram: false,
+  },
+];
+
+export const MATHNET_ARROW_BLOB = "mathnet-arrow-demo";
+export const MATHNET_ARROW_PATH = `/__nteract_demo_blobs/${MATHNET_ARROW_BLOB}.arrow`;
+export const MATHNET_ARROW_ROW_COUNT = mathnetRows.length;
+
+export function createMathNetArrowIpc(): Uint8Array {
+  const table = tableFromArrays({
+    id: mathnetRows.map((row) => row.id),
+    problem_markdown: mathnetRows.map((row) => row.problem_markdown),
+    country: mathnetRows.map((row) => row.country),
+    competition: mathnetRows.map((row) => row.competition),
+    language: mathnetRows.map((row) => row.language),
+    problem_type: mathnetRows.map((row) => row.problem_type),
+    final_answer: mathnetRows.map((row) => row.final_answer),
+    difficulty: Float64Array.from(mathnetRows.map((row) => row.difficulty)),
+    has_diagram: mathnetRows.map((row) => row.has_diagram),
+  });
+  return tableToIPC(table, "stream");
+}

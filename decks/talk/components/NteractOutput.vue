@@ -62,7 +62,10 @@ const fixtureOutput = computed<OutputValue | undefined>(() => {
 const resolvedOutput = computed(() => props.output ?? fixtureOutput.value);
 const resolvedBlobResolver = computed(
   () =>
-    props.blobResolver ?? (props.fixture === "mathnet-problem-card" ? demoBlobResolver : undefined),
+    props.blobResolver ??
+    (props.fixture === "mathnet-problem-card" || props.fixture === "mathnet-table"
+      ? demoBlobResolver
+      : undefined),
 );
 
 const hostContext = computed<NteractEmbedHostContextPatch>(() => ({
