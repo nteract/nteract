@@ -89,7 +89,15 @@ The cheaper approach for V1-only deployments is to parse each chunk directly as 
 
 Either way, the validator must also **filter changes already present in the room by hash** before checking authorship. Heads/have negotiation should prevent re-sending known changes in normal sync, but a reconnecting peer or a peer-state reset can cause legitimate replays. Skipping known-hash changes avoids false rejections.
 
-A new helper is needed and may want an upstream Automerge contribution to expose it safely:
+### Prior art and why we still need a new helper
+
+Three adjacent efforts in the Automerge ecosystem are worth naming, because two of them are easy to confuse with this work and one is genuinely orthogonal.
+
+- **Automerge `filters` branch** (`origin/filters` in `automerge/automerge`, post-peer-review at the time of writing, see `rust/automerge/src/filter.rs`). Adds a persistent visibility filter with three rule types: `Allow`, `AllowUpTo { heads }`, `Deny`, scoped per-actor / per-author / document-default. **Critical semantic from the docstring:** "Changes that are rejected by the active filter are still ingested and synced to peers — only their effect on the rendered state is suppressed." This is subduction: changes stay in the merkle DAG, they just stop rendering. That is the right primitive for **revocation and audit** (the open follow-up below); it is not the right primitive for our trust gate, which needs to reject changes at the network boundary before they enter the doc at all. The two compose: pre-apply gate prevents storage of unauthorized changes; `Filter` (when it lands in main) gives us a way to hide previously-stored changes from a later-revoked principal without breaking causal integrity.
+- **automerge-repo `NetworkAdapter`** has no pre-apply authorization hook. `DocSynchronizer.receiveSyncMessage` applies the raw sync bytes directly. The `senderId` is available but unused for auth. If we adopt automerge-repo at any layer, the gate has to live above the synchronizer (a wrapper or a custom adapter), not inside it.
+- **Keyhive** ([inkandswitch/keyhive notebook](https://www.inkandswitch.com/keyhive/notebook/)) is orthogonal: capability-token access control and end-to-end encryption with signed changes. Our trust gate is connection-level (the server enforces who can author what); keyhive is change-level (the change itself carries a capability). They compose cleanly if we ever need E2EE or cross-host capability delegation, but neither replaces the other. v1 does not adopt keyhive.
+
+The pre-apply helper we need does not exist upstream. It is a candidate for an Automerge contribution (a hook on `receive_sync_message`, or a public `parse_change_chunks` that handles V1 and V2 chunk shapes safely). Until then, the helper lives in our tree:
 
 ```rust
 // new helper, location TBD: notebook-doc::diff, runtime-doc, or nteract-room-host
@@ -302,7 +310,7 @@ These follow-up ADRs and design decisions are tracked but not decided here:
 1. **Room-host crate extraction.** Pulling `runtimed::notebook_sync_server::room` into `nteract-room-host` with pluggable `Listener` and `SnapshotStore` traits. Tracked in a separate ADR.
 2. **Identity provider selection for Anaconda hosted v1.** Likely OIDC against Anaconda's existing SSO. Confirmed when the runtimed.com prototype lands.
 3. **Anonymous viewer scope.** Whether read-only public publish URLs require a session or run un-authenticated under a synthetic `system:anonymous` principal.
-4. **Revocation signal.** The exact `SESSION_CONTROL` close frame and the channel for admin revokes / plan downgrades.
+4. **Revocation signal and historical-change subduction.** Two parts. First, the wire signal: the exact `SESSION_CONTROL` close frame and the channel for admin revokes / plan downgrades. Second, what happens to changes a revoked principal already authored. The Automerge `filters` work (`origin/filters` branch, `rust/automerge/src/filter.rs`) is the natural primitive: install a `Filter::with_author(revoked, Rule::AllowUpTo { heads: validated })` to subduct edits authored after revocation while keeping causal integrity intact. Wait for `filters` to land in main before depending on it; until then, revocation is a hard connection close with no post-hoc audit hiding.
 5. **Connection-scope field on the wire.** Optional handshake response field so UIs can render "read-only" badges without inferring from request failures.
 6. **Federation.** A notebook host trusting another notebook host's identity claims (e.g., JupyterHub Anaconda interop). Not v1.
 7. **`runtime_peer` connection topology.** Whether the kernel sidecar connects to the room directly with its own `runtime_peer` scope credential, or whether a separate runtime-coordination protocol relays writes. Tied to the future remote-runtime work.
@@ -372,3 +380,6 @@ This section records the audit against Automerge and automerge-repo so the trust
 - intheloop `backend/auth.ts`, `backend/sync.ts` - bearer-JWT validation + connection-time auth model.
 - runtimed/anaconda `api_key.ts` - Anaconda userinfo validation + scope mapping.
 - JupyterHub `jupyterhub/services/auth.py` - Hub cookie/token validation, no `X-Forwarded-User`.
+- Automerge `filters` branch (`origin/filters` on `automerge/automerge`), specifically `rust/automerge/src/filter.rs` - the subduction primitive that complements (but does not replace) our pre-apply gate, and the natural home for runtime revocation.
+- automerge-repo `DocSynchronizer.receiveSyncMessage` and `NetworkAdapterInterface` - confirms there is no built-in per-message authorization hook; any gate has to sit above the synchronizer.
+- Keyhive notebook: https://www.inkandswitch.com/keyhive/notebook/ - capability + E2EE; orthogonal to connection-level trust, composable later.
