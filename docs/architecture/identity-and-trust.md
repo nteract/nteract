@@ -1,7 +1,7 @@
 # Identity and Trust for nteract Notebook Rooms
 
 **Status:** Accepted, 2026-05-21.
-**Supersedes:** drafts at #2657 (web-sync-engine architecture) and #2761 (SwiftUI viewer + bearer-token endpoint). Both can be closed when this ADR lands.
+**Replaces:** drafts at #2657 (web-sync-engine architecture) and #2761 (SwiftUI viewer + bearer-token endpoint), both since closed.
 
 ## Context
 
@@ -211,6 +211,40 @@ local-socket           -> (none, peer creds used)
 ```
 
 A user adds an entry once (paste a key, OAuth flow, JupyterHub session forward) and any subsequent room-open against that host uses it.
+
+### Credential presentation on the WebSocket upgrade
+
+Browsers cannot set custom request headers on `new WebSocket(url, subprotocols)`. The credential has to arrive via one of these mechanisms, each of which the `Oidc` and `JupyterHub` providers must know how to extract from a Cloudflare Worker upgrade request:
+
+1. **Subprotocol smuggling** (the Kubernetes pattern). Client opens `new WebSocket(url, ["bearer.<base64url-token>", "nteract.v4"])`. Server reads `Sec-WebSocket-Protocol`, peels off the `bearer.*` element, validates the decoded token, and echoes back `nteract.v4` as the selected subprotocol. The token is not in the URL, not in the referer, not in server access logs. The token is still visible to any JS in the browser that can construct a WebSocket, which is the same trust boundary every other credential mechanism shares.
+
+2. **One-time ticket**. Client POSTs `/api/session-tickets` with the real bearer (header-set, normal CORS). Server returns a short-lived (~10s, single-use) ticket. Client opens `wss://host/n/<id>?ticket=<one-time>`. Server validates the ticket, consumes it, and the connection is authenticated as the original user. The real bearer never appears in the WebSocket URL. Costs one extra round trip; the server tracks outstanding tickets in memory or D1.
+
+3. **Cookie**. Browsers send cookies automatically on the WS upgrade when same-site (or with the right CORS dance). This is the path JupyterHub already provides because Hub login issues a signed session cookie. No client code needed.
+
+4. **`Authorization` header** (system-to-system only). Native clients (desktop daemon, agents, CLI) set `Authorization: Bearer ...` directly on the upgrade request. Browsers cannot. This is the trivial path for the desktop daemon connecting to an Anaconda-hosted or JupyterHub-hosted room on the user's behalf.
+
+Recommendation by provider:
+
+| Provider | Browser clients | System clients |
+|----------|-----------------|----------------|
+| `Oidc` (Anaconda, Cloudflare Access, Clerk, ...) | Subprotocol smuggling; tickets as a deployment opt-in for high-security setups | `Authorization` header |
+| `JupyterHub` | Cookie (Hub already issues one) | `Authorization` header with Hub-issued token |
+| `Local` | N/A (no WS) | Unix peer creds |
+
+The Worker DO extracts the credential at upgrade time, validates via the configured `IdentityProvider`, and rejects the upgrade with HTTP 401 (or closes immediately with a typed close code) if validation fails. After upgrade, the WebSocket carries no further auth; per-frame validation runs against the in-memory `AuthenticatedConnection`.
+
+The `Credential` enum therefore covers all of these:
+
+```rust
+pub enum Credential {
+    BearerToken(String),     // from subprotocol, ticket exchange, or Authorization header
+    Cookie(String),          // from upgrade-request cookies
+    UnixPeer(PeerCredInfo),  // SO_PEERCRED for the local daemon's listener
+}
+```
+
+The extraction logic (parse subprotocol header, look up ticket, read cookie, query peer creds) is listener-side concerns; it does not belong in the providers themselves. A `CredentialExtractor` trait sits on the listener implementation and feeds the provider a normalized `Credential`.
 
 ## Decision 5: Four scopes
 
