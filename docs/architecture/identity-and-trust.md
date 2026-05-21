@@ -76,15 +76,27 @@ If the credential expires while connected, the connection stays open. Revocation
 
 The validator runs inside the existing critical section in `peer_notebook_sync.rs::handle_notebook_doc_frame` between `sync::Message::decode` and `doc.receive_sync_message_recovering`. Same for `peer_runtime_sync.rs` and the presence ingress.
 
-The enforcement primitive must be **pre-apply**, i.e., walk the changes carried in the decoded `sync::Message` without touching the document. The existing `extract_change_actors` in `crates/notebook-doc/src/diff.rs:439` is post-apply: it calls `doc.get_changes(before)` against an already-mutated `AutoCommit`, which would put the trust boundary on the wrong side of the merge. The validator needs a new helper that operates on the message itself:
+The enforcement primitive must be **pre-apply**, i.e., it must enumerate the changes carried in the decoded `sync::Message` *before* they reach `doc.receive_sync_message_recovering`. The existing `extract_change_actors` in `crates/notebook-doc/src/diff.rs:439` is post-apply: it calls `doc.get_changes(before)` against an already-mutated `AutoCommit`, which would put the trust boundary on the wrong side of the merge.
+
+What's actually on the wire is uncomfortable. `automerge::sync::Message.changes` is `ChunkList(Vec<Vec<u8>>)`; its `iter()` yields `&[u8]`, not parsed `Change`s. Two cases need handling:
+
+1. **V1**: each chunk is one length-delimited `Change` blob. Parse each via `automerge::Change::try_from(&[u8])` to get an `ActorId` and a `ChangeHash`.
+2. **V2**: the `ChunkList` may contain a single chunk that is the output of `Automerge::save()` (a whole-document chunk), used when syncing a large slice of history. Parsing this as a single `Change` fails; it needs the document-chunk parser. See `automerge::sync::Message` docstring at sync.rs:523-528.
+
+The simplest safe approach is: load each chunk into a throwaway `Automerge` peer (`load_incremental`), enumerate the new `Change`s it now holds, and walk their actors. This is correct for both V1 and V2 but allocates a temporary doc per frame.
+
+The cheaper approach for V1-only deployments is to parse each chunk directly as a `Change`. If we keep V1 as the default wire format for hosted rooms initially (which we can, since both sides are our code), the throwaway-peer path is the fallback for V2 capability negotiation.
+
+Either way, the validator must also **filter changes already present in the room by hash** before checking authorship. Heads/have negotiation should prevent re-sending known changes in normal sync, but a reconnecting peer or a peer-state reset can cause legitimate replays. Skipping known-hash changes avoids false rejections.
+
+A new helper is needed and may want an upstream Automerge contribution to expose it safely:
 
 ```rust
-// new helper in notebook-doc::diff (or nearby)
-pub fn sync_message_change_actors(
+// new helper, location TBD: notebook-doc::diff, runtime-doc, or nteract-room-host
+pub fn sync_message_new_changes(
     msg: &automerge::sync::Message,
-) -> impl Iterator<Item = automerge::ActorId> + '_ {
-    msg.changes.iter().map(|change| change.actor_id().clone())
-}
+    have_hashes: &std::collections::HashSet<automerge::ChangeHash>,
+) -> Result<Vec<(automerge::ActorId, automerge::ChangeHash)>, ParseError>;
 ```
 
 The validator then runs strictly before `receive_sync_message_recovering`:
@@ -95,11 +107,11 @@ impl AuthenticatedConnection {
     pub fn validate_sync_message(
         &self,
         msg: &automerge::sync::Message,
+        room_known_hashes: &HashSet<ChangeHash>,
     ) -> Result<(), UnauthorizedActor> {
-        for actor_id in sync_message_change_actors(msg) {
+        for (actor_id, _hash) in sync_message_new_changes(msg, room_known_hashes)? {
             let label = ActorLabel::from_actor_id(&actor_id);
             if label.is_genesis_schema_seed() {
-                // Frozen schema-seed actors. See "Frozen genesis actors" below.
                 return Err(UnauthorizedActor::ReservedGenesis(label));
             }
             if label.principal() != self.principal.as_str() {
@@ -114,9 +126,7 @@ impl AuthenticatedConnection {
 }
 ```
 
-Cost is microseconds per frame: one `Vec` walk, one `ActorId -> ActorLabel` parse per change, no I/O, no extra locks. The decoded `sync::Message` already exists from the line above the validator call.
-
-`extract_change_actors` is kept for what it was built for (post-apply attribution into `TextAttribution`). The two helpers are different boundaries and need different signatures.
+`extract_change_actors` is kept for what it was built for (post-apply attribution into `TextAttribution`). It is **not** an enforcement primitive; the two helpers sit on different sides of the merge and have different signatures.
 
 ### Frozen genesis actors
 
@@ -133,17 +143,23 @@ A future schema bump (notebook v5, runtime-state v3, etc.) should adopt the new 
 
 ### Presence rewrite
 
-Presence frames carry `peer_id`, `peer_label`, and `actor_label`, all self-declared today. On ingress:
+Presence frames carry `peer_id`, `peer_label`, and `actor_label` (the last two optional, per `crates/notebook-doc/src/presence.rs:161, 200`). All three are self-declared today. On ingress:
 
-- Overwrite the **principal prefix** of `actor_label` with the connection's authenticated principal. Always.
-- Pass the **operator suffix** of `actor_label` through unchanged. The client picks its own operator name.
-- Pass `peer_label` (display name) through unchanged. It's UI text.
+- **`actor_label` present**: overwrite the principal prefix with the connection's authenticated principal. The operator suffix passes through unchanged.
+- **`actor_label` missing**: synthesize one from the connection's authenticated principal plus the connection-level operator declared at handshake (or, if the client never declared one, a synthetic operator built from the listener's connection id, e.g., `unknown:<connection-uuid>`). The synthesized label always has the correct principal.
+- **`actor_label` malformed** (no `/`, principal-only, or unrecognized shape): treat as missing. Synthesize as above.
+- **`peer_label` (display name)**: passes through unchanged. It's UI text.
+- **`peer_id`**: passes through unchanged. It's a transport-layer connection scope.
 
-No validation, no rejection. Just rewrite. Cheap and unforgeable.
+The principal prefix is always server-controlled; no presence ingress path lets a client choose what principal it appears as. Operator and display name are client-declared.
 
 ## Decision 4: Credentials and identity providers are separate concerns
 
-Two pluggable traits, two separate crates:
+Two concepts, two surfaces:
+
+- **Identity providers** are server-side. One closed enum in the `nteract-identity` crate. They accept a normalized `Credential` and return an `AuthenticatedUser`.
+- **Credentials** are everything else: the client-side keyring that stores them and the listener-side extractor that pulls them out of the upgrade request. Both sit outside the providers.
+
 
 **Server-side: enum dispatch** (in `nteract-identity`)
 
@@ -214,7 +230,7 @@ A user adds an entry once (paste a key, OAuth flow, JupyterHub session forward) 
 
 ### Credential presentation on the WebSocket upgrade
 
-Browsers cannot set custom request headers on `new WebSocket(url, subprotocols)`. The credential has to arrive via one of these mechanisms, each of which the `Oidc` and `JupyterHub` providers must know how to extract from a Cloudflare Worker upgrade request:
+Browsers cannot set custom request headers on `new WebSocket(url, subprotocols)`. The credential has to arrive via one of these mechanisms. Parsing each of them is a **listener-side concern**, not a provider concern: the listener (Cloudflare Worker, Unix socket, etc.) inspects the upgrade request and produces a normalized `Credential` that the provider then validates.
 
 1. **Subprotocol smuggling** (the Kubernetes pattern). Client opens `new WebSocket(url, ["bearer.<base64url-token>", "nteract.v4"])`. Server reads `Sec-WebSocket-Protocol`, peels off the `bearer.*` element, validates the decoded token, and echoes back `nteract.v4` as the selected subprotocol. The token is not in the URL, not in the referer, not in server access logs. The token is still visible to any JS in the browser that can construct a WebSocket, which is the same trust boundary every other credential mechanism shares.
 
@@ -250,7 +266,7 @@ The extraction logic (parse subprotocol header, look up ticket, read cookie, que
 
 A connection carries a scope determined by the identity provider:
 
-- `viewer` - receives sync, presence, and session-control frames. Outbound `0x00` (NotebookDoc) and `0x05` (RuntimeStateDoc) frames rejected. Requests limited to read-only.
+- `viewer` - may send and receive sync, presence, and session-control frames, **but outbound sync frames must carry no changes**. Automerge sync is bidirectional even when the client never authors: a read-only consumer still negotiates heads/have/need with the server, applies incoming changes, and produces reply frames (see `crates/notebook-sync/src/sync_task.rs:680-724` for the current read-only RuntimeStateDoc client doing exactly this). The server enforces read-only by rejecting any `0x00` or `0x05` frame from a viewer-scope connection whose `Message.changes` is non-empty. Requests limited to read-only. The viewer's server-side `peer_state` is configured so its outbound generator does not emit doc changes either, matching Automerge's `MessageFlags` read-only signal.
 - `editor` - full live edit. Today's desktop peer.
 - `runtime_peer` - permitted to write `RuntimeStateDoc` and emit kernel lifecycle broadcasts. Cannot edit `NotebookDoc`. Used by future remote-runtime services and by JupyterHub-spawned room-hosts when they connect a kernel.
 - `owner` - editor plus publish-revisions and manage-ACLs requests.
@@ -349,7 +365,8 @@ This section records the audit against Automerge and automerge-repo so the trust
 - `crates/notebook-wire/AGENTS.md` - frame types and v4 wire details.
 - `crates/notebook-protocol/src/connection/handshake.rs` - handshake shape.
 - `crates/runtimed/src/notebook_sync_server/peer_notebook_sync.rs` - where the per-frame validator hooks in.
-- `crates/notebook-doc/src/diff.rs:439` - `extract_change_actors`, the primitive for both attribution and enforcement.
+- `crates/notebook-doc/src/diff.rs:439` - `extract_change_actors`, the post-apply attribution primitive feeding `TextAttribution`. Distinct from the pre-apply enforcement primitive this ADR specifies (`sync_message_new_changes`).
+- `automerge::sync::Message` (rust/automerge/src/sync.rs:516-588) - the `ChunkList` wire shape backing per-frame validation.
 - `crates/notebook-doc/src/presence.rs` - presence frame shape.
 - intheloop `backend/auth.ts`, `backend/sync.ts` - bearer-JWT validation + connection-time auth model.
 - runtimed/anaconda `api_key.ts` - Anaconda userinfo validation + scope mapping.
