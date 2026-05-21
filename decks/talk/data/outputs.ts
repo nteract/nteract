@@ -5,7 +5,12 @@ import type {
   OutputBlobResolver,
   OutputManifest,
 } from "../../../src/components/isolated/output-manifest";
-import { MATHNET_ARROW_BLOB, MATHNET_ARROW_PATH, MATHNET_ARROW_ROW_COUNT } from "./mathnet-arrow";
+import {
+  MATHNET_AGENT_TABLE_SUMMARY,
+  MATHNET_ARROW_BLOB,
+  MATHNET_ARROW_PATH,
+  MATHNET_ARROW_ROW_COUNT,
+} from "./mathnet-arrow";
 
 const blobFixtures: Record<string, { body: string; mediaType: string }> = {
   "mathnet-problem-card": {
@@ -115,6 +120,9 @@ export const mathnetDataFrameOutput: OutputManifest = {
         ],
         complete: true,
       }),
+    },
+    "text/llm+plain": {
+      inline: MATHNET_AGENT_TABLE_SUMMARY,
     },
   },
   metadata: {},

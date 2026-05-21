@@ -1,6 +1,6 @@
 import { tableFromArrays, tableToIPC } from "apache-arrow";
 
-const mathnetRows = [
+export const mathnetRows = [
   {
     id: "mathnet-00017",
     problem_markdown: "Find all positive integers n such that n^2 + 1 is divisible by 2n + 1.",
@@ -145,6 +145,28 @@ const mathnetRows = [
 export const MATHNET_ARROW_BLOB = "mathnet-arrow-demo";
 export const MATHNET_ARROW_PATH = `/__nteract_demo_blobs/${MATHNET_ARROW_BLOB}.arrow`;
 export const MATHNET_ARROW_ROW_COUNT = mathnetRows.length;
+export const MATHNET_AGENT_TABLE_SUMMARY = [
+  `DataFrame (ShadenA/MathNet sample): ${MATHNET_ARROW_ROW_COUNT} rows x 9 columns`,
+  "",
+  "Columns: id, problem_markdown, country, competition, language,",
+  "problem_type, final_answer, difficulty, has_diagram",
+  "",
+  "Preview rows:",
+  ...mathnetRows
+    .slice(0, 3)
+    .map((row, index) =>
+      [
+        `${index}. ${row.id}`,
+        `type=${row.problem_type}`,
+        `competition=${row.competition}`,
+        `answer=${row.final_answer}`,
+        `problem="${row.problem_markdown}"`,
+      ].join(" | "),
+    ),
+  "",
+  "Agent cue: inspect problem_markdown and provenance first.",
+  "The human can use Sift for filtering, sorting, and row exploration.",
+].join("\n");
 
 export function createMathNetArrowIpc(): Uint8Array {
   const table = tableFromArrays({

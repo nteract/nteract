@@ -46,14 +46,11 @@ The stream and markdown output are not decoration. They are the agent's working 
 
 ---
 
-## What the agent actually sees
+## Same output, two consumers
 
-<NteractOutput
-  label="ShadenA/MathNet · Arrow stream through Sift"
-  fixture="mathnet-table"
-/>
+<HumanAgentTableComparison />
 
-MathNet is a better demo than a toy DataFrame: long problem text, provenance, languages, answer fields, and image-bearing rows.
+The same output carries `application/vnd.nteract.arrow-stream-manifest+json` for people and `text/llm+plain` for the agent loop.
 
 ---
 
