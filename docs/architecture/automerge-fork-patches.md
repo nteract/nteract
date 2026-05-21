@@ -10,26 +10,68 @@ Sister concern: before adding new patches we want to pull the latest upstream in
 
 ## Patches we want
 
-### 1. Public change-chunk parser on `sync::Message`
+### 1. Public receiver-context parser for sync messages
 
-Why: the room-host's pre-apply validator needs the actor IDs of new changes in an inbound sync message before merging. Today `sync::Message.changes` is `ChunkList(Vec<Vec<u8>>)` of raw chunk bytes, V1 = one `Change` per chunk, V2 = potentially a whole-doc save. The V1/V2 distinction and the bookkeeping for filtering already-known hashes are internal.
+Why: the room-host's pre-apply validator needs the actor IDs of new changes in an inbound sync message before merging. Today `sync::Message.changes` is `ChunkList(Vec<Vec<u8>>)` of raw chunk bytes, V1 = one `Change` per chunk, V2 = potentially a whole-doc save. The V1/V2 distinction, text encoding, and bookkeeping for filtering already-known hashes are internal.
+
+A `sync::Message` alone is not enough context for the robust API. V2 whole-doc chunks are reconstructed through the receiver's text encoding, and filtering duplicates is cheapest against the receiver's existing change graph. The public method should therefore live on `Automerge` and take the decoded sync message as input.
 
 Proposed API:
 
 ```rust
-impl sync::Message {
-    /// Parse change chunks in this message into Change objects without
-    /// applying them to a document. Handles V1 and V2 chunk shapes.
-    /// Returns only changes whose hash is not already in `have_hashes`,
-    /// so the caller sees just the new ones.
-    pub fn parse_new_changes(
+impl Automerge {
+    /// Parse the change chunks in `message` without applying them.
+    ///
+    /// Handles V1 change chunks, bundles, compressed changes, and V2
+    /// whole-document chunks using this document's text encoding.
+    /// Returns only changes whose hashes are not already present in
+    /// this document.
+    pub fn sync_message_new_changes(
         &self,
-        have_hashes: &HashSet<ChangeHash>,
-    ) -> Result<Vec<Change>, ReadChangeError>;
+        message: &sync::Message,
+    ) -> Result<Vec<Change>, ReadSyncMessageChangesError>;
 }
 ```
 
-Cost on the hot path: parse twice (once here, once in `receive_sync_message`). The doubled work is bounded by message size and acceptable for our scale.
+Internal implementation shape:
+
+```rust
+impl Automerge {
+    pub fn sync_message_new_changes(
+        &self,
+        message: &sync::Message,
+    ) -> Result<Vec<Change>, ReadSyncMessageChangesError> {
+        let bytes = message.changes.join();
+        let loaded = load::load_changes(
+            storage::parse::Input::new(&bytes),
+            self.text_encoding(),
+            &self.change_graph,
+        );
+        let changes = match loaded {
+            load::LoadedChanges::Complete(changes) => changes,
+            load::LoadedChanges::Partial { error, .. } => {
+                return Err(ReadSyncMessageChangesError::from(error));
+            }
+        };
+        Ok(changes
+            .into_iter()
+            .filter(|change| !self.has_change(&change.hash()))
+            .collect())
+    }
+}
+```
+
+`ReadSyncMessageChangesError` is a public error type in `automerge::sync`. It can be constructed from the crate-private load errors internally, but it must not expose crate-private types in its public variants.
+
+Cost on the hot path: parse twice (once here, once in `receive_sync_message`). The doubled work is bounded by message size and acceptable for our scale. The method must be read-only: it cannot advance sync state, mutate the document, or accept partially parsed data. The room-host validator should fail closed if this parser errors.
+
+Required fork tests:
+
+- Empty `Message.changes` returns an empty vector.
+- V1 sync message with new changes returns those `Change`s and exposes their `actor_id()`.
+- A message containing changes already present in the receiver returns an empty vector.
+- V2 whole-document sync message returns only changes missing from the receiver.
+- Malformed or partially loadable change bytes return `ReadSyncMessageChangesError` without returning the successfully parsed prefix.
 
 Upstream story: this is an additive public method with no behavior change to existing callers. Reasonable PR to submit upstream after we've got it working on our fork. If accepted, we drop our patch later.
 
@@ -64,10 +106,11 @@ Maintaining a long-lived fork is a known cost; the patches are deliberately smal
 
 ## Implementation order
 
-1. Pull latest upstream into our fork. Update `Cargo.toml` pin. Verify the workspace still builds and tests pass.
-2. Implement patch 1 on the fork. Land it behind the room-host crate extraction PR (the natural calling site).
-3. Wire the validator in `nteract-room-host` against the new helper. Identity ADR's deferred limitation closes.
-4. Watch the upstream filters PR. Revisit cherry-picking when revocation work begins.
+1. Pull latest upstream into our fork. Keep that as a fork-only maintenance PR unless the workspace pin changes.
+2. Implement patch 1 on a `nteract/automerge` branch with the tests above. Submit it upstream once the fork patch passes locally.
+3. Update this workspace's `Cargo.toml` and `Cargo.lock` to the fork commit. Verify at least `cargo test -p automerge-recovery`, `cargo test -p notebook-doc`, `cargo test -p runtime-doc`, and `cargo test -p notebook-sync`.
+4. Wire the pre-apply actor-label validator in the room-host extraction using `Automerge::sync_message_new_changes(&message)` before `receive_sync_message_recovering`. Identity ADR's deferred limitation closes only after this step lands.
+5. Watch the upstream filters PR. Revisit cherry-picking when revocation work begins.
 
 ## Out of scope here
 
