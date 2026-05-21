@@ -18,9 +18,11 @@ import {
   type IsolatedFrameHandle,
 } from "@/components/isolated";
 import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe-libraries";
+import { jupyterOutputsToRenderPayloads } from "@/components/isolated/output-payloads";
 import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-output";
 import { isSafeForMainDom } from "@/components/outputs/safe-mime-types";
 import { DEFAULT_PRIORITY, MediaRouter } from "@/components/outputs/media-router";
+import { selectMimeType } from "@/components/outputs/mime-priority";
 import { TracebackOutput } from "@/components/outputs/traceback-output";
 import { useWidgetStore } from "@/components/widgets/widget-store-context";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
@@ -175,23 +177,6 @@ interface OutputAreaProps {
  */
 function normalizeText(text: string | string[]): string {
   return Array.isArray(text) ? text.join("") : text;
-}
-
-/**
- * Select the best MIME type from available data based on priority.
- */
-function selectMimeType(
-  data: Record<string, unknown>,
-  priority: readonly string[] = DEFAULT_PRIORITY,
-): string | null {
-  const availableTypes = Object.keys(data);
-  for (const mimeType of priority) {
-    if (availableTypes.includes(mimeType) && data[mimeType] != null) {
-      return mimeType;
-    }
-  }
-  const firstAvailable = availableTypes.find((type) => data[type] != null);
-  return firstAvailable || null;
 }
 
 function isScrollPassthroughMimeType(mimeType: string): boolean {
@@ -654,70 +639,7 @@ export function OutputArea({
     // Build batch of render payloads and send atomically.
     // This avoids the clear+re-render cycle that causes DOM thrashing
     // (visible as flickering when interactive widgets update rapidly).
-    const batch: import("@/components/isolated/frame-bridge").RenderPayload[] = [];
-
-    outputs.forEach((output, index) => {
-      // output_id is the daemon-stamped UUID (non-empty invariant). Threading
-      // it through lets the iframe React key reconciliation survive
-      // display_update, stream append, and cell reorder without re-mounting
-      // sibling outputs. outputIndex stays as a fallback for render paths
-      // that don't surface an id.
-      const outputId = output.output_id;
-      if (output.output_type === "execute_result" || output.output_type === "display_data") {
-        const mimeType = selectMimeType(output.data, priority);
-        if (mimeType) {
-          batch.push({
-            mimeType,
-            data: output.data[mimeType],
-            metadata: output.metadata?.[mimeType] as Record<string, unknown> | undefined,
-            outputId,
-            cellId,
-            outputIndex: index,
-          });
-        }
-      } else if (output.output_type === "stream") {
-        batch.push({
-          mimeType: "text/plain",
-          data: normalizeText(output.text),
-          metadata: { streamName: output.name },
-          outputId,
-          cellId,
-          outputIndex: index,
-        });
-      } else if (output.output_type === "error") {
-        // Prefer the rich payload when present so mixed cells (HTML +
-        // raise, plotly + raise, widget + raise) don't downgrade to
-        // plain ANSI just because a sibling output forced iframe
-        // isolation. The iframe's OutputRenderer routes the rich MIME
-        // through TracebackOutput; without this branch we'd send
-        // text/plain and the iframe's AnsiErrorOutput fallback would
-        // win, losing the rich upgrade.
-        if (output.rich != null && typeof output.rich === "object") {
-          batch.push({
-            mimeType: "application/vnd.nteract.traceback+json",
-            data: output.rich,
-            metadata: { isError: true },
-            outputId,
-            cellId,
-            outputIndex: index,
-          });
-        } else {
-          batch.push({
-            mimeType: "text/plain",
-            data: output.traceback.join("\n"),
-            metadata: {
-              isError: true,
-              ename: output.ename,
-              evalue: output.evalue,
-              traceback: output.traceback,
-            },
-            outputId,
-            cellId,
-            outputIndex: index,
-          });
-        }
-      }
-    });
+    const batch = jupyterOutputsToRenderPayloads(outputs, { cellId, priority });
 
     frameRef.current.renderBatch(batch);
 

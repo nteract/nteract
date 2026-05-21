@@ -15,13 +15,16 @@
  * "plugin name" concept.
  */
 
-import type { IsolatedFrameHandle } from "@/components/isolated/isolated-frame";
 import { logIsolatedDiagnostic } from "@/components/isolated/diagnostics";
 import { isVegaMimeType } from "@/components/outputs/vega-mime";
 
 interface PluginModule {
   code: string;
   css?: string;
+}
+
+export interface RendererPluginTarget {
+  installRenderer(code: string, css?: string): void;
 }
 
 /** Normalize a raw virtual module import to { code, css? }. */
@@ -97,7 +100,7 @@ export function preWarmForMimes(mimes: Iterable<string>): void {
  * Idempotent per iframe — tracks what has been installed via `injectedSet`.
  */
 export async function injectPluginsForMimes(
-  frame: IsolatedFrameHandle,
+  frame: RendererPluginTarget,
   mimes: Iterable<string>,
   injectedSet: Set<string>,
 ): Promise<void> {

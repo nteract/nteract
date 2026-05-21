@@ -143,4 +143,55 @@ test.describe("Renderer plugin fixtures", () => {
     expect(contextDetails.hostWidth).toMatch(/^\d+px$/);
     expect(Number.parseInt(contextDetails.hostWidth, 10)).toBeGreaterThan(0);
   });
+
+  test("vanilla output embed renders markdown, stream, and blob-backed HTML", async ({ page }) => {
+    await page.goto("/?scenario=vanilla-embed");
+    const status = page.getByTestId("vanilla-embed-status");
+    await expect(status).toHaveAttribute("data-dark-mode", "true", { timeout: 30_000 });
+
+    const iframe = page.frameLocator('[data-testid="vanilla-embed-frame"] iframe');
+    const body = iframe.locator("body");
+    await expect(body).toContainText("vanilla stream before", { timeout: 30_000 });
+    await expect(body).toContainText("Vanilla Markdown", { timeout: 30_000 });
+    await expect(body).toContainText("Rendered by the framework-agnostic embed API", {
+      timeout: 30_000,
+    });
+    await expect(body).toContainText("a", { timeout: 30_000 });
+    await expect(body).toContainText("4", { timeout: 30_000 });
+
+    const root = iframe.locator("#root");
+    const snapshot = await root.evaluate((node) => ({
+      childCount: node.childElementCount,
+      htmlLength: node.innerHTML.length,
+    }));
+    expect(snapshot.childCount).toBeGreaterThan(0);
+    expect(snapshot.htmlLength).toBeGreaterThan(50);
+
+    const box = await page.locator('[data-testid="vanilla-embed-frame"] iframe').boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.height).toBeGreaterThan(20);
+
+    const contextDetails = await iframe.locator("html").evaluate((html) => {
+      const style = getComputedStyle(html);
+      return {
+        theme: html.getAttribute("data-theme"),
+        probe: style.getPropertyValue("--vanilla-embed-probe").trim(),
+      };
+    });
+    expect(contextDetails).toEqual({
+      theme: "dark",
+      probe: "#123456",
+    });
+  });
+
+  test("vanilla output embed disposes and remounts cleanly", async ({ page }) => {
+    await page.goto("/?scenario=vanilla-remount");
+    await expect(page.getByTestId("vanilla-remount-status")).toHaveAttribute(
+      "data-ready-count",
+      "2",
+      { timeout: 30_000 },
+    );
+    const body = page.frameLocator('[data-testid="vanilla-remount-frame"] iframe').locator("body");
+    await expect(body).toContainText("vanilla remount 1", { timeout: 30_000 });
+  });
 });

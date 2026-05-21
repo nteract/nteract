@@ -87,3 +87,34 @@ pub async fn read_resource(
         None,
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::resource_ui_meta;
+
+    #[test]
+    fn output_resource_meta_includes_blob_domains_for_mcp_ui_csp() {
+        let meta = resource_ui_meta(&Some("https://outputs.example.test".into()))
+            .expect("blob base url should produce ui metadata");
+        let ui = meta.0.get("ui").expect("ui metadata");
+        let csp = ui.get("csp").expect("csp metadata");
+
+        assert_eq!(
+            csp.get("resourceDomains")
+                .and_then(|value| value.as_array())
+                .expect("resource domains")[0],
+            "https://outputs.example.test"
+        );
+        assert_eq!(
+            csp.get("connectDomains")
+                .and_then(|value| value.as_array())
+                .expect("connect domains")[0],
+            "https://outputs.example.test"
+        );
+    }
+
+    #[test]
+    fn output_resource_meta_is_absent_without_blob_base_url() {
+        assert!(resource_ui_meta(&None).is_none());
+    }
+}
