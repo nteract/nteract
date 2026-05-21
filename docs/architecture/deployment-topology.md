@@ -1,12 +1,8 @@
 # Deployment Topology for nteract Notebook Rooms
 
-**Status:** Draft, 2026-05-21. Sibling to `docs/architecture/identity-and-trust.md`. Captures the network-routing and process-placement decisions that the identity ADR deliberately keeps out of scope.
+**Status:** Draft, 2026-05-21.
 
-## Why this is its own ADR
-
-The identity-and-trust ADR is about *who* can do *what*. That is intentionally orthogonal to *how packets get from a client to a room-host*. The latter has its own decisions: where rooms live, how clients reach them, where kernels run, what crosses an organizational/network boundary, what TLS / CORS / origin policies apply, and where credential keyrings sit.
-
-Putting both concerns into the identity ADR conflates protocol invariants with deployment choices and prevents alternative deployments (browser-direct, local-daemon-proxied, JupyterHub-spawned, etc.) from being equally valid.
+This ADR captures network-routing and process-placement decisions: where rooms live, how clients reach them, where kernels run, what crosses an organizational/network boundary, what TLS / CORS / origin policies apply, and where credential keyrings sit.
 
 ## What this ADR will cover
 
