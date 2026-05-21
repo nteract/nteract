@@ -1,15 +1,15 @@
 ---
 theme: seriph
-title: Embeddable nteract outputs
+title: Give Your Agents REPLs
 info: |
-  A fresh Slidev harness for testing nteract's framework-agnostic output embed API.
+  A fresh Slidev harness for telling the MathNet + nteract output embed story.
 class: text-center
 transition: slide-left
 ---
 
-# Embeddable nteract outputs
+# Give Your Agents REPLs
 
-Slidev using the same isolated output runtime as the notebook app.
+Rich notebook outputs, embedded in a deck, without leaving the talk.
 
 <div class="abs-br m-6 text-xl opacity-50">
   decks/talk
@@ -17,11 +17,11 @@ Slidev using the same isolated output runtime as the notebook app.
 
 ---
 
-## What this deck proves
+## The pitch
 
-- A non-React host can render notebook outputs through `createNteractOutputEmbed`
-- The iframe sandbox, renderer bundle, plugin injection, host context, resize, and teardown contract are shared
-- Blob-backed manifests use a resolver boundary instead of direct daemon coupling
+- Agents need to inspect data, not just emit prose
+- REPLs give agents a tight loop: run code, observe rich outputs, decide the next step
+- nteract outputs should embed cleanly in other hosts, starting with Slidev
 
 ---
 layout: center
@@ -35,48 +35,48 @@ The relay is optional for these fixtures. It becomes useful when a slide needs l
 
 ---
 
-## Stream plus markdown
+## A REPL is an observation loop
 
 <NteractOutput
-  label="stream + text/markdown"
-  fixture="stream-markdown"
+  label="agent REPL · stream + markdown observation"
+  fixture="agent-repl"
 />
 
-This exercises mixed output batches and the markdown renderer plugin.
+The stream and markdown output are not decoration. They are the agent's working memory made inspectable.
 
 ---
 
-## DataFrame output
+## What the agent actually sees
 
 <NteractOutput
-  label="execute_result · pandas-style HTML"
-  fixture="dataframe"
+  label="ShadenA/MathNet · sample as DataFrame HTML"
+  fixture="mathnet-table"
 />
 
-This follows the same rendered-output path used for DataFrames in notebook cells.
+MathNet is a better demo than a toy DataFrame: long problem text, provenance, languages, answer fields, and image-bearing rows.
 
 ---
 
-## Blob-backed manifest
+## Outputs need a durable content boundary
 
 <NteractOutput
-  label="display_data · manifest through fake blob resolver"
-  fixture="blob-html"
+  label="MathNet problem card · manifest through blob resolver"
+  fixture="mathnet-problem-card"
 />
 
-The resolver here is local and deterministic. A daemon blob server or signed HTTPS storage can implement the same interface.
+This fixture uses a local fake blob resolver. The same contract can point at daemon blobs today and signed HTTPS storage later.
 
 ---
 
-## Architecture boundary
+## Why this matters for embedding
 
 ```mermaid
 flowchart LR
-  Host["Slidev / external host"] --> Embed["createNteractOutputEmbed"]
-  Embed --> Runtime["IsolatedFrameRuntime"]
-  Runtime --> Frame["sandboxed nteract iframe"]
-  Embed --> Resolver["OutputBlobResolver"]
-  Resolver --> Blob["localhost daemon blobs or HTTPS storage"]
+  Agent["Agent"] --> Session["Execution session"]
+  Session --> Output["Notebook output"]
+  Output --> Embed["createNteractOutputEmbed"]
+  Embed --> Slidev["Slidev / external host"]
+  Embed --> Blob["daemon blobs or HTTPS storage"]
 ```
 
-Notebook execution stays out of this layer. The input is already-resolved output payloads, Jupyter outputs, or output manifests.
+This PR is the output surface only. Live sessions, execution targets, and notebook lookup can layer on top without changing how rendered outputs embed.

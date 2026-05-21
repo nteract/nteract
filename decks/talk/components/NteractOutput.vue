@@ -9,15 +9,15 @@ import {
 import type { OutputBlobResolver } from "../../../src/components/isolated/output-manifest";
 import type { IsolatedFrameRendererBundle } from "../../../src/components/isolated/isolated-frame-runtime";
 import {
-  blobBackedHtmlManifest,
-  dataframeOutput,
+  agentReplOutputs,
   demoBlobResolver,
-  streamAndMarkdownOutputs,
+  mathnetDataFrameOutput,
+  mathnetProblemManifest,
 } from "../data/outputs";
 
 type OutputValue = NteractEmbeddableOutput | readonly NteractEmbeddableOutput[];
 type RendererBundleModule = IsolatedFrameRendererBundle;
-type FixtureName = "stream-markdown" | "dataframe" | "blob-html";
+type FixtureName = "agent-repl" | "mathnet-table" | "mathnet-problem-card";
 
 const props = withDefaults(
   defineProps<{
@@ -48,12 +48,12 @@ const diagnostics = ref<string[]>([]);
 
 const fixtureOutput = computed<OutputValue | undefined>(() => {
   switch (props.fixture) {
-    case "stream-markdown":
-      return streamAndMarkdownOutputs;
-    case "dataframe":
-      return dataframeOutput;
-    case "blob-html":
-      return blobBackedHtmlManifest;
+    case "agent-repl":
+      return agentReplOutputs;
+    case "mathnet-table":
+      return mathnetDataFrameOutput;
+    case "mathnet-problem-card":
+      return mathnetProblemManifest;
     default:
       return undefined;
   }
@@ -61,7 +61,8 @@ const fixtureOutput = computed<OutputValue | undefined>(() => {
 
 const resolvedOutput = computed(() => props.output ?? fixtureOutput.value);
 const resolvedBlobResolver = computed(
-  () => props.blobResolver ?? (props.fixture === "blob-html" ? demoBlobResolver : undefined),
+  () =>
+    props.blobResolver ?? (props.fixture === "mathnet-problem-card" ? demoBlobResolver : undefined),
 );
 
 const hostContext = computed<NteractEmbedHostContextPatch>(() => ({
