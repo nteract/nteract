@@ -173,10 +173,10 @@ Each variant's inner provider exposes its own `authenticate` as RPITIT (Return-P
 
 ```
 nteract-identity/
-├── lib.rs            # ActorLabel, Principal, AuthenticatedUser, AuthError, Credential, IdentityProvider enum
-├── local.rs          # LocalProvider (peer creds)
-├── oidc.rs           # OidcProvider (JWKS bearer; configurable for Anaconda, Cloudflare Access, Clerk, Auth0, Okta, WorkOS, generic OIDC)
-└── jupyterhub.rs     # JupyterHubProvider (Hub cookie/token via /hub/api/user)
++-- lib.rs            # ActorLabel, Principal, AuthenticatedUser, AuthError, Credential, IdentityProvider enum
++-- local.rs          # LocalProvider (peer creds)
++-- oidc.rs           # OidcProvider (JWKS bearer; configurable for Anaconda, Cloudflare Access, Clerk, Auth0, Okta, WorkOS, generic OIDC)
+\-- jupyterhub.rs     # JupyterHubProvider (Hub cookie/token via /hub/api/user)
 ```
 
 Multi-crate decomposition (`nteract-identity-local`, `-oidc`, `-jupyterhub`) would put `Credential`, `AuthenticatedUser`, and `AuthError` in `nteract-identity` while the implementor crates also need those types; the enum then has to depend back on its implementors, producing a Cargo cycle. One crate avoids it.
