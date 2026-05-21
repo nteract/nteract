@@ -1,4 +1,5 @@
 import path from "node:path";
+import { createRequire } from "node:module";
 import { defineConfig } from "vite-plus";
 import { browserDevRelayPlugin } from "../../apps/notebook/vite-plugin-browser-relay";
 import { isolatedRendererPlugin } from "../../apps/notebook/vite-plugin-isolated-renderer";
@@ -6,6 +7,41 @@ import { createMathNetArrowIpc, MATHNET_ARROW_PATH } from "./data/mathnet-arrow"
 
 const repoRoot = path.resolve(__dirname, "../..");
 const mathnetArrowIpc = createMathNetArrowIpc();
+const requireFromConfig = createRequire(import.meta.url);
+
+interface RuntimedNodeDiscovery {
+  defaultSocketPath?: () => string;
+}
+
+interface DaemonInfo {
+  blob_port?: number;
+}
+
+function runtimedNodeSocketPath(): string | null {
+  const candidates = [
+    "@runtimed/node",
+    path.join(repoRoot, "packages/runtimed-node/src/index.cjs"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      const runtimedNode = requireFromConfig(candidate) as RuntimedNodeDiscovery;
+      const socketPath = runtimedNode.defaultSocketPath?.();
+      if (socketPath) return socketPath;
+    } catch {
+      // The local worktree package often has no native N-API build. Keep the
+      // Slidev harness usable and fall back to the same worktree cache path.
+    }
+  }
+  return null;
+}
+
+function readDaemonInfoFile(fs: typeof import("node:fs"), daemonJson: string): DaemonInfo | null {
+  try {
+    return JSON.parse(fs.readFileSync(daemonJson, "utf8")) as DaemonInfo;
+  } catch {
+    return null;
+  }
+}
 
 function cacheDir(): string {
   if (process.env.XDG_CACHE_HOME) return process.env.XDG_CACHE_HOME;
@@ -19,14 +55,17 @@ function cacheDir(): string {
 async function readDaemonInfo() {
   const fs = await import("node:fs");
   const crypto = await import("node:crypto");
+  const socketPath = runtimedNodeSocketPath();
+  if (socketPath) {
+    const daemonJson = path.join(path.dirname(socketPath), "daemon.json");
+    const daemonInfo = readDaemonInfoFile(fs, daemonJson);
+    if (daemonInfo) return daemonInfo;
+  }
+
   const namespace = process.env.RUNTIMED_CACHE_NAMESPACE ?? "runt-nightly";
   const hash = crypto.createHash("sha256").update(repoRoot).digest("hex").slice(0, 12);
   const daemonJson = path.join(cacheDir(), namespace, "worktrees", hash, "daemon.json");
-  try {
-    return JSON.parse(fs.readFileSync(daemonJson, "utf8")) as { blob_port?: number };
-  } catch {
-    return null;
-  }
+  return readDaemonInfoFile(fs, daemonJson);
 }
 
 function sendBytes(
