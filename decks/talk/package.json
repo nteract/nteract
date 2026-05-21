@@ -1,0 +1,22 @@
+{
+  "name": "@nteract/slidev-output-embed",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "slidev",
+    "build": "slidev build --out dist",
+    "export": "slidev export"
+  },
+  "dependencies": {
+    "@slidev/cli": "^52.15.2",
+    "@slidev/theme-seriph": "^0.25.0",
+    "vue": "^3.5.33"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "~5.8.3",
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.1.16",
+    "vite-plus": "0.1.16"
+  }
+}
