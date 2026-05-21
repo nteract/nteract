@@ -11,28 +11,87 @@ const requireFromConfig = createRequire(import.meta.url);
 
 interface RuntimedNodeDiscovery {
   defaultSocketPath?: () => string;
+  socketPathForChannel?: (channel: string) => string;
 }
 
 interface DaemonInfo {
   blob_port?: number;
 }
 
-function runtimedNodeSocketPath(): string | null {
+type PresentationDaemonMode = "dev" | "nightly";
+
+function presentationDaemonMode(): PresentationDaemonMode {
+  const mode = process.env.NTERACT_SLIDEV_DAEMON ?? process.env.RUNTIMED_PRESENTATION_DAEMON;
+  return mode === "nightly" ? "nightly" : "dev";
+}
+
+function withRuntimedEnv<T>(overrides: Record<string, string | undefined>, callback: () => T): T {
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(overrides)) {
+    previous.set(key, process.env[key]);
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+  try {
+    return callback();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
+function loadRuntimedNode(): RuntimedNodeDiscovery | null {
   const candidates = [
     "@runtimed/node",
     path.join(repoRoot, "packages/runtimed-node/src/index.cjs"),
   ];
   for (const candidate of candidates) {
     try {
-      const runtimedNode = requireFromConfig(candidate) as RuntimedNodeDiscovery;
-      const socketPath = runtimedNode.defaultSocketPath?.();
-      if (socketPath) return socketPath;
+      return requireFromConfig(candidate) as RuntimedNodeDiscovery;
     } catch {
       // The local worktree package often has no native N-API build. Keep the
       // Slidev harness usable and fall back to the same worktree cache path.
     }
   }
   return null;
+}
+
+function uniqueSocketPaths(paths: Array<string | null | undefined>): string[] {
+  return [...new Set(paths.filter((path): path is string => Boolean(path)))];
+}
+
+function runtimedNodeSocketPaths(): string[] {
+  const runtimedNode = loadRuntimedNode();
+  if (!runtimedNode) return [];
+
+  if (presentationDaemonMode() === "nightly") {
+    return uniqueSocketPaths([
+      withRuntimedEnv(
+        { RUNTIMED_DEV: undefined, RUNTIMED_WORKSPACE_PATH: undefined },
+        () => runtimedNode.socketPathForChannel?.("nightly") ?? runtimedNode.defaultSocketPath?.(),
+      ),
+      runtimedNode.defaultSocketPath?.(),
+    ]);
+  }
+
+  return uniqueSocketPaths([
+    // Explicit socket wins if the presenter wants to point the deck at an
+    // installed Nightly or another daemon by hand.
+    process.env.RUNTIMED_SOCKET_PATH ? runtimedNode.defaultSocketPath?.() : undefined,
+    // The talk is local-first. Prefer the worktree dev daemon so Sift and blob
+    // resources come from the same daemon used by `cargo xtask dev-daemon`.
+    withRuntimedEnv({ RUNTIMED_DEV: "1", RUNTIMED_WORKSPACE_PATH: repoRoot }, () =>
+      runtimedNode.defaultSocketPath?.(),
+    ),
+  ]);
 }
 
 function readDaemonInfoFile(fs: typeof import("node:fs"), daemonJson: string): DaemonInfo | null {
@@ -55,8 +114,7 @@ function cacheDir(): string {
 async function readDaemonInfo() {
   const fs = await import("node:fs");
   const crypto = await import("node:crypto");
-  const socketPath = runtimedNodeSocketPath();
-  if (socketPath) {
+  for (const socketPath of runtimedNodeSocketPaths()) {
     const daemonJson = path.join(path.dirname(socketPath), "daemon.json");
     const daemonInfo = readDaemonInfoFile(fs, daemonJson);
     if (daemonInfo) return daemonInfo;
