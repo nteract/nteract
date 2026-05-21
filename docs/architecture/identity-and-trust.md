@@ -111,17 +111,42 @@ No validation, no rejection. Just rewrite. Cheap and unforgeable.
 
 Two pluggable traits, two separate crates:
 
-**Server-side: `IdentityProvider`** (in `nteract-identity`)
+**Server-side: enum dispatch** (in `nteract-identity`)
+
+The provider set is small and closed; OIDC covers a broad collection of issuers (Anaconda, Cloudflare Access, Clerk, Auth0, Okta, WorkOS, generic OIDC) through configuration alone. The enum makes "which providers this build knows about" explicit in the type system, costs nothing at runtime, and avoids the `dyn`-incompatibility of Return-Position-`impl Trait`-in-Traits.
 
 ```rust
-pub trait IdentityProvider: Send + Sync {
-    async fn authenticate(&self, presented: Credential) -> Result<AuthenticatedUser, AuthError>;
+pub enum IdentityProvider {
+    Local(LocalProvider),
+    Oidc(OidcProvider),
+    JupyterHub(JupyterHubProvider),
+}
+
+impl IdentityProvider {
+    pub fn authenticate(
+        &self,
+        presented: Credential,
+    ) -> impl std::future::Future<Output = Result<AuthenticatedUser, AuthError>> + Send + '_ {
+        async move {
+            match self {
+                Self::Local(p) => p.authenticate(presented).await,
+                Self::Oidc(p) => p.authenticate(presented).await,
+                Self::JupyterHub(p) => p.authenticate(presented).await,
+            }
+        }
+    }
 }
 ```
 
-Implementations: `nteract-identity-oidc` (JWKS bearer), `nteract-identity-jupyterhub` (Hub cookie/token), `nteract-identity-anaconda` (userinfo bearer), `nteract-identity-local` (peer creds).
+Each variant's inner provider exposes its own `authenticate` as RPITIT with `+ Send`, matching the repo's existing convention (`crates/runtimed/src/kernel_connection.rs:80-98`). No `async_trait` boxing.
 
-Each implementation is its own crate, testable in isolation against fixture credentials and a fake IdP. None of them depend on `runtimed`, `kernel-env`, or any daemon internals.
+Implementations live in their own crates so the daemon and the Worker can each pick a subset:
+
+- `nteract-identity-local` (peer creds, used by the desktop daemon)
+- `nteract-identity-oidc` (JWKS bearer, configurable issuer / scope mapping; this is how Anaconda gets covered, since Anaconda is OIDC underneath with a specific issuer URL and scope translation)
+- `nteract-identity-jupyterhub` (Hub cookie/token validated against `/hub/api/user`)
+
+Each implementation crate is testable in isolation against fixture credentials and a fake IdP. None of them depend on `runtimed`, `kernel-env`, or any daemon internals.
 
 **Client-side: `Credential` keyring**
 
@@ -185,7 +210,7 @@ These follow-up ADRs and design decisions are tracked but not decided here:
 
 ### kylekelley editing a local untitled notebook
 
-- Unix socket connect. Listener reads `SO_PEERCRED`, finds OS user `kylekelley`. `IdentityProvider::local()` returns principal `local:kylekelley`, scope `owner`.
+- Unix socket connect. Listener reads `SO_PEERCRED`, finds OS user `kylekelley`. `IdentityProvider::Local(...)` returns principal `local:kylekelley`, scope `owner`.
 - Desktop UI opens the notebook via the daemon. Daemon stands up a WASM peer with actor `local:kylekelley/desktop:7f3a`.
 - Claude (via MCP) joins the same room from the same machine. Claude's MCP process connects on the same Unix socket; its principal is also `local:kylekelley`. It picks operator `agent:claude:s1`. Actor label `local:kylekelley/agent:claude:s1`.
 - Both connections write changes. Validator checks `principal == "local:kylekelley"` on every incoming change. Passes for both.
