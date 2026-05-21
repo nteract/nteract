@@ -71,9 +71,9 @@ Three properties fall out:
 1. Connection opens. Listener extracts a credential; the IdP validates it and yields a principal.
 2. Room-host looks up the principal in the ACL.
 3. If the principal is in the ACL, the connection inherits the ACL-stated scope. If not, the connection is rejected (or downgraded to anonymous `viewer` if the ACL has a public-read entry).
-4. The per-frame validator continues to enforce that change actors carry the connection's authenticated principal.
+4. The connection's `AuthenticatedConnection` carries that principal and scope for the life of the socket.
 
-The validator's job does not change. What changes is that the room is no longer implicitly scoped to one IdP's principal space.
+What this changes from the older framing: rooms are no longer implicitly scoped to one IdP's principal space. They authenticate principals from whatever IdPs the host validates against, and the per-room ACL is the source of truth for who can do what. Per-frame actor-label enforcement (ensuring the actor inside each accepted frame's changes matches the connection's principal) is deferred to the Automerge fork patch tracked in `docs/architecture/automerge-fork-patches.md`; until that lands, intra-room actor labels are best-effort (see Limitations).
 
 ### ACL mechanics (deferred)
 
@@ -287,7 +287,7 @@ Concretely: quill publishes a local untitled notebook to Anaconda.
 
 Attribution after publish reflects what the destination can actually vouch for: "this snapshot was published by `user:anaconda:550e...` on `<timestamp>`." Per-edit history of the source notebook is not preserved. Side effects:
 
-- **Trust is honest.** A hosted deployment never carries Automerge attribution outside its own scope. Cross-IdP forgery is impossible because the destination simply does not accept foreign actor labels.
+- **Import-time forgery is closed.** A hosted deployment never accepts a *published* doc that contains historical Automerge attribution from outside its own scope; the import path strips source-space history and re-authors as a fresh publisher actor. Live in-room actor spoofing by an authenticated peer is a separate concern and is deferred (see Limitations).
 - **History is lost on publish.** Anyone who needs the pre-publish authorship trail keeps the source notebook around (it still lives in the source space). Re-publishing produces a new snapshot in the destination; old snapshots are immutable revisions.
 - **Future cryptographic verification.** When Automerge gains signed-change support (keyhive direction; see `https://www.inkandswitch.com/keyhive/notebook/`), historical authorship from a source space could be carried across publish if every historical change is signed by its claimed author. Until then, this ADR closes the door on cross-space attribution.
 
@@ -302,11 +302,11 @@ The threat surface this leaves:
 | Unauthorized read | ACL check at connect | closed |
 | Unauthorized write at all | Bearer auth + ACL at connect | closed |
 | Scope escalation (viewer authoring, runtime_peer editing NotebookDoc) | Scope-based frame rejection | closed |
-| Cross-IdP forgery (e.g., a `local:*` actor showing up in an Anaconda room) | Publish-as-fresh-doc (Decision 6) | closed |
+| Import-time cross-IdP forgery (publishing a doc with historical foreign actor labels) | Publish-as-fresh-doc (Decision 6) | closed |
 | Bearer-token replay (stolen JWT opens a new socket) | DPoP / mTLS / short token lifetimes | deferred |
-| **Intra-room operator/principal spoofing** | None in v1 | **deferred** |
+| **Intra-room actor spoofing** (an authenticated peer authors a change with any operator suffix, any principal in the room's ACL, or even a foreign principal not in the ACL) | None in v1 | **deferred** |
 
-The intra-room spoofing case is the one this ADR deliberately defers. Building a pre-apply validator would require either upstream Automerge work (a hook on `receive_sync_message` or a public `parse_change_chunks` that handles V1 + V2 chunk shapes safely; `automerge::sync::Message.changes` is `ChunkList(Vec<Vec<u8>>)` with chunks that are not pre-parsed `Change`s), another patch on our existing Automerge fork, or a throwaway-peer hack that allocates a temporary doc per frame. Combined with publish-as-fresh-doc closing the cross-space leak, the remaining risk surface is bounded: an attacker must already have legitimate edit access to the room.
+The intra-room spoofing case is deferred for v1, not punted indefinitely. It covers both intra-IdP spoofing (claiming a different operator suffix or a different principal also in the room's ACL) and cross-IdP spoofing (claiming a principal not in the ACL at all, e.g., a `local:*` actor authored by an authenticated Anaconda peer). Both fall out of the same root cause: v1 does not parse Automerge `Change`s pre-apply to inspect their actor labels. Building that validator means parsing `automerge::sync::Message.changes` (`ChunkList(Vec<Vec<u8>>)` of raw chunks; V1 = one `Change` per chunk; V2 = potentially a whole-doc save), which is what the companion `automerge-fork-patches.md` ADR proposes adding to our Automerge fork. Until that patch ships, the remaining attack surface is bounded to peers who already have legitimate edit access to the room.
 
 The upstream `filters` work (`origin/filters` branch on `automerge/automerge`, post-peer-review, `rust/automerge/src/filter.rs`) gives us a complementary subduction primitive once it lands in main: `Filter::Allow / AllowUpTo { heads } / Deny` per-actor or per-author. Filters do not reject changes pre-storage (rejected changes still ingest and sync) but they hide them from rendering, which is the right primitive for runtime revocation and post-hoc audit hiding. When filters lands, pairing them with a pre-apply validator becomes the natural next step. Keyhive ([inkandswitch/keyhive notebook](https://www.inkandswitch.com/keyhive/notebook/)) is orthogonal: change-level capability tokens with signed changes; composable later if needed.
 
