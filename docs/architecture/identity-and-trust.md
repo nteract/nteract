@@ -147,7 +147,7 @@ These predate this ADR. They appear only in the immutable genesis bytes that eve
 
 The validator therefore **rejects** any inbound change whose actor is one of the known genesis labels. This is defensive: legitimate sync never carries them inbound; if one shows up it is either redundant or hostile, and rejecting it is safer than allowing it.
 
-A future schema bump (notebook v5, runtime-state v3, etc.) should adopt the new format and use `system/schema:notebook:v5` and `system/schema:runtime-state:v3` so the genesis actors are first-class within the principal model. Migration: regenerate frozen genesis bytes with the new labels at the schema-version bump; existing notebooks keep the legacy labels in their historical changes (immutable in the DAG, never validated inbound).
+As part of this work, we will make a schema bump (notebook v5, runtime-state v3, etc.) to adopt the new format and use `system/schema:notebook:v5` and `system/schema:runtime-state:v3` so the genesis actors are first-class within the principal model. Migration: regenerate frozen genesis bytes with the new labels at the schema-version bump; existing notebooks keep the legacy labels in their historical changes (immutable in the DAG, never validated inbound).
 
 ### Presence rewrite
 
@@ -171,7 +171,7 @@ Two concepts, two surfaces:
 
 **Server-side: enum dispatch** (in `nteract-identity`)
 
-The provider set is small and closed; OIDC covers a broad collection of issuers (Anaconda, Cloudflare Access, Clerk, Auth0, Okta, WorkOS, generic OIDC) through configuration alone. The enum makes "which providers this build knows about" explicit in the type system, costs nothing at runtime, and avoids the `dyn`-incompatibility of Return-Position-`impl Trait`-in-Traits.
+In order to make this easy to work with we'll have a fixed set of providers: Local, OIDC, and JupyterHub. OIDC covers a broad collection of issuers (Anaconda, Cloudflare Access, Clerk, Auth0, Okta, WorkOS, generic OIDC) through configuration alone. The enum makes "which providers this build knows about" explicit in the type system, costs nothing at runtime, and avoids the `dyn`-incompatibility of Return-Position-`impl Trait`-in-Traits.
 
 ```rust
 pub enum IdentityProvider {
@@ -196,7 +196,7 @@ impl IdentityProvider {
 }
 ```
 
-Each variant's inner provider exposes its own `authenticate` as RPITIT with `+ Send`, matching the repo's existing convention (`crates/runtimed/src/kernel_connection.rs:80-98`). No `async_trait` boxing.
+Each variant's inner provider exposes its own `authenticate` as RPITIT (Return-Position impl Trait In Traits) with `+ Send`, matching the repo's existing convention (`crates/runtimed/src/kernel_connection.rs:80-98`). No `async_trait` boxing.
 
 **Everything lives in one crate, `nteract-identity`.** Providers are modules, not separate crates:
 
