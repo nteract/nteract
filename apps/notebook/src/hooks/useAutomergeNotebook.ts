@@ -1,4 +1,4 @@
-import { useNotebookHost } from "@nteract/notebook-host";
+import { startRelayBootstrapCoordinator, useNotebookHost } from "@nteract/notebook-host";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NotebookTransport, SessionStatus, SyncableHandle } from "runtimed";
 import {
@@ -43,7 +43,6 @@ import { emitBroadcast, emitPresence } from "../lib/notebook-frame-bus";
 import { notifyMetadataChanged, setNotebookHandle } from "../lib/notebook-metadata";
 import { type PoolState, resetPoolState, setPoolState } from "../lib/pool-state";
 import { resetRuntimeState, setRuntimeState, useRuntimeState } from "../lib/runtime-state";
-import { startRelayBootstrapCoordinator } from "../lib/relay-bootstrap";
 import type { JupyterOutput, NotebookCell } from "../types";
 import init, {
   encode_heartbeat_presence,

@@ -41,3 +41,10 @@ export {
 } from "./commands";
 
 export { NotebookHostProvider, type NotebookHostProviderProps, useNotebookHost } from "./react";
+
+export {
+  startRelayBootstrapCoordinator,
+  type RelayBootstrapCoordinator,
+  type RelayBootstrapCoordinatorOptions,
+  type RelayBootstrapTrigger,
+} from "./relay-bootstrap";

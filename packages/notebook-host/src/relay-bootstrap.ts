@@ -1,4 +1,4 @@
-import type { DaemonReadyPayload, Unlisten } from "@nteract/notebook-host";
+import type { DaemonReadyPayload, Unlisten } from "./types";
 import { catchError, EMPTY, Observable, from, ignoreElements, switchMap } from "rxjs";
 
 export type RelayBootstrapTrigger = { kind: "ready"; payload: DaemonReadyPayload };
@@ -7,10 +7,7 @@ export interface RelayBootstrapCoordinatorOptions {
   onReady: (cb: (payload: DaemonReadyPayload) => void) => Unlisten;
   requiresReadyGeneration: boolean;
   beforeBootstrap?: (trigger: RelayBootstrapTrigger) => void;
-  bootstrap: (
-    isCancelled: () => boolean,
-    trigger: RelayBootstrapTrigger,
-  ) => Promise<boolean>;
+  bootstrap: (isCancelled: () => boolean, trigger: RelayBootstrapTrigger) => Promise<boolean>;
   notifyRelayReady: (generation?: number) => Promise<void>;
   onBootstrapError?: (error: unknown, trigger: RelayBootstrapTrigger) => void;
   onMissingGeneration?: (payload: DaemonReadyPayload) => void;
@@ -51,6 +48,8 @@ export function startRelayBootstrapCoordinator(
       ) {
         return;
       }
+      // Ungated browser/dev hosts do not have a generation token to dedupe on;
+      // every ready emission is treated as a real host lifecycle event.
       if (generation !== undefined) {
         latestReadyGeneration = generation;
       }

@@ -11,7 +11,8 @@
     "./tauri": "./src/tauri/index.ts"
   },
   "dependencies": {
-    "runtimed": "workspace:*"
+    "runtimed": "workspace:*",
+    "rxjs": "^7.8.2"
   },
   "peerDependencies": {
     "@tauri-apps/api": "^2.10.0",
