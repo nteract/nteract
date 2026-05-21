@@ -5,7 +5,7 @@ import { MATHNET_AGENT_TABLE_SUMMARY } from "../data/mathnet-arrow";
 <template>
   <figure class="agent-table-summary">
     <figcaption>
-      <span>Agent sees</span>
+      <span>Agent view</span>
       <code>text/llm+plain</code>
     </figcaption>
     <pre>{{ MATHNET_AGENT_TABLE_SUMMARY }}</pre>
@@ -19,7 +19,7 @@ import { MATHNET_AGENT_TABLE_SUMMARY } from "../data/mathnet-arrow";
   border-radius: 8px;
   box-shadow: 0 18px 48px rgb(15 23 42 / 0.16);
   color: #dbeafe;
-  margin: 0.35rem 0 0;
+  margin: 0;
   overflow: hidden;
   text-align: left;
 }

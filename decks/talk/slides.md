@@ -50,7 +50,7 @@ The stream and markdown output are not decoration. They are the agent's working 
 
 <HumanAgentTableComparison />
 
-The same output carries `application/vnd.nteract.arrow-stream-manifest+json` for people and `text/llm+plain` for the agent loop.
+One output carries a rich table for people and `text/llm+plain` for the agent loop.
 
 ---
 
