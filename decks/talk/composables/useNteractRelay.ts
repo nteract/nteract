@@ -1,7 +1,4 @@
-import type {
-  OutputBlobRef,
-  OutputBlobResolver,
-} from "../../../src/components/isolated/output-manifest";
+import type { OutputBlobRef, OutputBlobResolver } from "@/components/isolated/output-manifest";
 
 export interface RelayHealth {
   relay: string;

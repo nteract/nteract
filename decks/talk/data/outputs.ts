@@ -1,10 +1,10 @@
-import type { NteractEmbeddableOutput } from "../../../src/components/isolated/embeddable-output";
-import { ARROW_STREAM_MANIFEST_MIME } from "../../../src/components/isolated/output-manifest";
+import type { NteractEmbeddableOutput } from "@/components/isolated/embeddable-output";
+import { ARROW_STREAM_MANIFEST_MIME } from "@/components/isolated/output-manifest";
 import type {
   OutputBlobRef,
   OutputBlobResolver,
   OutputManifest,
-} from "../../../src/components/isolated/output-manifest";
+} from "@/components/isolated/output-manifest";
 import {
   MATHNET_AGENT_TABLE_SUMMARY,
   MATHNET_ARROW_BLOB,

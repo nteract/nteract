@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
-import type { NteractEmbeddableOutput } from "../../../src/components/isolated/embeddable-output";
-import type { NteractEmbedHostContextPatch } from "../../../src/components/isolated/host-context";
+import type { NteractEmbeddableOutput } from "@/components/isolated/embeddable-output";
+import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import {
   createNteractOutputEmbed,
   type NteractOutputEmbedHandle,
-} from "../../../src/components/isolated/output-embed";
-import type { OutputBlobResolver } from "../../../src/components/isolated/output-manifest";
-import type { IsolatedFrameRendererBundle } from "../../../src/components/isolated/isolated-frame-runtime";
+} from "@/components/isolated/output-embed";
+import type { OutputBlobResolver } from "@/components/isolated/output-manifest";
+import type { IsolatedFrameRendererBundle } from "@/components/isolated/isolated-frame-runtime";
 import {
   agentReplOutputs,
   demoBlobResolver,

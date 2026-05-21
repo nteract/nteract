@@ -25,6 +25,8 @@ function presentationDaemonMode(): PresentationDaemonMode {
   return mode === "nightly" ? "nightly" : "dev";
 }
 
+// @runtimed/node discovers sockets through process.env, so the deck briefly
+// pushes the daemon mode it wants while asking the local binding for paths.
 function withRuntimedEnv<T>(overrides: Record<string, string | undefined>, callback: () => T): T {
   const previous = new Map<string, string | undefined>();
   for (const [key, value] of Object.entries(overrides)) {

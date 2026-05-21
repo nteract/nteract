@@ -43,7 +43,7 @@ export const mathnetRows = [
     competition: "RMO",
     language: "en",
     problem_type: "algebra",
-    final_answer: "{2,3,?}",
+    final_answer: "{1,4,(5±√13)/2}",
     difficulty: 2.7,
     has_diagram: false,
   },

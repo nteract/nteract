@@ -21,13 +21,20 @@ It tells the MathNet / agents-using-REPLs story while using the current
 
 ```bash
 pnpm --dir decks/talk install
+pnpm --dir packages/runtimed-node build:debug
 pnpm --dir decks/talk dev
 ```
 
-Start the worktree daemon first. The Sift table fixture serves Arrow bytes from
-Slidev, but it loads Sift WASM from the same dev daemon blob-server surface that
-notebook outputs use:
+Start the worktree daemon first. By default, the deck uses the local
+`@runtimed/node` binding to resolve that dev daemon. Set
+`NTERACT_SLIDEV_DAEMON=nightly` or `RUNTIMED_SOCKET_PATH` when you want to point
+the presentation at an installed daemon instead.
 
 ```bash
 cargo xtask dev-daemon
 ```
+
+The deck pins `vite` to `npm:@voidzero-dev/vite-plus-core@0.1.16` because it
+reuses the same Vite plugin stack as `apps/notebook` and `apps/renderer-test`.
+The Sift table fixture serves Arrow bytes from Slidev, but loads Sift WASM from
+the daemon blob-server surface that notebook outputs use.

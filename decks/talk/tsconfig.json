@@ -17,7 +17,6 @@
   },
   "include": [
     "*.d.ts",
-    "*.md",
     "components/**/*.vue",
     "composables/**/*.ts",
     "data/**/*.ts",
