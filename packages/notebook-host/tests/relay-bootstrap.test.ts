@@ -1,10 +1,11 @@
-import type { DaemonReadyPayload, Unlisten } from "@nteract/notebook-host";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   startRelayBootstrapCoordinator,
+  type DaemonReadyPayload,
   type RelayBootstrapCoordinatorOptions,
   type RelayBootstrapTrigger,
-} from "../relay-bootstrap";
+  type Unlisten,
+} from "../src";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -226,6 +227,31 @@ describe("startRelayBootstrapCoordinator", () => {
     expect(onMissingGeneration).not.toHaveBeenCalled();
     expect(notifyRelayReady).toHaveBeenCalledTimes(1);
     expect(notifyRelayReady).toHaveBeenCalledWith(undefined);
+
+    coordinator.stop();
+  });
+
+  it("bootstraps every repeated generationless ready payload for hosts without a ready gate", async () => {
+    const ready = createReadySource();
+    const bootstrap = vi.fn(async () => true);
+    const notifyRelayReady = vi.fn(async () => {});
+
+    const coordinator = startCoordinator({
+      onReady: ready.onReady,
+      requiresReadyGeneration: false,
+      bootstrap,
+      notifyRelayReady,
+    });
+
+    ready.emit({ notebook_id: "nb-1" });
+    await flushMicrotasks();
+    ready.emit({ notebook_id: "nb-1" });
+    await flushMicrotasks();
+
+    expect(bootstrap).toHaveBeenCalledTimes(2);
+    expect(notifyRelayReady).toHaveBeenCalledTimes(2);
+    expect(notifyRelayReady).toHaveBeenNthCalledWith(1, undefined);
+    expect(notifyRelayReady).toHaveBeenNthCalledWith(2, undefined);
 
     coordinator.stop();
   });

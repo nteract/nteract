@@ -40,9 +40,11 @@ Configured in `apps/notebook/tsconfig.json`:
 
 ## Shared vs app-specific
 
-Put code in `src/` (shared) when it is a pure UI component with no Tauri/daemon dependencies, could be reused by future apps, or is a generic utility.
+Put pure reusable UI components and generic browser utilities in `src/`.
 
-Put code in `apps/notebook/src/` when it uses the `NotebookHost` interface, interacts with the daemon, or is specific to the notebook editing experience.
+Put host, transport, sync, and lifecycle mechanisms in packages such as `@nteract/notebook-host` or `@nteract/runtimed`. Package code may depend on `NotebookHost` contracts and daemon lifecycle types, but must not import app stores, routes, or React-owned notebook UI policy.
+
+Put code in `apps/notebook/src/` when it owns notebook app policy: stores, routes, layout, UI state, materialization choices, and closures that connect package mechanisms to app-specific state.
 
 ## NotebookHost — platform abstraction
 
