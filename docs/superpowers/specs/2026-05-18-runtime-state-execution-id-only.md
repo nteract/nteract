@@ -7,20 +7,23 @@ runtime execution state. Notebook cells, markdown blocks, slides, or any future
 document-specific structure should point at executions from their own document
 models instead of being embedded into the runtime-state schema.
 
-This PR implements the core RuntimeStateDoc v2 contract for the bundled
-desktop deployment. It changes the runtime-state schema, daemon queueing,
-generated protocol bindings, WASM/TypeScript projections, and native bindings.
-It intentionally does not update
-`docs/architecture/web-sync-engine-architecture.md`.
+The core RuntimeStateDoc v2 contract has landed for the bundled desktop
+deployment. Runtime-state schema, daemon queueing, generated protocol bindings,
+WASM/TypeScript projections, and native bindings now treat `execution_id` as the
+durable execution identity. The remaining work is to expose that contract
+through document-neutral execution APIs and remote-client compatibility
+boundaries.
 
-## Current Problem
+This document records both the landed design and the next architectural steps.
 
-RuntimeStateDoc still leaks notebook cell identity into durable runtime state.
-The execution records and queue state are partly shaped around `cell_id`, even
-though the durable result handle we want to support across documents is already
-`execution_id`.
+## Original Problem And Current Status
 
-That makes RuntimeStateDoc more notebook-specific than it needs to be:
+Before RuntimeStateDoc v2, runtime state leaked notebook cell identity into
+durable execution records and queue state. Execution records and queue entries
+were partly shaped around `cell_id`, even though the durable result handle we
+want to support across documents is `execution_id`.
+
+That made RuntimeStateDoc more notebook-specific than it needed to be:
 
 - A markdown file, Slidev deck, or future realtime markdown document would need
   to either pretend its executable blocks are notebook cells or introduce
@@ -31,8 +34,20 @@ That makes RuntimeStateDoc more notebook-specific than it needs to be:
   that requested execution, even though Jupyter already gives us a natural
   execution correlation key in `execute_request.header.msg_id`.
 
-The v2 contract should remove that coupling before remote compute, Swift, web,
-and markdown notebook surfaces make it harder to unwind.
+RuntimeStateDoc v2 removed the durable schema coupling:
+
+- RuntimeStateDoc queue state is now `executing_execution_id` and
+  `queued_execution_ids`.
+- RuntimeStateDoc executions are keyed by `execution_id` and no longer contain
+  `cell_id`.
+- NotebookDoc remains the notebook adapter through
+  `cells/{cell_id}.execution_id`.
+- Jupyter routing uses `execute_request.header.msg_id = execution_id`.
+
+The remaining coupling is intentionally outside the durable runtime-state
+schema: notebook protocol responses, cell-oriented helper APIs, watcher progress
+payloads, and projection adapter names still expose cells because today they
+serve the notebook UI and Python/MCP compatibility surfaces.
 
 ## Goals
 
@@ -332,15 +347,25 @@ share the same Rust projector instead of reimplementing the join:
 
 ## Remaining Follow-Up
 
-- Broaden direct execution APIs so non-notebook clients can submit by
-  execution ID without requiring a cell pointer.
+- Add an execution-ID-only watcher path so bindings can wait on
+  `execution_id` without also supplying a notebook `cell_id`. Keep the
+  cell-aware watcher as a notebook compatibility wrapper.
+- Broaden direct execution APIs so non-notebook clients can submit source by
+  execution ID without requiring a cell pointer. This should create a
+  RuntimeStateDoc execution record but not stamp a NotebookDoc cell pointer.
 - Decide whether Python and node high-level APIs should expose caller-supplied
   execution IDs, matching the TypeScript client.
+- Generalize projection terminology before another document type lands.
+  `cell_pointer_changes` can become a generic document-item pointer changeset,
+  with notebook-specific aliases kept as compatibility if needed.
 - Add remote-client schema negotiation and typed mismatch errors before Swift
   or web clients are allowed to drift independently from the daemon.
 - Extend trimming preservation discovery beyond the notebook room adapter
   before Slidev or markdown documents can hold execution references outside
   NotebookDoc cell pointers.
+- Keep iframe output embedding separate from execution. Slidev or published
+  markdown surfaces should call an execution API to produce results, then render
+  outputs through the embeddable output surface with a host-owned blob resolver.
 
 ## Test Plan
 
@@ -395,8 +420,12 @@ GET /sessions/{session_id}/executions/{execution_id}
 
 That API still needs daemon-level token creation, authentication, authorization,
 and a decision about whether direct REST execution creates document pointers or
-runtime-only records. Those decisions should build on the v2 contract rather
-than delay removing cell identity from RuntimeStateDoc.
+runtime-only records. The default should be runtime-only records; document
+adapters such as NotebookDoc, MarkdownDoc, or Slidev can opt in to storing their
+own current-execution pointer.
 
 Markdown notebooks and Slidev integration can then use the same execution
 service while keeping their own document-native pointers to current executions.
+Slidev already has a code-runner extension point, so the integration should be
+a runner that submits source to nteract and renders returned outputs, not a
+conversion layer that pretends slide code fences are notebook cells.

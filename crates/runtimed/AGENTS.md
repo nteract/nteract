@@ -48,8 +48,8 @@ The Tauri app crate (`crates/notebook/`) is glue — it wires Tauri commands to 
 Each notebook room has a daemon-authoritative **RuntimeStateDoc** — a separate Automerge document (frame type `0x05`). It tracks:
 
 - **Kernel state**: status, starting phase, name, language, env_source
-- **Execution queue**: executing cell + execution_id, queued entries as `QueueEntry { cell_id, execution_id }`
-- **Execution lifecycle**: per-execution_id map with status (`queued`/`running`/`done`/`error`), execution_count, success
+- **Execution queue**: `executing_execution_id` plus ordered `queued_execution_ids`; notebook cells point at executions from `NotebookDoc`
+- **Execution lifecycle**: per-execution_id map with status (`queued`/`running`/`done`/`error`), execution_count, success, source, outputs
 - **Environment drift**: in_sync flag, added/removed packages
 - **Trust state**: status and needs_approval flag
 
