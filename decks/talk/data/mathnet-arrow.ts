@@ -146,26 +146,23 @@ export const MATHNET_ARROW_BLOB = "mathnet-arrow-demo";
 export const MATHNET_ARROW_PATH = `/__nteract_demo_blobs/${MATHNET_ARROW_BLOB}.arrow`;
 export const MATHNET_ARROW_ROW_COUNT = mathnetRows.length;
 export const MATHNET_AGENT_TABLE_SUMMARY = [
-  `DataFrame (ShadenA/MathNet sample): ${MATHNET_ARROW_ROW_COUNT} rows x 9 columns`,
+  `DataFrame (pandas): ${MATHNET_ARROW_ROW_COUNT} rows × 9 columns`,
+  "Columns:",
+  '  - id (str) · 12 distinct, top: "mathnet-00017" (1), "mathnet-00042" (1), "mathnet-00083" (1)',
+  '  - problem_markdown (str) · 12 distinct, top: "Find all positive in…[+50 chars]" (1), "In triangle ABC, D …[+82 chars]" (1), "How many arrangement…[+61 chars]" (1)',
+  '  - country (str) · 11 distinct, top: "USA" (2), "China" (1), "Brazil" (1)',
+  '  - competition (str) · 11 distinct, top: "CMO" (2), "AMC" (1), "OBM" (1)',
+  '  - language (str) · 9 distinct, top: "en" (4), "zh" (1), "pt" (1)',
+  '  - problem_type (str) · 5 distinct, top: "geometry" (4), "algebra" (3), "combinatorics" (2)',
+  '  - final_answer (str) · 11 distinct, top: "2" (2), "none" (1), "4/25" (1)',
+  "  - difficulty (float64) · range 1.200 – 3.400",
+  "  - has_diagram (bool)",
   "",
-  "Columns: id, problem_markdown, country, competition, language,",
-  "problem_type, final_answer, difficulty, has_diagram",
-  "",
-  "Preview rows:",
-  ...mathnetRows
-    .slice(0, 3)
-    .map((row, index) =>
-      [
-        `${index}. ${row.id}`,
-        `type=${row.problem_type}`,
-        `competition=${row.competition}`,
-        `answer=${row.final_answer}`,
-        `problem="${row.problem_markdown}"`,
-      ].join(" | "),
-    ),
-  "",
-  "Agent cue: inspect problem_markdown and provenance first.",
-  "The human can use Sift for filtering, sorting, and row exploration.",
+  "Head (10):",
+  "id             problem_markdown                          country  competition  language  problem_type   final_answer  difficulty  has_diagram",
+  "mathnet-00017  Find all positive integers n…[+42 chars]  USA      AMC          en        algebra        none          2.4         False",
+  "mathnet-00042  In triangle ABC, D and E li…[+74 chars]   China    CMO          zh        geometry       4/25          3.1         True",
+  "mathnet-00083  How many arrangements of fiv…[+53 chars]  Brazil   OBM          pt        combinatorics  120           2.9         False",
 ].join("\n");
 
 export function createMathNetArrowIpc(): Uint8Array {
