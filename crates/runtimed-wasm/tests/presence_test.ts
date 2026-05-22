@@ -7,7 +7,7 @@
 
 import {
   assertEquals,
-  assertRejects,
+  assertThrows,
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
 
 // @ts-nocheck - wasm-bindgen output is browser-shaped, but Deno can run it.
@@ -153,8 +153,8 @@ Deno.test("Presence: ingress rewrite rejects client snapshots", () => {
     peers: [],
   });
 
-  assertRejects(
-    async () =>
+  assertThrows(
+    () =>
       mod.rewrite_presence_ingress(
         payload,
         "server-peer",
@@ -164,5 +164,30 @@ Deno.test("Presence: ingress rewrite rejects client snapshots", () => {
       ),
     Error,
     "snapshots",
+  );
+});
+
+Deno.test("Presence: ingress rewrite rejects client kernel-state updates", () => {
+  const payload = mod.encode_presence_frame({
+    type: "update",
+    peer_id: "client-peer",
+    channel: "kernel_state",
+    data: {
+      status: "idle",
+      env_source: "python",
+    },
+  });
+
+  assertThrows(
+    () =>
+      mod.rewrite_presence_ingress(
+        payload,
+        "server-peer",
+        "",
+        "user:dev:alice",
+        "desktop:browser",
+      ),
+    Error,
+    "kernel state",
   );
 });
