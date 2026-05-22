@@ -43,6 +43,14 @@ describe("dev identity", () => {
     assert.equal(identity.scope, "owner");
   });
 
+  it("defaults missing dev scope to viewer", () => {
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=anonymous&operator=desktop:a"),
+    );
+
+    assert.equal(identity.scope, "viewer");
+  });
+
   it("stamps and reads trusted upstream identity headers", () => {
     const request = new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a");
     const identity = authenticateDevRequest(request);

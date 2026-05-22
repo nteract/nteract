@@ -22,7 +22,7 @@ export function authenticateDevRequest(request: Request): AuthenticatedConnectio
   const principalHeader = headerOrQuery(request, url, "x-principal", "principal");
   const user = headerOrQuery(request, url, "x-user", "user") ?? "anonymous";
   const operator = headerOrQuery(request, url, "x-operator", "operator") ?? defaultOperator();
-  const scope = parseScope(headerOrQuery(request, url, "x-scope", "scope") ?? "owner");
+  const scope = parseScope(headerOrQuery(request, url, "x-scope", "scope") ?? "viewer");
   const principal = principalHeader ?? principalForDevUser(user);
 
   validatePrincipal(principal);

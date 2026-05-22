@@ -72,6 +72,8 @@ For browser-only testing, the same values can be supplied as query params:
 
 `X-Principal` or `principal` may be used to provide a full principal directly. The Worker stamps internal `x-nteract-*` headers before forwarding to the Durable Object, modeling the ADR boundary where the room host trusts an upstream-authenticated identity.
 
+If no scope is supplied, dev auth defaults to `viewer`. Write and publish paths must ask for `editor`, `runtime_peer`, or `owner` explicitly.
+
 ## Storage shape
 
 Bindings in `wrangler.toml`:
