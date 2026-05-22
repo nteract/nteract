@@ -113,7 +113,10 @@ impl LegacyOperatorActorPolicy {
 fn fallback_operator(kind: &str) -> Operator {
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let value = format!("{kind}:{}", &suffix[..8]);
-    Operator::new(value).expect("generated fallback operator is valid")
+    match Operator::new(value) {
+        Ok(operator) => operator,
+        Err(error) => panic!("generated fallback operator is invalid: {error}"),
+    }
 }
 
 fn local_username() -> String {
