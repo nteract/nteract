@@ -146,6 +146,46 @@ Deno.test("Presence: ingress rewrite restamps heartbeat peer id", () => {
   });
 });
 
+Deno.test("Presence: ingress rewrite restamps clear-channel peer id", () => {
+  const payload = mod.encode_presence_frame({
+    type: "clear_channel",
+    peer_id: "client-forged-peer",
+    channel: "cursor",
+  });
+  const rewritten = mod.rewrite_presence_ingress(
+    payload,
+    "server-peer",
+    "",
+    "user:dev:alice",
+    "desktop:browser",
+  );
+
+  assertEquals(mod.decode_presence_frame(rewritten), {
+    type: "clear_channel",
+    peer_id: "server-peer",
+    channel: "cursor",
+  });
+});
+
+Deno.test("Presence: ingress rewrite restamps left peer id", () => {
+  const payload = mod.encode_presence_frame({
+    type: "left",
+    peer_id: "client-forged-peer",
+  });
+  const rewritten = mod.rewrite_presence_ingress(
+    payload,
+    "server-peer",
+    "",
+    "user:dev:alice",
+    "desktop:browser",
+  );
+
+  assertEquals(mod.decode_presence_frame(rewritten), {
+    type: "left",
+    peer_id: "server-peer",
+  });
+});
+
 Deno.test("Presence: ingress rewrite rejects client snapshots", () => {
   const payload = mod.encode_presence_frame({
     type: "snapshot",

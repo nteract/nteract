@@ -2185,6 +2185,8 @@ pub fn encode_presence_frame(message: JsValue) -> Result<Vec<u8>, JsError> {
 /// overwrites the peer id, rewrites update actor labels to the authenticated
 /// principal while preserving the presented operator suffix, and re-encodes
 /// canonical CBOR. Malformed or missing actor labels use `fallback_operator`.
+/// The operator suffix is self-declared attribution metadata only; authorization
+/// must use the authenticated principal and connection scope.
 #[wasm_bindgen]
 pub fn rewrite_presence_ingress(
     payload: &[u8],
@@ -2206,13 +2208,22 @@ pub fn rewrite_presence_ingress(
 
     let rewritten = match message {
         presence::PresenceMessage::Update {
-            actor_label, data, ..
+            peer_id: _,
+            peer_label: _,
+            actor_label,
+            data,
         } => {
-            if matches!(data, presence::ChannelData::KernelState(_)) {
-                return Err(JsError::new(
-                    "client presence updates cannot publish kernel state",
-                ));
-            }
+            let data = match data {
+                client_data @ (presence::ChannelData::Cursor(_)
+                | presence::ChannelData::Selection(_)
+                | presence::ChannelData::Focus(_)
+                | presence::ChannelData::Custom(_)) => client_data,
+                presence::ChannelData::KernelState(_) => {
+                    return Err(JsError::new(
+                        "client presence updates cannot publish kernel state",
+                    ));
+                }
+            };
             let operator = actor_label
                 .as_deref()
                 .and_then(|label| Operator::from_actor_label_or_operator(label).ok())
