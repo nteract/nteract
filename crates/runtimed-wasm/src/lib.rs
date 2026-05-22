@@ -2185,6 +2185,7 @@ pub fn encode_presence_frame(message: JsValue) -> Result<Vec<u8>, JsError> {
 /// overwrites the peer id, rewrites update actor labels to the authenticated
 /// principal while preserving the presented operator suffix, and re-encodes
 /// canonical CBOR. Malformed or missing actor labels use `fallback_operator`.
+/// Pass an empty `peer_label` to omit display text from rewritten updates.
 /// The operator suffix is self-declared attribution metadata only; authorization
 /// must use the authenticated principal and connection scope.
 #[wasm_bindgen]

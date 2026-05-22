@@ -130,6 +130,32 @@ Deno.test("Presence: ingress rewrite falls back for malformed actor labels", () 
   });
 });
 
+Deno.test("Presence: ingress rewrite preserves custom channel bytes", () => {
+  const payload = mod.encode_presence_frame({
+    type: "update",
+    peer_id: "client-peer",
+    actor_label: "user:dev:mallory/desktop:custom",
+    channel: "custom",
+    data: [1, 3, 5, 8],
+  });
+
+  const rewritten = mod.rewrite_presence_ingress(
+    payload,
+    "server-peer",
+    "",
+    "user:dev:alice",
+    "desktop:browser",
+  );
+
+  assertEquals(mod.decode_presence_frame(rewritten), {
+    type: "update",
+    peer_id: "server-peer",
+    actor_label: "user:dev:alice/desktop:custom",
+    channel: "custom",
+    data: [1, 3, 5, 8],
+  });
+});
+
 Deno.test("Presence: ingress rewrite restamps heartbeat peer id", () => {
   const payload = mod.encode_heartbeat_presence("client-peer");
   const rewritten = mod.rewrite_presence_ingress(
