@@ -6,7 +6,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test test/*.test.ts",
     "dev": "pnpm --workspace-root exec wrangler dev --config apps/notebook-cloud/wrangler.toml",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "wasm:roundtrip": "node scripts/wasm-roundtrip.mjs"
   },
   "dependencies": {
     "runtimed": "workspace:*"

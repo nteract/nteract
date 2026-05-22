@@ -27,6 +27,20 @@ The smoke script proves:
 - Same-room typed-frame relay.
 - Viewer-scope rejection for notebook writes.
 
+If the volatile frontend WASM package exists at `apps/notebook/src/wasm/runtimed-wasm`,
+the deeper roundtrip smoke sends real `runtimed-wasm` Automerge sync payloads through
+the Durable Object and verifies that a second `NotebookHandle` converges:
+
+```bash
+pnpm --dir apps/notebook-cloud wasm:roundtrip
+```
+
+Rebuild the volatile package with:
+
+```bash
+cargo xtask wasm runtimed --skip-renderer-plugins
+```
+
 The browser harness is available at:
 
 ```text
