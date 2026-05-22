@@ -3,6 +3,7 @@ export interface Env {
   DB?: D1Database;
   NOTEBOOK_SNAPSHOTS?: R2Bucket;
   DEPLOYMENT_ENV?: string;
+  NOTEBOOK_CLOUD_DEV_TOKEN?: string;
 }
 
 export interface ExecutionContext {
@@ -31,6 +32,8 @@ export interface DurableObjectState {
   id: DurableObjectId;
   storage: DurableObjectStorage;
   waitUntil(promise: Promise<unknown>): void;
+  acceptWebSocket?(socket: CloudflareWebSocket, tags?: string[]): void;
+  getWebSockets?(tag?: string): CloudflareWebSocket[];
 }
 
 export interface DurableObjectStorage {
@@ -107,6 +110,8 @@ export interface R2HTTPMetadata {
 export type CloudflareWebSocket = WebSocket & {
   accept(): void;
   send(message: string | ArrayBuffer | ArrayBufferView): void;
+  serializeAttachment?(value: unknown): void;
+  deserializeAttachment?(): unknown;
 };
 
 export interface WebSocketPair {

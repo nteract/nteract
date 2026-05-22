@@ -29,6 +29,17 @@ describe("NotebookRoom presence rewrite", () => {
     assert.equal(body.peer_label, "Mallory");
   });
 
+  it("rejects non-JSON presence until the shared CBOR presence codec is available", () => {
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
+    );
+    const frame = splitTypedFrame(
+      encodeTypedFrame(FrameType.PRESENCE, new Uint8Array([0xa1, 0x01, 0x02])),
+    );
+
+    assert.throws(() => rewritePresenceFrame(frame, identity), /presence payload must be JSON/);
+  });
+
   it("keeps anonymous viewer presence local to the connection", () => {
     const anonymous = authenticateAnonymousViewer(
       new Request("https://cloud.test/n/demo/sync?viewer_session=anon-a"),

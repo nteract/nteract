@@ -7,6 +7,7 @@ const FrameType = {
 };
 
 const baseUrl = process.env.NOTEBOOK_CLOUD_URL ?? "http://127.0.0.1:8787";
+const devAuthToken = process.env.NOTEBOOK_CLOUD_DEV_TOKEN;
 const roomId = `wasm-${Date.now()}`;
 const wasmJsUrl = new URL(
   "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js",
@@ -114,6 +115,10 @@ async function connect(notebookId, user, operator, scope) {
   url.searchParams.set("user", user);
   url.searchParams.set("operator", operator);
   url.searchParams.set("scope", scope);
+  if (devAuthToken) {
+    url.searchParams.set("dev_token", devAuthToken);
+  }
+  const safeUrl = redactDevToken(url);
 
   const socket = new WebSocket(url);
   socket.binaryType = "arraybuffer";
@@ -134,7 +139,7 @@ async function connect(notebookId, user, operator, scope) {
 
   await new Promise((resolve, reject) => {
     socket.addEventListener("open", resolve, { once: true });
-    socket.addEventListener("error", () => reject(new Error(`failed to connect ${url.href}`)), {
+    socket.addEventListener("error", () => reject(new Error(`failed to connect ${safeUrl}`)), {
       once: true,
     });
   });
@@ -154,7 +159,7 @@ async function connect(notebookId, user, operator, scope) {
           if (index !== -1) {
             waiters.splice(index, 1);
           }
-          reject(new Error(`timed out waiting for frame from ${url.href}`));
+          reject(new Error(`timed out waiting for frame from ${safeUrl}`));
         }, timeoutMs);
         waiters.push({ predicate, resolve, timer });
       });
@@ -216,6 +221,12 @@ async function closeClient(client) {
     );
     client.socket.close();
   });
+}
+
+function redactDevToken(url) {
+  const copy = new URL(url.href);
+  copy.searchParams.delete("dev_token");
+  return copy.href;
 }
 
 function assert(condition, message) {

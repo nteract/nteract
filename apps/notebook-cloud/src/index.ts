@@ -1,8 +1,10 @@
 import type { Env, ExecutionContext, ExportedHandler } from "./cloudflare-types.ts";
 import { NotebookRoom } from "./notebook-room.ts";
 import {
+  AuthError,
   allowsPublish,
   authenticateRequest,
+  DEV_AUTH_TOKEN_HEADER,
   stampTrustedIdentity,
   type AuthenticatedConnection,
 } from "./identity.ts";
@@ -129,7 +131,7 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
     return json({ error: "expected WebSocket upgrade" }, 426);
   }
 
-  const identity = authenticateRequestOrResponse(request);
+  const identity = authenticateRequestOrResponse(request, env);
   if (identity instanceof Response) {
     return identity;
   }
@@ -172,7 +174,7 @@ async function routeSnapshot(
     return json({ error: "method not allowed" }, 405);
   }
 
-  const identity = authenticateRequestOrResponse(request);
+  const identity = authenticateRequestOrResponse(request, env);
   if (identity instanceof Response) {
     return identity;
   }
@@ -266,7 +268,7 @@ async function routeRender(
     return json({ error: "method not allowed" }, 405);
   }
 
-  const identity = authenticateRequestOrResponse(request);
+  const identity = authenticateRequestOrResponse(request, env);
   if (identity instanceof Response) {
     return identity;
   }
@@ -363,7 +365,7 @@ async function routeBlob(
     return json({ error: "method not allowed" }, 405);
   }
 
-  const identity = authenticateRequestOrResponse(request);
+  const identity = authenticateRequestOrResponse(request, env);
   if (identity instanceof Response) {
     return identity;
   }
@@ -406,10 +408,16 @@ async function safeEnsureCatalogSchema(env: Env, ctx: ExecutionContext): Promise
   );
 }
 
-function authenticateRequestOrResponse(request: Request): AuthenticatedConnection | Response {
+function authenticateRequestOrResponse(
+  request: Request,
+  env: Env,
+): AuthenticatedConnection | Response {
   try {
-    return authenticateRequest(request);
+    return authenticateRequest(request, env);
   } catch (error) {
+    if (error instanceof AuthError) {
+      return json({ error: error.message }, error.status);
+    }
     return json({ error: String(error) }, 400);
   }
 }
@@ -428,7 +436,7 @@ function withCors(response: Response): Response {
   response.headers.set("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, OPTIONS");
   response.headers.set(
     "Access-Control-Allow-Headers",
-    "Content-Type, X-User, X-Principal, X-Operator, X-Scope, X-Viewer-Session, X-Runtime-Heads-Hash",
+    `Content-Type, X-User, X-Principal, X-Operator, X-Scope, X-Viewer-Session, X-Runtime-Heads-Hash, ${DEV_AUTH_TOKEN_HEADER}`,
   );
   return response;
 }
@@ -757,7 +765,7 @@ function debugViewer(notebookId: string): Response {
     const base = new URL(location.href);
     base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
     base.pathname = "/n/" + encodeURIComponent(notebookId) + "/sync";
-    base.search = "?user=viewer&operator=desktop:browser&scope=viewer";
+    base.search = "?viewer_session=debug-browser";
     urlCell.textContent = base.href;
     const socket = new WebSocket(base);
     socket.binaryType = "arraybuffer";

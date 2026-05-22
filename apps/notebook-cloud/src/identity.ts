@@ -13,16 +13,42 @@ export interface AuthenticatedConnection {
   scope: ConnectionScope;
 }
 
+export interface IdentityEnvironment {
+  DEPLOYMENT_ENV?: string;
+  NOTEBOOK_CLOUD_DEV_TOKEN?: string;
+}
+
 const ANONYMOUS_PRINCIPAL_PREFIX = "anonymous:";
 
 export const TRUSTED_PRINCIPAL_HEADER = "x-nteract-principal";
 export const TRUSTED_OPERATOR_HEADER = "x-nteract-operator";
 export const TRUSTED_SCOPE_HEADER = "x-nteract-scope";
+export const DEV_AUTH_TOKEN_HEADER = "x-notebook-cloud-dev-token";
+export const DEV_AUTH_TOKEN_QUERY = "dev_token";
 
-export function authenticateRequest(request: Request): AuthenticatedConnection {
-  return hasDevCredential(request)
-    ? authenticateDevRequest(request)
-    : authenticateAnonymousViewer(request);
+export class AuthError extends Error {
+  constructor(
+    message: string,
+    readonly status = 400,
+  ) {
+    super(message);
+    this.name = "AuthError";
+  }
+}
+
+export function authenticateRequest(
+  request: Request,
+  env: IdentityEnvironment = {},
+): AuthenticatedConnection {
+  if (!hasDevCredential(request)) {
+    return authenticateAnonymousViewer(request);
+  }
+
+  if (!allowsDevCredential(request, env)) {
+    throw new AuthError("dev credentials require a local request or NOTEBOOK_CLOUD_DEV_TOKEN", 401);
+  }
+
+  return authenticateDevRequest(request);
 }
 
 export function authenticateDevRequest(request: Request): AuthenticatedConnection {
@@ -225,6 +251,30 @@ function hasDevCredential(request: Request): boolean {
   ].some(
     ([headerName, queryName]) => request.headers.has(headerName) || url.searchParams.has(queryName),
   );
+}
+
+function allowsDevCredential(request: Request, env: IdentityEnvironment): boolean {
+  return isLocalDevRequest(request, env) || hasValidDevToken(request, env);
+}
+
+function isLocalDevRequest(request: Request, env: IdentityEnvironment): boolean {
+  if (env.DEPLOYMENT_ENV === "development") {
+    return true;
+  }
+
+  const hostname = new URL(request.url).hostname;
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
+function hasValidDevToken(request: Request, env: IdentityEnvironment): boolean {
+  const expected = env.NOTEBOOK_CLOUD_DEV_TOKEN?.trim();
+  if (!expected) {
+    return false;
+  }
+
+  const url = new URL(request.url);
+  const presented = headerOrQuery(request, url, DEV_AUTH_TOKEN_HEADER, DEV_AUTH_TOKEN_QUERY);
+  return presented === expected;
 }
 
 function defaultOperator(): string {

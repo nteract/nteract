@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  AuthError,
   authenticateAnonymousViewer,
   authenticateDevRequest,
   authenticateRequest,
@@ -14,6 +15,8 @@ import {
   validateOperator,
   validatePrincipal,
 } from "../src/identity.ts";
+
+const localEnv = { DEPLOYMENT_ENV: "development" };
 
 describe("dev identity", () => {
   it("uses explicit anonymous viewer auth when no dev credential is presented", () => {
@@ -36,6 +39,7 @@ describe("dev identity", () => {
     );
     const dev = authenticateRequest(
       new Request("https://cloud.test/n/demo/sync?user=anonymous&operator=desktop:a"),
+      localEnv,
     );
 
     assert.equal(anonymous.principal, "anonymous:anon-1");
@@ -71,6 +75,35 @@ describe("dev identity", () => {
 
     assert.equal(identity.actorLabel, "user:dev:alice/agent:codex:s1");
     assert.equal(identity.scope, "owner");
+  });
+
+  it("rejects remote dev credentials unless the prototype admin token matches", () => {
+    const request = new Request(
+      "https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=owner",
+    );
+
+    assert.throws(
+      () => authenticateRequest(request, { DEPLOYMENT_ENV: "prototype" }),
+      (error) => error instanceof AuthError && error.status === 401,
+    );
+
+    const authenticated = authenticateRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=owner&dev_token=secret",
+      ),
+      { DEPLOYMENT_ENV: "prototype", NOTEBOOK_CLOUD_DEV_TOKEN: "secret" },
+    );
+    assert.equal(authenticated.actorLabel, "user:dev:alice/desktop:a");
+    assert.equal(authenticated.scope, "owner");
+  });
+
+  it("allows dev credentials from loopback during wrangler local development", () => {
+    const identity = authenticateRequest(
+      new Request("http://127.0.0.1:8787/n/demo/sync?user=alice&operator=desktop:a"),
+      { DEPLOYMENT_ENV: "prototype" },
+    );
+
+    assert.equal(identity.actorLabel, "user:dev:alice/desktop:a");
   });
 
   it("defaults missing dev scope to viewer", () => {

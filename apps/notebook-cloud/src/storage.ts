@@ -198,8 +198,10 @@ export async function recordRevision(
 
   await ensureCatalogSchema(env);
   const revisionId = crypto.randomUUID();
-  await env.DB.prepare(
-    `INSERT INTO notebook_revisions (
+  const createdAt = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO notebook_revisions (
        id,
        notebook_id,
        notebook_heads_hash,
@@ -207,23 +209,20 @@ export async function recordRevision(
        snapshot_key,
        actor_label
      ) VALUES (?, ?, ?, ?, ?, ?)`,
-  )
-    .bind(
+    ).bind(
       revisionId,
       revision.notebookId,
       revision.notebookHeadsHash,
       revision.runtimeHeadsHash,
       revision.snapshotKey,
       revision.actorLabel,
-    )
-    .run();
-  await env.DB.prepare(
-    `UPDATE notebooks
+    ),
+    env.DB.prepare(
+      `UPDATE notebooks
        SET latest_revision_id = ?, updated_at = ?
        WHERE id = ?`,
-  )
-    .bind(revisionId, new Date().toISOString(), revision.notebookId)
-    .run();
+    ).bind(revisionId, createdAt, revision.notebookId),
+  ]);
   return revisionId;
 }
 

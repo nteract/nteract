@@ -2,7 +2,7 @@
 
 This app is a Cloudflare Worker prototype for hosted nteract notebook rooms. It is intentionally small: the Worker authenticates a dev or anonymous viewer connection, stamps a trusted `<principal>/<operator>` actor label, routes `/n/:notebookId/sync` to a Durable Object keyed by notebook id, and relays typed-frame-v4-shaped WebSocket frames.
 
-The current Durable Object does not host kernels and does not parse Automerge sync messages. It enforces connection scope, rewrites JSON presence actor principals, stores frame metadata, and broadcasts accepted binary typed frames to other peers in the same room.
+The current Durable Object does not host kernels and does not parse Automerge sync messages. It enforces connection scope, rewrites JSON prototype presence actor principals, stores bounded frame metadata, and broadcasts accepted binary typed frames to other peers in the same room.
 
 `/n/:notebookId` is now a public read-only notebook viewer. The source of truth is still the persisted `NotebookDoc` Automerge snapshot in R2; the HTML viewer reads a JSON render cache generated from that snapshot by `runtimed-wasm` at publish time. This avoids committing the volatile generated WASM package to the Worker while keeping the projection grounded in shared notebook APIs. The next step is to serve or bundle `runtimed-wasm` so the viewer can materialize `.am` bytes directly.
 
@@ -27,7 +27,7 @@ The smoke script proves:
 - Durable Object room routing by notebook id.
 - Dev identity stamping from `X-User` / `X-Operator` headers or `user` / `operator` query params.
 - Presence principal rewrite to the authenticated principal.
-- Safe authenticated fallback for malformed/non-JSON presence payloads.
+- Explicit rejection for malformed/non-JSON presence payloads until the shared CBOR presence codec is available.
 - Same-room typed-frame relay.
 - Viewer-scope rejection for notebook writes.
 - Viewer-scope rejection for blob, request, and pool-state writes.
@@ -87,7 +87,7 @@ For browser-only testing, the same values can be supplied as query params:
 
 `X-Principal` or `principal` may be used to provide a full principal directly. The Worker stamps internal `x-nteract-*` headers before forwarding to the Durable Object, modeling the ADR boundary where the room host trusts an upstream-authenticated identity.
 
-If no scope is supplied, dev auth defaults to `viewer`. Write and publish paths must ask for `editor`, `runtime_peer`, or `owner` explicitly.
+Dev credentials are accepted without an extra token only from Wrangler local development (`localhost`, `127.0.0.1`, `::1`, or `DEPLOYMENT_ENV=development`). Deployed prototype environments require the `NOTEBOOK_CLOUD_DEV_TOKEN` Worker secret to match either the `X-Notebook-Cloud-Dev-Token` header or `dev_token` query parameter. If no scope is supplied, dev auth defaults to `viewer`. Write and publish paths must ask for `editor`, `runtime_peer`, or `owner` explicitly.
 
 Requests with no dev credential become anonymous public viewers. The Worker derives:
 
@@ -109,6 +109,8 @@ Bindings in `wrangler.toml`:
 
 Schema lives in `migrations/0001_initial.sql`. The Worker also creates the same tables lazily in local dev so the WebSocket path can run before applying migrations.
 
+Accepted WebSocket frames are limited to 1 MiB. The Durable Object keeps only the latest 500 `frame:*` metadata entries in object storage; D1 room events are observability rows, not the replay log.
+
 ## Prototype deployment
 
 Disposable Cloudflare resources currently wired in `wrangler.toml`:
@@ -129,6 +131,9 @@ pnpm --workspace-root exec wrangler d1 migrations apply nteract-notebook-cloud-p
 Deploy with:
 
 ```bash
+printf "%s" "$NOTEBOOK_CLOUD_DEV_TOKEN" \
+  | pnpm --workspace-root exec wrangler secret put NOTEBOOK_CLOUD_DEV_TOKEN \
+      --config apps/notebook-cloud/wrangler.toml
 pnpm --workspace-root exec wrangler deploy --config apps/notebook-cloud/wrangler.toml
 ```
 

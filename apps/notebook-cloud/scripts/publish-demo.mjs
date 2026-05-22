@@ -3,6 +3,7 @@ import { access, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 const baseUrl = process.env.NOTEBOOK_CLOUD_URL ?? "http://127.0.0.1:8787";
+const devAuthToken = process.env.NOTEBOOK_CLOUD_DEV_TOKEN;
 const notebookId = process.env.NOTEBOOK_CLOUD_NOTEBOOK_ID ?? "nteract-cloud-demo";
 const actorLabel = "user:dev:demo/agent:publish-demo";
 const wasmJsUrl = new URL(
@@ -139,8 +140,13 @@ function publishHeaders(contentType, extraHeaders) {
     "X-User": "demo",
     "X-Operator": "agent:publish-demo",
     "X-Scope": "owner",
+    ...devAuthHeaders(),
     ...extraHeaders,
   };
+}
+
+function devAuthHeaders() {
+  return devAuthToken ? { "X-Notebook-Cloud-Dev-Token": devAuthToken } : {};
 }
 
 async function fetchJson(pathname) {

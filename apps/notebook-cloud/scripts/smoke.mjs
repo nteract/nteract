@@ -9,6 +9,7 @@ const FrameType = {
 };
 
 const baseUrl = process.env.NOTEBOOK_CLOUD_URL ?? "http://127.0.0.1:8787";
+const devAuthToken = process.env.NOTEBOOK_CLOUD_DEV_TOKEN;
 const roomId = `smoke-${Date.now()}`;
 const otherRoomId = `${roomId}-other`;
 
@@ -49,15 +50,20 @@ assert(
 );
 
 sendBinaryFrame(alice.socket, FrameType.PRESENCE, new Uint8Array([0xa1, 0x01, 0x02]));
-const fallbackPresence = await bob.nextFrame((frame) => frame.type === FrameType.PRESENCE);
-assert(
-  fallbackPresence.json.actor_label === "user:dev:alice/desktop:alice",
-  `malformed presence was not stamped safely: ${JSON.stringify(fallbackPresence.json)}`,
+const rejectedMalformedPresence = await alice.nextFrame(
+  (frame) =>
+    frame.type === FrameType.SESSION_CONTROL &&
+    frame.json.type === "cloud_frame_rejected" &&
+    frame.json.frame_type === FrameType.PRESENCE,
 );
 assert(
-  fallbackPresence.json.presence_format === "unparsed",
-  `malformed presence did not carry fallback marker: ${JSON.stringify(fallbackPresence.json)}`,
+  rejectedMalformedPresence.json.reason.includes("presence payload must be JSON"),
+  `malformed presence was not rejected explicitly: ${JSON.stringify(rejectedMalformedPresence.json)}`,
 );
+const leakedMalformedPresence = await bob
+  .nextFrame((frame) => frame.type === FrameType.PRESENCE, 250)
+  .catch(() => undefined);
+assert(leakedMalformedPresence === undefined, "malformed presence was rebroadcast");
 
 sendJsonFrame(alice.socket, FrameType.PRESENCE, {
   peer_label: "Alice",
@@ -189,6 +195,7 @@ const invalidAuthResponse = await fetch(new URL(snapshotPath, baseUrl), {
   headers: {
     "Content-Type": "application/octet-stream",
     "X-Scope": "admin",
+    ...devAuthHeaders(),
   },
   body: snapshotBytes,
 });
@@ -240,7 +247,7 @@ console.log(
         "durable_object_room_routing",
         "identity_stamping",
         "presence_principal_rewrite",
-        "malformed_presence_safe_fallback",
+        "malformed_presence_rejection",
         "invalid_presence_actor_safe_fallback",
         "typed_frame_relay",
         "scope_rejection",
@@ -272,6 +279,10 @@ async function connect(notebookId, user, operator, scope) {
   url.searchParams.set("user", user);
   url.searchParams.set("operator", operator);
   url.searchParams.set("scope", scope);
+  if (devAuthToken) {
+    url.searchParams.set("dev_token", devAuthToken);
+  }
+  const safeUrl = redactDevToken(url);
 
   const socket = new WebSocket(url);
   socket.binaryType = "arraybuffer";
@@ -292,7 +303,7 @@ async function connect(notebookId, user, operator, scope) {
 
   await new Promise((resolve, reject) => {
     socket.addEventListener("open", resolve, { once: true });
-    socket.addEventListener("error", () => reject(new Error(`failed to connect ${url.href}`)), {
+    socket.addEventListener("error", () => reject(new Error(`failed to connect ${safeUrl}`)), {
       once: true,
     });
   });
@@ -312,7 +323,7 @@ async function connect(notebookId, user, operator, scope) {
           if (index !== -1) {
             waiters.splice(index, 1);
           }
-          reject(new Error(`timed out waiting for frame from ${url.href}`));
+          reject(new Error(`timed out waiting for frame from ${safeUrl}`));
         }, timeoutMs);
         waiters.push({ predicate, resolve, timer });
       });
@@ -415,6 +426,7 @@ async function putBytes(pathname, body, contentType, extraHeaders = {}) {
       "X-User": "alice",
       "X-Operator": "desktop:smoke",
       "X-Scope": "owner",
+      ...devAuthHeaders(),
       ...extraHeaders,
     },
     body,
@@ -493,6 +505,16 @@ async function decodeFrame(data) {
     }
   }
   return { type, payload, json };
+}
+
+function devAuthHeaders() {
+  return devAuthToken ? { "X-Notebook-Cloud-Dev-Token": devAuthToken } : {};
+}
+
+function redactDevToken(url) {
+  const copy = new URL(url.href);
+  copy.searchParams.delete("dev_token");
+  return copy.href;
 }
 
 function assert(condition, message) {
