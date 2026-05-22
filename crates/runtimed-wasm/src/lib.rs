@@ -16,6 +16,7 @@ use notebook_doc::pool_state::{PoolDoc, PoolState};
 use notebook_doc::presence;
 use notebook_doc::{CellSnapshot, NotebookDoc};
 use notebook_wire::{frame_types, SessionControlMessage, SessionSyncStatusWire};
+use nteract_identity::{ActorLabel, Operator, Principal};
 use runtime_doc::{
     diff_output_ids, output_ids_for_execution, ExecutionState, ExecutionViewChangeset,
     ExecutionViewProjector, RuntimeState, RuntimeStateDoc,
@@ -2152,6 +2153,98 @@ pub fn encode_clear_channel_presence(peer_id: &str, channel: &str) -> Result<Vec
         other => return Err(JsError::new(&format!("unknown presence channel: {other}"))),
     };
     presence::encode_clear_channel(peer_id, ch).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Decode a presence frame payload from CBOR into a JS object.
+///
+/// This is intentionally standalone from `NotebookHandle.receive_frame()` so
+/// Worker and test harness code can inspect real presence bytes without owning
+/// a notebook document replica.
+#[wasm_bindgen]
+pub fn decode_presence_frame(payload: &[u8]) -> Result<JsValue, JsError> {
+    let message = presence::decode_message(payload).map_err(|e| JsError::new(&e.to_string()))?;
+    serialize_to_js(&message).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Encode a JS presence message object into the canonical CBOR frame payload.
+///
+/// The object shape is the same as `decode_presence_frame()` returns:
+/// `{ type: "update", peer_id, channel, data, ... }`, `{ type: "heartbeat",
+/// peer_id }`, etc.
+#[wasm_bindgen]
+pub fn encode_presence_frame(message: JsValue) -> Result<Vec<u8>, JsError> {
+    let message: presence::PresenceMessage =
+        serde_wasm_bindgen::from_value(message).map_err(|e| JsError::new(&e.to_string()))?;
+    presence::encode_message(&message).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Rewrite client-authored presence for trusted server ingress.
+///
+/// Room hosts should authenticate the connection first, then use this helper
+/// before relaying a client presence payload. It decodes canonical CBOR,
+/// overwrites the peer id, rewrites update actor labels to the authenticated
+/// principal while preserving the presented operator suffix, and re-encodes
+/// canonical CBOR. Malformed or missing actor labels use `fallback_operator`.
+#[wasm_bindgen]
+pub fn rewrite_presence_ingress(
+    payload: &[u8],
+    peer_id: &str,
+    peer_label: &str,
+    principal: &str,
+    fallback_operator: &str,
+) -> Result<Vec<u8>, JsError> {
+    let principal =
+        Principal::new(principal.to_string()).map_err(|e| JsError::new(&e.to_string()))?;
+    let fallback_operator =
+        Operator::new(fallback_operator.to_string()).map_err(|e| JsError::new(&e.to_string()))?;
+    let message = presence::decode_message(payload).map_err(|e| JsError::new(&e.to_string()))?;
+    let peer_label = if peer_label.is_empty() {
+        None
+    } else {
+        Some(peer_label.to_string())
+    };
+
+    let rewritten = match message {
+        presence::PresenceMessage::Update {
+            actor_label, data, ..
+        } => {
+            if matches!(data, presence::ChannelData::KernelState(_)) {
+                return Err(JsError::new(
+                    "client presence updates cannot publish kernel state",
+                ));
+            }
+            let operator = actor_label
+                .as_deref()
+                .and_then(|label| Operator::from_actor_label_or_operator(label).ok())
+                .unwrap_or(fallback_operator);
+            let actor_label = ActorLabel::new(principal, operator);
+            presence::PresenceMessage::Update {
+                peer_id: peer_id.to_string(),
+                peer_label,
+                actor_label: Some(actor_label.as_str().to_string()),
+                data,
+            }
+        }
+        presence::PresenceMessage::Heartbeat { .. } => presence::PresenceMessage::Heartbeat {
+            peer_id: peer_id.to_string(),
+        },
+        presence::PresenceMessage::ClearChannel { channel, .. } => {
+            presence::PresenceMessage::ClearChannel {
+                peer_id: peer_id.to_string(),
+                channel,
+            }
+        }
+        presence::PresenceMessage::Left { .. } => presence::PresenceMessage::Left {
+            peer_id: peer_id.to_string(),
+        },
+        presence::PresenceMessage::Snapshot { .. } => {
+            return Err(JsError::new(
+                "client presence ingress cannot publish snapshots",
+            ));
+        }
+    };
+
+    presence::encode_message(&rewritten).map_err(|e| JsError::new(&e.to_string()))
 }
 
 #[cfg(test)]
