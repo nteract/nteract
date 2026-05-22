@@ -5,6 +5,8 @@ import {
   blobKey,
   ensureCatalogSchema,
   ensureNotebook,
+  getNotebookCatalog,
+  listRoomEvents,
   recordBlob,
   recordRevision,
   snapshotKey,
@@ -37,6 +39,16 @@ const worker: ExportedHandler<Env> = {
     const viewerMatch = url.pathname.match(/^\/n\/([^/]+)\/?$/);
     if (viewerMatch && request.method === "GET") {
       return viewer(decodeURIComponent(viewerMatch[1]));
+    }
+
+    const catalogMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/?$/);
+    if (catalogMatch && request.method === "GET") {
+      return routeCatalog(env, decodeURIComponent(catalogMatch[1]));
+    }
+
+    const eventsMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/events$/);
+    if (eventsMatch && request.method === "GET") {
+      return routeRoomEvents(request, env, decodeURIComponent(eventsMatch[1]));
     }
 
     const snapshotMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/snapshots\/([^/]+)$/);
@@ -139,6 +151,32 @@ async function routeSnapshot(
   return json({ ok: true, revision_id: revisionId, key }, 201);
 }
 
+async function routeCatalog(env: Env, notebookId: string): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const catalog = await getNotebookCatalog(env, notebookId);
+  if (!catalog) {
+    return json({ error: "notebook not found" }, 404);
+  }
+
+  return json(catalog);
+}
+
+async function routeRoomEvents(request: Request, env: Env, notebookId: string): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const url = new URL(request.url);
+  const limit = parseLimit(url.searchParams.get("limit"));
+  return json({
+    notebook_id: notebookId,
+    events: await listRoomEvents(env, notebookId, limit),
+  });
+}
+
 async function routeBlob(
   request: Request,
   env: Env,
@@ -238,6 +276,19 @@ function withCors(response: Response): Response {
     "Content-Type, X-User, X-Principal, X-Operator, X-Scope, X-Runtime-Heads-Hash",
   );
   return response;
+}
+
+function parseLimit(value: string | null): number {
+  if (!value) {
+    return 25;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return 25;
+  }
+
+  return Math.min(parsed, 100);
 }
 
 function viewer(notebookId: string): Response {

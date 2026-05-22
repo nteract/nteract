@@ -1,6 +1,51 @@
 import type { AuthenticatedConnection } from "./identity.ts";
 import type { Env } from "./cloudflare-types.ts";
 
+export interface NotebookCatalog {
+  notebook: NotebookRow;
+  revisions: RevisionRow[];
+  blobs: BlobRow[];
+}
+
+export interface NotebookRow {
+  id: string;
+  owner_principal: string;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+  latest_revision_id: string | null;
+}
+
+export interface RevisionRow {
+  id: string;
+  notebook_id: string;
+  notebook_heads_hash: string;
+  runtime_heads_hash: string | null;
+  snapshot_key: string;
+  actor_label: string;
+  created_at: string;
+}
+
+export interface BlobRow {
+  notebook_id: string;
+  hash: string;
+  size: number;
+  content_type: string | null;
+  r2_key: string;
+  uploaded_at: string;
+}
+
+export interface RoomEventRow {
+  id: string;
+  notebook_id: string;
+  peer_id: string;
+  actor_label: string;
+  connection_scope: string;
+  frame_type: number;
+  byte_length: number;
+  received_at: string;
+}
+
 const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS notebooks (
     id TEXT PRIMARY KEY,
@@ -207,6 +252,90 @@ export async function recordBlob(
   )
     .bind(blob.notebookId, blob.hash, blob.size, blob.contentType, blob.r2Key)
     .run();
+}
+
+export async function getNotebookCatalog(
+  env: Env,
+  notebookId: string,
+): Promise<NotebookCatalog | null> {
+  if (!env.DB) {
+    return null;
+  }
+
+  await ensureCatalogSchema(env);
+  const notebook = await env.DB.prepare(
+    `SELECT id, owner_principal, title, created_at, updated_at, latest_revision_id
+       FROM notebooks
+       WHERE id = ?`,
+  )
+    .bind(notebookId)
+    .first<NotebookRow>();
+
+  if (!notebook) {
+    return null;
+  }
+
+  const revisions = await env.DB.prepare(
+    `SELECT id,
+            notebook_id,
+            notebook_heads_hash,
+            runtime_heads_hash,
+            snapshot_key,
+            actor_label,
+            created_at
+       FROM notebook_revisions
+       WHERE notebook_id = ?
+       ORDER BY created_at DESC
+       LIMIT 50`,
+  )
+    .bind(notebookId)
+    .all<RevisionRow>();
+
+  const blobs = await env.DB.prepare(
+    `SELECT notebook_id, hash, size, content_type, r2_key, uploaded_at
+       FROM notebook_blobs
+       WHERE notebook_id = ?
+       ORDER BY uploaded_at DESC
+       LIMIT 50`,
+  )
+    .bind(notebookId)
+    .all<BlobRow>();
+
+  return {
+    notebook,
+    revisions: revisions.results ?? [],
+    blobs: blobs.results ?? [],
+  };
+}
+
+export async function listRoomEvents(
+  env: Env,
+  notebookId: string,
+  limit: number,
+): Promise<RoomEventRow[]> {
+  if (!env.DB) {
+    return [];
+  }
+
+  await ensureCatalogSchema(env);
+  const result = await env.DB.prepare(
+    `SELECT id,
+            notebook_id,
+            peer_id,
+            actor_label,
+            connection_scope,
+            frame_type,
+            byte_length,
+            received_at
+       FROM room_events
+       WHERE notebook_id = ?
+       ORDER BY received_at DESC
+       LIMIT ?`,
+  )
+    .bind(notebookId, limit)
+    .all<RoomEventRow>();
+
+  return result.results ?? [];
 }
 
 function encodePathComponent(value: string): string {

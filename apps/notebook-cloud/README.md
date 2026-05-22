@@ -26,6 +26,7 @@ The smoke script proves:
 - Presence principal rewrite to the authenticated principal.
 - Same-room typed-frame relay.
 - Viewer-scope rejection for notebook writes.
+- D1 room-event readback.
 
 If the volatile frontend WASM package exists at `apps/notebook/src/wasm/runtimed-wasm`,
 the deeper roundtrip smoke sends real `runtimed-wasm` Automerge sync payloads through
@@ -118,6 +119,13 @@ curl -X PUT "http://127.0.0.1:8787/api/n/demo/blobs/sha256abc" \
   -H "X-Operator: desktop:curl" \
   -H "X-Scope: owner" \
   --data-binary @output.bin
+```
+
+Catalog and event readback:
+
+```bash
+curl "http://127.0.0.1:8787/api/n/demo"
+curl "http://127.0.0.1:8787/api/n/demo/events?limit=20"
 ```
 
 ## Next integration steps

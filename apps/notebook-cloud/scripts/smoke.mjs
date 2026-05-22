@@ -56,6 +56,12 @@ const rejected = await viewer.nextFrame(
 );
 assert(rejected.json.reason.includes("viewer cannot write"), "viewer write was not rejected");
 
+const events = await fetchJson(`/api/n/${encodeURIComponent(roomId)}/events?limit=20`);
+assert(
+  events.events.some((event) => event.frame_type === FrameType.AUTOMERGE_SYNC),
+  "D1 event readback did not include the accepted sync frame",
+);
+
 const leaked = await other
   .nextFrame((frame) => frame.type === FrameType.AUTOMERGE_SYNC, 250)
   .catch(() => undefined);
@@ -74,6 +80,7 @@ console.log(
         "presence_principal_rewrite",
         "typed_frame_relay",
         "scope_rejection",
+        "d1_room_event_readback",
       ],
     },
     null,
@@ -159,6 +166,13 @@ async function closeClient(client) {
     );
     client.socket.close();
   });
+}
+
+async function fetchJson(pathname) {
+  const url = new URL(pathname, baseUrl);
+  const response = await fetch(url);
+  assert(response.ok, `${url.href} returned ${response.status}`);
+  return response.json();
 }
 
 function sendJsonFrame(socket, type, payload) {
