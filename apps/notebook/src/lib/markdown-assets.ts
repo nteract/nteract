@@ -1,4 +1,4 @@
-import { normalizeBlobResolver } from "../../../../packages/runtimed/src/blob-resolver";
+import { normalizeBlobResolver } from "runtimed";
 import type { BlobResolverInput } from "./manifest-resolution";
 
 function blobUrl(blobResolver: BlobResolverInput, hash: string): string {

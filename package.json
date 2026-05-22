@@ -71,6 +71,7 @@
     "rehype-raw": "^7.0.0",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
+    "runtimed": "workspace:*",
     "tailwind-merge": "^3.4.0",
     "vega": "^6.2.0",
     "vega-embed": "^7.1.0",

@@ -3,15 +3,11 @@ import {
   type BlobRef as OutputBlobRef,
   type BlobResolver as OutputBlobResolver,
   type BlobResolverInput,
-} from "../../../packages/runtimed/src/blob-resolver";
+} from "runtimed";
 
 export const ARROW_STREAM_MANIFEST_MIME = "application/vnd.nteract.arrow-stream-manifest+json";
 
-export {
-  createBlobResolver,
-  createHttpBlobResolver,
-  normalizeBlobResolver,
-} from "../../../packages/runtimed/src/blob-resolver";
+export { createBlobResolver, createHttpBlobResolver, normalizeBlobResolver } from "runtimed";
 export type { BlobResolverInput, OutputBlobRef, OutputBlobResolver };
 
 export type ContentRef =

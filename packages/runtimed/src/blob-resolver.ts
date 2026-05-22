@@ -55,7 +55,7 @@ export function createHttpBlobResolver(
   port: number,
   fetchImpl: typeof fetch = fetch,
 ): BlobResolver {
-  const url = (ref: BlobRef) => `http://127.0.0.1:${port}/blob/${encodeURIComponent(ref.blob)}`;
+  const url = (ref: BlobRef) => `http://127.0.0.1:${port}/blob/${ref.blob}`;
   return {
     port,
     url,

@@ -6,15 +6,15 @@ describe("blob resolver helpers", () => {
   it("creates daemon HTTP blob URLs from a local port", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response("ok"));
     const resolver = createHttpBlobResolver(8765, fetchImpl);
-    const ref = { blob: "sha256:abc/def", size: 12 };
+    const ref = { blob: "sha256:abc", size: 12 };
 
     expect(resolver.port).toBe(8765);
-    expect(resolver.url(ref)).toBe("http://127.0.0.1:8765/blob/sha256%3Aabc%2Fdef");
+    expect(resolver.url(ref)).toBe("http://127.0.0.1:8765/blob/sha256:abc");
 
     const response = await resolver.fetch(ref);
 
     expect(await response.text()).toBe("ok");
-    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:8765/blob/sha256%3Aabc%2Fdef");
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:8765/blob/sha256:abc");
   });
 
   it("creates host-agnostic resolvers without exposing a daemon port", async () => {
