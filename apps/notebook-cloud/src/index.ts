@@ -330,13 +330,17 @@ function viewer(notebookId: string): Response {
   <style>
     :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     body { margin: 0; background: Canvas; color: CanvasText; }
-    main { max-width: 920px; margin: 0 auto; padding: 24px; }
+    main { max-width: 1120px; margin: 0 auto; padding: 24px; }
     h1 { font-size: 20px; margin: 0 0 16px; }
     dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 16px; margin: 0 0 20px; }
     dt { color: color-mix(in srgb, CanvasText 65%, transparent); }
     dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
     button { font: inherit; padding: 8px 12px; }
-    pre { border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); padding: 12px; min-height: 240px; overflow: auto; }
+    section { margin-top: 18px; }
+    h2 { font-size: 14px; margin: 0 0 8px; }
+    .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+    pre { border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); padding: 12px; min-height: 220px; overflow: auto; white-space: pre-wrap; }
   </style>
 </head>
 <body>
@@ -347,13 +351,31 @@ function viewer(notebookId: string): Response {
       <dt>WebSocket</dt><dd id="url"></dd>
       <dt>Status</dt><dd id="status">connecting</dd>
     </dl>
-    <button id="presence" type="button">Send presence frame</button>
-    <pre id="log"></pre>
+    <div class="actions">
+      <button id="presence" type="button">Send presence frame</button>
+      <button id="refresh" type="button">Refresh catalog</button>
+    </div>
+    <div class="grid">
+      <section>
+        <h2>Frames</h2>
+        <pre id="log"></pre>
+      </section>
+      <section>
+        <h2>Catalog</h2>
+        <pre id="catalog"></pre>
+      </section>
+      <section>
+        <h2>Events</h2>
+        <pre id="events"></pre>
+      </section>
+    </div>
   </main>
   <script type="module">
     const notebookId = ${scriptJsonForHtml(notebookId)};
     const frameType = { presence: 0x04, sessionControl: 0x07 };
     const log = document.querySelector("#log");
+    const catalog = document.querySelector("#catalog");
+    const events = document.querySelector("#events");
     const status = document.querySelector("#status");
     const urlCell = document.querySelector("#url");
     const base = new URL(location.href);
@@ -369,6 +391,7 @@ function viewer(notebookId: string): Response {
       const bytes = new Uint8Array(event.data);
       const payload = new TextDecoder().decode(bytes.slice(1));
       log.textContent += "[" + bytes[0] + "] " + payload + "\\n";
+      if (bytes[0] === frameType.sessionControl) refreshCatalog();
     });
     document.querySelector("#presence").addEventListener("click", () => {
       const payload = new TextEncoder().encode(JSON.stringify({ peer_label: "browser viewer", actor_label: "desktop:browser" }));
@@ -377,6 +400,20 @@ function viewer(notebookId: string): Response {
       frame.set(payload, 1);
       socket.send(frame);
     });
+    document.querySelector("#refresh").addEventListener("click", refreshCatalog);
+    async function refreshCatalog() {
+      const [catalogResponse, eventsResponse] = await Promise.all([
+        fetch("/api/n/" + encodeURIComponent(notebookId)),
+        fetch("/api/n/" + encodeURIComponent(notebookId) + "/events?limit=10"),
+      ]);
+      catalog.textContent = catalogResponse.ok
+        ? JSON.stringify(await catalogResponse.json(), null, 2)
+        : "No catalog row yet";
+      events.textContent = eventsResponse.ok
+        ? JSON.stringify(await eventsResponse.json(), null, 2)
+        : "No room events yet";
+    }
+    refreshCatalog();
   </script>
 </body>
 </html>`;
