@@ -348,6 +348,10 @@ struct DaemonReadyPayload {
     /// Only set for Create (where we know the exact runtime); None for Open
     /// (where the actual runtime is determined from the file's metadata).
     runtime: Option<String>,
+    /// Authenticated actor label the frontend should use for Automerge writes.
+    actor_label: Option<String>,
+    /// Server-enforced scope for this connection.
+    connection_scope: Option<String>,
 }
 
 /// How to connect a new window to the daemon.
@@ -452,6 +456,11 @@ where
     )
 }
 
+fn desktop_operator_label() -> String {
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    format!("desktop:{}", &suffix[..8])
+}
+
 /// Connect to the daemon by opening an existing notebook file.
 ///
 /// The daemon loads the file, derives notebook_id, creates the room, and populates
@@ -494,9 +503,15 @@ async fn initialize_notebook_sync_open(
     let (frame_tx, raw_frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
 
     let caller_path = path.to_string_lossy().to_string();
-    let result = notebook_sync::connect::connect_open_relay(socket_path, path, frame_tx)
-        .await
-        .map_err(|e| format!("sync connect (open): {}", e))?;
+    let operator = desktop_operator_label();
+    let result = notebook_sync::connect::connect_open_relay_with_operator(
+        socket_path,
+        path,
+        frame_tx,
+        Some(operator),
+    )
+    .await
+    .map_err(|e| format!("sync connect (open): {}", e))?;
 
     let handle = result.handle;
     let info = result.info;
@@ -519,6 +534,8 @@ async fn initialize_notebook_sync_open(
         ephemeral: info.ephemeral,
         notebook_path: info.notebook_path.or(Some(caller_path)),
         runtime: None,
+        actor_label: info.capabilities.actor_label.clone(),
+        connection_scope: info.capabilities.connection_scope.clone(),
     };
 
     setup_sync_receivers(
@@ -560,7 +577,8 @@ async fn initialize_notebook_sync_create(
 
     let (frame_tx, raw_frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
 
-    let result = notebook_sync::connect::connect_create_relay(
+    let operator = desktop_operator_label();
+    let result = notebook_sync::connect::connect_create_relay_with_operator(
         socket_path,
         &runtime,
         working_dir,
@@ -570,6 +588,7 @@ async fn initialize_notebook_sync_create(
         None,
         vec![],
         None,
+        Some(operator),
     )
     .await
     .map_err(|e| format!("sync connect (create): {}", e))?;
@@ -595,6 +614,8 @@ async fn initialize_notebook_sync_create(
         ephemeral: info.ephemeral,
         notebook_path: info.notebook_path.clone(),
         runtime: Some(runtime),
+        actor_label: info.capabilities.actor_label.clone(),
+        connection_scope: info.capabilities.connection_scope.clone(),
     };
 
     setup_sync_receivers(
@@ -636,11 +657,18 @@ async fn initialize_notebook_sync_attach(
 
     let (frame_tx, raw_frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
 
-    let result = notebook_sync::connect::connect_relay(socket_path, notebook_id.clone(), frame_tx)
-        .await
-        .map_err(|e| format!("sync connect (attach): {}", e))?;
+    let operator = desktop_operator_label();
+    let result = notebook_sync::connect::connect_relay_with_operator(
+        socket_path,
+        notebook_id.clone(),
+        frame_tx,
+        Some(operator),
+    )
+    .await
+    .map_err(|e| format!("sync connect (attach): {}", e))?;
 
     let handle = result.handle;
+    let capabilities = result.capabilities;
 
     // Update notebook_id to match the room we just attached to.
     if let Ok(mut id) = notebook_id_arc.lock() {
@@ -658,6 +686,8 @@ async fn initialize_notebook_sync_attach(
         ephemeral: true,
         notebook_path: None,
         runtime: Some(runtime),
+        actor_label: capabilities.actor_label.clone(),
+        connection_scope: capabilities.connection_scope.clone(),
     };
 
     setup_sync_receivers(

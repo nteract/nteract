@@ -35,6 +35,7 @@ pub async fn handle_notebook_sync_connection<R, W>(
     // True if this is a newly-created notebook at a non-existent path.
     // Used to enable auto-launch for notebooks created via `runt notebook newfile.ipynb`.
     created_new_at_path: bool,
+    connection_identity: RoomConnectionIdentity,
     // Protocol version from the client preamble. v4 is required at connection
     // setup, so SessionControl frames are always supported.
     client_protocol_version: u8,
@@ -239,7 +240,11 @@ where
 
     // Send capabilities response unless already sent via NotebookConnectionInfo.
     if !skip_capabilities {
-        let caps = connection::ProtocolCapabilities::v4(Some(crate::daemon_version().to_string()));
+        let caps = connection::ProtocolCapabilities::v4(Some(crate::daemon_version().to_string()))
+            .with_identity(
+                connection_identity.actor_label().as_str(),
+                connection_identity.scope().as_str(),
+            );
         connection::send_json_frame(&mut writer, &caps).await?;
     }
 
@@ -256,6 +261,7 @@ where
         daemon.clone(),
         needs_load.as_deref(),
         &peer_id,
+        &connection_identity,
         client_protocol_version,
     )
     .await;

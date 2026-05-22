@@ -82,6 +82,10 @@ export interface DaemonReadyPayload {
   /** On-disk path if the notebook is file-backed. Derives the titlebar filename. */
   notebook_path?: string | null;
   runtime?: string;
+  /** Authenticated actor label to use for Automerge writes on this connection. */
+  actor_label?: string;
+  /** Server-enforced connection scope for this room connection. */
+  connection_scope?: string;
 }
 
 export interface DaemonProgressPayload {

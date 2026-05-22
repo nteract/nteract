@@ -183,6 +183,22 @@ impl Operator {
             None => self.as_str(),
         }
     }
+
+    /// Extracts an operator from either a full actor label or a legacy
+    /// operator-only label.
+    ///
+    /// Current room hosts emit `<principal>/<operator>`, but existing local
+    /// clients may still present values such as `human:session`. Treating a
+    /// valid operator-only value as the suffix keeps those clients attributed
+    /// under the authenticated principal instead of falling back to an
+    /// anonymous connection operator.
+    pub fn from_actor_label_or_operator(value: &str) -> Result<Self> {
+        match ActorLabel::parse(value.to_owned()) {
+            Ok(label) => label.operator_value(),
+            Err(AuthError::ActorLabelMissingDelimiter) => Self::new(value.to_owned()),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 impl fmt::Display for Operator {
@@ -521,13 +537,9 @@ impl AuthenticatedConnection {
         presented: Option<&str>,
         fallback_operator: Operator,
     ) -> ActorLabel {
-        let operator = match presented.and_then(|label| ActorLabel::parse(label).ok()) {
-            Some(label) => match label.operator_value() {
-                Ok(operator) => operator,
-                Err(_) => fallback_operator,
-            },
-            None => fallback_operator,
-        };
+        let operator = presented
+            .and_then(|label| Operator::from_actor_label_or_operator(label).ok())
+            .unwrap_or(fallback_operator);
 
         ActorLabel::new(self.principal.clone(), operator)
     }
@@ -681,15 +693,26 @@ mod tests {
         let connection =
             AuthenticatedConnection::new(principal("user:anaconda:550e"), ConnectionScope::Editor);
 
-        let rewritten = connection.rewrite_presence_actor_label(
-            Some("not-a-layered-label"),
-            operator("unknown:connection-1"),
-        );
+        let rewritten = connection
+            .rewrite_presence_actor_label(Some("bad/operator"), operator("unknown:connection-1"));
 
         assert_eq!(
             rewritten.as_str(),
             "user:anaconda:550e/unknown:connection-1"
         );
+    }
+
+    #[test]
+    fn connection_rewrite_preserves_legacy_operator_only_label() {
+        let connection =
+            AuthenticatedConnection::new(principal("local:kylekelley"), ConnectionScope::Owner);
+
+        let rewritten = connection.rewrite_presence_actor_label(
+            Some("human:session-abc"),
+            operator("unknown:connection-1"),
+        );
+
+        assert_eq!(rewritten.as_str(), "local:kylekelley/human:session-abc");
     }
 
     #[test]

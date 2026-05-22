@@ -164,6 +164,7 @@ mod tests {
             protocol: None,
             working_dir: None,
             initial_metadata: None,
+            operator: None,
         })
         .unwrap();
         assert_eq!(json, r#"{"channel":"notebook_sync","notebook_id":"abc"}"#);
@@ -174,6 +175,7 @@ mod tests {
             protocol: Some(PROTOCOL_V4.into()),
             working_dir: None,
             initial_metadata: None,
+            operator: None,
         })
         .unwrap();
         assert_eq!(
@@ -187,6 +189,7 @@ mod tests {
             protocol: Some(PROTOCOL_V4.into()),
             working_dir: Some("/home/user/project".into()),
             initial_metadata: None,
+            operator: None,
         })
         .unwrap();
         assert_eq!(
@@ -194,9 +197,24 @@ mod tests {
             r#"{"channel":"notebook_sync","notebook_id":"550e8400-e29b-41d4-a716-446655440000","protocol":"v4","working_dir":"/home/user/project"}"#
         );
 
+        // NotebookSync with authenticated operator hint
+        let json = serde_json::to_string(&Handshake::NotebookSync {
+            notebook_id: "abc".into(),
+            protocol: Some(PROTOCOL_V4.into()),
+            working_dir: None,
+            initial_metadata: None,
+            operator: Some("agent:codex:s1".into()),
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            r#"{"channel":"notebook_sync","notebook_id":"abc","protocol":"v4","operator":"agent:codex:s1"}"#
+        );
+
         // OpenNotebook
         let json = serde_json::to_string(&Handshake::OpenNotebook {
             path: "/home/user/notebook.ipynb".into(),
+            operator: None,
         })
         .unwrap();
         assert_eq!(
@@ -213,6 +231,7 @@ mod tests {
             package_manager: None,
             environment_mode: None,
             dependencies: vec![],
+            operator: None,
         })
         .unwrap();
         assert_eq!(json, r#"{"channel":"create_notebook","runtime":"python"}"#);
@@ -226,6 +245,7 @@ mod tests {
             package_manager: None,
             environment_mode: None,
             dependencies: vec![],
+            operator: None,
         })
         .unwrap();
         assert_eq!(
@@ -242,6 +262,7 @@ mod tests {
             package_manager: None,
             environment_mode: None,
             dependencies: vec![],
+            operator: None,
         })
         .unwrap();
         assert_eq!(
@@ -257,6 +278,7 @@ mod tests {
             package_manager: None,
             environment_mode: Some(CreateNotebookEnvironmentMode::Notebook),
             dependencies: vec![],
+            operator: None,
         })
         .unwrap();
         assert_eq!(
@@ -276,6 +298,8 @@ mod tests {
                 protocol_version,
                 daemon_version,
                 put_blob: None,
+                actor_label: None,
+                connection_scope: None,
             }
         }
 
@@ -348,10 +372,27 @@ mod tests {
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(r#""notebook_path":"/home/user/notebook.ipynb""#));
 
+        // With identity metadata
+        let info = NotebookConnectionInfo {
+            capabilities: capabilities(None, None)
+                .with_identity("local:kyle/desktop:7f3a", "owner"),
+            notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            cell_count: 5,
+            needs_trust_approval: false,
+            error: None,
+            ephemeral: false,
+            notebook_path: None,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains(r#""actor_label":"local:kyle/desktop:7f3a""#));
+        assert!(json.contains(r#""connection_scope":"owner""#));
+
         // Backward compat: deserialize without notebook_path
         let old_json = r#"{"protocol":"v2","notebook_id":"abc","cell_count":1,"needs_trust_approval":false,"ephemeral":false}"#;
         let info: NotebookConnectionInfo = serde_json::from_str(old_json).unwrap();
         assert!(info.notebook_path.is_none());
+        assert!(info.capabilities.actor_label.is_none());
+        assert!(info.capabilities.connection_scope.is_none());
     }
 
     #[test]

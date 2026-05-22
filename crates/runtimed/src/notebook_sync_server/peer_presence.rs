@@ -8,7 +8,7 @@ use tracing::{debug, warn};
 use notebook_protocol::connection::{self, NotebookFrameType};
 
 use super::peer_writer::PeerWriter;
-use super::NotebookRoom;
+use super::{NotebookRoom, RoomConnectionIdentity};
 
 /// Sanitize a peer label from the wire.
 ///
@@ -128,6 +128,7 @@ where
 pub(super) async fn handle_presence_frame(
     room: &Arc<NotebookRoom>,
     peer_id: &str,
+    connection_identity: &RoomConnectionIdentity,
     peer_writer: &PeerWriter,
     payload: &[u8],
 ) -> anyhow::Result<()> {
@@ -160,14 +161,16 @@ pub(super) async fn handle_presence_frame(
             }
 
             let data_for_relay = data.clone();
-            let actor_label_for_relay = actor_label.clone();
+            let rewritten_actor_label =
+                connection_identity.rewrite_presence_actor_label(actor_label.as_deref());
+            let actor_label_for_relay = Some(rewritten_actor_label.as_str().to_string());
             let label = sanitize_peer_label(peer_label.as_deref(), peer_id);
             let sanitized_label = Some(label.clone());
 
             let is_new = room.broadcasts.presence.write().await.update_peer(
                 peer_id,
                 &label,
-                actor_label.as_deref(),
+                actor_label_for_relay.as_deref(),
                 data,
                 now_ms,
             );

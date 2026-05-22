@@ -7,6 +7,7 @@
 
 use std::time::Duration;
 
+use notebook_doc::presence::PresenceMessage;
 use notebook_protocol::connection::LaunchSpec;
 use notebook_sync::connect;
 use notebook_wire::frame_types;
@@ -203,6 +204,37 @@ async fn wait_for_cell_count(
         sleep(Duration::from_millis(20)).await;
     }
     false
+}
+
+async fn wait_for_presence_update_actor_label(
+    frame_rx: &mut mpsc::UnboundedReceiver<Vec<u8>>,
+    peer_label: &str,
+    timeout: Duration,
+) -> Option<String> {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        let remaining = timeout.saturating_sub(start.elapsed());
+        let frame =
+            tokio::time::timeout(remaining.min(Duration::from_millis(250)), frame_rx.recv())
+                .await
+                .ok()
+                .flatten()?;
+        if frame.first().copied() != Some(frame_types::PRESENCE) {
+            continue;
+        }
+        let Ok(PresenceMessage::Update {
+            peer_label: Some(label),
+            actor_label,
+            ..
+        }) = notebook_doc::presence::decode_message(&frame[1..])
+        else {
+            continue;
+        };
+        if label == peer_label {
+            return actor_label;
+        }
+    }
+    None
 }
 
 #[cfg(unix)]
@@ -628,6 +660,103 @@ async fn test_blob_server_health() {
 
     // Shutdown
     client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+#[tokio::test]
+async fn test_local_identity_handshake_and_presence_rewrite() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new_for_test(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let result = connect::connect_create(
+        socket_path.clone(),
+        "python",
+        None,
+        "agent:codex:s1",
+        true,
+        None,
+        vec![],
+    )
+    .await
+    .expect("client should connect");
+    assert_session_ready(&result.handle, "identity client").await;
+
+    let actor_label = result
+        .info
+        .capabilities
+        .actor_label
+        .as_deref()
+        .expect("daemon should return authenticated actor label");
+    assert!(actor_label.starts_with("local:"), "{actor_label}");
+    assert!(actor_label.ends_with("/agent:codex:s1"), "{actor_label}");
+    assert_eq!(
+        result.info.capabilities.connection_scope.as_deref(),
+        Some("owner")
+    );
+    assert_eq!(
+        notebook_sync::presence::actor_label(&result.handle).as_deref(),
+        Some(actor_label)
+    );
+
+    let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let relay = connect::connect_relay_with_operator(
+        socket_path.clone(),
+        result.info.notebook_id.clone(),
+        frame_tx,
+        Some("desktop:observer".to_string()),
+    )
+    .await
+    .expect("relay should connect");
+    assert!(relay
+        .capabilities
+        .actor_label
+        .as_deref()
+        .is_some_and(|label| label.ends_with("/desktop:observer")));
+    assert_eq!(
+        relay.capabilities.connection_scope.as_deref(),
+        Some("owner")
+    );
+
+    let forged = notebook_doc::presence::encode_custom_update_labeled(
+        "client-peer",
+        Some("Forged Presence"),
+        Some("user:anaconda:evil/agent:claude:s1"),
+        &[],
+    )
+    .expect("presence should encode");
+    result
+        .handle
+        .send_presence(forged)
+        .await
+        .expect("presence should send");
+
+    let relayed_actor = wait_for_presence_update_actor_label(
+        &mut frame_rx,
+        "Forged Presence",
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("observer should receive rewritten presence");
+    assert!(relayed_actor.starts_with("local:"), "{relayed_actor}");
+    assert!(
+        relayed_actor.ends_with("/agent:claude:s1"),
+        "{relayed_actor}"
+    );
+    assert!(
+        !relayed_actor.starts_with("user:anaconda:"),
+        "{relayed_actor}"
+    );
+
+    pool_client.shutdown().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
 

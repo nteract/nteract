@@ -90,11 +90,13 @@ export function useAutomergeNotebook() {
   const sessionIdRef = useRef(crypto.randomUUID().slice(0, 8));
   const outputCacheRef = useRef<Map<string, JupyterOutput>>(new Map());
   const prevPathRef = useRef<string | null>(null);
+  const actorLabelRef = useRef(`local:browser/desktop:${sessionIdRef.current}`);
+  const [localActor, setLocalActor] = useState(actorLabelRef.current);
 
   const [handleHost] = useState(
     () =>
       new NotebookHandleHost<NotebookHandle>({
-        actorLabel: () => `human:${sessionIdRef.current}`,
+        actorLabel: () => actorLabelRef.current,
         createHandle: (actorLabel) => NotebookHandle.create_empty_with_actor(actorLabel),
         getBlobPort,
         publishHandle: setNotebookHandle,
@@ -287,6 +289,10 @@ export function useAutomergeNotebook() {
         if (trigger.kind !== "ready") return;
 
         logger.info("[automerge-notebook] daemon:ready — bootstrapping relay generation");
+        if (trigger.payload.actor_label) {
+          actorLabelRef.current = trigger.payload.actor_label;
+          setLocalActor(trigger.payload.actor_label);
+        }
         storeBridge.resetReadiness();
         refreshBlobPort();
         resetNotebookCells();
@@ -552,7 +558,6 @@ export function useAutomergeNotebook() {
 
   const getHandle = useCallback(() => handleHost.current, [handleHost]);
   const triggerSync = useCallback(() => engineRef.current?.scheduleFlush(), []);
-  const localActor = `human:${sessionIdRef.current}`;
 
   /** Accessor for the SyncEngine (for subscribing to commChanges$ etc.). */
   const getEngine = useCallback(() => engineRef.current, []);

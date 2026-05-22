@@ -176,7 +176,12 @@ impl OidcProviderConfig {
                 "principal namespace cannot be empty",
             ));
         }
-        Principal::new(format!("{principal_namespace}:subject"))?;
+        let namespace = Principal::new(principal_namespace.clone())?;
+        if namespace.as_str() == Principal::SYSTEM {
+            return Err(AuthError::InvalidOidcConfig(
+                "principal namespace cannot be system",
+            ));
+        }
 
         Ok(Self {
             issuer,
@@ -642,6 +647,16 @@ iK6jkmv5/uDc/iFj+DniQQ==
                 "OIDC bearer validation requires asymmetric algorithms"
             ))
         );
+    }
+
+    #[test]
+    fn rejects_invalid_principal_namespaces() {
+        for namespace in ["user:", "system", "bad/namespace"] {
+            assert!(
+                OidcProviderConfig::new(ISSUER, AUDIENCE, namespace).is_err(),
+                "{namespace}"
+            );
+        }
     }
 
     #[test]
