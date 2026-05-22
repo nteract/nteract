@@ -41,6 +41,54 @@ export const FrameType = {
 
 export type FrameTypeValue = (typeof FrameType)[keyof typeof FrameType];
 
+const KIB = 1024;
+const MIB = 1024 * KIB;
+
+/** Absolute maximum typed-frame payload size, aligned with notebook_wire::MAX_FRAME_SIZE. */
+export const MAX_FRAME_SIZE = 100 * MIB;
+
+/** Maximum control-frame payload size, aligned with notebook_wire::MAX_CONTROL_FRAME_SIZE. */
+export const MAX_CONTROL_FRAME_SIZE = 64 * KIB;
+
+export interface FrameSizeLimits {
+  /** Hard payload cap in bytes. Frames larger than this should be rejected. */
+  cap: number;
+  /** Soft payload threshold in bytes. Frames larger than this should be logged. */
+  warn: number;
+}
+
+/**
+ * Return the payload size limits for a typed notebook frame.
+ *
+ * Keep this table in lockstep with `notebook_wire::frame_size_limits` in
+ * `crates/notebook-wire/src/lib.rs`. Cloud and browser transports use this
+ * shared JS surface instead of copying Rust constants into app-local code.
+ */
+export function frameSizeLimits(frameType: number): FrameSizeLimits {
+  switch (frameType) {
+    case FrameType.AUTOMERGE_SYNC:
+      return { cap: 64 * MIB, warn: 16 * MIB };
+    case FrameType.REQUEST:
+      return { cap: 16 * MIB, warn: 256 * KIB };
+    case FrameType.RESPONSE:
+      return { cap: 64 * MIB, warn: 16 * MIB };
+    case FrameType.BROADCAST:
+      return { cap: 16 * MIB, warn: 4 * MIB };
+    case FrameType.PRESENCE:
+      return { cap: 1 * MIB, warn: 256 * KIB };
+    case FrameType.RUNTIME_STATE_SYNC:
+      return { cap: 64 * MIB, warn: 16 * MIB };
+    case FrameType.POOL_STATE_SYNC:
+      return { cap: 1 * MIB, warn: 256 * KIB };
+    case FrameType.SESSION_CONTROL:
+      return { cap: 1 * MIB, warn: 256 * KIB };
+    case FrameType.PUT_BLOB:
+      return { cap: 32 * MIB, warn: 8 * MIB };
+    default:
+      return { cap: MAX_FRAME_SIZE, warn: Math.floor(MAX_FRAME_SIZE / 2) };
+  }
+}
+
 export function sendAutomergeSyncFrame(
   transport: Pick<NotebookTransport, "sendFrame">,
   payload: Uint8Array,
