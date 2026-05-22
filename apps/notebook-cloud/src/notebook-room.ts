@@ -165,7 +165,17 @@ export class NotebookRoom {
     const normalizedFrame =
       frame.type === FrameType.PRESENCE ? rewritePresenceFrame(frame, peer.identity) : frame;
     const receivedAt = new Date().toISOString();
-    await this.persistFrame(notebookId, peer, normalizedFrame, receivedAt);
+    try {
+      await this.persistFrame(notebookId, peer, normalizedFrame, receivedAt);
+    } catch (error) {
+      this.rejectFrame(
+        notebookId,
+        peer,
+        normalizedFrame.type,
+        `failed to persist ${frameTypeName(normalizedFrame.type)} frame: ${String(error)}`,
+      );
+      return;
+    }
 
     this.broadcastFrame(encodeTypedFrame(normalizedFrame.type, normalizedFrame.payload), peer.id);
     this.sendControl(peer, {

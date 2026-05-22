@@ -1,6 +1,11 @@
 import type { Env, ExecutionContext, ExportedHandler } from "./cloudflare-types.ts";
 import { NotebookRoom } from "./notebook-room.ts";
-import { allowsPublish, authenticateDevRequest, stampTrustedIdentity } from "./identity.ts";
+import {
+  allowsPublish,
+  authenticateDevRequest,
+  stampTrustedIdentity,
+  type AuthenticatedConnection,
+} from "./identity.ts";
 import {
   blobKey,
   ensureCatalogSchema,
@@ -82,7 +87,10 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
     return json({ error: "expected WebSocket upgrade" }, 426);
   }
 
-  const identity = authenticateDevRequest(request);
+  const identity = authenticateDevRequestOrResponse(request);
+  if (identity instanceof Response) {
+    return identity;
+  }
   const url = new URL(request.url);
   const notebookId = decodeURIComponent(url.pathname.match(/^\/n\/([^/]+)\/sync\/?$/)?.[1] ?? "");
   if (!notebookId) {
@@ -122,7 +130,10 @@ async function routeSnapshot(
     return json({ error: "method not allowed" }, 405);
   }
 
-  const identity = authenticateDevRequest(request);
+  const identity = authenticateDevRequestOrResponse(request);
+  if (identity instanceof Response) {
+    return identity;
+  }
   if (!allowsPublish(identity.scope)) {
     return json({ error: `${identity.scope} cannot publish snapshots` }, 403);
   }
@@ -225,7 +236,10 @@ async function routeBlob(
     return json({ error: "method not allowed" }, 405);
   }
 
-  const identity = authenticateDevRequest(request);
+  const identity = authenticateDevRequestOrResponse(request);
+  if (identity instanceof Response) {
+    return identity;
+  }
   if (!allowsPublish(identity.scope)) {
     return json({ error: `${identity.scope} cannot upload blobs` }, 403);
   }
@@ -263,6 +277,14 @@ async function safeEnsureCatalogSchema(env: Env, ctx: ExecutionContext): Promise
       console.warn("Unable to ensure D1 schema", error);
     }),
   );
+}
+
+function authenticateDevRequestOrResponse(request: Request): AuthenticatedConnection | Response {
+  try {
+    return authenticateDevRequest(request);
+  } catch (error) {
+    return json({ error: String(error) }, 400);
+  }
 }
 
 function json(value: unknown, status = 200): Response {

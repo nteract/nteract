@@ -115,6 +115,18 @@ assert(
 const snapshotHeads = `heads-${roomId}`;
 const snapshotPath = `/api/n/${encodeURIComponent(roomId)}/snapshots/${encodeURIComponent(snapshotHeads)}`;
 const snapshotBytes = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+const invalidAuthResponse = await fetch(new URL(snapshotPath, baseUrl), {
+  method: "PUT",
+  headers: {
+    "Content-Type": "application/octet-stream",
+    "X-Scope": "admin",
+  },
+  body: snapshotBytes,
+});
+assert(
+  invalidAuthResponse.status === 400,
+  `invalid auth should return 400, got ${invalidAuthResponse.status}`,
+);
 const snapshotPut = await putBytes(snapshotPath, snapshotBytes, "application/octet-stream", {
   "X-Runtime-Heads-Hash": `runtime-${roomId}`,
 });
@@ -166,6 +178,7 @@ console.log(
         "viewer_blob_rejection",
         "viewer_pool_rejection",
         "d1_room_event_readback",
+        "invalid_auth_structured_rejection",
         "r2_snapshot_roundtrip",
         "r2_blob_roundtrip",
         "d1_catalog_readback",
