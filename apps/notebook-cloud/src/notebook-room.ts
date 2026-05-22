@@ -298,7 +298,10 @@ export class NotebookRoom {
   }
 }
 
-function rewritePresenceFrame(frame: TypedFrame, identity: AuthenticatedConnection): TypedFrame {
+export function rewritePresenceFrame(
+  frame: TypedFrame,
+  identity: AuthenticatedConnection,
+): TypedFrame {
   let presence: Record<string, unknown>;
   try {
     presence = decodeJsonPayload<Record<string, unknown>>(frame.payload);
@@ -309,12 +312,19 @@ function rewritePresenceFrame(frame: TypedFrame, identity: AuthenticatedConnecti
   }
 
   const presented = typeof presence.actor_label === "string" ? presence.actor_label : undefined;
+  let actorLabel: string;
+  try {
+    actorLabel = rewriteActorLabelPrincipal(presented, identity);
+  } catch {
+    actorLabel = identity.actorLabel;
+  }
+
   return {
     type: frame.type,
     payload: new TextEncoder().encode(
       JSON.stringify({
         ...presence,
-        actor_label: rewriteActorLabelPrincipal(presented, identity),
+        actor_label: actorLabel,
       }),
     ),
   };

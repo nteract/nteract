@@ -103,6 +103,8 @@ async function routeSnapshot(
   const key = snapshotKey(notebookId, headsHash);
 
   if (request.method === "GET") {
+    // Prototype publish reads are intentionally public. Production hosts should
+    // gate this path with viewer-or-better auth or signed artifact URLs.
     const object = await env.NOTEBOOK_SNAPSHOTS?.get(key);
     if (!object) {
       return json({ error: "snapshot not found" }, 404);
@@ -186,6 +188,8 @@ async function routeBlob(
   const key = blobKey(notebookId, hash);
 
   if (request.method === "HEAD") {
+    // Prototype publish reads are intentionally public. Production hosts should
+    // gate this path with viewer-or-better auth or signed artifact URLs.
     const object = await env.NOTEBOOK_SNAPSHOTS?.head(key);
     if (!object) {
       return json({ error: "blob not found" }, 404);
@@ -201,6 +205,8 @@ async function routeBlob(
   }
 
   if (request.method === "GET") {
+    // Prototype publish reads are intentionally public. Production hosts should
+    // gate this path with viewer-or-better auth or signed artifact URLs.
     const object = await env.NOTEBOOK_SNAPSHOTS?.get(key);
     if (!object) {
       return json({ error: "blob not found" }, 404);

@@ -76,6 +76,8 @@ For browser-only testing, the same values can be supplied as query params:
 
 If no scope is supplied, dev auth defaults to `viewer`. Write and publish paths must ask for `editor`, `runtime_peer`, or `owner` explicitly.
 
+Snapshot and blob reads are public in this prototype so `/n/:id` can act like a publish viewer without a product auth flow. Production hosts should move those reads behind viewer-or-better auth, signed URLs, or a dedicated output origin before accepting private notebooks.
+
 ## Storage shape
 
 Bindings in `wrangler.toml`:
