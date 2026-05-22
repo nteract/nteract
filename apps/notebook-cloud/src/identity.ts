@@ -274,9 +274,26 @@ function hasValidDevToken(request: Request, env: IdentityEnvironment): boolean {
 
   const url = new URL(request.url);
   const presented = headerOrQuery(request, url, DEV_AUTH_TOKEN_HEADER, DEV_AUTH_TOKEN_QUERY);
-  return presented === expected;
+  return timingSafeStringEqual(presented, expected);
 }
 
 function defaultOperator(): string {
   return `desktop:${crypto.randomUUID()}`;
+}
+
+function timingSafeStringEqual(presented: string | undefined, expected: string): boolean {
+  if (presented === undefined) {
+    return false;
+  }
+
+  const encoder = new TextEncoder();
+  const presentedBytes = encoder.encode(presented);
+  const expectedBytes = encoder.encode(expected);
+  let diff = presentedBytes.length ^ expectedBytes.length;
+
+  for (let index = 0; index < expectedBytes.length; index += 1) {
+    diff |= (presentedBytes[index] ?? 0) ^ expectedBytes[index];
+  }
+
+  return diff === 0;
 }

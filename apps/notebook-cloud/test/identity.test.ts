@@ -97,6 +97,35 @@ describe("dev identity", () => {
     assert.equal(authenticated.scope, "owner");
   });
 
+  it("accepts remote dev token from headers and rejects same-prefix guesses", () => {
+    const rejected = new Request("https://cloud.test/n/demo/sync?user=alice", {
+      headers: {
+        "X-Notebook-Cloud-Dev-Token": "secret-guess",
+      },
+    });
+    assert.throws(
+      () =>
+        authenticateRequest(rejected, {
+          DEPLOYMENT_ENV: "prototype",
+          NOTEBOOK_CLOUD_DEV_TOKEN: "secret-token",
+        }),
+      (error) => error instanceof AuthError && error.status === 401,
+    );
+
+    const accepted = new Request("https://cloud.test/n/demo/sync?user=alice", {
+      headers: {
+        "X-Notebook-Cloud-Dev-Token": "secret-token",
+      },
+    });
+    assert.equal(
+      authenticateRequest(accepted, {
+        DEPLOYMENT_ENV: "prototype",
+        NOTEBOOK_CLOUD_DEV_TOKEN: "secret-token",
+      }).principal,
+      "user:dev:alice",
+    );
+  });
+
   it("allows dev credentials from loopback during wrangler local development", () => {
     const identity = authenticateRequest(
       new Request("http://127.0.0.1:8787/n/demo/sync?user=alice&operator=desktop:a"),

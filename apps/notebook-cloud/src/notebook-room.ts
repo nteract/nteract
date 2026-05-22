@@ -12,6 +12,7 @@ import {
   encodeJsonFrame,
   encodeTypedFrame,
   FrameType,
+  frameSizeLimits,
   frameTypeName,
   isClientWritableFrame,
   splitTypedFrame,
@@ -44,14 +45,16 @@ interface PeerAttachment {
   connectedAt: string;
 }
 
-const MAX_FRAME_BYTES = 1024 * 1024;
 const MAX_STORED_FRAMES = 500;
 
 export class NotebookRoom {
   private readonly peers = new Map<string, Peer>();
+  private readonly removedPeerIds = new Set<string>();
+  private readonly pendingRemovals = new Map<string, { notebookId: string; peer: Peer }>();
   private nextFrameSequence = 0;
   private frameSequenceReady: Promise<void> | undefined;
   private framePersistQueue: Promise<void> = Promise.resolve();
+  private broadcastDepth = 0;
 
   constructor(
     private readonly state: DurableObjectState,
@@ -93,6 +96,7 @@ export class NotebookRoom {
       connectedAt: new Date().toISOString(),
     };
 
+    this.removedPeerIds.delete(peer.id);
     this.acceptPeerSocket(notebookId, peer);
     this.peers.set(peer.id, peer);
 
@@ -199,18 +203,11 @@ export class NotebookRoom {
     if (!attachment) {
       return undefined;
     }
-
-    let peer = this.peers.get(attachment.peerId);
-    if (!peer) {
-      peer = {
-        id: attachment.peerId,
-        socket,
-        identity: attachment.identity,
-        connectedAt: attachment.connectedAt,
-      };
-      this.peers.set(peer.id, peer);
+    if (this.removedPeerIds.has(attachment.peerId)) {
+      return undefined;
     }
-    return peer;
+
+    return this.peers.get(attachment.peerId);
   }
 
   private removeAttachedPeer(socket: CloudflareWebSocket): void {
@@ -250,12 +247,13 @@ export class NotebookRoom {
       return;
     }
 
-    if (frame.payload.byteLength + 1 > MAX_FRAME_BYTES) {
+    const sizeLimits = frameSizeLimits(frame.type);
+    if (frame.payload.byteLength > sizeLimits.cap) {
       this.rejectFrame(
         notebookId,
         peer,
         frame.type,
-        `${frameTypeName(frame.type)} frame exceeds ${MAX_FRAME_BYTES} byte limit`,
+        `${frameTypeName(frame.type)} frame payload exceeds ${sizeLimits.cap} byte limit`,
       );
       return;
     }
@@ -451,25 +449,70 @@ export class NotebookRoom {
   }
 
   private broadcastFrame(notebookId: string, frame: Uint8Array, excludePeerId?: string): void {
-    for (const [peerId, peer] of this.peers) {
-      if (peerId === excludePeerId) {
-        continue;
+    const peers = Array.from(this.peers.values()).filter((peer) => peer.id !== excludePeerId);
+    this.broadcastDepth += 1;
+    try {
+      for (const peer of peers) {
+        if (!this.trySendFrame(peer, frame)) {
+          this.queuePeerRemoval(notebookId, peer);
+        }
       }
-      this.sendFrameToPeer(notebookId, peer, frame);
+    } finally {
+      this.broadcastDepth -= 1;
+      if (this.broadcastDepth === 0) {
+        this.flushPendingRemovals();
+      }
     }
   }
 
   private sendFrameToPeer(notebookId: string, peer: Peer, frame: Uint8Array): void {
-    try {
-      peer.socket.send(frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength));
-    } catch {
+    if (!this.trySendFrame(peer, frame)) {
       this.removePeer(notebookId, peer);
     }
   }
 
+  private trySendFrame(peer: Peer, frame: Uint8Array): boolean {
+    try {
+      peer.socket.send(frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private queuePeerRemoval(notebookId: string, peer: Peer): void {
+    if (!this.peers.has(peer.id)) {
+      return;
+    }
+
+    this.pendingRemovals.set(peer.id, { notebookId, peer });
+  }
+
+  private flushPendingRemovals(): void {
+    while (this.pendingRemovals.size > 0) {
+      const removals = Array.from(this.pendingRemovals.values());
+      this.pendingRemovals.clear();
+      for (const { notebookId, peer } of removals) {
+        this.removePeer(notebookId, peer);
+      }
+    }
+  }
+
   private removePeer(notebookId: string, peer: Peer): void {
+    if (this.broadcastDepth > 0) {
+      this.queuePeerRemoval(notebookId, peer);
+      return;
+    }
+
     if (!this.peers.delete(peer.id)) {
       return;
+    }
+
+    this.removedPeerIds.add(peer.id);
+    try {
+      peer.socket.close();
+    } catch {
+      // Socket is already gone; the peer has still been removed from room state.
     }
 
     this.broadcastControl(notebookId, {

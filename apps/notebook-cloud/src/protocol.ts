@@ -10,6 +10,16 @@ export interface TypedFrame {
   payload: Uint8Array;
 }
 
+export interface FrameSizeLimits {
+  cap: number;
+  warn: number;
+}
+
+const KIB = 1024;
+const MIB = 1024 * 1024;
+
+export const MAX_FRAME_SIZE = 100 * MIB;
+
 export type SessionControlMessage =
   | {
       type: "cloud_room_ready";
@@ -116,6 +126,31 @@ export function isClientWritableFrame(type: FrameTypeValue): boolean {
     type === FrameType.POOL_STATE_SYNC ||
     type === FrameType.PUT_BLOB
   );
+}
+
+export function frameSizeLimits(type: number): FrameSizeLimits {
+  switch (type) {
+    case FrameType.AUTOMERGE_SYNC:
+      return { cap: 64 * MIB, warn: 16 * MIB };
+    case FrameType.REQUEST:
+      return { cap: 16 * MIB, warn: 256 * KIB };
+    case FrameType.RESPONSE:
+      return { cap: 64 * MIB, warn: 16 * MIB };
+    case FrameType.BROADCAST:
+      return { cap: 16 * MIB, warn: 4 * MIB };
+    case FrameType.PRESENCE:
+      return { cap: MIB, warn: 256 * KIB };
+    case FrameType.RUNTIME_STATE_SYNC:
+      return { cap: 64 * MIB, warn: 16 * MIB };
+    case FrameType.POOL_STATE_SYNC:
+      return { cap: MIB, warn: 256 * KIB };
+    case FrameType.SESSION_CONTROL:
+      return { cap: MIB, warn: 256 * KIB };
+    case FrameType.PUT_BLOB:
+      return { cap: 32 * MIB, warn: 8 * MIB };
+    default:
+      return { cap: MAX_FRAME_SIZE, warn: MAX_FRAME_SIZE / 2 };
+  }
 }
 
 export function toUint8Array(message: ArrayBuffer | ArrayBufferView): Uint8Array {

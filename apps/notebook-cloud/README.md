@@ -109,7 +109,7 @@ Bindings in `wrangler.toml`:
 
 Schema lives in `migrations/0001_initial.sql`. The Worker also creates the same tables lazily in local dev so the WebSocket path can run before applying migrations.
 
-Accepted WebSocket frames are limited to 1 MiB. The Durable Object keeps only the latest 500 `frame:*` metadata entries in object storage; D1 room events are observability rows, not the replay log.
+Accepted WebSocket frame payload caps mirror `notebook-wire` per-frame limits: Automerge sync and runtime-state frames may be up to 64 MiB, `PUT_BLOB` up to 32 MiB, request frames up to 16 MiB, and presence/pool-state/session-control frames up to 1 MiB. The Durable Object keeps only the latest 500 `frame:*` metadata entries in object storage; D1 room events are observability rows, not the replay log.
 
 ## Prototype deployment
 
