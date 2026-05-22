@@ -38,6 +38,8 @@ interface StoredRoomFrame {
 
 export class NotebookRoom {
   private readonly peers = new Map<string, Peer>();
+  private nextFrameSequence = 0;
+  private frameSequenceReady: Promise<void> | undefined;
 
   constructor(
     private readonly state: DurableObjectState,
@@ -200,8 +202,7 @@ export class NotebookRoom {
     frame: TypedFrame,
     receivedAt: string,
   ): Promise<void> {
-    const sequence = ((await this.state.storage.get<number>("frame_sequence")) ?? 0) + 1;
-    await this.state.storage.put("frame_sequence", sequence);
+    const sequence = await this.allocateFrameSequence();
 
     const stored: StoredRoomFrame = {
       sequence,
@@ -212,7 +213,10 @@ export class NotebookRoom {
       byteLength: frame.payload.byteLength,
       receivedAt,
     };
-    await this.state.storage.put(`frame:${sequence.toString().padStart(12, "0")}`, stored);
+    await Promise.all([
+      this.state.storage.put("frame_sequence", sequence),
+      this.state.storage.put(`frame:${sequence.toString().padStart(12, "0")}`, stored),
+    ]);
     await recordRoomEvent(this.env, {
       notebookId,
       peerId: peer.id,
@@ -222,6 +226,18 @@ export class NotebookRoom {
       byteLength: frame.payload.byteLength,
       receivedAt,
     });
+  }
+
+  private async allocateFrameSequence(): Promise<number> {
+    this.frameSequenceReady ??= this.state.storage
+      .get<number>("frame_sequence")
+      .then((sequence) => {
+        this.nextFrameSequence = sequence ?? 0;
+      });
+
+    await this.frameSequenceReady;
+    this.nextFrameSequence += 1;
+    return this.nextFrameSequence;
   }
 
   private rejectFrame(
@@ -241,7 +257,7 @@ export class NotebookRoom {
   }
 
   private sendControl(peer: Peer, message: SessionControlMessage): void {
-    peer.socket.send(encodeJsonFrame(FrameType.SESSION_CONTROL, message));
+    this.sendFrameToPeer(peer, encodeJsonFrame(FrameType.SESSION_CONTROL, message));
   }
 
   private broadcastControl(message: SessionControlMessage, excludePeerId?: string): void {
@@ -254,7 +270,15 @@ export class NotebookRoom {
       if (peerId === excludePeerId) {
         continue;
       }
+      this.sendFrameToPeer(peer, frame);
+    }
+  }
+
+  private sendFrameToPeer(peer: Peer, frame: Uint8Array): void {
+    try {
       peer.socket.send(frame);
+    } catch {
+      this.peers.delete(peer.id);
     }
   }
 

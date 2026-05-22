@@ -1,8 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { scriptJsonForHtml } from "../src/index.ts";
+import { escapeHtml, scriptJsonForHtml } from "../src/index.ts";
 
 describe("HTML script serialization", () => {
+  it("escapes text and attribute metacharacters", () => {
+    assert.equal(escapeHtml(`<&>"'`), "&lt;&amp;&gt;&quot;&#x27;");
+  });
+
   it("escapes script-breaking characters", () => {
     const serialized = scriptJsonForHtml("</script><img src=x onerror=alert(1)>");
 
