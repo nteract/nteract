@@ -533,6 +533,20 @@ impl NotebookHandle {
         })
     }
 
+    /// Load a persisted NotebookDoc + RuntimeStateDoc snapshot pair.
+    ///
+    /// Hosted viewers and room hosts should use this when materializing a
+    /// published notebook revision: NotebookDoc owns cells and execution_id
+    /// pointers, while RuntimeStateDoc owns execution/output manifests.
+    pub fn load_snapshot(
+        notebook_bytes: &[u8],
+        runtime_state_bytes: &[u8],
+    ) -> Result<NotebookHandle, JsError> {
+        let mut handle = Self::load(notebook_bytes)?;
+        handle.load_state_doc(runtime_state_bytes)?;
+        Ok(handle)
+    }
+
     /// Load a RuntimeStateDoc from saved bytes.
     ///
     /// Used by test fixtures to provide pre-populated state doc data
@@ -1061,6 +1075,15 @@ impl NotebookHandle {
         self.doc.get_heads_hex()
     }
 
+    /// Return the current RuntimeStateDoc heads as hex strings.
+    pub fn get_runtime_state_heads_hex(&mut self) -> Vec<String> {
+        self.state_doc
+            .get_heads()
+            .into_iter()
+            .map(|head| head.to_string())
+            .collect()
+    }
+
     /// Return a stable fingerprint of dependency metadata covered by trust approval.
     pub fn get_dependency_fingerprint(&self) -> Option<String> {
         self.doc.get_dependency_fingerprint()
@@ -1444,6 +1467,11 @@ impl NotebookHandle {
     /// Export the full document as bytes (for debugging or persistence).
     pub fn save(&mut self) -> Vec<u8> {
         self.doc.save()
+    }
+
+    /// Export the full RuntimeStateDoc as bytes.
+    pub fn save_state_doc(&mut self) -> Vec<u8> {
+        self.state_doc.doc_mut().save()
     }
 
     /// Set a single property in a comm's state map.
