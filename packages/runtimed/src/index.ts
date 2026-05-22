@@ -13,8 +13,12 @@ export type { PresenceHeartbeatOptions, SyncEngineOptions, SyncEngineLogger } fr
 export type { FrameListener, NotebookRequestOptions, NotebookTransport } from "./transport";
 export {
   FrameType,
+  MAX_CONTROL_FRAME_SIZE,
+  MAX_FRAME_SIZE,
+  frameSizeLimits,
   sendAutomergeSyncFrame,
   sendPresenceFrame,
+  type FrameSizeLimits,
   type FrameTypeValue,
 } from "./transport";
 

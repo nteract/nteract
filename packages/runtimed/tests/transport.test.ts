@@ -3,6 +3,9 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   DirectTransport,
   FrameType,
+  MAX_CONTROL_FRAME_SIZE,
+  MAX_FRAME_SIZE,
+  frameSizeLimits,
   sendAutomergeSyncFrame,
   sendPresenceFrame,
   type NotebookTransport,
@@ -36,6 +39,70 @@ describe("FrameType constants", () => {
     expect(FrameType.POOL_STATE_SYNC).toBe(0x06);
     expect(FrameType.SESSION_CONTROL).toBe(0x07);
     expect(FrameType.PUT_BLOB).toBe(0x08);
+  });
+});
+
+describe("frameSizeLimits", () => {
+  const kib = 1024;
+  const mib = 1024 * kib;
+
+  it("matches the notebook wire global limits", () => {
+    expect(MAX_FRAME_SIZE).toBe(100 * mib);
+    expect(MAX_CONTROL_FRAME_SIZE).toBe(64 * kib);
+  });
+
+  it("matches the notebook wire per-frame limits", () => {
+    expect(frameSizeLimits(FrameType.AUTOMERGE_SYNC)).toEqual({
+      cap: 64 * mib,
+      warn: 16 * mib,
+    });
+    expect(frameSizeLimits(FrameType.REQUEST)).toEqual({
+      cap: 16 * mib,
+      warn: 256 * kib,
+    });
+    expect(frameSizeLimits(FrameType.RESPONSE)).toEqual({
+      cap: 64 * mib,
+      warn: 16 * mib,
+    });
+    expect(frameSizeLimits(FrameType.BROADCAST)).toEqual({
+      cap: 16 * mib,
+      warn: 4 * mib,
+    });
+    expect(frameSizeLimits(FrameType.PRESENCE)).toEqual({
+      cap: 1 * mib,
+      warn: 256 * kib,
+    });
+    expect(frameSizeLimits(FrameType.RUNTIME_STATE_SYNC)).toEqual({
+      cap: 64 * mib,
+      warn: 16 * mib,
+    });
+    expect(frameSizeLimits(FrameType.POOL_STATE_SYNC)).toEqual({
+      cap: 1 * mib,
+      warn: 256 * kib,
+    });
+    expect(frameSizeLimits(FrameType.SESSION_CONTROL)).toEqual({
+      cap: 1 * mib,
+      warn: 256 * kib,
+    });
+    expect(frameSizeLimits(FrameType.PUT_BLOB)).toEqual({
+      cap: 32 * mib,
+      warn: 8 * mib,
+    });
+  });
+
+  it("uses the notebook wire fallback for unknown frame types", () => {
+    expect(frameSizeLimits(0xff)).toEqual({
+      cap: MAX_FRAME_SIZE,
+      warn: MAX_FRAME_SIZE / 2,
+    });
+  });
+
+  it("keeps warning thresholds below caps", () => {
+    for (const frameType of Object.values(FrameType)) {
+      const { cap, warn } = frameSizeLimits(frameType);
+
+      expect(warn).toBeLessThan(cap);
+    }
   });
 });
 
