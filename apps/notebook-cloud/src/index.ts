@@ -323,7 +323,7 @@ function viewer(notebookId: string): Response {
     <pre id="log"></pre>
   </main>
   <script type="module">
-    const notebookId = ${JSON.stringify(notebookId)};
+    const notebookId = ${scriptJsonForHtml(notebookId)};
     const frameType = { presence: 0x04, sessionControl: 0x07 };
     const log = document.querySelector("#log");
     const status = document.querySelector("#status");
@@ -362,4 +362,13 @@ function viewer(notebookId: string): Response {
 
 function escapeHtml(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+export function scriptJsonForHtml(value: unknown): string {
+  return JSON.stringify(value)
+    .replaceAll("<", "\\u003c")
+    .replaceAll(">", "\\u003e")
+    .replaceAll("&", "\\u0026")
+    .replaceAll("\u2028", "\\u2028")
+    .replaceAll("\u2029", "\\u2029");
 }

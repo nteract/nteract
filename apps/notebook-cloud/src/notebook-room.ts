@@ -177,13 +177,21 @@ export class NotebookRoom {
   }
 
   private scopeAllowsFrame(identity: AuthenticatedConnection, frame: TypedFrame): boolean {
-    if (frame.type === FrameType.AUTOMERGE_SYNC) {
-      return allowsNotebookWrite(identity.scope);
+    switch (frame.type) {
+      case FrameType.AUTOMERGE_SYNC:
+        return allowsNotebookWrite(identity.scope);
+      case FrameType.RUNTIME_STATE_SYNC:
+      case FrameType.PUT_BLOB:
+        return allowsRuntimeStateWrite(identity.scope);
+      case FrameType.POOL_STATE_SYNC:
+        return identity.scope === "owner";
+      case FrameType.REQUEST:
+        return identity.scope !== "viewer";
+      case FrameType.PRESENCE:
+        return true;
+      default:
+        return false;
     }
-    if (frame.type === FrameType.RUNTIME_STATE_SYNC) {
-      return allowsRuntimeStateWrite(identity.scope);
-    }
-    return true;
   }
 
   private async persistFrame(

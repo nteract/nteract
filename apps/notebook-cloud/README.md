@@ -26,6 +26,7 @@ The smoke script proves:
 - Presence principal rewrite to the authenticated principal.
 - Same-room typed-frame relay.
 - Viewer-scope rejection for notebook writes.
+- Viewer-scope rejection for blob and pool-state writes.
 - D1 room-event readback.
 
 If the volatile frontend WASM package exists at `apps/notebook/src/wasm/runtimed-wasm`,

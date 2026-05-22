@@ -1,7 +1,9 @@
 const FrameType = {
   AUTOMERGE_SYNC: 0x00,
   PRESENCE: 0x04,
+  POOL_STATE_SYNC: 0x06,
   SESSION_CONTROL: 0x07,
+  PUT_BLOB: 0x08,
 };
 
 const baseUrl = process.env.NOTEBOOK_CLOUD_URL ?? "http://127.0.0.1:8787";
@@ -56,6 +58,30 @@ const rejected = await viewer.nextFrame(
 );
 assert(rejected.json.reason.includes("viewer cannot write"), "viewer write was not rejected");
 
+sendBinaryFrame(viewer.socket, FrameType.PUT_BLOB, new Uint8Array([9]));
+const rejectedBlob = await viewer.nextFrame(
+  (frame) =>
+    frame.type === FrameType.SESSION_CONTROL &&
+    frame.json.type === "cloud_frame_rejected" &&
+    frame.json.frame_type === FrameType.PUT_BLOB,
+);
+assert(
+  rejectedBlob.json.reason.includes("viewer cannot write"),
+  "viewer blob write was not rejected",
+);
+
+sendBinaryFrame(viewer.socket, FrameType.POOL_STATE_SYNC, new Uint8Array([9]));
+const rejectedPool = await viewer.nextFrame(
+  (frame) =>
+    frame.type === FrameType.SESSION_CONTROL &&
+    frame.json.type === "cloud_frame_rejected" &&
+    frame.json.frame_type === FrameType.POOL_STATE_SYNC,
+);
+assert(
+  rejectedPool.json.reason.includes("viewer cannot write"),
+  "viewer pool write was not rejected",
+);
+
 const events = await fetchJson(`/api/n/${encodeURIComponent(roomId)}/events?limit=20`);
 assert(
   events.events.some((event) => event.frame_type === FrameType.AUTOMERGE_SYNC),
@@ -80,6 +106,8 @@ console.log(
         "presence_principal_rewrite",
         "typed_frame_relay",
         "scope_rejection",
+        "viewer_blob_rejection",
+        "viewer_pool_rejection",
         "d1_room_event_readback",
       ],
     },
