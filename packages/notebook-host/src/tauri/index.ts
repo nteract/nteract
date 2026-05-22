@@ -24,7 +24,7 @@ import {
 } from "@tauri-apps/plugin-log";
 import { open as pluginOpenShell } from "@tauri-apps/plugin-shell";
 import { check as pluginCheckUpdate } from "@tauri-apps/plugin-updater";
-import type { NotebookResponse, NotebookTransport } from "runtimed";
+import { createHttpBlobResolver, type NotebookResponse, type NotebookTransport } from "runtimed";
 import { createCommandRegistry } from "../commands";
 import { wireTauriMenuBridge } from "./menu-bridge";
 import { TauriTransport } from "./transport";
@@ -35,7 +35,6 @@ import type {
   DaemonReadyPayload,
   DaemonUnavailablePayload,
   GitInfo,
-  HostBlobRef,
   HostBlobResolver,
   HostBlobs,
   HostDaemon,
@@ -86,17 +85,6 @@ function listenWebview<T>(eventName: string, cb: (payload: T) => void): Unlisten
       unlisten();
       unlisten = null;
     }
-  };
-}
-
-function createHttpBlobResolver(port: number, fetchImpl: typeof fetch = fetch): HostBlobResolver {
-  const url = (ref: HostBlobRef) => `http://127.0.0.1:${port}/blob/${ref.blob}`;
-  return {
-    port,
-    url,
-    fetch(ref) {
-      return fetchImpl(url(ref));
-    },
   };
 }
 

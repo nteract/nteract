@@ -204,6 +204,15 @@ export type {
 
 // Blob upload
 export { BlobUploadError, PUT_BLOB_TIMEOUT_MS, putBlob, type PutBlobResult } from "./blob-upload";
+export {
+  createBlobResolver,
+  createHttpBlobResolver,
+  normalizeBlobResolver,
+  type BlobRef,
+  type BlobResolver,
+  type BlobResolverInput,
+  type BlobResolverOptions,
+} from "./blob-resolver";
 
 // MIME priority
 export { DEFAULT_MIME_PRIORITY } from "./mime-priority";

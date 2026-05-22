@@ -1,6 +1,9 @@
 export {
   ARROW_STREAM_MANIFEST_MIME,
+  createBlobResolver,
+  createHttpBlobResolver,
   isOutputManifest,
+  normalizeBlobResolver,
   resolveContentRef,
   resolveDataBundle,
   resolveManifest,
