@@ -275,21 +275,25 @@ export class NotebookRoom {
 }
 
 function rewritePresenceFrame(frame: TypedFrame, identity: AuthenticatedConnection): TypedFrame {
+  let presence: Record<string, unknown>;
   try {
-    const presence = decodeJsonPayload<Record<string, unknown>>(frame.payload);
-    const presented = typeof presence.actor_label === "string" ? presence.actor_label : undefined;
-    return {
-      type: frame.type,
-      payload: new TextEncoder().encode(
-        JSON.stringify({
-          ...presence,
-          actor_label: rewriteActorLabelPrincipal(presented, identity),
-        }),
-      ),
-    };
+    presence = decodeJsonPayload<Record<string, unknown>>(frame.payload);
   } catch {
-    return frame;
+    presence = {
+      presence_format: "unparsed",
+    };
   }
+
+  const presented = typeof presence.actor_label === "string" ? presence.actor_label : undefined;
+  return {
+    type: frame.type,
+    payload: new TextEncoder().encode(
+      JSON.stringify({
+        ...presence,
+        actor_label: rewriteActorLabelPrincipal(presented, identity),
+      }),
+    ),
+  };
 }
 
 function notebookIdFromPath(pathname: string): string | undefined {

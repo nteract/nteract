@@ -24,6 +24,7 @@ The smoke script proves:
 - Durable Object room routing by notebook id.
 - Dev identity stamping from `X-User` / `X-Operator` headers or `user` / `operator` query params.
 - Presence principal rewrite to the authenticated principal.
+- Safe authenticated fallback for malformed/non-JSON presence payloads.
 - Same-room typed-frame relay.
 - Viewer-scope rejection for notebook writes.
 - Viewer-scope rejection for blob and pool-state writes.

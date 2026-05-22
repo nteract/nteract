@@ -40,6 +40,17 @@ assert(
   `presence principal was not rewritten: ${JSON.stringify(rewrittenPresence.json)}`,
 );
 
+sendBinaryFrame(alice.socket, FrameType.PRESENCE, new Uint8Array([0xa1, 0x01, 0x02]));
+const fallbackPresence = await bob.nextFrame((frame) => frame.type === FrameType.PRESENCE);
+assert(
+  fallbackPresence.json.actor_label === "user:dev:alice/desktop:alice",
+  `malformed presence was not stamped safely: ${JSON.stringify(fallbackPresence.json)}`,
+);
+assert(
+  fallbackPresence.json.presence_format === "unparsed",
+  `malformed presence did not carry fallback marker: ${JSON.stringify(fallbackPresence.json)}`,
+);
+
 sendBinaryFrame(alice.socket, FrameType.AUTOMERGE_SYNC, new Uint8Array([1, 2, 3, 4]));
 const relayedSync = await bob.nextFrame((frame) => frame.type === FrameType.AUTOMERGE_SYNC);
 assert(relayedSync.payload.byteLength === 4, "same-room sync frame was not relayed");
@@ -104,6 +115,7 @@ console.log(
         "durable_object_room_routing",
         "identity_stamping",
         "presence_principal_rewrite",
+        "malformed_presence_safe_fallback",
         "typed_frame_relay",
         "scope_rejection",
         "viewer_blob_rejection",
