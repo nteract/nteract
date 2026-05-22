@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   ARROW_STREAM_MANIFEST_MIME,
+  createBlobResolver,
   type ContentRef,
   isOutputManifest,
   type OutputManifest,
@@ -411,6 +412,26 @@ describe("resolveContentRef", () => {
     expect(mockFetch).toHaveBeenCalledWith(
       "http://127.0.0.1:5555/blob/hash123",
     );
+  });
+
+  it("uses resolver URLs and fetch policy without a daemon port", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response("cloud", { status: 200 }));
+    const resolver = createBlobResolver({
+      url: (ref) => `/api/n/notebook-1/blobs/${encodeURIComponent(ref.blob)}`,
+      fetchImpl,
+      requestInit: { credentials: "include" },
+    });
+
+    const result = await resolveContentRef(
+      { blob: "sha256:abc", size: 5 },
+      resolver,
+      "text/plain",
+    );
+
+    expect(result).toBe("cloud");
+    expect(fetchImpl).toHaveBeenCalledWith("/api/n/notebook-1/blobs/sha256%3Aabc", {
+      credentials: "include",
+    });
   });
 });
 

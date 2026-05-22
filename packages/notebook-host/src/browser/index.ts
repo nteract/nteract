@@ -8,6 +8,7 @@
 
 import {
   FrameType,
+  createHttpBlobResolver,
   type FrameListener,
   type FrameTypeValue,
   type NotebookRequest,
@@ -22,7 +23,6 @@ import type {
   DaemonReadyPayload,
   DaemonUnavailablePayload,
   GitInfo,
-  HostBlobRef,
   HostBlobResolver,
   HostBlobs,
   HostUpdaterState,
@@ -78,17 +78,6 @@ function requestTimeoutMs(request: NotebookRequest): number {
     default:
       return 30_000;
   }
-}
-
-function createHttpBlobResolver(port: number, fetchImpl: typeof fetch): HostBlobResolver {
-  const url = (ref: HostBlobRef) => `http://127.0.0.1:${port}/blob/${ref.blob}`;
-  return {
-    port,
-    url,
-    fetch(ref) {
-      return fetchImpl(url(ref));
-    },
-  };
 }
 
 function addToken(url: string, token: string): string {

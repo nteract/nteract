@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import { createBlobResolver } from "../manifest-resolution";
 import { rewriteMarkdownAssetRefs } from "../markdown-assets";
 
 describe("rewriteMarkdownAssetRefs", () => {
@@ -90,6 +91,18 @@ describe("rewriteMarkdownAssetRefs", () => {
     expect(result).toBe(
       '![one](http://127.0.0.1:4321/blob/abc123)\n<img src="http://127.0.0.1:4321/blob/abc123" />',
     );
+  });
+
+  it("rewrites refs through a host blob resolver without a daemon port", () => {
+    const result = rewriteMarkdownAssetRefs(
+      "![plot](images/foo.png)",
+      { "images/foo.png": "sha256:abc" },
+      createBlobResolver({
+        url: (ref) => `/api/n/notebook-1/blobs/${encodeURIComponent(ref.blob)}`,
+      }),
+    );
+
+    expect(result).toBe("![plot](/api/n/notebook-1/blobs/sha256%3Aabc)");
   });
 
   it("rewrites angle-bracketed markdown destinations with spaces", () => {

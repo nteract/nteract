@@ -69,7 +69,14 @@ export type {
   NteractOutputEmbedOptions,
   NteractOutputRendererBundleProvider,
 } from "./output-embed";
-export { isOutputManifest, resolveManifest, resolveManifestSync } from "./output-manifest";
+export {
+  createBlobResolver,
+  createHttpBlobResolver,
+  isOutputManifest,
+  normalizeBlobResolver,
+  resolveManifest,
+  resolveManifestSync,
+} from "./output-manifest";
 export type {
   BlobResolverInput,
   ContentRef,

@@ -1,8 +1,8 @@
+import { normalizeBlobResolver } from "../../../../packages/runtimed/src/blob-resolver";
 import type { BlobResolverInput } from "./manifest-resolution";
 
 function blobUrl(blobResolver: BlobResolverInput, hash: string): string {
-  if (typeof blobResolver === "number") return `http://127.0.0.1:${blobResolver}/blob/${hash}`;
-  return blobResolver.url({ blob: hash });
+  return normalizeBlobResolver(blobResolver).url({ blob: hash });
 }
 
 /**

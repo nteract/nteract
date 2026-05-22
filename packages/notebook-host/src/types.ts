@@ -29,7 +29,7 @@
  *   point — not pre-optional now, to keep the contract honest.
  */
 
-import type { NotebookTransport } from "runtimed";
+import type { BlobRef, BlobResolver, NotebookTransport } from "runtimed";
 import type { CommandRegistry } from "./commands";
 
 // ── Shared types ─────────────────────────────────────────────────────────
@@ -121,27 +121,8 @@ export interface HostDaemon {
   getReadyInfo(): Promise<DaemonReadyPayload | null>;
 }
 
-export interface HostBlobRef {
-  blob: string;
-  size?: number;
-  media_type?: string;
-}
-
-export interface HostBlobResolver {
-  /**
-   * Local blob port when this resolver is backed by the daemon HTTP server.
-   *
-   * Kept for WASM compatibility while frontend render paths move to `url()`
-   * and `fetch()`.
-   */
-  readonly port?: number;
-
-  /** Return a browser-consumable URL for renderers that stream/fetch directly. */
-  url(ref: HostBlobRef): string;
-
-  /** Fetch blob bytes/text through the host, including any auth/proxy policy. */
-  fetch(ref: HostBlobRef): Promise<Response>;
-}
+export type HostBlobRef = BlobRef;
+export type HostBlobResolver = BlobResolver;
 
 /** Blob store — host-owned access to daemon blob content. */
 export interface HostBlobs {

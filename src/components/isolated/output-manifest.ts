@@ -1,18 +1,18 @@
+import {
+  normalizeBlobResolver,
+  type BlobRef as OutputBlobRef,
+  type BlobResolver as OutputBlobResolver,
+  type BlobResolverInput,
+} from "../../../packages/runtimed/src/blob-resolver";
+
 export const ARROW_STREAM_MANIFEST_MIME = "application/vnd.nteract.arrow-stream-manifest+json";
 
-export interface OutputBlobRef {
-  blob: string;
-  size?: number;
-  media_type?: string;
-}
-
-export interface OutputBlobResolver {
-  readonly port?: number;
-  url(ref: OutputBlobRef): string;
-  fetch(ref: OutputBlobRef): Promise<Response>;
-}
-
-export type BlobResolverInput = OutputBlobResolver | number;
+export {
+  createBlobResolver,
+  createHttpBlobResolver,
+  normalizeBlobResolver,
+} from "../../../packages/runtimed/src/blob-resolver";
+export type { BlobResolverInput, OutputBlobRef, OutputBlobResolver };
 
 export type ContentRef =
   | { inline: string }
@@ -80,19 +80,6 @@ export type ResolvedJupyterOutput =
       traceback: string[];
       rich?: unknown;
     };
-
-function normalizeBlobResolver(input: BlobResolverInput): OutputBlobResolver {
-  if (typeof input !== "number") return input;
-  const port = input;
-  const url = (ref: { blob: string }) => `http://127.0.0.1:${port}/blob/${ref.blob}`;
-  return {
-    port,
-    url,
-    fetch(ref: OutputBlobRef) {
-      return fetch(url(ref));
-    },
-  };
-}
 
 function looksLikeBinaryMime(mime: string): boolean {
   if (mime.startsWith("image/") && !mime.endsWith("+xml")) return true;
