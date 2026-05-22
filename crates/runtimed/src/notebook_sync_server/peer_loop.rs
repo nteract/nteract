@@ -38,6 +38,7 @@ pub(crate) async fn run_sync_loop_v2<R, W>(
     daemon: std::sync::Arc<crate::daemon::Daemon>,
     needs_load: Option<&Path>,
     peer_id: &str,
+    connection_identity: &RoomConnectionIdentity,
     client_protocol_version: u8,
 ) -> anyhow::Result<()>
 where
@@ -241,10 +242,20 @@ where
                 }
                 match frame.frame_type {
                             NotebookFrameType::AutomergeSync => {
+                                if !connection_identity.allows_notebook_write() {
+                                    warn!(
+                                        "[notebook-sync] Rejecting NotebookDoc frame for {} from peer {} with scope {}",
+                                        notebook_id,
+                                        peer_id,
+                                        connection_identity.scope()
+                                    );
+                                    continue;
+                                }
                                 let NotebookDocFrameOutcome::Applied(notebook_doc_effects) =
                                     handle_notebook_doc_frame(
                                     room,
                                     &mut peer_state,
+                                    connection_identity,
                                     &peer_writer,
                                     &frame.payload,
                                 )
@@ -281,11 +292,26 @@ where
                             }
 
                             NotebookFrameType::Presence => {
-                                handle_presence_frame(room, peer_id, &peer_writer, &frame.payload)
-                                    .await?;
+                                handle_presence_frame(
+                                    room,
+                                    peer_id,
+                                    connection_identity,
+                                    &peer_writer,
+                                    &frame.payload,
+                                )
+                                .await?;
                             }
 
                             NotebookFrameType::RuntimeStateSync => {
+                                if !connection_identity.allows_runtime_state_write() {
+                                    warn!(
+                                        "[notebook-sync] Rejecting RuntimeStateDoc frame for {} from peer {} with scope {}",
+                                        notebook_id,
+                                        peer_id,
+                                        connection_identity.scope()
+                                    );
+                                    continue;
+                                }
                                 if !handle_runtime_state_frame(
                                     room,
                                     &mut state_peer_state,
@@ -293,6 +319,7 @@ where
                                     &frame.payload,
                                     &execution_store,
                                     &mut persisted_execution_records,
+                                    connection_identity,
                                 )
                                 .await?
                                 {

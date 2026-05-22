@@ -31,7 +31,7 @@ interface CrdtBridgeContextValue {
   getHandle: () => NotebookHandle | null;
   /** Signal that the CRDT was mutated and needs syncing to daemon. */
   onSyncNeeded: () => void;
-  /** Local actor label (e.g. "human:abcd1234") for filtering self-echo attributions. */
+  /** Local actor label (e.g. "local:kyle/desktop:abcd1234") for filtering self-echo attributions. */
   localActor: string;
 }
 

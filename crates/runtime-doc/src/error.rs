@@ -14,6 +14,8 @@ pub enum RuntimeStateError {
     AutomergeRecovery(Box<automerge_recovery::AutomergeOperationError>),
     #[error("RuntimeStateDoc mutex poisoned")]
     LockPoisoned,
+    #[error("unauthorized actor: {0}")]
+    UnauthorizedActor(String),
 }
 
 impl From<automerge_recovery::AutomergeOperationError> for RuntimeStateError {

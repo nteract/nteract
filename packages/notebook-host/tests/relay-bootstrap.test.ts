@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vite-plus/test";
+import { NotebookHandleHost, type HostedNotebookHandle, type NotebookHandleSlot } from "runtimed";
 import {
   startRelayBootstrapCoordinator,
   type DaemonReadyPayload,
@@ -36,6 +37,14 @@ function createReadySource() {
     emit(payload: DaemonReadyPayload) {
       callbacks.forEach((cb) => cb(payload));
     },
+  };
+}
+
+function createHostedHandle(): HostedNotebookHandle {
+  return {
+    free: vi.fn(),
+    set_blob_port: vi.fn(),
+    set_mime_priority: vi.fn(),
   };
 }
 
@@ -90,6 +99,46 @@ describe("startRelayBootstrapCoordinator", () => {
       payload: { notebook_id: "nb-1", relay_generation: 7 },
     });
     expect(notifyRelayReady).toHaveBeenCalledWith(7);
+
+    coordinator.stop();
+  });
+
+  it("applies the daemon actor label before creating the notebook handle", async () => {
+    const ready = createReadySource();
+    const authoritativeActor = "local:quill/desktop:daemon";
+    let actorLabel = "desktop:fallback";
+    const handle = createHostedHandle();
+    const slot: NotebookHandleSlot = { current: null };
+    const createHandle = vi.fn((_actor: string) => handle);
+    const handleHost = new NotebookHandleHost({
+      actorLabel: () => actorLabel,
+      createHandle,
+      getBlobPort: vi.fn(() => null),
+      publishHandle: vi.fn(),
+      slot,
+    });
+    const notifyRelayReady = vi.fn(async () => {});
+
+    const coordinator = startCoordinator({
+      onReady: ready.onReady,
+      beforeBootstrap: (trigger) => {
+        actorLabel = trigger.payload.actor_label ?? actorLabel;
+      },
+      bootstrap: (isCancelled) => handleHost.bootstrap(isCancelled),
+      notifyRelayReady,
+    });
+
+    ready.emit({
+      notebook_id: "nb-1",
+      relay_generation: 8,
+      actor_label: authoritativeActor,
+    });
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(createHandle).toHaveBeenCalledWith(authoritativeActor);
+    expect(createHandle).not.toHaveBeenCalledWith("desktop:fallback");
+    expect(notifyRelayReady).toHaveBeenCalledWith(8);
 
     coordinator.stop();
   });

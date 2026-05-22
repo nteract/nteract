@@ -4,10 +4,11 @@ use automerge::sync;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
+use notebook_doc::diff::extract_change_actors;
 use notebook_protocol::connection::NotebookFrameType;
 
 use super::peer_writer::PeerWriter;
-use super::NotebookRoom;
+use super::{NotebookRoom, RoomConnectionIdentity};
 
 type PersistedExecutionRecords = HashMap<String, runtimed_client::execution_store::ExecutionRecord>;
 
@@ -70,6 +71,7 @@ pub(super) async fn handle_runtime_state_frame(
     payload: &[u8],
     store: &runtimed_client::execution_store::ExecutionStore,
     persisted_records: &mut PersistedExecutionRecords,
+    connection_identity: &RoomConnectionIdentity,
 ) -> anyhow::Result<bool> {
     let message =
         sync::Message::decode(payload).map_err(|e| anyhow::anyhow!("decode state sync: {}", e))?;
@@ -77,6 +79,32 @@ pub(super) async fn handle_runtime_state_frame(
 
     let reply_encoded = room.state.with_doc(|state_doc| {
         let before = runtime_file_save_fingerprint(state_doc);
+        if !message.changes.is_empty() {
+            // v1: clone-preview validator. Replace with sync_message_new_changes
+            // once nteract/automerge ships Patch 1.
+            let heads_before = state_doc.get_heads();
+            let mut preview = runtime_doc::RuntimeStateDoc::from_doc(state_doc.doc().clone());
+            let mut preview_peer_state = state_peer_state.clone();
+            match preview.receive_sync_message_with_changes_recovering(
+                &mut preview_peer_state,
+                message.clone(),
+                "state-auth-preview",
+            ) {
+                Ok(true) => {
+                    let actors = extract_change_actors(preview.doc_mut(), &heads_before);
+                    connection_identity
+                        .validate_actor_labels(actors.iter().map(std::string::String::as_str))
+                        .map_err(|error| {
+                            runtime_doc::RuntimeStateError::UnauthorizedActor(error.to_string())
+                        })?;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    warn!("[notebook-sync] state auth preview failed: {}", e);
+                    return Err(e.into());
+                }
+            }
+        }
         let had_changes = match state_doc.receive_sync_message_with_changes_recovering(
             state_peer_state,
             message,

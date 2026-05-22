@@ -6,13 +6,14 @@ use notebook_protocol::connection::NotebookFrameType;
 use super::peer_writer::PeerWriter;
 use super::{
     check_and_broadcast_sync_state, check_and_update_trust_state, process_markdown_assets,
-    NotebookRoom,
+    NotebookRoom, RoomConnectionIdentity,
 };
-use notebook_doc::diff::diff_metadata_touched;
+use notebook_doc::diff::{diff_metadata_touched, extract_change_actors};
 
 pub(super) async fn handle_notebook_doc_frame(
     room: &NotebookRoom,
     peer_state: &mut sync::State,
+    connection_identity: &RoomConnectionIdentity,
     writer: &PeerWriter,
     payload: &[u8],
 ) -> anyhow::Result<NotebookDocFrameOutcome> {
@@ -23,6 +24,29 @@ pub(super) async fn handle_notebook_doc_frame(
     // release the lock before performing async I/O.
     let (persist_bytes, reply_encoded, metadata_changed) = {
         let mut doc = room.doc.write().await;
+
+        if !message.changes.is_empty() {
+            // v1: clone-preview validator. Replace with sync_message_new_changes
+            // once nteract/automerge ships Patch 1.
+            let heads_before = doc.get_heads();
+            let mut preview = notebook_doc::NotebookDoc::wrap(doc.doc().clone());
+            let mut preview_peer_state = peer_state.clone();
+            match preview.receive_sync_message_recovering(
+                &mut preview_peer_state,
+                message.clone(),
+                "doc-auth-preview",
+            ) {
+                Ok(()) => {
+                    let actors = extract_change_actors(preview.doc_mut(), &heads_before);
+                    connection_identity
+                        .validate_actor_labels(actors.iter().map(std::string::String::as_str))?;
+                }
+                Err(e) => {
+                    warn!("[notebook-sync] doc auth preview failed: {}", e);
+                    return Err(anyhow::anyhow!("doc auth preview failed: {e}"));
+                }
+            }
+        }
 
         let heads_before = doc.get_heads();
 

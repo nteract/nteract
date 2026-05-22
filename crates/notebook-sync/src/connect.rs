@@ -187,6 +187,7 @@ pub async fn connect_with_options(
         protocol: Some(PROTOCOL_V4.to_string()),
         working_dir: working_dir.map(|p| p.to_string_lossy().to_string()),
         initial_metadata: initial_metadata.clone(),
+        operator: operator_from_actor_label(actor_label),
     };
     connection::send_json_frame(&mut writer, &handshake)
         .await
@@ -203,7 +204,7 @@ pub async fn connect_with_options(
     // owns the entire bootstrap from the first post-handshake frame onward.
     let bootstrap = notebook_doc::NotebookDoc::bootstrap(
         notebook_doc::TextEncoding::UnicodeCodePoint,
-        actor_label,
+        caps.actor_label.as_deref().unwrap_or(actor_label),
     );
     let doc = bootstrap.into_inner();
     let peer_state = sync::State::new();
@@ -235,6 +236,7 @@ pub async fn connect_open(
     // Send open handshake
     let handshake = Handshake::OpenNotebook {
         path: path.to_string_lossy().to_string(),
+        operator: operator_from_actor_label(actor_label),
     };
     connection::send_json_frame(&mut writer, &handshake)
         .await
@@ -254,7 +256,10 @@ pub async fn connect_open(
 
     let bootstrap = notebook_doc::NotebookDoc::bootstrap(
         notebook_doc::TextEncoding::UnicodeCodePoint,
-        actor_label,
+        info.capabilities
+            .actor_label
+            .as_deref()
+            .unwrap_or(actor_label),
     );
     let doc = bootstrap.into_inner();
     let peer_state = sync::State::new();
@@ -351,6 +356,7 @@ async fn connect_create_inner(
         package_manager,
         environment_mode,
         dependencies,
+        operator: operator_from_actor_label(actor_label),
     };
     connection::send_json_frame(&mut writer, &handshake)
         .await
@@ -370,7 +376,10 @@ async fn connect_create_inner(
 
     let bootstrap = notebook_doc::NotebookDoc::bootstrap(
         notebook_doc::TextEncoding::UnicodeCodePoint,
-        actor_label,
+        info.capabilities
+            .actor_label
+            .as_deref()
+            .unwrap_or(actor_label),
     );
     let doc = bootstrap.into_inner();
     let peer_state = sync::State::new();
@@ -481,6 +490,16 @@ pub async fn connect_open_relay(
     path: PathBuf,
     frame_tx: mpsc::UnboundedSender<Vec<u8>>,
 ) -> Result<RelayOpenResult, SyncError> {
+    connect_open_relay_with_operator(socket_path, path, frame_tx, None).await
+}
+
+/// Open a notebook as a relay with a self-declared operator label.
+pub async fn connect_open_relay_with_operator(
+    socket_path: PathBuf,
+    path: PathBuf,
+    frame_tx: mpsc::UnboundedSender<Vec<u8>>,
+    operator: Option<String>,
+) -> Result<RelayOpenResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
     let mut reader = tokio::io::BufReader::new(reader);
@@ -492,6 +511,7 @@ pub async fn connect_open_relay(
     // Send open handshake
     let handshake = Handshake::OpenNotebook {
         path: path.to_string_lossy().to_string(),
+        operator,
     };
     connection::send_json_frame(&mut writer, &handshake)
         .await
@@ -534,6 +554,35 @@ pub async fn connect_create_relay(
     dependencies: Vec<String>,
     environment_mode: Option<notebook_protocol::connection::CreateNotebookEnvironmentMode>,
 ) -> Result<RelayCreateResult, SyncError> {
+    connect_create_relay_with_operator(
+        socket_path,
+        runtime,
+        working_dir,
+        notebook_id,
+        frame_tx,
+        ephemeral,
+        package_manager,
+        dependencies,
+        environment_mode,
+        None,
+    )
+    .await
+}
+
+/// Create a notebook as a relay with a self-declared operator label.
+#[allow(clippy::too_many_arguments)]
+pub async fn connect_create_relay_with_operator(
+    socket_path: PathBuf,
+    runtime: &str,
+    working_dir: Option<PathBuf>,
+    notebook_id: Option<String>,
+    frame_tx: mpsc::UnboundedSender<Vec<u8>>,
+    ephemeral: bool,
+    package_manager: Option<notebook_protocol::connection::PackageManager>,
+    dependencies: Vec<String>,
+    environment_mode: Option<notebook_protocol::connection::CreateNotebookEnvironmentMode>,
+    operator: Option<String>,
+) -> Result<RelayCreateResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
     let mut reader = tokio::io::BufReader::new(reader);
@@ -553,6 +602,7 @@ pub async fn connect_create_relay(
         package_manager,
         environment_mode,
         dependencies,
+        operator,
     };
     connection::send_json_frame(&mut writer, &handshake)
         .await
@@ -588,6 +638,16 @@ pub async fn connect_relay(
     notebook_id: String,
     frame_tx: mpsc::UnboundedSender<Vec<u8>>,
 ) -> Result<RelayConnectResult, SyncError> {
+    connect_relay_with_operator(socket_path, notebook_id, frame_tx, None).await
+}
+
+/// Connect to a notebook room by ID as a relay with a self-declared operator label.
+pub async fn connect_relay_with_operator(
+    socket_path: PathBuf,
+    notebook_id: String,
+    frame_tx: mpsc::UnboundedSender<Vec<u8>>,
+    operator: Option<String>,
+) -> Result<RelayConnectResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
     let mut reader = tokio::io::BufReader::new(reader);
@@ -602,6 +662,7 @@ pub async fn connect_relay(
         protocol: Some(PROTOCOL_V4.to_string()),
         initial_metadata: None,
         working_dir: None,
+        operator,
     };
     connection::send_json_frame(&mut writer, &handshake)
         .await
@@ -622,13 +683,27 @@ pub async fn connect_relay(
 
     let handle = spawn_relay(notebook_id, frame_tx, reader, writer);
 
-    Ok(RelayConnectResult { handle })
+    Ok(RelayConnectResult {
+        handle,
+        capabilities: caps,
+    })
 }
 
 /// Result of connecting to a notebook room by ID as a relay.
 pub struct RelayConnectResult {
     /// Handle for forwarding frames and sending requests.
     pub handle: RelayHandle,
+
+    /// Protocol capabilities returned by the daemon.
+    pub capabilities: ProtocolCapabilities,
+}
+
+fn operator_from_actor_label(actor_label: &str) -> Option<String> {
+    match actor_label.split_once('/') {
+        Some((_, operator)) if !operator.is_empty() => Some(operator.to_string()),
+        None if !actor_label.is_empty() => Some(actor_label.to_string()),
+        _ => None,
+    }
 }
 
 /// Spawn a relay task and return the handle.

@@ -2501,6 +2501,7 @@ impl Daemon {
                 protocol,
                 working_dir,
                 initial_metadata,
+                operator,
             } => {
                 info!(
                     "[runtimed] NotebookSync requested for {} (protocol: {}, working_dir: {:?})",
@@ -2579,6 +2580,8 @@ impl Daemon {
                 let default_python_env = settings.default_python_env;
                 // Convert working_dir String to PathBuf
                 let working_dir_path = working_dir.map(std::path::PathBuf::from);
+                let connection_identity =
+                    crate::notebook_sync_server::RoomConnectionIdentity::local(operator).await?;
                 crate::notebook_sync_server::handle_notebook_sync_connection(
                     reader,
                     writer,
@@ -2593,12 +2596,13 @@ impl Daemon {
                     false, // Send ProtocolCapabilities for direct NotebookSync handshake
                     None,  // No streaming load for direct NotebookSync handshake
                     false, // Not a newly-created notebook at path
+                    connection_identity,
                     client_protocol_version,
                 )
                 .await
             }
-            Handshake::OpenNotebook { path } => {
-                self.handle_open_notebook(stream, path, client_protocol_version)
+            Handshake::OpenNotebook { path, operator } => {
+                self.handle_open_notebook(stream, path, operator, client_protocol_version)
                     .await
             }
             Handshake::CreateNotebook {
@@ -2609,6 +2613,7 @@ impl Daemon {
                 package_manager,
                 environment_mode,
                 dependencies,
+                operator,
             } => {
                 self.handle_create_notebook(
                     stream,
@@ -2619,6 +2624,7 @@ impl Daemon {
                     package_manager,
                     environment_mode,
                     dependencies,
+                    operator,
                     client_protocol_version,
                 )
                 .await
@@ -2671,6 +2677,7 @@ impl Daemon {
         self: Arc<Self>,
         stream: S,
         path: String,
+        operator: Option<String>,
         client_protocol_version: u8,
     ) -> anyhow::Result<()>
     where
@@ -2681,6 +2688,8 @@ impl Daemon {
         };
 
         info!("[runtimed] OpenNotebook requested for {}", path);
+        let connection_identity =
+            crate::notebook_sync_server::RoomConnectionIdentity::local(operator.clone()).await?;
 
         // Diagnostic: flag suspicious path shapes. UUID-shaped paths (no slash,
         // no extension, parses as a UUID) almost certainly indicate a bug
@@ -2775,6 +2784,7 @@ impl Daemon {
                         None,
                         None,
                         vec![],
+                        operator,
                         client_protocol_version,
                     )
                     .await;
@@ -2953,7 +2963,11 @@ impl Daemon {
         // used for logging and file-watcher wiring below.
         let (reader, mut writer) = tokio::io::split(stream);
         let response = NotebookConnectionInfo {
-            capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string())),
+            capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string()))
+                .with_identity(
+                    connection_identity.actor_label().as_str(),
+                    connection_identity.scope().as_str(),
+                ),
             notebook_id: room.id.to_string(),
             cell_count,
             needs_trust_approval,
@@ -2983,6 +2997,7 @@ impl Daemon {
             true, // Skip ProtocolCapabilities - already sent in NotebookConnectionInfo
             needs_load,
             created_new_at_path, // Enable auto-launch for notebooks created at non-existent paths
+            connection_identity,
             client_protocol_version,
         )
         .await
@@ -3003,6 +3018,7 @@ impl Daemon {
         package_manager: Option<notebook_protocol::connection::PackageManager>,
         environment_mode: Option<notebook_protocol::connection::CreateNotebookEnvironmentMode>,
         dependencies: Vec<String>,
+        operator: Option<String>,
         client_protocol_version: u8,
     ) -> anyhow::Result<()>
     where
@@ -3019,6 +3035,8 @@ impl Daemon {
             notebook_id_hint,
             environment_mode.unwrap_or_default().as_str()
         );
+        let connection_identity =
+            crate::notebook_sync_server::RoomConnectionIdentity::local(operator).await?;
 
         // Get settings for default Python env preference
         let settings = self.settings.read().await.get_all();
@@ -3157,7 +3175,11 @@ impl Daemon {
             .await
             .map(|p| p.to_string_lossy().to_string());
         let response = NotebookConnectionInfo {
-            capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string())),
+            capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string()))
+                .with_identity(
+                    connection_identity.actor_label().as_str(),
+                    connection_identity.scope().as_str(),
+                ),
             notebook_id: room.id.to_string(),
             cell_count,
             needs_trust_approval,
@@ -3189,6 +3211,7 @@ impl Daemon {
             true,  // Skip ProtocolCapabilities - already sent in NotebookConnectionInfo
             None,  // No streaming load - doc was just created with empty cell
             false, // UUID-based new notebook, handled by is_new_notebook check
+            connection_identity,
             client_protocol_version,
         )
         .await

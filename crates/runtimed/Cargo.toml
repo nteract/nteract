@@ -25,6 +25,7 @@ runtimed-settings-sync = { path = "../runtimed-settings-sync" }
 nteract-telemetry = { path = "../nteract-telemetry" }
 notebook-protocol = { path = "../notebook-protocol" }
 notebook-wire = { path = "../notebook-wire" }
+nteract-identity = { path = "../nteract-identity" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

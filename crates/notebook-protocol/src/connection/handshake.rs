@@ -31,6 +31,11 @@ pub enum Handshake {
         /// so the daemon can read kernelspec before auto-launching a kernel.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         initial_metadata: Option<String>,
+        /// Self-declared operator suffix for the authenticated actor label.
+        /// The room host owns the principal prefix and returns the assembled
+        /// `<principal>/<operator>` label in `ProtocolCapabilities`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        operator: Option<String>,
     },
     /// Open an existing notebook file. Daemon loads from disk, derives notebook_id.
     ///
@@ -39,6 +44,9 @@ pub enum Handshake {
     OpenNotebook {
         /// Path to the .ipynb file.
         path: String,
+        /// Self-declared operator suffix for the authenticated actor label.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        operator: Option<String>,
     },
 
     /// Runtime agent handshake. Sent by the coordinator to a spawned runtime
@@ -87,6 +95,9 @@ pub enum Handshake {
         /// Dependencies to seed into notebook metadata before auto-launch.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         dependencies: Vec<String>,
+        /// Self-declared operator suffix for the authenticated actor label.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        operator: Option<String>,
     },
 }
 
@@ -118,6 +129,14 @@ pub struct ProtocolCapabilities {
     /// Blob upload support advertised by the daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub put_blob: Option<PutBlobCapability>,
+    /// Authenticated actor label that the client should use for Automerge
+    /// changes on this connection, formatted as `<principal>/<operator>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_label: Option<String>,
+    /// Server-enforced connection scope. This is informational for clients;
+    /// room hosts still enforce scope server-side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_scope: Option<String>,
 }
 
 impl ProtocolCapabilities {
@@ -135,7 +154,20 @@ impl ProtocolCapabilities {
                 multipart: true,
                 ephemeral_supported: true,
             }),
+            actor_label: None,
+            connection_scope: None,
         }
+    }
+
+    /// Attach authenticated identity metadata to this capability response.
+    pub fn with_identity(
+        mut self,
+        actor_label: impl Into<String>,
+        connection_scope: impl Into<String>,
+    ) -> Self {
+        self.actor_label = Some(actor_label.into());
+        self.connection_scope = Some(connection_scope.into());
+        self
     }
 }
 
