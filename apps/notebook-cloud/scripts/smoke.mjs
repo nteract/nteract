@@ -103,7 +103,10 @@ assert(
   "viewer pool write was not rejected",
 );
 
-const events = await fetchJson(`/api/n/${encodeURIComponent(roomId)}/events?limit=20`);
+const events = await waitForEvents(
+  roomId,
+  (event) => event.frame_type === FrameType.AUTOMERGE_SYNC,
+);
 assert(
   events.events.some((event) => event.frame_type === FrameType.AUTOMERGE_SYNC),
   "D1 event readback did not include the accepted sync frame",
@@ -224,6 +227,20 @@ async function fetchJson(pathname) {
   const response = await fetch(url);
   assert(response.ok, `${url.href} returned ${response.status}`);
   return response.json();
+}
+
+async function waitForEvents(notebookId, predicate, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  const pathname = `/api/n/${encodeURIComponent(notebookId)}/events?limit=20`;
+  let lastEvents;
+  while (Date.now() < deadline) {
+    lastEvents = await fetchJson(pathname);
+    if (lastEvents.events.some(predicate)) {
+      return lastEvents;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return lastEvents ?? { events: [] };
 }
 
 function sendJsonFrame(socket, type, payload) {

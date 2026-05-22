@@ -217,15 +217,18 @@ export class NotebookRoom {
       this.state.storage.put("frame_sequence", sequence),
       this.state.storage.put(`frame:${sequence.toString().padStart(12, "0")}`, stored),
     ]);
-    await recordRoomEvent(this.env, {
-      notebookId,
-      peerId: peer.id,
-      actorLabel: peer.identity.actorLabel,
-      connectionScope: peer.identity.scope,
-      frameType: frame.type,
-      byteLength: frame.payload.byteLength,
-      receivedAt,
-    });
+    // D1 event rows are observability only; relay delivery must not depend on D1.
+    this.state.waitUntil(
+      recordRoomEvent(this.env, {
+        notebookId,
+        peerId: peer.id,
+        actorLabel: peer.identity.actorLabel,
+        connectionScope: peer.identity.scope,
+        frameType: frame.type,
+        byteLength: frame.payload.byteLength,
+        receivedAt,
+      }).catch(() => undefined),
+    );
   }
 
   private async allocateFrameSequence(): Promise<number> {

@@ -88,6 +88,8 @@ const SCHEMA_STATEMENTS = [
   )`,
 ];
 
+// Prototype-local schema memo. The Worker binds every room to the same D1
+// database; production multi-binding hosts should scope this per binding.
 let schemaReady: Promise<void> | undefined;
 
 export function snapshotKey(notebookId: string, headsHash: string): string {
