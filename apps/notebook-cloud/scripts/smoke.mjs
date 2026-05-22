@@ -112,6 +112,37 @@ assert(
   "D1 event readback did not include the accepted sync frame",
 );
 
+const snapshotHeads = `heads-${roomId}`;
+const snapshotPath = `/api/n/${encodeURIComponent(roomId)}/snapshots/${encodeURIComponent(snapshotHeads)}`;
+const snapshotBytes = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+const snapshotPut = await putBytes(snapshotPath, snapshotBytes, "application/octet-stream", {
+  "X-Runtime-Heads-Hash": `runtime-${roomId}`,
+});
+assert(snapshotPut.ok === true, `snapshot PUT failed: ${JSON.stringify(snapshotPut)}`);
+assertBytesEqual(await fetchBytes(snapshotPath), snapshotBytes, "snapshot GET did not round-trip");
+
+const blobHash = `sha256-${roomId}`;
+const blobPath = `/api/n/${encodeURIComponent(roomId)}/blobs/${encodeURIComponent(blobHash)}`;
+const blobBytes = new TextEncoder().encode(`blob:${roomId}`);
+const blobPut = await putBytes(blobPath, blobBytes, "text/plain");
+assert(blobPut.ok === true, `blob PUT failed: ${JSON.stringify(blobPut)}`);
+const blobHead = await fetchHead(blobPath);
+assert(
+  blobHead.headers.get("content-length") === blobBytes.byteLength.toString(),
+  "blob HEAD did not return the stored content length",
+);
+assertBytesEqual(await fetchBytes(blobPath), blobBytes, "blob GET did not round-trip");
+
+const catalog = await fetchJson(`/api/n/${encodeURIComponent(roomId)}`);
+assert(
+  catalog.revisions.some((revision) => revision.notebook_heads_hash === snapshotHeads),
+  "D1 catalog did not include the stored snapshot revision",
+);
+assert(
+  catalog.blobs.some((blob) => blob.hash === blobHash && blob.size === blobBytes.byteLength),
+  "D1 catalog did not include the stored blob",
+);
+
 const leaked = await other
   .nextFrame((frame) => frame.type === FrameType.AUTOMERGE_SYNC, 250)
   .catch(() => undefined);
@@ -135,6 +166,9 @@ console.log(
         "viewer_blob_rejection",
         "viewer_pool_rejection",
         "d1_room_event_readback",
+        "r2_snapshot_roundtrip",
+        "r2_blob_roundtrip",
+        "d1_catalog_readback",
       ],
     },
     null,
@@ -229,6 +263,37 @@ async function fetchJson(pathname) {
   return response.json();
 }
 
+async function putBytes(pathname, body, contentType, extraHeaders = {}) {
+  const url = new URL(pathname, baseUrl);
+  const response = await fetch(url, {
+    method: "PUT",
+    headers: {
+      "Content-Type": contentType,
+      "X-User": "alice",
+      "X-Operator": "desktop:smoke",
+      "X-Scope": "owner",
+      ...extraHeaders,
+    },
+    body,
+  });
+  assert(response.ok, `${url.href} returned ${response.status}`);
+  return response.json();
+}
+
+async function fetchBytes(pathname) {
+  const url = new URL(pathname, baseUrl);
+  const response = await fetch(url);
+  assert(response.ok, `${url.href} returned ${response.status}`);
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+async function fetchHead(pathname) {
+  const url = new URL(pathname, baseUrl);
+  const response = await fetch(url, { method: "HEAD" });
+  assert(response.ok, `${url.href} returned ${response.status}`);
+  return response;
+}
+
 async function waitForEvents(notebookId, predicate, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
   const pathname = `/api/n/${encodeURIComponent(notebookId)}/events?limit=20`;
@@ -241,6 +306,13 @@ async function waitForEvents(notebookId, predicate, timeoutMs = 5_000) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   return lastEvents ?? { events: [] };
+}
+
+function assertBytesEqual(actual, expected, message) {
+  assert(actual.byteLength === expected.byteLength, message);
+  for (let index = 0; index < expected.byteLength; index += 1) {
+    assert(actual[index] === expected[index], message);
+  }
 }
 
 function sendJsonFrame(socket, type, payload) {
