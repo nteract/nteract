@@ -80,6 +80,8 @@ pub(super) async fn handle_runtime_state_frame(
     let reply_encoded = room.state.with_doc(|state_doc| {
         let before = runtime_file_save_fingerprint(state_doc);
         if !message.changes.is_empty() {
+            // v1: clone-preview validator. Replace with sync_message_new_changes
+            // once nteract/automerge ships Patch 1.
             let heads_before = state_doc.get_heads();
             let mut preview = runtime_doc::RuntimeStateDoc::from_doc(state_doc.doc().clone());
             let mut preview_peer_state = state_peer_state.clone();

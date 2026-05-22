@@ -4,7 +4,8 @@ use crate::{AuthError, AuthenticatedUser, Credential, Result};
 ///
 /// The provider enum and feature gate land with the core crate so downstream
 /// code can compile against the intended dispatch shape before Hub API
-/// validation dependencies are introduced.
+/// validation dependencies are introduced. Until that path lands, this
+/// provider intentionally returns [`AuthError::ProviderUnavailable`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JupyterHubProvider;
 

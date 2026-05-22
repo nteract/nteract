@@ -26,6 +26,8 @@ pub(super) async fn handle_notebook_doc_frame(
         let mut doc = room.doc.write().await;
 
         if !message.changes.is_empty() {
+            // v1: clone-preview validator. Replace with sync_message_new_changes
+            // once nteract/automerge ships Patch 1.
             let heads_before = doc.get_heads();
             let mut preview = notebook_doc::NotebookDoc::wrap(doc.doc().clone());
             let mut preview_peer_state = peer_state.clone();

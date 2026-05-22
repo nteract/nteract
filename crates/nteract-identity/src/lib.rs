@@ -1,7 +1,9 @@
 //! Identity primitives for nteract notebook rooms.
 //!
 //! The crate keeps the security-critical parsing rules close to the provider
-//! dispatch types that room hosts will use at connection time.
+//! dispatch types that room hosts will use at connection time. The
+//! JupyterHub provider surface is feature-gated and currently returns
+//! [`AuthError::ProviderUnavailable`] until the Hub API validation path lands.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
@@ -71,6 +73,8 @@ pub enum AuthError {
 ///
 /// Principals are room-local identity names, not process-local identity names.
 /// They must either be the seed principal `system` or follow `<scheme>:<id>`.
+/// The literal `system` principal is reserved; `system:*` values are ordinary
+/// scheme principals and do not receive the seed-author exemption.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Principal(String);
 

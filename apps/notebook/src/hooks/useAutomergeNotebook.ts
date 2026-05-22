@@ -90,7 +90,7 @@ export function useAutomergeNotebook() {
   const sessionIdRef = useRef(crypto.randomUUID().slice(0, 8));
   const outputCacheRef = useRef<Map<string, JupyterOutput>>(new Map());
   const prevPathRef = useRef<string | null>(null);
-  const actorLabelRef = useRef(`local:browser/desktop:${sessionIdRef.current}`);
+  const actorLabelRef = useRef(`desktop:${sessionIdRef.current}`);
   const [localActor, setLocalActor] = useState(actorLabelRef.current);
 
   const [handleHost] = useState(

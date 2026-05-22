@@ -761,6 +761,74 @@ async fn test_local_identity_handshake_and_presence_rewrite() {
 }
 
 #[tokio::test]
+async fn test_local_identity_rejects_foreign_automerge_actor() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new_for_test(config).unwrap();
+    let daemon_for_inspect = daemon.clone();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let owner = connect::connect_create(
+        socket_path.clone(),
+        "python",
+        None,
+        "desktop:owner",
+        true,
+        None,
+        vec![],
+    )
+    .await
+    .expect("owner should connect");
+    assert_session_ready(&owner.handle, "owner client").await;
+
+    let forged = connect::connect(
+        socket_path.clone(),
+        owner.info.notebook_id.clone(),
+        "desktop:forge",
+    )
+    .await
+    .expect("forged client should connect before actor switch")
+    .handle;
+    assert_session_ready(&forged, "forged client").await;
+
+    forged
+        .set_actor("user:anaconda:evil/desktop:forge")
+        .expect("test client can switch actor locally");
+    forged
+        .add_cell_after("forged-cell", "code", None)
+        .expect("local forged mutation should apply before sync rejection");
+
+    let confirm = tokio::time::timeout(Duration::from_secs(5), forged.confirm_sync()).await;
+    match confirm {
+        Ok(Err(_)) => {}
+        Ok(Ok(())) => panic!("forged actor sync unexpectedly confirmed"),
+        Err(_) => panic!("forged actor sync did not fail before timeout"),
+    }
+
+    let room_uuid = uuid::Uuid::parse_str(&owner.info.notebook_id)
+        .expect("created test notebook id should be a UUID");
+    let room = daemon_for_inspect
+        .test_get_room(room_uuid)
+        .await
+        .expect("room should still exist after rejecting forged actor");
+    let cell = room.doc.read().await.get_cell("forged-cell");
+    assert!(
+        cell.is_none(),
+        "daemon room must not apply a cell authored by a foreign principal"
+    );
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+#[tokio::test]
 async fn test_notebook_sync_via_unified_socket() {
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);

@@ -13,6 +13,10 @@ pub struct OidcProvider {
 
 impl OidcProvider {
     /// Creates an OIDC provider from a JWKS JSON document.
+    ///
+    /// Tokens without a `kid` header are accepted only when exactly one JWKS
+    /// key matches the token algorithm. A no-`kid` token with multiple
+    /// matching candidate keys is rejected as ambiguous.
     pub fn from_jwks_json(config: OidcProviderConfig, jwks_json: &str) -> Result<Self> {
         let jwks = serde_json::from_str::<JwkSet>(jwks_json)
             .map_err(|error| AuthError::InvalidOidcJwks(error.to_string()))?;

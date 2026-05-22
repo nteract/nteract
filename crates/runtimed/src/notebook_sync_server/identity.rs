@@ -9,7 +9,7 @@ pub(crate) struct RoomConnectionIdentity {
     auth: AuthenticatedConnection,
     actor_label: ActorLabel,
     fallback_operator: Operator,
-    allow_legacy_operator_actor_labels: bool,
+    legacy_operator_actor_policy: LegacyOperatorActorPolicy,
 }
 
 impl RoomConnectionIdentity {
@@ -31,7 +31,7 @@ impl RoomConnectionIdentity {
             auth,
             actor_label,
             fallback_operator: operator,
-            allow_legacy_operator_actor_labels: true,
+            legacy_operator_actor_policy: LegacyOperatorActorPolicy::AllowLocalSameUid,
         })
     }
 
@@ -62,6 +62,7 @@ impl RoomConnectionIdentity {
     ) -> anyhow::Result<()> {
         for label in labels {
             match ActorLabel::parse(label.to_string()) {
+                // Reserved for future system/schema:* seed and import writes.
                 Ok(actor) if actor.principal() == nteract_identity::Principal::SYSTEM => {}
                 Ok(actor) if actor.principal() == self.auth.principal().as_str() => {}
                 Ok(actor) => anyhow::bail!(
@@ -70,13 +71,42 @@ impl RoomConnectionIdentity {
                     self.auth.principal()
                 ),
                 Err(nteract_identity::AuthError::ActorLabelMissingDelimiter)
-                    if self.allow_legacy_operator_actor_labels
+                    if self
+                        .legacy_operator_actor_policy
+                        .allows_operator_only(&self.auth)
                         && Operator::new(label.to_string()).is_ok() => {}
                 Err(error) => anyhow::bail!("actor label {label:?} is invalid: {error}"),
             }
         }
 
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyOperatorActorPolicy {
+    // Used by future non-local constructors. Local is the only constructor
+    // today, but remote providers must start from this strict policy.
+    #[allow(dead_code)]
+    Reject,
+    /// Local rooms historically accepted operator-only labels from same-UID
+    /// clients. Keep that compatibility local-only; remote auth providers must
+    /// send fully layered actor labels.
+    AllowLocalSameUid,
+}
+
+impl LegacyOperatorActorPolicy {
+    fn allows_operator_only(self, auth: &AuthenticatedConnection) -> bool {
+        match self {
+            Self::Reject => false,
+            Self::AllowLocalSameUid => {
+                debug_assert!(
+                    auth.principal().as_str().starts_with("local:"),
+                    "legacy operator-only labels are only allowed for local same-UID rooms"
+                );
+                auth.principal().as_str().starts_with("local:")
+            }
+        }
     }
 }
 
@@ -166,6 +196,27 @@ mod tests {
         identity
             .validate_actor_labels(["human:legacy-session"])
             .expect("local same-UID rooms keep legacy operator labels working");
+    }
+
+    #[test]
+    fn non_local_identity_rejects_legacy_operator_only_actor() {
+        let principal =
+            nteract_identity::Principal::new("user:anaconda:550e".to_string()).expect("principal");
+        let operator = Operator::new("desktop:window-1".to_string()).expect("operator");
+        let auth = AuthenticatedConnection::new(principal, ConnectionScope::Editor);
+        let actor_label = auth.actor_label_for(operator.clone()).expect("actor label");
+        let identity = RoomConnectionIdentity {
+            auth,
+            actor_label,
+            fallback_operator: operator,
+            legacy_operator_actor_policy: LegacyOperatorActorPolicy::Reject,
+        };
+
+        let error = identity
+            .validate_actor_labels(["human:legacy-session"])
+            .expect_err("remote rooms must reject legacy operator-only actors");
+
+        assert!(error.to_string().contains("actor label"));
     }
 
     #[test]
