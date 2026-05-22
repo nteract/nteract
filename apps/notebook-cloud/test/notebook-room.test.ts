@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { authenticateDevRequest } from "../src/identity.ts";
-import { rewritePresenceFrame } from "../src/notebook-room.ts";
+import { authenticateAnonymousViewer, authenticateDevRequest } from "../src/identity.ts";
+import { rewritePresenceFrame, shouldBroadcastFrame } from "../src/notebook-room.ts";
 import {
   FrameType,
   decodeJsonPayload,
@@ -27,5 +27,23 @@ describe("NotebookRoom presence rewrite", () => {
     assert.equal(rewritten.type, FrameType.PRESENCE);
     assert.equal(body.actor_label, "user:dev:alice/desktop:a");
     assert.equal(body.peer_label, "Mallory");
+  });
+
+  it("keeps anonymous viewer presence local to the connection", () => {
+    const anonymous = authenticateAnonymousViewer(
+      new Request("https://cloud.test/n/demo/sync?viewer_session=anon-a"),
+    );
+    const editor = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
+    );
+    const frame = splitTypedFrame(
+      encodeTypedFrame(
+        FrameType.PRESENCE,
+        new TextEncoder().encode(JSON.stringify({ actor_label: "browser:anon-a" })),
+      ),
+    );
+
+    assert.equal(shouldBroadcastFrame(frame, anonymous), false);
+    assert.equal(shouldBroadcastFrame(frame, editor), true);
   });
 });

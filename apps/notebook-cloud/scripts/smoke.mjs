@@ -1,6 +1,8 @@
 const FrameType = {
   AUTOMERGE_SYNC: 0x00,
+  REQUEST: 0x01,
   PRESENCE: 0x04,
+  RUNTIME_STATE_SYNC: 0x05,
   POOL_STATE_SYNC: 0x06,
   SESSION_CONTROL: 0x07,
   PUT_BLOB: 0x08,
@@ -21,6 +23,7 @@ const alice = await connect(roomId, "alice", "desktop:alice", "owner");
 const bob = await connect(roomId, "bob", "desktop:bob", "editor");
 const other = await connect(otherRoomId, "other", "desktop:other", "owner");
 const viewer = await connect(roomId, "viewer", "desktop:viewer", "viewer");
+const anonymous = await connectAnonymous(roomId, "anon-smoke");
 
 assert(
   alice.ready.actor_label === "user:dev:alice/desktop:alice",
@@ -28,6 +31,11 @@ assert(
 );
 assert(bob.ready.actor_label === "user:dev:bob/desktop:bob", "bob actor label was not stamped");
 assert(other.ready.notebook_id === otherRoomId, "other room routed to the wrong notebook id");
+assert(
+  anonymous.ready.actor_label === "anonymous:anon-smoke/browser:anon-smoke",
+  `anonymous viewer actor label was not explicit: ${anonymous.ready.actor_label}`,
+);
+assert(anonymous.ready.connection_scope === "viewer", "anonymous viewer was not viewer-scoped");
 
 sendJsonFrame(alice.socket, FrameType.PRESENCE, {
   peer_label: "Alice",
@@ -91,6 +99,18 @@ assert(
   "viewer blob write was not rejected",
 );
 
+sendBinaryFrame(viewer.socket, FrameType.RUNTIME_STATE_SYNC, new Uint8Array([9]));
+const rejectedRuntime = await viewer.nextFrame(
+  (frame) =>
+    frame.type === FrameType.SESSION_CONTROL &&
+    frame.json.type === "cloud_frame_rejected" &&
+    frame.json.frame_type === FrameType.RUNTIME_STATE_SYNC,
+);
+assert(
+  rejectedRuntime.json.reason.includes("viewer cannot write"),
+  "viewer runtime-state write was not rejected",
+);
+
 sendBinaryFrame(viewer.socket, FrameType.POOL_STATE_SYNC, new Uint8Array([9]));
 const rejectedPool = await viewer.nextFrame(
   (frame) =>
@@ -102,6 +122,55 @@ assert(
   rejectedPool.json.reason.includes("viewer cannot write"),
   "viewer pool write was not rejected",
 );
+
+sendJsonFrame(viewer.socket, FrameType.REQUEST, { id: "viewer-request", type: "noop" });
+const rejectedRequest = await viewer.nextFrame(
+  (frame) =>
+    frame.type === FrameType.SESSION_CONTROL &&
+    frame.json.type === "cloud_frame_rejected" &&
+    frame.json.frame_type === FrameType.REQUEST,
+);
+assert(
+  rejectedRequest.json.reason.includes("viewer cannot write"),
+  "viewer request frame was not rejected",
+);
+
+sendBinaryFrame(anonymous.socket, FrameType.AUTOMERGE_SYNC, new Uint8Array([9]));
+const rejectedAnonymousSync = await anonymous.nextFrame(
+  (frame) =>
+    frame.type === FrameType.SESSION_CONTROL &&
+    frame.json.type === "cloud_frame_rejected" &&
+    frame.json.frame_type === FrameType.AUTOMERGE_SYNC,
+);
+assert(
+  rejectedAnonymousSync.json.reason.includes("viewer cannot write"),
+  "anonymous viewer sync write was not rejected",
+);
+
+sendJsonFrame(anonymous.socket, FrameType.PRESENCE, {
+  peer_label: "anonymous smoke",
+  actor_label: "browser:anon-smoke",
+});
+const anonymousPresenceAccepted = await anonymous.nextFrame(
+  (frame) =>
+    frame.type === FrameType.SESSION_CONTROL &&
+    frame.json.type === "cloud_frame_accepted" &&
+    frame.json.frame_type === FrameType.PRESENCE,
+);
+assert(
+  anonymousPresenceAccepted.json.frame_type === FrameType.PRESENCE,
+  "anonymous presence was not locally accepted",
+);
+const leakedAnonymousPresence = await bob
+  .nextFrame(
+    (frame) =>
+      frame.type === FrameType.PRESENCE &&
+      typeof frame.json?.actor_label === "string" &&
+      frame.json.actor_label.startsWith("anonymous:"),
+    250,
+  )
+  .catch(() => undefined);
+assert(leakedAnonymousPresence === undefined, "anonymous presence was broadcast to room peers");
 
 const events = await waitForEvents(
   roomId,
@@ -176,7 +245,12 @@ console.log(
         "typed_frame_relay",
         "scope_rejection",
         "viewer_blob_rejection",
+        "viewer_runtime_state_rejection",
         "viewer_pool_rejection",
+        "viewer_request_rejection",
+        "anonymous_viewer_identity",
+        "anonymous_viewer_write_rejection",
+        "anonymous_presence_local_only",
         "d1_room_event_readback",
         "invalid_auth_structured_rejection",
         "r2_snapshot_roundtrip",
@@ -189,7 +263,7 @@ console.log(
   ),
 );
 
-await Promise.all([alice, bob, other, viewer].map(closeClient));
+await Promise.all([alice, bob, other, viewer, anonymous].map(closeClient));
 process.exit(0);
 
 async function connect(notebookId, user, operator, scope) {
@@ -198,6 +272,62 @@ async function connect(notebookId, user, operator, scope) {
   url.searchParams.set("user", user);
   url.searchParams.set("operator", operator);
   url.searchParams.set("scope", scope);
+
+  const socket = new WebSocket(url);
+  socket.binaryType = "arraybuffer";
+  const queue = [];
+  const waiters = [];
+  socket.addEventListener("message", async (event) => {
+    const frame = await decodeFrame(event.data);
+    const index = waiters.findIndex((waiter) => waiter.predicate(frame));
+    if (index === -1) {
+      queue.push(frame);
+      return;
+    }
+
+    const [waiter] = waiters.splice(index, 1);
+    clearTimeout(waiter.timer);
+    waiter.resolve(frame);
+  });
+
+  await new Promise((resolve, reject) => {
+    socket.addEventListener("open", resolve, { once: true });
+    socket.addEventListener("error", () => reject(new Error(`failed to connect ${url.href}`)), {
+      once: true,
+    });
+  });
+
+  const client = {
+    socket,
+    nextFrame(predicate, timeoutMs = 5_000) {
+      const queued = queue.findIndex(predicate);
+      if (queued !== -1) {
+        const [frame] = queue.splice(queued, 1);
+        return Promise.resolve(frame);
+      }
+
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          const index = waiters.findIndex((waiter) => waiter.timer === timer);
+          if (index !== -1) {
+            waiters.splice(index, 1);
+          }
+          reject(new Error(`timed out waiting for frame from ${url.href}`));
+        }, timeoutMs);
+        waiters.push({ predicate, resolve, timer });
+      });
+    },
+  };
+  const ready = await client.nextFrame(
+    (frame) => frame.type === FrameType.SESSION_CONTROL && frame.json.type === "cloud_room_ready",
+  );
+  return { ...client, ready: ready.json };
+}
+
+async function connectAnonymous(notebookId, sessionId) {
+  const url = new URL(`/n/${encodeURIComponent(notebookId)}/sync`, baseUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("viewer_session", sessionId);
 
   const socket = new WebSocket(url);
   socket.binaryType = "arraybuffer";

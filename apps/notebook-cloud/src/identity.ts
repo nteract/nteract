@@ -13,14 +13,22 @@ export interface AuthenticatedConnection {
   scope: ConnectionScope;
 }
 
+const ANONYMOUS_PRINCIPAL_PREFIX = "anonymous:";
+
 export const TRUSTED_PRINCIPAL_HEADER = "x-nteract-principal";
 export const TRUSTED_OPERATOR_HEADER = "x-nteract-operator";
 export const TRUSTED_SCOPE_HEADER = "x-nteract-scope";
 
+export function authenticateRequest(request: Request): AuthenticatedConnection {
+  return hasDevCredential(request)
+    ? authenticateDevRequest(request)
+    : authenticateAnonymousViewer(request);
+}
+
 export function authenticateDevRequest(request: Request): AuthenticatedConnection {
   const url = new URL(request.url);
   const principalHeader = headerOrQuery(request, url, "x-principal", "principal");
-  const user = headerOrQuery(request, url, "x-user", "user") ?? "anonymous";
+  const user = headerOrQuery(request, url, "x-user", "user") ?? "dev-anonymous";
   const operator = headerOrQuery(request, url, "x-operator", "operator") ?? defaultOperator();
   const scope = parseScope(headerOrQuery(request, url, "x-scope", "scope") ?? "viewer");
   const principal = principalHeader ?? principalForDevUser(user);
@@ -34,6 +42,31 @@ export function authenticateDevRequest(request: Request): AuthenticatedConnectio
     actorLabel: `${principal}/${operator}`,
     scope,
   };
+}
+
+export function authenticateAnonymousViewer(request: Request): AuthenticatedConnection {
+  const url = new URL(request.url);
+  const session =
+    headerOrQuery(request, url, "x-viewer-session", "viewer_session") ??
+    headerOrQuery(request, url, "x-session", "session") ??
+    crypto.randomUUID();
+  const encodedSession = encodePrincipalComponent(session.trim() || crypto.randomUUID());
+  const principal = `${ANONYMOUS_PRINCIPAL_PREFIX}${encodedSession}`;
+  const operator = `browser:${encodedSession}`;
+
+  validatePrincipal(principal);
+  validateOperator(operator);
+
+  return {
+    principal,
+    operator,
+    actorLabel: `${principal}/${operator}`,
+    scope: "viewer",
+  };
+}
+
+export function isAnonymousViewer(identity: AuthenticatedConnection): boolean {
+  return identity.scope === "viewer" && identity.principal.startsWith(ANONYMOUS_PRINCIPAL_PREFIX);
 }
 
 export function stampTrustedIdentity(request: Request, identity: AuthenticatedConnection): Request {
@@ -180,6 +213,18 @@ function headerOrQuery(
   queryName: string,
 ): string | undefined {
   return request.headers.get(headerName) ?? url.searchParams.get(queryName) ?? undefined;
+}
+
+function hasDevCredential(request: Request): boolean {
+  const url = new URL(request.url);
+  return [
+    ["x-principal", "principal"],
+    ["x-user", "user"],
+    ["x-operator", "operator"],
+    ["x-scope", "scope"],
+  ].some(
+    ([headerName, queryName]) => request.headers.has(headerName) || url.searchParams.has(queryName),
+  );
 }
 
 function defaultOperator(): string {

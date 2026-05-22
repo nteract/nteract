@@ -2,6 +2,7 @@ import type { CloudflareWebSocket, DurableObjectState, Env } from "./cloudflare-
 import {
   allowsNotebookWrite,
   allowsRuntimeStateWrite,
+  isAnonymousViewer,
   readTrustedIdentity,
   rewriteActorLabelPrincipal,
   type AuthenticatedConnection,
@@ -65,7 +66,9 @@ export class NotebookRoom {
       return json({ error: String(error) }, 401);
     }
 
-    await ensureNotebook(this.env, notebookId, identity);
+    if (identity.scope !== "viewer") {
+      await ensureNotebook(this.env, notebookId, identity);
+    }
 
     const pair = new WebSocketPair();
     const client = pair[0];
@@ -165,6 +168,20 @@ export class NotebookRoom {
     const normalizedFrame =
       frame.type === FrameType.PRESENCE ? rewritePresenceFrame(frame, peer.identity) : frame;
     const receivedAt = new Date().toISOString();
+    if (!shouldBroadcastFrame(normalizedFrame, peer.identity)) {
+      // Anonymous public viewers are read-only observers. Their presence is
+      // acknowledged locally but not broadcast or persisted as room activity.
+      this.sendControl(peer, {
+        type: "cloud_frame_accepted",
+        notebook_id: notebookId,
+        peer_id: peer.id,
+        frame_type: normalizedFrame.type,
+        byte_length: normalizedFrame.payload.byteLength,
+        timestamp: receivedAt,
+      });
+      return;
+    }
+
     try {
       await this.persistFrame(notebookId, peer, normalizedFrame, receivedAt);
     } catch (error) {
@@ -309,6 +326,13 @@ export class NotebookRoom {
       timestamp: new Date().toISOString(),
     });
   }
+}
+
+export function shouldBroadcastFrame(
+  frame: TypedFrame,
+  identity: AuthenticatedConnection,
+): boolean {
+  return !(frame.type === FrameType.PRESENCE && isAnonymousViewer(identity));
 }
 
 export function rewritePresenceFrame(

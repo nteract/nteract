@@ -2,7 +2,7 @@ import type { Env, ExecutionContext, ExportedHandler } from "./cloudflare-types.
 import { NotebookRoom } from "./notebook-room.ts";
 import {
   allowsPublish,
-  authenticateDevRequest,
+  authenticateRequest,
   stampTrustedIdentity,
   type AuthenticatedConnection,
 } from "./identity.ts";
@@ -14,10 +14,13 @@ import {
   listRoomEvents,
   recordBlob,
   recordRevision,
+  renderKey,
   snapshotKey,
 } from "./storage.ts";
 
 export { NotebookRoom };
+
+const DEMO_NOTEBOOK_ID = "nteract-cloud-demo";
 
 const worker: ExportedHandler<Env> = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -36,9 +39,33 @@ const worker: ExportedHandler<Env> = {
       });
     }
 
+    if (url.pathname === "/" && request.method === "GET") {
+      return withCors(
+        new Response(null, {
+          status: 302,
+          headers: {
+            Location: new URL(`/n/${encodeURIComponent(DEMO_NOTEBOOK_ID)}`, request.url).href,
+          },
+        }),
+      );
+    }
+
     const syncMatch = url.pathname.match(/^\/n\/([^/]+)\/sync\/?$/);
     if (syncMatch) {
       return routeRoomSync(request, env);
+    }
+
+    const debugMatch = url.pathname.match(/^\/n\/([^/]+)\/debug\/?$/);
+    if (debugMatch && request.method === "GET") {
+      return debugViewer(decodeURIComponent(debugMatch[1]));
+    }
+
+    const pinnedViewerMatch = url.pathname.match(/^\/n\/([^/]+)\/r\/([^/]+)\/?$/);
+    if (pinnedViewerMatch && request.method === "GET") {
+      return viewer(
+        decodeURIComponent(pinnedViewerMatch[1]),
+        decodeURIComponent(pinnedViewerMatch[2]),
+      );
     }
 
     const viewerMatch = url.pathname.match(/^\/n\/([^/]+)\/?$/);
@@ -54,6 +81,21 @@ const worker: ExportedHandler<Env> = {
     const eventsMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/events$/);
     if (eventsMatch && request.method === "GET") {
       return routeRoomEvents(request, env, decodeURIComponent(eventsMatch[1]));
+    }
+
+    const latestRenderMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/render$/);
+    if (latestRenderMatch && request.method === "GET") {
+      return routeLatestRender(env, decodeURIComponent(latestRenderMatch[1]));
+    }
+
+    const renderMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/renders\/([^/]+)$/);
+    if (renderMatch) {
+      return routeRender(
+        request,
+        env,
+        decodeURIComponent(renderMatch[1]),
+        decodeURIComponent(renderMatch[2]),
+      );
     }
 
     const snapshotMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/snapshots\/([^/]+)$/);
@@ -87,7 +129,7 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
     return json({ error: "expected WebSocket upgrade" }, 426);
   }
 
-  const identity = authenticateDevRequestOrResponse(request);
+  const identity = authenticateRequestOrResponse(request);
   if (identity instanceof Response) {
     return identity;
   }
@@ -130,7 +172,7 @@ async function routeSnapshot(
     return json({ error: "method not allowed" }, 405);
   }
 
-  const identity = authenticateDevRequestOrResponse(request);
+  const identity = authenticateRequestOrResponse(request);
   if (identity instanceof Response) {
     return identity;
   }
@@ -190,6 +232,91 @@ async function routeRoomEvents(request: Request, env: Env, notebookId: string): 
   });
 }
 
+async function routeLatestRender(env: Env, notebookId: string): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const catalog = await getNotebookCatalog(env, notebookId);
+  if (!catalog) {
+    return json({ error: "notebook not found" }, 404);
+  }
+
+  const revision =
+    catalog.revisions.find((candidate) => candidate.id === catalog.notebook.latest_revision_id) ??
+    catalog.revisions[0];
+  if (!revision) {
+    return json({ error: "notebook has no published revisions" }, 404);
+  }
+
+  return getRenderObject(env, notebookId, revision.notebook_heads_hash, false);
+}
+
+async function routeRender(
+  request: Request,
+  env: Env,
+  notebookId: string,
+  headsHash: string,
+): Promise<Response> {
+  if (request.method === "GET") {
+    return getRenderObject(env, notebookId, headsHash, true);
+  }
+
+  if (request.method !== "PUT") {
+    return json({ error: "method not allowed" }, 405);
+  }
+
+  const identity = authenticateRequestOrResponse(request);
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (!allowsPublish(identity.scope)) {
+    return json({ error: `${identity.scope} cannot publish render caches` }, 403);
+  }
+  if (!env.NOTEBOOK_SNAPSHOTS) {
+    return json({ error: "R2 binding NOTEBOOK_SNAPSHOTS is not configured" }, 503);
+  }
+
+  await ensureNotebook(env, notebookId, identity);
+  const key = renderKey(notebookId, headsHash);
+  const body = await request.text();
+  await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
+    httpMetadata: {
+      contentType: request.headers.get("content-type") ?? "application/json; charset=utf-8",
+      cacheControl: "public, max-age=31536000, immutable",
+    },
+    customMetadata: {
+      notebook_id: notebookId,
+      notebook_heads_hash: headsHash,
+      artifact: "render-cache",
+    },
+  });
+
+  return json({ ok: true, key, size: body.length }, 201);
+}
+
+async function getRenderObject(
+  env: Env,
+  notebookId: string,
+  headsHash: string,
+  immutable: boolean,
+): Promise<Response> {
+  const key = renderKey(notebookId, headsHash);
+  const object = await env.NOTEBOOK_SNAPSHOTS?.get(key);
+  if (!object) {
+    return json({ error: "render cache not found" }, 404);
+  }
+
+  const headers = new Headers({
+    "Cache-Control": immutable
+      ? "public, max-age=31536000, immutable"
+      : "public, max-age=30, stale-while-revalidate=300",
+    "Content-Type": object.httpMetadata?.contentType ?? "application/json; charset=utf-8",
+    ETag: object.httpEtag,
+  });
+  return withCors(new Response(object.body, { headers }));
+}
+
 async function routeBlob(
   request: Request,
   env: Env,
@@ -236,7 +363,7 @@ async function routeBlob(
     return json({ error: "method not allowed" }, 405);
   }
 
-  const identity = authenticateDevRequestOrResponse(request);
+  const identity = authenticateRequestOrResponse(request);
   if (identity instanceof Response) {
     return identity;
   }
@@ -279,9 +406,9 @@ async function safeEnsureCatalogSchema(env: Env, ctx: ExecutionContext): Promise
   );
 }
 
-function authenticateDevRequestOrResponse(request: Request): AuthenticatedConnection | Response {
+function authenticateRequestOrResponse(request: Request): AuthenticatedConnection | Response {
   try {
-    return authenticateDevRequest(request);
+    return authenticateRequest(request);
   } catch (error) {
     return json({ error: String(error) }, 400);
   }
@@ -301,7 +428,7 @@ function withCors(response: Response): Response {
   response.headers.set("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, OPTIONS");
   response.headers.set(
     "Access-Control-Allow-Headers",
-    "Content-Type, X-User, X-Principal, X-Operator, X-Scope, X-Runtime-Heads-Hash",
+    "Content-Type, X-User, X-Principal, X-Operator, X-Scope, X-Viewer-Session, X-Runtime-Heads-Hash",
   );
   return response;
 }
@@ -319,7 +446,256 @@ function parseLimit(value: string | null): number {
   return Math.min(parsed, 100);
 }
 
-function viewer(notebookId: string): Response {
+function viewer(notebookId: string, headsHash?: string): Response {
+  const escaped = escapeHtml(notebookId);
+  const title = headsHash ? `${escaped} @ ${escapeHtml(headsHash)}` : escaped;
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>nteract cloud notebook ${title}</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: Canvas;
+      color: CanvasText;
+    }
+    body { margin: 0; }
+    main { width: min(960px, calc(100vw - 32px)); margin: 0 auto; padding: 32px 0 48px; }
+    header { display: flex; gap: 16px; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; }
+    h1 { font-size: 24px; line-height: 1.2; margin: 0 0 8px; }
+    .meta { display: flex; flex-wrap: wrap; gap: 8px 16px; color: color-mix(in srgb, CanvasText 62%, transparent); font-size: 13px; }
+    .meta code { color: CanvasText; }
+    .links { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    a.button {
+      color: CanvasText;
+      border: 1px solid color-mix(in srgb, CanvasText 22%, transparent);
+      border-radius: 6px;
+      padding: 7px 10px;
+      text-decoration: none;
+      font-size: 13px;
+    }
+    .state {
+      border: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin-bottom: 18px;
+      color: color-mix(in srgb, CanvasText 72%, transparent);
+      background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
+    }
+    .state[data-kind="error"] {
+      border-color: color-mix(in srgb, #b42318 50%, transparent);
+      color: #b42318;
+      background: color-mix(in srgb, #b42318 8%, Canvas);
+    }
+    .notebook { display: grid; gap: 14px; }
+    .cell {
+      border-left: 3px solid color-mix(in srgb, CanvasText 20%, transparent);
+      padding: 8px 0 8px 16px;
+    }
+    .cell[data-type="code"] { border-left-color: #4f46e5; }
+    .cell[data-type="markdown"] { border-left-color: #0f766e; }
+    .cell-label {
+      font-size: 12px;
+      color: color-mix(in srgb, CanvasText 56%, transparent);
+      margin-bottom: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .markdown { line-height: 1.55; }
+    .markdown h2, .markdown h3, .markdown p, .markdown ul { margin: 0 0 10px; }
+    .markdown h2 { font-size: 21px; }
+    .markdown h3 { font-size: 17px; }
+    pre {
+      margin: 0;
+      border: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
+      border-radius: 8px;
+      padding: 12px;
+      overflow: auto;
+      background: color-mix(in srgb, Canvas 90%, CanvasText 10%);
+    }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+    .outputs { margin-top: 8px; }
+    @media (max-width: 640px) {
+      main { width: min(100vw - 24px, 960px); padding-top: 20px; }
+      header { display: block; }
+      .links { justify-content: flex-start; margin-top: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>nteract cloud notebook</h1>
+        <div class="meta">
+          <span>Notebook <code>${escaped}</code></span>
+          <span id="revision"></span>
+          <span id="connection">anonymous viewer connecting</span>
+        </div>
+      </div>
+      <nav class="links" aria-label="Notebook links">
+        <a class="button" href="/n/${encodeURIComponent(notebookId)}/debug">Debug</a>
+        <a class="button" href="/api/n/${encodeURIComponent(notebookId)}">Catalog JSON</a>
+      </nav>
+    </header>
+    <div id="state" class="state">Loading notebook snapshot...</div>
+    <section id="notebook" class="notebook" aria-label="Notebook cells"></section>
+  </main>
+  <script type="module">
+    const notebookId = ${scriptJsonForHtml(notebookId)};
+    const pinnedHeadsHash = ${scriptJsonForHtml(headsHash ?? null)};
+    const sessionId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
+    const state = document.querySelector("#state");
+    const notebook = document.querySelector("#notebook");
+    const revision = document.querySelector("#revision");
+    const connection = document.querySelector("#connection");
+    const renderEndpoint = pinnedHeadsHash
+      ? "/api/n/" + encodeURIComponent(notebookId) + "/renders/" + encodeURIComponent(pinnedHeadsHash)
+      : "/api/n/" + encodeURIComponent(notebookId) + "/render";
+
+    connectAnonymousViewer();
+    loadNotebook();
+
+    async function loadNotebook() {
+      try {
+        const response = await fetch(renderEndpoint, { headers: { Accept: "application/json" } });
+        if (!response.ok) {
+          showState(response.status === 404
+            ? "No published snapshot is available for this notebook yet."
+            : "Unable to load notebook render cache: " + response.status,
+            response.status === 404 ? "empty" : "error");
+          return;
+        }
+        const render = await response.json();
+        renderNotebook(render);
+      } catch (error) {
+        showState("Unable to load notebook: " + String(error), "error");
+      }
+    }
+
+    function renderNotebook(render) {
+      const cells = Array.isArray(render.cells) ? render.cells : [];
+      revision.textContent = render.heads_hash ? "Revision " + render.heads_hash : "";
+      notebook.replaceChildren();
+      if (cells.length === 0) {
+        showState("This published notebook has no cells.", "empty");
+        return;
+      }
+      showState("Rendered " + cells.length + " cells from a persisted NotebookDoc snapshot.", "ready");
+      for (const cell of cells) {
+        notebook.append(renderCell(cell));
+      }
+    }
+
+    function renderCell(cell) {
+      const type = typeof cell.cell_type === "string" ? cell.cell_type : "code";
+      const id = typeof cell.id === "string" ? cell.id : "cell";
+      const source = typeof cell.source === "string" ? cell.source : "";
+      const section = document.createElement("article");
+      section.className = "cell";
+      section.dataset.type = type;
+
+      const label = document.createElement("div");
+      label.className = "cell-label";
+      label.textContent = type + " - " + id;
+      section.append(label);
+
+      if (type === "markdown") {
+        const markdown = document.createElement("div");
+        markdown.className = "markdown";
+        renderMarkdown(markdown, source);
+        section.append(markdown);
+      } else {
+        const pre = document.createElement("pre");
+        const code = document.createElement("code");
+        code.textContent = source;
+        pre.append(code);
+        section.append(pre);
+      }
+
+      if (Array.isArray(cell.outputs) && cell.outputs.length > 0) {
+        const outputs = document.createElement("pre");
+        outputs.className = "outputs";
+        outputs.textContent = JSON.stringify(cell.outputs, null, 2);
+        section.append(outputs);
+      }
+
+      return section;
+    }
+
+    function renderMarkdown(container, source) {
+      const lines = source.split(/\\r?\\n/);
+      let list;
+      for (const line of lines) {
+        if (line.startsWith("## ")) {
+          list = undefined;
+          appendText(container, "h3", line.slice(3));
+        } else if (line.startsWith("# ")) {
+          list = undefined;
+          appendText(container, "h2", line.slice(2));
+        } else if (line.startsWith("- ")) {
+          if (!list) {
+            list = document.createElement("ul");
+            container.append(list);
+          }
+          appendText(list, "li", line.slice(2));
+        } else if (line.trim() === "") {
+          list = undefined;
+        } else {
+          list = undefined;
+          appendText(container, "p", line);
+        }
+      }
+    }
+
+    function appendText(parent, tagName, text) {
+      const element = document.createElement(tagName);
+      element.textContent = text;
+      parent.append(element);
+    }
+
+    function connectAnonymousViewer() {
+      const url = new URL("/n/" + encodeURIComponent(notebookId) + "/sync", location.href);
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      url.searchParams.set("viewer_session", sessionId);
+      const socket = new WebSocket(url);
+      socket.binaryType = "arraybuffer";
+      socket.addEventListener("open", () => {
+        connection.textContent = "anonymous viewer connected";
+      });
+      socket.addEventListener("close", () => {
+        connection.textContent = "anonymous viewer disconnected";
+      });
+      socket.addEventListener("message", async (event) => {
+        const bytes = new Uint8Array(event.data);
+        if (bytes[0] !== 0x07) {
+          return;
+        }
+        const message = JSON.parse(new TextDecoder().decode(bytes.slice(1)));
+        if (message.type === "cloud_room_ready") {
+          connection.textContent = message.actor_label + " (" + message.connection_scope + ")";
+        }
+      });
+    }
+
+    function showState(message, kind) {
+      state.textContent = message;
+      state.dataset.kind = kind;
+    }
+  </script>
+</body>
+</html>`;
+
+  return withCors(
+    new Response(html, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    }),
+  );
+}
+
+function debugViewer(notebookId: string): Response {
   const escaped = escapeHtml(notebookId);
   const html = `<!doctype html>
 <html lang="en">

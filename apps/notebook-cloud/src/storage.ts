@@ -100,6 +100,10 @@ export function blobKey(notebookId: string, hash: string): string {
   return `n/${encodePathComponent(notebookId)}/blobs/${encodePathComponent(hash)}`;
 }
 
+export function renderKey(notebookId: string, headsHash: string): string {
+  return `n/${encodePathComponent(notebookId)}/renders/${encodePathComponent(headsHash)}.json`;
+}
+
 export async function ensureCatalogSchema(env: Env): Promise<void> {
   if (!env.DB) {
     return;

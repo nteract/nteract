@@ -7,6 +7,7 @@
     "test": "node --import tsx --test test/*.test.ts",
     "dev": "pnpm --workspace-root exec wrangler dev --config apps/notebook-cloud/wrangler.toml",
     "smoke": "node scripts/smoke.mjs",
+    "publish:demo": "node scripts/publish-demo.mjs",
     "wasm:roundtrip": "node scripts/wasm-roundtrip.mjs"
   },
   "dependencies": {

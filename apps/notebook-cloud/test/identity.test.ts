@@ -1,7 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  authenticateAnonymousViewer,
   authenticateDevRequest,
+  authenticateRequest,
+  isAnonymousViewer,
   parseActorLabel,
   parseScope,
   principalForDevUser,
@@ -13,6 +16,33 @@ import {
 } from "../src/identity.ts";
 
 describe("dev identity", () => {
+  it("uses explicit anonymous viewer auth when no dev credential is presented", () => {
+    const identity = authenticateRequest(
+      new Request("https://cloud.test/n/demo/sync?viewer_session=session/a"),
+    );
+
+    assert.deepEqual(identity, {
+      principal: "anonymous:session%2Fa",
+      operator: "browser:session%2Fa",
+      actorLabel: "anonymous:session%2Fa/browser:session%2Fa",
+      scope: "viewer",
+    });
+    assert.equal(isAnonymousViewer(identity), true);
+  });
+
+  it("keeps dev auth explicit instead of treating anonymous viewers as system actors", () => {
+    const anonymous = authenticateAnonymousViewer(
+      new Request("https://cloud.test/n/demo/sync?viewer_session=anon-1"),
+    );
+    const dev = authenticateRequest(
+      new Request("https://cloud.test/n/demo/sync?user=anonymous&operator=desktop:a"),
+    );
+
+    assert.equal(anonymous.principal, "anonymous:anon-1");
+    assert.equal(dev.principal, "user:dev:anonymous");
+    assert.equal(anonymous.principal.startsWith("system"), false);
+  });
+
   it("maps X-User and X-Operator into a layered actor label", () => {
     const request = new Request("https://cloud.test/n/demo/sync", {
       headers: {
