@@ -16,12 +16,12 @@ new_sqlite_classes = ["NotebookRoom"]
 
 [[d1_databases]]
 binding = "DB"
-database_name = "nteract-notebook-cloud-dev"
-database_id = "local"
+database_name = "nteract-notebook-cloud-prototype-db"
+database_id = "59decd97-a3d4-4442-abe7-50b465cb347e"
 
 [[r2_buckets]]
 binding = "NOTEBOOK_SNAPSHOTS"
-bucket_name = "nteract-notebook-cloud-dev"
+bucket_name = "nteract-notebook-cloud-prototype"
 
 [vars]
-DEPLOYMENT_ENV = "development"
+DEPLOYMENT_ENV = "prototype"

@@ -67,6 +67,29 @@ Bindings in `wrangler.toml`:
 
 Schema lives in `migrations/0001_initial.sql`. The Worker also creates the same tables lazily in local dev so the WebSocket path can run before applying migrations.
 
+## Prototype deployment
+
+Disposable Cloudflare resources currently wired in `wrangler.toml`:
+
+- Worker: `nteract-notebook-cloud`
+- URL: `https://nteract-notebook-cloud.rgbkrk.workers.dev`
+- D1: `nteract-notebook-cloud-prototype-db`
+- R2: `nteract-notebook-cloud-prototype`
+
+The remote migration was applied with:
+
+```bash
+pnpm --workspace-root exec wrangler d1 migrations apply nteract-notebook-cloud-prototype-db \
+  --config apps/notebook-cloud/wrangler.toml \
+  --remote
+```
+
+Deploy with:
+
+```bash
+pnpm --workspace-root exec wrangler deploy --config apps/notebook-cloud/wrangler.toml
+```
+
 Snapshot and blob stubs:
 
 ```bash
