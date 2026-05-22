@@ -1,0 +1,19 @@
+{
+  "name": "notebook-cloud",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "dev": "pnpm --workspace-root exec wrangler dev --config apps/notebook-cloud/wrangler.toml",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "runtimed": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.3"
+  }
+}
