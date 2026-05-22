@@ -550,11 +550,14 @@ impl NotebookHandle {
     /// Load a RuntimeStateDoc from saved bytes.
     ///
     /// Used by test fixtures to provide pre-populated state doc data
-    /// (outputs, executions) alongside the notebook doc.
+    /// (outputs, executions) alongside the notebook doc. Replacing the state
+    /// doc also resets RuntimeStateDoc sync state so later room-host sync starts
+    /// from the loaded snapshot, not the previous empty/bootstrap doc.
     pub fn load_state_doc(&mut self, bytes: &[u8]) -> Result<(), JsError> {
         let doc = automerge::AutoCommit::load(bytes)
             .map_err(|e| JsError::new(&format!("load_state_doc failed: {}", e)))?;
         self.state_doc = RuntimeStateDoc::from_doc(doc);
+        self.state_sync_state = sync::State::new();
         self.prev_output_by_id.clear();
         self.execution_view_projector.reset();
         Ok(())
@@ -1080,7 +1083,7 @@ impl NotebookHandle {
         self.state_doc
             .get_heads()
             .into_iter()
-            .map(|head| head.to_string())
+            .map(|head| hex::encode(head.as_ref()))
             .collect()
     }
 

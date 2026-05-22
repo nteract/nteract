@@ -8,6 +8,7 @@ import {
   assert,
   assertEquals,
   assertExists,
+  assertThrows,
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -97,5 +98,44 @@ Deno.test("save_state_doc preserves runtime outputs for snapshot round trips", a
     }
   } finally {
     original.free();
+  }
+});
+
+Deno.test("load_snapshot reports invalid notebook and runtime-state bytes", async () => {
+  const docBytes = await readFixtureBytes("multi_cell_execution", "doc.bin");
+  const stateBytes = await readFixtureBytes("multi_cell_execution", "state_doc.bin");
+  const malformedBytes = new Uint8Array([0xff, 0x00, 0xff, 0x00]);
+
+  assertThrows(
+    () => NotebookHandle.load_snapshot(malformedBytes, stateBytes),
+    Error,
+    "load failed",
+  );
+  assertThrows(
+    () => NotebookHandle.load_snapshot(docBytes, malformedBytes),
+    Error,
+    "load_state_doc failed",
+  );
+});
+
+Deno.test("load_state_doc resets runtime-state sync tracking", async () => {
+  const docBytes = await readFixtureBytes("multi_cell_execution", "doc.bin");
+  const stateBytes = await readFixtureBytes("multi_cell_execution", "state_doc.bin");
+
+  const handle = NotebookHandle.load(docBytes);
+  try {
+    assertExists(
+      handle.flush_runtime_state_sync(),
+      "bootstrap RuntimeStateDoc should produce an initial sync message",
+    );
+
+    handle.load_state_doc(stateBytes);
+
+    assertExists(
+      handle.flush_runtime_state_sync(),
+      "loaded RuntimeStateDoc should flush after sync-state reset",
+    );
+  } finally {
+    handle.free();
   }
 });
