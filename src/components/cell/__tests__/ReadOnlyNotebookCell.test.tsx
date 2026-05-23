@@ -117,6 +117,7 @@ describe("ReadOnlyNotebookCell", () => {
         source="## Title"
         outputs={[]}
         priority={["text/markdown", "text/plain"]}
+        sourceClassName="markdown-source"
       />,
     );
 
@@ -127,6 +128,7 @@ describe("ReadOnlyNotebookCell", () => {
     expect(outputArea).toHaveAttribute("data-cell-id", "cell-markdown");
     expect(outputArea).toHaveAttribute("data-mimes", "text/markdown");
     expect(outputArea).toHaveAttribute("data-priority", "text/markdown,text/plain");
+    expect(outputArea).toHaveAttribute("data-class-name", "pl-0 pr-0 markdown-source");
   });
 
   it("omits the output row for code cells with no outputs", () => {
