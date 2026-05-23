@@ -234,6 +234,86 @@ describe("Worker artifact routes", () => {
     assert.equal(warnings.length, 1);
     assert.equal(warnings[0][0], "Unable to materialize notebook render");
   });
+
+  it("fails materialization when snapshot blob refs are missing from R2", async () => {
+    const env = fakeEnv();
+    const [notebookBytes, runtimeStateBytes, manifestBytes] = await Promise.all([
+      readFile(
+        new URL(
+          "../../../packages/runtimed/tests/fixtures/sift_arrow_output/doc.bin",
+          import.meta.url,
+        ),
+      ),
+      readFile(
+        new URL(
+          "../../../packages/runtimed/tests/fixtures/sift_arrow_output/state_doc.bin",
+          import.meta.url,
+        ),
+      ),
+      readFile(
+        new URL(
+          "../../../packages/runtimed/tests/fixtures/sift_arrow_output/manifest.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ]);
+    const manifest = JSON.parse(manifestBytes) as { blobs: Array<{ hash: string }> };
+    const missingHash = manifest.blobs[0]?.hash;
+    assert.equal(typeof missingHash, "string");
+
+    const runtimePut = await ownerPut(
+      env,
+      "/api/n/missing-blob-demo/runtime-snapshots/runtime-fixture",
+      runtimeStateBytes,
+    );
+    assert.equal(runtimePut.status, 201);
+
+    const notebookPut = await ownerPut(
+      env,
+      "/api/n/missing-blob-demo/snapshots/heads-fixture",
+      notebookBytes,
+      {
+        "X-Runtime-Heads-Hash": "runtime-fixture",
+      },
+    );
+    assert.equal(notebookPut.status, 201);
+
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+    let response: Response;
+    try {
+      response = await worker.fetch(
+        new Request("http://localhost/api/n/missing-blob-demo/render"),
+        env,
+        fakeContext(),
+      );
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(response.status, 424);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+    const body = (await response.json()) as {
+      error: string;
+      missing_blobs: Array<{ hash: string }>;
+    };
+    assert.equal(body.error, "render materialization missing blobs");
+    assert.ok(
+      body.missing_blobs.some((blob) => blob.hash === missingHash),
+      "response should include the missing fixture blob hash",
+    );
+    assert.equal(
+      env.NOTEBOOK_SNAPSHOTS.objects.has(renderKey("missing-blob-demo", "heads-fixture")),
+      false,
+      "failed blob validation should not cache a render object",
+    );
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0][0], "Unable to materialize notebook render: missing blobs");
+  });
 });
 
 async function ownerPut(

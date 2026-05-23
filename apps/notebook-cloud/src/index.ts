@@ -27,6 +27,7 @@ import {
   notebookCloudBlobBasePath,
   withTrailingSlash,
 } from "./blob-resolver.ts";
+import { collectBlobRefs } from "./blob-refs.ts";
 
 export { NotebookRoom };
 
@@ -35,6 +36,13 @@ const DEMO_NOTEBOOK_ID = "nteract-cloud-demo";
 // Worker-owned route by default so sandboxed srcdoc iframes can fetch sidecar
 // assets with explicit CORS, and let hosts replace it with a dedicated origin.
 const DEFAULT_RENDERER_ASSETS_BASE_PATH = "/renderer-assets/";
+const RENDER_BLOB_HEAD_CONCURRENCY = 16;
+
+interface MissingRenderBlob {
+  hash: string;
+  size: number | null;
+  media_type: string | null;
+}
 
 const worker: ExportedHandler<Env> = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -525,6 +533,28 @@ async function materializeSnapshotRender(
       422,
     );
   }
+
+  const missingBlobs = await findMissingRenderBlobs(
+    env.NOTEBOOK_SNAPSHOTS,
+    notebookId,
+    render.cells,
+  );
+  if (missingBlobs.length > 0) {
+    console.warn("Unable to materialize notebook render: missing blobs", {
+      notebookId,
+      notebookHeadsHash: revision.notebook_heads_hash,
+      runtimeHeadsHash: revision.runtime_heads_hash,
+      missingBlobs,
+    });
+    return json(
+      {
+        error: "render materialization missing blobs",
+        missing_blobs: missingBlobs,
+      },
+      424,
+    );
+  }
+
   const body = JSON.stringify(render);
   await env.NOTEBOOK_SNAPSHOTS.put(renderKey(notebookId, revision.notebook_heads_hash), body, {
     httpMetadata: {
@@ -550,6 +580,37 @@ async function materializeSnapshotRender(
       },
     }),
   );
+}
+
+async function findMissingRenderBlobs(
+  bucket: NonNullable<Env["NOTEBOOK_SNAPSHOTS"]>,
+  notebookId: string,
+  cells: unknown,
+): Promise<MissingRenderBlob[]> {
+  const refs = Object.values(collectBlobRefs(cells));
+  const missing: Array<MissingRenderBlob | null> = [];
+
+  for (let index = 0; index < refs.length; index += RENDER_BLOB_HEAD_CONCURRENCY) {
+    const batch = refs.slice(index, index + RENDER_BLOB_HEAD_CONCURRENCY);
+    missing.push(
+      ...(await Promise.all(
+        batch.map(async (ref) => {
+          const object = await bucket.head(blobKey(notebookId, ref.blob));
+          return object
+            ? null
+            : {
+                hash: ref.blob,
+                size: ref.size ?? null,
+                media_type: ref.media_type ?? null,
+              };
+        }),
+      )),
+    );
+  }
+
+  return missing
+    .filter((entry): entry is MissingRenderBlob => entry !== null)
+    .sort((left, right) => left.hash.localeCompare(right.hash));
 }
 
 async function routeBlob(
