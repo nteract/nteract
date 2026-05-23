@@ -50,6 +50,7 @@ node_modules/
 **/node_modules/
 dist/
 **/dist/
+.wrangler/
 *.tsbuildinfo
 
 # Generated isolated-renderer bundle (built from src/isolated-renderer)

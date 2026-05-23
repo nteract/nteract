@@ -1,0 +1,27 @@
+name = "nteract-notebook-cloud"
+main = "./src/index.ts"
+compatibility_date = "2024-11-06"
+compatibility_flags = ["nodejs_compat"]
+
+[dev]
+port = 8787
+
+[[durable_objects.bindings]]
+name = "NOTEBOOK_ROOMS"
+class_name = "NotebookRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["NotebookRoom"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "nteract-notebook-cloud-prototype-db"
+database_id = "59decd97-a3d4-4442-abe7-50b465cb347e"
+
+[[r2_buckets]]
+binding = "NOTEBOOK_SNAPSHOTS"
+bucket_name = "nteract-notebook-cloud-prototype"
+
+[vars]
+DEPLOYMENT_ENV = "prototype"

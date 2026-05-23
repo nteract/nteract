@@ -192,9 +192,6 @@ importers:
       remark-math:
         specifier: ^6.0.0
         version: 6.0.0
-      runtimed:
-        specifier: workspace:*
-        version: link:packages/runtimed
       tailwind-merge:
         specifier: ^3.4.0
         version: 3.5.0
@@ -486,6 +483,22 @@ importers:
       ws:
         specifier: ^8.20.0
         version: 8.20.0
+
+  apps/notebook-cloud:
+    dependencies:
+      runtimed:
+        specifier: workspace:*
+        version: link:../../packages/runtimed
+    devDependencies:
+      '@types/node':
+        specifier: ^20.10.0
+        version: 20.19.37
+      tsx:
+        specifier: ^4.21.0
+        version: 4.21.0
+      typescript:
+        specifier: ~5.8.3
+        version: 5.8.3
 
   apps/renderer-test:
     dependencies:
@@ -20182,7 +20195,7 @@ snapshots:
       deepmerge-ts: 5.1.0
       got: 12.6.1
       ky: 0.33.3
-      ws: 8.19.0
+      ws: 8.20.0
     transitivePeerDependencies:
       - bare-abort-controller
       - bare-buffer

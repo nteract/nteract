@@ -45,7 +45,7 @@ Sections to fill in:
 
 - *Who can do what* (lives in `identity-and-trust.md`).
 - Wire protocol (lives in `crates/notebook-wire/AGENTS.md`).
-- Storage shape for snapshots and blobs (separate forthcoming ADR alongside the hosted-room prototype).
+- Storage shape for snapshots and blobs (see `hosted-notebook-artifacts.md`).
 - Specific ACL semantics (separate forthcoming ADR).
 
 ## Status
