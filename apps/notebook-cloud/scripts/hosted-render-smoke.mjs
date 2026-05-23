@@ -23,6 +23,7 @@ const expectedRendererAssetOrigin =
   process.env.NOTEBOOK_CLOUD_EXPECTED_RENDERER_ASSET_ORIGIN ?? DEFAULT_RENDERER_ASSET_ORIGIN;
 const expectedSourceText = process.env.NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT ?? "import polars as pl";
 const expectedExecutionCount = process.env.NOTEBOOK_CLOUD_EXPECTED_EXECUTION_COUNT ?? null;
+const expectedPresenceText = process.env.NOTEBOOK_CLOUD_EXPECTED_PRESENCE_TEXT ?? "viewing";
 const expectedFrameTexts = parseExpectedTexts(process.env.NOTEBOOK_CLOUD_EXPECTED_FRAME_TEXTS, [
   "Loaded 25 rows",
   "PROBLEM_MARKDOWN",
@@ -164,6 +165,13 @@ async function main() {
       expectedExecutionCount,
       { timeout: timeoutMs },
     );
+    if (expectedPresenceText) {
+      await page.waitForFunction(
+        (expected) => document.querySelector(".cloud-presence")?.textContent?.includes(expected),
+        expectedPresenceText,
+        { timeout: timeoutMs },
+      );
+    }
     if (expectedFrameTexts.length > 0) {
       await page.waitForFunction(
         () =>
@@ -193,6 +201,10 @@ async function main() {
       })),
     );
     const reportCellCount = await page.locator("[data-slot='read-only-report-cell']").count();
+    const presenceText = await page
+      .locator(".cloud-presence")
+      .textContent({ timeout: 1_000 })
+      .catch(() => null);
 
     if (requireSiftWasm && siftWasmRequests.length === 0) {
       failures.push({ kind: "sift-wasm", text: "Sift WASM was not requested" });
@@ -238,6 +250,7 @@ async function main() {
           targetUrl,
           expectedSourceText,
           expectedExecutionCount,
+          expectedPresenceText,
           expectedFrameTexts,
           expectedRenderSource,
           expectedCatalogOwnerPrincipal,
@@ -248,6 +261,7 @@ async function main() {
           catalogApiCheck,
           executionCounts,
           reportCellCount,
+          presenceText,
           frameTextMatches,
           iframeMetrics,
           siftWasmRequests,

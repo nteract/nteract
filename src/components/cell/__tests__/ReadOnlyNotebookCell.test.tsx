@@ -1,7 +1,11 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { ReadOnlyNotebookCell } from "../ReadOnlyNotebookCell";
 import type { JupyterOutput } from "../jupyter-output";
+
+const outputAreaCalls = vi.hoisted(() => ({
+  outputs: [] as unknown[],
+}));
 
 vi.mock("../OutputArea", () => ({
   OutputArea: ({
@@ -20,24 +24,27 @@ vi.mock("../OutputArea", () => ({
     hostContext?: unknown;
     outputs: JupyterOutput[];
     priority?: readonly string[];
-  }) => (
-    <div
-      data-cell-id={cellId}
-      data-class-name={className ?? ""}
-      data-execution-count={executionCount ?? ""}
-      data-focused={String(focused)}
-      data-host-context={JSON.stringify(hostContext ?? null)}
-      data-mimes={outputs
-        .flatMap((output) =>
-          output.output_type === "display_data" || output.output_type === "execute_result"
-            ? Object.keys(output.data)
-            : [output.output_type],
-        )
-        .join(",")}
-      data-priority={priority?.join(",") ?? ""}
-      data-testid="output-area"
-    />
-  ),
+  }) => {
+    outputAreaCalls.outputs.push(outputs);
+    return (
+      <div
+        data-cell-id={cellId}
+        data-class-name={className ?? ""}
+        data-execution-count={executionCount ?? ""}
+        data-focused={String(focused)}
+        data-host-context={JSON.stringify(hostContext ?? null)}
+        data-mimes={outputs
+          .flatMap((output) =>
+            output.output_type === "display_data" || output.output_type === "execute_result"
+              ? Object.keys(output.data)
+              : [output.output_type],
+          )
+          .join(",")}
+        data-priority={priority?.join(",") ?? ""}
+        data-testid="output-area"
+      />
+    );
+  },
 }));
 
 vi.mock("@/components/editor/readonly-codemirror", () => ({
@@ -64,6 +71,10 @@ vi.mock("@/components/editor/readonly-codemirror", () => ({
 }));
 
 describe("ReadOnlyNotebookCell", () => {
+  beforeEach(() => {
+    outputAreaCalls.outputs.length = 0;
+  });
+
   it("renders code through shared cell chrome with execution count and outputs", () => {
     render(
       <ReadOnlyNotebookCell
@@ -140,6 +151,31 @@ describe("ReadOnlyNotebookCell", () => {
 
     expect(screen.getByTestId("readonly-codemirror")).toHaveTextContent("x = 1");
     expect(screen.queryByTestId("output-area")).toBeNull();
+  });
+
+  it("keeps code output props stable across unrelated parent rerenders", () => {
+    const outputs: JupyterOutput[] = [{ output_type: "stream", name: "stdout", text: "visible\n" }];
+    const { rerender } = render(
+      <ReadOnlyNotebookCell
+        id="stable-code"
+        cellType="code"
+        source="print('x')"
+        outputs={outputs}
+      />,
+    );
+
+    const firstOutputs = outputAreaCalls.outputs.at(-1);
+
+    rerender(
+      <ReadOnlyNotebookCell
+        id="stable-code"
+        cellType="code"
+        source="print('x')"
+        outputs={outputs}
+      />,
+    );
+
+    expect(outputAreaCalls.outputs.at(-1)).toBe(firstOutputs);
   });
 
   it("renders report cells without notebook gutter chrome and can focus outputs", () => {

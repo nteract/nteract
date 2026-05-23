@@ -159,6 +159,19 @@ describe("OutputArea iframe theme sync", () => {
     });
   });
 
+  it("does not resend isolated output renders for unrelated parent rerenders", async () => {
+    const outputs = makeMarkdownOutput();
+    const { rerender } = render(<OutputArea outputs={outputs} isolated />);
+
+    await waitFor(() => {
+      expect(mockFrameHandle.renderBatch).toHaveBeenCalledTimes(1);
+    });
+
+    rerender(<OutputArea outputs={outputs} isolated />);
+
+    expect(mockFrameHandle.renderBatch).toHaveBeenCalledTimes(1);
+  });
+
   it("renders a contained fallback when an isolated renderer plugin fails to load", async () => {
     vi.mocked(needsPlugin).mockReturnValue(true);
     vi.mocked(injectPluginsForMimes).mockRejectedValue(new Error("chunk failed"));

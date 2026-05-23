@@ -57,13 +57,14 @@ export function ReadOnlyNotebookCell({
       }),
     [cellType, hostContext, id, language, lineWrapping, priority, source, sourceClassName],
   );
+  const outputArray = useMemo(() => [...outputs], [outputs]);
 
   const outputContent =
     outputs.length > 0 ? (
       <OutputArea
         cellId={id}
         executionCount={executionCount}
-        outputs={[...outputs]}
+        outputs={outputArray}
         isolated="auto"
         focused={focusOutputs}
         priority={priority}

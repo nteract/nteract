@@ -555,107 +555,115 @@ export function OutputArea({
   );
 
   // Callback when frame is ready - set up bridge and render outputs
-  const handleFrameReady = useCallback(async () => {
-    if (!frameRef.current) return;
+  const handleFrameReady = useCallback(
+    async (options: { resetInjectedPlugins?: boolean } = {}) => {
+      if (!frameRef.current) return;
 
-    // Bump generation so any in-flight async handleFrameReady from a
-    // previous outputs snapshot will bail out after it awaits.
-    const gen = ++renderGenRef.current;
+      // Bump generation so any in-flight async handleFrameReady from a
+      // previous outputs snapshot will bail out after it awaits.
+      const gen = ++renderGenRef.current;
 
-    // Set up comm bridge if we have widgets and widget context
-    if (shouldUseBridge && widgetContext && !bridgeRef.current) {
-      bridgeRef.current = new CommBridgeManager({
-        frame: frameRef.current,
-        store: widgetContext.store,
-        sendUpdate: widgetContext.sendUpdate,
-        sendCustom: widgetContext.sendCustom,
-        closeComm: widgetContext.closeComm,
-      });
-    }
+      // Set up comm bridge if we have widgets and widget context
+      if (shouldUseBridge && widgetContext && !bridgeRef.current) {
+        bridgeRef.current = new CommBridgeManager({
+          frame: frameRef.current,
+          store: widgetContext.store,
+          sendUpdate: widgetContext.sendUpdate,
+          sendCustom: widgetContext.sendCustom,
+          closeComm: widgetContext.closeComm,
+        });
+      }
 
-    // Ensure theme is in sync before re-rendering (fixes theme drift after cell moves)
-    // Use ref to avoid adding darkMode to deps which would cause re-renders on theme toggle
-    frameRef.current.setTheme(darkModeRef.current, colorThemeRef.current ?? null);
+      // Ensure theme is in sync before re-rendering (fixes theme drift after cell moves)
+      // Use ref to avoid adding darkMode to deps which would cause re-renders on theme toggle
+      frameRef.current.setTheme(darkModeRef.current, colorThemeRef.current ?? null);
 
-    // Install renderer plugins required by the outputs (e.g. plotly, vega).
-    // Must happen before clear+render so the installRenderer messages arrive first.
-    // Clear the tracking set on each call — a reloaded iframe has a fresh registry.
-    injectedLibsRef.current.clear();
+      // Install renderer plugins required by the outputs (e.g. plotly, vega).
+      // Must happen before clear+render so the installRenderer messages arrive first.
+      if (options.resetInjectedPlugins) {
+        injectedLibsRef.current.clear();
+      }
 
-    // Collect MIME types that need renderer plugins from the cell's outputs
-    const pluginMimes = new Set<string>();
-    for (const output of outputs) {
-      if (output.output_type === "execute_result" || output.output_type === "display_data") {
-        for (const mime of Object.keys(output.data)) {
-          if (needsPlugin(mime)) pluginMimes.add(mime);
+      // Collect MIME types that need renderer plugins from the cell's outputs
+      const pluginMimes = new Set<string>();
+      for (const output of outputs) {
+        if (output.output_type === "execute_result" || output.output_type === "display_data") {
+          for (const mime of Object.keys(output.data)) {
+            if (needsPlugin(mime)) pluginMimes.add(mime);
+          }
         }
       }
-    }
 
-    // Also scan output widgets for captured outputs that need plugins.
-    // A cell may output a widget view (application/vnd.jupyter.widget-view+json)
-    // whose OutputModel.outputs contain plotly/vega/etc MIME types.
-    if (widgetContext?.store) {
-      for (const output of outputs) {
-        if (
-          (output.output_type === "execute_result" || output.output_type === "display_data") &&
-          output.data?.["application/vnd.jupyter.widget-view+json"]
-        ) {
-          const widgetData = output.data["application/vnd.jupyter.widget-view+json"] as {
-            model_id?: string;
-          };
-          if (widgetData?.model_id) {
-            const model = widgetContext.store.getModel(widgetData.model_id);
-            if (model?.modelName === "OutputModel" && model.state.outputs) {
-              const widgetOutputs = model.state.outputs as Array<{
-                output_type: string;
-                data?: Record<string, unknown>;
-              }>;
-              for (const wo of widgetOutputs) {
-                for (const mime of Object.keys(wo.data ?? {})) {
-                  if (needsPlugin(mime)) pluginMimes.add(mime);
+      // Also scan output widgets for captured outputs that need plugins.
+      // A cell may output a widget view (application/vnd.jupyter.widget-view+json)
+      // whose OutputModel.outputs contain plotly/vega/etc MIME types.
+      if (widgetContext?.store) {
+        for (const output of outputs) {
+          if (
+            (output.output_type === "execute_result" || output.output_type === "display_data") &&
+            output.data?.["application/vnd.jupyter.widget-view+json"]
+          ) {
+            const widgetData = output.data["application/vnd.jupyter.widget-view+json"] as {
+              model_id?: string;
+            };
+            if (widgetData?.model_id) {
+              const model = widgetContext.store.getModel(widgetData.model_id);
+              if (model?.modelName === "OutputModel" && model.state.outputs) {
+                const widgetOutputs = model.state.outputs as Array<{
+                  output_type: string;
+                  data?: Record<string, unknown>;
+                }>;
+                for (const wo of widgetOutputs) {
+                  for (const mime of Object.keys(wo.data ?? {})) {
+                    if (needsPlugin(mime)) pluginMimes.add(mime);
+                  }
                 }
               }
             }
           }
         }
       }
-    }
 
-    if (pluginMimes.size > 0) {
-      try {
-        await injectPluginsForMimes(frameRef.current, pluginMimes, injectedLibsRef.current);
-      } catch (error) {
+      if (pluginMimes.size > 0) {
+        try {
+          await injectPluginsForMimes(frameRef.current, pluginMimes, injectedLibsRef.current);
+        } catch (error) {
+          if (gen !== renderGenRef.current) return;
+          console.error("[OutputArea] Failed to load renderer plugin:", error);
+          frameRef.current.renderBatch([
+            {
+              mimeType: "text/plain",
+              data: `Failed to load renderer plugin: ${formatPluginLoadError(error)}`,
+              metadata: { isError: true },
+              cellId,
+              outputIndex: 0,
+            },
+          ]);
+          return;
+        }
+        // Stale check: if outputs changed while we were loading the plugin,
+        // bail — a newer handleFrameReady call is already in flight.
         if (gen !== renderGenRef.current) return;
-        console.error("[OutputArea] Failed to load renderer plugin:", error);
-        frameRef.current.renderBatch([
-          {
-            mimeType: "text/plain",
-            data: `Failed to load renderer plugin: ${formatPluginLoadError(error)}`,
-            metadata: { isError: true },
-            cellId,
-            outputIndex: 0,
-          },
-        ]);
-        return;
       }
-      // Stale check: if outputs changed while we were loading the plugin,
-      // bail — a newer handleFrameReady call is already in flight.
-      if (gen !== renderGenRef.current) return;
-    }
 
-    // Build batch of render payloads and send atomically.
-    // This avoids the clear+re-render cycle that causes DOM thrashing
-    // (visible as flickering when interactive widgets update rapidly).
-    const batch = jupyterOutputsToRenderPayloads(outputs, { cellId, priority });
+      // Build batch of render payloads and send atomically.
+      // This avoids the clear+re-render cycle that causes DOM thrashing
+      // (visible as flickering when interactive widgets update rapidly).
+      const batch = jupyterOutputsToRenderPayloads(outputs, { cellId, priority });
 
-    frameRef.current.renderBatch(batch);
+      frameRef.current.renderBatch(batch);
 
-    // Re-apply search highlights after rendering new content
-    if (searchQueryRef.current) {
-      frameRef.current?.search(searchQueryRef.current);
-    }
-  }, [outputs, priority, shouldUseBridge, widgetContext]);
+      // Re-apply search highlights after rendering new content
+      if (searchQueryRef.current) {
+        frameRef.current?.search(searchQueryRef.current);
+      }
+    },
+    [outputs, priority, shouldUseBridge, widgetContext],
+  );
+
+  const handleIsolatedFrameReady = useCallback(() => {
+    void handleFrameReady({ resetInjectedPlugins: true });
+  }, [handleFrameReady]);
 
   // Clean up bridge on unmount
   useEffect(() => {
@@ -774,7 +782,7 @@ export function OutputArea({
                 autoHeight={shouldIsolate && !focused}
                 allowWheelBoundaryScroll={allowWheelBoundaryScroll}
                 scrollPassthrough={shouldScrollPassthroughFrame}
-                onReady={handleFrameReady}
+                onReady={handleIsolatedFrameReady}
                 onLinkClick={onLinkClick}
                 onMouseDown={activateStaticFrameInteraction}
                 onWidgetUpdate={onWidgetUpdate}
