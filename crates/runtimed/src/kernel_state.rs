@@ -100,7 +100,6 @@ impl KernelState {
         &mut self,
         execution_id: String,
         source: String,
-        source_cell_id: Option<String>,
         conn: &mut impl KernelConnection,
     ) -> Result<String> {
         // Idempotent: return existing execution_id if already executing or queued
@@ -124,7 +123,6 @@ impl KernelState {
         // Add to queue.
         self.queue.push_back(QueuedCell {
             execution_id: execution_id.clone(),
-            source_cell_id,
             code: source,
         });
 
@@ -338,12 +336,7 @@ impl KernelState {
         }
 
         // Send execute request via the connection
-        conn.execute(
-            &cell.execution_id,
-            &cell.code,
-            cell.source_cell_id.as_deref(),
-        )
-        .await?;
+        conn.execute(&cell.execution_id, &cell.code).await?;
 
         info!(
             "[kernel-state] Sent execute_request: execution_id={}",
@@ -418,14 +411,12 @@ mod tests {
     /// Minimal mock that records execute calls and succeeds.
     struct MockKernel {
         executes: Vec<String>,
-        source_cell_ids: Vec<Option<String>>,
     }
 
     impl MockKernel {
         fn new() -> Self {
             Self {
                 executes: Vec::new(),
-                source_cell_ids: Vec::new(),
             }
         }
     }
@@ -438,15 +429,8 @@ mod tests {
             unimplemented!("tests create MockKernel directly")
         }
 
-        async fn execute(
-            &mut self,
-            execution_id: &str,
-            _source: &str,
-            source_cell_id: Option<&str>,
-        ) -> Result<()> {
+        async fn execute(&mut self, execution_id: &str, _source: &str) -> Result<()> {
             self.executes.push(execution_id.to_string());
-            self.source_cell_ids
-                .push(source_cell_id.map(ToOwned::to_owned));
             Ok(())
         }
 
@@ -520,11 +504,11 @@ mod tests {
 
         // Queue two cells — first starts executing, second stays queued
         state
-            .queue_cell("e1".into(), "x=1".into(), None, &mut mock)
+            .queue_cell("e1".into(), "x=1".into(), &mut mock)
             .await
             .unwrap();
         state
-            .queue_cell("e2".into(), "x=2".into(), None, &mut mock)
+            .queue_cell("e2".into(), "x=2".into(), &mut mock)
             .await
             .unwrap();
 
@@ -546,28 +530,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn queue_cell_forwards_source_cell_id_to_kernel() {
-        let (mut state, _handle) = test_state();
-        let mut mock = MockKernel::new();
-        state.set_idle();
-
-        state
-            .queue_cell("e1".into(), "x=1".into(), Some("cell-1".into()), &mut mock)
-            .await
-            .unwrap();
-
-        assert_eq!(mock.executes, vec!["e1"]);
-        assert_eq!(mock.source_cell_ids, vec![Some("cell-1".to_string())]);
-    }
-
-    #[tokio::test]
     async fn kernel_died_idempotent_when_already_dead() {
         let (mut state, _handle) = test_state();
         let mut mock = MockKernel::new();
         state.set_idle();
 
         state
-            .queue_cell("e1".into(), "x=1".into(), None, &mut mock)
+            .queue_cell("e1".into(), "x=1".into(), &mut mock)
             .await
             .unwrap();
 
@@ -600,11 +569,11 @@ mod tests {
         state.set_idle();
 
         state
-            .queue_cell("e1".into(), "x=1".into(), None, &mut mock)
+            .queue_cell("e1".into(), "x=1".into(), &mut mock)
             .await
             .unwrap();
         state
-            .queue_cell("e2".into(), "x=2".into(), None, &mut mock)
+            .queue_cell("e2".into(), "x=2".into(), &mut mock)
             .await
             .unwrap();
 

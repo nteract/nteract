@@ -45,9 +45,7 @@ pub struct RichFrame {
     pub filename: String,
     pub lineno: u32,
     pub name: String,
-    /// Notebook cell provenance for frames compiled from notebook source.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cell_id: Option<String>,
+    /// Execution provenance for frames compiled from notebook source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -71,8 +69,6 @@ pub struct RichSyntax {
     pub filename: String,
     pub lineno: u32,
     pub offset: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cell_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -107,8 +103,6 @@ pub struct RichTraceback {
 /// Execution context attached to the traceback as a whole.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RichExecutionContext {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cell_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_id: Option<String>,
 }
@@ -367,7 +361,6 @@ impl PendingFrame {
             filename: self.filename,
             lineno: self.lineno,
             name: self.name,
-            cell_id: None,
             execution_id: None,
             source_hash: None,
             lines: if self.lines.is_empty() {
@@ -784,7 +777,7 @@ mod tests {
     }
 
     #[test]
-    fn from_nbformat_rich_preserves_cell_provenance() {
+    fn from_nbformat_rich_preserves_execution_provenance() {
         let v = json!({
             "output_type": "display_data",
             "data": {
@@ -792,14 +785,12 @@ mod tests {
                     "ename": "RuntimeError",
                     "evalue": "bad",
                     "execution": {
-                        "cell_id": "cell-run",
                         "execution_id": "exec-run"
                     },
                     "frames": [{
                         "filename": "/tmp/ipykernel_1/123.py",
                         "lineno": 2,
                         "name": "boom",
-                        "cell_id": "cell-def",
                         "execution_id": "exec-def",
                         "source_hash": "sha256:abc"
                     }],
@@ -814,10 +805,9 @@ mod tests {
         assert_eq!(
             rt.execution
                 .as_ref()
-                .and_then(|execution| execution.cell_id.as_deref()),
-            Some("cell-run")
+                .and_then(|execution| execution.execution_id.as_deref()),
+            Some("exec-run")
         );
-        assert_eq!(rt.frames[0].cell_id.as_deref(), Some("cell-def"));
         assert_eq!(rt.frames[0].execution_id.as_deref(), Some("exec-def"));
         assert_eq!(rt.frames[0].source_hash.as_deref(), Some("sha256:abc"));
     }

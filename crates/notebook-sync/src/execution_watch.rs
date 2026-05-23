@@ -239,7 +239,6 @@ mod tests {
                     .or((status == "error").then_some(false)),
                 outputs,
                 source: Some("print('hi')".to_string()),
-                source_cell_id: None,
                 seq: Some(1),
             },
         );

@@ -2830,12 +2830,7 @@ impl KernelConnection for JupyterKernel {
 
     // ── Execute ──────────────────────────────────────────────────────────
 
-    async fn execute(
-        &mut self,
-        execution_id: &str,
-        source: &str,
-        source_cell_id: Option<&str>,
-    ) -> Result<()> {
+    async fn execute(&mut self, execution_id: &str, source: &str) -> Result<()> {
         let shell = self
             .shell_writer
             .as_mut()
@@ -2847,21 +2842,11 @@ impl KernelConnection for JupyterKernel {
         let request = ExecuteRequest::new(source.to_string());
         let mut message: JupyterMessage = request.into();
         message.header.msg_id = execution_id.to_string();
-        let mut metadata = serde_json::Map::new();
-        if let Some(cell_id) = source_cell_id {
-            metadata.insert(
-                "cellId".to_string(),
-                serde_json::Value::String(cell_id.to_string()),
-            );
-        }
-        metadata.insert(
-            "nteract".to_string(),
-            serde_json::json!({
+        message.metadata = serde_json::json!({
+            "nteract": {
                 "execution_id": execution_id,
-                "cell_id": source_cell_id,
-            }),
-        );
-        message.metadata = serde_json::Value::Object(metadata);
+            },
+        });
 
         // Register execution_id BEFORE sending so IOPub can identify replies
         // without depending on notebook cell identity.

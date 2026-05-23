@@ -329,7 +329,7 @@ def test_install_registers_pre_run_cell_provenance_hook(monkeypatch):
     )
     ip = _FakeKernelShell(
         {
-            "metadata": {"cellId": "cell-1", "nteract": {"execution_id": "exec-1"}},
+            "metadata": {"nteract": {"execution_id": "exec-1"}},
             "header": {"msg_id": "exec-1"},
         }
     )
@@ -338,21 +338,20 @@ def test_install_registers_pre_run_cell_provenance_hook(monkeypatch):
     callbacks = ip.events.callbacks["pre_run_cell"]
     assert len(callbacks) == 1
 
-    callbacks[0](SimpleNamespace(raw_cell="x = 1", cell_id="cell-1"))
+    callbacks[0](SimpleNamespace(raw_cell="x = 1"))
 
     registry = getattr(ip, _traceback._CELL_REGISTRY_ATTR)
-    assert registry["/tmp/ipykernel_1/abc.py"]["cell_id"] == "cell-1"
     assert registry["/tmp/ipykernel_1/abc.py"]["execution_id"] == "exec-1"
     assert registry["/tmp/ipykernel_1/abc.py"]["source_hash"].startswith("sha256:")
 
 
-def test_build_payload_attaches_cell_provenance_to_prior_function_frame():
+def test_build_payload_attaches_execution_provenance_to_prior_function_frame():
     filename = "/tmp/ipykernel_1/defined_elsewhere.py"
     source = "def defined_elsewhere():\n    raise RuntimeError('from definition')\n"
     linecache.cache[filename] = (len(source), None, source.splitlines(True), filename)
     ip = SimpleNamespace(
         parent_header={
-            "metadata": {"cellId": "cell-run"},
+            "metadata": {},
             "header": {"msg_id": "exec-run"},
         }
     )
@@ -361,7 +360,6 @@ def test_build_payload_attaches_cell_provenance_to_prior_function_frame():
         _traceback._CELL_REGISTRY_ATTR,
         {
             filename: {
-                "cell_id": "cell-def",
                 "execution_id": "exec-def",
                 "source_hash": "sha256:def",
             }
@@ -377,13 +375,12 @@ def test_build_payload_attaches_cell_provenance_to_prior_function_frame():
         linecache.cache.pop(filename, None)
 
     frame = next(frame for frame in payload["frames"] if frame["filename"] == filename)
-    assert frame["cell_id"] == "cell-def"
     assert frame["execution_id"] == "exec-def"
     assert frame["source_hash"] == "sha256:def"
-    assert payload["execution"] == {"cell_id": "cell-run", "execution_id": "exec-run"}
+    assert payload["execution"] == {"execution_id": "exec-run"}
 
 
-def test_syntax_error_payload_attaches_cell_provenance():
+def test_syntax_error_payload_attaches_execution_provenance():
     filename = "/tmp/ipykernel_1/syntax.py"
     ip = SimpleNamespace()
     setattr(
@@ -391,7 +388,6 @@ def test_syntax_error_payload_attaches_cell_provenance():
         _traceback._CELL_REGISTRY_ATTR,
         {
             filename: {
-                "cell_id": "cell-syntax",
                 "execution_id": "exec-syntax",
                 "source_hash": "sha256:syntax",
             }
@@ -403,7 +399,6 @@ def test_syntax_error_payload_attaches_cell_provenance():
     except SyntaxError as exc:
         payload = build_rich_payload(type(exc), exc, exc.__traceback__, ip)
 
-    assert payload["syntax"]["cell_id"] == "cell-syntax"
     assert payload["syntax"]["execution_id"] == "exec-syntax"
     assert payload["syntax"]["source_hash"] == "sha256:syntax"
 

@@ -37,8 +37,7 @@ interface Frame {
   lineno: number;
   /** Enclosing function / method / module name. */
   name: string;
-  /** Notebook cell provenance for clients that want to jump to source. */
-  cell_id?: string;
+  /** Execution provenance for clients that want to jump to source. */
   execution_id?: string;
   source_hash?: string;
   /** Optional source-context window — lines around `lineno`. */
@@ -58,7 +57,6 @@ interface SyntaxInfo {
   filename: string;
   lineno: number;
   offset: number;
-  cell_id?: string;
   execution_id?: string;
   source_hash?: string;
   /**
@@ -87,7 +85,6 @@ interface TracebackPayload {
    */
   language?: string;
   execution?: {
-    cell_id?: string;
     execution_id?: string;
   };
   /**

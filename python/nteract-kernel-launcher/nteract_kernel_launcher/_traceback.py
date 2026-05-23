@@ -190,16 +190,6 @@ def _parent_metadata(parent: Any) -> dict[str, Any]:
     return metadata if isinstance(metadata, dict) else {}
 
 
-def _metadata_cell_id(metadata: dict[str, Any]) -> str | None:
-    nteract = metadata.get("nteract")
-    nteract_cell_id = nteract.get("cell_id") if isinstance(nteract, dict) else None
-    return (
-        _coerce_metadata_str(metadata.get("cellId"))
-        or _coerce_metadata_str(metadata.get("cell_id"))
-        or _coerce_metadata_str(nteract_cell_id)
-    )
-
-
 def _metadata_execution_id(metadata: dict[str, Any]) -> str | None:
     nteract = metadata.get("nteract")
     nteract_execution_id = nteract.get("execution_id") if isinstance(nteract, dict) else None
@@ -228,7 +218,6 @@ def _current_execution_context(ip: Any | None) -> dict[str, str]:
     header = header if isinstance(header, dict) else {}
 
     context = {
-        "cell_id": _metadata_cell_id(metadata),
         "execution_id": _metadata_execution_id(metadata)
         or _coerce_metadata_str(header.get("msg_id")),
     }
@@ -257,7 +246,6 @@ def _register_cell_source(
     ip: Any,
     raw_cell: Any,
     *,
-    cell_id: str | None,
     execution_id: str | None,
 ) -> None:
     if not isinstance(raw_cell, str):
@@ -267,7 +255,6 @@ def _register_cell_source(
         return
 
     provenance = {
-        "cell_id": cell_id,
         "execution_id": execution_id,
         "source_hash": _source_hash(raw_cell),
     }
@@ -311,9 +298,6 @@ def _install_cell_registry_hook(ip: Any) -> None:
         try:
             parent = _current_parent(ip)
             metadata = _parent_metadata(parent)
-            cell_id = _coerce_metadata_str(getattr(info, "cell_id", None)) or _metadata_cell_id(
-                metadata
-            )
             header = parent.get("header") if isinstance(parent, dict) else None
             header = header if isinstance(header, dict) else {}
             execution_id = _metadata_execution_id(metadata) or _coerce_metadata_str(
@@ -322,7 +306,6 @@ def _install_cell_registry_hook(ip: Any) -> None:
             _register_cell_source(
                 ip,
                 getattr(info, "raw_cell", None),
-                cell_id=cell_id,
                 execution_id=execution_id,
             )
         except BaseException as err:  # noqa: BLE001

@@ -194,13 +194,6 @@ pub struct ExecutionState {
     /// Set by the coordinator when creating the execution entry.
     #[serde(default)]
     pub source: Option<String>,
-    /// Notebook cell whose source created this execution, when applicable.
-    ///
-    /// This is provenance only. Execution identity remains `execution_id`;
-    /// non-notebook or future remote execution targets may not have a source
-    /// cell.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_cell_id: Option<String>,
     /// Queue sequence number for ordering.
     /// Monotonic counter owned by the coordinator; the runtime agent sorts
     /// queued entries by this to determine execution order.
@@ -1182,18 +1175,6 @@ impl RuntimeStateDoc {
         source: &str,
         seq: u64,
     ) -> Result<bool, RuntimeStateError> {
-        self.create_execution_with_source_and_cell(execution_id, source, seq, None)
-    }
-
-    /// Create a new execution entry with source code, queue sequence number,
-    /// and optional source-cell provenance.
-    pub fn create_execution_with_source_and_cell(
-        &mut self,
-        execution_id: &str,
-        source: &str,
-        seq: u64,
-        source_cell_id: Option<&str>,
-    ) -> Result<bool, RuntimeStateError> {
         let executions = self.scaffold_map("executions")?;
 
         // Don't overwrite if it already exists (idempotent)
@@ -1215,9 +1196,6 @@ impl RuntimeStateDoc {
         self.doc.put(&entry, "success", ScalarValue::Null)?;
         self.doc.put_object(&entry, "outputs", ObjType::Map)?;
         self.doc.put(&entry, "source", source)?;
-        if let Some(cell_id) = source_cell_id {
-            self.doc.put(&entry, "source_cell_id", cell_id)?;
-        }
         self.doc.put(&entry, "seq", ScalarValue::Uint(seq))?;
         Ok(true)
     }
@@ -1353,7 +1331,6 @@ impl RuntimeStateDoc {
         let outputs = self.get_outputs(execution_id);
 
         let source = self.read_opt_str(&entry, "source");
-        let source_cell_id = self.read_opt_str(&entry, "source_cell_id");
 
         let seq = self
             .doc
@@ -1375,7 +1352,6 @@ impl RuntimeStateDoc {
             success,
             outputs,
             source,
-            source_cell_id,
             seq,
         })
     }
@@ -3910,18 +3886,6 @@ mod tests {
     }
 
     #[test]
-    fn test_create_execution_with_source_and_cell_records_provenance() {
-        let mut doc = RuntimeStateDoc::new();
-        assert!(doc
-            .create_execution_with_source_and_cell("exec-1", "x = 42", 0, Some("cell-1"))
-            .unwrap());
-
-        let es = doc.get_execution("exec-1").unwrap();
-        assert_eq!(es.source, Some("x = 42".to_string()));
-        assert_eq!(es.source_cell_id, Some("cell-1".to_string()));
-    }
-
-    #[test]
     fn test_get_queued_executions_sorted_by_seq() {
         let mut doc = RuntimeStateDoc::new();
         doc.create_execution_with_source("exec-3", "z = 3", 2)
@@ -5152,7 +5116,6 @@ mod tests {
                 success: Some(true),
                 outputs: vec![test_stream("hash1")],
                 source: None,
-                source_cell_id: None,
                 seq: None,
             },
         );
@@ -5172,7 +5135,6 @@ mod tests {
                 success: None,
                 outputs: vec![],
                 source: None,
-                source_cell_id: None,
                 seq: None,
             },
         );
@@ -5193,7 +5155,6 @@ mod tests {
                 success: Some(true),
                 outputs: vec![],
                 source: None,
-                source_cell_id: None,
                 seq: None,
             },
         );
@@ -5217,7 +5178,6 @@ mod tests {
                 success: Some(true),
                 outputs: vec![test_stream("hash1")],
                 source: None,
-                source_cell_id: None,
                 seq: None,
             },
         );
@@ -5238,7 +5198,6 @@ mod tests {
                 success: None,
                 outputs: vec![],
                 source: None,
-                source_cell_id: None,
                 seq: None,
             },
         );
@@ -5271,7 +5230,6 @@ mod tests {
                 success: Some(true),
                 outputs: vec![],
                 source: None,
-                source_cell_id: None,
                 seq: None,
             },
         );

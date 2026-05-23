@@ -411,7 +411,6 @@ pub(crate) fn apply_display_manifest_updates(
 #[derive(Debug, Clone)]
 pub struct QueuedCell {
     pub execution_id: String,
-    pub source_cell_id: Option<String>,
     pub code: String,
 }
 
