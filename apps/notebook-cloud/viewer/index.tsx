@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Code2, Eye, EyeOff } from "lucide-react";
+import { Code2, Eye, EyeOff, UsersRound } from "lucide-react";
 import {
   ReadOnlyNotebook,
   type ReadOnlyNotebookCellData,
@@ -10,7 +10,15 @@ import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-co
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
+import type { SessionControlMessage } from "../src/protocol";
 import { CLOUD_VIEWER_PRIORITY } from "./mime-policy";
+import {
+  cloudViewerPresenceDisplay,
+  type CloudViewerPresenceState,
+  initialCloudViewerPresence,
+  reduceCloudViewerConnection,
+  reduceCloudViewerPresenceMessage,
+} from "./presence";
 import { resolveCell, type RenderCell, type ResolvedCell } from "./render-resolution";
 import { preloadSiftWasmForCells } from "./sift-preload";
 import { cloudSourceLanguage } from "./source-language";
@@ -185,11 +193,6 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
     };
   }, [blobResolver, config.renderEndpoint]);
 
-  useEffect(
-    () => connectAnonymousViewer(config.syncEndpoint, () => undefined),
-    [config.syncEndpoint],
-  );
-
   const readOnlyCells = useMemo(
     () =>
       cells.map(
@@ -213,14 +216,10 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
     <main className="flex min-h-screen w-full flex-col py-6">
       <h1 className="sr-only">nteract cloud notebook {config.notebookId}</h1>
 
-      {status.kind === "ready" ? null : (
-        <div className="cloud-state mx-8 mr-4" data-kind={status.kind}>
-          {status.message}
-        </div>
-      )}
+      <div className="cloud-report-toolbar" aria-label="Notebook view status and controls">
+        <CloudPresenceStatus syncEndpoint={config.syncEndpoint} />
 
-      {status.kind === "ready" && codeCellCount > 0 ? (
-        <div className="cloud-report-toolbar" aria-label="Notebook display controls">
+        {status.kind === "ready" && codeCellCount > 0 ? (
           <button
             type="button"
             className="cloud-code-toggle"
@@ -232,8 +231,16 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
             {showCode ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
             <Code2 aria-hidden="true" />
           </button>
+        ) : (
+          <span aria-hidden="true" />
+        )}
+      </div>
+
+      {status.kind === "ready" ? null : (
+        <div className="cloud-state mx-8 mr-4" data-kind={status.kind}>
+          {status.message}
         </div>
-      ) : null}
+      )}
 
       <ReadOnlyNotebook
         cells={readOnlyCells}
@@ -256,6 +263,33 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
   );
 }
 
+function CloudPresenceStatus({ syncEndpoint }: { syncEndpoint: string }) {
+  const [presence, setPresence] = useState(initialCloudViewerPresence);
+
+  useEffect(
+    () =>
+      connectAnonymousViewer(syncEndpoint, (update) => {
+        setPresence(update);
+      }),
+    [syncEndpoint],
+  );
+
+  const presenceDisplay = cloudViewerPresenceDisplay(presence);
+
+  return (
+    <div
+      className="cloud-presence"
+      data-connected={String(presenceDisplay.connected)}
+      title={presenceDisplay.title}
+      aria-label={presenceDisplay.title}
+      aria-live="polite"
+    >
+      <UsersRound aria-hidden="true" />
+      <span>{presenceDisplay.label}</span>
+    </div>
+  );
+}
+
 function ViewerStartupError({ message }: { message: string }) {
   return (
     <main className="flex min-h-screen w-full flex-col px-8 py-4 pr-4">
@@ -271,7 +305,7 @@ function ViewerStartupError({ message }: { message: string }) {
 
 function connectAnonymousViewer(
   syncEndpoint: string,
-  setConnection: (value: string) => void,
+  updatePresence: (update: (state: CloudViewerPresenceState) => CloudViewerPresenceState) => void,
 ): () => void {
   const sessionId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
   const url = new URL(syncEndpoint, location.href);
@@ -281,16 +315,21 @@ function connectAnonymousViewer(
   const socket = new WebSocket(url);
   socket.binaryType = "arraybuffer";
   let closed = false;
-  const setConnectionIfActive = (value: string) => {
+  const updatePresenceIfActive = (
+    update: (state: CloudViewerPresenceState) => CloudViewerPresenceState,
+  ) => {
     if (!closed) {
-      setConnection(value);
+      updatePresence(update);
     }
   };
   socket.addEventListener("open", () => {
-    setConnectionIfActive("anonymous viewer connected");
+    updatePresenceIfActive((state) => reduceCloudViewerConnection(state, "connected"));
+  });
+  socket.addEventListener("error", () => {
+    updatePresenceIfActive((state) => reduceCloudViewerConnection(state, "disconnected"));
   });
   socket.addEventListener("close", () => {
-    setConnectionIfActive("anonymous viewer disconnected");
+    updatePresenceIfActive((state) => reduceCloudViewerConnection(state, "disconnected"));
   });
   socket.addEventListener("message", async (event) => {
     if (closed) return;
@@ -298,9 +337,13 @@ function connectAnonymousViewer(
     if (bytes[0] !== 0x07) {
       return;
     }
-    const message = JSON.parse(new TextDecoder().decode(bytes.slice(1))) as Record<string, unknown>;
-    if (message.type === "cloud_room_ready") {
-      setConnectionIfActive(`${message.actor_label} (${message.connection_scope})`);
+    const message = JSON.parse(new TextDecoder().decode(bytes.slice(1))) as SessionControlMessage;
+    if (
+      message.type === "cloud_room_ready" ||
+      message.type === "cloud_peer_joined" ||
+      message.type === "cloud_peer_left"
+    ) {
+      updatePresenceIfActive((state) => reduceCloudViewerPresenceMessage(state, message));
     }
   });
 
