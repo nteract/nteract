@@ -26,6 +26,10 @@ bucket_name = "nteract-notebook-cloud-prototype"
 [assets]
 directory = "./dist"
 binding = "ASSETS"
+# Renderer plugins are loaded from sandboxed srcdoc iframes whose origin is
+# "null". Run the Worker for plugin assets so it can attach CORS without
+# weakening the iframe sandbox or CSP.
+run_worker_first = ["/plugins/*"]
 
 [vars]
 DEPLOYMENT_ENV = "prototype"

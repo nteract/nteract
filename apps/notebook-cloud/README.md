@@ -120,6 +120,9 @@ Bindings in `wrangler.toml`:
 - `DB`: D1 catalog for notebooks, revisions, blobs, and room event metadata.
 - `NOTEBOOK_SNAPSHOTS`: R2 bucket for `NotebookDoc` snapshots, `RuntimeStateDoc` snapshots, generated render caches, and blobs.
 - `ASSETS`: Worker static assets for `/assets/notebook-cloud-viewer.js`, renderer chunks, and `/plugins/sift_wasm.wasm`.
+- `RENDERER_ASSETS_BASE_URL` (optional): base URL for renderer plugin assets such as `sift_wasm.wasm`. It can point at a dedicated output/plugin origin. If unset, the viewer uses the Worker-owned `/api/plugins/` route so sandboxed `srcdoc` iframes can fetch plugin WASM through explicit CORS headers.
+
+The `/plugins/*` static path is configured with `assets.run_worker_first` so the Worker can attach CORS for legacy/direct plugin asset URLs. This does not relax iframe sandboxing or CSP; it only changes the HTTP headers on host-owned renderer assets.
 
 Schema lives in `migrations/0001_initial.sql`. The Worker also creates the same tables lazily in local dev so the WebSocket path can run before applying migrations.
 

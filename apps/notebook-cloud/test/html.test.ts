@@ -41,14 +41,27 @@ describe("HTML script serialization", () => {
     assert.match(html, /src="\/assets\/notebook-cloud-viewer\.js"/);
     assert.match(html, /"renderEndpoint":"\/api\/n\/demo\/renders\/heads-123"/);
     assert.match(html, /"blobBasePath":"\/api\/n\/demo\/blobs\/"/);
-    assert.match(html, /"rendererAssetsBasePath":"\/plugins\/"/);
-    assert.doesNotMatch(html, /"rendererAssetsBasePath":"\/api\/plugins\/"/);
+    assert.match(html, /"rendererAssetsBasePath":"\/api\/plugins\/"/);
     assert.doesNotMatch(html, /function renderNotebook/);
     assert.doesNotMatch(html, /id="notebook"/);
   });
+
+  it("allows the host to place renderer assets on a separate origin", async () => {
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/demo"),
+      fakeEnv({
+        RENDERER_ASSETS_BASE_URL: "https://outputs.example/plugins",
+      }),
+      fakeContext(),
+    );
+    const html = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(html, /"rendererAssetsBasePath":"https:\/\/outputs\.example\/plugins\/"/);
+  });
 });
 
-function fakeEnv(): Env {
+function fakeEnv(overrides: Partial<Env> = {}): Env {
   return {
     NOTEBOOK_ROOMS: {
       idFromName: (name: string) => ({ toString: () => name }),
@@ -56,6 +69,7 @@ function fakeEnv(): Env {
         fetch: async () => new Response("not implemented", { status: 501 }),
       }),
     } satisfies DurableObjectNamespace,
+    ...overrides,
   };
 }
 

@@ -5,6 +5,7 @@ export interface Env {
   ASSETS?: WorkerAssets;
   DEPLOYMENT_ENV?: string;
   NOTEBOOK_CLOUD_DEV_TOKEN?: string;
+  RENDERER_ASSETS_BASE_URL?: string;
 }
 
 export interface WorkerAssets {

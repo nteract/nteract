@@ -27,7 +27,7 @@ import { createNotebookCloudBlobResolver, notebookCloudBlobBasePath } from "./bl
 export { NotebookRoom };
 
 const DEMO_NOTEBOOK_ID = "nteract-cloud-demo";
-const RENDERER_ASSETS_BASE_PATH = "/plugins/";
+const DEFAULT_RENDERER_ASSETS_BASE_PATH = "/api/plugins/";
 
 const worker: ExportedHandler<Env> = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -76,13 +76,14 @@ const worker: ExportedHandler<Env> = {
     if (pinnedViewerMatch && request.method === "GET") {
       return viewer(
         decodeURIComponent(pinnedViewerMatch[1]),
+        env,
         decodeURIComponent(pinnedViewerMatch[2]),
       );
     }
 
     const viewerMatch = url.pathname.match(/^\/n\/([^/]+)\/?$/);
     if (viewerMatch && request.method === "GET") {
-      return viewer(decodeURIComponent(viewerMatch[1]));
+      return viewer(decodeURIComponent(viewerMatch[1]), env);
     }
 
     const catalogMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/?$/);
@@ -664,7 +665,7 @@ function normalizedRuntimeHeadsHash(value: string | null): string | null {
   return trimmed && trimmed !== "none" ? trimmed : null;
 }
 
-function viewer(notebookId: string, headsHash?: string): Response {
+function viewer(notebookId: string, env: Env, headsHash?: string): Response {
   const escaped = escapeHtml(notebookId);
   const title = headsHash ? `${escaped} @ ${escapeHtml(headsHash)}` : escaped;
   const renderEndpoint = headsHash
@@ -676,7 +677,7 @@ function viewer(notebookId: string, headsHash?: string): Response {
     renderEndpoint,
     syncEndpoint: `/n/${encodeURIComponent(notebookId)}/sync`,
     blobBasePath: notebookCloudBlobBasePath(notebookId),
-    rendererAssetsBasePath: RENDERER_ASSETS_BASE_PATH,
+    rendererAssetsBasePath: rendererAssetsBasePath(env),
   };
   const html = `<!doctype html>
 <html lang="en">
@@ -698,6 +699,15 @@ function viewer(notebookId: string, headsHash?: string): Response {
       headers: { "Content-Type": "text/html; charset=utf-8" },
     }),
   );
+}
+
+function rendererAssetsBasePath(env: Env): string {
+  const configured = env.RENDERER_ASSETS_BASE_URL?.trim();
+  return withTrailingSlash(configured || DEFAULT_RENDERER_ASSETS_BASE_PATH);
+}
+
+function withTrailingSlash(value: string): string {
+  return value.endsWith("/") ? value : `${value}/`;
 }
 
 function debugViewer(notebookId: string): Response {
