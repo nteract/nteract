@@ -33,13 +33,18 @@ export async function resolveCell(
 ): Promise<ResolvedCell> {
   const cellType = normalizeCellType(cell.cell_type);
   const metadata = normalizeMetadata(cell.metadata);
+  const outputs = Array.isArray(cell.outputs)
+    ? await resolveOutputs(cell.outputs, blobResolver)
+    : [];
+  const executionCount =
+    normalizeExecutionCount(cell.execution_count) ?? executionCountFromOutputs(outputs);
   return {
     id: typeof cell.id === "string" ? cell.id : `cell-${index + 1}`,
     cellType,
     source: typeof cell.source === "string" ? cell.source : "",
     language: cellType === "code" ? (normalizeCellLanguage(metadata) ?? defaultLanguage) : null,
-    executionCount: normalizeExecutionCount(cell.execution_count),
-    outputs: Array.isArray(cell.outputs) ? await resolveOutputs(cell.outputs, blobResolver) : [],
+    executionCount,
+    outputs,
     metadata,
   };
 }
@@ -106,6 +111,19 @@ function normalizeExecutionCount(value: unknown): number | null {
   if (typeof value !== "string" || value === "null") return null;
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function executionCountFromOutputs(outputs: JupyterOutput[]): number | null {
+  for (const output of outputs) {
+    if (
+      output.output_type === "execute_result" &&
+      typeof output.execution_count === "number" &&
+      Number.isFinite(output.execution_count)
+    ) {
+      return output.execution_count;
+    }
+  }
+  return null;
 }
 
 function normalizeMetadata(value: unknown): Record<string, unknown> {
