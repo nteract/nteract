@@ -35,8 +35,15 @@ body {
   padding-inline: 1rem;
 }
 
-.cloud-source-block {
+.cloud-source-block .cm-editor {
   background: transparent !important;
-  padding: 0 !important;
-  white-space: pre-wrap !important;
+}
+
+.cloud-source-block .cm-scroller {
+  overflow-x: hidden;
+  overflow-y: visible;
+}
+
+.cloud-source-block .cm-content {
+  padding-bottom: 0.125rem;
 }

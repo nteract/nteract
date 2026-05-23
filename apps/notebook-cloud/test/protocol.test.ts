@@ -63,7 +63,7 @@ describe("typed-frame protocol helpers", () => {
     assert.equal(frameSizeLimits(FrameType.RUNTIME_STATE_SYNC).cap, 64 * 1024 * 1024);
     assert.equal(frameSizeLimits(FrameType.PUT_BLOB).cap, 32 * 1024 * 1024);
     assert.equal(frameSizeLimits(FrameType.REQUEST).cap, 16 * 1024 * 1024);
-    assert.equal(frameSizeLimits(FrameType.PRESENCE).cap, 1024 * 1024);
+    assert.equal(frameSizeLimits(FrameType.PRESENCE).cap, 4 * 1024);
   });
 
   it("rejects empty and unknown typed frames", () => {

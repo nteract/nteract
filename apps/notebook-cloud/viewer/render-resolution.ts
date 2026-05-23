@@ -19,6 +19,7 @@ export interface ResolvedCell {
   id: string;
   cellType: "code" | "markdown" | "raw";
   source: string;
+  language: string | null;
   executionCount: number | null;
   outputs: JupyterOutput[];
   metadata: Record<string, unknown>;
@@ -28,15 +29,18 @@ export async function resolveCell(
   cell: RenderCell,
   blobResolver: BlobResolver,
   index: number,
+  defaultLanguage: string | null = null,
 ): Promise<ResolvedCell> {
   const cellType = normalizeCellType(cell.cell_type);
+  const metadata = normalizeMetadata(cell.metadata);
   return {
     id: typeof cell.id === "string" ? cell.id : `cell-${index + 1}`,
     cellType,
     source: typeof cell.source === "string" ? cell.source : "",
+    language: cellType === "code" ? (normalizeCellLanguage(metadata) ?? defaultLanguage) : null,
     executionCount: normalizeExecutionCount(cell.execution_count),
     outputs: Array.isArray(cell.outputs) ? await resolveOutputs(cell.outputs, blobResolver) : [],
-    metadata: normalizeMetadata(cell.metadata),
+    metadata,
   };
 }
 
@@ -106,4 +110,17 @@ function normalizeExecutionCount(value: unknown): number | null {
 
 function normalizeMetadata(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+}
+
+function normalizeCellLanguage(metadata: Record<string, unknown>): string | null {
+  const direct = metadata.language;
+  if (typeof direct === "string") return direct;
+
+  const runt = metadata.runt;
+  if (typeof runt === "object" && runt !== null) {
+    const language = (runt as Record<string, unknown>).language;
+    if (typeof language === "string") return language;
+  }
+
+  return null;
 }
