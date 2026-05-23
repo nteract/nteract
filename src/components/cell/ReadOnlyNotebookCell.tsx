@@ -2,6 +2,7 @@ import { type ReactNode, useMemo } from "react";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { ReadOnlyCodeMirror } from "@/components/editor/readonly-codemirror";
 import type { SupportedLanguage } from "@/components/editor/languages";
+import { cn } from "@/lib/utils";
 import { CellContainer } from "./CellContainer";
 import { ExecutionCount } from "./ExecutionCount";
 import { OutputArea } from "./OutputArea";
@@ -103,6 +104,7 @@ function renderReadOnlyCellSource({
         isolated="auto"
         priority={priority}
         hostContext={hostContext}
+        className={cn("pl-0 pr-0", sourceClassName)}
       />
     );
   }
