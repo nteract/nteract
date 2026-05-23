@@ -18,7 +18,6 @@ import {
   type TypedFrame,
 } from "./protocol.ts";
 import { rewritePresenceIngress } from "./runtimed-wasm.ts";
-import { ensureNotebook } from "./storage.ts";
 
 interface Peer {
   id: string;
@@ -56,7 +55,7 @@ export class NotebookRoom {
 
   constructor(
     private readonly state: DurableObjectState,
-    private readonly env: Env,
+    _env: Env,
   ) {
     this.restoreHibernatedPeers();
   }
@@ -78,10 +77,6 @@ export class NotebookRoom {
       identity = readTrustedIdentity(request);
     } catch (error) {
       return json({ error: String(error) }, 401);
-    }
-
-    if (!isAnonymousViewer(identity)) {
-      await ensureNotebook(this.env, notebookId, identity);
     }
 
     const pair = new WebSocketPair();

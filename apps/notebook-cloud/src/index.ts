@@ -8,11 +8,14 @@ import {
   DEV_AUTH_TOKEN_HEADER,
   stampTrustedIdentity,
   type AuthenticatedConnection,
+  type ConnectionScope,
 } from "./identity.ts";
+import { AuthorizationError, authorizeNotebookAccess } from "./authorization.ts";
 import {
   blobKey,
+  createNotebookWithOwnerAcl,
   ensureCatalogSchema,
-  ensureNotebook,
+  getNotebookRow,
   getNotebookCatalog,
   recordBlob,
   recordRevision,
@@ -114,7 +117,7 @@ const worker: ExportedHandler<Env> = {
 
     const catalogMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/?$/);
     if (catalogMatch && request.method === "GET") {
-      return routeCatalog(env, decodeURIComponent(catalogMatch[1]));
+      return routeCatalog(request, env, decodeURIComponent(catalogMatch[1]));
     }
 
     const latestRenderMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/render$/);
@@ -237,10 +240,14 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
   if (!notebookId) {
     return json({ error: "notebook id is required" }, 400);
   }
+  const authorizedIdentity = await authorizeIdentityOrResponse(env, notebookId, identity);
+  if (authorizedIdentity instanceof Response) {
+    return authorizedIdentity;
+  }
 
   const id = env.NOTEBOOK_ROOMS.idFromName(notebookId);
   const room = env.NOTEBOOK_ROOMS.get(id);
-  return room.fetch(stampTrustedIdentity(request, identity));
+  return room.fetch(stampTrustedIdentity(request, authorizedIdentity));
 }
 
 async function routeSnapshot(
@@ -252,8 +259,10 @@ async function routeSnapshot(
   const key = snapshotKey(notebookId, headsHash);
 
   if (request.method === "GET") {
-    // Prototype publish reads are intentionally public. Production hosts should
-    // gate this path with viewer-or-better auth or signed artifact URLs.
+    const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
+    if (identity instanceof Response) {
+      return identity;
+    }
     const object = await env.NOTEBOOK_SNAPSHOTS?.get(key);
     if (!object) {
       return json({ error: "snapshot not found" }, 404);
@@ -271,18 +280,14 @@ async function routeSnapshot(
     return json({ error: "method not allowed" }, 405);
   }
 
-  const identity = authenticateRequestOrResponse(request, env);
+  const identity = await authorizePublishOrCreateOrResponse(request, env, notebookId, "snapshots");
   if (identity instanceof Response) {
     return identity;
-  }
-  if (!allowsPublish(identity.scope)) {
-    return json({ error: `${identity.scope} cannot publish snapshots` }, 403);
   }
   if (!env.NOTEBOOK_SNAPSHOTS) {
     return json({ error: "R2 binding NOTEBOOK_SNAPSHOTS is not configured" }, 503);
   }
 
-  await ensureNotebook(env, notebookId, identity);
   const body = await request.arrayBuffer();
   const runtimeHeadsHash = normalizedRuntimeHeadsHash(request.headers.get("x-runtime-heads-hash"));
   const runtimeKey = runtimeHeadsHash ? runtimeSnapshotKey(notebookId, runtimeHeadsHash) : null;
@@ -338,6 +343,7 @@ async function routeSnapshot(
       snapshotKey: key,
       runtimeSnapshotKey: runtimeKey,
       actorLabel: identity.actorLabel,
+      publishPublic: true,
     });
   } catch (error) {
     await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
@@ -359,6 +365,10 @@ async function routeRuntimeSnapshot(
   const key = runtimeSnapshotKey(notebookId, headsHash);
 
   if (request.method === "GET") {
+    const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
+    if (identity instanceof Response) {
+      return identity;
+    }
     const object = await env.NOTEBOOK_SNAPSHOTS?.get(key);
     if (!object) {
       return json({ error: "runtime snapshot not found" }, 404);
@@ -376,18 +386,19 @@ async function routeRuntimeSnapshot(
     return json({ error: "method not allowed" }, 405);
   }
 
-  const identity = authenticateRequestOrResponse(request, env);
+  const identity = await authorizePublishOrCreateOrResponse(
+    request,
+    env,
+    notebookId,
+    "runtime snapshots",
+  );
   if (identity instanceof Response) {
     return identity;
-  }
-  if (!allowsPublish(identity.scope)) {
-    return json({ error: `${identity.scope} cannot publish runtime snapshots` }, 403);
   }
   if (!env.NOTEBOOK_SNAPSHOTS) {
     return json({ error: "R2 binding NOTEBOOK_SNAPSHOTS is not configured" }, 503);
   }
 
-  await ensureNotebook(env, notebookId, identity);
   const body = await request.arrayBuffer();
   await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
     httpMetadata: {
@@ -404,9 +415,13 @@ async function routeRuntimeSnapshot(
   return json({ ok: true, key, size: body.byteLength }, 201);
 }
 
-async function routeCatalog(env: Env, notebookId: string): Promise<Response> {
+async function routeCatalog(request: Request, env: Env, notebookId: string): Promise<Response> {
   if (!env.DB) {
     return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
+  if (identity instanceof Response) {
+    return identity;
   }
 
   const catalog = await getNotebookCatalog(env, notebookId);
@@ -424,6 +439,10 @@ async function routeLatestRender(
 ): Promise<Response> {
   if (!env.DB) {
     return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
+  if (identity instanceof Response) {
+    return identity;
   }
 
   const catalog = await getNotebookCatalog(env, notebookId);
@@ -448,8 +467,9 @@ async function routeRender(
   headsHash: string,
 ): Promise<Response> {
   if (request.method === "GET") {
-    if (!env.DB) {
-      return getRenderObject(env, notebookId, headsHash, true);
+    const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
+    if (identity instanceof Response) {
+      return identity;
     }
     const catalog = await getNotebookCatalog(env, notebookId);
     const revision = catalog?.revisions.find(
@@ -676,8 +696,10 @@ async function routeBlob(
   const key = blobKey(notebookId, hash);
 
   if (request.method === "HEAD") {
-    // Prototype publish reads are intentionally public. Production hosts should
-    // gate this path with viewer-or-better auth or signed artifact URLs.
+    const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
+    if (identity instanceof Response) {
+      return identity;
+    }
     const object = await env.NOTEBOOK_SNAPSHOTS?.head(key);
     if (!object) {
       return json({ error: "blob not found" }, 404);
@@ -693,8 +715,10 @@ async function routeBlob(
   }
 
   if (request.method === "GET") {
-    // Prototype publish reads are intentionally public. Production hosts should
-    // gate this path with viewer-or-better auth or signed artifact URLs.
+    const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
+    if (identity instanceof Response) {
+      return identity;
+    }
     const object = await env.NOTEBOOK_SNAPSHOTS?.get(key);
     if (!object) {
       return json({ error: "blob not found" }, 404);
@@ -737,7 +761,13 @@ async function routeBlob(
     );
   }
 
-  await ensureNotebook(env, notebookId, identity);
+  const authorizedIdentity = allowsPublish(identity.scope)
+    ? await authorizePublishOrCreate(env, notebookId, identity)
+    : await authorizeIdentityOrResponse(env, notebookId, identity);
+  if (authorizedIdentity instanceof Response) {
+    return authorizedIdentity;
+  }
+
   const contentType = request.headers.get("content-type");
   await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
     httpMetadata: {
@@ -780,6 +810,69 @@ function authenticateRequestOrResponse(
     }
     return json({ error: String(error) }, 400);
   }
+}
+
+async function authenticateAndAuthorizeOrResponse(
+  request: Request,
+  env: Env,
+  notebookId: string,
+  requestedScope: ConnectionScope,
+): Promise<AuthenticatedConnection | Response> {
+  const identity = authenticateRequestOrResponse(request, env);
+  if (identity instanceof Response) {
+    return identity;
+  }
+  return authorizeIdentityOrResponse(env, notebookId, identity, requestedScope);
+}
+
+async function authorizeIdentityOrResponse(
+  env: Env,
+  notebookId: string,
+  identity: AuthenticatedConnection,
+  requestedScope: ConnectionScope = identity.scope,
+): Promise<AuthenticatedConnection | Response> {
+  try {
+    return await authorizeNotebookAccess(env, notebookId, identity, requestedScope);
+  } catch (error) {
+    if (error instanceof AuthorizationError) {
+      return json({ error: error.message }, error.status);
+    }
+    throw error;
+  }
+}
+
+async function authorizePublishOrCreateOrResponse(
+  request: Request,
+  env: Env,
+  notebookId: string,
+  artifactName: string,
+): Promise<AuthenticatedConnection | Response> {
+  const identity = authenticateRequestOrResponse(request, env);
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (!allowsPublish(identity.scope)) {
+    return json({ error: `${identity.scope} cannot publish ${artifactName}` }, 403);
+  }
+  return authorizePublishOrCreate(env, notebookId, identity);
+}
+
+async function authorizePublishOrCreate(
+  env: Env,
+  notebookId: string,
+  identity: AuthenticatedConnection,
+): Promise<AuthenticatedConnection | Response> {
+  if (!env.DB) {
+    return identity;
+  }
+
+  const existing = await getNotebookRow(env, notebookId);
+  if (existing) {
+    return authorizeIdentityOrResponse(env, notebookId, identity, "owner");
+  }
+
+  await createNotebookWithOwnerAcl(env, notebookId, identity);
+  return authorizeIdentityOrResponse(env, notebookId, identity, "owner");
 }
 
 function json(value: unknown, status = 200): Response {

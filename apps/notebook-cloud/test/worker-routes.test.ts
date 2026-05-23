@@ -2,6 +2,7 @@ import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import worker from "../src/index.ts";
+import { authenticateDevRequest } from "../src/identity.ts";
 import type {
   D1Database,
   D1PreparedStatement,
@@ -16,7 +17,13 @@ import type {
   R2PutOptions,
 } from "../src/cloudflare-types.ts";
 import { initializeRuntimedWasm } from "../src/runtimed-wasm.ts";
-import { blobKey, renderKey, snapshotKey } from "../src/storage.ts";
+import {
+  blobKey,
+  createNotebookWithOwnerAcl,
+  getNotebookAclRowsForPrincipal,
+  renderKey,
+  snapshotKey,
+} from "../src/storage.ts";
 
 const wasmBytes = await readFile(
   new URL("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm", import.meta.url),
@@ -288,6 +295,11 @@ describe("Worker artifact routes", () => {
   it("allows runtime peers to upload content-addressed output blobs", async () => {
     const env = fakeEnv();
     seedNotebook(env, "runtime-demo");
+    seedAcl(env, {
+      notebookId: "runtime-demo",
+      subject: "user:dev:runtime-service",
+      scope: "runtime_peer",
+    });
     const body = new Uint8Array([1, 2, 3, 4]);
     const hash = await sha256Hex(body);
 
@@ -317,6 +329,12 @@ describe("Worker artifact routes", () => {
 
   it("rejects blob uploads whose path hash does not match the bytes", async () => {
     const env = fakeEnv();
+    seedNotebook(env, "runtime-demo");
+    seedAcl(env, {
+      notebookId: "runtime-demo",
+      subject: "user:dev:runtime-service",
+      scope: "runtime_peer",
+    });
     const body = new Uint8Array([1, 2, 3, 4]);
     const actual = await sha256Hex(body);
     const expected = "0".repeat(64);
@@ -335,7 +353,108 @@ describe("Worker artifact routes", () => {
     });
     assert.equal(env.NOTEBOOK_SNAPSHOTS.objects.has(blobKey("runtime-demo", expected)), false);
     assert.equal(env.DB.blobs.size, 0);
-    assert.equal(env.DB.notebooks.has("runtime-demo"), false);
+    assert.equal(env.DB.notebooks.has("runtime-demo"), true);
+  });
+
+  it("keeps unpublished notebooks private to anonymous readers", async () => {
+    const env = fakeEnv({ DEPLOYMENT_ENV: "prototype" });
+    seedNotebook(env, "private-demo");
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/n/private-demo"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { error: "notebook not found" });
+  });
+
+  it("does not let authenticated principals fall back to public ACL rows", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "public-demo");
+    seedAcl(env, {
+      notebookId: "public-demo",
+      subjectKind: "public",
+      subject: "anonymous",
+      scope: "viewer",
+    });
+
+    const anonymous = await worker.fetch(
+      new Request("http://localhost/api/n/public-demo?viewer_session=anon-a"),
+      env,
+      fakeContext(),
+    );
+    assert.equal(anonymous.status, 200);
+
+    const authenticated = await worker.fetch(
+      new Request("http://localhost/api/n/public-demo?user=bob&operator=desktop:b&scope=viewer"),
+      env,
+      fakeContext(),
+    );
+    assert.equal(authenticated.status, 403);
+    assert.deepEqual(await authenticated.json(), {
+      error: "user:dev:bob cannot access public-demo",
+    });
+  });
+
+  it("does not grant owner ACL to a principal that loses notebook creation", async () => {
+    const env = fakeEnv();
+    const alice = authenticateDevRequest(
+      new Request("http://localhost/n/race-demo/sync?user=alice&operator=desktop:a&scope=owner"),
+    );
+    const bob = authenticateDevRequest(
+      new Request("http://localhost/n/race-demo/sync?user=bob&operator=desktop:b&scope=owner"),
+    );
+
+    await createNotebookWithOwnerAcl(env, "race-demo", alice);
+    await createNotebookWithOwnerAcl(env, "race-demo", bob);
+
+    assert.equal(env.DB.notebooks.get("race-demo")?.owner_principal, "user:dev:alice");
+    assert.equal(
+      (await getNotebookAclRowsForPrincipal(env, "race-demo", "user:dev:alice")).length,
+      1,
+    );
+    assert.equal(
+      (await getNotebookAclRowsForPrincipal(env, "race-demo", "user:dev:bob")).length,
+      0,
+    );
+  });
+
+  it("does not create notebook rows from unauthorized WebSocket opens", async () => {
+    let roomFetches = 0;
+    const env = fakeEnv({
+      DEPLOYMENT_ENV: "prototype",
+      NOTEBOOK_CLOUD_DEV_TOKEN: "secret-token",
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async () => {
+            roomFetches += 1;
+            return new Response("unexpected room fetch", { status: 500 });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+
+    const response = await worker.fetch(
+      new Request(
+        "https://cloud.test/n/unclaimed-demo/sync?user=alice&operator=desktop:a&scope=editor",
+        {
+          headers: {
+            Upgrade: "websocket",
+            "X-Notebook-Cloud-Dev-Token": "secret-token",
+          },
+        },
+      ),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { error: "notebook not found" });
+    assert.equal(roomFetches, 0);
+    assert.equal(env.DB.notebooks.has("unclaimed-demo"), false);
   });
 
   it("publishes a snapshot pair and materializes render JSON through the route layer", async () => {
@@ -361,6 +480,10 @@ describe("Worker artifact routes", () => {
       runtimeStateBytes,
     );
     assert.equal(runtimePut.status, 201);
+    assert.deepEqual(
+      env.DB.acl.map((row) => [row.notebook_id, row.subject_kind, row.subject, row.scope]),
+      [["route-demo", "principal", "user:dev:alice", "owner"]],
+    );
 
     const notebookPut = await ownerPut(
       env,
@@ -371,6 +494,13 @@ describe("Worker artifact routes", () => {
       },
     );
     assert.equal(notebookPut.status, 201);
+    assert.deepEqual(
+      env.DB.acl.map((row) => [row.notebook_id, row.subject_kind, row.subject, row.scope]),
+      [
+        ["route-demo", "principal", "user:dev:alice", "owner"],
+        ["route-demo", "public", "anonymous", "viewer"],
+      ],
+    );
     assert.equal(
       env.NOTEBOOK_SNAPSHOTS.objects.has(renderKey("route-demo", "heads-fixture")),
       true,
@@ -605,6 +735,26 @@ function seedNotebook(env: FakeEnv, notebookId: string): void {
   });
 }
 
+function seedAcl(
+  env: FakeEnv,
+  row: {
+    notebookId: string;
+    subject: string;
+    scope: NotebookAclRow["scope"];
+    subjectKind?: NotebookAclRow["subject_kind"];
+  },
+): void {
+  env.DB.acl.push({
+    notebook_id: row.notebookId,
+    subject_kind: row.subjectKind ?? "principal",
+    subject: row.subject,
+    scope: row.scope,
+    created_at: "2026-05-22T00:00:00.000Z",
+    updated_at: "2026-05-22T00:00:00.000Z",
+    created_by_actor_label: "user:dev:alice/desktop:test",
+  });
+}
+
 async function sha256Hex(body: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", body);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -647,6 +797,16 @@ interface NotebookRow {
   latest_revision_id: string | null;
 }
 
+interface NotebookAclRow {
+  notebook_id: string;
+  subject_kind: "principal" | "public";
+  subject: string;
+  scope: "viewer" | "editor" | "runtime_peer" | "owner";
+  created_at: string;
+  updated_at: string;
+  created_by_actor_label: string;
+}
+
 interface RevisionRow {
   id: string;
   notebook_id: string;
@@ -662,6 +822,7 @@ class FakeD1 implements D1Database {
   readonly notebooks = new Map<string, NotebookRow>();
   readonly revisions: RevisionRow[] = [];
   readonly blobs = new Map<string, BlobRow>();
+  readonly acl: NotebookAclRow[] = [];
 
   prepare(query: string): D1PreparedStatement {
     return new FakeD1Statement(this, query);
@@ -694,14 +855,71 @@ class FakeD1Statement implements D1PreparedStatement {
   }
 
   async run<T = unknown>(): Promise<D1Result<T>> {
-    if (this.query.includes("INSERT INTO notebooks")) {
-      const [id, ownerPrincipal, updatedAt] = this.values as [string, string, string];
+    if (this.query.includes("INSERT OR IGNORE INTO notebook_acl")) {
+      if (this.query.includes("'principal'") && this.query.includes("owner_principal")) {
+        for (const notebook of this.db.notebooks.values()) {
+          this.insertAclIfMissing({
+            notebook_id: notebook.id,
+            subject_kind: "principal",
+            subject: notebook.owner_principal,
+            scope: "owner",
+            created_at: notebook.created_at,
+            updated_at: notebook.updated_at,
+            created_by_actor_label: "system/schema:notebook-cloud-owner-acl-backfill",
+          });
+        }
+      } else if (this.query.includes("'public'")) {
+        for (const notebook of this.db.notebooks.values()) {
+          if (notebook.latest_revision_id === null) continue;
+          this.insertAclIfMissing({
+            notebook_id: notebook.id,
+            subject_kind: "public",
+            subject: "anonymous",
+            scope: "viewer",
+            created_at: notebook.created_at,
+            updated_at: notebook.updated_at,
+            created_by_actor_label: "system/schema:notebook-cloud-public-acl-backfill",
+          });
+        }
+      }
+    } else if (this.query.includes("INSERT INTO notebook_acl")) {
+      const [notebookId, subjectKind, subject, scope, createdAt, updatedAt, actorLabel] = this
+        .values as [
+        string,
+        NotebookAclRow["subject_kind"],
+        string,
+        NotebookAclRow["scope"],
+        string,
+        string,
+        string,
+      ];
+      this.insertAclIfMissing({
+        notebook_id: notebookId,
+        subject_kind: subjectKind,
+        subject,
+        scope,
+        created_at: createdAt,
+        updated_at: updatedAt,
+        created_by_actor_label: actorLabel,
+      });
+    } else if (this.query.includes("INSERT INTO notebooks")) {
+      const [id, ownerPrincipal, createdAtOrUpdatedAt, maybeUpdatedAt] = this.values as [
+        string,
+        string,
+        string,
+        string | undefined,
+      ];
+      const createdAt = maybeUpdatedAt ? createdAtOrUpdatedAt : undefined;
+      const updatedAt = maybeUpdatedAt ?? createdAtOrUpdatedAt;
       const existing = this.db.notebooks.get(id);
+      if (existing && this.query.includes("DO NOTHING")) {
+        return okResult();
+      }
       this.db.notebooks.set(id, {
         id,
         owner_principal: existing?.owner_principal ?? ownerPrincipal,
         title: existing?.title ?? null,
-        created_at: existing?.created_at ?? updatedAt,
+        created_at: existing?.created_at ?? createdAt ?? updatedAt,
         updated_at: updatedAt,
         latest_revision_id: existing?.latest_revision_id ?? null,
       });
@@ -725,11 +943,20 @@ class FakeD1Statement implements D1PreparedStatement {
         actor_label: actorLabel,
         created_at: new Date().toISOString(),
       });
-    } else if (this.query.includes("UPDATE notebooks")) {
+    } else if (
+      this.query.includes("UPDATE notebooks") &&
+      this.query.includes("latest_revision_id")
+    ) {
       const [revisionId, updatedAt, notebookId] = this.values as [string, string, string];
       const existing = this.db.notebooks.get(notebookId);
       if (existing) {
         existing.latest_revision_id = revisionId;
+        existing.updated_at = updatedAt;
+      }
+    } else if (this.query.includes("UPDATE notebooks")) {
+      const [updatedAt, notebookId] = this.values as [string, string];
+      const existing = this.db.notebooks.get(notebookId);
+      if (existing) {
         existing.updated_at = updatedAt;
       }
     } else if (this.query.includes("INSERT INTO notebook_blobs")) {
@@ -752,6 +979,21 @@ class FakeD1Statement implements D1PreparedStatement {
     return okResult();
   }
 
+  private insertAclIfMissing(row: NotebookAclRow): void {
+    const existing = this.db.acl.find(
+      (candidate) =>
+        candidate.notebook_id === row.notebook_id &&
+        candidate.subject_kind === row.subject_kind &&
+        candidate.subject === row.subject &&
+        candidate.scope === row.scope,
+    );
+    if (existing) {
+      existing.updated_at = row.updated_at;
+      return;
+    }
+    this.db.acl.push(row);
+  }
+
   async first<T = unknown>(): Promise<T | null> {
     if (this.query.includes("FROM notebooks")) {
       return (this.db.notebooks.get(this.values[0] as string) as T | undefined) ?? null;
@@ -760,6 +1002,30 @@ class FakeD1Statement implements D1PreparedStatement {
   }
 
   async all<T = unknown>(): Promise<D1Result<T>> {
+    if (this.query.includes("FROM notebook_acl")) {
+      const notebookId = this.values[0] as string;
+      if (this.query.includes("subject_kind = 'principal'")) {
+        const principal = this.values[1] as string;
+        return okResult(
+          this.db.acl.filter(
+            (row) =>
+              row.notebook_id === notebookId &&
+              row.subject_kind === "principal" &&
+              row.subject === principal,
+          ) as T[],
+        );
+      }
+      if (this.query.includes("subject_kind = 'public'")) {
+        return okResult(
+          this.db.acl.filter(
+            (row) =>
+              row.notebook_id === notebookId &&
+              row.subject_kind === "public" &&
+              row.subject === "anonymous",
+          ) as T[],
+        );
+      }
+    }
     if (this.query.includes("FROM notebook_revisions")) {
       const notebookId = this.values[0] as string;
       return okResult(
