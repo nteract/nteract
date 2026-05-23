@@ -26,6 +26,7 @@ Severity legend:
 | WP-9 | Pool and SettingsSync channels use untyped framing; the wire crate's AGENTS.md doesn't call out which channels use typed vs untyped frames. | Inline | `crates/notebook-wire/AGENTS.md` |
 | WP-10 | No application-layer heartbeat for typed-frame connections. Presence has room-level heartbeats; the connection itself only has `daemon.idle_peer_timeout()`. | Design | `crates/runtimed/src/notebook_sync_server/peer_loop.rs` |
 | WP-11 | `recv_typed_frame` reads and allocates the body buffer up to the per-type cap *before* `try_from` rejects the unknown type. For unknown frame types the cap falls back to the outer 100 MiB ceiling, so a v4 daemon receiving forward-compat unknown bytes can allocate up to 100 MiB before skipping. | Targeted PR | `crates/notebook-protocol/src/connection/framing.rs:204-222` |
+| WP-12 | `packages/runtimed/src/transport.ts::frameSizeLimits` is hand-mirrored from `notebook_wire::frame_size_limits`. The WP-3 contract test catches drift but does not eliminate the duplication. The right shape: expose the per-type cap+warn table through `runtimed-wasm` (and/or via the existing `ts-rs` codegen path the project already uses for `protocol.ts` / `request-types.ts`) so the frontend, the cloud Worker, and any future JS consumer read from a Rust source of truth. Once the table is single-sourced, delete the WP-3 contract test (its precondition vanishes). Apply the same treatment to any other hand-mirrored constant in this area worth exposing — check `FrameType` discriminants and the `MAX_FRAME_SIZE` / `MAX_CONTROL_FRAME_SIZE` constants in `transport.ts`. Where it makes sense, surface the values on the WASM handle so all JS consumers benefit (browser frontend, Cloudflare Worker, future hosts), not just the desktop. | Targeted PR | `crates/notebook-wire/src/lib.rs`, `crates/runtimed-wasm/src/lib.rs`, `packages/runtimed/src/transport.ts` |
 
 ## Three-document split
 
@@ -87,7 +88,7 @@ Severity legend:
 
 - **Done:** WP-1, WP-5, WP-9, EP-7, EP-12, BS-8, BS-11. Seven landed via #2813 + cleanup/inline-pass.
 - **Refuted:** EP-4 (log levels are correct per `.claude/rules/logging.md`), EP-13 (warn/debug asymmetry matches the actual severity of `Full` vs `Closed`).
-- **Targeted PRs (one per smell):** WP-6, WP-7, WP-11, 3D-1, 3D-2, EP-1, EP-8, EP-10, EP-11, BS-3, BS-7, TMD-1, TMD-2, MSL-1, MSL-3, FSB-1, FSB-2. Seventeen open. (WP-2 and WP-3 landed in stacks 2 and 3; EP-2 and BS-1 landed in stacks 5 and 6.)
+- **Targeted PRs (one per smell):** WP-6, WP-7, WP-11, WP-12, 3D-1, 3D-2, EP-1, EP-8, EP-10, EP-11, BS-3, BS-7, TMD-1, TMD-2, MSL-1, MSL-3, FSB-1, FSB-2. Eighteen open. (WP-2 and WP-3 landed in stacks 2 and 3; EP-2 and BS-1 landed in stacks 5 and 6.)
 - **Design (resolve in ADR or memo first):** WP-4, WP-8, WP-10, 3D-3, 3D-4, 3D-5, 3D-6, EP-3, EP-5, EP-6, EP-9, BS-2, BS-4, BS-5, BS-6, BS-9, BS-10, MSL-2, MSL-4. Nineteen open.
 
 ## Next steps
