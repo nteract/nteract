@@ -9,7 +9,9 @@ vi.mock("../ReadOnlyNotebookCell", () => ({
   ReadOnlyNotebookCell: ({
     cellType,
     className,
+    displayMode,
     executionCount,
+    focusOutputs,
     hostContext,
     id,
     language,
@@ -17,12 +19,15 @@ vi.mock("../ReadOnlyNotebookCell", () => ({
     outputClassName,
     outputs,
     priority,
+    showSource,
     source,
     sourceClassName,
   }: {
     cellType: string;
     className?: string;
+    displayMode?: "notebook" | "report";
     executionCount?: number | null;
+    focusOutputs?: boolean;
     hostContext?: unknown;
     id: string;
     language?: string | null;
@@ -30,6 +35,7 @@ vi.mock("../ReadOnlyNotebookCell", () => ({
     outputClassName?: string;
     outputs?: readonly JupyterOutput[];
     priority?: readonly string[];
+    showSource?: boolean;
     source: string;
     sourceClassName?: string;
   }) => {
@@ -42,13 +48,16 @@ vi.mock("../ReadOnlyNotebookCell", () => ({
       <article
         data-cell-type={cellType}
         data-class-name={className ?? ""}
+        data-display-mode={displayMode ?? "notebook"}
         data-execution-count={executionCount ?? ""}
+        data-focus-outputs={String(focusOutputs)}
         data-host-context={JSON.stringify(hostContext ?? null)}
         data-language={language ?? ""}
         data-line-wrapping={String(lineWrapping)}
         data-output-class-name={outputClassName ?? ""}
         data-output-count={outputs?.length ?? 0}
         data-priority={priority?.join(",") ?? ""}
+        data-show-source={String(showSource)}
         data-source-class-name={sourceClassName ?? ""}
         data-testid="read-only-cell"
       >
@@ -103,9 +112,12 @@ describe("ReadOnlyNotebook", () => {
     expect(cells).toHaveLength(2);
     expect(cells[0]).toHaveTextContent("cell-1:print('hello')");
     expect(cells[0]).toHaveAttribute("data-cell-type", "code");
+    expect(cells[0]).toHaveAttribute("data-display-mode", "notebook");
     expect(cells[0]).toHaveAttribute("data-language", "ipython");
     expect(cells[0]).toHaveAttribute("data-line-wrapping", "true");
     expect(cells[0]).toHaveAttribute("data-execution-count", "3");
+    expect(cells[0]).toHaveAttribute("data-show-source", "true");
+    expect(cells[0]).toHaveAttribute("data-focus-outputs", "false");
     expect(cells[0]).toHaveAttribute("data-output-count", "1");
     expect(cells[0]).toHaveAttribute("data-class-name", "cell-shell");
     expect(cells[0]).toHaveAttribute("data-source-class-name", "source-shell");
@@ -131,6 +143,36 @@ describe("ReadOnlyNotebook", () => {
     );
 
     expect(screen.getByTestId("read-only-cell")).toHaveAttribute("data-line-wrapping", "false");
+  });
+
+  it("supports report display mode with local code visibility", () => {
+    render(
+      <ReadOnlyNotebook
+        cells={[
+          {
+            id: "code-cell",
+            cellType: "code",
+            source: "print('hidden')",
+            outputs: [{ output_type: "stream", name: "stdout", text: "visible\n" }],
+          },
+          {
+            id: "markdown-cell",
+            cellType: "markdown",
+            source: "# Still visible",
+          },
+        ]}
+        displayMode="report"
+        showCode={false}
+        focusOutputs
+      />,
+    );
+
+    const cells = screen.getAllByTestId("read-only-cell");
+    expect(cells[0]).toHaveAttribute("data-display-mode", "report");
+    expect(cells[0]).toHaveAttribute("data-show-source", "false");
+    expect(cells[0]).toHaveAttribute("data-focus-outputs", "true");
+    expect(cells[1]).toHaveAttribute("data-display-mode", "report");
+    expect(cells[1]).toHaveAttribute("data-show-source", "true");
   });
 
   it("does not reset errored cells when unchanged cell data is remapped", () => {

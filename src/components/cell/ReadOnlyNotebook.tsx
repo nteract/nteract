@@ -19,6 +19,9 @@ export interface ReadOnlyNotebookProps {
   cells: readonly ReadOnlyNotebookCellData[];
   priority?: readonly string[];
   hostContext?: NteractEmbedHostContextPatch;
+  displayMode?: "notebook" | "report";
+  showCode?: boolean;
+  focusOutputs?: boolean;
   className?: string;
   cellClassName?: string;
   sourceClassName?: string;
@@ -33,6 +36,9 @@ export function ReadOnlyNotebook({
   cells,
   priority,
   hostContext,
+  displayMode = "notebook",
+  showCode = true,
+  focusOutputs = false,
   className,
   cellClassName,
   sourceClassName,
@@ -77,6 +83,9 @@ export function ReadOnlyNotebook({
                 executionCount={cell.executionCount}
                 priority={priority}
                 hostContext={hostContext}
+                displayMode={displayMode}
+                showSource={displayMode === "report" ? cell.cellType !== "code" || showCode : true}
+                focusOutputs={focusOutputs}
                 className={cellClassName}
                 sourceClassName={sourceClassName}
                 outputClassName={outputClassName}

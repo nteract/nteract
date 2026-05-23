@@ -150,13 +150,16 @@ async function main() {
     }
     await page.waitForFunction(
       (expected) => {
+        const reportCellCount = document.querySelectorAll(
+          "[data-slot='read-only-report-cell']",
+        ).length;
         const counts = Array.from(document.querySelectorAll("[data-slot='execution-count']")).map(
           (node) => node.textContent?.trim() ?? "",
         );
         if (expected) {
           return counts.includes(expected);
         }
-        return counts.some((count) => /^\[\d+\]:$/.test(count));
+        return reportCellCount > 0 || counts.some((count) => /^\[\d+\]:$/.test(count));
       },
       expectedExecutionCount,
       { timeout: timeoutMs },
@@ -189,6 +192,7 @@ async function main() {
         allow: iframe.getAttribute("allow"),
       })),
     );
+    const reportCellCount = await page.locator("[data-slot='read-only-report-cell']").count();
 
     if (requireSiftWasm && siftWasmRequests.length === 0) {
       failures.push({ kind: "sift-wasm", text: "Sift WASM was not requested" });
@@ -243,6 +247,7 @@ async function main() {
           renderApiCheck,
           catalogApiCheck,
           executionCounts,
+          reportCellCount,
           frameTextMatches,
           iframeMetrics,
           siftWasmRequests,
