@@ -402,6 +402,13 @@ async function routeCatalog(env: Env, notebookId: string): Promise<Response> {
 }
 
 async function routeRoomEvents(request: Request, env: Env, notebookId: string): Promise<Response> {
+  const identity = authenticateRequestOrResponse(request, env);
+  if (identity instanceof Response) {
+    return identity;
+  }
+  if (!allowsPublish(identity.scope)) {
+    return json({ error: `${identity.scope} cannot read room events` }, 403);
+  }
   if (!env.DB) {
     return json({ error: "D1 binding DB is not configured" }, 503);
   }
