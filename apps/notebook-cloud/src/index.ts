@@ -22,12 +22,19 @@ import {
   type RevisionRow,
 } from "./storage.ts";
 import { materializeSnapshotPairRender } from "./snapshot-render.ts";
-import { createNotebookCloudBlobResolver, notebookCloudBlobBasePath } from "./blob-resolver.ts";
+import {
+  createNotebookCloudBlobResolver,
+  notebookCloudBlobBasePath,
+  withTrailingSlash,
+} from "./blob-resolver.ts";
 
 export { NotebookRoom };
 
 const DEMO_NOTEBOOK_ID = "nteract-cloud-demo";
-const DEFAULT_RENDERER_ASSETS_BASE_PATH = "/api/plugins/";
+// `/plugins/*` is a raw static asset path in deployed Workers. Use a
+// Worker-owned route by default so sandboxed srcdoc iframes can fetch sidecar
+// assets with explicit CORS, and let hosts replace it with a dedicated origin.
+const DEFAULT_RENDERER_ASSETS_BASE_PATH = "/renderer-assets/";
 
 const worker: ExportedHandler<Env> = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -168,6 +175,9 @@ async function routeAsset(request: Request, env: Env): Promise<Response | null> 
 function assetPathnameForRequest(pathname: string): string | null {
   if (pathname.startsWith("/assets/") || pathname.startsWith("/plugins/")) {
     return pathname;
+  }
+  if (pathname.startsWith("/renderer-assets/")) {
+    return `/plugins/${pathname.slice("/renderer-assets/".length)}`;
   }
   if (pathname.startsWith("/api/assets/")) {
     return pathname.slice("/api".length);
@@ -704,10 +714,6 @@ function viewer(notebookId: string, env: Env, headsHash?: string): Response {
 function rendererAssetsBasePath(env: Env): string {
   const configured = env.RENDERER_ASSETS_BASE_URL?.trim();
   return withTrailingSlash(configured || DEFAULT_RENDERER_ASSETS_BASE_PATH);
-}
-
-function withTrailingSlash(value: string): string {
-  return value.endsWith("/") ? value : `${value}/`;
 }
 
 function debugViewer(notebookId: string): Response {

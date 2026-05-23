@@ -3,19 +3,14 @@ import { createRoot } from "react-dom/client";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { ExecutionCount } from "@/components/cell/ExecutionCount";
 import { OutputArea } from "@/components/cell/OutputArea";
-import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import { StaticCodeBlock } from "@/components/editor/static-highlight";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
-import {
-  isOutputManifest,
-  resolveManifest,
-  type OutputManifest,
-} from "@/components/isolated/output-manifest";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
+import { resolveCell, type RenderCell, type ResolvedCell } from "./render-resolution";
 import "./index.css";
 
 interface CloudViewerConfig {
@@ -31,24 +26,6 @@ interface SnapshotRender {
   heads_hash?: string;
   source?: string;
   cells?: unknown;
-}
-
-interface RenderCell {
-  id?: unknown;
-  cell_type?: unknown;
-  source?: unknown;
-  execution_count?: unknown;
-  outputs?: unknown;
-  metadata?: unknown;
-}
-
-interface ResolvedCell {
-  id: string;
-  cellType: "code" | "markdown" | "raw";
-  source: string;
-  executionCount: number | null;
-  outputs: JupyterOutput[];
-  metadata: Record<string, unknown>;
 }
 
 type ViewerStatus =
@@ -319,72 +296,6 @@ function ReadonlySource({ source, language }: { source: string; language: string
       className="cloud-source-block"
     />
   );
-}
-
-async function resolveCell(
-  cell: RenderCell,
-  blobResolver: ViewerRuntime["blobResolver"],
-  index: number,
-): Promise<ResolvedCell> {
-  const cellType = normalizeCellType(cell.cell_type);
-  return {
-    id: typeof cell.id === "string" ? cell.id : `cell-${index + 1}`,
-    cellType,
-    source: typeof cell.source === "string" ? cell.source : "",
-    executionCount: normalizeExecutionCount(cell.execution_count),
-    outputs: Array.isArray(cell.outputs) ? await resolveOutputs(cell.outputs, blobResolver) : [],
-    metadata: normalizeMetadata(cell.metadata),
-  };
-}
-
-async function resolveOutputs(
-  outputs: unknown[],
-  blobResolver: ViewerRuntime["blobResolver"],
-): Promise<JupyterOutput[]> {
-  const resolved = await Promise.all(outputs.map((output) => resolveOutput(output, blobResolver)));
-  return resolved.filter((output): output is JupyterOutput => output !== null);
-}
-
-async function resolveOutput(
-  output: unknown,
-  blobResolver: ViewerRuntime["blobResolver"],
-): Promise<JupyterOutput | null> {
-  if (typeof output === "string") {
-    try {
-      return resolveOutput(JSON.parse(output) as unknown, blobResolver);
-    } catch {
-      return null;
-    }
-  }
-
-  if (isOutputManifest(output)) {
-    return resolveManifest(output as OutputManifest, blobResolver) as Promise<JupyterOutput>;
-  }
-
-  if (isJupyterOutput(output)) {
-    return output;
-  }
-
-  return null;
-}
-
-function isJupyterOutput(value: unknown): value is JupyterOutput {
-  return typeof value === "object" && value !== null && "output_type" in value;
-}
-
-function normalizeCellType(value: unknown): ResolvedCell["cellType"] {
-  return value === "markdown" || value === "raw" ? value : "code";
-}
-
-function normalizeExecutionCount(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value !== "string" || value === "null") return null;
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function normalizeMetadata(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
 }
 
 function connectAnonymousViewer(

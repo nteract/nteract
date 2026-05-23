@@ -18,6 +18,6 @@ export function createNotebookCloudBlobResolver(input: {
   });
 }
 
-function withTrailingSlash(value: string): string {
+export function withTrailingSlash(value: string): string {
   return value.endsWith("/") ? value : `${value}/`;
 }

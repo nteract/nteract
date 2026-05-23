@@ -41,7 +41,7 @@ describe("HTML script serialization", () => {
     assert.match(html, /src="\/assets\/notebook-cloud-viewer\.js"/);
     assert.match(html, /"renderEndpoint":"\/api\/n\/demo\/renders\/heads-123"/);
     assert.match(html, /"blobBasePath":"\/api\/n\/demo\/blobs\/"/);
-    assert.match(html, /"rendererAssetsBasePath":"\/api\/plugins\/"/);
+    assert.match(html, /"rendererAssetsBasePath":"\/renderer-assets\/"/);
     assert.doesNotMatch(html, /function renderNotebook/);
     assert.doesNotMatch(html, /id="notebook"/);
   });
