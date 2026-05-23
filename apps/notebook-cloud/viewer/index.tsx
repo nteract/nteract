@@ -1,6 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { ReadOnlyNotebookCell } from "@/components/cell/ReadOnlyNotebookCell";
+import {
+  ReadOnlyNotebook,
+  type ReadOnlyNotebookCellData,
+} from "@/components/cell/ReadOnlyNotebook";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { MediaProvider } from "@/components/outputs/media-provider";
@@ -179,6 +182,21 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
     [config.syncEndpoint],
   );
 
+  const readOnlyCells = useMemo(
+    () =>
+      cells.map(
+        (cell): ReadOnlyNotebookCellData => ({
+          id: cell.id,
+          cellType: cell.cellType,
+          source: cell.source,
+          language: cloudSourceLanguage(cell.language),
+          outputs: cell.outputs,
+          executionCount: cell.executionCount,
+        }),
+      ),
+    [cells],
+  );
+
   return (
     <main className="flex min-h-screen w-full flex-col py-4">
       <h1 className="sr-only">nteract cloud notebook {config.notebookId}</h1>
@@ -189,24 +207,19 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         </div>
       )}
 
-      <section
-        className="flex min-h-0 flex-1 flex-col overflow-x-clip overscroll-x-contain pl-8 pr-2"
-        aria-label="Notebook cells"
-      >
-        {cells.map((cell, index) => (
-          <ErrorBoundary
-            key={`${cell.id}:${index}`}
-            resetKeys={[cell]}
-            fallback={(error) => (
-              <div className="cloud-state" data-kind="error">
-                Unable to render cell {index + 1}: {error.message}
-              </div>
-            )}
-          >
-            <ReadonlyNotebookCell cell={cell} outputHostContext={outputHostContext} />
-          </ErrorBoundary>
-        ))}
-      </section>
+      <ReadOnlyNotebook
+        cells={readOnlyCells}
+        priority={CLOUD_VIEWER_PRIORITY}
+        hostContext={outputHostContext}
+        className="pl-8 pr-2"
+        cellClassName="cloud-cell"
+        sourceClassName="cloud-source-block"
+        renderCellError={(error, _cell, index) => (
+          <div className="cloud-state" data-kind="error">
+            Unable to render cell {index + 1}: {error.message}
+          </div>
+        )}
+      />
     </main>
   );
 }
@@ -221,29 +234,6 @@ function ViewerStartupError({ message }: { message: string }) {
         {message}
       </div>
     </main>
-  );
-}
-
-function ReadonlyNotebookCell({
-  cell,
-  outputHostContext,
-}: {
-  cell: ResolvedCell;
-  outputHostContext: NteractEmbedHostContextPatch;
-}) {
-  return (
-    <ReadOnlyNotebookCell
-      id={cell.id}
-      cellType={cell.cellType}
-      source={cell.source}
-      language={cloudSourceLanguage(cell.language)}
-      outputs={cell.outputs}
-      executionCount={cell.executionCount}
-      priority={CLOUD_VIEWER_PRIORITY}
-      hostContext={outputHostContext}
-      className="cloud-cell"
-      sourceClassName="cloud-source-block"
-    />
   );
 }
 
