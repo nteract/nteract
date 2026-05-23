@@ -307,7 +307,7 @@ The phase fields are deliberately ordered so a later snapshot never represents l
 
 ## Open questions
 
-1. **TS-Rust size-limit drift.** `frameSizeLimits` in TS is hand-mirrored from `frame_size_limits` in Rust. The contract test only checks enum discriminants, not per-type caps. A future cap change in Rust will silently diverge from TS until a human notices a warn log. The fix is either codegen or extending the contract test to compare the full table. Filed as a known gap.
+1. ~~**TS-Rust size-limit drift.**~~ **Resolved** by punchlist WP-3. New Rust contract test `frame_size_limits_match_typescript` parses the TS table and compares cap+warn per type against `notebook_wire::frame_size_limits`. Any Rust cap change that forgets the TS side now fails CI.
 
 2. **AGENTS.md drift on `Handshake::Blob`.** `crates/notebook-wire/AGENTS.md` lists a `Blob` handshake variant for "Store blobs and query the localhost blob HTTP port." No such variant exists in `crates/notebook-protocol/src/connection/handshake.rs`. Blob uploads ride the `NotebookSync` channel as `0x08` frames; blob downloads go over the daemon's HTTP server (`GET /blob/{hash}`). The AGENTS.md row is stale.
 
