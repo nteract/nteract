@@ -17,8 +17,6 @@ import {
   validatePrincipal,
 } from "../src/identity.ts";
 
-const localEnv = { DEPLOYMENT_ENV: "development" };
-
 describe("dev identity", () => {
   it("uses explicit anonymous viewer auth when no dev credential is presented", () => {
     const identity = authenticateRequest(
@@ -39,8 +37,8 @@ describe("dev identity", () => {
       new Request("https://cloud.test/n/demo/sync?viewer_session=anon-1"),
     );
     const dev = authenticateRequest(
-      new Request("https://cloud.test/n/demo/sync?user=anonymous&operator=desktop:a"),
-      localEnv,
+      new Request("http://localhost:8787/n/demo/sync?user=anonymous&operator=desktop:a"),
+      { DEPLOYMENT_ENV: "development" },
     );
 
     assert.equal(anonymous.principal, "anonymous:anon-1");
@@ -79,10 +77,10 @@ describe("dev identity", () => {
 
   it("supports browser query params for the local viewer harness", () => {
     const request = new Request(
-      "https://cloud.test/n/demo/sync?user=alice&operator=agent:codex:s1&scope=owner",
+      "http://localhost:8787/n/demo/sync?user=alice&operator=agent:codex:s1&scope=owner",
     );
 
-    const identity = authenticateDevRequest(request);
+    const identity = authenticateRequest(request, { DEPLOYMENT_ENV: "prototype" });
 
     assert.equal(identity.actorLabel, "user:dev:alice/agent:codex:s1");
     assert.equal(identity.scope, "owner");
@@ -95,6 +93,11 @@ describe("dev identity", () => {
 
     assert.throws(
       () => authenticateRequest(request, { DEPLOYMENT_ENV: "prototype" }),
+      (error) => error instanceof AuthError && error.status === 401,
+    );
+
+    assert.throws(
+      () => authenticateRequest(request, { DEPLOYMENT_ENV: "development" }),
       (error) => error instanceof AuthError && error.status === 401,
     );
 
@@ -128,6 +131,26 @@ describe("dev identity", () => {
       ).webSocketProtocol,
       devProtocol,
     );
+  });
+
+  it("does not let DEPLOYMENT_ENV=development bypass deployed dev auth", () => {
+    const queryCredential = new Request(
+      "https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=owner",
+    );
+    const headerCredential = new Request("https://cloud.test/n/demo/sync", {
+      headers: {
+        "X-User": "alice",
+        "X-Operator": "desktop:a",
+        "X-Scope": "owner",
+      },
+    });
+
+    for (const request of [queryCredential, headerCredential]) {
+      assert.throws(
+        () => authenticateRequest(request, { DEPLOYMENT_ENV: "development" }),
+        (error) => error instanceof AuthError && error.status === 401,
+      );
+    }
   });
 
   it("accepts remote dev token from headers and rejects same-prefix guesses", () => {

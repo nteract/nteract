@@ -48,7 +48,10 @@ export function authenticateRequest(
 
   const devCredential = authenticateDevCredential(request, env);
   if (!devCredential) {
-    throw new AuthError("dev credentials require a local request or NOTEBOOK_CLOUD_DEV_TOKEN", 401);
+    throw new AuthError(
+      "dev credentials require a loopback request or NOTEBOOK_CLOUD_DEV_TOKEN",
+      401,
+    );
   }
 
   const identity = authenticateDevRequest(request);
@@ -273,18 +276,14 @@ function authenticateDevCredential(
   request: Request,
   env: IdentityEnvironment,
 ): { webSocketProtocol?: string } | undefined {
-  if (isLocalDevRequest(request, env)) {
+  if (isLocalDevRequest(request)) {
     return {};
   }
 
   return validDevTokenCredential(request, env);
 }
 
-function isLocalDevRequest(request: Request, env: IdentityEnvironment): boolean {
-  if (env.DEPLOYMENT_ENV === "development") {
-    return true;
-  }
-
+function isLocalDevRequest(request: Request): boolean {
   const hostname = new URL(request.url).hostname;
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
 }
