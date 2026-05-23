@@ -73,6 +73,81 @@ describe("TracebackOutput", () => {
     expect(container.textContent).not.toContain("/var/folders/x/T/ipykernel_39879");
   });
 
+  it("shortens displayed Python package paths", () => {
+    const { container } = render(
+      <TracebackOutput
+        data={{
+          ename: "ColumnNotFoundError",
+          evalue: "missing column",
+          frames: [
+            {
+              filename:
+                "/Users/kylekelley/Library/Caches/runt-nightly/inline-envs/f446e2ef9c92b4c9/lib/python3.13/site-packages/polars/lazyframe/frame.py",
+              lineno: 2630,
+              name: "collect",
+              library: true,
+              lines: [{ lineno: 2630, source: "return wrap_df(ldf.collect())", highlight: true }],
+            },
+          ],
+          language: "python",
+        }}
+      />,
+    );
+
+    expect(container.textContent).toContain("Line2630inpython/polars/lazyframe/frame.pyincollect");
+    expect(container.textContent).not.toContain("/Users/kylekelley/Library/Caches");
+  });
+
+  it("keeps non-Python source paths unchanged when they look package-like", () => {
+    const filename = "/Users/kyle/project/site-packages/example/runtime/frame.jl";
+    const { container } = render(
+      <TracebackOutput
+        data={{
+          ename: "RuntimeError",
+          evalue: "bad module",
+          frames: [
+            {
+              filename,
+              lineno: 7,
+              name: "load",
+              library: true,
+              lines: [{ lineno: 7, source: "await load()", highlight: true }],
+            },
+          ],
+          language: "typescript",
+        }}
+      />,
+    );
+
+    expect(container.textContent).toContain(
+      "Line7in/Users/kyle/project/site-packages/example/runtime/frame.jlinload",
+    );
+    expect(container.textContent).not.toContain("python/example/runtime/frame.jl");
+  });
+
+  it("does not throw when a frame has a malformed filename", () => {
+    const { container } = render(
+      <TracebackOutput
+        data={{
+          ename: "RuntimeError",
+          evalue: "bad frame",
+          frames: [
+            {
+              filename: { path: "/tmp/not-a-string.py" },
+              lineno: 7,
+              name: "load",
+              library: true,
+              lines: [{ lineno: 7, source: "load()", highlight: true }],
+            },
+          ],
+          language: "python",
+        }}
+      />,
+    );
+
+    expect(container.textContent).toContain("Line7inUnknown sourceinload");
+  });
+
   it("navigates to a resolved traceback cell", () => {
     const onNavigateToCell = vi.fn();
 

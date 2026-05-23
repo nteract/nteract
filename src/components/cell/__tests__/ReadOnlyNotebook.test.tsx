@@ -16,9 +16,11 @@ vi.mock("../ReadOnlyNotebookCell", () => ({
     id,
     language,
     lineWrapping,
+    onNavigateToTracebackCell,
     outputClassName,
     outputs,
     priority,
+    resolveTracebackExecutionTarget,
     showSource,
     source,
     sourceClassName,
@@ -32,9 +34,11 @@ vi.mock("../ReadOnlyNotebookCell", () => ({
     id: string;
     language?: string | null;
     lineWrapping?: boolean;
+    onNavigateToTracebackCell?: unknown;
     outputClassName?: string;
     outputs?: readonly JupyterOutput[];
     priority?: readonly string[];
+    resolveTracebackExecutionTarget?: unknown;
     showSource?: boolean;
     source: string;
     sourceClassName?: string;
@@ -54,6 +58,8 @@ vi.mock("../ReadOnlyNotebookCell", () => ({
         data-host-context={JSON.stringify(hostContext ?? null)}
         data-language={language ?? ""}
         data-line-wrapping={String(lineWrapping)}
+        data-has-traceback-navigator={String(Boolean(onNavigateToTracebackCell))}
+        data-has-traceback-resolver={String(Boolean(resolveTracebackExecutionTarget))}
         data-output-class-name={outputClassName ?? ""}
         data-output-count={outputs?.length ?? 0}
         data-priority={priority?.join(",") ?? ""}
@@ -125,6 +131,32 @@ describe("ReadOnlyNotebook", () => {
     expect(cells[0]).toHaveAttribute("data-priority", "application/vnd.apache.parquet,text/plain");
     expect(cells[0].getAttribute("data-host-context")).toContain(
       "https://assets.example.test/renderer-assets/",
+    );
+  });
+
+  it("passes traceback resolver and navigator to read-only cells", () => {
+    render(
+      <ReadOnlyNotebook
+        cells={[
+          {
+            id: "cell-1",
+            cellType: "code",
+            source: "raise Exception()",
+            outputs: [{ output_type: "error", ename: "E", evalue: "bad", traceback: [] }],
+          },
+        ]}
+        resolveTracebackExecutionTarget={() => null}
+        onNavigateToTracebackCell={() => undefined}
+      />,
+    );
+
+    expect(screen.getByTestId("read-only-cell")).toHaveAttribute(
+      "data-has-traceback-resolver",
+      "true",
+    );
+    expect(screen.getByTestId("read-only-cell")).toHaveAttribute(
+      "data-has-traceback-navigator",
+      "true",
     );
   });
 

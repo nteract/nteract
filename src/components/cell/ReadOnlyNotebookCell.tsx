@@ -2,6 +2,10 @@ import { type ReactNode, useMemo } from "react";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { ReadOnlyCodeMirror } from "@/components/editor/readonly-codemirror";
 import type { SupportedLanguage } from "@/components/editor/languages";
+import type {
+  TracebackCellNavigator,
+  TracebackExecutionResolver,
+} from "@/components/outputs/traceback-output";
 import { cn } from "@/lib/utils";
 import { CellContainer } from "./CellContainer";
 import { ExecutionCount } from "./ExecutionCount";
@@ -24,6 +28,8 @@ export interface ReadOnlyNotebookCellProps {
   sourceClassName?: string;
   outputClassName?: string;
   lineWrapping?: boolean;
+  resolveTracebackExecutionTarget?: TracebackExecutionResolver;
+  onNavigateToTracebackCell?: TracebackCellNavigator;
 }
 
 export function ReadOnlyNotebookCell({
@@ -42,6 +48,8 @@ export function ReadOnlyNotebookCell({
   sourceClassName,
   outputClassName,
   lineWrapping = true,
+  resolveTracebackExecutionTarget,
+  onNavigateToTracebackCell,
 }: ReadOnlyNotebookCellProps) {
   const codeContent = useMemo(
     () =>
@@ -70,6 +78,8 @@ export function ReadOnlyNotebookCell({
         priority={priority}
         hostContext={hostContext}
         className={outputClassName}
+        resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
+        onNavigateToTracebackCell={onNavigateToTracebackCell}
       />
     ) : null;
 
