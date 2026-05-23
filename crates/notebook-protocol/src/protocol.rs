@@ -1478,6 +1478,108 @@ mod tests {
             .collect()
     }
 
+    #[derive(Debug, PartialEq, Eq)]
+    struct TsFrameSizeLimits {
+        cap: usize,
+        warn: usize,
+    }
+
+    /// Parse `frameSizeLimits` from `packages/runtimed/src/transport.ts`.
+    ///
+    /// Pulls the `frameSizeLimits` function body, then per `case FrameType.<NAME>:`
+    /// extracts `cap` and `warn` from the following `return { cap: <expr>,
+    /// warn: <expr> };` line. Expressions accept literal numbers or `N *
+    /// UNIT` / bare `UNIT` where `UNIT` is `KIB` (1024) or `MIB` (1024 *
+    /// 1024). Anything more complex would need a real parser, but the
+    /// caps table is deliberately written in this restricted form.
+    fn extract_frame_size_limits_table(source: &str) -> BTreeMap<String, TsFrameSizeLimits> {
+        let needle = "export function frameSizeLimits(";
+        let start = source
+            .find(needle)
+            .expect("missing TS frameSizeLimits function");
+        let rest = &source[start..];
+        // Match the function's closing brace by counting braces from the
+        // opening one (the function body must be self-contained).
+        let body_start = rest.find('{').expect("missing function body open");
+        let mut depth = 0_i32;
+        let mut body_end = body_start;
+        for (idx, ch) in rest[body_start..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        body_end = body_start + idx;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let body = &rest[body_start..=body_end];
+
+        let mut current_case: Option<String> = None;
+        let mut table = BTreeMap::new();
+        for raw_line in body.lines() {
+            let line = raw_line.trim();
+            if let Some(name) = line
+                .strip_prefix("case FrameType.")
+                .and_then(|s| s.strip_suffix(':'))
+            {
+                current_case = Some(name.to_string());
+                continue;
+            }
+            if let (Some(name), Some(remainder)) =
+                (current_case.clone(), line.strip_prefix("return {"))
+            {
+                let inner = remainder.trim_end_matches(';').trim_end_matches('}').trim();
+                let mut cap: Option<usize> = None;
+                let mut warn: Option<usize> = None;
+                for part in inner.split(',') {
+                    let part = part.trim();
+                    let (key, value) = match part.split_once(':') {
+                        Some((k, v)) => (k.trim(), v.trim()),
+                        None => continue,
+                    };
+                    let parsed = parse_size_expression(value);
+                    match key {
+                        "cap" => cap = Some(parsed),
+                        "warn" => warn = Some(parsed),
+                        _ => {}
+                    }
+                }
+                table.insert(
+                    name,
+                    TsFrameSizeLimits {
+                        cap: cap.expect("cap missing in TS frameSizeLimits case"),
+                        warn: warn.expect("warn missing in TS frameSizeLimits case"),
+                    },
+                );
+                current_case = None;
+            }
+        }
+        table
+    }
+
+    fn parse_size_expression(expr: &str) -> usize {
+        const KIB: usize = 1024;
+        const MIB: usize = 1024 * 1024;
+        let resolve = |token: &str| -> usize {
+            match token {
+                "KIB" => KIB,
+                "MIB" => MIB,
+                other => other
+                    .parse::<usize>()
+                    .unwrap_or_else(|_| panic!("unparseable TS size token: {other}")),
+            }
+        };
+        if let Some((lhs, rhs)) = expr.split_once('*') {
+            resolve(lhs.trim()) * resolve(rhs.trim())
+        } else {
+            resolve(expr.trim())
+        }
+    }
+
     fn extract_frame_type_object(source: &str) -> BTreeMap<String, u8> {
         let needle = "export const FrameType = {";
         let start = source.find(needle).expect("missing TS FrameType object") + needle.len();
@@ -1568,6 +1670,62 @@ mod tests {
                 ("PUT_BLOB".to_string(), notebook_wire::frame_types::PUT_BLOB),
             ])
         );
+    }
+
+    /// Per-type size caps must match between Rust and TypeScript.
+    ///
+    /// `notebook-wire::frame_size_limits` is the source of truth; the TS
+    /// table in `packages/runtimed/src/transport.ts::frameSizeLimits` is
+    /// hand-mirrored. This test extracts the TS `case` arms and compares
+    /// both `cap` and `warn` against the Rust table value-for-value, so a
+    /// future bump to a Rust cap that forgets the TS side fails CI.
+    /// Punchlist WP-3.
+    #[test]
+    fn frame_size_limits_match_typescript() {
+        let ts_transport = include_str!("../../../packages/runtimed/src/transport.ts");
+        let ts_table = extract_frame_size_limits_table(ts_transport);
+
+        let frame_types = [
+            ("AUTOMERGE_SYNC", notebook_wire::frame_types::AUTOMERGE_SYNC),
+            ("REQUEST", notebook_wire::frame_types::REQUEST),
+            ("RESPONSE", notebook_wire::frame_types::RESPONSE),
+            ("BROADCAST", notebook_wire::frame_types::BROADCAST),
+            ("PRESENCE", notebook_wire::frame_types::PRESENCE),
+            (
+                "RUNTIME_STATE_SYNC",
+                notebook_wire::frame_types::RUNTIME_STATE_SYNC,
+            ),
+            (
+                "POOL_STATE_SYNC",
+                notebook_wire::frame_types::POOL_STATE_SYNC,
+            ),
+            (
+                "SESSION_CONTROL",
+                notebook_wire::frame_types::SESSION_CONTROL,
+            ),
+            ("PUT_BLOB", notebook_wire::frame_types::PUT_BLOB),
+        ];
+
+        for (name, byte) in frame_types {
+            let rust = notebook_wire::frame_size_limits(byte);
+            let ts = ts_table.get(name).unwrap_or_else(|| {
+                panic!(
+                    "TS frameSizeLimits is missing a case for FrameType.{name}; \
+                     keep packages/runtimed/src/transport.ts in lockstep with \
+                     notebook-wire::frame_size_limits"
+                )
+            });
+            assert_eq!(
+                ts.cap, rust.cap,
+                "cap mismatch for {name}: TS={} Rust={}; update transport.ts to match notebook-wire",
+                ts.cap, rust.cap
+            );
+            assert_eq!(
+                ts.warn, rust.warn,
+                "warn mismatch for {name}: TS={} Rust={}; update transport.ts to match notebook-wire",
+                ts.warn, rust.warn
+            );
+        }
     }
 
     #[test]
