@@ -33,6 +33,11 @@ pub const DEFAULT_PEER_TTL_MS: u64 = 3 * DEFAULT_HEARTBEAT_MS;
 /// Maximum size for a presence frame payload (4 KiB).
 /// Presence data is small (cursor ~40 bytes CBOR, selection ~60 bytes).
 /// Anything larger is likely malformed or malicious.
+///
+/// This value must agree with `notebook-wire::frame_size_limits(PRESENCE).cap`.
+/// The wire-layer cap rejects oversize frames before body allocation; this
+/// constant gates the CBOR decode path. Two layers, one limit. Punchlist
+/// WP-2; the WP-3 contract test will guard future drift.
 pub const MAX_PRESENCE_FRAME_SIZE: usize = 4 * 1024;
 
 // ── Channel types ────────────────────────────────────────────────────
