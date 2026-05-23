@@ -192,6 +192,9 @@ importers:
       remark-math:
         specifier: ^6.0.0
         version: 6.0.0
+      runtimed:
+        specifier: workspace:*
+        version: link:packages/runtimed
       tailwind-merge:
         specifier: ^3.4.0
         version: 3.5.0
