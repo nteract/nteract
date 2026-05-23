@@ -1,9 +1,6 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { CellContainer } from "@/components/cell/CellContainer";
-import { ExecutionCount } from "@/components/cell/ExecutionCount";
-import { OutputArea } from "@/components/cell/OutputArea";
-import { ReadOnlyCodeMirror } from "@/components/editor/readonly-codemirror";
+import { ReadOnlyNotebookCell } from "@/components/cell/ReadOnlyNotebookCell";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { MediaProvider } from "@/components/outputs/media-provider";
@@ -234,68 +231,18 @@ function ReadonlyNotebookCell({
   cell: ResolvedCell;
   outputHostContext: NteractEmbedHostContextPatch;
 }) {
-  const codeContent = useMemo(
-    () => renderCellSource(cell, outputHostContext),
-    [cell, outputHostContext],
-  );
-  const outputContent =
-    cell.outputs.length > 0 ? (
-      <OutputArea
-        cellId={cell.id}
-        executionCount={cell.executionCount}
-        outputs={cell.outputs}
-        isolated="auto"
-        priority={CLOUD_VIEWER_PRIORITY}
-        hostContext={outputHostContext}
-      />
-    ) : null;
-
   return (
-    <CellContainer
+    <ReadOnlyNotebookCell
       id={cell.id}
       cellType={cell.cellType}
-      codeContent={codeContent}
-      outputContent={outputContent}
-      gutterContent={
-        cell.cellType === "code" ? <ExecutionCount count={cell.executionCount} /> : null
-      }
+      source={cell.source}
+      language={cloudSourceLanguage(cell.language)}
+      outputs={cell.outputs}
+      executionCount={cell.executionCount}
+      priority={CLOUD_VIEWER_PRIORITY}
+      hostContext={outputHostContext}
       className="cloud-cell"
-    />
-  );
-}
-
-function renderCellSource(
-  cell: ResolvedCell,
-  outputHostContext: NteractEmbedHostContextPatch,
-): ReactNode {
-  if (cell.cellType === "markdown") {
-    return (
-      <OutputArea
-        cellId={cell.id}
-        outputs={[
-          {
-            output_type: "display_data",
-            data: { "text/markdown": cell.source },
-            metadata: {},
-          },
-        ]}
-        isolated="auto"
-        priority={CLOUD_VIEWER_PRIORITY}
-        hostContext={outputHostContext}
-      />
-    );
-  }
-
-  return <ReadonlySource source={cell.source} language={cell.language} />;
-}
-
-function ReadonlySource({ source, language }: { source: string; language: string | null }) {
-  return (
-    <ReadOnlyCodeMirror
-      value={source}
-      language={cloudSourceLanguage(language)}
-      lineWrapping
-      className="cloud-source-block"
+      sourceClassName="cloud-source-block"
     />
   );
 }
