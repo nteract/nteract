@@ -1,0 +1,51 @@
+@source "./**/*.{ts,tsx}";
+@source "../../notebook/src/**/*.{ts,tsx}";
+@source "../../../src/components/**/*.{ts,tsx}";
+
+@import "../../notebook/src/index.css";
+
+html,
+body,
+#root {
+  min-height: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+body {
+  margin: 0;
+}
+
+.cloud-state {
+  border: 1px solid color-mix(in srgb, var(--foreground) 16%, transparent);
+  border-radius: 8px;
+  padding: 0.875rem 1rem;
+  color: color-mix(in srgb, var(--foreground) 72%, transparent);
+  background: color-mix(in srgb, var(--background) 94%, var(--foreground) 6%);
+}
+
+.cloud-state[data-kind="error"] {
+  border-color: color-mix(in srgb, #b42318 50%, transparent);
+  color: #b42318;
+  background: color-mix(in srgb, #b42318 8%, var(--background));
+}
+
+.cloud-link-button {
+  border: 1px solid color-mix(in srgb, var(--foreground) 22%, transparent);
+  border-radius: 6px;
+  color: var(--foreground);
+  padding: 0.45rem 0.65rem;
+  text-decoration: none;
+  font-size: 0.8125rem;
+}
+
+.cloud-cell {
+  margin-inline: -1rem;
+  padding-inline: 1rem;
+}
+
+.cloud-source-block {
+  background: transparent !important;
+  padding: 0 !important;
+  white-space: pre-wrap !important;
+}

@@ -35,10 +35,14 @@ describe("HTML script serialization", () => {
     const html = await response.text();
 
     assert.equal(response.status, 200);
+    assert.match(html, /id="root"/);
     assert.match(html, /id="nteract-cloud-viewer-config"/);
+    assert.match(html, /href="\/assets\/notebook-cloud-viewer\.css"/);
     assert.match(html, /src="\/assets\/notebook-cloud-viewer\.js"/);
     assert.match(html, /"renderEndpoint":"\/api\/n\/demo\/renders\/heads-123"/);
+    assert.match(html, /"rendererAssetsBasePath":"\/plugins\/"/);
     assert.doesNotMatch(html, /function renderNotebook/);
+    assert.doesNotMatch(html, /id="notebook"/);
   });
 });
 
