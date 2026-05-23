@@ -148,6 +148,16 @@ export interface CellResult {
   outputs: JsOutput[];
 }
 
+export interface SnapshotPair {
+  notebookId: string;
+  notebookBytes: Uint8Array;
+  runtimeStateBytes: Uint8Array;
+  notebookHeads: string[];
+  runtimeStateHeads: string[];
+  blobBaseUrl?: string | null;
+  blobStorePath?: string | null;
+}
+
 export interface EventSubscription {
   dispose(): void;
 }
@@ -222,6 +232,7 @@ export class Session {
   waitForExecution(executionId: string, options?: WaitExecutionOptions): Promise<CellResult>;
   runCell(source: string, options?: RunCellOptions): Promise<CellResult>;
   saveNotebook(path?: string): Promise<void>;
+  exportSnapshotPair(): Promise<SnapshotPair>;
   listCells(): Promise<CellSnapshot[]>;
   getCell(cellId: string): Promise<CellSnapshot | null>;
   createCell(source: string, options?: CreateCellOptions): Promise<string>;

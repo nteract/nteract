@@ -9,6 +9,7 @@ import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-co
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
+import { CLOUD_VIEWER_PRIORITY } from "./mime-policy";
 import { resolveCell, type RenderCell, type ResolvedCell } from "./render-resolution";
 import { cloudSourceLanguage } from "./source-language";
 import { installDocumentThemeSync } from "./theme";
@@ -244,6 +245,7 @@ function ReadonlyNotebookCell({
         executionCount={cell.executionCount}
         outputs={cell.outputs}
         isolated="auto"
+        priority={CLOUD_VIEWER_PRIORITY}
         hostContext={outputHostContext}
       />
     ) : null;
@@ -278,6 +280,7 @@ function renderCellSource(
           },
         ]}
         isolated="auto"
+        priority={CLOUD_VIEWER_PRIORITY}
         hostContext={outputHostContext}
       />
     );
@@ -351,7 +354,7 @@ createRoot(requireElement("#root")).render(
     fallback={(error) => <ViewerStartupError message={`Cloud viewer crashed: ${error.message}`} />}
   >
     <IsolatedRendererProvider loader={rendererBundle}>
-      <MediaProvider>
+      <MediaProvider priority={CLOUD_VIEWER_PRIORITY}>
         <App />
       </MediaProvider>
     </IsolatedRendererProvider>

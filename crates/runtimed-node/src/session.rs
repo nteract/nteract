@@ -362,6 +362,18 @@ pub struct CellResult {
     pub outputs: Vec<JsOutput>,
 }
 
+/// Serialized notebook + runtime-state snapshots for hosted publishing.
+#[napi(object)]
+pub struct SnapshotPair {
+    pub notebook_id: String,
+    pub notebook_bytes: Buffer,
+    pub runtime_state_bytes: Buffer,
+    pub notebook_heads: Vec<String>,
+    pub runtime_state_heads: Vec<String>,
+    pub blob_base_url: Option<String>,
+    pub blob_store_path: Option<String>,
+}
+
 // ── Internal state ─────────────────────────────────────────────────────
 
 struct SessionState {
@@ -750,6 +762,40 @@ impl Session {
                 "Unexpected response: {other:?}"
             ))),
         }
+    }
+
+    /// Export the live synced notebook and runtime-state documents.
+    ///
+    /// This waits for both document channels to converge with the daemon
+    /// before serializing, so hosted publish clients can upload a coherent
+    /// `NotebookDoc` + `RuntimeStateDoc` snapshot pair.
+    #[napi]
+    pub async fn export_snapshot_pair(&self) -> Result<SnapshotPair> {
+        let (handle, blob_base_url, blob_store_path) = {
+            let st = self.state.lock().await;
+            (
+                st.handle
+                    .as_ref()
+                    .ok_or_else(|| Error::from_reason("Not connected"))?
+                    .clone(),
+                st.blob_base_url.clone(),
+                st.blob_store_path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().to_string()),
+            )
+        };
+        handle.confirm_sync().await.map_err(to_napi_err)?;
+        handle.confirm_state_sync().await.map_err(to_napi_err)?;
+        let snapshot = handle.save_snapshot_pair().map_err(to_napi_err)?;
+        Ok(SnapshotPair {
+            notebook_id: self.notebook_id.clone(),
+            notebook_bytes: snapshot.notebook_bytes.into(),
+            runtime_state_bytes: snapshot.runtime_state_bytes.into(),
+            notebook_heads: snapshot.notebook_heads,
+            runtime_state_heads: snapshot.runtime_state_heads,
+            blob_base_url,
+            blob_store_path,
+        })
     }
 
     /// Close the session and release the underlying connection.

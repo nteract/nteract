@@ -13,6 +13,7 @@
     "smoke": "node --import tsx scripts/smoke.mjs",
     "publish:demo": "node scripts/publish-demo.mjs",
     "publish:fixture": "node scripts/publish-fixture.mjs",
+    "publish:live": "node --import tsx scripts/publish-live.mjs",
     "wasm:roundtrip": "node --import tsx scripts/wasm-roundtrip.mjs"
   },
   "dependencies": {
@@ -21,6 +22,7 @@
     "runtimed": "workspace:*"
   },
   "devDependencies": {
+    "@runtimed/node": "workspace:*",
     "@tailwindcss/vite": "^4.1.8",
     "@types/node": "^20.10.0",
     "@types/react": "^19.1.6",

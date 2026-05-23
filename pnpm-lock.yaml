@@ -499,6 +499,9 @@ importers:
         specifier: workspace:*
         version: link:../../packages/runtimed
     devDependencies:
+      '@runtimed/node':
+        specifier: workspace:*
+        version: link:../../packages/runtimed-node
       '@tailwindcss/vite':
         specifier: ^4.1.8
         version: 4.2.2(@voidzero-dev/vite-plus-core@0.1.16(@types/node@20.19.37)(esbuild@0.17.19)(jiti@2.7.0)(tsx@4.21.0)(typescript@5.8.3)(yaml@2.8.3))

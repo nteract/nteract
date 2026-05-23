@@ -22,6 +22,7 @@ With Wrangler running:
 pnpm --dir apps/notebook-cloud smoke
 pnpm --dir apps/notebook-cloud publish:demo
 pnpm --dir apps/notebook-cloud publish:fixture
+pnpm --dir apps/notebook-cloud publish:live
 ```
 
 The smoke script proves:
@@ -75,6 +76,13 @@ http://127.0.0.1:8787/n/nteract-cloud-fixture-output_streaming
 
 Set `NOTEBOOK_CLOUD_FIXTURE=<fixture-dir>` and
 `NOTEBOOK_CLOUD_NOTEBOOK_ID=<id>` to publish another fixture pair.
+
+`publish:live` exports a real synced notebook session through `@runtimed/node`,
+uploads its `NotebookDoc` + `RuntimeStateDoc` snapshot pair, walks the rendered
+output manifests for blob refs, uploads the matching local daemon blobs, and
+materializes the hosted render. By default it creates and executes a small
+`ShadenA/MathNet` Polars notebook. Set `NOTEBOOK_CLOUD_SOURCE_NOTEBOOK_ID=<id>`
+to publish an already-open live notebook room instead.
 
 ## Dev auth
 
