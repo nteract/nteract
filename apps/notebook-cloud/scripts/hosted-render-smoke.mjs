@@ -3,6 +3,13 @@ import path from "node:path";
 
 import { chromium } from "@playwright/test";
 
+import {
+  consoleMessageLevel,
+  isolatedDiagnosticFailure,
+  isFatalIsolatedDiagnostic,
+  parseIsolatedDiagnosticText,
+} from "./hosted-render-smoke-diagnostics.mjs";
+
 const DEFAULT_URL =
   "https://nteract-notebook-cloud.rgbkrk.workers.dev/n/nteract-cloud-live-mathnet";
 const DEFAULT_RENDERER_ASSET_ORIGIN = "https://nteract-notebook-cloud-assets.rgbkrk.workers.dev";
@@ -24,6 +31,14 @@ const rendererAssetOrigin = expectedRendererAssetOrigin
   ? new URL(expectedRendererAssetOrigin).origin
   : null;
 
+const failures = [];
+const warnings = [];
+const siftWasmRequests = [];
+const rendererCompletions = [];
+const fatalIsolatedDiagnostics = [];
+const diagnosticTasks = [];
+let screenshotSaved = false;
+
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
@@ -39,14 +54,15 @@ async function main() {
     deviceScaleFactor: 1,
   });
 
-  const failures = [];
-  const warnings = [];
-  const siftWasmRequests = [];
-  const rendererCompletions = [];
-  let screenshotSaved = false;
-
   page.on("console", (message) => {
     const text = message.text();
+    const parsedDiagnostic = parseIsolatedDiagnosticText(text);
+    if (parsedDiagnostic) {
+      captureIsolatedDiagnostic(message, parsedDiagnostic);
+      if (message.type() === "error") {
+        return;
+      }
+    }
     if (message.type() === "error" && !isBenignConsoleError(text)) {
       failures.push({ kind: "console-error", text });
       return;
@@ -127,6 +143,7 @@ async function main() {
 
     // Give async iframe plugin fetches a beat to surface late CORS or WASM failures.
     await page.waitForTimeout(750);
+    await flushDiagnosticTasks();
 
     const executionCounts = await page
       .locator("[data-slot='execution-count']")
@@ -143,6 +160,7 @@ async function main() {
     if (requireSiftWasm && siftWasmRequests.length === 0) {
       failures.push({ kind: "sift-wasm", text: "Sift WASM was not requested" });
     }
+    failures.push(...fatalIsolatedDiagnostics.map(isolatedDiagnosticFailure));
     for (const request of siftWasmRequests) {
       if (request.status >= 400) {
         failures.push({ kind: "sift-wasm", text: `Sift WASM returned ${request.status}` });
@@ -170,7 +188,6 @@ async function main() {
     }
     if (screenshotPath) {
       await saveScreenshot(page);
-      screenshotSaved = true;
     }
 
     if (failures.length > 0) {
@@ -197,12 +214,15 @@ async function main() {
       ),
     );
   } catch (error) {
+    await flushDiagnosticTasks();
     if (screenshotPath && !screenshotSaved) {
-      await saveScreenshot(page)
-        .then(() => {
-          screenshotSaved = true;
-        })
-        .catch(() => {});
+      await saveScreenshot(page).catch(() => {});
+    }
+    if (!(error instanceof SmokeFailure) && fatalIsolatedDiagnostics.length > 0) {
+      throw new SmokeFailure([
+        ...fatalIsolatedDiagnostics.map(isolatedDiagnosticFailure),
+        { kind: "smoke-error", text: error instanceof Error ? error.message : String(error) },
+      ]);
     }
     throw error;
   } finally {
@@ -247,11 +267,57 @@ function isRelevantRequestUrl(value) {
   }
 }
 
+function captureIsolatedDiagnostic(message, parsedDiagnostic) {
+  const diagnostic = {
+    ...parsedDiagnostic,
+    level: consoleMessageLevel(message.type()),
+    text: message.text(),
+    details: null,
+  };
+  if (isFatalIsolatedDiagnostic(diagnostic)) {
+    fatalIsolatedDiagnostics.push(diagnostic);
+  }
+
+  diagnosticTasks.push(
+    readConsoleMessageDetails(message).then((details) => {
+      diagnostic.details = details;
+    }),
+  );
+}
+
+async function readConsoleMessageDetails(message) {
+  const detailsArg = message.args()[1];
+  if (!detailsArg) {
+    return null;
+  }
+  try {
+    const value = await detailsArg.jsonValue();
+    if (isPlainRecord(value)) {
+      return value;
+    }
+    return { value };
+  } catch (error) {
+    return { unavailable: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function flushDiagnosticTasks() {
+  await Promise.allSettled(diagnosticTasks);
+}
+
+function isPlainRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 async function waitForFrameText(page, expectedTexts) {
   const deadline = Date.now() + timeoutMs;
   const matches = new Map(expectedTexts.map((text) => [text, false]));
 
   while (Date.now() < deadline) {
+    if (fatalIsolatedDiagnostics.length > 0) {
+      await flushDiagnosticTasks();
+      throw new SmokeFailure(fatalIsolatedDiagnostics.map(isolatedDiagnosticFailure));
+    }
     for (const frame of page.frames().filter((frame) => frame !== page.mainFrame())) {
       const text = await frame
         .locator("body")
@@ -279,6 +345,7 @@ async function waitForFrameText(page, expectedTexts) {
 async function saveScreenshot(page) {
   await mkdir(path.dirname(screenshotPath), { recursive: true });
   await page.screenshot({ path: screenshotPath, fullPage: true });
+  screenshotSaved = true;
 }
 
 class SmokeFailure extends Error {
