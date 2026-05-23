@@ -14,6 +14,7 @@
 //!   default_runtime: "python"
 //!   default_python_env: "uv"
 //!   install_default_data_packages: true
+//!   disable_nteract_launcher: false
 //!   uv/                           ← nested Map
 //!     default_packages: List[…]   ← List of Str
 //!   conda/                        ← nested Map
@@ -288,16 +289,15 @@ pub struct SyncedSettings {
     #[serde(default = "default_install_default_data_packages")]
     pub install_default_data_packages: bool,
 
-    /// Enable the nteract data-experience kernel bootstrap.
-    /// When true, the daemon launches kernels via `nteract_kernel_launcher`
-    /// so the vendored launcher can register rich display formatters before
-    /// the first user cell. Default: false.
+    /// Disable the nteract kernel launcher and fall back to the legacy
+    /// `ipykernel_launcher` entry point.
     ///
-    /// Mirrors `FeatureFlags::bootstrap_dx`. Flattened on the wire so the
-    /// settings JSON and Automerge document keep a flat layout even as new
-    /// feature flags are added.
+    /// The nteract launcher is now the default path so Python kernels can
+    /// register rich DataFrame and exception formatters before the first user
+    /// cell. This opt-out flag is an escape hatch for environments that need
+    /// vanilla IPython launch behavior.
     #[serde(default)]
-    pub bootstrap_dx: bool,
+    pub disable_nteract_launcher: bool,
 
     /// Redact eligible environment variable values from text outputs for newly
     /// launched or restarted kernels.
@@ -351,7 +351,7 @@ impl SyncedSettings {
     /// Snapshot the user's feature-flag settings.
     pub fn feature_flags(&self) -> notebook_protocol::protocol::FeatureFlags {
         notebook_protocol::protocol::FeatureFlags {
-            bootstrap_dx: self.bootstrap_dx,
+            bootstrap_dx: !self.disable_nteract_launcher,
         }
     }
 }
@@ -373,7 +373,7 @@ impl Default for SyncedSettings {
             conda_pool_size: pool_sizes.conda_pool_size,
             pixi_pool_size: pool_sizes.pixi_pool_size,
             install_default_data_packages: true,
-            bootstrap_dx: false,
+            disable_nteract_launcher: false,
             redact_env_values_in_outputs: true,
             import_shell_environment: true,
             install_id: String::new(),
@@ -571,8 +571,12 @@ impl SettingsDoc {
         // Store onboarding_completed as boolean
         let _ = doc.put(automerge::ROOT, "onboarding_completed", false);
 
-        // nteract kernel-launcher bootstrap (opt-in)
-        let _ = doc.put(automerge::ROOT, "bootstrap_dx", defaults.bootstrap_dx);
+        // nteract kernel launcher is default-on; this is the legacy escape hatch.
+        let _ = doc.put(
+            automerge::ROOT,
+            "disable_nteract_launcher",
+            defaults.disable_nteract_launcher,
+        );
         let _ = doc.put(
             automerge::ROOT,
             "redact_env_values_in_outputs",
@@ -705,9 +709,12 @@ impl SettingsDoc {
             settings.put_bool("onboarding_completed", completed);
         }
 
-        // bootstrap_dx: boolean
-        if let Some(enabled) = json.get("bootstrap_dx").and_then(|v| v.as_bool()) {
-            settings.put_bool("bootstrap_dx", enabled);
+        // disable_nteract_launcher: boolean
+        if let Some(disabled) = json
+            .get("disable_nteract_launcher")
+            .and_then(|v| v.as_bool())
+        {
+            settings.put_bool("disable_nteract_launcher", disabled);
         }
         if let Some(enabled) = json
             .get("redact_env_values_in_outputs")
@@ -1167,9 +1174,9 @@ impl SettingsDoc {
             install_default_data_packages: self
                 .get_bool("install_default_data_packages")
                 .unwrap_or(defaults.install_default_data_packages),
-            bootstrap_dx: self
-                .get_bool("bootstrap_dx")
-                .unwrap_or(defaults.bootstrap_dx),
+            disable_nteract_launcher: self
+                .get_bool("disable_nteract_launcher")
+                .unwrap_or(defaults.disable_nteract_launcher),
             redact_env_values_in_outputs: self
                 .get_bool("redact_env_values_in_outputs")
                 .unwrap_or(defaults.redact_env_values_in_outputs),
@@ -1365,15 +1372,18 @@ impl SettingsDoc {
             }
         }
 
-        // bootstrap_dx: boolean
-        if let Some(enabled) = json.get("bootstrap_dx").and_then(|v| v.as_bool()) {
-            let current = self.get_bool("bootstrap_dx");
-            if current != Some(enabled) {
+        // disable_nteract_launcher: boolean
+        if let Some(disabled) = json
+            .get("disable_nteract_launcher")
+            .and_then(|v| v.as_bool())
+        {
+            let current = self.get_bool("disable_nteract_launcher");
+            if current != Some(disabled) {
                 info!(
-                    "[settings] apply_json_changes: bootstrap_dx changed {:?} -> {}",
-                    current, enabled
+                    "[settings] apply_json_changes: disable_nteract_launcher changed {:?} -> {}",
+                    current, disabled
                 );
-                self.put_bool("bootstrap_dx", enabled);
+                self.put_bool("disable_nteract_launcher", disabled);
                 changed = true;
             }
         }
@@ -1583,6 +1593,8 @@ mod tests {
         assert!(settings.conda.default_packages.is_empty());
         assert!(settings.pixi.default_packages.is_empty());
         assert!(settings.install_default_data_packages);
+        assert!(!settings.disable_nteract_launcher);
+        assert!(settings.feature_flags().bootstrap_dx);
         assert!(settings.redact_env_values_in_outputs);
     }
 
@@ -1644,6 +1656,31 @@ mod tests {
 
         assert_eq!(doc.get_bool("install_default_data_packages"), Some(false));
         assert!(!doc.get_all().install_default_data_packages);
+    }
+
+    #[test]
+    fn test_disable_nteract_launcher_can_be_enabled_from_json() {
+        let mut doc = SettingsDoc::new();
+
+        assert!(doc.apply_json_changes(&serde_json::json!({
+            "disable_nteract_launcher": true
+        })));
+
+        let settings = doc.get_all();
+        assert_eq!(doc.get_bool("disable_nteract_launcher"), Some(true));
+        assert!(settings.disable_nteract_launcher);
+        assert!(!settings.feature_flags().bootstrap_dx);
+    }
+
+    #[test]
+    fn test_legacy_bootstrap_dx_false_does_not_disable_launcher() {
+        let doc = SettingsDoc::from_json_value(&serde_json::json!({
+            "bootstrap_dx": false
+        }));
+
+        let settings = doc.get_all();
+        assert!(!settings.disable_nteract_launcher);
+        assert!(settings.feature_flags().bootstrap_dx);
     }
 
     #[test]
@@ -2025,6 +2062,7 @@ mod tests {
         assert!(schema_str.contains("default_runtime"));
         assert!(schema_str.contains("default_python_env"));
         assert!(schema_str.contains("install_default_data_packages"));
+        assert!(schema_str.contains("disable_nteract_launcher"));
         assert!(schema_str.contains("redact_env_values_in_outputs"));
         // Should have known values as examples for editor autocomplete
         assert!(schema_str.contains("python"));

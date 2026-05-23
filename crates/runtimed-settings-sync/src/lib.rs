@@ -596,7 +596,8 @@ pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
         pixi_pool_size: get_u64("pixi_pool_size").unwrap_or(pool_sizes.pixi_pool_size),
         install_default_data_packages: get_bool("install_default_data_packages")
             .unwrap_or(defaults.install_default_data_packages),
-        bootstrap_dx: get_bool("bootstrap_dx").unwrap_or(defaults.bootstrap_dx),
+        disable_nteract_launcher: get_bool("disable_nteract_launcher")
+            .unwrap_or(defaults.disable_nteract_launcher),
         redact_env_values_in_outputs: get_bool("redact_env_values_in_outputs")
             .unwrap_or(defaults.redact_env_values_in_outputs),
         import_shell_environment: get_bool("import_shell_environment")
@@ -802,6 +803,17 @@ mod tests {
         assert_eq!(settings.theme, ThemeMode::Dark);
         assert_eq!(settings.default_runtime, Runtime::Deno);
         assert_eq!(settings.default_python_env, PythonEnvType::Conda);
+    }
+
+    #[test]
+    fn test_get_all_reads_disable_nteract_launcher() {
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "disable_nteract_launcher", true)
+            .unwrap();
+
+        let settings = get_all_from_doc(&doc);
+        assert!(settings.disable_nteract_launcher);
+        assert!(!settings.feature_flags().bootstrap_dx);
     }
 
     #[test]

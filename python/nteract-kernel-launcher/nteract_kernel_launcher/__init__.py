@@ -8,9 +8,9 @@ Subclasses ``IPKernelApp``/``IPythonKernel``/``ZMQInteractiveShell``/
 - An auto-loaded bootstrap extension that registers DataFrame formatters
   and publisher hooks for the nteract data-experience integration.
 
-The daemon invokes this module in place of ``ipykernel_launcher`` when the
-``bootstrap_dx`` feature flag (user-facing: "Enhanced Data Experience") is
-on. See ``docs/superpowers/specs/2026-04-24-launcher-hosted-display-bootstrap.md``.
+The daemon invokes this module in place of ``ipykernel_launcher`` by default.
+Users can opt back into the legacy entry point with the
+``disable_nteract_launcher`` feature flag.
 """
 
 from nteract_kernel_launcher._progressive import display_arrow_stream

@@ -109,10 +109,10 @@ pub fn load_settings() -> SyncedSettings {
             .get("install_default_data_packages")
             .and_then(|v| v.as_bool())
             .unwrap_or(defaults.install_default_data_packages),
-        bootstrap_dx: json
-            .get("bootstrap_dx")
+        disable_nteract_launcher: json
+            .get("disable_nteract_launcher")
             .and_then(|v| v.as_bool())
-            .unwrap_or(defaults.bootstrap_dx),
+            .unwrap_or(defaults.disable_nteract_launcher),
         redact_env_values_in_outputs: json
             .get("redact_env_values_in_outputs")
             .and_then(|v| v.as_bool())
@@ -178,6 +178,7 @@ mod tests {
         assert!(settings.uv.default_packages.is_empty());
         assert!(settings.conda.default_packages.is_empty());
         assert!(settings.install_default_data_packages);
+        assert!(!settings.disable_nteract_launcher);
         assert!(settings.redact_env_values_in_outputs);
     }
 
@@ -199,7 +200,7 @@ mod tests {
             conda_pool_size: 5,
             pixi_pool_size: 6,
             install_default_data_packages: true,
-            bootstrap_dx: false,
+            disable_nteract_launcher: false,
             ..SyncedSettings::default()
         };
 
@@ -391,7 +392,7 @@ mod tests {
             conda_pool_size: defaults.conda_pool_size,
             pixi_pool_size: defaults.pixi_pool_size,
             install_default_data_packages: defaults.install_default_data_packages,
-            bootstrap_dx: defaults.bootstrap_dx,
+            disable_nteract_launcher: defaults.disable_nteract_launcher,
             ..defaults
         };
         // Valid fields are preserved

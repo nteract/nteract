@@ -110,21 +110,20 @@ export function isKnownPythonEnv(value: string): value is "uv" | "conda" | "pixi
 /**
  * Feature flags exposed to the settings UI.
  *
- * Mirrors the `FeatureFlags` struct on the Rust side. The TS source of truth
- * is intentionally flat (each flag is a top-level boolean on `SyncedSettings`)
- * so that adding a new flag is one field here, one struct field in Rust, and
- * one entry in the settings UI — no schema migration.
+ * Mirrors feature-flag settings exposed by `SyncedSettings`. The TS source of
+ * truth is intentionally flat (each flag is a top-level boolean on
+ * `SyncedSettings`) so that adding a new flag is one field here, one struct
+ * field in Rust, and one entry in the settings UI — no schema migration.
  *
  * Adding a flag:
- *  1. Add `flag_id: boolean` to `FeatureFlags` in Rust + the matching field
- *     on `SyncedSettings`.
+ *  1. Add `flag_id: boolean` to `SyncedSettings`.
  *  2. Add `flag_id: { label, description }` below.
  *  3. Done — the settings UI renders a toggle automatically.
  */
 export const FEATURE_FLAG_METADATA = {
-  bootstrap_dx: {
-    label: "Rich DataFrames and Exceptions",
-    description: "Enable the nteract kernel launcher into Python runtimes.",
+  disable_nteract_launcher: {
+    label: "Use Legacy IPython Launcher",
+    description: "Launch Python kernels with ipykernel_launcher instead of the nteract launcher.",
   },
 } as const satisfies Record<string, { label: string; description: string }>;
 
@@ -132,7 +131,7 @@ export type FeatureFlagId = keyof typeof FEATURE_FLAG_METADATA;
 export type FeatureFlagValues = Record<FeatureFlagId, boolean>;
 
 const FEATURE_FLAG_DEFAULTS: FeatureFlagValues = {
-  bootstrap_dx: false,
+  disable_nteract_launcher: false,
 };
 
 export const FEATURE_FLAGS: ReadonlyArray<{
