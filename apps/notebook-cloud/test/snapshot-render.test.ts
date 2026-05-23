@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { initializeRuntimedWasm } from "../src/runtimed-wasm.ts";
 import { materializeSnapshotPairRender } from "../src/snapshot-render.ts";
-import { createNotebookCloudBlobResolver } from "../src/blob-resolver.ts";
+import {
+  createNotebookCloudBlobResolver,
+  notebookCloudBlobBasePath,
+} from "../src/blob-resolver.ts";
 
 const wasmBytes = await readFile(
   new URL("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm", import.meta.url),
@@ -81,7 +84,7 @@ describe("snapshot pair render materialization", () => {
       generatedAt: "2026-05-22T00:00:00.000Z",
       blobResolver: createNotebookCloudBlobResolver({
         baseUrl: "https://cloud.test/n/fixture-display-data",
-        notebookId: "fixture-display-data",
+        blobBasePath: notebookCloudBlobBasePath("fixture-display-data"),
       }),
     });
     const blobUrls = Object.values(render.blob_urls);
@@ -128,7 +131,7 @@ describe("snapshot pair render materialization", () => {
       generatedAt: "2026-05-22T00:00:00.000Z",
       blobResolver: createNotebookCloudBlobResolver({
         baseUrl: "https://cloud.test/n/fixture-sift-arrow",
-        notebookId: "fixture-sift-arrow",
+        blobBasePath: notebookCloudBlobBasePath("fixture-sift-arrow"),
       }),
     });
     const cells = render.cells as Array<{

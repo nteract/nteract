@@ -38,6 +38,9 @@ describe("HTML script serialization", () => {
     assert.match(html, /id="nteract-cloud-viewer-config"/);
     assert.match(html, /src="\/assets\/notebook-cloud-viewer\.js"/);
     assert.match(html, /"renderEndpoint":"\/api\/n\/demo\/renders\/heads-123"/);
+    assert.match(html, /"blobBasePath":"\/api\/n\/demo\/blobs\/"/);
+    assert.match(html, /"rendererAssetsBasePath":"\/plugins\/"/);
+    assert.doesNotMatch(html, /"rendererAssetsBasePath":"\/api\/plugins\/"/);
     assert.doesNotMatch(html, /function renderNotebook/);
   });
 });

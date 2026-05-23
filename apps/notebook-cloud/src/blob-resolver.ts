@@ -1,18 +1,23 @@
 import { createBlobResolver, type BlobRef, type BlobResolver } from "runtimed";
 
+export function notebookCloudBlobBasePath(notebookId: string): string {
+  return `/api/n/${encodeURIComponent(notebookId)}/blobs/`;
+}
+
 export function createNotebookCloudBlobResolver(input: {
   baseUrl: string | URL;
-  notebookId: string;
+  blobBasePath: string;
   fetchImpl?: typeof fetch;
 }): BlobResolver {
-  const baseUrl = new URL(input.baseUrl);
+  const blobBaseUrl = new URL(withTrailingSlash(input.blobBasePath), input.baseUrl);
   return createBlobResolver({
     fetchImpl: input.fetchImpl,
     url(ref: BlobRef) {
-      return new URL(
-        `/api/n/${encodeURIComponent(input.notebookId)}/blobs/${encodeURIComponent(ref.blob)}`,
-        baseUrl,
-      ).href;
+      return new URL(encodeURIComponent(ref.blob), blobBaseUrl).href;
     },
   });
+}
+
+function withTrailingSlash(value: string): string {
+  return value.endsWith("/") ? value : `${value}/`;
 }

@@ -62,7 +62,7 @@ describe("Worker artifact routes", () => {
     });
 
     const response = await worker.fetch(
-      new Request("http://localhost/api/plugins/sift_wasm.wasm?v=test"),
+      new Request("http://localhost/plugins/sift_wasm.wasm?v=test"),
       env,
       fakeContext(),
     );
@@ -72,6 +72,29 @@ describe("Worker artifact routes", () => {
     assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
     assert.equal(response.headers.get("Content-Type"), "application/wasm");
     assert.equal(await response.text(), "wasm");
+  });
+
+  it("keeps the legacy api plugin path as an alias for older viewers", async () => {
+    const seenPaths: string[] = [];
+    const env = fakeEnv({
+      ASSETS: {
+        fetch: async (request: Request) => {
+          seenPaths.push(new URL(request.url).pathname);
+          return new Response("wasm", {
+            headers: { "Content-Type": "application/wasm" },
+          });
+        },
+      },
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/plugins/sift_wasm.wasm?v=test"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(seenPaths, ["/plugins/sift_wasm.wasm"]);
   });
 
   it("publishes a snapshot pair and materializes render JSON through the route layer", async () => {

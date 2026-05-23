@@ -22,11 +22,12 @@ import {
   type RevisionRow,
 } from "./storage.ts";
 import { materializeSnapshotPairRender } from "./snapshot-render.ts";
-import { createNotebookCloudBlobResolver } from "./blob-resolver.ts";
+import { createNotebookCloudBlobResolver, notebookCloudBlobBasePath } from "./blob-resolver.ts";
 
 export { NotebookRoom };
 
 const DEMO_NOTEBOOK_ID = "nteract-cloud-demo";
+const RENDERER_ASSETS_BASE_PATH = "/plugins/";
 
 const worker: ExportedHandler<Env> = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -493,7 +494,7 @@ async function materializeSnapshotRender(
     runtimeStateBytes: new Uint8Array(await runtimeObject.arrayBuffer()),
     blobResolver: createNotebookCloudBlobResolver({
       baseUrl: request.url,
-      notebookId,
+      blobBasePath: notebookCloudBlobBasePath(notebookId),
     }),
   });
   const body = JSON.stringify(render);
@@ -674,7 +675,8 @@ function viewer(notebookId: string, headsHash?: string): Response {
     headsHash: headsHash ?? null,
     renderEndpoint,
     syncEndpoint: `/n/${encodeURIComponent(notebookId)}/sync`,
-    blobBasePath: `/api/n/${encodeURIComponent(notebookId)}/blobs/`,
+    blobBasePath: notebookCloudBlobBasePath(notebookId),
+    rendererAssetsBasePath: RENDERER_ASSETS_BASE_PATH,
   };
   const html = `<!doctype html>
 <html lang="en">

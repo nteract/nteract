@@ -1,7 +1,7 @@
 import { createNteractOutputEmbed } from "@/components/isolated/output-embed";
 import type { NteractEmbeddableOutput } from "@/components/isolated/embeddable-output";
 import type { NteractOutputEmbedHandle } from "@/components/isolated/output-embed";
-import { createBlobResolver } from "runtimed";
+import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
 
 interface CloudViewerConfig {
   notebookId: string;
@@ -9,6 +9,7 @@ interface CloudViewerConfig {
   renderEndpoint: string;
   syncEndpoint: string;
   blobBasePath: string;
+  rendererAssetsBasePath: string;
 }
 
 interface SnapshotRender {
@@ -43,7 +44,8 @@ function loadConfig(): CloudViewerConfig {
     !parsed.notebookId ||
     !parsed.renderEndpoint ||
     !parsed.syncEndpoint ||
-    !parsed.blobBasePath
+    !parsed.blobBasePath ||
+    !parsed.rendererAssetsBasePath
   ) {
     throw new Error("Cloud viewer config is incomplete");
   }
@@ -53,6 +55,7 @@ function loadConfig(): CloudViewerConfig {
     renderEndpoint: parsed.renderEndpoint,
     syncEndpoint: parsed.syncEndpoint,
     blobBasePath: parsed.blobBasePath,
+    rendererAssetsBasePath: parsed.rendererAssetsBasePath,
   };
 }
 
@@ -62,10 +65,9 @@ const notebook = requireElement("#notebook");
 const revision = requireElement("#revision");
 const connection = requireElement("#connection");
 
-const blobResolver = createBlobResolver({
-  url(ref) {
-    return new URL(`${config.blobBasePath}${encodeURIComponent(ref.blob)}`, location.href).href;
-  },
+const blobResolver = createNotebookCloudBlobResolver({
+  baseUrl: location.href,
+  blobBasePath: config.blobBasePath,
 });
 
 connectAnonymousViewer();
@@ -214,7 +216,7 @@ function hostContext() {
     userAgent: navigator.userAgent,
     platform: "web",
     nteract: {
-      rendererAssetsBaseUrl: new URL("/api/plugins/", location.href).href,
+      rendererAssetsBaseUrl: new URL(config.rendererAssetsBasePath, location.href).href,
     },
   } as const;
 }

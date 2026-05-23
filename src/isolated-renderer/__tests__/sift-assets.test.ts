@@ -15,9 +15,9 @@ describe("Sift renderer assets", () => {
     expect(
       resolveSiftWasmUrl({
         tableUrl: "https://notebooks.example/api/n/demo/blobs/sha256-abc",
-        rendererAssetsBaseUrl: "/api/plugins/",
+        rendererAssetsBaseUrl: "/plugins/",
       }),
-    ).toBe("https://notebooks.example/api/plugins/sift_wasm.wasm?v=dev");
+    ).toBe("https://notebooks.example/plugins/sift_wasm.wasm?v=dev");
   });
 
   it("falls back to the daemon-style plugin route on the blob URL origin", () => {
