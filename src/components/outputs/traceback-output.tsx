@@ -503,7 +503,6 @@ function FrameRow({
 interface SourceLocation {
   kind: "notebook" | "file";
   label: string;
-  executionLabel?: string;
   executionId?: string;
   sourceHash?: string;
   target?: TracebackCellTarget;
@@ -548,11 +547,6 @@ function LocationLabel({
       ) : (
         <span className="truncate text-muted-foreground">{location.label}</span>
       )}
-      {location.executionLabel && (
-        <code className="shrink-0 rounded bg-muted px-1 py-0.5 text-[11px] text-muted-foreground">
-          {location.executionLabel}
-        </code>
-      )}
       {showName && (
         <>
           <span className="shrink-0 text-muted-foreground">in</span>
@@ -573,12 +567,10 @@ function sourceLocation(
 ): SourceLocation {
   const sourceRef = source.source_ref;
   const executionId = sourceRef?.execution_id ?? source.execution_id;
-  const executionCount = sourceRef?.execution_count ?? source.execution_count;
   const sourceHash = sourceRef?.source_hash ?? source.source_hash;
   const compiledFilename = sourceRef?.compiled_filename ?? source.filename;
   const titleParts = [];
   if (executionId) titleParts.push(`Execution: ${executionId}`);
-  if (executionCount !== undefined) titleParts.push(`Input: In[${executionCount}]`);
   if (sourceHash) titleParts.push(`Source: ${sourceHash}`);
   if (compiledFilename) titleParts.push(`Compiled file: ${compiledFilename}`);
 
@@ -592,7 +584,6 @@ function sourceLocation(
     return { kind: "file", label: source.filename || "Unknown source", title };
   }
 
-  const executionLabel = executionCount === undefined ? undefined : `In[${executionCount}]`;
   if (target) {
     const label =
       target.label ??
@@ -600,7 +591,6 @@ function sourceLocation(
     return {
       kind: "notebook",
       label,
-      executionLabel,
       executionId,
       sourceHash,
       target,
@@ -612,7 +602,6 @@ function sourceLocation(
     return {
       kind: "notebook",
       label: "Current Cell",
-      executionLabel,
       executionId,
       sourceHash,
       title,
@@ -623,7 +612,6 @@ function sourceLocation(
     return {
       kind: "notebook",
       label: "Notebook Execution",
-      executionLabel,
       executionId,
       sourceHash,
       title,
@@ -633,7 +621,6 @@ function sourceLocation(
   return {
     kind: "notebook",
     label: "Notebook Cell",
-    executionLabel,
     sourceHash,
     title,
   };
@@ -718,7 +705,6 @@ function copyLocationLine(
   const details = [];
   if (location.target) details.push(`cell_id=${location.target.cellId}`);
   if (location.executionId) details.push(`execution_id=${location.executionId}`);
-  if (location.executionLabel) details.push(location.executionLabel);
   if (location.sourceHash) details.push(`source_hash=${location.sourceHash}`);
   if (details.length > 0) line += ` (${details.join(", ")})`;
   if (name && name !== "<module>") line += `, in ${name}`;

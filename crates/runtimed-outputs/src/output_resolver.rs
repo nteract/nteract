@@ -790,10 +790,6 @@ fn rich_location_line(
         .and_then(|r| r.get("execution_id"))
         .or_else(|| source.get("execution_id"))
         .and_then(Value::as_str);
-    let execution_count = source_ref
-        .and_then(|r| r.get("execution_count"))
-        .or_else(|| source.get("execution_count"))
-        .and_then(Value::as_u64);
     let source_hash = source_ref
         .and_then(|r| r.get("source_hash"))
         .or_else(|| source.get("source_hash"))
@@ -809,9 +805,6 @@ fn rich_location_line(
     }
     if let Some(eid) = execution_id {
         details.push(format!("execution_id={eid}"));
-    }
-    if let Some(count) = execution_count {
-        details.push(format!("In[{count}]"));
     }
     if let Some(hash) = source_hash {
         details.push(format!("source_hash={hash}"));
@@ -2678,11 +2671,12 @@ mod tests {
         };
         let traceback = out.traceback.unwrap_or_default().join("\n");
 
+        assert!(
+            traceback.contains("Line 1 in Cell cell-run (cell_id=cell-run, execution_id=exec-run)")
+        );
         assert!(traceback
-            .contains("Line 1 in Cell cell-run (cell_id=cell-run, execution_id=exec-run, In[3])"));
-        assert!(traceback.contains(
-            "Line 5 in Cell cell-def (cell_id=cell-def, execution_id=exec-def, In[2]), in g"
-        ));
+            .contains("Line 5 in Cell cell-def (cell_id=cell-def, execution_id=exec-def), in g"));
+        assert!(!traceback.contains("In["));
         assert!(traceback.contains("pd.not_real()"));
         assert!(!traceback.contains("/var/folders/x/T/ipykernel_39879"));
     }
