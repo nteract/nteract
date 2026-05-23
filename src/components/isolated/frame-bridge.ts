@@ -345,6 +345,20 @@ export interface LinkClickMessage {
 }
 
 /**
+ * User requested navigation from an iframe-rendered traceback frame back to
+ * the owning notebook cell.
+ */
+export interface TracebackNavigateMessage {
+  type: "traceback_navigate";
+  payload: {
+    target: {
+      cellId: string;
+      label?: string;
+    };
+  };
+}
+
+/**
  * User double-clicked in the iframe.
  */
 export interface DoubleClickMessage {
@@ -451,6 +465,7 @@ export type IframeToParentMessage =
   | RenderCompleteMessage
   | ResizeMessage
   | LinkClickMessage
+  | TracebackNavigateMessage
   | DoubleClickMessage
   | WidgetUpdateMessage
   | IframeErrorMessage
@@ -487,6 +502,7 @@ export function isIframeMessage(data: unknown): data is IframeToParentMessage {
       "render_complete",
       "resize",
       "link_click",
+      "traceback_navigate",
       "dblclick",
       "widget_update",
       "error",

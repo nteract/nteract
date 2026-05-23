@@ -9,7 +9,7 @@ import {
 } from "./helpers";
 
 test.describe("isolated rich output rendering", () => {
-  test("keeps stream text visible outside the iframe when a pandas dataframe is isolated", async ({
+  test("keeps stream text visible when a pandas dataframe renders in the iframe", async ({
     page,
   }) => {
     test.setTimeout(180_000);
@@ -43,16 +43,12 @@ test.describe("isolated rich output rendering", () => {
     await executeCell(cell);
     await waitForKernelStatus(page, "idle", 120_000);
 
-    await expect(cell.locator('[data-slot="ansi-stream-output"]')).toContainText("stream before", {
-      timeout: 60_000,
-    });
-
     const frame = cell.frameLocator('[data-slot="isolated-frame"]');
     const frameBody = frame.locator("body");
+    await expect(frameBody).toContainText("stream before", { timeout: 60_000 });
     await expect
       .poll(async () => normalizeOutputText(await frameBody.innerText()), { timeout: 60_000 })
       .toMatch(/a\s*#\s*1|b\s*#\s*3|a b 0 1 3 1 2 4/i);
-    await expect(frameBody).not.toContainText("stream before");
     await expect.poll(() => isolatedRootHeight(cell), { timeout: 30_000 }).toBeGreaterThan(20);
 
     expect(isolatedLogs.join("\n")).not.toContain("rendered-empty-after-paint");
