@@ -39,11 +39,12 @@ vi.mock("@/components/isolated", async () => {
     {
       allowWheelBoundaryScroll?: boolean;
       autoHeight?: boolean;
+      hostContext?: unknown;
       scrollPassthrough?: boolean;
       onReady?: () => void;
     }
   >(function MockIsolatedFrame(
-    { allowWheelBoundaryScroll, autoHeight, scrollPassthrough, onReady },
+    { allowWheelBoundaryScroll, autoHeight, hostContext, scrollPassthrough, onReady },
     ref,
   ) {
     React.useImperativeHandle(ref, () => mockFrameHandle);
@@ -56,6 +57,7 @@ vi.mock("@/components/isolated", async () => {
       <div
         data-allow-wheel-boundary-scroll={String(allowWheelBoundaryScroll)}
         data-auto-height={String(autoHeight)}
+        data-host-context={JSON.stringify(hostContext ?? null)}
         data-scroll-passthrough={String(scrollPassthrough)}
         data-testid="isolated-frame"
       />
@@ -126,6 +128,7 @@ describe("OutputArea iframe theme sync", () => {
     mockFrameHandle.eval.mockClear();
     mockFrameHandle.installRenderer.mockClear();
     mockFrameHandle.setTheme.mockClear();
+    mockFrameHandle.setHostContext.mockClear();
     mockFrameHandle.clear.mockClear();
     mockFrameHandle.search.mockClear();
     mockFrameHandle.searchNavigate.mockClear();
@@ -190,6 +193,24 @@ describe("OutputArea iframe theme sync", () => {
     expect(getByTestId("isolated-frame").getAttribute("data-scroll-passthrough")).toBe("true");
     expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
       "false",
+    );
+  });
+
+  it("passes host context through to isolated output frames", () => {
+    const { getByTestId } = render(
+      <OutputArea
+        outputs={makeParquetOutput()}
+        isolated
+        hostContext={{
+          nteract: {
+            rendererAssetsBaseUrl: "https://cdn.example.test/plugins/",
+          },
+        }}
+      />,
+    );
+
+    expect(getByTestId("isolated-frame").getAttribute("data-host-context")).toContain(
+      "https://cdn.example.test/plugins/",
     );
   });
 

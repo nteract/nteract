@@ -17,6 +17,7 @@ import {
   IsolatedFrame,
   type IsolatedFrameHandle,
 } from "@/components/isolated";
+import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe-libraries";
 import { jupyterOutputsToRenderPayloads } from "@/components/isolated/output-payloads";
 import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-output";
@@ -170,6 +171,12 @@ interface OutputAreaProps {
    * Use to update cell focus when the click is captured by the iframe.
    */
   onIframeMouseDown?: () => void;
+  /**
+   * Host-specific context passed through to isolated output iframes. Cloud
+   * viewers use this for renderer sidecar asset bases; desktop callers can
+   * keep relying on the default daemon-local context.
+   */
+  hostContext?: NteractEmbedHostContextPatch;
 }
 
 /**
@@ -388,6 +395,7 @@ export function OutputArea({
   searchQuery,
   onSearchMatchCount,
   onIframeMouseDown,
+  hostContext,
 }: OutputAreaProps) {
   const id = useId();
   const frameRef = useRef<IsolatedFrameHandle>(null);
@@ -772,6 +780,7 @@ export function OutputArea({
                 onWidgetUpdate={onWidgetUpdate}
                 onMessage={handleIframeMessage}
                 onError={handleIframeError}
+                hostContext={hostContext}
               />
               {showSiftInteractionCue && (
                 <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-end rounded-b-md pb-[9px] pr-[84px] opacity-0 transition-opacity duration-150 group-hover/sift:opacity-100 group-focus-within/sift:opacity-100">
