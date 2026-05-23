@@ -47,21 +47,28 @@ fn resource_ui_meta(blob_base_url: &Option<String>) -> Option<Meta> {
 }
 
 /// List available MCP resources.
-pub async fn list_resources(_server: &NteractMcp) -> Result<ListResourcesResult, McpError> {
-    let mut raw = RawResource::new(OUTPUT_RESOURCE_URI, "nteract output");
-    raw.description = Some("Interactive output renderer for notebook cells".into());
-    raw.mime_type = Some(OUTPUT_MIME_TYPE.into());
-
-    let resources = vec![Annotated {
-        raw,
-        annotations: None,
-    }];
+pub async fn list_resources(server: &NteractMcp) -> Result<ListResourcesResult, McpError> {
+    let resources = vec![output_resource(&server.blob_base_url)];
 
     Ok(ListResourcesResult {
         resources,
         next_cursor: None,
         meta: None,
     })
+}
+
+fn output_resource(blob_base_url: &Option<String>) -> Annotated<RawResource> {
+    let mut raw = RawResource::new(OUTPUT_RESOURCE_URI, "nteract output");
+    raw.description = Some("Interactive output renderer for notebook cells".into());
+    raw.mime_type = Some(OUTPUT_MIME_TYPE.into());
+    // Advertise CSP in resources/list as a fallback for hosts that snapshot
+    // sandbox policy before reading the concrete resource content.
+    raw.meta = resource_ui_meta(blob_base_url);
+
+    Annotated {
+        raw,
+        annotations: None,
+    }
 }
 
 /// Read an MCP resource by URI.
@@ -90,7 +97,7 @@ pub async fn read_resource(
 
 #[cfg(test)]
 mod tests {
-    use super::resource_ui_meta;
+    use super::{output_resource, resource_ui_meta};
 
     #[test]
     fn output_resource_meta_includes_blob_domains_for_mcp_ui_csp() {
@@ -116,5 +123,30 @@ mod tests {
     #[test]
     fn output_resource_meta_is_absent_without_blob_base_url() {
         assert!(resource_ui_meta(&None).is_none());
+    }
+
+    #[test]
+    fn output_resource_listing_includes_csp_meta() {
+        let resource = output_resource(&Some("https://outputs.example.test".into()));
+        let ui = resource
+            .raw
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.0.get("ui"))
+            .expect("resource listing should include ui metadata");
+        let csp = ui.get("csp").expect("csp metadata");
+
+        assert_eq!(
+            csp.get("resourceDomains")
+                .and_then(|value| value.as_array())
+                .expect("resource domains")[0],
+            "https://outputs.example.test"
+        );
+        assert_eq!(
+            csp.get("connectDomains")
+                .and_then(|value| value.as_array())
+                .expect("connect domains")[0],
+            "https://outputs.example.test"
+        );
     }
 }

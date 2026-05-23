@@ -100,7 +100,13 @@ function PluginRenderer({
             : parsedData,
         );
       })
-      .catch(() => {
+      .catch((err) => {
+        console.warn("[mcp-app] plugin render failed", {
+          mime,
+          blobBaseUrl,
+          rawPreview: raw.slice(0, 200),
+          err,
+        });
         if (!cancelled) setFailed(true);
       });
 
@@ -110,7 +116,7 @@ function PluginRenderer({
   }, [mime, raw, blobBaseUrl]);
 
   if (failed) {
-    if (plainFallback) return <AnsiText text={plainFallback} />;
+    if (plainFallback) return <PlainFallback text={plainFallback} />;
     return null;
   }
 
@@ -118,7 +124,7 @@ function PluginRenderer({
 
   const RendererComponent = getPluginRenderer(mime);
   if (!RendererComponent) {
-    if (plainFallback) return <AnsiText text={plainFallback} />;
+    if (plainFallback) return <PlainFallback text={plainFallback} />;
     return null;
   }
 
@@ -169,7 +175,7 @@ function FetchAndRender({
   }, [raw]);
 
   if (failed) {
-    if (plainFallback) return <AnsiText text={plainFallback} />;
+    if (plainFallback) return <PlainFallback text={plainFallback} />;
     return null;
   }
 
@@ -187,6 +193,34 @@ function FetchAndRender({
     default:
       return <AnsiText text={content} />;
   }
+}
+
+function PlainFallback({ text }: { text: string }) {
+  const [resolvedText, setResolvedText] = useState<string | null>(isBlobUrl(text) ? null : text);
+
+  useEffect(() => {
+    if (!isBlobUrl(text)) {
+      setResolvedText(text);
+      return;
+    }
+
+    let cancelled = false;
+    setResolvedText(null);
+    fetchBlobText(text)
+      .then((content) => {
+        if (!cancelled) setResolvedText(content);
+      })
+      .catch(() => {
+        if (!cancelled) setResolvedText(text);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [text]);
+
+  if (resolvedText == null) return null;
+  return <AnsiText text={resolvedText} />;
 }
 
 export function StreamOutput({ output }: { output: CellOutput }) {
