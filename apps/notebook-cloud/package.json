@@ -1,0 +1,22 @@
+{
+  "name": "notebook-cloud",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "wasm": "cargo xtask wasm runtimed --skip-renderer-plugins",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm run wasm && node --import tsx --test test/*.test.ts",
+    "dev": "pnpm --workspace-root exec wrangler dev --config apps/notebook-cloud/wrangler.toml",
+    "smoke": "node --import tsx scripts/smoke.mjs",
+    "publish:demo": "node scripts/publish-demo.mjs",
+    "wasm:roundtrip": "node --import tsx scripts/wasm-roundtrip.mjs"
+  },
+  "dependencies": {
+    "runtimed": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.3"
+  }
+}
