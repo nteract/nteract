@@ -439,37 +439,7 @@ async function routeRender(
       : getRenderObject(env, notebookId, headsHash, true);
   }
 
-  if (request.method !== "PUT") {
-    return json({ error: "method not allowed" }, 405);
-  }
-
-  const identity = authenticateRequestOrResponse(request, env);
-  if (identity instanceof Response) {
-    return identity;
-  }
-  if (!allowsPublish(identity.scope)) {
-    return json({ error: `${identity.scope} cannot publish render caches` }, 403);
-  }
-  if (!env.NOTEBOOK_SNAPSHOTS) {
-    return json({ error: "R2 binding NOTEBOOK_SNAPSHOTS is not configured" }, 503);
-  }
-
-  await ensureNotebook(env, notebookId, identity);
-  const key = renderKey(notebookId, headsHash);
-  const body = await request.text();
-  await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
-    httpMetadata: {
-      contentType: request.headers.get("content-type") ?? "application/json; charset=utf-8",
-      cacheControl: "public, max-age=31536000, immutable",
-    },
-    customMetadata: {
-      notebook_id: notebookId,
-      notebook_heads_hash: headsHash,
-      artifact: "render-cache",
-    },
-  });
-
-  return json({ ok: true, key, size: body.length }, 201);
+  return json({ error: "method not allowed" }, 405);
 }
 
 async function getRenderObjectOrMaterialize(

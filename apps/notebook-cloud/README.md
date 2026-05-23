@@ -203,7 +203,9 @@ n/{id}/renders/{notebookHeadsHash}.json
 The render path is derived. Snapshot-pair publishes pre-materialize it to prove
 the pair and all referenced blobs are complete before recording a revision. If
 the render object is later missing, the Worker can load the snapshot pair
-through `runtimed-wasm` and regenerate the materialized render response.
+through `runtimed-wasm` and regenerate the materialized render response. Clients
+cannot upload render-cache JSON directly; the Worker only writes render caches
+from persisted snapshot pairs.
 
 ## Prototype deployment
 
