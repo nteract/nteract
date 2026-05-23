@@ -16,7 +16,7 @@ import type {
   R2PutOptions,
 } from "../src/cloudflare-types.ts";
 import { initializeRuntimedWasm } from "../src/runtimed-wasm.ts";
-import { renderKey, snapshotKey } from "../src/storage.ts";
+import { blobKey, renderKey, snapshotKey } from "../src/storage.ts";
 
 const wasmBytes = await readFile(
   new URL("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm", import.meta.url),
@@ -202,6 +202,59 @@ describe("Worker artifact routes", () => {
     assert.equal(response.status, 403);
     assert.deepEqual(await response.json(), { error: "viewer cannot upload blobs" });
     assert.equal(env.NOTEBOOK_SNAPSHOTS.objects.size, 0);
+  });
+
+  it("allows runtime peers to upload content-addressed output blobs", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "runtime-demo");
+    const body = new Uint8Array([1, 2, 3, 4]);
+    const hash = await sha256Hex(body);
+
+    const response = await scopedPut(env, `/api/n/runtime-demo/blobs/${hash}`, body, {
+      "Content-Type": "application/vnd.apache.arrow.stream",
+      "X-Scope": "runtime_peer",
+      "X-User": "runtime-service",
+      "X-Operator": "runtime:py-3.12",
+    });
+
+    assert.equal(response.status, 201);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      key: blobKey("runtime-demo", hash),
+      size: body.byteLength,
+    });
+    assert.equal(env.NOTEBOOK_SNAPSHOTS.objects.has(blobKey("runtime-demo", hash)), true);
+    assert.deepEqual(env.DB.blobs.get(`runtime-demo:${hash}`), {
+      notebook_id: "runtime-demo",
+      hash,
+      size: body.byteLength,
+      content_type: "application/vnd.apache.arrow.stream",
+      r2_key: blobKey("runtime-demo", hash),
+      uploaded_at: env.DB.blobs.get(`runtime-demo:${hash}`)?.uploaded_at,
+    });
+  });
+
+  it("rejects blob uploads whose path hash does not match the bytes", async () => {
+    const env = fakeEnv();
+    const body = new Uint8Array([1, 2, 3, 4]);
+    const actual = await sha256Hex(body);
+    const expected = "0".repeat(64);
+
+    const response = await scopedPut(env, `/api/n/runtime-demo/blobs/${expected}`, body, {
+      "X-Scope": "runtime_peer",
+      "X-User": "runtime-service",
+      "X-Operator": "runtime:py-3.12",
+    });
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), {
+      error: "blob hash mismatch",
+      expected,
+      actual,
+    });
+    assert.equal(env.NOTEBOOK_SNAPSHOTS.objects.has(blobKey("runtime-demo", expected)), false);
+    assert.equal(env.DB.blobs.size, 0);
+    assert.equal(env.DB.notebooks.has("runtime-demo"), false);
   });
 
   it("publishes a snapshot pair and materializes render JSON through the route layer", async () => {
@@ -432,6 +485,18 @@ async function ownerPut(
   body: Uint8Array,
   headers: Record<string, string> = {},
 ): Promise<Response> {
+  return scopedPut(env, pathname, body, {
+    "X-Scope": "owner",
+    ...headers,
+  });
+}
+
+async function scopedPut(
+  env: FakeEnv,
+  pathname: string,
+  body: Uint8Array,
+  headers: Record<string, string> = {},
+): Promise<Response> {
   return worker.fetch(
     new Request(new URL(pathname, "http://localhost"), {
       method: "PUT",
@@ -439,7 +504,6 @@ async function ownerPut(
         "Content-Type": "application/octet-stream",
         "X-User": "alice",
         "X-Operator": "desktop:test",
-        "X-Scope": "owner",
         ...headers,
       },
       body,
@@ -447,6 +511,22 @@ async function ownerPut(
     env,
     fakeContext(),
   );
+}
+
+function seedNotebook(env: FakeEnv, notebookId: string): void {
+  env.DB.notebooks.set(notebookId, {
+    id: notebookId,
+    owner_principal: "user:dev:alice",
+    title: null,
+    created_at: "2026-05-22T00:00:00.000Z",
+    updated_at: "2026-05-22T00:00:00.000Z",
+    latest_revision_id: null,
+  });
+}
+
+async function sha256Hex(body: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", body);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 interface FakeEnv extends Env {
@@ -500,6 +580,7 @@ interface RevisionRow {
 class FakeD1 implements D1Database {
   readonly notebooks = new Map<string, NotebookRow>();
   readonly revisions: RevisionRow[] = [];
+  readonly blobs = new Map<string, BlobRow>();
 
   prepare(query: string): D1PreparedStatement {
     return new FakeD1Statement(this, query);
@@ -570,6 +651,22 @@ class FakeD1Statement implements D1PreparedStatement {
         existing.latest_revision_id = revisionId;
         existing.updated_at = updatedAt;
       }
+    } else if (this.query.includes("INSERT INTO notebook_blobs")) {
+      const [notebookId, hash, size, contentType, r2Key] = this.values as [
+        string,
+        string,
+        number,
+        string | null,
+        string,
+      ];
+      this.db.blobs.set(`${notebookId}:${hash}`, {
+        notebook_id: notebookId,
+        hash,
+        size,
+        content_type: contentType,
+        r2_key: r2Key,
+        uploaded_at: new Date().toISOString(),
+      });
     }
     return okResult();
   }
@@ -588,8 +685,23 @@ class FakeD1Statement implements D1PreparedStatement {
         this.db.revisions.filter((revision) => revision.notebook_id === notebookId) as T[],
       );
     }
+    if (this.query.includes("FROM notebook_blobs")) {
+      const notebookId = this.values[0] as string;
+      return okResult(
+        Array.from(this.db.blobs.values()).filter((blob) => blob.notebook_id === notebookId) as T[],
+      );
+    }
     return okResult([]);
   }
+}
+
+interface BlobRow {
+  notebook_id: string;
+  hash: string;
+  size: number;
+  content_type: string | null;
+  r2_key: string;
+  uploaded_at: string;
 }
 
 function okResult<T = unknown>(results?: T[]): D1Result<T> {

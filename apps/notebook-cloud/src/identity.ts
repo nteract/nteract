@@ -170,6 +170,10 @@ export function allowsRuntimeStateWrite(scope: ConnectionScope): boolean {
   return scope === "editor" || scope === "runtime_peer" || scope === "owner";
 }
 
+export function allowsBlobUpload(scope: ConnectionScope): boolean {
+  return allowsRuntimeStateWrite(scope);
+}
+
 export function allowsPublish(scope: ConnectionScope): boolean {
   return scope === "owner";
 }

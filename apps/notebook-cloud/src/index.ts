@@ -2,6 +2,7 @@ import type { Env, ExecutionContext, ExportedHandler } from "./cloudflare-types.
 import { NotebookRoom } from "./notebook-room.ts";
 import {
   AuthError,
+  allowsBlobUpload,
   allowsPublish,
   authenticateRequest,
   DEV_AUTH_TOKEN_HEADER,
@@ -725,15 +726,27 @@ async function routeBlob(
   if (identity instanceof Response) {
     return identity;
   }
-  if (!allowsPublish(identity.scope)) {
+  if (!allowsBlobUpload(identity.scope)) {
     return json({ error: `${identity.scope} cannot upload blobs` }, 403);
   }
   if (!env.NOTEBOOK_SNAPSHOTS) {
     return json({ error: "R2 binding NOTEBOOK_SNAPSHOTS is not configured" }, 503);
   }
 
-  await ensureNotebook(env, notebookId, identity);
   const body = await request.arrayBuffer();
+  const digest = await sha256Hex(body);
+  if (hash !== digest) {
+    return json(
+      {
+        error: "blob hash mismatch",
+        expected: hash,
+        actual: digest,
+      },
+      400,
+    );
+  }
+
+  await ensureNotebook(env, notebookId, identity);
   const contentType = request.headers.get("content-type");
   await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
     httpMetadata: {
@@ -789,6 +802,11 @@ function json(value: unknown, status = 200): Response {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function sha256Hex(body: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", body);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function withCors(response: Response): Response {
