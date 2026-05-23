@@ -17,6 +17,9 @@ export interface ReadOnlyNotebookCellProps {
   executionCount?: number | null;
   priority?: readonly string[];
   hostContext?: NteractEmbedHostContextPatch;
+  displayMode?: "notebook" | "report";
+  showSource?: boolean;
+  focusOutputs?: boolean;
   className?: string;
   sourceClassName?: string;
   outputClassName?: string;
@@ -32,6 +35,9 @@ export function ReadOnlyNotebookCell({
   executionCount = null,
   priority,
   hostContext,
+  displayMode = "notebook",
+  showSource = true,
+  focusOutputs = false,
   className,
   sourceClassName,
   outputClassName,
@@ -59,17 +65,42 @@ export function ReadOnlyNotebookCell({
         executionCount={executionCount}
         outputs={[...outputs]}
         isolated="auto"
+        focused={focusOutputs}
         priority={priority}
         hostContext={hostContext}
         className={outputClassName}
       />
     ) : null;
 
+  if (displayMode === "report") {
+    if (!showSource && !outputContent) return null;
+
+    return (
+      <article
+        className={cn("flex min-w-0 flex-col", className)}
+        data-cell-id={id}
+        data-cell-type={cellType}
+        data-slot="read-only-report-cell"
+      >
+        {showSource ? (
+          <div className="min-w-0" data-slot="read-only-cell-source">
+            {codeContent}
+          </div>
+        ) : null}
+        {outputContent ? (
+          <div className="min-w-0" data-slot="read-only-cell-output">
+            {outputContent}
+          </div>
+        ) : null}
+      </article>
+    );
+  }
+
   return (
     <CellContainer
       id={id}
       cellType={cellType}
-      codeContent={codeContent}
+      codeContent={showSource ? codeContent : null}
       outputContent={outputContent}
       gutterContent={cellType === "code" ? <ExecutionCount count={executionCount} /> : null}
       className={className}

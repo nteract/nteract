@@ -8,6 +8,7 @@ vi.mock("../OutputArea", () => ({
     cellId,
     className,
     executionCount,
+    focused,
     hostContext,
     outputs,
     priority,
@@ -15,6 +16,7 @@ vi.mock("../OutputArea", () => ({
     cellId?: string;
     className?: string;
     executionCount?: number | null;
+    focused?: boolean;
     hostContext?: unknown;
     outputs: JupyterOutput[];
     priority?: readonly string[];
@@ -23,6 +25,7 @@ vi.mock("../OutputArea", () => ({
       data-cell-id={cellId}
       data-class-name={className ?? ""}
       data-execution-count={executionCount ?? ""}
+      data-focused={String(focused)}
       data-host-context={JSON.stringify(hostContext ?? null)}
       data-mimes={outputs
         .flatMap((output) =>
@@ -101,6 +104,7 @@ describe("ReadOnlyNotebookCell", () => {
     expect(screen.getByText("[7]:")).toHaveAttribute("data-slot", "execution-count");
     expect(screen.getByTestId("output-area")).toHaveAttribute("data-cell-id", "cell-code");
     expect(screen.getByTestId("output-area")).toHaveAttribute("data-execution-count", "7");
+    expect(screen.getByTestId("output-area")).toHaveAttribute("data-focused", "false");
     expect(screen.getByTestId("output-area")).toHaveAttribute("data-mimes", "stream");
     expect(screen.getByTestId("output-area")).toHaveAttribute("data-priority", "text/plain");
     expect(screen.getByTestId("output-area")).toHaveAttribute("data-class-name", "cloud-output");
@@ -136,5 +140,29 @@ describe("ReadOnlyNotebookCell", () => {
 
     expect(screen.getByTestId("readonly-codemirror")).toHaveTextContent("x = 1");
     expect(screen.queryByTestId("output-area")).toBeNull();
+  });
+
+  it("renders report cells without notebook gutter chrome and can focus outputs", () => {
+    render(
+      <ReadOnlyNotebookCell
+        id="report-code"
+        cellType="code"
+        source="print('hidden')"
+        showSource={false}
+        displayMode="report"
+        focusOutputs
+        outputs={[{ output_type: "stream", name: "stdout", text: "visible\n" }]}
+      />,
+    );
+
+    expect(document.querySelector('[data-slot="cell-container"]')).toBeNull();
+    const reportCell = document.querySelector('[data-slot="read-only-report-cell"]');
+    expect(reportCell).toHaveAttribute("data-cell-id", "report-code");
+    expect(reportCell).toHaveAttribute("data-cell-type", "code");
+    expect(screen.queryByTestId("readonly-codemirror")).toBeNull();
+    expect(document.querySelector('[data-slot="execution-count"]')).toBeNull();
+    expect(document.querySelector('[data-slot="read-only-cell-source"]')).toBeNull();
+    expect(document.querySelector('[data-slot="read-only-cell-output"]')).not.toBeNull();
+    expect(screen.getByTestId("output-area")).toHaveAttribute("data-focused", "true");
   });
 });

@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite-plus";
+import { siftWasmCacheKey } from "../../src/build/renderer-plugin-builder";
 import { isolatedRendererPlugin } from "../notebook/vite-plugin-isolated-renderer";
 
 const appDir = path.dirname(fileURLToPath(import.meta.url));
@@ -47,6 +48,7 @@ export default defineConfig({
     },
   },
   define: {
+    __SIFT_WASM_CACHE_KEY__: JSON.stringify(siftWasmCacheKey()),
     "process.env.NODE_ENV": JSON.stringify("production"),
   },
 });

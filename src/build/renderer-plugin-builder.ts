@@ -73,7 +73,7 @@ function resolveWasmGlue(): string {
   return fs.existsSync(realPath) ? realPath : mockPath;
 }
 
-function siftWasmCacheKey(): string {
+export function siftWasmCacheKey(): string {
   const wasmPath = path.resolve(srcDir, "../crates/sift-wasm/pkg/sift_wasm_bg.wasm");
   if (!fs.existsSync(wasmPath)) {
     return "missing";

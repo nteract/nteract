@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { Code2, Eye, EyeOff } from "lucide-react";
 import {
   ReadOnlyNotebook,
   type ReadOnlyNotebookCellData,
@@ -11,6 +12,7 @@ import { ErrorBoundary } from "@/lib/error-boundary";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
 import { CLOUD_VIEWER_PRIORITY } from "./mime-policy";
 import { resolveCell, type RenderCell, type ResolvedCell } from "./render-resolution";
+import { preloadSiftWasmForCells } from "./sift-preload";
 import { cloudSourceLanguage } from "./source-language";
 import { installDocumentThemeSync } from "./theme";
 import "./index.css";
@@ -124,6 +126,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
     message: "Loading notebook snapshot...",
   });
   const [cells, setCells] = useState<ResolvedCell[]>([]);
+  const [showCode, setShowCode] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -154,6 +157,11 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         );
         if (cancelled) return;
 
+        preloadSiftWasmForCells(resolvedCells, {
+          blobBasePath: config.blobBasePath,
+          rendererAssetsBasePath: config.rendererAssetsBasePath,
+          pageUrl: location.href,
+        });
         setCells(resolvedCells);
         if (resolvedCells.length === 0) {
           setStatus({ kind: "empty", message: "This published notebook has no cells." });
@@ -196,9 +204,13 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
       ),
     [cells],
   );
+  const codeCellCount = useMemo(
+    () => readOnlyCells.filter((cell) => cell.cellType === "code").length,
+    [readOnlyCells],
+  );
 
   return (
-    <main className="flex min-h-screen w-full flex-col py-4">
+    <main className="flex min-h-screen w-full flex-col py-6">
       <h1 className="sr-only">nteract cloud notebook {config.notebookId}</h1>
 
       {status.kind === "ready" ? null : (
@@ -207,13 +219,33 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         </div>
       )}
 
+      {status.kind === "ready" && codeCellCount > 0 ? (
+        <div className="cloud-report-toolbar" aria-label="Notebook display controls">
+          <button
+            type="button"
+            className="cloud-code-toggle"
+            aria-pressed={showCode}
+            aria-label={showCode ? "Hide code cells" : "Show code cells"}
+            title={showCode ? "Hide code cells" : "Show code cells"}
+            onClick={() => setShowCode((current) => !current)}
+          >
+            {showCode ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
+            <Code2 aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
+
       <ReadOnlyNotebook
         cells={readOnlyCells}
         priority={CLOUD_VIEWER_PRIORITY}
         hostContext={outputHostContext}
-        className="pl-8 pr-2"
+        displayMode="report"
+        showCode={showCode}
+        focusOutputs
+        className="cloud-report-notebook"
         cellClassName="cloud-cell"
         sourceClassName="cloud-source-block"
+        outputClassName="cloud-output-block"
         renderCellError={(error, _cell, index) => (
           <div className="cloud-state" data-kind="error">
             Unable to render cell {index + 1}: {error.message}
