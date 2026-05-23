@@ -36,12 +36,27 @@ export default rendererAssetsWorker;
 
 function assetPathnameForRequest(pathname: string): string | null {
   if (pathname.startsWith("/renderer-assets/")) {
-    return `/${pathname.slice("/renderer-assets/".length)}`;
+    return rendererAssetPathname(pathname.slice("/renderer-assets/".length));
   }
   if (pathname.startsWith("/plugins/")) {
-    return `/${pathname.slice("/plugins/".length)}`;
+    return rendererAssetPathname(pathname.slice("/plugins/".length));
   }
   return null;
+}
+
+function rendererAssetPathname(rawName: string): string | null {
+  let name: string;
+  try {
+    name = decodeURIComponent(rawName);
+  } catch {
+    return null;
+  }
+
+  if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
+    return null;
+  }
+
+  return `/${name}`;
 }
 
 function json(value: unknown, status = 200): Response {

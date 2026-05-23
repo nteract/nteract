@@ -46,6 +46,29 @@ describe("renderer assets Worker", () => {
     assert.deepEqual(await response.json(), { error: "not found" });
   });
 
+  it("rejects traversal-shaped renderer asset paths before asset lookup", async () => {
+    const requests = [
+      "https://assets.test/renderer-assets/../assets/notebook-cloud-viewer.js",
+      "https://assets.test/renderer-assets/%2e%2e%2fassets%2fnotebook-cloud-viewer.js",
+      "https://assets.test/plugins/%2e%2e%5csift_wasm.wasm",
+    ];
+
+    for (const request of requests) {
+      const response = await rendererAssetsWorker.fetch(
+        new Request(request),
+        fakeEnv({
+          ASSETS: {
+            fetch: async () => new Response("should not be reached"),
+          },
+        }),
+        fakeContext(),
+      );
+
+      assert.equal(response.status, 404);
+      assert.deepEqual(await response.json(), { error: "not found" });
+    }
+  });
+
   it("does not cache health checks as immutable assets", async () => {
     const response = await rendererAssetsWorker.fetch(
       new Request("https://assets.test/api/health"),
