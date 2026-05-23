@@ -213,6 +213,9 @@ function hostContext() {
     timeZone,
     userAgent: navigator.userAgent,
     platform: "web",
+    nteract: {
+      rendererAssetsBaseUrl: new URL("/api/plugins/", location.href).href,
+    },
   } as const;
 }
 

@@ -70,13 +70,14 @@ import "@/components/widgets/controls";
 // The registry lives in @/lib/renderer-registry so that both OutputRenderer
 // and MediaRouter (used by output widgets) can look up installed renderers.
 
-import type { ComponentType } from "react";
 import {
-  type RendererProps,
+  type RendererInstallContext,
   getRenderer,
   registerRenderer,
   registerRendererPattern,
 } from "@/lib/renderer-registry";
+
+const rendererPluginHostContextListeners = new Set<(context: NteractEmbedHostContext) => void>();
 
 /**
  * Load and install a renderer plugin.
@@ -96,15 +97,7 @@ function installRendererPlugin(code: string, css?: string) {
   // eslint-disable-next-line no-new-func -- CJS loader pattern
   new Function("module", "exports", "require", code)(mod, mod.exports, customRequire);
 
-  const install = mod.exports.install as
-    | ((ctx: {
-        register: (mimeTypes: string[], component: ComponentType<RendererProps>) => void;
-        registerPattern: (
-          test: (mime: string) => boolean,
-          component: ComponentType<RendererProps>,
-        ) => void;
-      }) => void)
-    | undefined;
+  const install = mod.exports.install as ((ctx: RendererInstallContext) => void) | undefined;
 
   if (typeof install !== "function") {
     throw new Error("[renderer-plugin] Plugin does not export an install() function");
@@ -113,6 +106,11 @@ function installRendererPlugin(code: string, css?: string) {
   install({
     register: registerRenderer,
     registerPattern: registerRendererPattern,
+    getHostContext: () => currentHostContext,
+    subscribeHostContext: (listener) => {
+      rendererPluginHostContextListeners.add(listener);
+      return () => rendererPluginHostContextListeners.delete(listener);
+    },
   });
 
   if (css) {
@@ -256,6 +254,9 @@ function applyHostContext(contextPatch: NteractEmbedHostContextPatch) {
   // Parent-side height and width guards are load-bearing: this resize must not
   // create an unbounded host-context <-> size-changed feedback loop.
   window.dispatchEvent(new Event("resize"));
+  for (const listener of rendererPluginHostContextListeners) {
+    listener(currentHostContext);
+  }
 }
 
 // --- Message Handling ---
