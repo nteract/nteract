@@ -48,7 +48,58 @@ describe("Worker artifact routes", () => {
     assert.equal(await response.text(), "console.log('viewer')");
   });
 
-  it("serves plugin assets through a Worker-owned CORS route", async () => {
+  it("adds CORS when plugin assets are routed through the Worker", async () => {
+    const seenPaths: string[] = [];
+    const env = fakeEnv({
+      ASSETS: {
+        fetch: async (request: Request) => {
+          seenPaths.push(new URL(request.url).pathname);
+          return new Response("wasm", {
+            headers: { "Content-Type": "application/wasm" },
+          });
+        },
+      },
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/plugins/sift_wasm.wasm?v=test"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(seenPaths, ["/plugins/sift_wasm.wasm"]);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+    assert.equal(response.headers.get("Content-Type"), "application/wasm");
+    assert.equal(await response.text(), "wasm");
+  });
+
+  it("serves renderer sidecar assets through a Worker-owned route", async () => {
+    const seenPaths: string[] = [];
+    const env = fakeEnv({
+      ASSETS: {
+        fetch: async (request: Request) => {
+          seenPaths.push(new URL(request.url).pathname);
+          return new Response("wasm", {
+            headers: { "Content-Type": "application/wasm" },
+          });
+        },
+      },
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/renderer-assets/sift_wasm.wasm?v=test"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(seenPaths, ["/plugins/sift_wasm.wasm"]);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+    assert.equal(response.headers.get("Content-Type"), "application/wasm");
+  });
+
+  it("keeps the api plugin path as a compatibility alias for older viewers", async () => {
     const seenPaths: string[] = [];
     const env = fakeEnv({
       ASSETS: {
@@ -69,9 +120,6 @@ describe("Worker artifact routes", () => {
 
     assert.equal(response.status, 200);
     assert.deepEqual(seenPaths, ["/plugins/sift_wasm.wasm"]);
-    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
-    assert.equal(response.headers.get("Content-Type"), "application/wasm");
-    assert.equal(await response.text(), "wasm");
   });
 
   it("publishes a snapshot pair and materializes render JSON through the route layer", async () => {
@@ -134,6 +182,57 @@ describe("Worker artifact routes", () => {
       true,
       "materialized render should be cached back into R2",
     );
+  });
+
+  it("returns a structured error when persisted snapshots cannot be materialized", async () => {
+    const env = fakeEnv();
+    const corruptBytes = new TextEncoder().encode("not an automerge document");
+
+    const runtimePut = await ownerPut(
+      env,
+      "/api/n/corrupt-demo/runtime-snapshots/runtime-corrupt",
+      corruptBytes,
+    );
+    assert.equal(runtimePut.status, 201);
+
+    const notebookPut = await ownerPut(
+      env,
+      "/api/n/corrupt-demo/snapshots/heads-corrupt",
+      corruptBytes,
+      {
+        "X-Runtime-Heads-Hash": "runtime-corrupt",
+      },
+    );
+    assert.equal(notebookPut.status, 201);
+
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+    let response: Response;
+    try {
+      response = await worker.fetch(
+        new Request("http://localhost/api/n/corrupt-demo/render"),
+        env,
+        fakeContext(),
+      );
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(response.status, 422);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+    const body = (await response.json()) as { error: string; details: string };
+    assert.equal(body.error, "render materialization failed");
+    assert.match(body.details, /load|document|decode|automerge/i);
+    assert.equal(
+      env.NOTEBOOK_SNAPSHOTS.objects.has(renderKey("corrupt-demo", "heads-corrupt")),
+      false,
+      "failed materialization should not cache a render object",
+    );
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0][0], "Unable to materialize notebook render");
   });
 });
 

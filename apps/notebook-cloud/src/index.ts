@@ -22,11 +22,19 @@ import {
   type RevisionRow,
 } from "./storage.ts";
 import { materializeSnapshotPairRender } from "./snapshot-render.ts";
-import { createNotebookCloudBlobResolver } from "./blob-resolver.ts";
+import {
+  createNotebookCloudBlobResolver,
+  notebookCloudBlobBasePath,
+  withTrailingSlash,
+} from "./blob-resolver.ts";
 
 export { NotebookRoom };
 
 const DEMO_NOTEBOOK_ID = "nteract-cloud-demo";
+// `/plugins/*` is a raw static asset path in deployed Workers. Use a
+// Worker-owned route by default so sandboxed srcdoc iframes can fetch sidecar
+// assets with explicit CORS, and let hosts replace it with a dedicated origin.
+const DEFAULT_RENDERER_ASSETS_BASE_PATH = "/renderer-assets/";
 
 const worker: ExportedHandler<Env> = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -75,13 +83,14 @@ const worker: ExportedHandler<Env> = {
     if (pinnedViewerMatch && request.method === "GET") {
       return viewer(
         decodeURIComponent(pinnedViewerMatch[1]),
+        env,
         decodeURIComponent(pinnedViewerMatch[2]),
       );
     }
 
     const viewerMatch = url.pathname.match(/^\/n\/([^/]+)\/?$/);
     if (viewerMatch && request.method === "GET") {
-      return viewer(decodeURIComponent(viewerMatch[1]));
+      return viewer(decodeURIComponent(viewerMatch[1]), env);
     }
 
     const catalogMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/?$/);
@@ -166,6 +175,9 @@ async function routeAsset(request: Request, env: Env): Promise<Response | null> 
 function assetPathnameForRequest(pathname: string): string | null {
   if (pathname.startsWith("/assets/") || pathname.startsWith("/plugins/")) {
     return pathname;
+  }
+  if (pathname.startsWith("/renderer-assets/")) {
+    return `/plugins/${pathname.slice("/renderer-assets/".length)}`;
   }
   if (pathname.startsWith("/api/assets/")) {
     return pathname.slice("/api".length);
@@ -485,17 +497,34 @@ async function materializeSnapshotRender(
     return json({ error: "runtime snapshot not found" }, 404);
   }
 
-  const render = await materializeSnapshotPairRender({
-    notebookId,
-    notebookHeadsHash: revision.notebook_heads_hash,
-    runtimeHeadsHash: revision.runtime_heads_hash,
-    notebookBytes: new Uint8Array(await notebookObject.arrayBuffer()),
-    runtimeStateBytes: new Uint8Array(await runtimeObject.arrayBuffer()),
-    blobResolver: createNotebookCloudBlobResolver({
-      baseUrl: request.url,
+  let render: Awaited<ReturnType<typeof materializeSnapshotPairRender>>;
+  try {
+    render = await materializeSnapshotPairRender({
       notebookId,
-    }),
-  });
+      notebookHeadsHash: revision.notebook_heads_hash,
+      runtimeHeadsHash: revision.runtime_heads_hash,
+      notebookBytes: new Uint8Array(await notebookObject.arrayBuffer()),
+      runtimeStateBytes: new Uint8Array(await runtimeObject.arrayBuffer()),
+      blobResolver: createNotebookCloudBlobResolver({
+        baseUrl: request.url,
+        blobBasePath: notebookCloudBlobBasePath(notebookId),
+      }),
+    });
+  } catch (error) {
+    console.warn("Unable to materialize notebook render", {
+      notebookId,
+      notebookHeadsHash: revision.notebook_heads_hash,
+      runtimeHeadsHash: revision.runtime_heads_hash,
+      error,
+    });
+    return json(
+      {
+        error: "render materialization failed",
+        details: errorMessage(error),
+      },
+      422,
+    );
+  }
   const body = JSON.stringify(render);
   await env.NOTEBOOK_SNAPSHOTS.put(renderKey(notebookId, revision.notebook_heads_hash), body, {
     httpMetadata: {
@@ -635,6 +664,10 @@ function json(value: unknown, status = 200): Response {
   );
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function withCors(response: Response): Response {
   response.headers.set("Access-Control-Allow-Origin", "*");
   response.headers.set("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, OPTIONS");
@@ -663,7 +696,7 @@ function normalizedRuntimeHeadsHash(value: string | null): string | null {
   return trimmed && trimmed !== "none" ? trimmed : null;
 }
 
-function viewer(notebookId: string, headsHash?: string): Response {
+function viewer(notebookId: string, env: Env, headsHash?: string): Response {
   const escaped = escapeHtml(notebookId);
   const title = headsHash ? `${escaped} @ ${escapeHtml(headsHash)}` : escaped;
   const renderEndpoint = headsHash
@@ -674,7 +707,8 @@ function viewer(notebookId: string, headsHash?: string): Response {
     headsHash: headsHash ?? null,
     renderEndpoint,
     syncEndpoint: `/n/${encodeURIComponent(notebookId)}/sync`,
-    blobBasePath: `/api/n/${encodeURIComponent(notebookId)}/blobs/`,
+    blobBasePath: notebookCloudBlobBasePath(notebookId),
+    rendererAssetsBasePath: rendererAssetsBasePath(env),
   };
   const html = `<!doctype html>
 <html lang="en">
@@ -682,108 +716,10 @@ function viewer(notebookId: string, headsHash?: string): Response {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>nteract cloud notebook ${title}</title>
-  <style>
-    :root {
-      color-scheme: light dark;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: Canvas;
-      color: CanvasText;
-    }
-    body { margin: 0; }
-    main { width: min(1040px, calc(100vw - 32px)); margin: 0 auto; padding: 32px 0 48px; }
-    header { display: flex; gap: 16px; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; }
-    h1 { font-size: 24px; line-height: 1.2; margin: 0 0 8px; }
-    .meta { display: flex; flex-wrap: wrap; gap: 8px 16px; color: color-mix(in srgb, CanvasText 62%, transparent); font-size: 13px; }
-    .meta code { color: CanvasText; }
-    .links { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-    a.button {
-      color: CanvasText;
-      border: 1px solid color-mix(in srgb, CanvasText 22%, transparent);
-      border-radius: 6px;
-      padding: 7px 10px;
-      text-decoration: none;
-      font-size: 13px;
-    }
-    .state {
-      border: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
-      border-radius: 8px;
-      padding: 14px 16px;
-      margin-bottom: 18px;
-      color: color-mix(in srgb, CanvasText 72%, transparent);
-      background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
-    }
-    .state[data-kind="error"] {
-      border-color: color-mix(in srgb, #b42318 50%, transparent);
-      color: #b42318;
-      background: color-mix(in srgb, #b42318 8%, Canvas);
-    }
-    .notebook { display: grid; gap: 14px; }
-    .cell {
-      border-left: 3px solid color-mix(in srgb, CanvasText 20%, transparent);
-      padding: 8px 0 8px 16px;
-    }
-    .cell[data-type="code"] { border-left-color: #4f46e5; }
-    .cell[data-type="markdown"] { border-left-color: #0f766e; }
-    .cell[data-rendering="pending"] { opacity: 0.72; }
-    .cell-label {
-      font-size: 12px;
-      color: color-mix(in srgb, CanvasText 56%, transparent);
-      margin-bottom: 6px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    }
-    .source {
-      margin-bottom: 10px;
-    }
-    pre {
-      margin: 0;
-      border: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
-      border-radius: 8px;
-      padding: 12px;
-      overflow: auto;
-      background: color-mix(in srgb, Canvas 90%, CanvasText 10%);
-    }
-    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
-    .outputs {
-      display: grid;
-      gap: 10px;
-      margin-top: 10px;
-    }
-    .output-embed, .markdown-embed {
-      min-height: 1px;
-    }
-    .render-error {
-      color: #b42318;
-      border: 1px solid color-mix(in srgb, #b42318 42%, transparent);
-      border-radius: 6px;
-      padding: 10px 12px;
-      background: color-mix(in srgb, #b42318 7%, Canvas);
-    }
-    @media (max-width: 640px) {
-      main { width: min(100vw - 24px, 960px); padding-top: 20px; }
-      header { display: block; }
-      .links { justify-content: flex-start; margin-top: 12px; }
-    }
-  </style>
+  <link rel="stylesheet" href="/assets/notebook-cloud-viewer.css" />
 </head>
 <body>
-  <main>
-    <header>
-      <div>
-        <h1>nteract cloud notebook</h1>
-        <div class="meta">
-          <span>Notebook <code>${escaped}</code></span>
-          <span id="revision"></span>
-          <span id="connection">anonymous viewer connecting</span>
-        </div>
-      </div>
-      <nav class="links" aria-label="Notebook links">
-        <a class="button" href="/n/${encodeURIComponent(notebookId)}/debug">Debug</a>
-        <a class="button" href="/api/n/${encodeURIComponent(notebookId)}">Catalog JSON</a>
-      </nav>
-    </header>
-    <div id="state" class="state">Loading notebook snapshot...</div>
-    <section id="notebook" class="notebook" aria-label="Notebook cells"></section>
-  </main>
+  <div id="root"></div>
   <script id="nteract-cloud-viewer-config" type="application/json">${scriptJsonForHtml(config)}</script>
   <script type="module" src="/assets/notebook-cloud-viewer.js"></script>
 </body>
@@ -794,6 +730,11 @@ function viewer(notebookId: string, headsHash?: string): Response {
       headers: { "Content-Type": "text/html; charset=utf-8" },
     }),
   );
+}
+
+function rendererAssetsBasePath(env: Env): string {
+  const configured = env.RENDERER_ASSETS_BASE_URL?.trim();
+  return withTrailingSlash(configured || DEFAULT_RENDERER_ASSETS_BASE_PATH);
 }
 
 function debugViewer(notebookId: string): Response {
