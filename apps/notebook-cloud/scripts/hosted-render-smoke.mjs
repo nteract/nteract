@@ -12,12 +12,11 @@ const expectedRendererAssetOrigin =
   process.env.NOTEBOOK_CLOUD_EXPECTED_RENDERER_ASSET_ORIGIN ?? DEFAULT_RENDERER_ASSET_ORIGIN;
 const expectedSourceText = process.env.NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT ?? "import polars as pl";
 const expectedExecutionCount = process.env.NOTEBOOK_CLOUD_EXPECTED_EXECUTION_COUNT ?? null;
-const expectedFrameTexts = (
-  process.env.NOTEBOOK_CLOUD_EXPECTED_FRAME_TEXTS ?? "Loaded 25 rows|PROBLEM_MARKDOWN"
-)
-  .split("|")
-  .map((text) => text.trim())
-  .filter(Boolean);
+const expectedFrameTexts = parseExpectedTexts(process.env.NOTEBOOK_CLOUD_EXPECTED_FRAME_TEXTS, [
+  "Loaded 25 rows",
+  "PROBLEM_MARKDOWN",
+]);
+const requireSiftWasm = process.env.NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM !== "0";
 const screenshotPath = process.env.NOTEBOOK_CLOUD_SMOKE_SCREENSHOT;
 const timeoutMs = Number(process.env.NOTEBOOK_CLOUD_SMOKE_TIMEOUT_MS ?? 60_000);
 const targetOrigin = new URL(targetUrl).origin;
@@ -91,13 +90,15 @@ async function main() {
     await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
     await page.waitForLoadState("networkidle", { timeout: timeoutMs }).catch(() => {});
 
-    await page.waitForFunction(
-      (text) => document.body.innerText.includes(text),
-      expectedSourceText,
-      {
-        timeout: timeoutMs,
-      },
-    );
+    if (expectedSourceText) {
+      await page.waitForFunction(
+        (text) => document.body.innerText.includes(text),
+        expectedSourceText,
+        {
+          timeout: timeoutMs,
+        },
+      );
+    }
     await page.waitForFunction(
       (expected) => {
         const counts = Array.from(document.querySelectorAll("[data-slot='execution-count']")).map(
@@ -111,15 +112,18 @@ async function main() {
       expectedExecutionCount,
       { timeout: timeoutMs },
     );
-    await page.waitForFunction(
-      () =>
-        Array.from(document.querySelectorAll("iframe[sandbox]")).some(
-          (iframe) => iframe.clientHeight >= 240,
-        ),
-      undefined,
-      { timeout: timeoutMs },
-    );
-    const frameTextMatches = await waitForFrameText(page, expectedFrameTexts);
+    if (expectedFrameTexts.length > 0) {
+      await page.waitForFunction(
+        () =>
+          Array.from(document.querySelectorAll("iframe[sandbox]")).some(
+            (iframe) => iframe.clientHeight >= 240,
+          ),
+        undefined,
+        { timeout: timeoutMs },
+      );
+    }
+    const frameTextMatches =
+      expectedFrameTexts.length > 0 ? await waitForFrameText(page, expectedFrameTexts) : {};
 
     // Give async iframe plugin fetches a beat to surface late CORS or WASM failures.
     await page.waitForTimeout(750);
@@ -136,7 +140,7 @@ async function main() {
       })),
     );
 
-    if (siftWasmRequests.length === 0) {
+    if (requireSiftWasm && siftWasmRequests.length === 0) {
       failures.push({ kind: "sift-wasm", text: "Sift WASM was not requested" });
     }
     for (const request of siftWasmRequests) {
@@ -155,6 +159,7 @@ async function main() {
     }
     if (
       expectedRendererAssetOrigin &&
+      (requireSiftWasm || siftWasmRequests.length > 0) &&
       !siftWasmRequests.some((request) => request.url.startsWith(expectedRendererAssetOrigin))
     ) {
       failures.push({
@@ -203,6 +208,27 @@ async function main() {
   } finally {
     await browser.close();
   }
+}
+
+function parseExpectedTexts(value, fallback) {
+  if (value === undefined) {
+    return fallback;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return [];
+  }
+  if (trimmed.startsWith("[")) {
+    const parsed = JSON.parse(trimmed);
+    if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === "string")) {
+      throw new Error("NOTEBOOK_CLOUD_EXPECTED_FRAME_TEXTS JSON must be an array of strings");
+    }
+    return parsed;
+  }
+  return trimmed
+    .split("|")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }
 
 function isBenignConsoleError(text) {

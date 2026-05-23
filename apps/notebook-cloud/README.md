@@ -103,6 +103,13 @@ contract with `NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT`,
 `NOTEBOOK_CLOUD_SMOKE_SCREENSHOT=/tmp/notebook-cloud.png` to save a visual
 artifact.
 
+For non-MathNet published notebooks, customize the hosted smoke expectations
+with `NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT`,
+`NOTEBOOK_CLOUD_EXPECTED_EXECUTION_COUNT`, and
+`NOTEBOOK_CLOUD_EXPECTED_FRAME_TEXTS`. Frame texts can be a JSON string array or
+a `|`-delimited list. Set `NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM=0` when the target
+notebook does not include a Sift output.
+
 `publish:live` exports a real synced notebook session through `@runtimed/node`,
 uploads its `NotebookDoc` + `RuntimeStateDoc` snapshot pair, walks the rendered
 output manifests for blob refs, uploads the matching local daemon blobs, and
