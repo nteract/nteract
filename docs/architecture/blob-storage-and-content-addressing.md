@@ -357,6 +357,17 @@ narrowing yields `ResolvedContentRef::Url` only when `set_blob_port(port)`
 has been called and the MIME is binary; text and inline refs stay structured
 and travel through `BlobResolver`. That indirection earns three things:
 
+`BlobResolver` and `rendererAssetsBaseUrl` are deliberately **two separate
+host contracts**, not one. Output blob bytes (the content of executions,
+attachments, comm buffers) flow through `BlobResolver` and may eventually
+ride a signed-URL or per-room origin in hosted deployments. Renderer plugin
+sidecar assets (Sift's WASM binary, future renderer JS/CSS) flow through
+`rendererAssetsBaseUrl` (Decision 4) and behave like static CDN assets.
+Generic renderer code should only read whichever host context applies to it;
+it should never reconstruct a cloud route shape from `notebookId` or any
+other doc-level value. On the desktop, both default to the daemon's local
+HTTP origin and the same port, but the contracts can move independently.
+
 1. **Port-change tolerance.** Daemon restart with a new port is one refresh
    on the resolver, not a doc rewrite.
 2. **Cloud transport reuse.** The hosted notebook path
@@ -446,10 +457,15 @@ elsewhere, some are surfaced here for the first time.
    considering a debug-mode ref-source map (hash -> Vec<(room_id, ref_kind)>)
    that the sweep can dump on demand.
 2. **No backend abstraction.** `BlobStore` is hard-coded to the local
-   filesystem. The hosted artifacts ADR expects R2; nothing in this crate is
-   prepared for a non-filesystem backend, and `BlobStore::list()` would not
-   port to an object store without pagination. A `BlobBackend` trait with
-   filesystem and object-store implementations is implied but not designed.
+   filesystem. Desktop will keep using the local filesystem store as its
+   source of truth; the hosted path needs a real object-store backend (R2
+   for the prototype, signed-origin or per-tenant bucket for production)
+   with streaming reads and paginated listing. The right shape is a
+   `BlobBackend` trait (storage concern: filesystem, R2, etc.) kept
+   separate from `BlobResolver` (host/viewer concern: how a renderer
+   fetches blob bytes given a hash). Conflating them would force the
+   browser viewer to know about daemon filesystem assumptions or force the
+   storage layer to know about HTTP routing. Punchlist BS-6.
 3. **Authenticated blob HTTP.** `Access-Control-Allow-Origin: *` plus loopback
    is acceptable for the single-user desktop today. The moment the daemon
    serves more than one local OS user (multi-tenant Anaconda hosted on the
@@ -473,6 +489,11 @@ elsewhere, some are surfaced here for the first time.
    `ContentRef::Blob` entries, and verifies they exist in the destination
    blob store before declaring a publish complete. A publisher that forgets
    a blob produces a snapshot that loads but renders with broken outputs.
+   The natural home for the fix is the hosted-artifacts publish flow
+   (`hosted-notebook-artifacts.md`): `latest_revision_id` should not advance
+   until every reachable `ContentRef::Blob` exists in the destination store.
+   The desktop ADR keeps this as an open question because desktop save does
+   not have a publish boundary; the room either has the blobs or it doesn't.
 7. **MIME mutation on re-put.** A repeat put with the same bytes but a
    different `media_type` overwrites the sidecar (`put_disk` fast path).
    That is intentional for the `application/json` -> `text/javascript`
@@ -485,6 +506,8 @@ elsewhere, some are surfaced here for the first time.
    `Vec<u8>`, the body is `Full<Bytes>`). A 100 MiB output renders the
    daemon RSS spike on every renderer fetch. The HTTP layer should stream
    from disk; the memory cap then becomes the OS page cache, not Rust heap.
+   Critical for the hosted path: a multi-user worker that loads each
+   100 MiB blob into RAM per fetch is not going to scale. Punchlist BS-1.
 9. **Multipart upload TTL and sweep timing.** `MULTIPART_UPLOAD_TTL` is 1
    hour and the registry only sweeps when a new Create/Complete/Abort entry
    arrives. A daemon that goes idle with stale staging dirs on disk does
