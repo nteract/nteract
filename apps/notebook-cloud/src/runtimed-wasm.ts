@@ -17,7 +17,10 @@ export function initializeRuntimedWasm(moduleOrPath?: RuntimedWasmModuleOrPath):
   initialized ??= (async () => {
     const resolvedModuleOrPath = moduleOrPath ?? (await loadBundledWasmModule());
     await initWasm({ module_or_path: resolvedModuleOrPath } as RuntimedWasmInitInput);
-  })();
+  })().catch((error: unknown) => {
+    initialized = undefined;
+    throw error;
+  });
   return initialized;
 }
 

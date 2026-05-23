@@ -47,6 +47,16 @@ describe("dev identity", () => {
     assert.equal(anonymous.principal.startsWith("system"), false);
   });
 
+  it("does not treat a bare scope parameter as dev authentication", () => {
+    const identity = authenticateRequest(
+      new Request("https://cloud.test/n/demo/sync?scope=viewer&viewer_session=anon-scope"),
+      { DEPLOYMENT_ENV: "prototype" },
+    );
+
+    assert.equal(identity.actorLabel, "anonymous:anon-scope/browser:anon-scope");
+    assert.equal(identity.scope, "viewer");
+  });
+
   it("maps X-User and X-Operator into a layered actor label", () => {
     const request = new Request("https://cloud.test/n/demo/sync", {
       headers: {

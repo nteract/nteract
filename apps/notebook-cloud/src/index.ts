@@ -215,14 +215,20 @@ async function routeSnapshot(
       notebook_heads_hash: headsHash,
     },
   });
-  const revisionId = await recordRevision(env, {
-    notebookId,
-    notebookHeadsHash: headsHash,
-    runtimeHeadsHash,
-    snapshotKey: key,
-    runtimeSnapshotKey: runtimeKey,
-    actorLabel: identity.actorLabel,
-  });
+  let revisionId: string;
+  try {
+    revisionId = await recordRevision(env, {
+      notebookId,
+      notebookHeadsHash: headsHash,
+      runtimeHeadsHash,
+      snapshotKey: key,
+      runtimeSnapshotKey: runtimeKey,
+      actorLabel: identity.actorLabel,
+    });
+  } catch (error) {
+    await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
+    throw error;
+  }
 
   return json({ ok: true, revision_id: revisionId, key }, 201);
 }
@@ -456,8 +462,23 @@ async function materializeSnapshotRender(
       notebookId,
     }),
   });
+  const body = JSON.stringify(render);
+  await env.NOTEBOOK_SNAPSHOTS.put(renderKey(notebookId, revision.notebook_heads_hash), body, {
+    httpMetadata: {
+      contentType: "application/json; charset=utf-8",
+      cacheControl: immutable
+        ? "public, max-age=31536000, immutable"
+        : "public, max-age=30, stale-while-revalidate=300",
+    },
+    customMetadata: {
+      notebook_id: notebookId,
+      notebook_heads_hash: revision.notebook_heads_hash,
+      runtime_heads_hash: revision.runtime_heads_hash ?? "",
+      artifact: "materialized-render",
+    },
+  });
   return withCors(
-    new Response(JSON.stringify(render), {
+    new Response(body, {
       headers: {
         "Cache-Control": immutable
           ? "public, max-age=31536000, immutable"

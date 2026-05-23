@@ -247,7 +247,6 @@ function hasDevCredential(request: Request): boolean {
     ["x-principal", "principal"],
     ["x-user", "user"],
     ["x-operator", "operator"],
-    ["x-scope", "scope"],
   ].some(
     ([headerName, queryName]) => request.headers.has(headerName) || url.searchParams.has(queryName),
   );

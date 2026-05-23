@@ -221,6 +221,7 @@ const invalidAuthResponse = await fetch(new URL(snapshotPath, baseUrl), {
   method: "PUT",
   headers: {
     "Content-Type": "application/octet-stream",
+    "X-User": "alice",
     "X-Scope": "admin",
     ...devAuthHeaders(),
   },

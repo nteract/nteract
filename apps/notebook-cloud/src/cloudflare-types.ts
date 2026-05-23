@@ -77,6 +77,7 @@ export interface R2Bucket {
     value: ReadableStream | ArrayBuffer | ArrayBufferView | string | null,
     options?: R2PutOptions,
   ): Promise<R2Object>;
+  delete(key: string): Promise<void>;
 }
 
 export interface R2Object {

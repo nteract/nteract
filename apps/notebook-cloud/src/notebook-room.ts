@@ -48,7 +48,6 @@ const MAX_STORED_FRAMES = 500;
 
 export class NotebookRoom {
   private readonly peers = new Map<string, Peer>();
-  private readonly removedPeerIds = new Set<string>();
   private readonly pendingRemovals = new Map<string, { notebookId: string; peer: Peer }>();
   private nextFrameSequence = 0;
   private frameSequenceReady: Promise<void> | undefined;
@@ -95,7 +94,6 @@ export class NotebookRoom {
       connectedAt: new Date().toISOString(),
     };
 
-    this.removedPeerIds.delete(peer.id);
     this.acceptPeerSocket(notebookId, peer);
     this.peers.set(peer.id, peer);
 
@@ -202,10 +200,6 @@ export class NotebookRoom {
     if (!attachment) {
       return undefined;
     }
-    if (this.removedPeerIds.has(attachment.peerId)) {
-      return undefined;
-    }
-
     return this.peers.get(attachment.peerId);
   }
 
@@ -507,7 +501,6 @@ export class NotebookRoom {
       return;
     }
 
-    this.removedPeerIds.add(peer.id);
     try {
       peer.socket.close();
     } catch {
