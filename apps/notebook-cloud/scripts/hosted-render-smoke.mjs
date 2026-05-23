@@ -3,17 +3,20 @@ import path from "node:path";
 
 import { chromium } from "@playwright/test";
 
+import { catalogExpectationFailures, summarizeCatalog } from "./hosted-render-smoke-catalog.mjs";
 import {
   consoleMessageLevel,
   isolatedDiagnosticFailure,
   isFatalIsolatedDiagnostic,
   parseIsolatedDiagnosticText,
 } from "./hosted-render-smoke-diagnostics.mjs";
-import { renderApiUrlForViewer } from "./hosted-render-smoke-routes.mjs";
+import { catalogApiUrlForViewer, renderApiUrlForViewer } from "./hosted-render-smoke-routes.mjs";
 
 const DEFAULT_URL =
   "https://nteract-notebook-cloud.rgbkrk.workers.dev/n/nteract-cloud-live-mathnet";
 const DEFAULT_RENDERER_ASSET_ORIGIN = "https://nteract-notebook-cloud-assets.rgbkrk.workers.dev";
+const DEFAULT_CATALOG_OWNER_PRINCIPAL = "user:dev:live-publish";
+const DEFAULT_LATEST_REVISION_ACTOR_LABEL = "user:dev:live-publish/agent:publish-live";
 
 const targetUrl = process.argv[2] ?? process.env.NOTEBOOK_CLOUD_HOSTED_URL ?? DEFAULT_URL;
 const expectedRendererAssetOrigin =
@@ -25,6 +28,11 @@ const expectedFrameTexts = parseExpectedTexts(process.env.NOTEBOOK_CLOUD_EXPECTE
   "PROBLEM_MARKDOWN",
 ]);
 const expectedRenderSource = process.env.NOTEBOOK_CLOUD_EXPECTED_RENDER_SOURCE ?? "snapshot-pair";
+const expectedCatalogOwnerPrincipal =
+  process.env.NOTEBOOK_CLOUD_EXPECTED_CATALOG_OWNER_PRINCIPAL ?? DEFAULT_CATALOG_OWNER_PRINCIPAL;
+const expectedLatestRevisionActorLabel =
+  process.env.NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_ACTOR_LABEL ??
+  DEFAULT_LATEST_REVISION_ACTOR_LABEL;
 const requireSiftWasm = process.env.NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM !== "0";
 const screenshotPath = process.env.NOTEBOOK_CLOUD_SMOKE_SCREENSHOT;
 const timeoutMs = Number(process.env.NOTEBOOK_CLOUD_SMOKE_TIMEOUT_MS ?? 60_000);
@@ -40,6 +48,7 @@ const rendererCompletions = [];
 const fatalIsolatedDiagnostics = [];
 const diagnosticTasks = [];
 let renderApiCheck = null;
+let catalogApiCheck = null;
 let screenshotSaved = false;
 
 main().catch((error) => {
@@ -108,6 +117,12 @@ async function main() {
   try {
     if (expectedRenderSource) {
       renderApiCheck = await checkHostedRenderApi(targetUrl, expectedRenderSource);
+    }
+    if (expectedCatalogOwnerPrincipal || expectedLatestRevisionActorLabel) {
+      catalogApiCheck = await checkHostedCatalogApi(targetUrl, {
+        expectedCatalogOwnerPrincipal,
+        expectedLatestRevisionActorLabel,
+      });
     }
 
     await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
@@ -210,7 +225,10 @@ async function main() {
           expectedExecutionCount,
           expectedFrameTexts,
           expectedRenderSource,
+          expectedCatalogOwnerPrincipal,
+          expectedLatestRevisionActorLabel,
           renderApiCheck,
+          catalogApiCheck,
           executionCounts,
           frameTextMatches,
           iframeMetrics,
@@ -310,6 +328,48 @@ async function checkHostedRenderApi(viewerUrl, expectedSource) {
     status: response.status,
     source,
     cellCount,
+  };
+}
+
+async function checkHostedCatalogApi(
+  viewerUrl,
+  { expectedCatalogOwnerPrincipal, expectedLatestRevisionActorLabel },
+) {
+  const catalogUrl = catalogApiUrlForViewer(viewerUrl);
+  if (!catalogUrl) {
+    failures.push({
+      kind: "catalog-api",
+      text: `Could not derive /api/n/:id URL from ${viewerUrl}`,
+    });
+    return null;
+  }
+
+  const response = await fetch(catalogUrl);
+  if (!response.ok) {
+    failures.push({
+      kind: "catalog-api",
+      text: `${catalogUrl} returned ${response.status}`,
+    });
+    return { url: catalogUrl, status: response.status };
+  }
+
+  const json = await response.json();
+  const summary = summarizeCatalog(json);
+  for (const failure of catalogExpectationFailures(summary, {
+    expectedCatalogOwnerPrincipal,
+    expectedLatestRevisionActorLabel,
+  })) {
+    failures.push({
+      ...failure,
+      kind: "catalog-api",
+      url: catalogUrl,
+    });
+  }
+
+  return {
+    url: catalogUrl,
+    status: response.status,
+    ...summary,
   };
 }
 
