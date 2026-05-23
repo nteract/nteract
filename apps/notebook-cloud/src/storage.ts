@@ -90,6 +90,14 @@ const SCHEMA_STATEMENTS = [
   )`,
 ];
 
+const SCHEMA_MIGRATIONS = [
+  {
+    table: "notebook_revisions",
+    column: "runtime_snapshot_key",
+    statement: `ALTER TABLE notebook_revisions ADD COLUMN runtime_snapshot_key TEXT`,
+  },
+];
+
 // Prototype-local schema memo. The Worker binds every room to the same D1
 // database; production multi-binding hosts should scope this per binding.
 let schemaReady: Promise<void> | undefined;
@@ -115,9 +123,7 @@ export async function ensureCatalogSchema(env: Env): Promise<void> {
     return;
   }
 
-  schemaReady ??= Promise.all(
-    SCHEMA_STATEMENTS.map((statement) => env.DB!.prepare(statement).run()),
-  )
+  schemaReady ??= initializeCatalogSchema(env)
     .then(() => undefined)
     .catch((error: unknown) => {
       schemaReady = undefined;
@@ -125,6 +131,25 @@ export async function ensureCatalogSchema(env: Env): Promise<void> {
     });
 
   await schemaReady;
+}
+
+async function initializeCatalogSchema(env: Env): Promise<void> {
+  await Promise.all(SCHEMA_STATEMENTS.map((statement) => env.DB!.prepare(statement).run()));
+  await runCatalogMigrations(env);
+}
+
+async function runCatalogMigrations(env: Env): Promise<void> {
+  for (const migration of SCHEMA_MIGRATIONS) {
+    if (await tableHasColumn(env, migration.table, migration.column)) {
+      continue;
+    }
+    await env.DB!.prepare(migration.statement).run();
+  }
+}
+
+async function tableHasColumn(env: Env, table: string, column: string): Promise<boolean> {
+  const result = await env.DB!.prepare(`PRAGMA table_info(${table})`).all<{ name: string }>();
+  return result.results?.some((row) => row.name === column) ?? false;
 }
 
 export async function ensureNotebook(
