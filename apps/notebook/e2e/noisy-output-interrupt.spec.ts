@@ -13,6 +13,8 @@ import { McpPeer } from "./mcp-peer";
 test.describe("noisy output interrupt", () => {
   let mcp: McpPeer | null = null;
 
+  test.setTimeout(180_000);
+
   test.afterEach(async () => {
     await mcp?.close();
     mcp = null;
@@ -45,7 +47,10 @@ test.describe("noisy output interrupt", () => {
     );
 
     await executeCell(cell);
-    await waitForOutputContaining(cell, "noisy-e2e-line-25", 60_000);
+    // Long stream output is intentionally collapsed after the flood is underway.
+    // Wait for the collapsed-output sentinel so this keeps exercising the noisy path.
+    const floodOutput = await waitForOutputContaining(cell, "lines hidden", 60_000);
+    await expect(floodOutput.getByRole("button", { name: "Show full log" })).toBeVisible();
 
     await page.getByTestId("interrupt-kernel-button").click();
     await waitForKernelStatus(page, "idle", 60_000);

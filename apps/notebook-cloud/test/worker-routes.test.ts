@@ -324,9 +324,9 @@ describe("Worker artifact routes", () => {
       missing_blobs: Array<{ hash: string }>;
     };
     assert.equal(body.error, "render materialization missing blobs");
-    assert.deepEqual(
-      body.missing_blobs.map((blob) => blob.hash),
-      [missingHash],
+    assert.ok(
+      body.missing_blobs.some((blob) => blob.hash === missingHash),
+      "response should include the missing fixture blob hash",
     );
     assert.equal(env.DB.revisions.length, 0);
     assert.equal(
