@@ -49,7 +49,7 @@ async function main() {
   page.on("console", (message) => {
     const text = message.text();
     if (message.type() === "error" && !isBenignConsoleError(text)) {
-      warnings.push(`console-error: ${text}`);
+      failures.push({ kind: "console-error", text });
       return;
     }
     if (message.type() === "warning") {
@@ -193,7 +193,11 @@ async function main() {
     );
   } catch (error) {
     if (screenshotPath && !screenshotSaved) {
-      await saveScreenshot(page).catch(() => {});
+      await saveScreenshot(page)
+        .then(() => {
+          screenshotSaved = true;
+        })
+        .catch(() => {});
     }
     throw error;
   } finally {
@@ -249,7 +253,6 @@ async function waitForFrameText(page, expectedTexts) {
 async function saveScreenshot(page) {
   await mkdir(path.dirname(screenshotPath), { recursive: true });
   await page.screenshot({ path: screenshotPath, fullPage: true });
-  screenshotSaved = true;
 }
 
 class SmokeFailure extends Error {
