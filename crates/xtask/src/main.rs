@@ -558,15 +558,23 @@ fn cmd_vite() {
     println!("Use `cargo xtask notebook --attach` in another terminal to connect.");
     println!();
 
-    // Check for port override: RUNTIMED_VITE_PORT > CONDUCTOR_PORT
-    if let Ok(port) = env::var("RUNTIMED_VITE_PORT") {
+    let vite_port = resolve_vite_port(true);
+    if let Some(ref port) = vite_port {
         println!("Using RUNTIMED_VITE_PORT={port}");
-    } else if let Ok(port) = env::var("CONDUCTOR_PORT") {
-        println!("Using CONDUCTOR_PORT={port}");
     }
 
-    // Run pnpm dev for the notebook app
-    run_cmd("pnpm", &["--filter", "notebook-ui", "dev"]);
+    let mut command = Command::new("pnpm");
+    command.args(["--filter", "notebook-ui", "dev"]);
+    apply_worktree_env(&mut command, true);
+    if let Some(ref port) = vite_port {
+        command.env("RUNTIMED_VITE_PORT", port);
+    }
+
+    let status = command.status().unwrap_or_else(|e| {
+        eprintln!("Failed to run pnpm dev: {e}");
+        exit(1);
+    });
+    exit_on_failed_status("pnpm dev", status);
 }
 
 fn ensure_pnpm_install() {
