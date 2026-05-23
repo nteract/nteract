@@ -72,8 +72,10 @@ runtime document code rather than duplicating projection in a Worker-local JSON
 format.
 
 In the current prototype the Worker materializes a JSON render response on
-request. The next viewer step is to move this materialized model into the real
-isolated output renderer path instead of the temporary JSON/pre text renderer.
+request. The browser viewer consumes that response with the framework-agnostic
+`createNteractOutputEmbed()` surface, so markdown cells, rich display data,
+stdout/stderr, Plotly/Vega/Leaflet, and Sift-style table outputs go through the
+same isolated renderer path as desktop instead of a Worker-local DOM renderer.
 
 ## Decision 4: Blob refs stay host-neutral
 
@@ -93,7 +95,29 @@ WASM does not rewrite these into daemon-local HTTP URLs. The host provides a
 This keeps the storage and rendering model independent of where the blob bytes
 live.
 
-## Decision 5: Presence stays typed-frame v4 CBOR
+## Decision 5: The cloud viewer is a static bundle, not a forked app
+
+The Worker still owns notebook identity, artifact routes, and room WebSockets.
+The viewer UI is a static browser bundle served from Worker assets:
+
+```text
+/assets/notebook-cloud-viewer.js
+/assets/* dynamic renderer chunks
+/plugins/sift_wasm.wasm
+```
+
+The bundle imports the shared isolated output embed API and the existing
+renderer plugin virtual modules. It receives notebook-specific configuration
+from the Worker HTML shell as JSON:
+
+- render endpoint (`/api/n/:id/render` or pinned `/renders/:headsHash`);
+- sync endpoint for anonymous viewer-scope presence;
+- blob base path (`/api/n/:id/blobs/`).
+
+This keeps the cloud app from copying desktop renderer code while still leaving
+room host and artifact serving inside the Worker.
+
+## Decision 6: Presence stays typed-frame v4 CBOR
 
 Cloud rooms relay frame type `0x04` as canonical nteract presence CBOR. The
 Worker decodes and rewrites ingress presence with shared `runtimed-wasm`
@@ -119,10 +143,9 @@ decision for public viewer presence is settled.
 
 ## Open Questions
 
-1. Whether `/n/:id` should materialize in the Worker, in the browser, or both.
-2. How the isolated output renderer bundle should be packaged for the cloud
-   viewer.
-3. How to publish large Arrow/Sift outputs efficiently without routing all
+1. Whether `/n/:id` should eventually stream materialized cells into the browser
+   instead of returning one render JSON response.
+2. How to publish large Arrow/Sift outputs efficiently without routing all
    artifact bytes through a single Worker request.
-4. Whether public anonymous viewer presence should be visible to editors or
+3. Whether public anonymous viewer presence should be visible to editors or
    remain connection-local.

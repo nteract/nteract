@@ -27,6 +27,27 @@ before(async () => {
 });
 
 describe("Worker artifact routes", () => {
+  it("serves viewer bundle assets through the Worker assets binding", async () => {
+    const env = fakeEnv({
+      ASSETS: {
+        fetch: async () =>
+          new Response("console.log('viewer')", {
+            headers: { "Content-Type": "application/javascript" },
+          }),
+      },
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/assets/notebook-cloud-viewer.js"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+    assert.equal(await response.text(), "console.log('viewer')");
+  });
+
   it("publishes a snapshot pair and materializes render JSON through the route layer", async () => {
     const env = fakeEnv();
     const [notebookBytes, runtimeStateBytes] = await Promise.all([
@@ -118,8 +139,8 @@ interface FakeEnv extends Env {
   NOTEBOOK_SNAPSHOTS: FakeR2Bucket;
 }
 
-function fakeEnv(): FakeEnv {
-  return {
+function fakeEnv(overrides: Partial<Env> = {}): FakeEnv {
+  const env: FakeEnv = {
     DEPLOYMENT_ENV: "development",
     DB: new FakeD1(),
     NOTEBOOK_SNAPSHOTS: new FakeR2Bucket(),
@@ -130,6 +151,8 @@ function fakeEnv(): FakeEnv {
       }),
     } satisfies DurableObjectNamespace,
   };
+  Object.assign(env, overrides);
+  return env;
 }
 
 function fakeContext(): ExecutionContext {

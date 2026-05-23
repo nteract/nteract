@@ -36,6 +36,11 @@ const worker: ExportedHandler<Env> = {
       return withCors(new Response(null, { status: 204 }));
     }
 
+    const assetResponse = await routeAsset(request, env);
+    if (assetResponse) {
+      return assetResponse;
+    }
+
     if (url.pathname === "/api/health" && request.method === "GET") {
       await safeEnsureCatalogSchema(env, ctx);
       return json({
@@ -141,6 +146,19 @@ const worker: ExportedHandler<Env> = {
 };
 
 export default worker;
+
+async function routeAsset(request: Request, env: Env): Promise<Response | null> {
+  const pathname = new URL(request.url).pathname;
+  if (!pathname.startsWith("/assets/") && !pathname.startsWith("/plugins/")) {
+    return null;
+  }
+  if (!env.ASSETS) {
+    return json({ error: "viewer assets are not configured" }, 503);
+  }
+
+  const response = await env.ASSETS.fetch(request);
+  return withCors(new Response(response.body, response));
+}
 
 async function routeRoomSync(request: Request, env: Env): Promise<Response> {
   if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
@@ -632,6 +650,16 @@ function normalizedRuntimeHeadsHash(value: string | null): string | null {
 function viewer(notebookId: string, headsHash?: string): Response {
   const escaped = escapeHtml(notebookId);
   const title = headsHash ? `${escaped} @ ${escapeHtml(headsHash)}` : escaped;
+  const renderEndpoint = headsHash
+    ? `/api/n/${encodeURIComponent(notebookId)}/renders/${encodeURIComponent(headsHash)}`
+    : `/api/n/${encodeURIComponent(notebookId)}/render`;
+  const config = {
+    notebookId,
+    headsHash: headsHash ?? null,
+    renderEndpoint,
+    syncEndpoint: `/n/${encodeURIComponent(notebookId)}/sync`,
+    blobBasePath: `/api/n/${encodeURIComponent(notebookId)}/blobs/`,
+  };
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -646,7 +674,7 @@ function viewer(notebookId: string, headsHash?: string): Response {
       color: CanvasText;
     }
     body { margin: 0; }
-    main { width: min(960px, calc(100vw - 32px)); margin: 0 auto; padding: 32px 0 48px; }
+    main { width: min(1040px, calc(100vw - 32px)); margin: 0 auto; padding: 32px 0 48px; }
     header { display: flex; gap: 16px; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; }
     h1 { font-size: 24px; line-height: 1.2; margin: 0 0 8px; }
     .meta { display: flex; flex-wrap: wrap; gap: 8px 16px; color: color-mix(in srgb, CanvasText 62%, transparent); font-size: 13px; }
@@ -680,16 +708,16 @@ function viewer(notebookId: string, headsHash?: string): Response {
     }
     .cell[data-type="code"] { border-left-color: #4f46e5; }
     .cell[data-type="markdown"] { border-left-color: #0f766e; }
+    .cell[data-rendering="pending"] { opacity: 0.72; }
     .cell-label {
       font-size: 12px;
       color: color-mix(in srgb, CanvasText 56%, transparent);
       margin-bottom: 6px;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }
-    .markdown { line-height: 1.55; }
-    .markdown h2, .markdown h3, .markdown p, .markdown ul { margin: 0 0 10px; }
-    .markdown h2 { font-size: 21px; }
-    .markdown h3 { font-size: 17px; }
+    .source {
+      margin-bottom: 10px;
+    }
     pre {
       margin: 0;
       border: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
@@ -699,7 +727,21 @@ function viewer(notebookId: string, headsHash?: string): Response {
       background: color-mix(in srgb, Canvas 90%, CanvasText 10%);
     }
     code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
-    .outputs { margin-top: 8px; }
+    .outputs {
+      display: grid;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .output-embed, .markdown-embed {
+      min-height: 1px;
+    }
+    .render-error {
+      color: #b42318;
+      border: 1px solid color-mix(in srgb, #b42318 42%, transparent);
+      border-radius: 6px;
+      padding: 10px 12px;
+      background: color-mix(in srgb, #b42318 7%, Canvas);
+    }
     @media (max-width: 640px) {
       main { width: min(100vw - 24px, 960px); padding-top: 20px; }
       header { display: block; }
@@ -726,149 +768,8 @@ function viewer(notebookId: string, headsHash?: string): Response {
     <div id="state" class="state">Loading notebook snapshot...</div>
     <section id="notebook" class="notebook" aria-label="Notebook cells"></section>
   </main>
-  <script type="module">
-    const notebookId = ${scriptJsonForHtml(notebookId)};
-    const pinnedHeadsHash = ${scriptJsonForHtml(headsHash ?? null)};
-    const sessionId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
-    const state = document.querySelector("#state");
-    const notebook = document.querySelector("#notebook");
-    const revision = document.querySelector("#revision");
-    const connection = document.querySelector("#connection");
-    const renderEndpoint = pinnedHeadsHash
-      ? "/api/n/" + encodeURIComponent(notebookId) + "/renders/" + encodeURIComponent(pinnedHeadsHash)
-      : "/api/n/" + encodeURIComponent(notebookId) + "/render";
-
-    connectAnonymousViewer();
-    loadNotebook();
-
-    async function loadNotebook() {
-      try {
-        const response = await fetch(renderEndpoint, { headers: { Accept: "application/json" } });
-        if (!response.ok) {
-          showState(response.status === 404
-            ? "No published snapshot is available for this notebook yet."
-            : "Unable to load notebook render: " + response.status,
-            response.status === 404 ? "empty" : "error");
-          return;
-        }
-        const render = await response.json();
-        renderNotebook(render);
-      } catch (error) {
-        showState("Unable to load notebook: " + String(error), "error");
-      }
-    }
-
-    function renderNotebook(render) {
-      const cells = Array.isArray(render.cells) ? render.cells : [];
-      revision.textContent = render.heads_hash ? "Revision " + render.heads_hash : "";
-      notebook.replaceChildren();
-      if (cells.length === 0) {
-        showState("This published notebook has no cells.", "empty");
-        return;
-      }
-      const source = render.source === "snapshot-pair" ? "snapshot pair" : "render cache";
-      showState("Rendered " + cells.length + " cells from a persisted " + source + ".", "ready");
-      for (const cell of cells) {
-        notebook.append(renderCell(cell));
-      }
-    }
-
-    function renderCell(cell) {
-      const type = typeof cell.cell_type === "string" ? cell.cell_type : "code";
-      const id = typeof cell.id === "string" ? cell.id : "cell";
-      const source = typeof cell.source === "string" ? cell.source : "";
-      const section = document.createElement("article");
-      section.className = "cell";
-      section.dataset.type = type;
-
-      const label = document.createElement("div");
-      label.className = "cell-label";
-      label.textContent = type + " - " + id;
-      section.append(label);
-
-      if (type === "markdown") {
-        const markdown = document.createElement("div");
-        markdown.className = "markdown";
-        renderMarkdown(markdown, source);
-        section.append(markdown);
-      } else {
-        const pre = document.createElement("pre");
-        const code = document.createElement("code");
-        code.textContent = source;
-        pre.append(code);
-        section.append(pre);
-      }
-
-      if (Array.isArray(cell.outputs) && cell.outputs.length > 0) {
-        const outputs = document.createElement("pre");
-        outputs.className = "outputs";
-        outputs.textContent = JSON.stringify(cell.outputs, null, 2);
-        section.append(outputs);
-      }
-
-      return section;
-    }
-
-    function renderMarkdown(container, source) {
-      const lines = source.split(/\\r?\\n/);
-      let list;
-      for (const line of lines) {
-        if (line.startsWith("## ")) {
-          list = undefined;
-          appendText(container, "h3", line.slice(3));
-        } else if (line.startsWith("# ")) {
-          list = undefined;
-          appendText(container, "h2", line.slice(2));
-        } else if (line.startsWith("- ")) {
-          if (!list) {
-            list = document.createElement("ul");
-            container.append(list);
-          }
-          appendText(list, "li", line.slice(2));
-        } else if (line.trim() === "") {
-          list = undefined;
-        } else {
-          list = undefined;
-          appendText(container, "p", line);
-        }
-      }
-    }
-
-    function appendText(parent, tagName, text) {
-      const element = document.createElement(tagName);
-      element.textContent = text;
-      parent.append(element);
-    }
-
-    function connectAnonymousViewer() {
-      const url = new URL("/n/" + encodeURIComponent(notebookId) + "/sync", location.href);
-      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-      url.searchParams.set("viewer_session", sessionId);
-      const socket = new WebSocket(url);
-      socket.binaryType = "arraybuffer";
-      socket.addEventListener("open", () => {
-        connection.textContent = "anonymous viewer connected";
-      });
-      socket.addEventListener("close", () => {
-        connection.textContent = "anonymous viewer disconnected";
-      });
-      socket.addEventListener("message", async (event) => {
-        const bytes = new Uint8Array(event.data);
-        if (bytes[0] !== 0x07) {
-          return;
-        }
-        const message = JSON.parse(new TextDecoder().decode(bytes.slice(1)));
-        if (message.type === "cloud_room_ready") {
-          connection.textContent = message.actor_label + " (" + message.connection_scope + ")";
-        }
-      });
-    }
-
-    function showState(message, kind) {
-      state.textContent = message;
-      state.dataset.kind = kind;
-    }
-  </script>
+  <script id="nteract-cloud-viewer-config" type="application/json">${scriptJsonForHtml(config)}</script>
+  <script type="module" src="/assets/notebook-cloud-viewer.js"></script>
 </body>
 </html>`;
 
