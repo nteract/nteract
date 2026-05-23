@@ -34,23 +34,50 @@ jobs:
       - name: Check pnpmDeps hash
         id: check
         run: |
-          set +e
-          OUTPUT=$(nix build .#pnpmDeps --no-link 2>&1)
-          EXIT=$?
-          set -e
+          set -euo pipefail
+
+          run_pnpm_deps_build() {
+            local attempt="$1"
+            OUTPUT_FILE="$RUNNER_TEMP/pnpm-deps-build-${attempt}.log"
+
+            echo "::group::nix build .#pnpmDeps (attempt ${attempt})"
+            set +e
+            nix build .#pnpmDeps --no-link > "$OUTPUT_FILE" 2>&1
+            EXIT=$?
+            set -e
+            cat "$OUTPUT_FILE"
+            echo "::endgroup::"
+          }
+
+          extract_new_hash() {
+            awk '/^[[:space:]]*got:/ { print $2; exit }' "$1"
+          }
+
+          is_transient_store_error() {
+            grep -Eq 'creating file ".*/nix/store/tmp-[^"]+/.+": No such file or directory' "$1"
+          }
+
+          run_pnpm_deps_build 1
+
+          # fetchPnpmDeps hash mismatches print "got:" and should create/update
+          # the hash PR. Missing files under /nix/store/tmp-* are transient
+          # materialization failures, so retry once before failing the workflow.
+          if [ "$EXIT" -ne 0 ] && [ -z "$(extract_new_hash "$OUTPUT_FILE")" ] && is_transient_store_error "$OUTPUT_FILE"; then
+            echo "pnpmDeps build hit a transient Nix store materialization error; retrying once..."
+            run_pnpm_deps_build 2
+          fi
 
           if [ $EXIT -eq 0 ]; then
             echo "hash_ok=true" >> "$GITHUB_OUTPUT"
             echo "pnpmDeps hash is up to date"
           else
-            NEW_HASH=$(echo "$OUTPUT" | grep 'got:' | awk '{print $2}')
+            NEW_HASH=$(extract_new_hash "$OUTPUT_FILE")
             if [ -n "$NEW_HASH" ]; then
               echo "hash_ok=false" >> "$GITHUB_OUTPUT"
               echo "new_hash=$NEW_HASH" >> "$GITHUB_OUTPUT"
               echo "pnpmDeps hash outdated, new hash: $NEW_HASH"
             else
               echo "Build failed for unknown reason:"
-              echo "$OUTPUT"
               exit 1
             fi
           fi
@@ -87,4 +114,3 @@ jobs:
           else
             echo "PR #$EXISTING already exists, branch updated via force-push"
           fi
-
