@@ -226,6 +226,46 @@ describe("cloud viewer render resolution", () => {
     assert.equal(cell.executionCount, null);
   });
 
+  it("resolves direct Arrow and Parquet blob refs to cloud blob URLs", async () => {
+    const outputs = await resolveOutputs(
+      [
+        {
+          output_type: "execute_result",
+          execution_count: 1,
+          data: {
+            "application/vnd.apache.arrow.stream": {
+              blob: "sha256:arrow",
+              size: 18744,
+            },
+            "application/vnd.apache.parquet": {
+              blob: "sha256:parquet",
+              size: 4096,
+            },
+            "text/plain": {
+              inline: "shape: (25, 10)",
+            },
+          },
+          metadata: {},
+        },
+      ],
+      rejectingBlobResolver(),
+    );
+
+    assert.equal(outputs.length, 1);
+    assert.equal(outputs[0].output_type, "execute_result");
+    if (outputs[0].output_type === "execute_result") {
+      assert.equal(
+        outputs[0].data["application/vnd.apache.arrow.stream"],
+        "https://cloud.test/blobs/sha256%3Aarrow",
+      );
+      assert.equal(
+        outputs[0].data["application/vnd.apache.parquet"],
+        "https://cloud.test/blobs/sha256%3Aparquet",
+      );
+      assert.equal(outputs[0].data["text/plain"], "shape: (25, 10)");
+    }
+  });
+
   it("keeps an explicit cell execution count over output fallbacks", async () => {
     const cell = await resolveCell(
       {

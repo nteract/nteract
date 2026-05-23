@@ -77,10 +77,17 @@ export type ResolvedJupyterOutput =
       rich?: unknown;
     };
 
+const URL_BACKED_BINARY_MIME_TYPES = new Set([
+  "application/octet-stream",
+  "application/pdf",
+  "application/vnd.apache.arrow.stream",
+  "application/vnd.apache.parquet",
+]);
+
 function looksLikeBinaryMime(mime: string): boolean {
   if (mime.startsWith("image/") && !mime.endsWith("+xml")) return true;
   if (mime.startsWith("audio/") || mime.startsWith("video/")) return true;
-  return mime === "application/pdf" || mime === "application/octet-stream";
+  return URL_BACKED_BINARY_MIME_TYPES.has(mime);
 }
 
 function isContentRef(value: unknown): value is ContentRef {
