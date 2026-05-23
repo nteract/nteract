@@ -1,0 +1,8 @@
+name = "nteract-notebook-cloud-assets"
+main = "./src/renderer-assets-worker.ts"
+compatibility_date = "2024-11-06"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./dist/plugins"
+binding = "ASSETS"

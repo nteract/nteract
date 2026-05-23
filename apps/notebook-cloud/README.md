@@ -128,7 +128,7 @@ Bindings in `wrangler.toml`:
 - `DB`: D1 catalog for notebooks, revisions, blobs, and room event metadata.
 - `NOTEBOOK_SNAPSHOTS`: R2 bucket for `NotebookDoc` snapshots, `RuntimeStateDoc` snapshots, generated render caches, and blobs.
 - `ASSETS`: Worker static assets for `/assets/notebook-cloud-viewer.js`, renderer chunks, and `/plugins/sift_wasm.wasm`.
-- `RENDERER_ASSETS_BASE_URL` (optional): base URL for renderer plugin assets such as `sift_wasm.wasm`. It can point at a dedicated output/plugin origin. If unset, the viewer uses the Worker-owned `/renderer-assets/` route so sandboxed `srcdoc` iframes can fetch plugin WASM through explicit CORS headers.
+- `RENDERER_ASSETS_BASE_URL` (optional): base URL for renderer plugin assets such as `sift_wasm.wasm`. The prototype deployment points this at the dedicated `nteract-notebook-cloud-assets` Worker. If unset, the viewer uses the main Worker-owned `/renderer-assets/` route so sandboxed `srcdoc` iframes can fetch plugin WASM through explicit CORS headers.
 
 Schema lives in `migrations/0001_initial.sql`. The Worker also creates the same tables lazily in local dev so the WebSocket path can run before applying migrations.
 
@@ -150,9 +150,13 @@ The render path is optional. If it is missing, the Worker loads the snapshot pai
 Disposable Cloudflare resources currently wired in `wrangler.toml`:
 
 - Worker: `nteract-notebook-cloud`
+- Renderer asset Worker: `nteract-notebook-cloud-assets`
 - URL: `https://nteract-notebook-cloud.rgbkrk.workers.dev`
+- Renderer assets URL: `https://nteract-notebook-cloud-assets.rgbkrk.workers.dev/renderer-assets/`
 - D1: `nteract-notebook-cloud-prototype-db`
 - R2: `nteract-notebook-cloud-prototype`
+
+The renderer asset Worker binds only `dist/plugins`, not the full viewer bundle, so the separate origin is limited to renderer sidecars such as Sift's WASM binary.
 
 The remote migration was applied with:
 
@@ -169,6 +173,7 @@ printf "%s" "$NOTEBOOK_CLOUD_DEV_TOKEN" \
   | pnpm --workspace-root exec wrangler secret put NOTEBOOK_CLOUD_DEV_TOKEN \
       --config apps/notebook-cloud/wrangler.toml
 pnpm --dir apps/notebook-cloud build
+pnpm --workspace-root exec wrangler deploy --config apps/notebook-cloud/wrangler.renderer-assets.toml
 pnpm --workspace-root exec wrangler deploy --config apps/notebook-cloud/wrangler.toml
 ```
 
