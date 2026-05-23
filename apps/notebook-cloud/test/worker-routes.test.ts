@@ -147,10 +147,6 @@ describe("Worker artifact routes", () => {
         error: "viewer cannot publish snapshots",
       },
       {
-        pathname: "/api/n/readonly-demo/renders/heads-viewer",
-        error: "viewer cannot publish render caches",
-      },
-      {
         pathname: "/api/n/readonly-demo/blobs/sha256-viewer",
         error: "viewer cannot upload blobs",
       },
@@ -176,6 +172,23 @@ describe("Worker artifact routes", () => {
 
     assert.equal(env.NOTEBOOK_SNAPSHOTS.objects.size, 0);
     assert.equal(env.DB.revisions.length, 0);
+  });
+
+  it("keeps render caches derived from snapshot pairs instead of accepting uploads", async () => {
+    const env = fakeEnv();
+    const response = await ownerPut(
+      env,
+      "/api/n/readonly-demo/renders/heads-viewer",
+      new TextEncoder().encode(JSON.stringify({ cells: [] })),
+      {
+        "Content-Type": "application/json",
+      },
+    );
+
+    assert.equal(response.status, 405);
+    assert.deepEqual(await response.json(), { error: "method not allowed" });
+    assert.equal(env.NOTEBOOK_SNAPSHOTS.objects.size, 0);
+    assert.equal(env.DB.notebooks.size, 0);
   });
 
   it("keeps explicit dev viewer scope read-only even with a valid dev token", async () => {
