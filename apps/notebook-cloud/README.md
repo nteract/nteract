@@ -21,6 +21,7 @@ With Wrangler running:
 ```bash
 pnpm --dir apps/notebook-cloud smoke
 pnpm --dir apps/notebook-cloud smoke:hosted
+pnpm --dir apps/notebook-cloud smoke:hosted:live
 pnpm --dir apps/notebook-cloud publish:demo
 pnpm --dir apps/notebook-cloud publish:fixture
 pnpm --dir apps/notebook-cloud publish:live
@@ -106,6 +107,12 @@ output manifests for blob refs, uploads the matching local daemon blobs, and
 materializes the hosted render. By default it creates and executes a small
 `ShadenA/MathNet` Polars notebook. Set `NOTEBOOK_CLOUD_SOURCE_NOTEBOOK_ID=<id>`
 to publish an already-open live notebook room instead.
+
+`smoke:hosted:live` composes the two live checks: it runs `publish:live`, reads
+the returned viewer URL, then runs `smoke:hosted` against that exact notebook.
+Use `NOTEBOOK_CLOUD_URL=https://nteract-notebook-cloud.rgbkrk.workers.dev` and
+`NOTEBOOK_CLOUD_DEV_TOKEN=...` to target the deployed prototype, or leave the
+defaults to target local Wrangler.
 
 ## Dev auth
 
