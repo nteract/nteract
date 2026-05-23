@@ -454,6 +454,39 @@ fn walk_and_resolve_comm_state(
     }
 }
 
+fn path_starts_with_outputs(path: &[String]) -> bool {
+    path.first().map(String::as_str) == Some("outputs")
+}
+
+fn resolve_comm_state_for_frontend(
+    state: &serde_json::Value,
+    port: u16,
+    is_output_model: bool,
+) -> (serde_json::Value, Vec<Vec<String>>, Vec<Vec<String>>) {
+    let mut buffer_paths: Vec<Vec<String>> = Vec::new();
+    let mut text_paths: Vec<Vec<String>> = Vec::new();
+    let mut resolved = walk_and_resolve_comm_state(
+        state,
+        port,
+        &mut Vec::new(),
+        &mut buffer_paths,
+        &mut text_paths,
+    );
+
+    if is_output_model {
+        // OutputModel.outputs contains notebook output manifests. Those
+        // ContentRefs are resolved by the output-manifest resolver, not by the
+        // ipywidgets binary-traitlet path that fetches URLs into DataViews.
+        if let serde_json::Value::Object(obj) = &mut resolved {
+            obj.remove("outputs");
+        }
+        buffer_paths.retain(|path| !path_starts_with_outputs(path));
+        text_paths.retain(|path| !path_starts_with_outputs(path));
+    }
+
+    (resolved, buffer_paths, text_paths)
+}
+
 #[wasm_bindgen]
 impl NotebookHandle {
     /// Create a new empty notebook document.
@@ -1622,6 +1655,9 @@ impl NotebookHandle {
     ///   string at that path with the decoded content before handing the state
     ///   to widget code. Widgets that consume synced string traits (e.g.
     ///   anywidget `_py_render`) expect the actual content, not a URL.
+    /// - `OutputModel.outputs` is omitted from `state` and from both path
+    ///   lists. Output widget manifests are resolved through the notebook
+    ///   output resolver, not through the widget binary-traitlet protocol.
     ///
     /// Returns undefined if blob_port is not set or comm doesn't exist.
     pub fn resolve_comm_state(&self, comm_id: &str) -> JsValue {
@@ -1633,15 +1669,10 @@ impl NotebookHandle {
             return JsValue::UNDEFINED;
         };
 
-        let mut buffer_paths: Vec<Vec<String>> = Vec::new();
-        let mut text_paths: Vec<Vec<String>> = Vec::new();
-        let resolved = walk_and_resolve_comm_state(
-            &entry.state,
-            port,
-            &mut Vec::new(),
-            &mut buffer_paths,
-            &mut text_paths,
-        );
+        let is_output_model = entry.model_name == "OutputModel"
+            || entry.state.get("_model_name").and_then(|v| v.as_str()) == Some("OutputModel");
+        let (resolved, buffer_paths, text_paths) =
+            resolve_comm_state_for_frontend(&entry.state, port, is_output_model);
 
         serialize_to_js(&serde_json::json!({
             "state": resolved,
@@ -2296,16 +2327,13 @@ mod tests {
     use serde_json::json;
 
     fn resolve(val: serde_json::Value) -> (serde_json::Value, Vec<Vec<String>>, Vec<Vec<String>>) {
-        let mut buffer_paths: Vec<Vec<String>> = Vec::new();
-        let mut text_paths: Vec<Vec<String>> = Vec::new();
-        let resolved = walk_and_resolve_comm_state(
-            &val,
-            1234,
-            &mut Vec::new(),
-            &mut buffer_paths,
-            &mut text_paths,
-        );
-        (resolved, buffer_paths, text_paths)
+        resolve_comm_state_for_frontend(&val, 1234, false)
+    }
+
+    fn resolve_output_model(
+        val: serde_json::Value,
+    ) -> (serde_json::Value, Vec<Vec<String>>, Vec<Vec<String>>) {
+        resolve_comm_state_for_frontend(&val, 1234, true)
     }
 
     #[test]
@@ -2328,6 +2356,30 @@ mod tests {
             json!({ "image": "http://127.0.0.1:1234/blob/abc123" })
         );
         assert_eq!(buffer_paths, vec![vec!["image".to_string()]]);
+        assert!(text_paths.is_empty());
+    }
+
+    #[test]
+    fn output_model_outputs_are_not_widget_buffer_paths() {
+        let (resolved, buffer_paths, text_paths) = resolve_output_model(json!({
+            "_model_name": "OutputModel",
+            "outputs": [{
+                "output_type": "display_data",
+                "data": {
+                    "image/png": { "blob": "pnghash", "size": 2048, "media_type": "image/png" },
+                    "text/plain": { "blob": "txthash", "size": 12, "media_type": "text/plain" },
+                },
+                "metadata": {},
+            }],
+            "value": { "blob": "traitlet-bin", "size": 8, "media_type": "application/octet-stream" },
+        }));
+
+        assert!(resolved.as_object().unwrap().get("outputs").is_none());
+        assert_eq!(
+            resolved["value"],
+            json!("http://127.0.0.1:1234/blob/traitlet-bin")
+        );
+        assert_eq!(buffer_paths, vec![vec!["value".to_string()]]);
         assert!(text_paths.is_empty());
     }
 

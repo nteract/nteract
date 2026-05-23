@@ -40,6 +40,9 @@ export interface ResolvedComm {
    * Resolved widget state. Binary blob ContentRefs appear as URL strings;
    * text blob ContentRefs are fetched from the blob server and inlined as
    * their decoded string content. Inline ContentRefs are unwrapped.
+   * For OutputModel widgets, `outputs` is omitted and delivered through
+   * `unresolvedOutputs` so notebook output manifests stay out of widget
+   * binary traitlet resolution.
    */
   state: Record<string, unknown>;
   /** JSON paths where blob URLs replaced binary ContentRef objects (for ArrayBuffer fetch). */
