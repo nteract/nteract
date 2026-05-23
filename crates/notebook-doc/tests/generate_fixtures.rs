@@ -23,10 +23,13 @@ use notebook_doc::NotebookDoc;
 use runtime_doc::RuntimeStateDoc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
+
+const ARROW_STREAM_MANIFEST_MIME: &str = "application/vnd.nteract.arrow-stream-manifest+json";
 
 /// Write execution_count directly via raw Automerge put.
 /// `NotebookDoc::set_execution_count` was removed — RuntimeStateDoc is
@@ -54,6 +57,14 @@ enum ContentRef {
         blob: String,
         size: u64,
     },
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct FixtureBlob {
+    hash: String,
+    path: String,
+    size: u64,
+    content_type: String,
 }
 
 /// Output manifest — the JSON shape stored inline in `ExecutionState.outputs`.
@@ -125,6 +136,11 @@ fn inline(s: &str) -> ContentRef {
     }
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    format!("sha256:{}", hex::encode(digest))
+}
+
 // ── Fixture writing ─────────────────────────────────────────────────
 
 /// Directory where fixtures are written.
@@ -158,6 +174,39 @@ fn write_scenario(
     fs::write(
         dir.join("manifest.json"),
         serde_json::to_string_pretty(test_manifest).unwrap(),
+    )
+    .unwrap();
+    fs::write(dir.join("doc.bin"), daemon.save()).unwrap();
+    fs::write(dir.join("state_doc.bin"), state_doc.doc_mut().save()).unwrap();
+}
+
+/// Write a scenario with content-addressed blob sidecars.
+fn write_scenario_with_blobs(
+    name: &str,
+    daemon: &mut NotebookDoc,
+    state_doc: &mut RuntimeStateDoc,
+    mut test_manifest: Value,
+    blobs: &[(FixtureBlob, Vec<u8>)],
+) {
+    let dir = clean_scenario_dir(name);
+    if !blobs.is_empty() {
+        let blob_dir = dir.join("blobs");
+        fs::create_dir_all(&blob_dir).unwrap();
+        for (blob, bytes) in blobs {
+            fs::write(dir.join(&blob.path), bytes).unwrap();
+        }
+    }
+
+    if let Some(object) = test_manifest.as_object_mut() {
+        object.insert(
+            "blobs".to_string(),
+            serde_json::to_value(blobs.iter().map(|(blob, _)| blob).collect::<Vec<_>>()).unwrap(),
+        );
+    }
+
+    fs::write(
+        dir.join("manifest.json"),
+        serde_json::to_string_pretty(&test_manifest).unwrap(),
     )
     .unwrap();
     fs::write(dir.join("doc.bin"), daemon.save()).unwrap();
@@ -441,4 +490,95 @@ fn scenario_display_data_output() {
     });
 
     write_scenario(scenario, &mut daemon, &mut state_doc, &test_manifest);
+}
+
+#[test]
+fn scenario_sift_arrow_output() {
+    //! Cell produces an Arrow stream manifest backed by a real blob sidecar.
+
+    let scenario = "sift_arrow_output";
+    let mut daemon = NotebookDoc::new_with_actor("sift-arrow", "fixture-sift-arrow");
+    let mut state_doc = RuntimeStateDoc::new();
+    daemon.add_cell(0, "cell-1", "code").unwrap();
+    daemon
+        .update_source(
+            "cell-1",
+            "import polars as pl\n# df contains utf8-view columns and is published as Arrow IPC\ndf",
+        )
+        .unwrap();
+
+    set_execution_count_raw(&mut daemon, "cell-1", "1");
+
+    let arrow_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../packages/sift/public/polars-utf8view.arrow");
+    let arrow_bytes = fs::read(&arrow_path).expect("read polars arrow fixture");
+    let arrow_hash = sha256_hex(&arrow_bytes);
+    let arrow_size = arrow_bytes.len() as u64;
+    let blob_path = format!("blobs/{}.arrow", arrow_hash.replace(':', "-"));
+    let blob = FixtureBlob {
+        hash: arrow_hash.clone(),
+        path: blob_path.clone(),
+        size: arrow_size,
+        content_type: "application/vnd.apache.arrow.stream".to_string(),
+    };
+
+    let arrow_manifest = json!({
+        "chunks": [
+            {
+                "hash": arrow_hash,
+                "size": arrow_size,
+                "media_type": "application/vnd.apache.arrow.stream"
+            }
+        ],
+        "complete": true
+    });
+
+    let mut data = BTreeMap::new();
+    data.insert(
+        ARROW_STREAM_MANIFEST_MIME.to_string(),
+        inline(&serde_json::to_string(&arrow_manifest).unwrap()),
+    );
+    data.insert(
+        "text/plain".to_string(),
+        inline("shape: (3, 2)\nid | label\n1  | alpha\n2  | beta\n3  | gamma"),
+    );
+
+    let manifests = vec![OutputManifest::ExecuteResult {
+        output_id: fixture_output_id(scenario, "exec-001", 0),
+        data,
+        metadata: BTreeMap::new(),
+        execution_count: Some(1),
+    }];
+    fixture_add_execution(
+        &mut daemon,
+        &mut state_doc,
+        "cell-1",
+        "exec-001",
+        &manifests,
+    );
+
+    let test_manifest = json!({
+        "scenario": scenario,
+        "description": "Cell produces a Sift-compatible Arrow stream manifest with a real blob sidecar",
+        "expected": {
+            "cell_id": "cell-1",
+            "source": "import polars as pl\n# df contains utf8-view columns and is published as Arrow IPC\ndf",
+            "execution_count": "1",
+            "output_count": 1,
+            "output_ids": output_ids(&manifests),
+            "mime": ARROW_STREAM_MANIFEST_MIME,
+            "blob_hash": blob.hash,
+            "blob_path": blob_path,
+            "blob_content_type": blob.content_type,
+            "blob_size": arrow_size,
+        }
+    });
+
+    write_scenario_with_blobs(
+        scenario,
+        &mut daemon,
+        &mut state_doc,
+        test_manifest,
+        &[(blob, arrow_bytes)],
+    );
 }

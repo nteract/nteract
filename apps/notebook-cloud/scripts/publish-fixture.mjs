@@ -21,6 +21,7 @@ const wasmBytesUrl = new URL(
 
 await assertExists(wasmJsUrl);
 await assertExists(wasmBytesUrl);
+await assertExists(new URL("manifest.json", fixtureRoot));
 await assertExists(new URL("doc.bin", fixtureRoot));
 await assertExists(new URL("state_doc.bin", fixtureRoot));
 
@@ -32,11 +33,17 @@ const [snapshotBytes, runtimeSnapshotBytes] = await Promise.all([
   readFile(new URL("doc.bin", fixtureRoot)),
   readFile(new URL("state_doc.bin", fixtureRoot)),
 ]);
+const fixtureManifest = JSON.parse(await readFile(new URL("manifest.json", fixtureRoot), "utf8"));
+const fixtureBlobs = Array.isArray(fixtureManifest.blobs) ? fixtureManifest.blobs : [];
 const handle = NotebookHandle.load_snapshot(snapshotBytes, runtimeSnapshotBytes);
 const headsHash = headsDigest(handle.get_heads_hex());
 const runtimeHeadsHash = headsDigest(handle.get_runtime_state_heads_hex());
 const cells = JSON.parse(handle.get_cells_json());
 handle.free();
+
+for (const blob of fixtureBlobs) {
+  await uploadFixtureBlob(blob);
+}
 
 await putBytes(
   `/api/n/${encodeURIComponent(notebookId)}/runtime-snapshots/${encodeURIComponent(runtimeHeadsHash)}`,
@@ -54,6 +61,12 @@ await putBytes(
 
 const rendered = await fetchJson(`/api/n/${encodeURIComponent(notebookId)}/render`);
 assert(rendered.source === "snapshot-pair", "latest render was not materialized from snapshots");
+for (const blob of fixtureBlobs) {
+  assert(
+    rendered.blob_urls?.[blob.hash],
+    `materialized render did not include blob URL for ${blob.hash}`,
+  );
+}
 
 console.log(
   JSON.stringify(
@@ -70,16 +83,44 @@ console.log(
         (count, cell) => count + (Array.isArray(cell.outputs) ? cell.outputs.length : 0),
         0,
       ),
+      blobs: fixtureBlobs.length,
       checks: [
         "fixture_snapshot_pair_publish",
         "runtime_state_output_manifests",
         "latest_snapshot_materialization",
+        ...(fixtureBlobs.length > 0 ? ["fixture_blob_uploads", "blob_resolver_urls"] : []),
       ],
     },
     null,
     2,
   ),
 );
+
+async function uploadFixtureBlob(blob) {
+  assert(blob && typeof blob === "object", `Invalid fixture blob entry: ${JSON.stringify(blob)}`);
+  assert(typeof blob.hash === "string" && blob.hash.length > 0, "Fixture blob is missing hash");
+  assert(
+    typeof blob.path === "string" && blob.path.length > 0,
+    `Fixture blob ${blob.hash} is missing path`,
+  );
+
+  const blobUrl = new URL(blob.path, fixtureRoot);
+  await assertExists(blobUrl);
+  const bytes = await readFile(blobUrl);
+  if (blob.hash.startsWith("sha256:")) {
+    const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    assert(
+      digest === blob.hash,
+      `Fixture blob ${blob.path} hash mismatch: ${digest} !== ${blob.hash}`,
+    );
+  }
+
+  await putBytes(
+    `/api/n/${encodeURIComponent(notebookId)}/blobs/${encodeURIComponent(blob.hash)}`,
+    bytes,
+    typeof blob.content_type === "string" ? blob.content_type : "application/octet-stream",
+  );
+}
 
 function headsDigest(heads) {
   const input = heads.length > 0 ? heads.slice().sort().join("\n") : "empty";
