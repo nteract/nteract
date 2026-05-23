@@ -95,6 +95,7 @@ pub trait KernelConnection: Send {
         &mut self,
         execution_id: &str,
         source: &str,
+        source_cell_id: Option<&str>,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Send an interrupt_request via the control channel (SIGINT).

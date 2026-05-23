@@ -20,6 +20,7 @@ error reporting.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import linecache
 import logging
 import os
@@ -51,6 +52,10 @@ _CONTEXT_AFTER = 2
 # (raise-site) frames. Between them, a sentinel records the count.
 _MAX_HEAD_FRAMES = 5
 _MAX_TAIL_FRAMES = 5
+_MAX_CELL_REGISTRY_ENTRIES = 512
+
+_CELL_REGISTRY_ATTR = "_nteract_traceback_cell_registry"
+_CELL_REGISTRY_HOOK_ATTR = "_nteract_traceback_cell_registry_hook"
 
 _REDACT_ENV_VALUES_FLAG = "NTERACT_REDACT_ENV_VALUES_IN_OUTPUTS"
 _REDACTION_MARKER = "[redacted env]"
@@ -168,6 +173,167 @@ def _redact_payload(payload: dict[str, Any]) -> dict[str, Any]:
 # ─── Payload construction ───────────────────────────────────────────────────
 
 
+def _coerce_metadata_str(value: Any) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def _source_hash(source: str) -> str:
+    return "sha256:" + hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def _parent_metadata(parent: Any) -> dict[str, Any]:
+    if not isinstance(parent, dict):
+        return {}
+    metadata = parent.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _metadata_cell_id(metadata: dict[str, Any]) -> str | None:
+    nteract = metadata.get("nteract")
+    nteract_cell_id = nteract.get("cell_id") if isinstance(nteract, dict) else None
+    return (
+        _coerce_metadata_str(metadata.get("cellId"))
+        or _coerce_metadata_str(metadata.get("cell_id"))
+        or _coerce_metadata_str(nteract_cell_id)
+    )
+
+
+def _metadata_execution_id(metadata: dict[str, Any]) -> str | None:
+    nteract = metadata.get("nteract")
+    nteract_execution_id = nteract.get("execution_id") if isinstance(nteract, dict) else None
+    return _coerce_metadata_str(nteract_execution_id)
+
+
+def _current_parent(ip: Any | None) -> dict[str, Any]:
+    if ip is None:
+        return {}
+
+    get_parent = getattr(ip, "get_parent", None)
+    if callable(get_parent):
+        with contextlib.suppress(BaseException):
+            parent = get_parent()
+            if isinstance(parent, dict):
+                return parent
+
+    parent = getattr(ip, "parent_header", None)
+    return parent if isinstance(parent, dict) else {}
+
+
+def _current_execution_context(ip: Any | None) -> dict[str, str]:
+    parent = _current_parent(ip)
+    metadata = _parent_metadata(parent)
+    header = parent.get("header") if isinstance(parent, dict) else None
+    header = header if isinstance(header, dict) else {}
+
+    context = {
+        "cell_id": _metadata_cell_id(metadata),
+        "execution_id": _metadata_execution_id(metadata)
+        or _coerce_metadata_str(header.get("msg_id")),
+    }
+    return {key: value for key, value in context.items() if value}
+
+
+def _filename_for_cell_source(raw_cell: str) -> str | None:
+    try:
+        from ipykernel.compiler import get_file_name
+
+        return get_file_name(raw_cell)
+    except BaseException as err:  # noqa: BLE001
+        log.debug("rich traceback cell filename unavailable: %r", err)
+        return None
+
+
+def _cell_registry(ip: Any) -> dict[str, dict[str, str]]:
+    registry = getattr(ip, _CELL_REGISTRY_ATTR, None)
+    if not isinstance(registry, dict):
+        registry = {}
+        setattr(ip, _CELL_REGISTRY_ATTR, registry)
+    return registry
+
+
+def _register_cell_source(
+    ip: Any,
+    raw_cell: Any,
+    *,
+    cell_id: str | None,
+    execution_id: str | None,
+) -> None:
+    if not isinstance(raw_cell, str):
+        return
+    filename = _filename_for_cell_source(raw_cell)
+    if not filename:
+        return
+
+    provenance = {
+        "cell_id": cell_id,
+        "execution_id": execution_id,
+        "source_hash": _source_hash(raw_cell),
+    }
+    provenance = {key: value for key, value in provenance.items() if value}
+    if not provenance:
+        return
+
+    registry = _cell_registry(ip)
+    registry[filename] = provenance
+    while len(registry) > _MAX_CELL_REGISTRY_ENTRIES:
+        with contextlib.suppress(StopIteration):
+            registry.pop(next(iter(registry)))
+
+
+def _provenance_for_filename(ip: Any | None, filename: str) -> dict[str, str]:
+    if ip is None or not filename:
+        return {}
+    registry = getattr(ip, _CELL_REGISTRY_ATTR, None)
+    if not isinstance(registry, dict):
+        return {}
+    provenance = registry.get(filename)
+    return provenance.copy() if isinstance(provenance, dict) else {}
+
+
+def _install_cell_registry_hook(ip: Any) -> None:
+    if getattr(ip, _CELL_REGISTRY_HOOK_ATTR, False):
+        return
+
+    events = getattr(ip, "events", None)
+    register = getattr(events, "register", None)
+    if not callable(register):
+        return
+
+    callbacks = getattr(events, "callbacks", {})
+    callbacks = callbacks.get("pre_run_cell", []) if isinstance(callbacks, dict) else []
+    if any(getattr(callback, "_nteract_cell_registry_hook", False) for callback in callbacks):
+        setattr(ip, _CELL_REGISTRY_HOOK_ATTR, True)
+        return
+
+    def _nteract_pre_run_cell(info: Any) -> None:
+        try:
+            parent = _current_parent(ip)
+            metadata = _parent_metadata(parent)
+            cell_id = _coerce_metadata_str(getattr(info, "cell_id", None)) or _metadata_cell_id(
+                metadata
+            )
+            header = parent.get("header") if isinstance(parent, dict) else None
+            header = header if isinstance(header, dict) else {}
+            execution_id = _metadata_execution_id(metadata) or _coerce_metadata_str(
+                header.get("msg_id")
+            )
+            _register_cell_source(
+                ip,
+                getattr(info, "raw_cell", None),
+                cell_id=cell_id,
+                execution_id=execution_id,
+            )
+        except BaseException as err:  # noqa: BLE001
+            log.debug("rich traceback cell registry hook failed: %r", err)
+
+    _nteract_pre_run_cell._nteract_cell_registry_hook = True
+    with contextlib.suppress(BaseException):
+        register("pre_run_cell", _nteract_pre_run_cell)
+        setattr(ip, _CELL_REGISTRY_HOOK_ATTR, True)
+
+
 def _is_library_frame(filename: str) -> bool:
     if not filename:
         return True
@@ -238,7 +404,12 @@ def _strip_leading_library_frames(frames: list[dict[str, Any]]) -> list[dict[str
     return frames
 
 
-def _build_syntax_error_payload(etype: Any, evalue: Any, tb: Any) -> dict[str, Any]:
+def _build_syntax_error_payload(
+    etype: Any,
+    evalue: Any,
+    tb: Any,
+    ip: Any | None,
+) -> dict[str, Any]:
     """Special-case payload for `SyntaxError` and friends.
 
     Parse errors never have a user-code frame — IPython raises from
@@ -273,25 +444,36 @@ def _build_syntax_error_payload(etype: Any, evalue: Any, tb: Any) -> dict[str, A
     end_offset = end_offset_raw if isinstance(end_offset_raw, int) and end_offset_raw > 0 else 0
     text = getattr(evalue, "text", "") or ""
     msg = getattr(evalue, "msg", None) or str(evalue)
-    return {
+    syntax = {
+        "filename": filename,
+        "lineno": lineno,
+        "offset": offset,
+        "end_lineno": end_lineno,
+        "end_offset": end_offset,
+        "text": text.rstrip("\n"),
+        "msg": msg,
+    }
+    syntax.update(_provenance_for_filename(ip, filename))
+    payload: dict[str, Any] = {
         "ename": etype.__name__ if isinstance(etype, type) else str(etype),
         "evalue": str(evalue),
         "frames": [],
         "language": "python",
         "text": "".join(_pytraceback.format_exception(etype, evalue, tb)),
-        "syntax": {
-            "filename": filename,
-            "lineno": lineno,
-            "offset": offset,
-            "end_lineno": end_lineno,
-            "end_offset": end_offset,
-            "text": text.rstrip("\n"),
-            "msg": msg,
-        },
+        "syntax": syntax,
     }
+    execution = _current_execution_context(ip)
+    if execution:
+        payload["execution"] = execution
+    return payload
 
 
-def build_rich_payload(etype: Any, evalue: Any, tb: Any) -> dict[str, Any]:
+def build_rich_payload(
+    etype: Any,
+    evalue: Any,
+    tb: Any,
+    ip: Any | None = None,
+) -> dict[str, Any]:
     """Structure an exception into the rich traceback payload.
 
     Assumes the caller protects against exceptions from this function —
@@ -301,7 +483,7 @@ def build_rich_payload(etype: Any, evalue: Any, tb: Any) -> dict[str, Any]:
     # no user-code frame, but the exception object has the caret info
     # (offset, text) we want to render.
     if isinstance(evalue, SyntaxError):
-        return _redact_payload(_build_syntax_error_payload(etype, evalue, tb))
+        return _redact_payload(_build_syntax_error_payload(etype, evalue, tb, ip))
 
     raw_frames = []
     for f in _pytraceback.extract_tb(tb):
@@ -309,27 +491,29 @@ def build_rich_payload(etype: Any, evalue: Any, tb: Any) -> dict[str, Any]:
         # as 0 so the manifest stays numeric. `linecache.getline` with
         # lineno=0 returns "" which is what we want (no context).
         lineno = f.lineno or 0
-        raw_frames.append(
-            {
-                "filename": f.filename,
-                "lineno": lineno,
-                "name": f.name,
-                "lines": _source_window(f.filename, lineno),
-                "library": _is_library_frame(f.filename),
-            }
-        )
+        frame = {
+            "filename": f.filename,
+            "lineno": lineno,
+            "name": f.name,
+            "lines": _source_window(f.filename, lineno),
+            "library": _is_library_frame(f.filename),
+        }
+        frame.update(_provenance_for_filename(ip, f.filename))
+        raw_frames.append(frame)
     frames = _clip_frames(_strip_leading_library_frames(raw_frames))
     text = "".join(_pytraceback.format_exception(etype, evalue, tb))
     ename = etype.__name__ if isinstance(etype, type) else str(etype)
-    return _redact_payload(
-        {
-            "ename": ename,
-            "evalue": str(evalue),
-            "frames": frames,
-            "language": "python",
-            "text": text,
-        }
-    )
+    payload: dict[str, Any] = {
+        "ename": ename,
+        "evalue": str(evalue),
+        "frames": frames,
+        "language": "python",
+        "text": text,
+    }
+    execution = _current_execution_context(ip)
+    if execution:
+        payload["execution"] = execution
+    return _redact_payload(payload)
 
 
 # ─── Safe showtraceback wrapper ─────────────────────────────────────────────
@@ -341,6 +525,8 @@ def install(ip: Any) -> None:
     Tagged with ``_nteract_installed`` so re-installs (e.g. dev
     hot-reload) don't stack.
     """
+    _install_cell_registry_hook(ip)
+
     existing = getattr(ip, "_showtraceback", None)
     if existing is not None and getattr(existing, "_nteract_installed", False):
         return
@@ -363,7 +549,7 @@ def install(ip: Any) -> None:
             from IPython.display import publish_display_data
 
             tb = evalue.__traceback__ if isinstance(evalue, BaseException) else None
-            payload = build_rich_payload(etype, evalue, tb)
+            payload = build_rich_payload(etype, evalue, tb, self)
             publish_display_data(data={TRACEBACK_MIME: payload}, metadata={})
         except (SystemExit, KeyboardInterrupt):
             # Intentional control flow — propagate.

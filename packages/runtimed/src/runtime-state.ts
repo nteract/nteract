@@ -180,6 +180,11 @@ export interface ExecutionState {
   status: "queued" | "running" | "done" | "error";
   execution_count: number | null;
   success: boolean | null;
+  /**
+   * Notebook cell whose source created this execution, when applicable.
+   * Execution identity remains `execution_id`; this is provenance only.
+   */
+  source_cell_id?: string | null;
   /** Queue sequence number from RuntimeStateDoc; used as execution recency. */
   seq?: number | null;
   /**

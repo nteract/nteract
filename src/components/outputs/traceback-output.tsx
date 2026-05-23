@@ -37,6 +37,10 @@ interface Frame {
   lineno: number;
   /** Enclosing function / method / module name. */
   name: string;
+  /** Notebook cell provenance for clients that want to jump to source. */
+  cell_id?: string;
+  execution_id?: string;
+  source_hash?: string;
   /** Optional source-context window — lines around `lineno`. */
   lines?: Line[];
   /** Optional "in library code" flag; lets the UI dim non-user frames. */
@@ -54,6 +58,9 @@ interface SyntaxInfo {
   filename: string;
   lineno: number;
   offset: number;
+  cell_id?: string;
+  execution_id?: string;
+  source_hash?: string;
   /**
    * End of the offending token (Python 3.11+). 0 means "absent" — the
    * renderer falls back to a single-column caret. When set, we underline
@@ -79,6 +86,10 @@ interface TracebackPayload {
    * ship "typescript" here. Unknown values fall back to plain text.
    */
   language?: string;
+  execution?: {
+    cell_id?: string;
+    execution_id?: string;
+  };
   /**
    * Paste-ready plain text version of the traceback — ANSI-stripped,
    * in the same shape the kernel would emit as `text/llm+plain`. Used

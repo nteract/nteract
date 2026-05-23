@@ -245,7 +245,12 @@ async fn queue_cell_if_current(
             if sd.get_execution(&execution_id).is_some() {
                 return Ok(false);
             }
-            sd.create_execution_with_source(&execution_id, &cell.source, seq)
+            sd.create_execution_with_source_and_cell(
+                &execution_id,
+                &cell.source,
+                seq,
+                Some(cell_id),
+            )
         }) {
             Ok(true) => break,
             Ok(false) if requested_execution_id.is_none() => {

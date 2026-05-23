@@ -8,6 +8,7 @@ code blows up in creative ways.
 from __future__ import annotations
 
 import json
+import linecache
 from types import SimpleNamespace
 
 import pytest
@@ -300,6 +301,111 @@ class _FakeShell:
         import types as _t
 
         self._showtraceback = _t.MethodType(_original, self)
+
+
+class _FakeEvents:
+    def __init__(self):
+        self.callbacks = {"pre_run_cell": []}
+
+    def register(self, event, function):
+        self.callbacks.setdefault(event, []).append(function)
+
+
+class _FakeKernelShell(_FakeShell):
+    def __init__(self, parent):
+        super().__init__()
+        self.parent = parent
+        self.events = _FakeEvents()
+
+    def get_parent(self):
+        return self.parent
+
+
+def test_install_registers_pre_run_cell_provenance_hook(monkeypatch):
+    monkeypatch.setattr(
+        _traceback,
+        "_filename_for_cell_source",
+        lambda _raw_cell: "/tmp/ipykernel_1/abc.py",
+    )
+    ip = _FakeKernelShell(
+        {
+            "metadata": {"cellId": "cell-1", "nteract": {"execution_id": "exec-1"}},
+            "header": {"msg_id": "exec-1"},
+        }
+    )
+
+    install(ip)
+    callbacks = ip.events.callbacks["pre_run_cell"]
+    assert len(callbacks) == 1
+
+    callbacks[0](SimpleNamespace(raw_cell="x = 1", cell_id="cell-1"))
+
+    registry = getattr(ip, _traceback._CELL_REGISTRY_ATTR)
+    assert registry["/tmp/ipykernel_1/abc.py"]["cell_id"] == "cell-1"
+    assert registry["/tmp/ipykernel_1/abc.py"]["execution_id"] == "exec-1"
+    assert registry["/tmp/ipykernel_1/abc.py"]["source_hash"].startswith("sha256:")
+
+
+def test_build_payload_attaches_cell_provenance_to_prior_function_frame():
+    filename = "/tmp/ipykernel_1/defined_elsewhere.py"
+    source = "def defined_elsewhere():\n    raise RuntimeError('from definition')\n"
+    linecache.cache[filename] = (len(source), None, source.splitlines(True), filename)
+    ip = SimpleNamespace(
+        parent_header={
+            "metadata": {"cellId": "cell-run"},
+            "header": {"msg_id": "exec-run"},
+        }
+    )
+    setattr(
+        ip,
+        _traceback._CELL_REGISTRY_ATTR,
+        {
+            filename: {
+                "cell_id": "cell-def",
+                "execution_id": "exec-def",
+                "source_hash": "sha256:def",
+            }
+        },
+    )
+    namespace = {}
+    try:
+        exec(compile(source, filename, "exec"), namespace)
+        namespace["defined_elsewhere"]()
+    except RuntimeError as exc:
+        payload = build_rich_payload(type(exc), exc, exc.__traceback__, ip)
+    finally:
+        linecache.cache.pop(filename, None)
+
+    frame = next(frame for frame in payload["frames"] if frame["filename"] == filename)
+    assert frame["cell_id"] == "cell-def"
+    assert frame["execution_id"] == "exec-def"
+    assert frame["source_hash"] == "sha256:def"
+    assert payload["execution"] == {"cell_id": "cell-run", "execution_id": "exec-run"}
+
+
+def test_syntax_error_payload_attaches_cell_provenance():
+    filename = "/tmp/ipykernel_1/syntax.py"
+    ip = SimpleNamespace()
+    setattr(
+        ip,
+        _traceback._CELL_REGISTRY_ATTR,
+        {
+            filename: {
+                "cell_id": "cell-syntax",
+                "execution_id": "exec-syntax",
+                "source_hash": "sha256:syntax",
+            }
+        },
+    )
+
+    try:
+        compile("def oops(\n", filename, "exec")
+    except SyntaxError as exc:
+        payload = build_rich_payload(type(exc), exc, exc.__traceback__, ip)
+
+    assert payload["syntax"]["cell_id"] == "cell-syntax"
+    assert payload["syntax"]["execution_id"] == "exec-syntax"
+    assert payload["syntax"]["source_hash"] == "sha256:syntax"
 
 
 def test_install_replaces_showtraceback_and_tags_for_idempotency(monkeypatch):

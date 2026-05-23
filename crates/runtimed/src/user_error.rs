@@ -45,6 +45,13 @@ pub struct RichFrame {
     pub filename: String,
     pub lineno: u32,
     pub name: String,
+    /// Notebook cell provenance for frames compiled from notebook source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lines: Option<Vec<RichLine>>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -64,6 +71,12 @@ pub struct RichSyntax {
     pub filename: String,
     pub lineno: u32,
     pub offset: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_hash: Option<String>,
     #[serde(default)]
     pub end_lineno: u32,
     #[serde(default)]
@@ -80,6 +93,8 @@ pub struct RichTraceback {
     pub frames: Vec<RichFrame>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<RichExecutionContext>,
     /// Paste-ready plain text — the ANSI-stripped `traceback.format_exception`
     /// output. Frontend Copy button writes this verbatim.
     pub text: String,
@@ -87,6 +102,15 @@ pub struct RichTraceback {
     /// dedicated source-line + caret layout instead of a frame list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub syntax: Option<RichSyntax>,
+}
+
+/// Execution context attached to the traceback as a whole.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RichExecutionContext {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<String>,
 }
 
 /// A user-code error, regardless of wire shape.
@@ -277,6 +301,7 @@ pub fn parse_ansi_traceback(
         evalue: effective_evalue,
         frames,
         language: Some("python".to_string()),
+        execution: None,
         text,
         syntax: None,
     })
@@ -342,6 +367,9 @@ impl PendingFrame {
             filename: self.filename,
             lineno: self.lineno,
             name: self.name,
+            cell_id: None,
+            execution_id: None,
+            source_hash: None,
             lines: if self.lines.is_empty() {
                 None
             } else {
@@ -756,6 +784,45 @@ mod tests {
     }
 
     #[test]
+    fn from_nbformat_rich_preserves_cell_provenance() {
+        let v = json!({
+            "output_type": "display_data",
+            "data": {
+                TRACEBACK_MIME: {
+                    "ename": "RuntimeError",
+                    "evalue": "bad",
+                    "execution": {
+                        "cell_id": "cell-run",
+                        "execution_id": "exec-run"
+                    },
+                    "frames": [{
+                        "filename": "/tmp/ipykernel_1/123.py",
+                        "lineno": 2,
+                        "name": "boom",
+                        "cell_id": "cell-def",
+                        "execution_id": "exec-def",
+                        "source_hash": "sha256:abc"
+                    }],
+                    "text": "RuntimeError: bad"
+                }
+            },
+        });
+        let ue = UserErrorOutput::from_nbformat(&v).unwrap();
+        let UserErrorOutput::Rich(rt) = ue else {
+            panic!("expected rich traceback");
+        };
+        assert_eq!(
+            rt.execution
+                .as_ref()
+                .and_then(|execution| execution.cell_id.as_deref()),
+            Some("cell-run")
+        );
+        assert_eq!(rt.frames[0].cell_id.as_deref(), Some("cell-def"));
+        assert_eq!(rt.frames[0].execution_id.as_deref(), Some("exec-def"));
+        assert_eq!(rt.frames[0].source_hash.as_deref(), Some("sha256:abc"));
+    }
+
+    #[test]
     fn from_nbformat_none_for_unrelated() {
         assert!(UserErrorOutput::from_nbformat(
             &json!({"output_type": "stream", "name": "stdout", "text": "hi"})
@@ -776,6 +843,7 @@ mod tests {
             evalue: "division by zero".into(),
             frames: vec![],
             language: Some("python".into()),
+            execution: None,
             text: "Traceback (most recent call last):\n  File \"/tmp/x.py\", line 1, in <module>\n    1/0\nZeroDivisionError: division by zero".into(),
             syntax: None,
         };
@@ -979,6 +1047,7 @@ mod tests {
             evalue: "line one\nline two\nline three".into(),
             frames: vec![],
             language: Some("python".into()),
+            execution: None,
             text: "Traceback (most recent call last):\n  File \"/tmp/x.py\", line 1, in t\n    assert False, \"line one\\nline two\\nline three\"\nAssertionError: line one\nline two\nline three".into(),
             syntax: None,
         };
@@ -1004,6 +1073,7 @@ mod tests {
             evalue: "v".into(),
             frames: vec![],
             language: Some("python".into()),
+            execution: None,
             text: "line1\nline2\n".into(),
             syntax: None,
         };
