@@ -11,6 +11,7 @@ export interface AuthenticatedConnection {
   operator: string;
   actorLabel: string;
   scope: ConnectionScope;
+  webSocketProtocol?: string;
 }
 
 export interface IdentityEnvironment {
@@ -23,8 +24,9 @@ const ANONYMOUS_PRINCIPAL_PREFIX = "anonymous:";
 export const TRUSTED_PRINCIPAL_HEADER = "x-nteract-principal";
 export const TRUSTED_OPERATOR_HEADER = "x-nteract-operator";
 export const TRUSTED_SCOPE_HEADER = "x-nteract-scope";
+export const TRUSTED_WEBSOCKET_PROTOCOL_HEADER = "x-nteract-websocket-protocol";
 export const DEV_AUTH_TOKEN_HEADER = "x-notebook-cloud-dev-token";
-export const DEV_AUTH_TOKEN_QUERY = "dev_token";
+export const DEV_AUTH_TOKEN_PROTOCOL_PREFIX = "nteract-dev-token.";
 
 export class AuthError extends Error {
   constructor(
@@ -44,11 +46,15 @@ export function authenticateRequest(
     return authenticateAnonymousViewer(request);
   }
 
-  if (!allowsDevCredential(request, env)) {
+  const devCredential = authenticateDevCredential(request, env);
+  if (!devCredential) {
     throw new AuthError("dev credentials require a local request or NOTEBOOK_CLOUD_DEV_TOKEN", 401);
   }
 
-  return authenticateDevRequest(request);
+  const identity = authenticateDevRequest(request);
+  return devCredential.webSocketProtocol
+    ? { ...identity, webSocketProtocol: devCredential.webSocketProtocol }
+    : identity;
 }
 
 export function authenticateDevRequest(request: Request): AuthenticatedConnection {
@@ -100,6 +106,11 @@ export function stampTrustedIdentity(request: Request, identity: AuthenticatedCo
   headers.set(TRUSTED_PRINCIPAL_HEADER, identity.principal);
   headers.set(TRUSTED_OPERATOR_HEADER, identity.operator);
   headers.set(TRUSTED_SCOPE_HEADER, identity.scope);
+  if (identity.webSocketProtocol) {
+    headers.set(TRUSTED_WEBSOCKET_PROTOCOL_HEADER, identity.webSocketProtocol);
+  } else {
+    headers.delete(TRUSTED_WEBSOCKET_PROTOCOL_HEADER);
+  }
   return new Request(request, { headers });
 }
 
@@ -107,6 +118,7 @@ export function readTrustedIdentity(request: Request): AuthenticatedConnection {
   const principal = request.headers.get(TRUSTED_PRINCIPAL_HEADER);
   const operator = request.headers.get(TRUSTED_OPERATOR_HEADER);
   const scope = request.headers.get(TRUSTED_SCOPE_HEADER);
+  const webSocketProtocol = request.headers.get(TRUSTED_WEBSOCKET_PROTOCOL_HEADER) ?? undefined;
 
   if (!principal || !operator || !scope) {
     throw new Error("missing trusted identity headers");
@@ -116,12 +128,13 @@ export function readTrustedIdentity(request: Request): AuthenticatedConnection {
   validateOperator(operator);
 
   const parsedScope = parseScope(scope);
-  return {
+  const identity = {
     principal,
     operator,
     actorLabel: `${principal}/${operator}`,
     scope: parsedScope,
   };
+  return webSocketProtocol ? { ...identity, webSocketProtocol } : identity;
 }
 
 export function principalForDevUser(user: string): string {
@@ -252,8 +265,15 @@ function hasDevCredential(request: Request): boolean {
   );
 }
 
-function allowsDevCredential(request: Request, env: IdentityEnvironment): boolean {
-  return isLocalDevRequest(request, env) || hasValidDevToken(request, env);
+function authenticateDevCredential(
+  request: Request,
+  env: IdentityEnvironment,
+): { webSocketProtocol?: string } | undefined {
+  if (isLocalDevRequest(request, env)) {
+    return {};
+  }
+
+  return validDevTokenCredential(request, env);
 }
 
 function isLocalDevRequest(request: Request, env: IdentityEnvironment): boolean {
@@ -265,15 +285,58 @@ function isLocalDevRequest(request: Request, env: IdentityEnvironment): boolean 
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
 }
 
-function hasValidDevToken(request: Request, env: IdentityEnvironment): boolean {
+function validDevTokenCredential(
+  request: Request,
+  env: IdentityEnvironment,
+): { webSocketProtocol?: string } | undefined {
   const expected = env.NOTEBOOK_CLOUD_DEV_TOKEN?.trim();
   if (!expected) {
-    return false;
+    return undefined;
   }
 
-  const url = new URL(request.url);
-  const presented = headerOrQuery(request, url, DEV_AUTH_TOKEN_HEADER, DEV_AUTH_TOKEN_QUERY);
-  return timingSafeStringEqual(presented, expected);
+  const headerToken = request.headers.get(DEV_AUTH_TOKEN_HEADER) ?? undefined;
+  if (timingSafeStringEqual(headerToken, expected)) {
+    return {};
+  }
+
+  const webSocketProtocol = tokenFromWebSocketProtocol(
+    request.headers.get("sec-websocket-protocol"),
+  );
+  if (webSocketProtocol && timingSafeStringEqual(webSocketProtocol.token, expected)) {
+    return { webSocketProtocol: webSocketProtocol.protocol };
+  }
+
+  return undefined;
+}
+
+function tokenFromWebSocketProtocol(
+  value: string | null,
+): { protocol: string; token: string } | undefined {
+  if (!value) return undefined;
+
+  for (const protocol of value.split(",")) {
+    const trimmed = protocol.trim();
+    if (!trimmed.startsWith(DEV_AUTH_TOKEN_PROTOCOL_PREFIX)) continue;
+    const token = decodeBase64Url(trimmed.slice(DEV_AUTH_TOKEN_PROTOCOL_PREFIX.length));
+    if (!token) continue;
+    return { protocol: trimmed, token };
+  }
+
+  return undefined;
+}
+
+function decodeBase64Url(value: string): string | undefined {
+  if (value.length === 0) return undefined;
+
+  try {
+    const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
+    const binary = atob(padded);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return undefined;
+  }
 }
 
 function defaultOperator(): string {

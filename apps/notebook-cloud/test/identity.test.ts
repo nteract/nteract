@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   AuthError,
+  DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
   authenticateAnonymousViewer,
   authenticateDevRequest,
   authenticateRequest,
@@ -87,7 +88,7 @@ describe("dev identity", () => {
     assert.equal(identity.scope, "owner");
   });
 
-  it("rejects remote dev credentials unless the prototype admin token matches", () => {
+  it("rejects remote dev credentials unless the prototype admin token is presented out of band", () => {
     const request = new Request(
       "https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=owner",
     );
@@ -97,14 +98,36 @@ describe("dev identity", () => {
       (error) => error instanceof AuthError && error.status === 401,
     );
 
-    const authenticated = authenticateRequest(
-      new Request(
-        "https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=owner&dev_token=secret",
-      ),
+    const queryToken = new Request(
+      "https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=owner&dev_token=secret",
+    );
+    assert.throws(
+      () =>
+        authenticateRequest(queryToken, {
+          DEPLOYMENT_ENV: "prototype",
+          NOTEBOOK_CLOUD_DEV_TOKEN: "secret",
+        }),
+      (error) => error instanceof AuthError && error.status === 401,
+    );
+
+    const devProtocol = `${DEV_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url("secret")}`;
+    const websocketProtocolToken = authenticateRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=owner", {
+        headers: {
+          "Sec-WebSocket-Protocol": devProtocol,
+        },
+      }),
       { DEPLOYMENT_ENV: "prototype", NOTEBOOK_CLOUD_DEV_TOKEN: "secret" },
     );
-    assert.equal(authenticated.actorLabel, "user:dev:alice/desktop:a");
-    assert.equal(authenticated.scope, "owner");
+    assert.equal(websocketProtocolToken.actorLabel, "user:dev:alice/desktop:a");
+    assert.equal(websocketProtocolToken.scope, "owner");
+    assert.equal(websocketProtocolToken.webSocketProtocol, devProtocol);
+    assert.equal(
+      readTrustedIdentity(
+        stampTrustedIdentity(new Request("https://cloud.test/n/demo/sync"), websocketProtocolToken),
+      ).webSocketProtocol,
+      devProtocol,
+    );
   });
 
   it("accepts remote dev token from headers and rejects same-prefix guesses", () => {
@@ -205,3 +228,12 @@ describe("dev identity", () => {
     );
   });
 });
+
+function base64Url(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}

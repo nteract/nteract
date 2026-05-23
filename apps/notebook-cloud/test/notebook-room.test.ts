@@ -2,8 +2,19 @@ import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import type { CloudflareWebSocket, DurableObjectState, Env } from "../src/cloudflare-types.ts";
-import { authenticateAnonymousViewer, authenticateDevRequest } from "../src/identity.ts";
-import { NotebookRoom, rewritePresenceFrame, shouldBroadcastFrame } from "../src/notebook-room.ts";
+import {
+  DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
+  TRUSTED_WEBSOCKET_PROTOCOL_HEADER,
+  authenticateAnonymousViewer,
+  authenticateDevRequest,
+  stampTrustedIdentity,
+} from "../src/identity.ts";
+import {
+  NotebookRoom,
+  rewritePresenceFrame,
+  shouldBroadcastFrame,
+  webSocketUpgradeHeaders,
+} from "../src/notebook-room.ts";
 import {
   FrameType,
   decodeJsonPayload,
@@ -110,6 +121,31 @@ describe("NotebookRoom presence rewrite", () => {
 });
 
 describe("NotebookRoom peer lifecycle", () => {
+  it("echoes the trusted dev auth WebSocket subprotocol in upgrade headers", () => {
+    const webSocketProtocol = `${DEV_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url("secret")}`;
+    const identity = {
+      ...authenticateAnonymousViewer(
+        new Request("https://cloud.test/n/demo/sync?viewer_session=anon-a"),
+      ),
+      webSocketProtocol,
+    };
+    const stamped = stampTrustedIdentity(new Request("https://cloud.test/n/demo/sync"), identity);
+
+    assert.equal(
+      webSocketUpgradeHeaders(identity).get("Sec-WebSocket-Protocol"),
+      webSocketProtocol,
+    );
+    assert.equal(
+      webSocketUpgradeHeaders(
+        authenticateAnonymousViewer(
+          new Request("https://cloud.test/n/demo/sync?viewer_session=anon-b"),
+        ),
+      ).has("Sec-WebSocket-Protocol"),
+      false,
+    );
+    assert.equal(stamped.headers.get(TRUSTED_WEBSOCKET_PROTOCOL_HEADER), webSocketProtocol);
+  });
+
   it("does not silently resurrect a removed hibernated peer", () => {
     const room = new NotebookRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
@@ -250,4 +286,13 @@ class FakeSocket {
   asCloudflareWebSocket(): CloudflareWebSocket {
     return this as unknown as CloudflareWebSocket;
   }
+}
+
+function base64Url(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }

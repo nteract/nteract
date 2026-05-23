@@ -123,6 +123,7 @@ export class NotebookRoom {
 
     return new Response(null, {
       status: 101,
+      headers: webSocketUpgradeHeaders(identity),
       webSocket: client,
     } as ResponseInit & { webSocket: CloudflareWebSocket });
   }
@@ -506,6 +507,14 @@ export function shouldBroadcastFrame(
   identity: AuthenticatedConnection,
 ): boolean {
   return !(frame.type === FrameType.PRESENCE && isAnonymousViewer(identity));
+}
+
+export function webSocketUpgradeHeaders(identity: AuthenticatedConnection): Headers {
+  const headers = new Headers();
+  if (identity.webSocketProtocol) {
+    headers.set("Sec-WebSocket-Protocol", identity.webSocketProtocol);
+  }
+  return headers;
 }
 
 export function rewritePresenceFrame(
