@@ -4,6 +4,9 @@ export interface Env {
   NOTEBOOK_SNAPSHOTS?: R2Bucket;
   ASSETS?: WorkerAssets;
   DEPLOYMENT_ENV?: string;
+  NOTEBOOK_CLOUD_ACCESS_AUD?: string;
+  NOTEBOOK_CLOUD_ACCESS_JWKS_JSON?: string;
+  NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN?: string;
   NOTEBOOK_CLOUD_DEV_TOKEN?: string;
   RENDERER_ASSETS_BASE_URL?: string;
 }

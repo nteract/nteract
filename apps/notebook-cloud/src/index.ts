@@ -4,7 +4,7 @@ import {
   AuthError,
   allowsBlobUpload,
   allowsPublish,
-  authenticateRequest,
+  authenticateRequestWithProviders,
   DEV_AUTH_TOKEN_HEADER,
   stampTrustedIdentity,
   type AuthenticatedConnection,
@@ -231,7 +231,7 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
     return json({ error: "expected WebSocket upgrade" }, 426);
   }
 
-  const identity = authenticateRequestOrResponse(request, env);
+  const identity = await authenticateRequestOrResponse(request, env);
   if (identity instanceof Response) {
     return identity;
   }
@@ -737,7 +737,7 @@ async function routeBlob(
     return json({ error: "method not allowed" }, 405);
   }
 
-  const identity = authenticateRequestOrResponse(request, env);
+  const identity = await authenticateRequestOrResponse(request, env);
   if (identity instanceof Response) {
     return identity;
   }
@@ -798,12 +798,12 @@ async function safeEnsureCatalogSchema(env: Env, ctx: ExecutionContext): Promise
   );
 }
 
-function authenticateRequestOrResponse(
+async function authenticateRequestOrResponse(
   request: Request,
   env: Env,
-): AuthenticatedConnection | Response {
+): Promise<AuthenticatedConnection | Response> {
   try {
-    return authenticateRequest(request, env);
+    return await authenticateRequestWithProviders(request, env);
   } catch (error) {
     if (error instanceof AuthError) {
       return json({ error: error.message }, error.status);
@@ -818,7 +818,7 @@ async function authenticateAndAuthorizeOrResponse(
   notebookId: string,
   requestedScope: ConnectionScope,
 ): Promise<AuthenticatedConnection | Response> {
-  const identity = authenticateRequestOrResponse(request, env);
+  const identity = await authenticateRequestOrResponse(request, env);
   if (identity instanceof Response) {
     return identity;
   }
@@ -847,7 +847,7 @@ async function authorizePublishOrCreateOrResponse(
   notebookId: string,
   artifactName: string,
 ): Promise<AuthenticatedConnection | Response> {
-  const identity = authenticateRequestOrResponse(request, env);
+  const identity = await authenticateRequestOrResponse(request, env);
   if (identity instanceof Response) {
     return identity;
   }
