@@ -19,19 +19,13 @@ import {
 } from "@nteract/sift";
 import "@nteract/sift/style.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-
-declare const __SIFT_WASM_CACHE_KEY__: string | undefined;
+import type { NteractEmbedHostContext } from "@/components/isolated/host-context";
+import type { RendererInstallContext, RendererProps } from "@/lib/renderer-registry";
+import { resolveSiftWasmUrl } from "./sift-assets";
 
 const ARROW_STREAM_MANIFEST_MIME = "application/vnd.nteract.arrow-stream-manifest+json";
 
 // --- Types ---
-
-interface RendererProps {
-  data: unknown;
-  metadata?: Record<string, unknown>;
-  mimeType: string;
-  interactionActive?: boolean;
-}
 
 interface RendererArrowStreamManifestChunk {
   url?: unknown;
@@ -45,21 +39,25 @@ interface RendererArrowStreamManifest {
 // --- WASM configuration ---
 
 let wasmConfigured = false;
-
-const SIFT_WASM_CACHE_KEY =
-  typeof __SIFT_WASM_CACHE_KEY__ === "string" ? __SIFT_WASM_CACHE_KEY__ : "dev";
+let configuredWasmUrl: string | undefined;
+let lastTableUrl: string | undefined;
+let getHostContext: (() => NteractEmbedHostContext | undefined) | undefined;
+let unsubscribeHostContext: (() => void) | undefined;
 
 /**
- * Extract the blob server origin from a blob URL and configure WASM
- * to load from the same server's /plugins/ route.
+ * Configure Sift's WASM sidecar from the host's renderer asset base.
+ * The daemon fallback remains the blob URL origin's /plugins/ route.
  */
 function configureWasm(blobUrl: string): void {
-  if (wasmConfigured) return;
+  lastTableUrl = blobUrl;
   try {
-    const parsed = new URL(blobUrl);
-    const wasmUrl = new URL("/plugins/sift_wasm.wasm", parsed.origin);
-    wasmUrl.searchParams.set("v", SIFT_WASM_CACHE_KEY);
-    setWasmUrl(wasmUrl.toString());
+    const nextUrl = resolveSiftWasmUrl({
+      tableUrl: blobUrl,
+      rendererAssetsBaseUrl: getHostContext?.()?.nteract?.rendererAssetsBaseUrl,
+    });
+    if (wasmConfigured && configuredWasmUrl === nextUrl) return;
+    setWasmUrl(nextUrl);
+    configuredWasmUrl = nextUrl;
     wasmConfigured = true;
   } catch (err) {
     console.warn("[sift-renderer] configureWasm failed, using defaults:", err);
@@ -202,9 +200,13 @@ function SiftRenderer({ data, mimeType, interactionActive = false }: RendererPro
 
 // --- Plugin install ---
 
-export function install(ctx: {
-  register: (mimeTypes: string[], component: React.ComponentType<RendererProps>) => void;
-}) {
+export function install(ctx: RendererInstallContext) {
+  getHostContext = ctx.getHostContext;
+  unsubscribeHostContext?.();
+  unsubscribeHostContext = ctx.subscribeHostContext((context) => {
+    if (!lastTableUrl || !context.nteract?.rendererAssetsBaseUrl) return;
+    configureWasm(lastTableUrl);
+  });
   ctx.register(
     [
       "application/vnd.apache.parquet",

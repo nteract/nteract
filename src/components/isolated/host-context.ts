@@ -40,6 +40,11 @@ export interface NteractEmbedHostContext {
   safeAreaInsets?: NteractEmbedSafeAreaInsets;
   nteract?: {
     colorTheme?: string | null;
+    /**
+     * Absolute or host-relative base URL for renderer sidecar assets loaded
+     * from inside isolated output iframes, e.g. Sift's WASM binary.
+     */
+    rendererAssetsBaseUrl?: string;
   };
 }
 

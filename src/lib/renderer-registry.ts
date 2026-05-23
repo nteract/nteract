@@ -18,6 +18,19 @@ export interface RendererProps {
   interactionActive?: boolean;
 }
 
+export interface RendererHostContext {
+  nteract?: {
+    rendererAssetsBaseUrl?: string;
+  };
+}
+
+export interface RendererInstallContext {
+  register: (mimeTypes: string[], component: ComponentType<RendererProps>) => void;
+  registerPattern: (test: (mime: string) => boolean, component: ComponentType<RendererProps>) => void;
+  getHostContext: () => RendererHostContext | undefined;
+  subscribeHostContext: (listener: (context: RendererHostContext) => void) => () => void;
+}
+
 const exactMatches = new Map<string, ComponentType<RendererProps>>();
 const patternMatchers: Array<{
   test: (mime: string) => boolean;
