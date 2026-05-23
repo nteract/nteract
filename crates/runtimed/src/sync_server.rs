@@ -265,6 +265,21 @@ mod tests {
     use serial_test::serial;
     use tempfile::TempDir;
 
+    struct SettingsSyncFailureHookGuard;
+
+    impl SettingsSyncFailureHookGuard {
+        fn new() -> Self {
+            SettingsDoc::__reset_sync_failure_hooks_for_test();
+            Self
+        }
+    }
+
+    impl Drop for SettingsSyncFailureHookGuard {
+        fn drop(&mut self) {
+            SettingsDoc::__reset_sync_failure_hooks_for_test();
+        }
+    }
+
     fn write_settings_json(path: &Path, settings: &SyncedSettings) {
         let json = serde_json::to_string_pretty(settings).expect("settings serialize");
         std::fs::write(path, json).expect("settings write");
@@ -273,6 +288,7 @@ mod tests {
     #[test]
     #[serial(settings_sync_panic_hooks)]
     fn generate_panic_returns_error_without_rebuild_or_retry() {
+        let _hook_guard = SettingsSyncFailureHookGuard::new();
         let tmp = TempDir::new().expect("temp dir");
         let json_path = tmp.path().join("settings.json");
         let canonical = SyncedSettings {
@@ -298,6 +314,7 @@ mod tests {
     #[test]
     #[serial(settings_sync_panic_hooks)]
     fn receive_panic_returns_error_without_persisting_or_broadcasting() {
+        let _hook_guard = SettingsSyncFailureHookGuard::new();
         let tmp = TempDir::new().expect("temp dir");
         let json_path = tmp.path().join("settings.json");
         let canonical = SyncedSettings::default();
@@ -335,6 +352,7 @@ mod tests {
     #[test]
     #[serial(settings_sync_panic_hooks)]
     fn receive_patch_log_mismatch_does_not_persist_or_broadcast_client_edit() {
+        let _hook_guard = SettingsSyncFailureHookGuard::new();
         let tmp = TempDir::new().expect("temp dir");
         let json_path = tmp.path().join("settings.json");
         let canonical = SyncedSettings::default();
@@ -371,6 +389,7 @@ mod tests {
     #[test]
     #[serial(settings_sync_panic_hooks)]
     fn invalid_json_recovery_keeps_last_known_good_and_file_contents() {
+        let _hook_guard = SettingsSyncFailureHookGuard::new();
         let tmp = TempDir::new().expect("temp dir");
         let json_path = tmp.path().join("settings.json");
         std::fs::write(&json_path, "{ invalid json").expect("settings write");
@@ -407,6 +426,7 @@ mod tests {
     #[test]
     #[serial(settings_sync_panic_hooks)]
     fn repeated_generate_panic_returns_first_error_without_retry() {
+        let _hook_guard = SettingsSyncFailureHookGuard::new();
         let tmp = TempDir::new().expect("temp dir");
         let json_path = tmp.path().join("settings.json");
         write_settings_json(&json_path, &SyncedSettings::default());

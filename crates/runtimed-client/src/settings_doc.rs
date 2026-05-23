@@ -1490,6 +1490,14 @@ impl SettingsDoc {
     }
 
     #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn __reset_sync_failure_hooks_for_test() {
+        PANIC_ON_NEXT_GENERATE_SYNC_CALLS.store(0, Ordering::SeqCst);
+        PANIC_ON_NEXT_RECEIVE_SYNC_CALLS.store(0, Ordering::SeqCst);
+        PATCH_LOG_MISMATCH_ON_NEXT_RECEIVE_SYNC_CALLS.store(0, Ordering::SeqCst);
+    }
+
+    #[cfg(debug_assertions)]
     fn panic_if_requested(counter: &AtomicUsize, operation: &str) {
         if counter
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
@@ -1577,7 +1585,23 @@ pub fn read_nested_list(doc: &AutoCommit, map_key: &str, sub_key: &str) -> Vec<S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tempfile::TempDir;
+
+    struct SettingsSyncFailureHookGuard;
+
+    impl SettingsSyncFailureHookGuard {
+        fn new() -> Self {
+            SettingsDoc::__reset_sync_failure_hooks_for_test();
+            Self
+        }
+    }
+
+    impl Drop for SettingsSyncFailureHookGuard {
+        fn drop(&mut self) {
+            SettingsDoc::__reset_sync_failure_hooks_for_test();
+        }
+    }
 
     #[test]
     fn test_new_has_defaults() {
@@ -2429,7 +2453,9 @@ mod tests {
     }
 
     #[test]
+    #[serial(settings_sync_panic_hooks)]
     fn test_recovering_generate_sync_catches_injected_panic() {
+        let _hook_guard = SettingsSyncFailureHookGuard::new();
         let mut doc = SettingsDoc::new();
         let mut peer_state = sync::State::new();
 
@@ -2443,7 +2469,9 @@ mod tests {
     }
 
     #[test]
+    #[serial(settings_sync_panic_hooks)]
     fn test_recovering_receive_sync_catches_injected_panic() {
+        let _hook_guard = SettingsSyncFailureHookGuard::new();
         let mut sender = SettingsDoc::new();
         sender.put("theme", "dark");
         let mut sender_state = sync::State::new();
