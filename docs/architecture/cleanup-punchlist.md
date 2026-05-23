@@ -69,7 +69,7 @@ Severity legend:
 
 | ID | Smell | Severity | Where |
 |----|-------|----------|-------|
-| BS-1 | `GET /blob/<hash>` loads the entire payload into `Vec<u8> -> Full<Bytes>`. A 100 MiB output allocates the full payload on every fetch instead of streaming from disk. | Targeted PR | blob HTTP server |
+| ~~BS-1~~ | **Done** in cleanup/bs-1-streaming-blob-http. `BlobStore::open_reader` returns either an in-memory `Bytes` (memory-layer hit) or an open `tokio::fs::File` (disk-only); the HTTP server uses `StreamBody<ReaderStream<File>>` for the disk variant so a 100 MiB blob streams instead of buffering. Regression guard: `test_serve_blob_streams_from_disk_for_large_payloads` rounds 2 MiB through the server and asserts byte equality + correct Content-Length. | Done | `crates/runtimed/src/blob_server.rs`, `crates/runtimed/src/blob_store.rs:open_reader` |
 | BS-2 | `put_disk` fast-path rewrites the sidecar `media_type` when a duplicate write disagrees. Intentional for anywidget `_esm`, but means any authenticated peer can change the served `Content-Type` of an existing blob. | Design | `crates/runtimed/src/blob/` |
 | BS-3 | `MULTIPART_UPLOAD_TTL = 1h` only sweeps on the next Create/Complete/Abort. An idle daemon retains expired staging dirs forever. | Targeted PR | multipart sweep |
 | BS-4 | `NotebookHandle.load_snapshot` and the publish artifacts spec assume the destination can resolve every `ContentRef::Blob`. Nothing walks a saved `RuntimeStateDoc` and confirms its blob hashes exist before declaring publish complete. | Design | publish path |
