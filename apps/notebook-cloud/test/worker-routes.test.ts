@@ -134,6 +134,76 @@ describe("Worker artifact routes", () => {
     assert.deepEqual(await response.json(), { error: "not found" });
   });
 
+  it("keeps anonymous viewer requests read-only on publish and upload routes", async () => {
+    const env = fakeEnv({ DEPLOYMENT_ENV: "prototype" });
+    const body = new TextEncoder().encode("viewer cannot write this");
+    const routes = [
+      {
+        pathname: "/api/n/readonly-demo/runtime-snapshots/runtime-viewer",
+        error: "viewer cannot publish runtime snapshots",
+      },
+      {
+        pathname: "/api/n/readonly-demo/snapshots/heads-viewer",
+        error: "viewer cannot publish snapshots",
+      },
+      {
+        pathname: "/api/n/readonly-demo/renders/heads-viewer",
+        error: "viewer cannot publish render caches",
+      },
+      {
+        pathname: "/api/n/readonly-demo/blobs/sha256-viewer",
+        error: "viewer cannot upload blobs",
+      },
+    ];
+
+    for (const route of routes) {
+      const response = await worker.fetch(
+        new Request(
+          new URL(`${route.pathname}?scope=owner&viewer_session=anon`, "https://cloud.test"),
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/octet-stream" },
+            body,
+          },
+        ),
+        env,
+        fakeContext(),
+      );
+
+      assert.equal(response.status, 403, route.pathname);
+      assert.deepEqual(await response.json(), { error: route.error });
+    }
+
+    assert.equal(env.NOTEBOOK_SNAPSHOTS.objects.size, 0);
+    assert.equal(env.DB.revisions.length, 0);
+  });
+
+  it("keeps explicit dev viewer scope read-only even with a valid dev token", async () => {
+    const env = fakeEnv({
+      DEPLOYMENT_ENV: "prototype",
+      NOTEBOOK_CLOUD_DEV_TOKEN: "secret-token",
+    });
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/n/readonly-demo/blobs/sha256-viewer", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "X-Notebook-Cloud-Dev-Token": "secret-token",
+          "X-Operator": "desktop:test",
+          "X-Scope": "viewer",
+          "X-User": "alice",
+        },
+        body: new Uint8Array([1, 2, 3]),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { error: "viewer cannot upload blobs" });
+    assert.equal(env.NOTEBOOK_SNAPSHOTS.objects.size, 0);
+  });
+
   it("publishes a snapshot pair and materializes render JSON through the route layer", async () => {
     const env = fakeEnv();
     const [notebookBytes, runtimeStateBytes] = await Promise.all([
