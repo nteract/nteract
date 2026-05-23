@@ -122,8 +122,6 @@ Bindings in `wrangler.toml`:
 - `ASSETS`: Worker static assets for `/assets/notebook-cloud-viewer.js`, renderer chunks, and `/plugins/sift_wasm.wasm`.
 - `RENDERER_ASSETS_BASE_URL` (optional): base URL for renderer plugin assets such as `sift_wasm.wasm`. It can point at a dedicated output/plugin origin. If unset, the viewer uses the Worker-owned `/api/plugins/` route so sandboxed `srcdoc` iframes can fetch plugin WASM through explicit CORS headers.
 
-The `/plugins/*` static path is configured with `assets.run_worker_first` so the Worker can attach CORS for legacy/direct plugin asset URLs. This does not relax iframe sandboxing or CSP; it only changes the HTTP headers on host-owned renderer assets.
-
 Schema lives in `migrations/0001_initial.sql`. The Worker also creates the same tables lazily in local dev so the WebSocket path can run before applying migrations.
 
 Accepted WebSocket frame payload caps mirror `notebook-wire` per-frame limits: Automerge sync and runtime-state frames may be up to 64 MiB, `PUT_BLOB` up to 32 MiB, request frames up to 16 MiB, and presence/pool-state/session-control frames up to 1 MiB. The Durable Object keeps only the latest 500 `frame:*` metadata entries in object storage; D1 room events are observability rows, not the replay log.

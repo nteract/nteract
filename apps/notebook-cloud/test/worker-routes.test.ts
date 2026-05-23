@@ -48,7 +48,7 @@ describe("Worker artifact routes", () => {
     assert.equal(await response.text(), "console.log('viewer')");
   });
 
-  it("serves plugin assets through a Worker-owned CORS route", async () => {
+  it("adds CORS when plugin assets are routed through the Worker", async () => {
     const seenPaths: string[] = [];
     const env = fakeEnv({
       ASSETS: {
