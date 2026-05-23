@@ -2,25 +2,18 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  assertPublishResultMatchesSource,
+  smokeEnvForPublishResult,
+} from "./hosted-live-smoke-env.mjs";
+
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const publish = await runNode(["--import", "tsx", "scripts/publish-live.mjs"], process.env);
 const publishResult = parseJson(publish.stdout, "publish-live");
-if (!publishResult.viewerUrl) {
-  throw new Error("publish-live output did not include viewerUrl");
-}
+assertPublishResultMatchesSource(process.env, publishResult);
 
-const smokeEnv = {
-  ...process.env,
-  NOTEBOOK_CLOUD_HOSTED_URL: publishResult.viewerUrl,
-};
-if (!smokeEnv.NOTEBOOK_CLOUD_EXPECTED_RENDERER_ASSET_ORIGIN) {
-  const origin = new URL(publishResult.viewerUrl).origin;
-  if (isLoopbackOrigin(origin)) {
-    smokeEnv.NOTEBOOK_CLOUD_EXPECTED_RENDERER_ASSET_ORIGIN = origin;
-  }
-}
-
+const smokeEnv = smokeEnvForPublishResult(process.env, publishResult);
 const smoke = await runNode(["scripts/hosted-render-smoke.mjs", publishResult.viewerUrl], smokeEnv);
 const smokeResult = parseJson(smoke.stdout, "hosted-render-smoke");
 
@@ -77,9 +70,4 @@ function parseJson(stdout, label) {
   } catch (error) {
     throw new Error(`${label} did not print JSON: ${error.message}\n${stdout}`);
   }
-}
-
-function isLoopbackOrigin(origin) {
-  const hostname = new URL(origin).hostname;
-  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
 }

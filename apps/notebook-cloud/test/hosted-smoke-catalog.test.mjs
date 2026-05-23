@@ -15,7 +15,12 @@ describe("hosted render smoke catalog checks", () => {
       },
       revisions: [
         { id: "revision-1", actor_label: "user:dev:fixture/agent:publish-fixture" },
-        { id: "revision-2", actor_label: "user:dev:live-publish/agent:publish-live" },
+        {
+          id: "revision-2",
+          actor_label: "user:dev:live-publish/agent:publish-live",
+          notebook_heads_hash: "heads-notebook",
+          runtime_heads_hash: "heads-runtime",
+        },
       ],
     });
 
@@ -23,6 +28,8 @@ describe("hosted render smoke catalog checks", () => {
       ownerPrincipal: "user:dev:live-publish",
       latestRevisionId: "revision-2",
       latestRevisionActorLabel: "user:dev:live-publish/agent:publish-live",
+      latestRevisionNotebookHeadsHash: "heads-notebook",
+      latestRevisionRuntimeHeadsHash: "heads-runtime",
       revisionCount: 2,
     });
   });
@@ -35,6 +42,8 @@ describe("hosted render smoke catalog checks", () => {
 
     assert.equal(summary.latestRevisionId, null);
     assert.equal(summary.latestRevisionActorLabel, null);
+    assert.equal(summary.latestRevisionNotebookHeadsHash, null);
+    assert.equal(summary.latestRevisionRuntimeHeadsHash, null);
   });
 
   it("reports catalog expectation mismatches", () => {
@@ -49,6 +58,8 @@ describe("hosted render smoke catalog checks", () => {
         {
           expectedCatalogOwnerPrincipal: "user:dev:live-publish",
           expectedLatestRevisionActorLabel: "user:dev:live-publish/agent:publish-live",
+          expectedLatestRevisionNotebookHeadsHash: "heads-notebook",
+          expectedLatestRevisionRuntimeHeadsHash: "heads-runtime",
         },
       ),
       [
@@ -57,6 +68,12 @@ describe("hosted render smoke catalog checks", () => {
         },
         {
           text: "expected latest revision actor user:dev:live-publish/agent:publish-live, got missing",
+        },
+        {
+          text: "expected latest notebook heads heads-notebook, got missing",
+        },
+        {
+          text: "expected latest runtime heads heads-runtime, got missing",
         },
       ],
     );

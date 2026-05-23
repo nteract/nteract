@@ -11,18 +11,33 @@ export function summarizeCatalog(json) {
     : null;
   const latestRevisionActorLabel =
     typeof latestRevision?.actor_label === "string" ? latestRevision.actor_label : null;
+  const latestRevisionNotebookHeadsHash =
+    typeof latestRevision?.notebook_heads_hash === "string"
+      ? latestRevision.notebook_heads_hash
+      : null;
+  const latestRevisionRuntimeHeadsHash =
+    typeof latestRevision?.runtime_heads_hash === "string"
+      ? latestRevision.runtime_heads_hash
+      : null;
 
   return {
     ownerPrincipal,
     latestRevisionId,
     latestRevisionActorLabel,
+    latestRevisionNotebookHeadsHash,
+    latestRevisionRuntimeHeadsHash,
     revisionCount: revisions.length,
   };
 }
 
 export function catalogExpectationFailures(
   summary,
-  { expectedCatalogOwnerPrincipal, expectedLatestRevisionActorLabel },
+  {
+    expectedCatalogOwnerPrincipal,
+    expectedLatestRevisionActorLabel,
+    expectedLatestRevisionNotebookHeadsHash,
+    expectedLatestRevisionRuntimeHeadsHash,
+  },
 ) {
   const failures = [];
   if (expectedCatalogOwnerPrincipal && summary.ownerPrincipal !== expectedCatalogOwnerPrincipal) {
@@ -39,6 +54,26 @@ export function catalogExpectationFailures(
     failures.push({
       text: `expected latest revision actor ${expectedLatestRevisionActorLabel}, got ${
         summary.latestRevisionActorLabel ?? "missing"
+      }`,
+    });
+  }
+  if (
+    expectedLatestRevisionNotebookHeadsHash &&
+    summary.latestRevisionNotebookHeadsHash !== expectedLatestRevisionNotebookHeadsHash
+  ) {
+    failures.push({
+      text: `expected latest notebook heads ${expectedLatestRevisionNotebookHeadsHash}, got ${
+        summary.latestRevisionNotebookHeadsHash ?? "missing"
+      }`,
+    });
+  }
+  if (
+    expectedLatestRevisionRuntimeHeadsHash &&
+    summary.latestRevisionRuntimeHeadsHash !== expectedLatestRevisionRuntimeHeadsHash
+  ) {
+    failures.push({
+      text: `expected latest runtime heads ${expectedLatestRevisionRuntimeHeadsHash}, got ${
+        summary.latestRevisionRuntimeHeadsHash ?? "missing"
       }`,
     });
   }
