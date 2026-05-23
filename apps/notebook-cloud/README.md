@@ -20,6 +20,7 @@ With Wrangler running:
 
 ```bash
 pnpm --dir apps/notebook-cloud smoke
+pnpm --dir apps/notebook-cloud smoke:hosted
 pnpm --dir apps/notebook-cloud publish:demo
 pnpm --dir apps/notebook-cloud publish:fixture
 pnpm --dir apps/notebook-cloud publish:live
@@ -76,6 +77,21 @@ http://127.0.0.1:8787/n/nteract-cloud-fixture-output_streaming
 
 Set `NOTEBOOK_CLOUD_FIXTURE=<fixture-dir>` and
 `NOTEBOOK_CLOUD_NOTEBOOK_ID=<id>` to publish another fixture pair.
+
+`smoke:hosted` runs a headless Chromium check against the deployed canonical
+MathNet notebook by default:
+
+```text
+https://nteract-notebook-cloud.rgbkrk.workers.dev/n/nteract-cloud-live-mathnet
+```
+
+It verifies that the hosted viewer renders the live-published code cell with a
+runtime-derived execution count, that sandboxed output iframes expose the
+MathNet stdout and Sift table content, and that Sift's WASM sidecar loads from
+the configured renderer asset origin with CORS. Override the target with
+`NOTEBOOK_CLOUD_HOSTED_URL` or a positional URL argument. Set
+`NOTEBOOK_CLOUD_SMOKE_SCREENSHOT=/tmp/notebook-cloud.png` to save a visual
+artifact.
 
 `publish:live` exports a real synced notebook session through `@runtimed/node`,
 uploads its `NotebookDoc` + `RuntimeStateDoc` snapshot pair, walks the rendered
