@@ -47,6 +47,7 @@ describe("snapshot pair render materialization", () => {
 
     assert.equal(render.generated_from, "runtimed-wasm:load_snapshot");
     assert.equal(render.source, "snapshot-pair");
+    assert.notEqual(render.metadata, undefined);
     assert.equal(cells.length, 1);
     assert.equal(cells[0].id, "cell-1");
     assert.deepEqual(

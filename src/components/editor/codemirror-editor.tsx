@@ -349,6 +349,7 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
 
       // Read-only consumers use initialValue as a controlled display value.
       // Editable notebook cells remain uncontrolled; their sync is CRDT-owned.
+      // CodeMirror's readOnly facet disables editing commands, not dispatches.
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: initialValue },
         annotations: externalChangeAnnotation.of(true),

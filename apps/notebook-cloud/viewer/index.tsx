@@ -4,13 +4,14 @@ import { CellContainer } from "@/components/cell/CellContainer";
 import { ExecutionCount } from "@/components/cell/ExecutionCount";
 import { OutputArea } from "@/components/cell/OutputArea";
 import { ReadOnlyCodeMirror } from "@/components/editor/readonly-codemirror";
-import type { SupportedLanguage } from "@/components/editor/languages";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
 import { resolveCell, type RenderCell, type ResolvedCell } from "./render-resolution";
+import { cloudSourceLanguage } from "./source-language";
+import { installDocumentThemeSync } from "./theme";
 import "./index.css";
 
 interface CloudViewerConfig {
@@ -24,6 +25,7 @@ interface CloudViewerConfig {
 
 interface SnapshotRender {
   heads_hash?: string;
+  metadata?: unknown;
   source?: string;
   cells?: unknown;
 }
@@ -45,6 +47,8 @@ type ViewerRuntimeState =
   | { kind: "error"; message: string };
 
 const rendererBundle = () => import("virtual:isolated-renderer");
+
+installDocumentThemeSync();
 
 function requireElement<T extends Element = HTMLElement>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -143,8 +147,9 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
 
         const render = (await response.json()) as SnapshotRender;
         const rawCells = Array.isArray(render.cells) ? (render.cells as RenderCell[]) : [];
+        const notebookLanguage = languageFromNotebookMetadata(render.metadata) ?? "python";
         const resolvedCells = await Promise.all(
-          rawCells.map((cell, index) => resolveCell(cell, blobResolver, index)),
+          rawCells.map((cell, index) => resolveCell(cell, blobResolver, index, notebookLanguage)),
         );
         if (cancelled) return;
 
@@ -278,12 +283,10 @@ function renderCellSource(
     );
   }
 
-  return (
-    <ReadonlySource source={cell.source} language={cell.cellType === "code" ? "python" : ""} />
-  );
+  return <ReadonlySource source={cell.source} language={cell.language} />;
 }
 
-function ReadonlySource({ source, language }: { source: string; language: string }) {
+function ReadonlySource({ source, language }: { source: string; language: string | null }) {
   return (
     <ReadOnlyCodeMirror
       value={source}
@@ -292,10 +295,6 @@ function ReadonlySource({ source, language }: { source: string; language: string
       className="cloud-source-block"
     />
   );
-}
-
-function cloudSourceLanguage(language: string): SupportedLanguage {
-  return language === "python" ? "ipython" : "plain";
 }
 
 function connectAnonymousViewer(
@@ -337,6 +336,14 @@ function connectAnonymousViewer(
     closed = true;
     socket.close();
   };
+}
+
+function languageFromNotebookMetadata(metadata: unknown): string | null {
+  if (typeof metadata !== "object" || metadata === null) return null;
+  const languageInfo = (metadata as Record<string, unknown>).language_info;
+  if (typeof languageInfo !== "object" || languageInfo === null) return null;
+  const name = (languageInfo as Record<string, unknown>).name;
+  return typeof name === "string" ? name : null;
 }
 
 createRoot(requireElement("#root")).render(

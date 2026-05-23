@@ -81,6 +81,65 @@ describe("cloud viewer render resolution", () => {
     assert.equal(brokenCell.outputs.length, 1);
     assert.equal(brokenCell.outputs[0].output_type, "error");
   });
+
+  it("derives code cell language from cell metadata before notebook metadata", async () => {
+    const [
+      cellWithLocalLanguage,
+      cellWithNotebookLanguage,
+      markdownCell,
+      codeCellWithDefaultLanguage,
+    ] = await Promise.all([
+      resolveCell(
+        {
+          id: "local-language",
+          cell_type: "code",
+          source: "select * from cities",
+          metadata: { language: "sql" },
+        },
+        rejectingBlobResolver(),
+        0,
+        "python",
+      ),
+      resolveCell(
+        {
+          id: "notebook-language",
+          cell_type: "code",
+          source: "x <- 1",
+          metadata: {},
+        },
+        rejectingBlobResolver(),
+        1,
+        "r",
+      ),
+      resolveCell(
+        {
+          id: "markdown-language",
+          cell_type: "markdown",
+          source: "# Title",
+          metadata: { language: "python" },
+        },
+        rejectingBlobResolver(),
+        2,
+        "python",
+      ),
+      resolveCell(
+        {
+          id: "default-language",
+          cell_type: "code",
+          source: "print('ok')",
+          metadata: {},
+        },
+        rejectingBlobResolver(),
+        3,
+        "python",
+      ),
+    ]);
+
+    assert.equal(cellWithLocalLanguage.language, "sql");
+    assert.equal(cellWithNotebookLanguage.language, "r");
+    assert.equal(markdownCell.language, null);
+    assert.equal(codeCellWithDefaultLanguage.language, "python");
+  });
 });
 
 function rejectingBlobResolver(): BlobResolver {
