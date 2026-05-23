@@ -18,19 +18,41 @@
 //! down when the process exits; no explicit cancellation is implemented yet.
 
 use std::convert::Infallible;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use http_body_util::Full;
-use hyper::body::Bytes;
+use futures::TryStreamExt;
+use http_body_util::{BodyExt, Full, StreamBody};
+use hyper::body::{Bytes, Frame};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
+use tokio_util::io::ReaderStream;
 use tracing::{error, info, warn};
 
-use crate::blob_store::BlobStore;
+use crate::blob_store::{BlobReader, BlobStore};
+
+/// Response body type used by the blob HTTP server.
+///
+/// `BoxBody` lets `/blob/<hash>` stream from disk via [`StreamBody`] while
+/// `/plugins/<name>`, `/health`, and error responses keep using [`Full`]
+/// (their payloads are small and already in memory). All paths erase to the
+/// same body type for the `service_fn` signature. Punchlist BS-1.
+type ResponseBody = http_body_util::combinators::BoxBody<Bytes, io::Error>;
+
+fn full_body(bytes: impl Into<Bytes>) -> ResponseBody {
+    Full::new(bytes.into())
+        .map_err(|never: Infallible| match never {})
+        .boxed()
+}
+
+fn stream_body_from_reader(file: tokio::fs::File) -> ResponseBody {
+    let stream = ReaderStream::new(file).map_ok(Frame::data);
+    StreamBody::new(stream).boxed()
+}
 use crate::daemon::Daemon;
 use crate::embedded_plugins;
 use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
@@ -140,7 +162,7 @@ async fn bind_preferred_or_random() -> std::io::Result<TcpListener> {
 async fn handle_request(
     req: Request<hyper::body::Incoming>,
     store: Arc<BlobStore>,
-) -> Result<Response<Full<Bytes>>, Infallible> {
+) -> Result<Response<ResponseBody>, Infallible> {
     let path = req.uri().path();
     let method = req.method();
 
@@ -160,32 +182,42 @@ async fn handle_request(
 }
 
 /// Serve a blob by hash with correct Content-Type.
-async fn serve_blob(store: &BlobStore, hash: &str) -> Response<Full<Bytes>> {
-    let (blob_result, meta_result) = tokio::join!(store.get(hash), store.get_meta(hash));
+///
+/// In-memory hits return a `Full<Bytes>` body (the bytes are already buffered
+/// in the memory layer, no I/O required). Disk-only hits stream from an open
+/// `tokio::fs::File` via `StreamBody` so a 100 MiB blob does not spike the
+/// daemon's heap by 100 MiB per fetch. Punchlist BS-1.
+async fn serve_blob(store: &BlobStore, hash: &str) -> Response<ResponseBody> {
+    let (reader_result, meta_result) = tokio::join!(store.open_reader(hash), store.get_meta(hash));
 
-    match blob_result {
-        Ok(Some(data)) => {
-            let content_type = meta_result
-                .ok()
-                .flatten()
-                .map(|m| m.media_type)
-                .unwrap_or_else(|| "application/octet-stream".to_string());
+    let reader = match reader_result {
+        Ok(Some(reader)) => reader,
+        Ok(None) => return text_response(StatusCode::NOT_FOUND, "Not Found"),
+        Err(_) => return text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+    };
 
-            Response::builder()
-                .status(StatusCode::OK)
-                .header("Content-Type", content_type)
-                .header("Content-Length", data.len().to_string())
-                .header("Cache-Control", "public, max-age=31536000, immutable")
-                .header("Access-Control-Allow-Origin", "*")
-                .header("X-Content-Type-Options", "nosniff")
-                .body(Full::new(Bytes::from(data)))
-                .unwrap_or_else(|_| {
-                    text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
-                })
-        }
-        Ok(None) => text_response(StatusCode::NOT_FOUND, "Not Found"),
-        Err(_) => text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
-    }
+    let content_type = meta_result
+        .ok()
+        .flatten()
+        .map(|m| m.media_type)
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let size = reader.size();
+    let body = match reader {
+        BlobReader::InMemory { bytes, .. } => full_body(bytes),
+        BlobReader::Disk { file, .. } => stream_body_from_reader(file),
+    };
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", content_type)
+        .header("Content-Length", size.to_string())
+        .header("Cache-Control", "public, max-age=31536000, immutable")
+        .header("Access-Control-Allow-Origin", "*")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(body)
+        .unwrap_or_else(|_| {
+            text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
+        })
 }
 
 /// Serve a renderer plugin asset.
@@ -196,7 +228,7 @@ async fn serve_blob(store: &BlobStore, hash: &str) -> Response<Full<Bytes>> {
 /// `cargo xtask renderer-plugins` can refresh bundles without a daemon
 /// rebuild; release builds and dev builds missing an on-disk asset fall
 /// through to the embedded copy.
-async fn serve_plugin(name: &str) -> Response<Full<Bytes>> {
+async fn serve_plugin(name: &str) -> Response<ResponseBody> {
     if !is_valid_plugin_name(name) {
         return text_response(StatusCode::NOT_FOUND, "Not Found");
     }
@@ -208,7 +240,7 @@ async fn serve_plugin(name: &str) -> Response<Full<Bytes>> {
 async fn serve_plugin_with_dev_assets(
     name: &str,
     dev_assets_dir: Option<&Path>,
-) -> Response<Full<Bytes>> {
+) -> Response<ResponseBody> {
     if !is_valid_plugin_name(name) {
         return text_response(StatusCode::NOT_FOUND, "Not Found");
     }
@@ -246,7 +278,7 @@ fn dev_plugin_assets_dir() -> Option<PathBuf> {
     Some(workspace.join("apps/notebook/src/renderer-plugins"))
 }
 
-async fn serve_dev_plugin_file(name: &str, dir: &Path) -> Option<Response<Full<Bytes>>> {
+async fn serve_dev_plugin_file(name: &str, dir: &Path) -> Option<Response<ResponseBody>> {
     let content_type = embedded_plugins::content_type_for(name)?;
     let path = dir.join(name);
 
@@ -261,7 +293,7 @@ async fn serve_dev_plugin_file(name: &str, dir: &Path) -> Option<Response<Full<B
                     .header("Cache-Control", "no-store")
                     .header("Access-Control-Allow-Origin", "*")
                     .header("X-Content-Type-Options", "nosniff")
-                    .body(Full::new(Bytes::from(body)))
+                    .body(full_body(body))
                     .unwrap_or_else(|_| {
                         text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
                     }),
@@ -289,7 +321,7 @@ async fn serve_dev_plugin_file(name: &str, dir: &Path) -> Option<Response<Full<B
 /// gets run through [`wrap_for_mcp_app`] because runtimed embeds the raw CJS
 /// bundle from the notebook renderer-plugin dir (one canonical location,
 /// two shapes at the edge).
-fn serve_embedded_plugin(name: &str) -> Response<Full<Bytes>> {
+fn serve_embedded_plugin(name: &str) -> Response<ResponseBody> {
     let Some((bytes, content_type)) = embedded_plugins::get(name) else {
         return text_response(StatusCode::NOT_FOUND, "Not Found");
     };
@@ -297,9 +329,9 @@ fn serve_embedded_plugin(name: &str) -> Response<Full<Bytes>> {
     let (body, body_len) = if name.ends_with(".js") {
         let wrapped = wrap_for_mcp_app(bytes);
         let len = wrapped.len();
-        (Full::new(Bytes::from(wrapped)), len)
+        (full_body(wrapped), len)
     } else {
-        (Full::new(Bytes::from_static(bytes)), bytes.len())
+        (full_body(Bytes::from_static(bytes)), bytes.len())
     };
 
     Response::builder()
@@ -353,11 +385,11 @@ pub(crate) fn wrap_for_mcp_app(code: &[u8]) -> Vec<u8> {
 
 /// Build a simple text response.
 #[allow(clippy::expect_used)] // Response::builder only fails with invalid StatusCode, we use valid enum values
-fn text_response(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
+fn text_response(status: StatusCode, body: &str) -> Response<ResponseBody> {
     Response::builder()
         .status(status)
         .header("Access-Control-Allow-Origin", "*")
-        .body(Full::new(Bytes::from(body.to_string())))
+        .body(full_body(body.to_string()))
         .expect("response builder should not fail")
 }
 
@@ -396,8 +428,17 @@ mod tests {
         let mut buf = Vec::new();
         stream.read_to_end(&mut buf).await.unwrap();
 
-        let response = String::from_utf8_lossy(&buf);
-        let (head, body) = response.split_once("\r\n\r\n").unwrap_or((&response, ""));
+        // Split header/body on the raw byte stream so non-UTF8 binary bodies
+        // survive intact. Parsing through `String::from_utf8_lossy` here
+        // would replace each invalid byte with a 3-byte U+FFFD, doubling
+        // the apparent body length for any non-text blob.
+        let split_at = buf
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .expect("response must have header terminator");
+        let head_bytes = &buf[..split_at];
+        let body = buf[split_at + 4..].to_vec();
+        let head = std::str::from_utf8(head_bytes).expect("HTTP headers are ASCII");
 
         let mut lines = head.lines();
         let status_line = lines.next().unwrap_or("");
@@ -415,11 +456,43 @@ mod tests {
             })
             .collect();
 
+        // Streaming responses use Transfer-Encoding: chunked. Dechunk if so.
+        let body = if headers
+            .iter()
+            .any(|(k, v)| k == "transfer-encoding" && v.eq_ignore_ascii_case("chunked"))
+        {
+            dechunk(&body)
+        } else {
+            body
+        };
+
         (
             StatusCode::from_u16(status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             headers,
-            body.as_bytes().to_vec(),
+            body,
         )
+    }
+
+    /// Decode a chunked-transfer-encoded body. Test-only.
+    fn dechunk(input: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(input.len());
+        let mut i = 0;
+        while i < input.len() {
+            // Read size line up to CRLF.
+            let end = input[i..]
+                .windows(2)
+                .position(|w| w == b"\r\n")
+                .expect("malformed chunk header");
+            let size_line = std::str::from_utf8(&input[i..i + end]).expect("ASCII chunk size");
+            let size = usize::from_str_radix(size_line.trim_end(), 16).expect("hex chunk size");
+            i += end + 2;
+            if size == 0 {
+                break;
+            }
+            out.extend_from_slice(&input[i..i + size]);
+            i += size + 2; // skip body and trailing CRLF
+        }
+        out
     }
 
     fn header_value(headers: &[(String, String)], name: &str) -> Option<String> {
@@ -429,7 +502,7 @@ mod tests {
             .map(|(_, v)| v.clone())
     }
 
-    fn response_header(response: &Response<Full<Bytes>>, name: &str) -> Option<String> {
+    fn response_header(response: &Response<ResponseBody>, name: &str) -> Option<String> {
         response
             .headers()
             .get(name)
@@ -437,7 +510,7 @@ mod tests {
             .map(ToOwned::to_owned)
     }
 
-    async fn response_body(response: Response<Full<Bytes>>) -> Vec<u8> {
+    async fn response_body(response: Response<ResponseBody>) -> Vec<u8> {
         use http_body_util::BodyExt;
 
         response
@@ -486,6 +559,31 @@ mod tests {
         assert_eq!(
             header_value(&headers, "access-control-allow-origin"),
             Some("*".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_serve_blob_streams_from_disk_for_large_payloads() {
+        // BS-1 punchlist regression guard: a blob that's not in the memory
+        // layer must round-trip correctly when served from disk via the
+        // streaming body. We use a payload larger than the in-memory cap so
+        // the disk path is taken even when the cache is warm. Content,
+        // Content-Length, and Content-Type must all match.
+        let (_dir, store, port) = setup().await;
+
+        // 2 MiB of pseudo-random-ish bytes. The exact value doesn't matter
+        // beyond "doesn't compress trivially" and "exceeds the per-blob
+        // memory cap configured in test_store" (currently smaller than 1 MiB).
+        let data: Vec<u8> = (0..(2 * 1024 * 1024)).map(|i| (i % 251) as u8).collect();
+        let hash = store.put(&data, "application/octet-stream").await.unwrap();
+
+        let (status, headers, body) = get(port, &format!("/blob/{}", hash)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.len(), data.len());
+        assert_eq!(body, data);
+        assert_eq!(
+            header_value(&headers, "content-length"),
+            Some(data.len().to_string())
         );
     }
 

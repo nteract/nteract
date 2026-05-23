@@ -501,13 +501,13 @@ elsewhere, some are surfaced here for the first time.
    `Content-Type` of an existing blob. Not exploitable on a single-user
    desktop, plausibly a vector once the protocol carries authenticated remote
    peers.
-8. **No `Content-Length`-bounded streaming on the read path.** `GET /blob/<hash>`
-   reads the full blob into memory before responding (`store.get` returns
-   `Vec<u8>`, the body is `Full<Bytes>`). A 100 MiB output renders the
-   daemon RSS spike on every renderer fetch. The HTTP layer should stream
-   from disk; the memory cap then becomes the OS page cache, not Rust heap.
-   Critical for the hosted path: a multi-user worker that loads each
-   100 MiB blob into RAM per fetch is not going to scale. Punchlist BS-1.
+8. ~~**No `Content-Length`-bounded streaming on the read path.**~~ **Resolved**
+   by punchlist BS-1. `BlobStore::open_reader` returns either an in-memory
+   `Bytes` (memory-layer hit) or an open `tokio::fs::File` (disk-only).
+   `GET /blob/<hash>` now wraps the disk variant in
+   `StreamBody<ReaderStream<File>>`, so a 100 MiB output is streamed off
+   the OS page cache instead of allocated into Rust heap per fetch.
+   `Content-Length` is taken from the reader's reported size.
 9. **Multipart upload TTL and sweep timing.** `MULTIPART_UPLOAD_TTL` is 1
    hour and the registry only sweeps when a new Create/Complete/Abort entry
    arrives. A daemon that goes idle with stale staging dirs on disk does

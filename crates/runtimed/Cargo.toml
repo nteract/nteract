@@ -75,6 +75,9 @@ pulldown-cmark = "0.13"
 hyper = { version = "1", features = ["http1", "server"] }
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["tokio"] }
+# ReaderStream lets the blob HTTP server stream from a tokio::fs::File handle
+# instead of reading the whole blob into Vec<u8> per request. Punchlist BS-1.
+tokio-util = { version = "0.7", features = ["io"] }
 
 # Automerge CRDT for settings sync
 automerge = { workspace = true }

@@ -225,6 +225,28 @@ pub struct BlobStore {
     inner: Arc<BlobStoreInner>,
 }
 
+/// Streaming reader for a single blob.
+///
+/// Either an already-buffered `Bytes` (hot in the memory layer) or an open
+/// `tokio::fs::File` waiting to stream from disk. Carries the byte length so
+/// callers can stamp `Content-Length` without a second metadata fetch.
+#[derive(Debug)]
+pub enum BlobReader {
+    /// Blob was hot in the memory layer; no disk read required.
+    InMemory { bytes: Bytes, size: u64 },
+    /// Blob lives on disk only; an open `File` is ready to be streamed.
+    Disk { file: tokio::fs::File, size: u64 },
+}
+
+impl BlobReader {
+    /// Byte length of the blob, suitable for the `Content-Length` header.
+    pub fn size(&self) -> u64 {
+        match self {
+            BlobReader::InMemory { size, .. } | BlobReader::Disk { size, .. } => *size,
+        }
+    }
+}
+
 impl BlobStore {
     /// Create a new BlobStore rooted at `root`.
     ///
@@ -660,6 +682,45 @@ impl BlobStore {
         let (_, blob_path, _) = self.paths(hash);
         match tokio::fs::read(&blob_path).await {
             Ok(data) => Ok(Some(data)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Open a blob for streaming reads.
+    ///
+    /// Returns the blob as either an in-memory `Bytes` (when the memory layer
+    /// already holds it) or an open `tokio::fs::File` ready to be read
+    /// incrementally (when the blob lives only on disk). Both variants carry
+    /// the byte length, which the HTTP server uses for `Content-Length`.
+    ///
+    /// This is the streaming counterpart to [`Self::get`]: where `get` reads
+    /// the whole blob into a `Vec<u8>`, this method lets a caller hand a file
+    /// handle to a streaming body without ever buffering the blob in the
+    /// daemon's heap. Punchlist BS-1.
+    pub async fn open_reader(&self, hash: &str) -> io::Result<Option<BlobReader>> {
+        if !Self::validate_hash(hash) {
+            return Ok(None);
+        }
+        if let Some(entry) = {
+            let memory = self.memory_layer();
+            memory.get(hash)
+        } {
+            let size = entry.data.len() as u64;
+            return Ok(Some(BlobReader::InMemory {
+                bytes: entry.data,
+                size,
+            }));
+        }
+        let (_, blob_path, _) = self.paths(hash);
+        match tokio::fs::File::open(&blob_path).await {
+            Ok(file) => {
+                let size = match file.metadata().await {
+                    Ok(meta) => meta.len(),
+                    Err(e) => return Err(e),
+                };
+                Ok(Some(BlobReader::Disk { file, size }))
+            }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e),
         }
