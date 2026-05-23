@@ -156,7 +156,12 @@ back to OS-assigned. The server exposes:
   (falling back to `application/octet-stream`).
 - `GET /plugins/{name}` - embedded renderer plugin assets (out of scope for
   this ADR; lives on the same listener because the renderer needs both
-  origins and a single port keeps the CSP simple).
+  origins and a single port keeps the CSP simple). The renderer can be told
+  to fetch these assets from a different base URL via
+  `NteractEmbedHostContext.nteract.rendererAssetsBaseUrl`
+  (`src/components/isolated/host-context.ts`, added in #2812). Desktop
+  leaves it unset and falls back to `/plugins/{name}` on the daemon's HTTP
+  origin; hosted viewers point it at a cloud-served asset prefix.
 - `GET /health` - probe.
 
 Response headers:
