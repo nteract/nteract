@@ -7596,6 +7596,7 @@ dependencies = [
  "getrandom 0.4.2",
  "notebook-doc",
  "notebook-wire",
+ "nteract-identity",
  "runtime-doc",
  "serde",
  "serde-wasm-bindgen",
