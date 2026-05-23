@@ -26,7 +26,7 @@ describe("renderer plugin artifacts", () => {
 
     for (const field of fields) {
       assert.ok(
-        artifactSource.includes(field),
+        hasIdentifierOccurrence(artifactSource, field),
         `isolated renderer artifact is missing RendererInstallContext.${field}; run cargo xtask renderer-plugins`,
       );
     }
@@ -40,4 +40,9 @@ function rendererInstallContextFields(source: string): string[] {
   if (!interfaceBody) return [];
 
   return Array.from(interfaceBody.matchAll(/^\s{2}(\w+):/gm), (match) => match[1]);
+}
+
+function hasIdentifierOccurrence(source: string, identifier: string): boolean {
+  const escaped = identifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^A-Za-z0-9_$])${escaped}([^A-Za-z0-9_$]|$)`).test(source);
 }
