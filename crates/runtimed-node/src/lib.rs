@@ -37,7 +37,7 @@ pub use session::{
     ListActiveNotebooksOptions, MoveCellOptions, OpenNotebookOptions, PackageManager,
     PixiDependencyStatus, QueueCellOptions, QueuedExecution, RunCellOptions, RuntimeStatus,
     Session, SetCellOptions, ShowNotebookOptions, ShowNotebookResult, ShutdownNotebookOptions,
-    UvDependencyStatus, WaitExecutionOptions,
+    SnapshotPair, UvDependencyStatus, WaitExecutionOptions,
 };
 
 /// Return the default daemon socket path.

@@ -107,6 +107,10 @@ class Session {
     return this._native.saveNotebook(path);
   }
 
+  exportSnapshotPair() {
+    return this._native.exportSnapshotPair();
+  }
+
   listCells() {
     return this._native.listCells();
   }

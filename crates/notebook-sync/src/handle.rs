@@ -96,6 +96,19 @@ pub struct DocHandle {
     notebook_id: String,
 }
 
+/// Serialized notebook snapshot pair suitable for hosted publish flows.
+///
+/// `notebook_bytes` are the saved `NotebookDoc`; `runtime_state_bytes` are the
+/// saved `RuntimeStateDoc` whose execution/output manifests are resolved by
+/// `execution_id` from the notebook cells.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnapshotPairBytes {
+    pub notebook_bytes: Vec<u8>,
+    pub runtime_state_bytes: Vec<u8>,
+    pub notebook_heads: Vec<String>,
+    pub runtime_state_heads: Vec<String>,
+}
+
 impl std::fmt::Debug for DocHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DocHandle")
@@ -691,6 +704,36 @@ impl DocHandle {
             .into_iter()
             .map(|head| head.to_string())
             .collect())
+    }
+
+    /// Save the current local `NotebookDoc` and `RuntimeStateDoc` replicas.
+    ///
+    /// Callers that need a daemon-fresh publish artifact should call
+    /// [`confirm_sync`](Self::confirm_sync) and
+    /// [`confirm_state_sync`](Self::confirm_state_sync) before saving.
+    pub fn save_snapshot_pair(&self) -> Result<SnapshotPairBytes, SyncError> {
+        let mut state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+        let notebook_heads = state
+            .doc
+            .get_heads()
+            .into_iter()
+            .map(|head| head.to_string())
+            .collect();
+        let runtime_state_heads = state
+            .state_doc
+            .get_heads()
+            .into_iter()
+            .map(|head| hex::encode(head.as_ref()))
+            .collect();
+        let notebook_bytes = state.doc.save();
+        let runtime_state_bytes = state.state_doc.doc_mut().save();
+
+        Ok(SnapshotPairBytes {
+            notebook_bytes,
+            runtime_state_bytes,
+            notebook_heads,
+            runtime_state_heads,
+        })
     }
 
     /// Confirm that the daemon has merged our current local heads.

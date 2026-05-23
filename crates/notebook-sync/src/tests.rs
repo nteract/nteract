@@ -832,6 +832,47 @@ mod tests {
     }
 
     #[test]
+    fn test_save_snapshot_pair_exports_notebook_and_runtime_state_docs() {
+        let (handle, shared, _changed_rx, _cmd_rx) = test_handle_with_shared();
+
+        handle.add_cell_after("cell-1", "code", None).unwrap();
+        handle.update_source("cell-1", "print('live')").unwrap();
+        set_execution(
+            &shared,
+            "exec-1",
+            "cell-1",
+            "done",
+            &[stream_output("out-1", "live\n")],
+            Some(1),
+        );
+
+        let snapshot = handle.save_snapshot_pair().unwrap();
+        assert!(!snapshot.notebook_bytes.is_empty());
+        assert!(!snapshot.runtime_state_bytes.is_empty());
+        assert!(!snapshot.notebook_heads.is_empty());
+        assert!(!snapshot.runtime_state_heads.is_empty());
+
+        let notebook_doc =
+            automerge::AutoCommit::load(&snapshot.notebook_bytes).expect("notebook doc loads");
+        let cells = notebook_doc::get_cells_from_doc(&notebook_doc);
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].source, "print('live')");
+
+        let runtime_doc = runtime_doc::RuntimeStateDoc::from_doc(
+            automerge::AutoCommit::load(&snapshot.runtime_state_bytes)
+                .expect("runtime state doc loads"),
+        );
+        let runtime_state = runtime_doc.read_state();
+        let execution = runtime_state
+            .executions
+            .get("exec-1")
+            .expect("execution exported");
+        assert_eq!(execution.status, "done");
+        assert_eq!(execution.execution_count, Some(1));
+        assert_eq!(execution.outputs.len(), 1);
+    }
+
+    #[test]
     fn get_cell_execution_count_falls_back_to_notebook_doc() {
         let (handle, _shared, _rx, _cmd_rx) = test_handle_with_shared();
 

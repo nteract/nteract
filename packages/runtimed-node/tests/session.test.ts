@@ -16,6 +16,7 @@ const { Session } = require("../src/session.cjs") as {
     };
     getExecutionView: () => unknown;
     runCell: (source: string, options?: Record<string, unknown>) => Promise<unknown>;
+    exportSnapshotPair: () => Promise<unknown>;
     close: () => Promise<void>;
   };
 };
@@ -293,5 +294,26 @@ describe("@runtimed/node Session wrapper", () => {
       executionId: "exec-1",
       status: "done",
     });
+  });
+
+  it("passes snapshot pair export through to the native session", async () => {
+    const snapshot = {
+      notebookId: "nb-1",
+      notebookBytes: new Uint8Array([1, 2, 3]),
+      runtimeStateBytes: new Uint8Array([4, 5, 6]),
+      notebookHeads: ["a"],
+      runtimeStateHeads: ["b"],
+      blobBaseUrl: "http://127.0.0.1:1234",
+      blobStorePath: "/tmp/runtimed-blobs",
+    };
+    const native = {
+      notebookId: "nb-1",
+      exportSnapshotPair: vi.fn(async () => snapshot),
+      close: vi.fn(async () => {}),
+    };
+    const session = new Session(native);
+
+    await expect(session.exportSnapshotPair()).resolves.toBe(snapshot);
+    expect(native.exportSnapshotPair).toHaveBeenCalledTimes(1);
   });
 });
