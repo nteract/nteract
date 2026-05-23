@@ -3,6 +3,7 @@ import initWasm, {
   encode_presence_frame,
   rewrite_presence_ingress,
   NotebookHandle,
+  RoomHostHandle,
 } from "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
 
 let initialized: Promise<void> | undefined;
@@ -57,3 +58,21 @@ export async function loadSnapshotPair(
   await initializeRuntimedWasm();
   return NotebookHandle.load_snapshot(notebookBytes, runtimeStateBytes);
 }
+
+export async function createEmptyRoomHost(
+  notebookId: string,
+  actorLabel: string,
+): Promise<RoomHostHandle> {
+  await initializeRuntimedWasm();
+  return RoomHostHandle.create_empty(notebookId, actorLabel);
+}
+
+export async function loadRoomHostSnapshot(
+  notebookBytes: Uint8Array,
+  runtimeStateBytes: Uint8Array,
+): Promise<RoomHostHandle> {
+  await initializeRuntimedWasm();
+  return RoomHostHandle.load_snapshot(notebookBytes, runtimeStateBytes);
+}
+
+export { NotebookHandle, RoomHostHandle };

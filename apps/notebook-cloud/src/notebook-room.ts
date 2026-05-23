@@ -1,6 +1,5 @@
 import type { CloudflareWebSocket, DurableObjectState, Env } from "./cloudflare-types.ts";
 import {
-  allowsNotebookWrite,
   allowsRuntimeStateWrite,
   isAnonymousViewer,
   readTrustedIdentity,
@@ -18,6 +17,12 @@ import {
   type TypedFrame,
 } from "./protocol.ts";
 import { rewritePresenceIngress } from "./runtimed-wasm.ts";
+import {
+  isMaterializedSyncFrame,
+  RoomMaterializer,
+  typedFrameFromRoomHostOutbound,
+  type RoomHostFrameResult,
+} from "./room-materializer.ts";
 
 interface Peer {
   id: string;
@@ -52,10 +57,11 @@ export class NotebookRoom {
   private frameSequenceReady: Promise<void> | undefined;
   private framePersistQueue: Promise<void> = Promise.resolve();
   private broadcastDepth = 0;
+  private readonly materializers = new Map<string, RoomMaterializer>();
 
   constructor(
     private readonly state: DurableObjectState,
-    _env: Env,
+    private readonly env: Env,
   ) {
     this.restoreHibernatedPeers();
   }
@@ -115,6 +121,7 @@ export class NotebookRoom {
       },
       peer.id,
     );
+    this.state.waitUntil(this.syncPeerFromRoomHost(notebookId, peer));
 
     return new Response(null, {
       status: 101,
@@ -297,6 +304,39 @@ export class NotebookRoom {
       return;
     }
 
+    if (isMaterializedSyncFrame(normalizedFrame.type)) {
+      let result: RoomHostFrameResult;
+      const materializer = this.materializerFor(notebookId);
+      try {
+        result = await materializer.receiveFrame(peer, normalizedFrame);
+      } catch (error) {
+        this.rejectFrame(
+          notebookId,
+          peer,
+          normalizedFrame.type,
+          `room host rejected ${frameTypeName(normalizedFrame.type)} frame: ${String(error)}`,
+        );
+        return;
+      }
+
+      this.state.waitUntil(
+        this.persistFrame(peer, normalizedFrame, receivedAt).catch(() => undefined),
+      );
+      this.deliverRoomHostFrames(notebookId, result);
+      if (result.changed) {
+        this.state.waitUntil(materializer.checkpoint().catch(() => undefined));
+      }
+      this.sendControl(notebookId, peer, {
+        type: "cloud_frame_accepted",
+        notebook_id: notebookId,
+        peer_id: peer.id,
+        frame_type: normalizedFrame.type,
+        byte_length: normalizedFrame.payload.byteLength,
+        timestamp: receivedAt,
+      });
+      return;
+    }
+
     try {
       await this.persistFrame(peer, normalizedFrame, receivedAt);
     } catch (error) {
@@ -327,8 +367,11 @@ export class NotebookRoom {
   private scopeAllowsFrame(identity: AuthenticatedConnection, frame: TypedFrame): boolean {
     switch (frame.type) {
       case FrameType.AUTOMERGE_SYNC:
-        return allowsNotebookWrite(identity.scope);
       case FrameType.RUNTIME_STATE_SYNC:
+        // These frames are both data and protocol control. Read-only peers may
+        // send empty sync acks/needs; RoomMaterializer rejects messages carrying
+        // document changes when the connection lacks write scope.
+        return true;
       case FrameType.PUT_BLOB:
         return allowsRuntimeStateWrite(identity.scope);
       case FrameType.POOL_STATE_SYNC:
@@ -339,6 +382,33 @@ export class NotebookRoom {
         return true;
       default:
         return false;
+    }
+  }
+
+  private async syncPeerFromRoomHost(notebookId: string, peer: Peer): Promise<void> {
+    try {
+      this.deliverRoomHostFrames(notebookId, await this.materializerFor(notebookId).syncPeer(peer));
+    } catch {
+      this.removePeer(notebookId, peer);
+    }
+  }
+
+  private materializerFor(notebookId: string): RoomMaterializer {
+    let materializer = this.materializers.get(notebookId);
+    if (!materializer) {
+      materializer = new RoomMaterializer(notebookId, this.state, this.env);
+      this.materializers.set(notebookId, materializer);
+    }
+    return materializer;
+  }
+
+  private deliverRoomHostFrames(notebookId: string, result: RoomHostFrameResult): void {
+    for (const outbound of result.outbound) {
+      const target = this.peers.get(outbound.peer_id);
+      if (!target) {
+        continue;
+      }
+      this.sendFrameToPeer(notebookId, target, typedFrameFromRoomHostOutbound(outbound));
     }
   }
 
@@ -479,6 +549,11 @@ export class NotebookRoom {
     if (!this.peers.delete(peer.id)) {
       return;
     }
+    this.state.waitUntil(
+      this.materializerFor(notebookId)
+        .removePeer(peer.id)
+        .catch(() => undefined),
+    );
 
     try {
       peer.socket.close();

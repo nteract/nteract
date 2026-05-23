@@ -1,0 +1,245 @@
+import { before, describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import type { DurableObjectState, Env } from "../src/cloudflare-types.ts";
+import { authenticateDevRequest } from "../src/identity.ts";
+import { FrameType, encodeTypedFrame, type FrameTypeValue } from "../src/protocol.ts";
+import { RoomMaterializer } from "../src/room-materializer.ts";
+import {
+  createEmptyRoomHost,
+  initializeRuntimedWasm,
+  NotebookHandle,
+} from "../src/runtimed-wasm.ts";
+
+const wasmBytes = await readFile(
+  new URL("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm", import.meta.url),
+);
+
+before(async () => {
+  await initializeRuntimedWasm(wasmBytes);
+});
+
+describe("RoomHostHandle", () => {
+  it("hosts NotebookDoc sync with per-peer state", async () => {
+    const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
+    const editor = NotebookHandle.create_bootstrap("user:dev:alice/desktop:a");
+    const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
+
+    syncHostWithClient(host, "peer-editor", "user:dev:alice", true, editor);
+    editor.add_cell(0, "cell-1", "markdown");
+    editor.update_source("cell-1", "# Hosted markdown\n");
+    const message = editor.flush_local_changes();
+    assert.ok(message);
+
+    const editorResult = host.receive_peer_frame(
+      "peer-editor",
+      "user:dev:alice",
+      true,
+      encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
+    ) as {
+      changed: boolean;
+      outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: number[] }>;
+    };
+
+    assert.equal(editorResult.changed, true);
+
+    syncHostWithClient(host, "peer-viewer", "user:dev:bob", false, viewer);
+
+    const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
+    assert.deepEqual(
+      cells.map((cell) => [cell.id, cell.source]),
+      [["cell-1", "# Hosted markdown\n"]],
+    );
+  });
+
+  it("rejects document changes authored by a foreign principal", async () => {
+    const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
+    const forged = NotebookHandle.create_bootstrap("user:dev:mallory/desktop:forge");
+    syncHostWithClient(host, "peer-alice", "user:dev:alice", true, forged);
+    forged.add_cell(0, "cell-forged", "markdown");
+    const message = forged.flush_local_changes();
+    assert.ok(message);
+
+    assert.throws(
+      () =>
+        host.receive_peer_frame(
+          "peer-alice",
+          "user:dev:alice",
+          true,
+          encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
+        ),
+      /not authorized/,
+    );
+  });
+
+  it("rejects viewer-authored document changes", async () => {
+    const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
+    const viewer = NotebookHandle.create_bootstrap("user:dev:alice/desktop:a");
+    syncHostWithClient(host, "peer-viewer", "user:dev:alice", false, viewer);
+    viewer.add_cell(0, "cell-viewer", "markdown");
+    const message = viewer.flush_local_changes();
+    assert.ok(message);
+
+    assert.throws(
+      () =>
+        host.receive_peer_frame(
+          "peer-viewer",
+          "user:dev:alice",
+          false,
+          encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
+        ),
+      /cannot write NotebookDoc/,
+    );
+  });
+});
+
+describe("RoomMaterializer", () => {
+  it("persists and reloads a durable room checkpoint", async () => {
+    const state = fakeState();
+    const editorIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
+    );
+    const editorPeer = {
+      id: "peer-editor",
+      identity: editorIdentity,
+    };
+    const editor = NotebookHandle.create_bootstrap(editorIdentity.actorLabel);
+    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    await syncMaterializerWithClient(materializer, editorPeer, editor);
+    editor.add_cell(0, "cell-1", "markdown");
+    editor.update_source("cell-1", "Durable room checkpoint\n");
+    const message = editor.flush_local_changes();
+    assert.ok(message);
+
+    const applied = await materializer.receiveFrame(editorPeer, {
+      type: FrameType.AUTOMERGE_SYNC,
+      payload: message,
+    });
+    assert.equal(applied.changed, true);
+    await materializer.checkpoint();
+
+    const keys = [...(await state.storage.list({ prefix: "room-host:" })).keys()].sort();
+    assert.deepEqual(keys, [
+      "room-host:checkpoint",
+      "room-host:notebook-doc",
+      "room-host:runtime-state-doc",
+    ]);
+
+    const reloaded = new RoomMaterializer("demo", state, {} as Env);
+    const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
+    await syncMaterializerWithClient(
+      reloaded,
+      {
+        id: "peer-viewer",
+        identity: authenticateDevRequest(
+          new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
+        ),
+      },
+      viewer,
+    );
+
+    const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
+    assert.deepEqual(
+      cells.map((cell) => cell.id),
+      ["cell-1"],
+    );
+    assert.equal(cells[0].source, "Durable room checkpoint\n");
+  });
+});
+
+function syncHostWithClient(
+  host: Awaited<ReturnType<typeof createEmptyRoomHost>>,
+  peerId: string,
+  principal: string,
+  canWrite: boolean,
+  client: NotebookHandle,
+): void {
+  let result = host.sync_peer(peerId) as {
+    outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: number[] }>;
+  };
+  for (let round = 0; round < 8; round += 1) {
+    const replies = applyOutboundToClient(result.outbound, peerId, client);
+    if (replies.length === 0) {
+      return;
+    }
+    const outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: number[] }> = [];
+    for (const reply of replies) {
+      const next = host.receive_peer_frame(peerId, principal, canWrite, reply) as {
+        outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: number[] }>;
+      };
+      outbound.push(...next.outbound);
+    }
+    result = { outbound };
+  }
+}
+
+async function syncMaterializerWithClient(
+  materializer: RoomMaterializer,
+  peer: { id: string; identity: ReturnType<typeof authenticateDevRequest> },
+  client: NotebookHandle,
+): Promise<void> {
+  let result = await materializer.syncPeer(peer);
+  for (let round = 0; round < 8; round += 1) {
+    const replies = applyOutboundToClient(result.outbound, peer.id, client);
+    if (replies.length === 0) {
+      return;
+    }
+    const outbound = [];
+    for (const reply of replies) {
+      const next = await materializer.receiveFrame(peer, {
+        type: FrameType.AUTOMERGE_SYNC,
+        payload: reply.slice(1),
+      });
+      outbound.push(...next.outbound);
+    }
+    result = {
+      changed: false,
+      notebook_changed: false,
+      runtime_state_changed: false,
+      outbound,
+    };
+  }
+}
+
+function applyOutboundToClient(
+  outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: Uint8Array | number[] }>,
+  peerId: string,
+  client: NotebookHandle,
+): Uint8Array[] {
+  const replies: Uint8Array[] = [];
+  for (const frame of outbound) {
+    if (frame.peer_id !== peerId || frame.frame_type !== FrameType.AUTOMERGE_SYNC) {
+      continue;
+    }
+    const events = client.receive_frame(
+      encodeTypedFrame(frame.frame_type, new Uint8Array(frame.payload)),
+    ) as Array<{ type: string; reply?: number[] }>;
+    for (const event of events ?? []) {
+      if (event.type === "sync_applied" && event.reply) {
+        replies.push(encodeTypedFrame(FrameType.AUTOMERGE_SYNC, new Uint8Array(event.reply)));
+      }
+    }
+  }
+  return replies;
+}
+
+function fakeState(): DurableObjectState {
+  const values = new Map<string, unknown>();
+  return {
+    id: { toString: () => "room-id" },
+    storage: {
+      get: async <T>(key: string) => values.get(key) as T | undefined,
+      put: async <T>(key: string, value: T) => {
+        values.set(key, value);
+      },
+      delete: async (key: string) => values.delete(key),
+      list: async <T>(options?: { prefix?: string }) => {
+        const entries = [...values.entries()].filter(
+          ([key]) => !options?.prefix || key.startsWith(options.prefix),
+        );
+        return new Map(entries) as Map<string, T>;
+      },
+    },
+    waitUntil: () => undefined,
+  };
+}
