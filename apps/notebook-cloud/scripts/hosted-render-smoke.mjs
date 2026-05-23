@@ -9,6 +9,7 @@ import {
   isFatalIsolatedDiagnostic,
   parseIsolatedDiagnosticText,
 } from "./hosted-render-smoke-diagnostics.mjs";
+import { renderApiUrlForViewer } from "./hosted-render-smoke-routes.mjs";
 
 const DEFAULT_URL =
   "https://nteract-notebook-cloud.rgbkrk.workers.dev/n/nteract-cloud-live-mathnet";
@@ -23,6 +24,7 @@ const expectedFrameTexts = parseExpectedTexts(process.env.NOTEBOOK_CLOUD_EXPECTE
   "Loaded 25 rows",
   "PROBLEM_MARKDOWN",
 ]);
+const expectedRenderSource = process.env.NOTEBOOK_CLOUD_EXPECTED_RENDER_SOURCE ?? "snapshot-pair";
 const requireSiftWasm = process.env.NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM !== "0";
 const screenshotPath = process.env.NOTEBOOK_CLOUD_SMOKE_SCREENSHOT;
 const timeoutMs = Number(process.env.NOTEBOOK_CLOUD_SMOKE_TIMEOUT_MS ?? 60_000);
@@ -37,6 +39,7 @@ const siftWasmRequests = [];
 const rendererCompletions = [];
 const fatalIsolatedDiagnostics = [];
 const diagnosticTasks = [];
+let renderApiCheck = null;
 let screenshotSaved = false;
 
 main().catch((error) => {
@@ -103,6 +106,10 @@ async function main() {
   });
 
   try {
+    if (expectedRenderSource) {
+      renderApiCheck = await checkHostedRenderApi(targetUrl, expectedRenderSource);
+    }
+
     await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
     await page.waitForLoadState("networkidle", { timeout: timeoutMs }).catch(() => {});
 
@@ -202,6 +209,8 @@ async function main() {
           expectedSourceText,
           expectedExecutionCount,
           expectedFrameTexts,
+          expectedRenderSource,
+          renderApiCheck,
           executionCounts,
           frameTextMatches,
           iframeMetrics,
@@ -265,6 +274,43 @@ function isRelevantRequestUrl(value) {
   } catch {
     return false;
   }
+}
+
+async function checkHostedRenderApi(viewerUrl, expectedSource) {
+  const renderUrl = renderApiUrlForViewer(viewerUrl);
+  if (!renderUrl) {
+    failures.push({
+      kind: "render-api",
+      text: `Could not derive /api/n/:id/render URL from ${viewerUrl}`,
+    });
+    return null;
+  }
+
+  const response = await fetch(renderUrl);
+  if (!response.ok) {
+    failures.push({
+      kind: "render-api",
+      text: `${renderUrl} returned ${response.status}`,
+    });
+    return { url: renderUrl, status: response.status };
+  }
+
+  const json = await response.json();
+  const source = typeof json.source === "string" ? json.source : null;
+  const cellCount = Array.isArray(json.cells) ? json.cells.length : null;
+  if (source !== expectedSource) {
+    failures.push({
+      kind: "render-api",
+      text: `expected render source ${expectedSource}, got ${source ?? "missing"}`,
+      url: renderUrl,
+    });
+  }
+  return {
+    url: renderUrl,
+    status: response.status,
+    source,
+    cellCount,
+  };
 }
 
 function captureIsolatedDiagnostic(message, parsedDiagnostic) {
