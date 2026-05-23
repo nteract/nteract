@@ -25,7 +25,7 @@
 //! 1. Runtime agent connects to daemon socket, sends `Handshake::RuntimeAgent`
 //! 2. Initial sync for NotebookDoc and RuntimeStateDoc
 //! 3. Runtime agent waits for `LaunchKernel` RPC
-//! 4. Main select loop: socket frames, QueueCommands, RuntimeStateDoc changes
+//! 4. Main select loop: socket frames, LifecycleSignals, WorkCommands, RuntimeStateDoc changes
 //! 5. Watches for new `status=queued` execution entries after each sync
 //! 6. On shutdown or daemon disconnect, runtime agent exits
 
@@ -48,7 +48,7 @@ use crate::blob_store::BlobStore;
 use crate::jupyter_kernel::JupyterKernel;
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
 use crate::kernel_state::KernelState;
-use crate::output_prep::{QueueCommand, QueueCommandReceivers};
+use crate::output_prep::{LifecycleSignal, QueueCommandReceivers, WorkCommand};
 use crate::protocol::QueueEntry;
 
 mod echo_suppression;
@@ -125,8 +125,8 @@ pub async fn run_runtime_agent(
     let mut kernel_state = KernelState::new(state.clone());
     let mut seen_execution_ids = HashSet::new();
     let mut echo_suppressor = EchoSuppressor::default();
-    let mut lifecycle_rx: Option<mpsc::UnboundedReceiver<QueueCommand>> = None;
-    let mut work_rx: Option<mpsc::Receiver<QueueCommand>> = None;
+    let mut lifecycle_rx: Option<mpsc::UnboundedReceiver<LifecycleSignal>> = None;
+    let mut work_rx: Option<mpsc::Receiver<WorkCommand>> = None;
 
     // Async responses from spawned tasks (currently: SyncEnvironment).
     // Keeping these off the request handler's await frees the main loop to
@@ -592,19 +592,19 @@ pub async fn run_runtime_agent(
             // Process lifecycle commands from kernel tasks. These are
             // control-plane signals and intentionally do not share the
             // bounded output/work queue.
-            Some(command) = async {
+            Some(signal) = async {
                 match lifecycle_rx.as_mut() {
                     Some(rx) => rx.recv().await,
                     None => std::future::pending().await,
                 }
             } => {
-                if let Err(e) = handle_queue_command(
-                    command,
+                if let Err(e) = handle_lifecycle_signal(
+                    signal,
                     &ctx,
                     &mut kernel,
                     &mut kernel_state,
                 ).await {
-                    warn!("[runtime-agent] Error handling queue command: {}", e);
+                    warn!("[runtime-agent] Error handling lifecycle signal: {}", e);
                 }
             }
 
@@ -628,12 +628,7 @@ pub async fn run_runtime_agent(
                         warn!("[runtime-agent] Error draining lifecycle commands: {}", e);
                     }
                 }
-                if let Err(e) = handle_queue_command(
-                    command,
-                    &ctx,
-                    &mut kernel,
-                    &mut kernel_state,
-                ).await {
+                if let Err(e) = handle_work_command(command, &mut kernel).await {
                     warn!("[runtime-agent] Error handling work command: {}", e);
                 }
             }
@@ -1324,15 +1319,18 @@ async fn run_sync_environment(
     }
 }
 
-/// Handle a QueueCommand from the kernel's IOPub/shell/heartbeat tasks.
-async fn handle_queue_command(
-    command: QueueCommand,
+/// Handle a control-plane lifecycle signal from the kernel's tasks.
+///
+/// Lifecycle signals are rare (zero or one per execution), unbounded-channel,
+/// and must not be dropped. See `execution-pipeline.md` Decision 2.
+async fn handle_lifecycle_signal(
+    signal: LifecycleSignal,
     ctx: &RuntimeAgentContext,
     kernel: &mut Option<JupyterKernel>,
     state: &mut KernelState,
 ) -> anyhow::Result<()> {
-    match command {
-        QueueCommand::ExecutionDone { execution_id } => {
+    match signal {
+        LifecycleSignal::ExecutionDone { execution_id } => {
             debug!("[runtime-agent] ExecutionDone for {}", execution_id);
             if let Some(ref mut k) = kernel {
                 if let Err(e) = state.execution_done(&execution_id, k).await {
@@ -1341,7 +1339,7 @@ async fn handle_queue_command(
             }
         }
 
-        QueueCommand::KernelIdle { execution_id } => {
+        LifecycleSignal::KernelIdle { execution_id } => {
             if let Some(ref mut k) = kernel {
                 if let Err(e) = state.kernel_idle(execution_id.as_deref(), k).await {
                     warn!("[runtime-agent] kernel_idle error: {}", e);
@@ -1349,7 +1347,7 @@ async fn handle_queue_command(
             }
         }
 
-        QueueCommand::CellError { execution_id } => {
+        LifecycleSignal::CellError { execution_id } => {
             debug!("[runtime-agent] CellError: execution={}", execution_id);
             if state.mark_execution_error(&execution_id) {
                 let cleared = state.clear_queue();
@@ -1365,7 +1363,7 @@ async fn handle_queue_command(
             }
         }
 
-        QueueCommand::KernelDied => {
+        LifecycleSignal::KernelDied => {
             warn!("[runtime-agent] Kernel died");
             if let Some(ref mut k) = kernel {
                 k.shutdown().await.ok();
@@ -1390,8 +1388,21 @@ async fn handle_queue_command(
                 warn!("[runtime-state] {}", e);
             }
         }
+    }
 
-        QueueCommand::SendCommUpdate {
+    Ok(())
+}
+
+/// Handle a best-effort work command (kernel-facing widget replay).
+///
+/// Work commands ride the bounded channel and can be shed under load. See
+/// `execution-pipeline.md` Decision 4.
+async fn handle_work_command(
+    command: WorkCommand,
+    kernel: &mut Option<JupyterKernel>,
+) -> anyhow::Result<()> {
+    match command {
+        WorkCommand::SendCommUpdate {
             comm_id,
             state: comm_state,
             buffer_paths,
@@ -1412,18 +1423,16 @@ async fn handle_queue_command(
 }
 
 async fn drain_lifecycle_commands(
-    rx: &mut mpsc::UnboundedReceiver<QueueCommand>,
+    rx: &mut mpsc::UnboundedReceiver<LifecycleSignal>,
     ctx: &RuntimeAgentContext,
     kernel: &mut Option<JupyterKernel>,
     state: &mut KernelState,
 ) -> anyhow::Result<usize> {
     let mut drained = 0;
-    while let Ok(command) = rx.try_recv() {
-        debug_assert!(
-            command.is_lifecycle(),
-            "lifecycle channel received non-lifecycle work"
-        );
-        handle_queue_command(command, ctx, kernel, state).await?;
+    // Channel type guarantees only lifecycle signals arrive here. The previous
+    // runtime debug_assert!(command.is_lifecycle()) is now structural.
+    while let Ok(signal) = rx.try_recv() {
+        handle_lifecycle_signal(signal, ctx, kernel, state).await?;
         drained += 1;
     }
     Ok(drained)
@@ -1823,8 +1832,8 @@ mod tests {
         }
 
         // Simulate kernel death
-        handle_queue_command(
-            QueueCommand::KernelDied,
+        handle_lifecycle_signal(
+            LifecycleSignal::KernelDied,
             &ctx,
             &mut None::<JupyterKernel>,
             &mut state,
@@ -1856,8 +1865,8 @@ mod tests {
         state.set_idle();
 
         // No cells queued — just fire KernelDied
-        handle_queue_command(
-            QueueCommand::KernelDied,
+        handle_lifecycle_signal(
+            LifecycleSignal::KernelDied,
             &ctx,
             &mut None::<JupyterKernel>,
             &mut state,
@@ -1878,7 +1887,7 @@ mod tests {
         let (lifecycle_tx, work_tx, mut receivers) = queue_command_channels(1);
 
         work_tx
-            .try_send(QueueCommand::SendCommUpdate {
+            .try_send(WorkCommand::SendCommUpdate {
                 comm_id: "comm-a".to_string(),
                 state: serde_json::json!({ "outputs": [] }),
                 buffer_paths: vec![],
@@ -1886,7 +1895,7 @@ mod tests {
             })
             .expect("work queue should accept one item");
         lifecycle_tx
-            .send(QueueCommand::KernelDied)
+            .send(LifecycleSignal::KernelDied)
             .expect("lifecycle channel should be open");
 
         let drained = drain_lifecycle_commands(
@@ -1991,8 +2000,8 @@ mod tests {
         mark_interrupted_executions_failed(&handle, interrupted.as_ref(), &cleared);
 
         // Now simulate CellError from the interrupted cell A
-        handle_queue_command(
-            QueueCommand::CellError {
+        handle_lifecycle_signal(
+            LifecycleSignal::CellError {
                 execution_id: "eA".to_string(),
             },
             &ctx,
