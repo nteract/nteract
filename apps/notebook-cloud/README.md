@@ -85,11 +85,21 @@ MathNet notebook by default:
 https://nteract-notebook-cloud.rgbkrk.workers.dev/n/nteract-cloud-live-mathnet
 ```
 
+Install the Chromium browser once before running the hosted smoke from a fresh
+checkout:
+
+```bash
+pnpm --dir apps/notebook-cloud smoke:hosted:install
+```
+
 It verifies that the hosted viewer renders the live-published code cell with a
-runtime-derived execution count, that sandboxed output iframes expose the
-MathNet stdout and Sift table content, and that Sift's WASM sidecar loads from
-the configured renderer asset origin with CORS. Override the target with
-`NOTEBOOK_CLOUD_HOSTED_URL` or a positional URL argument. Set
+runtime-derived execution count, that sandboxed output iframes expose expected
+notebook content, and that Sift's WASM sidecar loads from the configured
+renderer asset origin with CORS. Override the target with
+`NOTEBOOK_CLOUD_HOSTED_URL` or a positional URL argument. Override the content
+contract with `NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT`,
+`NOTEBOOK_CLOUD_EXPECTED_EXECUTION_COUNT`, and
+`NOTEBOOK_CLOUD_EXPECTED_FRAME_TEXTS` (`|` separated). Set
 `NOTEBOOK_CLOUD_SMOKE_SCREENSHOT=/tmp/notebook-cloud.png` to save a visual
 artifact.
 
