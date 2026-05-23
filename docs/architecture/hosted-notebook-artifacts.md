@@ -44,6 +44,11 @@ The revision row records:
 Render caches may exist, but they are derived caches. They are not the source of
 truth and can be regenerated from the snapshot pair.
 
+The publish API may materialize that cache before recording the catalog row.
+This is a validation step, not a change in durability: if the `NotebookDoc` /
+`RuntimeStateDoc` pair cannot load, or if any rendered output manifest points at
+a missing blob object, the host rejects the publish and leaves no revision row.
+
 ## Decision 2: R2 layout is deterministic
 
 For a notebook `n/:id`:
@@ -55,8 +60,9 @@ n/{id}/blobs/{sha256}
 n/{id}/renders/{notebookHeadsHash}.json
 ```
 
-The render path is optional. The first three paths are the durable publish
-artifact set.
+The render path is derived. The first three paths are the durable publish
+artifact set, but hosts can precompute the render path at publish time to prove
+the snapshot pair and blob set are complete.
 
 ## Decision 3: Materialization uses runtimed-wasm
 
