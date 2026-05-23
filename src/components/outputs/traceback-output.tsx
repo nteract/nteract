@@ -11,7 +11,7 @@
  * no persistence, no plugin build step — main-DOM React all the way.
  */
 
-import { Check, ChevronRight, Copy, OctagonAlert } from "lucide-react";
+import { Check, ChevronRight, Copy, LocateFixed, OctagonAlert } from "lucide-react";
 import { useState } from "react";
 import { highlight } from "@/components/editor/static-highlight";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
@@ -123,7 +123,21 @@ interface SourceRef {
 interface Props {
   data: unknown;
   className?: string;
+  resolveExecutionTarget?: TracebackExecutionResolver;
+  onNavigateToCell?: TracebackCellNavigator;
 }
+
+export interface TracebackCellTarget {
+  cellId: string;
+  label?: string;
+}
+
+export type TracebackExecutionResolver = (
+  executionId: string,
+  sourceHash?: string,
+) => TracebackCellTarget | null | undefined;
+
+export type TracebackCellNavigator = (target: TracebackCellTarget) => void;
 
 /** A single frame, or a run of consecutive identical frames (recursion). */
 interface Cluster {
@@ -158,7 +172,12 @@ function clusterFrames(frames: Frame[]): Cluster[] {
   return out;
 }
 
-export function TracebackOutput({ data, className }: Props) {
+export function TracebackOutput({
+  data,
+  className,
+  resolveExecutionTarget,
+  onNavigateToCell,
+}: Props) {
   const payload = toPayload(data);
   if (!payload) {
     return <RawJsonFallback data={data} className={className} />;
@@ -204,6 +223,7 @@ export function TracebackOutput({ data, className }: Props) {
         // for cell users — the caret block shows location already.
         evalue={payload.syntax?.msg || payload.evalue}
         payload={payload}
+        resolveExecutionTarget={resolveExecutionTarget}
         inlineEvalue={inlineEvalue || Boolean(payload.syntax?.msg)}
       />
       {payload.syntax ? (
@@ -211,6 +231,8 @@ export function TracebackOutput({ data, className }: Props) {
           syntax={payload.syntax}
           language={language}
           currentExecutionId={currentExecutionId}
+          resolveExecutionTarget={resolveExecutionTarget}
+          onNavigateToCell={onNavigateToCell}
         />
       ) : (
         clusters.length > 0 && (
@@ -222,6 +244,8 @@ export function TracebackOutput({ data, className }: Props) {
                 defaultOpen={shouldOpen(cluster, i)}
                 language={language}
                 currentExecutionId={currentExecutionId}
+                resolveExecutionTarget={resolveExecutionTarget}
+                onNavigateToCell={onNavigateToCell}
               />
             ))}
           </ol>
@@ -237,11 +261,13 @@ function Header({
   ename,
   evalue,
   payload,
+  resolveExecutionTarget,
   inlineEvalue,
 }: {
   ename: string;
   evalue: string;
   payload: TracebackPayload;
+  resolveExecutionTarget?: TracebackExecutionResolver;
   /**
    * When true, render `ename: evalue` on a single line (for the
    * single-frame and SyntaxError cases where the two-line header
@@ -278,7 +304,7 @@ function Header({
           </>
         )}
       </div>
-      <CopyButton payload={payload} />
+      <CopyButton payload={payload} resolveExecutionTarget={resolveExecutionTarget} />
     </div>
   );
 }
@@ -293,10 +319,14 @@ function SyntaxErrorBlock({
   syntax,
   language,
   currentExecutionId,
+  resolveExecutionTarget,
+  onNavigateToCell,
 }: {
   syntax: SyntaxInfo;
   language: string;
   currentExecutionId?: string;
+  resolveExecutionTarget?: TracebackExecutionResolver;
+  onNavigateToCell?: TracebackCellNavigator;
 }) {
   const isDark = useDarkMode();
   const rawTheme = useColorTheme();
@@ -321,12 +351,16 @@ function SyntaxErrorBlock({
   const underline = "^".repeat(underlineLen);
 
   const gutterWidth = String(syntax.lineno || 1).length;
-  const location = sourceLocation(syntax, currentExecutionId);
+  const location = sourceLocation(syntax, currentExecutionId, resolveExecutionTarget);
 
   return (
     <div className="px-3 pb-2">
       <div className="mb-1.5 font-mono text-xs text-muted-foreground" title={location.title}>
-        <LocationLabel location={location} line={syntax.lineno || 1} />
+        <LocationLabel
+          location={location}
+          line={syntax.lineno || 1}
+          onNavigateToCell={onNavigateToCell}
+        />
       </div>
       <pre
         className={cn(
@@ -363,11 +397,17 @@ function SyntaxErrorBlock({
   );
 }
 
-function CopyButton({ payload }: { payload: TracebackPayload }) {
+function CopyButton({
+  payload,
+  resolveExecutionTarget,
+}: {
+  payload: TracebackPayload;
+  resolveExecutionTarget?: TracebackExecutionResolver;
+}) {
   const [copied, setCopied] = useState(false);
 
   const onClick = async () => {
-    const text = tracebackCopyText(payload);
+    const text = tracebackCopyText(payload, resolveExecutionTarget);
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
@@ -407,31 +447,40 @@ function FrameRow({
   defaultOpen,
   language,
   currentExecutionId,
+  resolveExecutionTarget,
+  onNavigateToCell,
 }: {
   cluster: Cluster;
   defaultOpen: boolean;
   language: string;
   currentExecutionId?: string;
+  resolveExecutionTarget?: TracebackExecutionResolver;
+  onNavigateToCell?: TracebackCellNavigator;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const { frame, count } = cluster;
-  const location = sourceLocation(frame, currentExecutionId);
+  const location = sourceLocation(frame, currentExecutionId, resolveExecutionTarget);
   return (
     <li className={cn("px-3 py-1.5", frame.library && "opacity-60")}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 text-left font-mono text-xs hover:text-destructive"
-        aria-expanded={open}
-      >
-        <ChevronRight
-          aria-hidden="true"
-          className={cn(
-            "h-3 w-3 shrink-0 text-muted-foreground transition-transform",
-            open && "rotate-90",
-          )}
+      <div className="flex w-full items-center gap-2 font-mono text-xs">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="rounded-sm text-muted-foreground transition-colors hover:text-destructive"
+          aria-expanded={open}
+          aria-label={open ? "Collapse traceback frame" : "Expand traceback frame"}
+        >
+          <ChevronRight
+            aria-hidden="true"
+            className={cn("h-3 w-3 shrink-0 transition-transform", open && "rotate-90")}
+          />
+        </button>
+        <LocationLabel
+          location={location}
+          line={frame.lineno}
+          name={frame.name}
+          onNavigateToCell={onNavigateToCell}
         />
-        <LocationLabel location={location} line={frame.lineno} name={frame.name} />
         {count > 1 && (
           <span
             className={cn(
@@ -443,7 +492,7 @@ function FrameRow({
             ×{count.toLocaleString()}
           </span>
         )}
-      </button>
+      </div>
       {open && frame.lines && frame.lines.length > 0 && (
         <SourceBlock lines={frame.lines} language={language} />
       )}
@@ -455,6 +504,9 @@ interface SourceLocation {
   kind: "notebook" | "file";
   label: string;
   executionLabel?: string;
+  executionId?: string;
+  sourceHash?: string;
+  target?: TracebackCellTarget;
   title: string;
 }
 
@@ -462,18 +514,40 @@ function LocationLabel({
   location,
   line,
   name,
+  onNavigateToCell,
 }: {
   location: SourceLocation;
   line: number;
   name?: string;
+  onNavigateToCell?: TracebackCellNavigator;
 }) {
   const showName = Boolean(name && name !== "<module>");
+  const target = location.target && onNavigateToCell ? location.target : undefined;
   return (
     <span className="flex min-w-0 items-center gap-1.5" title={location.title}>
       <span className="shrink-0 text-muted-foreground">Line</span>
       <span className="shrink-0 tabular-nums text-muted-foreground">{line}</span>
       <span className="shrink-0 text-muted-foreground">in</span>
-      <span className="truncate text-muted-foreground">{location.label}</span>
+      {target ? (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onNavigateToCell?.(target);
+          }}
+          className={cn(
+            "inline-flex min-w-0 items-center gap-1 rounded-sm px-1 py-0.5",
+            "text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive",
+          )}
+          aria-label={`Go to cell ${target.cellId}`}
+          title={`Go to cell ${target.cellId}`}
+        >
+          <LocateFixed aria-hidden="true" className="h-3 w-3 shrink-0" />
+          <span className="truncate">{location.label}</span>
+        </button>
+      ) : (
+        <span className="truncate text-muted-foreground">{location.label}</span>
+      )}
       {location.executionLabel && (
         <code className="shrink-0 rounded bg-muted px-1 py-0.5 text-[11px] text-muted-foreground">
           {location.executionLabel}
@@ -495,6 +569,7 @@ function sourceLocation(
     "filename" | "execution_id" | "execution_count" | "source_hash" | "source_ref"
   >,
   currentExecutionId: string | undefined,
+  resolveExecutionTarget?: TracebackExecutionResolver,
 ): SourceLocation {
   const sourceRef = source.source_ref;
   const executionId = sourceRef?.execution_id ?? source.execution_id;
@@ -506,20 +581,40 @@ function sourceLocation(
   if (executionCount !== undefined) titleParts.push(`Input: In[${executionCount}]`);
   if (sourceHash) titleParts.push(`Source: ${sourceHash}`);
   if (compiledFilename) titleParts.push(`Compiled file: ${compiledFilename}`);
-  const title = titleParts.join("\n") || source.filename || "Unknown source";
 
   const isNotebookSource =
     sourceRef?.kind === "notebook_execution" || isSyntheticNotebookFilename(source.filename);
+  const target = executionId ? (resolveExecutionTarget?.(executionId, sourceHash) ?? null) : null;
+  if (target) titleParts.unshift(`Cell: ${target.cellId}`);
+  const title = titleParts.join("\n") || source.filename || "Unknown source";
 
   if (!isNotebookSource) {
     return { kind: "file", label: source.filename || "Unknown source", title };
+  }
+
+  const executionLabel = executionCount === undefined ? undefined : `In[${executionCount}]`;
+  if (target) {
+    const label =
+      target.label ??
+      (executionId === currentExecutionId ? "Current Cell" : `Cell ${shortCellId(target.cellId)}`);
+    return {
+      kind: "notebook",
+      label,
+      executionLabel,
+      executionId,
+      sourceHash,
+      target,
+      title,
+    };
   }
 
   if (executionId && executionId === currentExecutionId) {
     return {
       kind: "notebook",
       label: "Current Cell",
-      executionLabel: executionCount === undefined ? undefined : `In[${executionCount}]`,
+      executionLabel,
+      executionId,
+      sourceHash,
       title,
     };
   }
@@ -527,8 +622,10 @@ function sourceLocation(
   if (executionId) {
     return {
       kind: "notebook",
-      label: "Earlier Cell",
-      executionLabel: executionCount === undefined ? undefined : `In[${executionCount}]`,
+      label: "Notebook Execution",
+      executionLabel,
+      executionId,
+      sourceHash,
       title,
     };
   }
@@ -536,9 +633,14 @@ function sourceLocation(
   return {
     kind: "notebook",
     label: "Notebook Cell",
-    executionLabel: executionCount === undefined ? undefined : `In[${executionCount}]`,
+    executionLabel,
+    sourceHash,
     title,
   };
+}
+
+function shortCellId(cellId: string): string {
+  return cellId.length <= 12 ? cellId : cellId.slice(0, 8);
 }
 
 function isSyntheticNotebookFilename(filename: string): boolean {
@@ -549,8 +651,11 @@ function isSyntheticNotebookFilename(filename: string): boolean {
   );
 }
 
-function tracebackCopyText(payload: TracebackPayload): string {
-  const synthesized = synthesizeTracebackText(payload);
+function tracebackCopyText(
+  payload: TracebackPayload,
+  resolveExecutionTarget?: TracebackExecutionResolver,
+): string {
+  const synthesized = synthesizeTracebackText(payload, resolveExecutionTarget);
   if (synthesized) return synthesized;
   return (
     payload.text ??
@@ -560,7 +665,10 @@ function tracebackCopyText(payload: TracebackPayload): string {
   );
 }
 
-function synthesizeTracebackText(payload: TracebackPayload): string | null {
+function synthesizeTracebackText(
+  payload: TracebackPayload,
+  resolveExecutionTarget?: TracebackExecutionResolver,
+): string | null {
   const frames = payload.frames ?? [];
   const currentExecutionId = payload.execution?.execution_id;
   const hasNotebookSource =
@@ -571,7 +679,7 @@ function synthesizeTracebackText(payload: TracebackPayload): string | null {
 
   const out = ["Traceback (most recent call last):"];
   if (payload.syntax) {
-    out.push(`  ${copyLocationLine(payload.syntax, currentExecutionId)}`);
+    out.push(`  ${copyLocationLine(payload.syntax, currentExecutionId, resolveExecutionTarget)}`);
     if (payload.syntax.text) {
       out.push(`    ${payload.syntax.text}`);
       const caret = syntaxCaretLine(payload.syntax);
@@ -579,7 +687,9 @@ function synthesizeTracebackText(payload: TracebackPayload): string | null {
     }
   } else {
     for (const frame of frames) {
-      out.push(`  ${copyLocationLine(frame, currentExecutionId, frame.name)}`);
+      out.push(
+        `  ${copyLocationLine(frame, currentExecutionId, resolveExecutionTarget, frame.name)}`,
+      );
       const source = highlightedSourceLine(frame.lines);
       if (source) out.push(`    ${source}`);
     }
@@ -591,9 +701,10 @@ function synthesizeTracebackText(payload: TracebackPayload): string | null {
 function copyLocationLine(
   source: Pick<
     Frame | SyntaxInfo,
-    "filename" | "lineno" | "execution_id" | "execution_count" | "source_ref"
+    "filename" | "lineno" | "execution_id" | "execution_count" | "source_hash" | "source_ref"
   >,
   currentExecutionId: string | undefined,
+  resolveExecutionTarget?: TracebackExecutionResolver,
   name?: string,
 ): string {
   if (!isNotebookSource(source)) {
@@ -602,9 +713,14 @@ function copyLocationLine(
     }`;
   }
 
-  const location = sourceLocation(source, currentExecutionId);
+  const location = sourceLocation(source, currentExecutionId, resolveExecutionTarget);
   let line = `Line ${source.lineno} in ${location.label}`;
-  if (location.executionLabel) line += ` (${location.executionLabel})`;
+  const details = [];
+  if (location.target) details.push(`cell_id=${location.target.cellId}`);
+  if (location.executionId) details.push(`execution_id=${location.executionId}`);
+  if (location.executionLabel) details.push(location.executionLabel);
+  if (location.sourceHash) details.push(`source_hash=${location.sourceHash}`);
+  if (details.length > 0) line += ` (${details.join(", ")})`;
   if (name && name !== "<module>") line += `, in ${name}`;
   return line;
 }

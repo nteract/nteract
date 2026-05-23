@@ -133,6 +133,10 @@ pub async fn run_all_cells(
 
     let cells = handle.get_cells();
     let runtime_state = handle.get_runtime_state().ok();
+    let mut execution_cell_map = execution::execution_cell_map(&handle);
+    for (cell_id, execution_id) in &result.cell_execution_ids {
+        execution_cell_map.insert(execution_id.clone(), cell_id.clone());
+    }
 
     // Look up this run's execution state for a given cell.
     let run_exec = |cell_id: &str| -> Option<&runtime_doc::ExecutionState> {
@@ -231,6 +235,7 @@ pub async fn run_all_cells(
                     blob_base_url: server.blob_base_url.as_deref(),
                     blob_store_path: server.blob_store_path.as_deref(),
                     comms,
+                    execution_cell_map: Some(&execution_cell_map),
                     ..Default::default()
                 },
             )
@@ -336,12 +341,19 @@ pub async fn get_results(
             let cell = handle.get_cells().into_iter().find(|cell| {
                 handle.get_cell_execution_id(&cell.id).as_deref() == Some(execution_id)
             });
+            let mut execution_cell_map = execution::execution_cell_map(handle);
+            if let Some(cell) = &cell {
+                execution_cell_map
+                    .entry(execution_id.to_string())
+                    .or_insert_with(|| cell.id.clone());
+            }
             return render_execution_result(
                 server,
                 execution_id,
                 exec,
                 Some(&runtime_state.comms),
                 cell,
+                Some(execution_cell_map),
                 full_output,
             )
             .await;
@@ -359,7 +371,19 @@ pub async fn get_results(
             source: record.source,
             seq: record.seq,
         };
-        return render_execution_result(server, execution_id, &exec, None, None, full_output).await;
+        let execution_cell_map = record
+            .cell_id
+            .map(|cell_id| std::collections::HashMap::from([(execution_id.to_string(), cell_id)]));
+        return render_execution_result(
+            server,
+            execution_id,
+            &exec,
+            None,
+            None,
+            execution_cell_map,
+            full_output,
+        )
+        .await;
     }
 
     tool_error(&format!(
@@ -373,6 +397,7 @@ async fn render_execution_result(
     exec: &runtime_doc::ExecutionState,
     comms: Option<&std::collections::HashMap<String, runtime_doc::CommDocEntry>>,
     cell: Option<notebook_doc::CellSnapshot>,
+    execution_cell_map: Option<std::collections::HashMap<String, String>>,
     full_output: bool,
 ) -> Result<CallToolResult, McpError> {
     // Determine display status with clear indication of completeness
@@ -413,6 +438,7 @@ async fn render_execution_result(
                 } else {
                     output_resolver::OutputLength::Preview
                 },
+                execution_cell_map: execution_cell_map.as_ref(),
             },
         )
         .await

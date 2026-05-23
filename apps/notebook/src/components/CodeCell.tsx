@@ -26,7 +26,11 @@ import {
 import { onEditorRegistered, onEditorUnregistered } from "../lib/cursor-registry";
 import { registerCellEditor, unregisterCellEditor } from "../lib/editor-registry";
 import { kernelCompletionExtension } from "../lib/kernel-completion";
-import { useCellExecutionId, useExecution } from "../lib/notebook-executions";
+import {
+  getCellIdForExecutionId,
+  useCellExecutionId,
+  useExecution,
+} from "../lib/notebook-executions";
 import { useCellOutputs } from "../lib/notebook-outputs";
 import { openUrl } from "../lib/open-url";
 import { presenceSenderExtension } from "../lib/presence-sender";
@@ -52,6 +56,7 @@ interface CodeCellProps {
   onDelete: () => void;
   onFocusPrevious?: (cursorPosition: "start" | "end") => void;
   onFocusNext?: (cursorPosition: "start" | "end") => void;
+  onNavigateToCell?: (cellId: string) => void;
   onInsertCellAfter?: () => void;
   isLastCell?: boolean;
   /** Props for dnd-kit drag handle (applied to ribbon) */
@@ -146,6 +151,7 @@ export const CodeCell = memo(function CodeCell({
   onDelete,
   onFocusPrevious,
   onFocusNext,
+  onNavigateToCell,
   onInsertCellAfter,
   isLastCell = false,
   dragHandleProps,
@@ -347,6 +353,16 @@ export const CodeCell = memo(function CodeCell({
     editorRef.current?.getEditor()?.contentDOM.blur();
     onFocus();
   }, [onFocus]);
+  const resolveTracebackExecutionTarget = useCallback((executionId: string) => {
+    const cellId = getCellIdForExecutionId(executionId);
+    return cellId ? { cellId } : null;
+  }, []);
+  const handleTracebackCellNavigate = useCallback(
+    (target: { cellId: string }) => {
+      onNavigateToCell?.(target.cellId);
+    },
+    [onNavigateToCell],
+  );
 
   const gutterContent = bothHidden ? null : (
     <CompactExecutionButton
@@ -466,6 +482,8 @@ export const CodeCell = memo(function CodeCell({
               onSearchMatchCount={onSearchMatchCount}
               onLinkClick={handleLinkClick}
               onIframeMouseDown={handleOutputMouseDown}
+              resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
+              onNavigateToTracebackCell={handleTracebackCellNavigate}
               focused={outputFocused}
               useOutputWell={showOutputChrome}
             />

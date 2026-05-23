@@ -24,7 +24,11 @@ import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-out
 import { isSafeForMainDom } from "@/components/outputs/safe-mime-types";
 import { DEFAULT_PRIORITY, MediaRouter } from "@/components/outputs/media-router";
 import { selectMimeType } from "@/components/outputs/mime-priority";
-import { TracebackOutput } from "@/components/outputs/traceback-output";
+import {
+  TracebackOutput,
+  type TracebackCellNavigator,
+  type TracebackExecutionResolver,
+} from "@/components/outputs/traceback-output";
 import { useWidgetStore } from "@/components/widgets/widget-store-context";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { ErrorBoundary } from "@/lib/error-boundary";
@@ -177,6 +181,14 @@ interface OutputAreaProps {
    * keep relying on the default daemon-local context.
    */
   hostContext?: NteractEmbedHostContextPatch;
+  /**
+   * Resolve a traceback frame's execution_id back to a current notebook cell,
+   * when the execution still belongs to one. Omitted in read-only/isolated
+   * contexts that cannot navigate notebook cells.
+   */
+  resolveTracebackExecutionTarget?: TracebackExecutionResolver;
+  /** Navigate to the cell resolved for a traceback frame. */
+  onNavigateToTracebackCell?: TracebackCellNavigator;
 }
 
 /**
@@ -315,6 +327,8 @@ function renderOutput(
   index: number,
   renderers?: OutputAreaProps["renderers"],
   priority?: readonly string[],
+  resolveTracebackExecutionTarget?: OutputAreaProps["resolveTracebackExecutionTarget"],
+  onNavigateToTracebackCell?: OutputAreaProps["onNavigateToTracebackCell"],
 ) {
   const key = `output-${index}`;
 
@@ -343,7 +357,14 @@ function renderOutput(
       // When absent, fall back to the plain ANSI render — the classic
       // path still works for vanilla ipykernel_launcher.
       if (output.rich != null && typeof output.rich === "object") {
-        return <TracebackOutput key={key} data={output.rich} />;
+        return (
+          <TracebackOutput
+            key={key}
+            data={output.rich}
+            resolveExecutionTarget={resolveTracebackExecutionTarget}
+            onNavigateToCell={onNavigateToTracebackCell}
+          />
+        );
       }
       return (
         <AnsiErrorOutput
@@ -396,6 +417,8 @@ export function OutputArea({
   onSearchMatchCount,
   onIframeMouseDown,
   hostContext,
+  resolveTracebackExecutionTarget,
+  onNavigateToTracebackCell,
 }: OutputAreaProps) {
   const id = useId();
   const frameRef = useRef<IsolatedFrameHandle>(null);
@@ -831,7 +854,14 @@ export function OutputArea({
                         );
                       }}
                     >
-                      {renderOutput(output, index, renderers, priority)}
+                      {renderOutput(
+                        output,
+                        index,
+                        renderers,
+                        priority,
+                        resolveTracebackExecutionTarget,
+                        onNavigateToTracebackCell,
+                      )}
                     </ErrorBoundary>
                   </div>
                 );

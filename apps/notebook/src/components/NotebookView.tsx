@@ -721,6 +721,13 @@ function NotebookViewContent({
         }
       };
 
+      const onNavigateToCell = (targetCellId: string) => {
+        logger.debug(`[cell-nav] Navigating to traceback cell: ${targetCellId.slice(0, 8)}`);
+        onFocusCell(targetCellId);
+        presence?.setFocus(targetCellId);
+        focusCell(targetCellId, "start");
+      };
+
       // Build right gutter content — delete button for all cells,
       // plus source toggle for code cells
       const deleteButton = (
@@ -791,6 +798,7 @@ function NotebookViewContent({
             onDelete={() => onDeleteCell(cell.id)}
             onFocusPrevious={onFocusPrevious}
             onFocusNext={onFocusNext}
+            onNavigateToCell={onNavigateToCell}
             onInsertCellAfter={() => onAddCell("code", cell.id)}
             isLastCell={index === cellIdsRef.current.length - 1}
             dragHandleProps={dragHandleProps}
