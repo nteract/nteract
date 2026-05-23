@@ -140,6 +140,57 @@ describe("cloud viewer render resolution", () => {
     assert.equal(markdownCell.language, null);
     assert.equal(codeCellWithDefaultLanguage.language, "python");
   });
+
+  it("falls back to RuntimeStateDoc output execution counts", async () => {
+    const cell = await resolveCell(
+      {
+        id: "runtime-count",
+        cell_type: "code",
+        source: "df",
+        execution_count: "null",
+        outputs: [
+          {
+            output_type: "stream",
+            name: "stdout",
+            text: "loaded\n",
+          },
+          {
+            output_type: "execute_result",
+            execution_count: 7,
+            data: { "text/plain": "shape: (25, 8)" },
+            metadata: {},
+          },
+        ],
+      },
+      rejectingBlobResolver(),
+      0,
+    );
+
+    assert.equal(cell.executionCount, 7);
+  });
+
+  it("keeps an explicit cell execution count over output fallbacks", async () => {
+    const cell = await resolveCell(
+      {
+        id: "cell-count",
+        cell_type: "code",
+        source: "df",
+        execution_count: 3,
+        outputs: [
+          {
+            output_type: "execute_result",
+            execution_count: 7,
+            data: { "text/plain": "shape: (25, 8)" },
+            metadata: {},
+          },
+        ],
+      },
+      rejectingBlobResolver(),
+      0,
+    );
+
+    assert.equal(cell.executionCount, 3);
+  });
 });
 
 function rejectingBlobResolver(): BlobResolver {
