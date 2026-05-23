@@ -3094,6 +3094,14 @@ async fn test_pipe_mode_preserves_initial_session_status_frame() {
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
 
+/// "Pipe mode" here is the daemon-side `connect_relay` path used by CLI
+/// inspection tools — it intentionally suppresses `Response` so a debug
+/// tap does not steal request/response correlation from a real client.
+///
+/// This is **not** the Tauri desktop relay's `pipe_frame`
+/// (`crates/notebook-sync/src/relay_task.rs:328`), which **does** forward
+/// `Response` because the frontend's pending-request map needs to see them.
+/// Same verb, two different audiences. Punchlist WP-5.
 #[tokio::test]
 async fn test_pipe_mode_only_pipes_allowed_frame_types() {
     let temp_dir = TempDir::new().unwrap();

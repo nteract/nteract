@@ -19,7 +19,7 @@ Severity legend:
 | WP-2 | Two presence size caps disagree: `frame_size_limits(PRESENCE).cap = 1 MiB` (wire crate) vs `MAX_PRESENCE_FRAME_SIZE = 4 KiB` (`notebook-doc::presence`). A 5 KiB CBOR presence frame passes one layer and fails the next. | Targeted PR | `crates/notebook-wire/src/lib.rs`, `crates/notebook-doc/src/presence.rs` |
 | WP-3 | Contract test `frame_type_constants_match_ts_transport` checks discriminants but not per-type caps. `packages/runtimed/src/transport.ts::frameSizeLimits` can silently diverge from the Rust table. | Targeted PR | `crates/notebook-protocol/src/protocol.rs`, `packages/runtimed/src/transport.ts` |
 | WP-4 | `0x01`/`0x02` frame IDs are reused with different envelopes between `RuntimeAgent` and `NotebookSync` channels. Distinguishable only by handshake variant; a misrouted frame deserializes incorrectly with no protocol-level detection. | Design | `crates/notebook-protocol/`, `crates/runtimed/` |
-| WP-5 | Integration test `test_pipe_mode_only_pipes_allowed_frame_types` excludes `RESPONSE` from pipe-mode while `crates/notebook-sync/src/relay_task.rs::pipe_frame` includes it for the relay-mode path. Different code paths, but naming overlap is misleading. | Inline | code comment + ADR cross-ref |
+| ~~WP-5~~ | **Done** in cleanup/inline-pass. Doc comments on both call sites explain the distinction: daemon CLI "pipe mode" is a debug tap (drops `Response`); Tauri relay `pipe_frame` forwards `Response` because the frontend depends on it. | Done | `crates/runtimed/tests/integration.rs:3098`, `crates/notebook-sync/src/relay_task.rs:328` |
 | WP-6 | `frame_size_limits` default fallback for unknown frame types is the outer 100 MiB ceiling. A typo in a new variant's cap clause silently lands on the ceiling. | Targeted PR | `crates/notebook-wire/src/lib.rs` |
 | WP-7 | `PROTOCOL_VERSION` is `u32` but serialized as `u8`. Compile-time asserted to fit, but the 4-byte constant vs 1-byte wire field is a footgun. | Targeted PR | `crates/notebook-wire/src/lib.rs` |
 | WP-8 | `ProtocolCapabilities.protocol_version: Option<u32>` is set, defaults to `Some(PROTOCOL_VERSION)`, but no client reads it differently from the preamble byte. Possibly vestigial. | Design | `crates/notebook-protocol/` |
@@ -45,16 +45,16 @@ Severity legend:
 | EP-1 | `flush_then_signal_commits_stream_before_lifecycle_signal` test verifies signal arrival order, not durable Automerge change order. A refactor that re-routes `ExecutionDone` past the priority path would still pass. | Targeted PR | `crates/runtimed/src/stream_committer.rs` test |
 | EP-2 | `is_lifecycle()` is `debug_assert!` only. No release-build enforcement, no CI lint. A `SendCommUpdate` accidentally routed onto the lifecycle channel passes in production. | Targeted PR | `crates/runtimed/src/stream_committer.rs` |
 | EP-3 | No daemon-side execution watchdog. A panic or task drop between final output write and `set_execution_done` leaves execution in `running` forever; consumers time out client-side. | Targeted PR | `crates/runtimed/src/runtime_agent.rs` |
-| EP-4 | Periodic-flush drop telemetry (`stream_committer.request_flush`, `try_send_comm_update`) logs at `debug`. Production-default log levels have no signal that replay or stream flushes are being shed. | Inline | log-level promotion |
+| ~~EP-4~~ | **Refuted.** Per `.claude/rules/logging.md`, per-operation drops belong at `debug`. Flush drops are per-operation. The visibility concern is real but the fix is metrics, not a log-level change — reclassified to a future Targeted PR for instrumentation. | Refuted | (was `stream_committer.request_flush`) |
 | EP-5 | Capacity constants (`STREAM_COMMITTER_QUEUE_CAPACITY = 32`, `MAX_PENDING_DISPLAY_IDS = 128`, `DEFAULT_OUTPUT_SYNC_GRACE = 500ms`) picked by judgment. No benchmark, no drop-rate metric, no measured upper bound under load. | Design | telemetry + tuning pass |
 | EP-6 | `required_heads` is `NotebookDoc`-only. No causal gate exists for requests that depend on recent `RuntimeStateDoc` writes. | Design | request handling |
-| EP-7 | `update_display_data` buffer coalescing drops earlier binary buffers when two updates for the same display_id carry different sets. Correct per semantics; the contract isn't named anywhere. | Inline | doc comment on the coalescing path |
+| ~~EP-7~~ | **Done** in cleanup/inline-pass. `DisplayUpdateCommitterHandle::request_update` now carries a doc comment naming the latest-wins-including-buffers contract. | Done | `crates/runtimed/src/display_update_committer.rs:49` |
 | EP-8 | "IOPub reader cannot block on bounded queues" is discipline, not a check. Adding `.await` on a bounded send in any IOPub handler arm would silently reintroduce the backpressure failure. | Targeted PR | IOPub handlers, lint or type-level enforcement |
 | EP-9 | Run-all timeouts are shared across the batch; a long first cell starves the budget for later cells. No fairness mechanism. | Design | run-all path |
 | EP-10 | Runtime agent `select!` is not `biased;`. Brief window where work could be selected before lifecycle drain. Drain inside the work-arm body closes this for already-pending signals, not for ones that arrive during work selection. | Targeted PR | `crates/runtimed/src/runtime_agent.rs` |
 | EP-11 | `flush_then_signal` empty-flushes fast path: when `flushes` is empty, the signal is sent directly on `lifecycle_tx` bypassing the priority committer. A no-output execution's `ExecutionDone` races freely with `KernelIdle` on the same channel. | Targeted PR | `crates/runtimed/src/stream_committer.rs:106-109` |
-| EP-12 | `KernelDied` is also sent from the committer supervisor on panic, not only from IOPub disconnect. The committer crash → queue release tie is load-bearing but not documented. | Inline | doc comment + ADR cross-ref |
-| EP-13 | `try_send_comm_update` `Closed` arm logs at `warn`, while the `Full` arm logs at `debug`. Asymmetric severity for two paths that both represent loss of replay. | Inline | log-level consistency |
+| ~~EP-12~~ | **Done** in cleanup/inline-pass. Both `start_stream_committer` and `start_display_update_committer` now carry doc comments on the panic-supervisor branch explaining the `KernelDied` → queue-release tie. | Done | `crates/runtimed/src/stream_committer.rs:227`, `crates/runtimed/src/display_update_committer.rs:259` |
+| ~~EP-13~~ | **Refuted.** The asymmetry is correct severity-matching, not a bug. `Full` is expected backpressure under load (the work channel saturates under widget storms — per `.claude/rules/logging.md`, that's `debug`). `Closed` means the work receiver is gone, which is a real anomaly worth `warn`. Different conditions, different levels. | Refuted | (was `jupyter_kernel.rs:208-220`) |
 
 ## Blob storage
 
@@ -67,16 +67,19 @@ Severity legend:
 | BS-5 | Blob HTTP responds with `Access-Control-Allow-Origin: *` plus loopback only. Fine for single-user desktop; the moment a daemon serves more than one OS user or accepts a remote peer, any peer that knows a hash gets the blob regardless of room ownership. Hash unguessability is the only mitigation. | Design | identity gate on blob HTTP |
 | BS-6 | `BlobStore` hard-codes the filesystem. `hosted-notebook-artifacts.md` says R2 dedupes on the same keys, but `runtimed` has no `BlobBackend` trait or paginated `list()` that would survive on an object store. | Design | abstraction layer |
 | BS-7 | GC mark walks rooms and persisted docs producing one combined hash set with no per-ref provenance. Any mark-miss is a silent data-loss bug at sweep time, with no debug surface to audit. | Targeted PR | GC instrumentation |
-| BS-8 | `BlobStore` in-memory cache is referenced as "LRU" in source comments and AGENTS.md but eviction is insertion-order FIFO; `get` never refreshes recency. Either fix the name or fix the algorithm. | Inline | `crates/runtimed/src/blob_store.rs:174-201` |
+| ~~BS-8~~ | **Done** in cleanup/inline-pass. `MemoryLayer` now carries a doc comment naming the FIFO semantics explicitly, and the misleading `lru_eviction_oldest_first` test is renamed `fifo_eviction_oldest_first`. Algorithm unchanged. | Done | `crates/runtimed/src/blob_store.rs:89, :1175` |
 | BS-9 | `MAX_BLOB_SIZE = 100 MiB` only gates the in-process `BlobStore::put()` API. The multipart finalize path validates against the caller's `expected_size` and the per-peer 256 MiB staging budget but does not enforce a 100 MiB ceiling on the completed blob. A peer can multipart-upload a 200 MiB blob today. | Design | `crates/runtimed/src/blob_upload.rs` finalize path |
 | BS-10 | Save-to-`.ipynb` externalizes Arrow IPC and Parquet only via `BLOB_REF_MIME`; every other binary MIME is base64-inlined in the saved file. A user opening the saved `.ipynb` outside nteract gets self-contained binary for non-Arrow/Parquet but broken refs for the rest unless they keep the colocated blob store. | Design | `output_store.rs:62-89` |
-| BS-11 | `COMM_STATE_BLOB_THRESHOLD = 1024` and `DEFAULT_INLINE_THRESHOLD = 1024` are two independent constants that happen to share the same value. A future tune to one will not move the other. | Inline | constant cross-reference comment |
+| ~~BS-11~~ | **Done** in cleanup/inline-pass. `COMM_STATE_BLOB_THRESHOLD`'s doc comment now explicitly cross-references `DEFAULT_INLINE_THRESHOLD` and explains that the shared value is coincidence, not coupling. | Done | `crates/runtimed/src/output_prep.rs:143` |
 
 ## Triage summary
 
-- **Inline (this branch, alongside ADRs):** WP-1, WP-5, WP-9, EP-4, EP-7. Five total.
-- **Targeted PRs (one per smell after ADRs land):** WP-2, WP-3, WP-6, WP-7, 3D-1, 3D-2, EP-1, EP-2, EP-3, EP-8, EP-10, BS-1, BS-3, BS-7. Fourteen total.
-- **Design (resolve in ADR before code moves):** WP-4, WP-8, WP-10, 3D-3, 3D-4, 3D-5, 3D-6, EP-5, EP-6, EP-9, BS-2, BS-4, BS-5, BS-6. Fourteen total.
+**Status legend:** Done = landed; Refuted = examined and rejected with rationale; Inline / Targeted / Design = open.
+
+- **Done:** WP-1, WP-5, WP-9, EP-7, EP-12, BS-8, BS-11. Seven landed via #2813 + cleanup/inline-pass.
+- **Refuted:** EP-4 (log levels are correct per `.claude/rules/logging.md`), EP-13 (warn/debug asymmetry matches the actual severity of `Full` vs `Closed`).
+- **Targeted PRs (one per smell):** WP-2, WP-3, WP-6, WP-7, WP-11, 3D-1, 3D-2, EP-1, EP-2, EP-8, EP-10, EP-11, BS-1, BS-3, BS-7. Fifteen open.
+- **Design (resolve in ADR or memo first):** WP-4, WP-8, WP-10, 3D-3, 3D-4, 3D-5, 3D-6, EP-3, EP-5, EP-6, EP-9, BS-2, BS-4, BS-5, BS-6, BS-9, BS-10. Seventeen open.
 
 ## Next steps
 

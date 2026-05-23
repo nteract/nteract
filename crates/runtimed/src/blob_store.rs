@@ -85,6 +85,13 @@ struct BlobStoreInner {
     memory: Mutex<MemoryLayer>,
 }
 
+/// In-memory blob cache layered on top of the on-disk store.
+///
+/// Eviction is **insertion-order FIFO**, not LRU. `get` does not refresh
+/// recency; `evict_to_cap` pops from the front of the insertion order. A
+/// frequently-read durable blob inserted early still falls out first when
+/// the cap is exceeded. Tests and comments that reference "LRU" predate
+/// the FIFO semantics — the algorithm has always been FIFO. Punchlist BS-8.
 #[derive(Debug)]
 struct MemoryLayer {
     entries: HashMap<String, MemoryEntry>,
@@ -1165,7 +1172,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lru_eviction_oldest_first() {
+    async fn fifo_eviction_oldest_first() {
         let dir = TempDir::new().unwrap();
         let store = test_store_with_cap(&dir, 2);
 
