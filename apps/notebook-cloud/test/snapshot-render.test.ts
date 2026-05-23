@@ -8,6 +8,7 @@ import { createNotebookCloudBlobResolver } from "../src/blob-resolver.ts";
 const wasmBytes = await readFile(
   new URL("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm", import.meta.url),
 );
+const ARROW_STREAM_MANIFEST_MIME = "application/vnd.nteract.arrow-stream-manifest+json";
 
 before(async () => {
   await initializeRuntimedWasm(wasmBytes);
@@ -93,4 +94,57 @@ describe("snapshot pair render materialization", () => {
       `unexpected blob URL set: ${JSON.stringify(render.blob_urls)}`,
     );
   });
+
+  it("derives hosted blob URLs from Arrow stream manifest chunk hashes", async () => {
+    const [fixtureManifest, notebookBytes, runtimeStateBytes] = await Promise.all([
+      readJson(
+        new URL(
+          "../../../packages/runtimed/tests/fixtures/sift_arrow_output/manifest.json",
+          import.meta.url,
+        ),
+      ),
+      readFile(
+        new URL(
+          "../../../packages/runtimed/tests/fixtures/sift_arrow_output/doc.bin",
+          import.meta.url,
+        ),
+      ),
+      readFile(
+        new URL(
+          "../../../packages/runtimed/tests/fixtures/sift_arrow_output/state_doc.bin",
+          import.meta.url,
+        ),
+      ),
+    ]);
+    const expected = fixtureManifest.expected as Record<string, unknown>;
+    const blobHash = expected.blob_hash as string;
+
+    const render = await materializeSnapshotPairRender({
+      notebookId: "fixture-sift-arrow",
+      notebookHeadsHash: "heads-fixture",
+      runtimeHeadsHash: "runtime-fixture",
+      notebookBytes,
+      runtimeStateBytes,
+      generatedAt: "2026-05-22T00:00:00.000Z",
+      blobResolver: createNotebookCloudBlobResolver({
+        baseUrl: "https://cloud.test/n/fixture-sift-arrow",
+        notebookId: "fixture-sift-arrow",
+      }),
+    });
+    const cells = render.cells as Array<{
+      outputs?: Array<{ data?: Record<string, { inline?: string }> }>;
+    }>;
+    const arrowRef = cells[0].outputs?.[0].data?.[ARROW_STREAM_MANIFEST_MIME];
+
+    assert.ok(arrowRef?.inline, "fixture should contain an inline Arrow stream manifest");
+    assert.equal(JSON.parse(arrowRef.inline).chunks[0].hash, blobHash);
+    assert.equal(
+      render.blob_urls[blobHash],
+      `https://cloud.test/api/n/fixture-sift-arrow/blobs/${encodeURIComponent(blobHash)}`,
+    );
+  });
 });
+
+async function readJson(url: URL): Promise<Record<string, unknown>> {
+  return JSON.parse(await readFile(url, "utf8")) as Record<string, unknown>;
+}

@@ -48,6 +48,32 @@ describe("Worker artifact routes", () => {
     assert.equal(await response.text(), "console.log('viewer')");
   });
 
+  it("serves plugin assets through a Worker-owned CORS route", async () => {
+    const seenPaths: string[] = [];
+    const env = fakeEnv({
+      ASSETS: {
+        fetch: async (request: Request) => {
+          seenPaths.push(new URL(request.url).pathname);
+          return new Response("wasm", {
+            headers: { "Content-Type": "application/wasm" },
+          });
+        },
+      },
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/plugins/sift_wasm.wasm?v=test"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(seenPaths, ["/plugins/sift_wasm.wasm"]);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+    assert.equal(response.headers.get("Content-Type"), "application/wasm");
+    assert.equal(await response.text(), "wasm");
+  });
+
   it("publishes a snapshot pair and materializes render JSON through the route layer", async () => {
     const env = fakeEnv();
     const [notebookBytes, runtimeStateBytes] = await Promise.all([

@@ -1,0 +1,26 @@
+{
+  "blobs": [
+    {
+      "content_type": "application/vnd.apache.arrow.stream",
+      "hash": "sha256:10bda18795f19e46bee92a2bb34606f89f089868c6b121b7f0526761c913b77f",
+      "path": "blobs/sha256-10bda18795f19e46bee92a2bb34606f89f089868c6b121b7f0526761c913b77f.arrow",
+      "size": 9352
+    }
+  ],
+  "description": "Cell produces a Sift-compatible Arrow stream manifest with a real blob sidecar",
+  "expected": {
+    "blob_content_type": "application/vnd.apache.arrow.stream",
+    "blob_hash": "sha256:10bda18795f19e46bee92a2bb34606f89f089868c6b121b7f0526761c913b77f",
+    "blob_path": "blobs/sha256-10bda18795f19e46bee92a2bb34606f89f089868c6b121b7f0526761c913b77f.arrow",
+    "blob_size": 9352,
+    "cell_id": "cell-1",
+    "execution_count": "1",
+    "mime": "application/vnd.nteract.arrow-stream-manifest+json",
+    "output_count": 1,
+    "output_ids": [
+      "303d8977-b2f5-5e5e-8e11-e04123b9922c"
+    ],
+    "source": "import polars as pl\n# df contains utf8-view columns and is published as Arrow IPC\ndf"
+  },
+  "scenario": "sift_arrow_output"
+}

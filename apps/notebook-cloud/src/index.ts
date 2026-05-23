@@ -148,16 +148,32 @@ const worker: ExportedHandler<Env> = {
 export default worker;
 
 async function routeAsset(request: Request, env: Env): Promise<Response | null> {
-  const pathname = new URL(request.url).pathname;
-  if (!pathname.startsWith("/assets/") && !pathname.startsWith("/plugins/")) {
+  const url = new URL(request.url);
+  const assetPathname = assetPathnameForRequest(url.pathname);
+  if (!assetPathname) {
     return null;
   }
   if (!env.ASSETS) {
     return json({ error: "viewer assets are not configured" }, 503);
   }
 
-  const response = await env.ASSETS.fetch(request);
+  const assetUrl = new URL(request.url);
+  assetUrl.pathname = assetPathname;
+  const response = await env.ASSETS.fetch(new Request(assetUrl, request));
   return withCors(new Response(response.body, response));
+}
+
+function assetPathnameForRequest(pathname: string): string | null {
+  if (pathname.startsWith("/assets/") || pathname.startsWith("/plugins/")) {
+    return pathname;
+  }
+  if (pathname.startsWith("/api/assets/")) {
+    return pathname.slice("/api".length);
+  }
+  if (pathname.startsWith("/api/plugins/")) {
+    return pathname.slice("/api".length);
+  }
+  return null;
 }
 
 async function routeRoomSync(request: Request, env: Env): Promise<Response> {

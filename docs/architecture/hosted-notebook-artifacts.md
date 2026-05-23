@@ -95,6 +95,23 @@ WASM does not rewrite these into daemon-local HTTP URLs. The host provides a
 This keeps the storage and rendering model independent of where the blob bytes
 live.
 
+Arrow/Sift outputs follow the same rule. The `RuntimeStateDoc` output stores an
+`application/vnd.nteract.arrow-stream-manifest+json` content ref. That manifest
+names chunk objects by content hash:
+
+```json
+{
+  "chunks": [{ "hash": "sha256:...", "size": 9352 }],
+  "complete": true
+}
+```
+
+The cloud materializer may include a `blob_urls` inventory for these chunk
+hashes so tests and debugging tools can see which hosted blob URLs are required,
+but the durable state remains the snapshot pair plus blob objects. The browser
+viewer still resolves chunk hashes through the shared `BlobResolver` when the
+isolated Sift renderer consumes the output.
+
 ## Decision 5: The cloud viewer is a static bundle, not a forked app
 
 The Worker still owns notebook identity, artifact routes, and room WebSockets.
@@ -104,6 +121,7 @@ The viewer UI is a static browser bundle served from Worker assets:
 /assets/notebook-cloud-viewer.js
 /assets/* dynamic renderer chunks
 /plugins/sift_wasm.wasm
+/api/plugins/sift_wasm.wasm
 ```
 
 The bundle imports the shared isolated output embed API and the existing
@@ -116,6 +134,12 @@ from the Worker HTML shell as JSON:
 
 This keeps the cloud app from copying desktop renderer code while still leaving
 room host and artifact serving inside the Worker.
+
+The `/api/plugins/*` route exists for isolated iframes whose origin is `null`.
+Those iframes cannot fetch Worker Assets that are served before the Worker can
+add CORS headers, so cloud blob-backed Sift outputs load the WASM binary through
+the Worker-owned `/api/plugins/sift_wasm.wasm` path. Desktop keeps using the
+daemon-local `/plugins/sift_wasm.wasm` route.
 
 ## Decision 6: Presence stays typed-frame v4 CBOR
 

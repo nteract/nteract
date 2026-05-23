@@ -33,6 +33,7 @@ import { initWasm } from "./wasm-harness";
 const FIXTURES_DIR = resolve(__dirname, "fixtures");
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const ARROW_STREAM_MANIFEST_MIME = "application/vnd.nteract.arrow-stream-manifest+json";
 
 interface ScenarioManifest {
   scenario: string;
@@ -392,6 +393,40 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
       expect(image.size).toBe(12345);
       expect("inline" in image).toBe(false);
       expect("url" in image).toBe(false);
+
+      h.dispose();
+    });
+  });
+
+  describe("sift_arrow_output", () => {
+    it("client receives a Sift-compatible Arrow manifest with blob chunks", async () => {
+      const manifest = loadManifest("sift_arrow_output");
+      const h = await setupFixtureSync("sift_arrow_output");
+
+      await h.startAndCompleteSync();
+
+      expect(h.client.get_cell_execution_count("cell-1")).toBe("1");
+
+      const outputs = cellOutputs(h.client, "cell-1");
+      expect(outputs).toHaveLength(1);
+
+      const [result] = outputs;
+      const expected = manifest.expected!;
+      const expectedIds = expected.output_ids as string[];
+      expect(result.output_id).toBe(expectedIds[0]);
+      expect(result.output_type).toBe("execute_result");
+      expect(result.execution_count).toBe(1);
+
+      const data = result.data as Record<string, unknown>;
+      const arrowManifest = JSON.parse(resolveInline(data[ARROW_STREAM_MANIFEST_MIME])) as {
+        chunks: Array<Record<string, unknown>>;
+        complete: boolean;
+      };
+      expect(arrowManifest.complete).toBe(true);
+      expect(arrowManifest.chunks).toHaveLength(1);
+      expect(arrowManifest.chunks[0].hash).toBe(expected.blob_hash);
+      expect(arrowManifest.chunks[0].size).toBe(expected.blob_size);
+      expect(resolveInline(data["text/plain"])).toContain("shape:");
 
       h.dispose();
     });
