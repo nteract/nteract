@@ -36,6 +36,20 @@ pub struct ExecutionResult {
     pub success: bool,
 }
 
+/// Build the current execution_id -> cell_id map from NotebookDoc pointers.
+///
+/// RuntimeStateDoc intentionally does not require cell IDs, because some
+/// executions are notebook-less. Notebook callers can still provide this
+/// best-effort map to LLM output resolution for traceback provenance.
+pub fn execution_cell_map(handle: &DocHandle) -> HashMap<String, String> {
+    handle
+        .get_cell_execution_pointers()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(cell_id, execution_id)| execution_id.map(|eid| (eid, cell_id)))
+        .collect()
+}
+
 /// Execute a cell and wait for completion.
 ///
 /// 1. Captures current Automerge heads as a causal precondition.
@@ -138,6 +152,12 @@ pub async fn execute_and_wait(
     };
 
     let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
+    let mut execution_cell_map = execution_cell_map(handle);
+    if let Some(eid) = &execution_id {
+        execution_cell_map
+            .entry(eid.clone())
+            .or_insert_with(|| cell_id.to_string());
+    }
     // Execute paths (and `and_run` variants) always use preview mode —
     // agents that need unabridged output should call `get_cell(full_output=true)`
     // afterwards rather than paying for it on every run.
@@ -145,6 +165,7 @@ pub async fn execute_and_wait(
         blob_base_url: blob_base_url.as_deref(),
         blob_store_path: blob_store_path.as_deref(),
         comms: comms.as_ref(),
+        execution_cell_map: Some(&execution_cell_map),
         ..Default::default()
     };
     let outputs = if !output_manifests.is_empty() {

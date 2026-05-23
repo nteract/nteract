@@ -84,6 +84,14 @@ pub async fn get_cell(
         raw_outputs = handle.get_cell_outputs(cell_id).unwrap_or_default();
     }
 
+    let execution_id = handle.get_cell_execution_id(cell_id);
+    let mut execution_cell_map = crate::execution::execution_cell_map(&handle);
+    if let Some(eid) = &execution_id {
+        execution_cell_map
+            .entry(eid.clone())
+            .or_insert_with(|| cell_id.to_string());
+    }
+
     // Resolve outputs (with widget state synthesis). `get_cell` is the
     // only tool that honors `full_output=true`; all other paths hardcode
     // preview mode to protect the agent's context budget.
@@ -99,11 +107,10 @@ pub async fn get_cell(
             } else {
                 output_resolver::OutputLength::Preview
             },
+            execution_cell_map: Some(&execution_cell_map),
         },
     )
     .await;
-
-    let execution_id = handle.get_cell_execution_id(cell_id);
 
     // Get execution status from RuntimeState
     let status = get_cell_status(&handle, cell_id);
@@ -197,6 +204,7 @@ pub async fn get_all_cells(
     let cell_status_map = build_cell_status_map(&handle);
     let cell_ec_map = build_cell_execution_count_map(&handle);
     let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
+    let execution_cell_map = crate::execution::execution_cell_map(&handle);
     let outputs_by_cell = handle.get_all_outputs();
     let empty_outputs: Vec<serde_json::Value> = Vec::new();
 
@@ -221,6 +229,7 @@ pub async fn get_all_cells(
                         blob_base_url: server.blob_base_url.as_deref(),
                         blob_store_path: server.blob_store_path.as_deref(),
                         comms: comms.as_ref(),
+                        execution_cell_map: Some(&execution_cell_map),
                         ..Default::default()
                     },
                 )
@@ -268,6 +277,7 @@ pub async fn get_all_cells(
                         blob_base_url: server.blob_base_url.as_deref(),
                         blob_store_path: server.blob_store_path.as_deref(),
                         comms: comms.as_ref(),
+                        execution_cell_map: Some(&execution_cell_map),
                         ..Default::default()
                     },
                 )
@@ -331,6 +341,7 @@ pub async fn get_all_cells(
                             blob_base_url: server.blob_base_url.as_deref(),
                             blob_store_path: server.blob_store_path.as_deref(),
                             comms: comms.as_ref(),
+                            execution_cell_map: Some(&execution_cell_map),
                             ..Default::default()
                         },
                     )

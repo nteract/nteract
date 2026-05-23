@@ -49,6 +49,12 @@ pub struct ResolveCtx<'a> {
     /// Whether to render the blob-preview marker (default) or fetch the
     /// full blob text. See [`OutputLength`].
     pub length: OutputLength,
+    /// Current notebook provenance map: execution_id -> cell_id.
+    ///
+    /// This is intentionally optional because runtime executions can exist
+    /// without a notebook. When present, rich traceback resolution can name
+    /// the cell that still points at each execution.
+    pub execution_cell_map: Option<&'a HashMap<String, String>>,
 }
 
 /// MIME type for Jupyter widget view references.
@@ -645,6 +651,19 @@ pub async fn resolve_output_for_llm(
             if ctx.length == OutputLength::Preview {
                 if let Some(blob_hash) = traceback_val.get("blob").and_then(|v| v.as_str()) {
                     if let Some(preview) = manifest.get("llm_preview") {
+                        if let Some(cell_map) = ctx.execution_cell_map {
+                            if let Some(tb) = rich_traceback_lines_for_llm(
+                                manifest,
+                                cell_map,
+                                &blob_base_url,
+                                &blob_store_path,
+                                ctx.length,
+                            )
+                            .await
+                            {
+                                return Some(Output::error(&ename, &evalue, tb));
+                            }
+                        }
                         let tb = render_error_preview(preview, blob_hash, &blob_base_url);
                         return Some(Output::error(&ename, &evalue, tb));
                     }
@@ -658,6 +677,19 @@ pub async fn resolve_output_for_llm(
                 let tb_str =
                     resolve_text_ref(traceback_val, &blob_base_url, &blob_store_path).await?;
                 serde_json::from_str::<Vec<String>>(&tb_str).ok()?
+            };
+            let traceback = if let Some(cell_map) = ctx.execution_cell_map {
+                rich_traceback_lines_for_llm(
+                    manifest,
+                    cell_map,
+                    &blob_base_url,
+                    &blob_store_path,
+                    ctx.length,
+                )
+                .await
+                .unwrap_or(traceback)
+            } else {
+                traceback
             };
             Some(Output::error(&ename, &evalue, traceback))
         }
@@ -673,6 +705,189 @@ pub async fn resolve_output_for_llm(
         }
         _ => None,
     }
+}
+
+async fn rich_traceback_lines_for_llm(
+    manifest: &serde_json::Value,
+    execution_cell_map: &HashMap<String, String>,
+    blob_base_url: &Option<String>,
+    blob_store_path: &Option<PathBuf>,
+    length: OutputLength,
+) -> Option<Vec<String>> {
+    let rich_ref = manifest.get("rich")?;
+    if length == OutputLength::Preview && rich_ref.get("blob").is_some() {
+        return None;
+    }
+    let rich_json = resolve_text_ref(rich_ref, blob_base_url, blob_store_path).await?;
+    let payload: Value = serde_json::from_str(&rich_json).ok()?;
+    synthesize_rich_traceback_lines(&payload, execution_cell_map)
+}
+
+fn synthesize_rich_traceback_lines(
+    payload: &Value,
+    execution_cell_map: &HashMap<String, String>,
+) -> Option<Vec<String>> {
+    let ename = payload.get("ename")?.as_str()?;
+    let evalue = payload.get("evalue").and_then(Value::as_str).unwrap_or("");
+    let mut out = vec!["Traceback (most recent call last):".to_string()];
+
+    if let Some(syntax) = payload.get("syntax").filter(|v| v.is_object()) {
+        out.push(format!(
+            "  {}",
+            rich_location_line(syntax, execution_cell_map, None)?
+        ));
+        if let Some(text) = syntax.get("text").and_then(Value::as_str) {
+            if !text.is_empty() {
+                out.push(format!("    {text}"));
+                if let Some(caret) = rich_syntax_caret_line(syntax) {
+                    out.push(format!("    {caret}"));
+                }
+            }
+        }
+    } else {
+        let frames = payload.get("frames")?.as_array()?;
+        if frames.is_empty() {
+            return None;
+        }
+        for frame in frames {
+            let name = frame.get("name").and_then(Value::as_str);
+            out.push(format!(
+                "  {}",
+                rich_location_line(frame, execution_cell_map, name)?
+            ));
+            if let Some(source) = rich_highlighted_source_line(frame) {
+                out.push(format!("    {source}"));
+            }
+        }
+    }
+
+    out.push(format!("{ename}: {evalue}"));
+    Some(out)
+}
+
+fn rich_location_line(
+    source: &Value,
+    execution_cell_map: &HashMap<String, String>,
+    name: Option<&str>,
+) -> Option<String> {
+    let filename = source.get("filename").and_then(Value::as_str).unwrap_or("");
+    let lineno = source.get("lineno").and_then(Value::as_i64).unwrap_or(0);
+    if !rich_is_notebook_source(source) {
+        return Some(format!(
+            "File \"{}\", line {}, in {}",
+            if filename.is_empty() {
+                "<unknown>"
+            } else {
+                filename
+            },
+            lineno,
+            name.unwrap_or("<module>")
+        ));
+    }
+
+    let source_ref = source.get("source_ref").filter(|v| v.is_object());
+    let execution_id = source_ref
+        .and_then(|r| r.get("execution_id"))
+        .or_else(|| source.get("execution_id"))
+        .and_then(Value::as_str);
+    let execution_count = source_ref
+        .and_then(|r| r.get("execution_count"))
+        .or_else(|| source.get("execution_count"))
+        .and_then(Value::as_u64);
+    let source_hash = source_ref
+        .and_then(|r| r.get("source_hash"))
+        .or_else(|| source.get("source_hash"))
+        .and_then(Value::as_str);
+    let cell_id = execution_id.and_then(|eid| execution_cell_map.get(eid));
+
+    let label = cell_id
+        .map(|cid| format!("Cell {cid}"))
+        .unwrap_or_else(|| "Notebook Execution".to_string());
+    let mut details = Vec::new();
+    if let Some(cid) = cell_id {
+        details.push(format!("cell_id={cid}"));
+    }
+    if let Some(eid) = execution_id {
+        details.push(format!("execution_id={eid}"));
+    }
+    if let Some(count) = execution_count {
+        details.push(format!("In[{count}]"));
+    }
+    if let Some(hash) = source_hash {
+        details.push(format!("source_hash={hash}"));
+    }
+
+    let mut line = format!("Line {lineno} in {label}");
+    if !details.is_empty() {
+        line.push_str(&format!(" ({})", details.join(", ")));
+    }
+    if let Some(name) = name.filter(|n| *n != "<module>") {
+        line.push_str(&format!(", in {name}"));
+    }
+    Some(line)
+}
+
+fn rich_is_notebook_source(source: &Value) -> bool {
+    let source_ref = source.get("source_ref").filter(|v| v.is_object());
+    source_ref
+        .and_then(|r| r.get("kind"))
+        .and_then(Value::as_str)
+        == Some("notebook_execution")
+        || source
+            .get("filename")
+            .and_then(Value::as_str)
+            .is_some_and(is_synthetic_notebook_filename)
+}
+
+fn is_synthetic_notebook_filename(filename: &str) -> bool {
+    (filename.starts_with("<ipython-input-") && filename.ends_with('>'))
+        || ((filename.contains("/ipykernel_") || filename.contains("\\ipykernel_"))
+            && filename.ends_with(".py"))
+}
+
+fn rich_highlighted_source_line(frame: &Value) -> Option<&str> {
+    let lines = frame.get("lines")?.as_array()?;
+    lines
+        .iter()
+        .find(|line| {
+            line.get("highlight")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .or_else(|| lines.first())
+        .and_then(|line| line.get("source"))
+        .and_then(Value::as_str)
+}
+
+fn rich_syntax_caret_line(syntax: &Value) -> Option<String> {
+    let text = syntax.get("text")?.as_str()?;
+    if text.is_empty() {
+        return None;
+    }
+    let line_len = text.chars().count() as u64;
+    let offset = syntax.get("offset").and_then(Value::as_u64).unwrap_or(1);
+    let start_col = offset.max(1).min(line_len + 1);
+    let same_line = syntax
+        .get("end_lineno")
+        .and_then(Value::as_u64)
+        .is_none_or(|end_lineno| {
+            let lineno = syntax.get("lineno").and_then(Value::as_u64).unwrap_or(1);
+            end_lineno == lineno
+        });
+    let end_offset = syntax
+        .get("end_offset")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let end_col = if same_line && end_offset > start_col {
+        end_offset.min(line_len + 1)
+    } else {
+        start_col + 1
+    };
+    Some(format!(
+        "{}{}",
+        " ".repeat((start_col - 1) as usize),
+        "^".repeat((end_col - start_col).max(1) as usize)
+    ))
 }
 
 /// Selectively resolve a display_data or execute_result manifest for LLM use.
@@ -2400,6 +2615,76 @@ mod tests {
         assert_eq!(tb[0], "RecursionError: maximum recursion depth");
         assert!(tb[1].contains("200"));
         assert!(tb[1].contains("http://localhost:9999/blob/tb_hash"));
+    }
+
+    #[tokio::test]
+    async fn llm_error_uses_rich_traceback_cell_ids_when_available() {
+        let rich = json!({
+            "ename": "AttributeError",
+            "evalue": "module 'pandas' has no attribute 'not_real'",
+            "execution": {"execution_id": "exec-run", "execution_count": 3},
+            "frames": [
+                {
+                    "filename": "/var/folders/x/T/ipykernel_39879/258099874.py",
+                    "lineno": 1,
+                    "name": "<module>",
+                    "source_ref": {
+                        "kind": "notebook_execution",
+                        "execution_id": "exec-run",
+                        "execution_count": 3,
+                        "compiled_filename": "/var/folders/x/T/ipykernel_39879/258099874.py"
+                    },
+                    "lines": [{"lineno": 1, "source": "g()", "highlight": true}]
+                },
+                {
+                    "filename": "/var/folders/x/T/ipykernel_39879/3398808089.py",
+                    "lineno": 5,
+                    "name": "g",
+                    "source_ref": {
+                        "kind": "notebook_execution",
+                        "execution_id": "exec-def",
+                        "execution_count": 2,
+                        "compiled_filename": "/var/folders/x/T/ipykernel_39879/3398808089.py"
+                    },
+                    "lines": [{"lineno": 5, "source": "pd.not_real()", "highlight": true}]
+                }
+            ],
+            "text": "fallback text"
+        });
+        let fallback_traceback = serde_json::to_string(&json!(["fallback traceback"])).unwrap();
+        let rich_json = serde_json::to_string(&rich).unwrap();
+        let manifest = serde_json::json!({
+            "output_type": "error",
+            "ename": "AttributeError",
+            "evalue": "module 'pandas' has no attribute 'not_real'",
+            "traceback": inline_ref(&fallback_traceback),
+            "rich": inline_ref(&rich_json),
+        });
+        let execution_cell_map = HashMap::from([
+            ("exec-run".to_string(), "cell-run".to_string()),
+            ("exec-def".to_string(), "cell-def".to_string()),
+        ]);
+
+        let Some(out) = resolve_output_for_llm(
+            &manifest,
+            ResolveCtx {
+                execution_cell_map: Some(&execution_cell_map),
+                ..Default::default()
+            },
+        )
+        .await
+        else {
+            panic!("resolve should succeed");
+        };
+        let traceback = out.traceback.unwrap_or_default().join("\n");
+
+        assert!(traceback
+            .contains("Line 1 in Cell cell-run (cell_id=cell-run, execution_id=exec-run, In[3])"));
+        assert!(traceback.contains(
+            "Line 5 in Cell cell-def (cell_id=cell-def, execution_id=exec-def, In[2]), in g"
+        ));
+        assert!(traceback.contains("pd.not_real()"));
+        assert!(!traceback.contains("/var/folders/x/T/ipykernel_39879"));
     }
 
     #[tokio::test]
