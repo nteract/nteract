@@ -117,6 +117,20 @@ Anything load-bearing on its value (test fixtures, the comm-state externalizer
 in `output_prep.rs`) reaches for `DEFAULT_INLINE_THRESHOLD` so a future tune
 flips one site.
 
+There is a **separate, parallel** threshold for comm-state externalization:
+`COMM_STATE_BLOB_THRESHOLD = 1024` (`crates/runtimed/src/output_prep.rs:138-218`).
+Comm-state top-level values blob when their byte size exceeds 1024. The two
+thresholds happen to share the same numeric value but are independent
+constants; they could diverge.
+
+Save to `.ipynb` does not re-externalize every blob ref back to bytes. Only
+Arrow IPC and Parquet blobs are written into the save output array as
+`BLOB_REF_MIME` references (`output_store.rs:62-89, :1252-1282`); other
+binary MIMEs are base64-inlined into the nbformat output payload. A user
+opening the saved `.ipynb` outside nteract therefore gets self-contained
+binary outputs for everything except Arrow / Parquet, which require a tool
+that understands `BLOB_REF_MIME` and the colocated blob store.
+
 ## Decision 4: Localhost HTTP read, content-immutable cache headers
 
 Blobs are served by an in-process Hyper HTTP server bound to
@@ -159,7 +173,7 @@ When the daemon restarts, the port may shift. The frontend resolves blob URLs
 through `BlobResolver` (Decision 7) so a port change at reconnect time is a
 single resolver refresh, not a per-output URL rewrite.
 
-## Decision 5: PUT_BLOB is a binary frame, multipart above 32 MiB
+## Decision 5: PUT_BLOB is a binary frame; multipart is required above 32 MiB
 
 Remote peers upload blobs via typed frame `PUT_BLOB` (`0x08`). The wire shape
 is deliberately not JSON: a JSON envelope around megabytes of base64 would
@@ -171,16 +185,22 @@ PUT_BLOB payload = u32_be header_len | JSON header | raw blob bytes
 ```
 
 The JSON header is one of two `PutBlobHeader` variants
-(`notebook-protocol/src/protocol.rs:307`):
+(`crates/notebook-protocol/src/protocol.rs:313`):
 
 - `op: "put"` - one-shot. Carries `id`, `media_type`, `size`, `sha256`,
-  `durability?`, `purpose?`. Used when the blob fits under the per-frame cap.
+  `durability?`, `purpose?`. Used when the caller chooses to upload in one
+  frame; the daemon does not refuse one-shot uploads above a size threshold,
+  it refuses one-shot uploads above the 32 MiB per-frame cap.
 - `op: "part"` - multipart part. Carries `id`, `upload_id`, `part_number`,
   `size`, `sha256` of the part. Used after a `CreateBlobUpload` request opens
   an upload session.
 
-The per-frame cap for `PUT_BLOB` is 32 MiB (`frame_size_limits` in
-`notebook-wire/src/lib.rs`). Anything larger uses the multipart sequence:
+The per-frame cap for `PUT_BLOB` is 32 MiB (`crates/notebook-wire/src/lib.rs:93-96`).
+Anything that must travel in one frame is bounded by that cap; the caller
+explicitly chooses one-shot vs multipart (`packages/runtimed/src/blob-upload.ts:44-60`
+always builds a single frame; the Rust APIs expose `relay.rs:201-217` for
+one-shot and `relay.rs:254-259` for multipart). Above the cap, multipart is
+the only path:
 
 1. **`CreateBlobUpload` request** - peer announces total size, expected final
    `sha256`, and part size (default 8 MiB, max 32 MiB). Daemon returns an
@@ -199,19 +219,31 @@ Safety properties baked in:
   state is tracked per peer (`MultipartUploadState`), so one malicious peer
   cannot exhaust disk by opening many sessions.
 - **One active upload per peer at a time.** `PUT_BLOB_QUEUE_CAPACITY = 1`,
-  enforced via an `AtomicBool::in_flight`. The peer loop is never blocked:
-  excess uploads return `TooManyInFlight` immediately rather than queueing.
+  enforced via an `AtomicBool::in_flight` (`crates/runtimed/src/blob_upload.rs:181-185`).
+  This gate covers **both** one-shot and multipart uploads, not multipart only.
+  The peer loop is never blocked: excess uploads return `TooManyInFlight`
+  immediately rather than queueing.
 - **No partial publish.** The blob bytes only appear at their final path
   after the daemon verifies size and SHA-256 against the manifest. A
   hash-mismatched upload leaves the staging dir for the abort/sweep paths to
   clean up.
 - **TTL sweep.** Multipart sessions older than 1 hour are reaped on the next
-  Create/Complete/Abort entry into the registry.
+  Create/Complete/Abort entry into the registry; there is no periodic timer
+  (`crates/runtimed/src/blob_upload.rs:469`, `:664`, `:847`). An idle daemon
+  retains expired staging directories until traffic resumes. The registry's
+  `Drop` impl also removes staged dirs at process shutdown.
+- **Early hash validation.** `is_sha256_hex` runs against the
+  `CreateBlobUpload` expected hash (`blob_upload.rs:482`), not only against
+  the final `CompleteBlobUpload` hash. Malformed hashes are rejected before
+  staging begins.
 
 The peer-facing handshake advertises this surface via
 `ProtocolCapabilities.put_blob` (single-frame max, multipart support, ephemeral
 durability hint support), so older clients can detect what the daemon will
-accept (`notebook-protocol/src/connection.rs:399`).
+accept. The type lives at `crates/notebook-protocol/src/connection/handshake.rs:118-131`;
+`crates/notebook-protocol/src/connection.rs:399` is the test
+`protocol_capabilities_advertise_put_blob_frame_limit` that pins the wire
+value.
 
 ## Decision 6: Two durability classes, mark-and-sweep with a 30-day grace
 
@@ -221,23 +253,37 @@ Every blob carries `BlobDurability` in its sidecar: `Durable` or `Ephemeral`.
   attachments, blob refs in `NotebookDoc.cell.resolved_assets` or
   `cell.attachments`. Kept until the daemon GC decides no live or persisted
   document references them and the 30-day grace has elapsed.
-- **`Ephemeral`** - widget comm buffers (`set_comm_state_batch` payloads,
-  ipywidgets binary traitlets). Kept around so a kernel that runs in a
-  separate process can rehydrate by hash, but eligible for
-  `delete_if_ephemeral` as soon as a superseding comm update arrives
+- **`Ephemeral`** - opt-in from the **frontend** widget upload path. The
+  kernel-side output prep path uses default `Durable` for everything it
+  writes including widget comm buffers (`crates/runtimed/src/output_prep.rs:60-63,
+  :209`, `crates/runtimed/src/blob_store.rs:253-255`). Frontend writes
+  through `set_comm_state_batch` can request `Ephemeral` explicitly. An
+  ephemeral blob is eligible for `delete_if_ephemeral` as soon as a
+  superseding comm update arrives
   (`runtime_agent.rs::free_superseded_ephemeral_blobs`).
 
 Promotion is monotone. A blob first written as ephemeral can be promoted to
 durable on a later put; the reverse never happens. `merged_durability`
 chooses `Durable` whenever either side asks for it. This keeps the durability
 tag honest: once anyone asserts a blob is durable, no later opportunistic
-ephemeral write demotes it.
+ephemeral write demotes it. The sidecar rewrite on re-put covers durability
+merging as well as media-type changes (`blob_store.rs:344-365`); a re-put
+with a stricter durability rewrites the sidecar even when the content is
+unchanged.
 
-In-memory layer: `BlobStore` also holds an LRU memory cache capped at
-`EPHEMERAL_BLOB_CAP_BYTES = 64 MiB`. The cache is content-addressed by the
-same hash and falls through to disk on miss. Durable puts also prime the
-cache; ephemeral puts that exceed the cap stay disk-only. Eviction is FIFO by
-insertion sequence (stale order entries are skipped, see `MemoryLayer::evict_to_cap`).
+Sidecar back-compat: `BlobMeta.durability` has `serde(default)` to `Durable`
+(`blob_store.rs:58-64`), so legacy sidecars predating the field are read as
+durable. `BlobMeta.size` is stored as `u64`.
+
+In-memory layer: `BlobStore` also holds a memory cache capped at
+`EPHEMERAL_BLOB_CAP_BYTES = 64 MiB` (`crates/runtimed/src/blob_store.rs:34`).
+The cache is content-addressed by the same hash and falls through to disk on
+miss. Durable puts also prime the cache; ephemeral puts that exceed the cap
+stay disk-only. **Eviction is insertion-order FIFO, not LRU**: `get` does not
+refresh recency (`blob_store.rs:174-176`), and `evict_to_cap`
+(`blob_store.rs:191-201`) pops from the front of the insertion order. A
+high-traffic durable blob accessed many times still falls out first if it
+was inserted earliest. The cleanup punchlist names this naming inconsistency.
 
 Garbage collection is a daemon-level mark-and-sweep that runs every 30 minutes
 (`daemon.rs::ghost_room_reaper_loop` adjacent loop, search for
@@ -247,9 +293,12 @@ Garbage collection is a daemon-level mark-and-sweep that runs every 30 minutes
    executions and comms (outputs + comm state), `NotebookDoc` resolved assets
    and attachments. Then walk persisted `notebook_docs_dir/*.automerge` for
    closed-but-saved notebooks to protect their refs through the close/reopen
-   window. Also walk the durable execution-store records past their retention.
-   Arrow stream manifests get a second-pass walk that pulls referenced data
-   blobs out of the manifest body.
+   window. Also walk the durable execution-store records **within** their
+   retention window via `collect_execution_store_refs_for_gc`
+   (`crates/runtimed/src/daemon.rs:3935-3939`). Arrow stream manifests get a
+   second-pass walk that pulls referenced data blobs out of the manifest body
+   (`daemon.rs:4227, 4531-4532`). The mark produces one combined hash set
+   with no per-ref provenance; the punchlist tracks this opacity (BS-7).
 2. **Skip guard.** If there are zero rooms loaded **and** no room has ever
    been loaded since daemon start, the sweep skips. That guard exists because
    "zero refs" is ambiguous in the post-restart window (we genuinely don't
@@ -421,12 +470,23 @@ elsewhere, some are surfaced here for the first time.
    hour and the registry only sweeps when a new Create/Complete/Abort entry
    arrives. A daemon that goes idle with stale staging dirs on disk does
    not reclaim them until the next upload. Not a correctness bug; a "we
-   never bothered cleaning up" gap.
+   never bothered cleaning up" gap. Punchlist BS-3.
+10. **`MAX_BLOB_SIZE = 100 MiB` only gates `BlobStore::put()`.** The
+    multipart finalize path validates against the caller's declared
+    `expected_size` and the per-peer 256 MiB staging budget; it does not
+    enforce a 100 MiB ceiling on the completed blob. A peer could
+    multipart-upload a 200 MiB blob. Either intentional (multipart is the
+    escape hatch above 100 MiB) or an undocumented bypass.
+11. **Frontend blob-fetch retry policy is invisible from the daemon side.**
+    `packages/runtimed/src/sync-engine.ts:107-140, :165-183` retries text
+    blob fetches with `[100, 300, 1000]` ms backoff and gives up immediately
+    on 4xx. The daemon does not know about this policy; a renderer that
+    requests a not-yet-written blob will retry on its own cadence.
 
 ## References
 
 - `crates/runtimed/src/blob_store.rs` - the store API, sharding, atomic
-  write, in-memory LRU, durability merging.
+  write, in-memory FIFO cache, durability merging.
 - `crates/runtimed/src/blob_server.rs` - the localhost HTTP read server.
 - `crates/runtimed/src/notebook_sync_server/blob_upload.rs` - `PUT_BLOB`
   handling, multipart sessions, peer-staging budget.

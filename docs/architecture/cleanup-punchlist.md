@@ -52,6 +52,9 @@ Severity legend:
 | EP-8 | "IOPub reader cannot block on bounded queues" is discipline, not a check. Adding `.await` on a bounded send in any IOPub handler arm would silently reintroduce the backpressure failure. | Targeted PR | IOPub handlers, lint or type-level enforcement |
 | EP-9 | Run-all timeouts are shared across the batch; a long first cell starves the budget for later cells. No fairness mechanism. | Design | run-all path |
 | EP-10 | Runtime agent `select!` is not `biased;`. Brief window where work could be selected before lifecycle drain. Drain inside the work-arm body closes this for already-pending signals, not for ones that arrive during work selection. | Targeted PR | `crates/runtimed/src/runtime_agent.rs` |
+| EP-11 | `flush_then_signal` empty-flushes fast path: when `flushes` is empty, the signal is sent directly on `lifecycle_tx` bypassing the priority committer. A no-output execution's `ExecutionDone` races freely with `KernelIdle` on the same channel. | Targeted PR | `crates/runtimed/src/stream_committer.rs:106-109` |
+| EP-12 | `KernelDied` is also sent from the committer supervisor on panic, not only from IOPub disconnect. The committer crash → queue release tie is load-bearing but not documented. | Inline | doc comment + ADR cross-ref |
+| EP-13 | `try_send_comm_update` `Closed` arm logs at `warn`, while the `Full` arm logs at `debug`. Asymmetric severity for two paths that both represent loss of replay. | Inline | log-level consistency |
 
 ## Blob storage
 
@@ -64,6 +67,10 @@ Severity legend:
 | BS-5 | Blob HTTP responds with `Access-Control-Allow-Origin: *` plus loopback only. Fine for single-user desktop; the moment a daemon serves more than one OS user or accepts a remote peer, any peer that knows a hash gets the blob regardless of room ownership. Hash unguessability is the only mitigation. | Design | identity gate on blob HTTP |
 | BS-6 | `BlobStore` hard-codes the filesystem. `hosted-notebook-artifacts.md` says R2 dedupes on the same keys, but `runtimed` has no `BlobBackend` trait or paginated `list()` that would survive on an object store. | Design | abstraction layer |
 | BS-7 | GC mark walks rooms and persisted docs producing one combined hash set with no per-ref provenance. Any mark-miss is a silent data-loss bug at sweep time, with no debug surface to audit. | Targeted PR | GC instrumentation |
+| BS-8 | `BlobStore` in-memory cache is referenced as "LRU" in source comments and AGENTS.md but eviction is insertion-order FIFO; `get` never refreshes recency. Either fix the name or fix the algorithm. | Inline | `crates/runtimed/src/blob_store.rs:174-201` |
+| BS-9 | `MAX_BLOB_SIZE = 100 MiB` only gates the in-process `BlobStore::put()` API. The multipart finalize path validates against the caller's `expected_size` and the per-peer 256 MiB staging budget but does not enforce a 100 MiB ceiling on the completed blob. A peer can multipart-upload a 200 MiB blob today. | Design | `crates/runtimed/src/blob_upload.rs` finalize path |
+| BS-10 | Save-to-`.ipynb` externalizes Arrow IPC and Parquet only via `BLOB_REF_MIME`; every other binary MIME is base64-inlined in the saved file. A user opening the saved `.ipynb` outside nteract gets self-contained binary for non-Arrow/Parquet but broken refs for the rest unless they keep the colocated blob store. | Design | `output_store.rs:62-89` |
+| BS-11 | `COMM_STATE_BLOB_THRESHOLD = 1024` and `DEFAULT_INLINE_THRESHOLD = 1024` are two independent constants that happen to share the same value. A future tune to one will not move the other. | Inline | constant cross-reference comment |
 
 ## Triage summary
 
