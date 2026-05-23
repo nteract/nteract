@@ -255,7 +255,13 @@ impl BlobStore {
         Self::with_ephemeral_cap(root, EPHEMERAL_BLOB_CAP_BYTES)
     }
 
-    fn with_ephemeral_cap(root: PathBuf, cap: usize) -> Self {
+    /// Create a `BlobStore` with an explicit in-memory cap.
+    ///
+    /// `BlobStore::new` uses the production default
+    /// [`EPHEMERAL_BLOB_CAP_BYTES`] (64 MiB). Tests that need to force the
+    /// disk-streaming path (BS-1 punchlist) construct the store with a small
+    /// cap so payloads above the cap spill to disk.
+    pub fn with_ephemeral_cap(root: PathBuf, cap: usize) -> Self {
         Self {
             inner: Arc::new(BlobStoreInner {
                 root,

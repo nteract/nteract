@@ -474,6 +474,11 @@ mod tests {
     }
 
     /// Decode a chunked-transfer-encoded body. Test-only.
+    ///
+    /// Tolerates `chunk-ext` (RFC 7230 § 4.1.1: `chunk-size [ ";" chunk-ext ]`).
+    /// Hyper does not emit chunk-ext today, but the parser strips anything
+    /// after the first `;` on the size line so a future runtime upgrade does
+    /// not turn our test helper into a panic.
     fn dechunk(input: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(input.len());
         let mut i = 0;
@@ -484,7 +489,8 @@ mod tests {
                 .position(|w| w == b"\r\n")
                 .expect("malformed chunk header");
             let size_line = std::str::from_utf8(&input[i..i + end]).expect("ASCII chunk size");
-            let size = usize::from_str_radix(size_line.trim_end(), 16).expect("hex chunk size");
+            let size_token = size_line.split(';').next().unwrap_or("").trim();
+            let size = usize::from_str_radix(size_token, 16).expect("hex chunk size");
             i += end + 2;
             if size == 0 {
                 break;
@@ -564,26 +570,77 @@ mod tests {
 
     #[tokio::test]
     async fn test_serve_blob_streams_from_disk_for_large_payloads() {
-        // BS-1 punchlist regression guard: a blob that's not in the memory
-        // layer must round-trip correctly when served from disk via the
-        // streaming body. We use a payload larger than the in-memory cap so
-        // the disk path is taken even when the cache is warm. Content,
-        // Content-Length, and Content-Type must all match.
-        let (_dir, store, port) = setup().await;
+        // BS-1 punchlist regression guard: a blob whose disk read goes through
+        // the streaming body must round-trip correctly. The default
+        // BlobStore::new uses a 64 MiB memory cap, so a 2 MiB blob would sit
+        // in the memory layer and never exercise the streaming path. We pin
+        // the cap to 1 KiB so anything larger spills to disk and the
+        // open_reader call returns BlobReader::Disk.
+        let dir = TempDir::new().unwrap();
+        let store = Arc::new(BlobStore::with_ephemeral_cap(
+            dir.path().join("blobs"),
+            1024,
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = start_blob_server_with_listener(listener, store.clone(), None)
+            .await
+            .unwrap();
 
-        // 2 MiB of pseudo-random-ish bytes. The exact value doesn't matter
-        // beyond "doesn't compress trivially" and "exceeds the per-blob
-        // memory cap configured in test_store" (currently smaller than 1 MiB).
+        // 2 MiB of non-trivially-compressible bytes - well above the 1 KiB cap.
         let data: Vec<u8> = (0..(2 * 1024 * 1024)).map(|i| (i % 251) as u8).collect();
         let hash = store.put(&data, "application/octet-stream").await.unwrap();
+
+        // Sanity-check the path: open_reader must return Disk for the
+        // streaming body to be exercised. If a future change reverts to
+        // buffering, this assert is the first thing to fail.
+        match store.open_reader(&hash).await.unwrap() {
+            Some(BlobReader::Disk { size, .. }) => {
+                assert_eq!(size, data.len() as u64);
+            }
+            other => panic!(
+                "expected BlobReader::Disk for a >1 KiB blob, got {:?}",
+                other
+            ),
+        }
 
         let (status, headers, body) = get(port, &format!("/blob/{}", hash)).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body.len(), data.len());
         assert_eq!(body, data);
+        // Hyper streams the body in chunked transfer-encoding when the body
+        // is a StreamBody. Content-Length is also stamped from the file size
+        // captured at open time; both should be present and match.
         assert_eq!(
             header_value(&headers, "content-length"),
             Some(data.len().to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn dechunk_handles_empty_body() {
+        assert_eq!(dechunk(b"0\r\n\r\n"), Vec::<u8>::new());
+    }
+
+    #[tokio::test]
+    async fn dechunk_handles_single_chunk() {
+        assert_eq!(dechunk(b"5\r\nhello\r\n0\r\n\r\n"), b"hello".to_vec());
+    }
+
+    #[tokio::test]
+    async fn dechunk_handles_multi_chunk() {
+        assert_eq!(
+            dechunk(b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"),
+            b"hello world".to_vec()
+        );
+    }
+
+    #[tokio::test]
+    async fn dechunk_handles_chunk_extension() {
+        // RFC 7230 § 4.1.1 allows chunk-ext after the size. Hyper does not
+        // emit them today, but if it ever does, the dechunker must not panic.
+        assert_eq!(
+            dechunk(b"5;name=value\r\nhello\r\n0\r\n\r\n"),
+            b"hello".to_vec()
         );
     }
 
