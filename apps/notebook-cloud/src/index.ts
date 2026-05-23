@@ -36,6 +36,7 @@ const DEMO_NOTEBOOK_ID = "nteract-cloud-demo";
 // Worker-owned route by default so sandboxed srcdoc iframes can fetch sidecar
 // assets with explicit CORS, and let hosts replace it with a dedicated origin.
 const DEFAULT_RENDERER_ASSETS_BASE_PATH = "/renderer-assets/";
+const RENDER_BLOB_HEAD_CONCURRENCY = 16;
 
 interface MissingRenderBlob {
   hash: string;
@@ -533,7 +534,11 @@ async function materializeSnapshotRender(
     );
   }
 
-  const missingBlobs = await findMissingRenderBlobs(env, notebookId, render.cells);
+  const missingBlobs = await findMissingRenderBlobs(
+    env.NOTEBOOK_SNAPSHOTS,
+    notebookId,
+    render.cells,
+  );
   if (missingBlobs.length > 0) {
     console.warn("Unable to materialize notebook render: missing blobs", {
       notebookId,
@@ -578,28 +583,30 @@ async function materializeSnapshotRender(
 }
 
 async function findMissingRenderBlobs(
-  env: Env,
+  bucket: NonNullable<Env["NOTEBOOK_SNAPSHOTS"]>,
   notebookId: string,
   cells: unknown,
 ): Promise<MissingRenderBlob[]> {
-  const bucket = env.NOTEBOOK_SNAPSHOTS;
-  if (!bucket) {
-    return [];
-  }
-
   const refs = Object.values(collectBlobRefs(cells));
-  const missing = await Promise.all(
-    refs.map(async (ref) => {
-      const object = await bucket.head(blobKey(notebookId, ref.blob));
-      return object
-        ? null
-        : {
-            hash: ref.blob,
-            size: ref.size ?? null,
-            media_type: ref.media_type ?? null,
-          };
-    }),
-  );
+  const missing: Array<MissingRenderBlob | null> = [];
+
+  for (let index = 0; index < refs.length; index += RENDER_BLOB_HEAD_CONCURRENCY) {
+    const batch = refs.slice(index, index + RENDER_BLOB_HEAD_CONCURRENCY);
+    missing.push(
+      ...(await Promise.all(
+        batch.map(async (ref) => {
+          const object = await bucket.head(blobKey(notebookId, ref.blob));
+          return object
+            ? null
+            : {
+                hash: ref.blob,
+                size: ref.size ?? null,
+                media_type: ref.media_type ?? null,
+              };
+        }),
+      )),
+    );
+  }
 
   return missing
     .filter((entry): entry is MissingRenderBlob => entry !== null)
