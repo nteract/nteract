@@ -1,5 +1,9 @@
 import type { ReactNode } from "react";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
+import type {
+  TracebackCellNavigator,
+  TracebackExecutionResolver,
+} from "@/components/outputs/traceback-output";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
 import type { SupportedLanguage } from "../editor/languages";
@@ -12,6 +16,7 @@ export interface ReadOnlyNotebookCellData {
   source: string;
   language?: SupportedLanguage | null;
   outputs?: readonly JupyterOutput[];
+  executionId?: string | null;
   executionCount?: number | null;
 }
 
@@ -30,6 +35,8 @@ export interface ReadOnlyNotebookProps {
   label?: string;
   emptyContent?: ReactNode;
   renderCellError?: (error: Error, cell: ReadOnlyNotebookCellData, index: number) => ReactNode;
+  resolveTracebackExecutionTarget?: TracebackExecutionResolver;
+  onNavigateToTracebackCell?: TracebackCellNavigator;
 }
 
 export function ReadOnlyNotebook({
@@ -47,6 +54,8 @@ export function ReadOnlyNotebook({
   label = "Notebook cells",
   emptyContent = null,
   renderCellError,
+  resolveTracebackExecutionTarget,
+  onNavigateToTracebackCell,
 }: ReadOnlyNotebookProps) {
   return (
     <section
@@ -90,6 +99,8 @@ export function ReadOnlyNotebook({
                 sourceClassName={sourceClassName}
                 outputClassName={outputClassName}
                 lineWrapping={lineWrapping}
+                resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
+                onNavigateToTracebackCell={onNavigateToTracebackCell}
               />
             </ErrorBoundary>
           ))}

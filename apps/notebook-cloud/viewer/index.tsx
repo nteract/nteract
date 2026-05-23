@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Code2, Eye, EyeOff, UsersRound } from "lucide-react";
 import {
@@ -8,6 +8,7 @@ import {
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { MediaProvider } from "@/components/outputs/media-provider";
+import type { TracebackCellTarget } from "@/components/outputs/traceback-output";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
 import type { SessionControlMessage } from "../src/protocol";
@@ -202,6 +203,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
           source: cell.source,
           language: cloudSourceLanguage(cell.language),
           outputs: cell.outputs,
+          executionId: cell.executionId,
           executionCount: cell.executionCount,
         }),
       ),
@@ -211,6 +213,27 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
     () => readOnlyCells.filter((cell) => cell.cellType === "code").length,
     [readOnlyCells],
   );
+  const tracebackTargets = useMemo(() => {
+    const targets = new Map<string, TracebackCellTarget>();
+    for (const cell of cells) {
+      if (!cell.executionId) continue;
+      targets.set(cell.executionId, {
+        cellId: cell.id,
+        executionCount: cell.executionCount,
+      });
+    }
+    return targets;
+  }, [cells]);
+  const resolveTracebackExecutionTarget = useCallback(
+    (executionId: string) => tracebackTargets.get(executionId) ?? null,
+    [tracebackTargets],
+  );
+  const handleTracebackCellNavigate = useCallback((target: TracebackCellTarget) => {
+    findCellElement(target.cellId)?.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+  }, []);
 
   return (
     <main className="flex min-h-screen w-full flex-col py-6">
@@ -253,6 +276,8 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         cellClassName="cloud-cell"
         sourceClassName="cloud-source-block"
         outputClassName="cloud-output-block"
+        resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
+        onNavigateToTracebackCell={handleTracebackCellNavigate}
         renderCellError={(error, _cell, index) => (
           <div className="cloud-state" data-kind="error">
             Unable to render cell {index + 1}: {error.message}
@@ -261,6 +286,13 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
       />
     </main>
   );
+}
+
+function findCellElement(cellId: string): HTMLElement | null {
+  for (const element of document.querySelectorAll<HTMLElement>("[data-cell-id]")) {
+    if (element.dataset.cellId === cellId) return element;
+  }
+  return null;
 }
 
 function CloudPresenceStatus({ syncEndpoint }: { syncEndpoint: string }) {

@@ -147,6 +147,7 @@ describe("cloud viewer render resolution", () => {
         id: "runtime-count",
         cell_type: "code",
         source: "df",
+        execution_id: "exec-runtime-count",
         execution_count: "null",
         outputs: [
           {
@@ -167,6 +168,7 @@ describe("cloud viewer render resolution", () => {
     );
 
     assert.equal(cell.executionCount, 7);
+    assert.equal(cell.executionId, "exec-runtime-count");
   });
 
   it("uses the first finite execute_result count as the output fallback", async () => {

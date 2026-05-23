@@ -72,6 +72,7 @@ function cell(outputs: JupyterOutput[]): ResolvedCell {
     cellType: "code",
     source: "df",
     language: "python",
+    executionId: null,
     executionCount: null,
     outputs,
     metadata: {},

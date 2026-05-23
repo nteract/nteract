@@ -10,6 +10,7 @@ export interface RenderCell {
   id?: unknown;
   cell_type?: unknown;
   source?: unknown;
+  execution_id?: unknown;
   execution_count?: unknown;
   outputs?: unknown;
   metadata?: unknown;
@@ -20,6 +21,7 @@ export interface ResolvedCell {
   cellType: "code" | "markdown" | "raw";
   source: string;
   language: string | null;
+  executionId: string | null;
   executionCount: number | null;
   outputs: JupyterOutput[];
   metadata: Record<string, unknown>;
@@ -43,6 +45,7 @@ export async function resolveCell(
     cellType,
     source: typeof cell.source === "string" ? cell.source : "",
     language: cellType === "code" ? (normalizeCellLanguage(metadata) ?? defaultLanguage) : null,
+    executionId: normalizeExecutionId(cell.execution_id),
     executionCount,
     outputs,
     metadata,
@@ -111,6 +114,10 @@ function normalizeExecutionCount(value: unknown): number | null {
   if (typeof value !== "string" || value === "null") return null;
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeExecutionId(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 function executionCountFromOutputs(outputs: JupyterOutput[]): number | null {

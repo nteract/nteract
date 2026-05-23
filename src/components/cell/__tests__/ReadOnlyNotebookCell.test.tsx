@@ -14,16 +14,20 @@ vi.mock("../OutputArea", () => ({
     executionCount,
     focused,
     hostContext,
+    onNavigateToTracebackCell,
     outputs,
     priority,
+    resolveTracebackExecutionTarget,
   }: {
     cellId?: string;
     className?: string;
     executionCount?: number | null;
     focused?: boolean;
     hostContext?: unknown;
+    onNavigateToTracebackCell?: unknown;
     outputs: JupyterOutput[];
     priority?: readonly string[];
+    resolveTracebackExecutionTarget?: unknown;
   }) => {
     outputAreaCalls.outputs.push(outputs);
     return (
@@ -33,6 +37,8 @@ vi.mock("../OutputArea", () => ({
         data-execution-count={executionCount ?? ""}
         data-focused={String(focused)}
         data-host-context={JSON.stringify(hostContext ?? null)}
+        data-has-traceback-navigator={String(Boolean(onNavigateToTracebackCell))}
+        data-has-traceback-resolver={String(Boolean(resolveTracebackExecutionTarget))}
         data-mimes={outputs
           .flatMap((output) =>
             output.output_type === "display_data" || output.output_type === "execute_result"
@@ -121,6 +127,28 @@ describe("ReadOnlyNotebookCell", () => {
     expect(screen.getByTestId("output-area")).toHaveAttribute("data-class-name", "cloud-output");
     expect(screen.getByTestId("output-area").getAttribute("data-host-context")).toContain(
       "https://assets.example.test/renderer-assets/",
+    );
+  });
+
+  it("passes traceback cell resolver and navigator to code outputs", () => {
+    render(
+      <ReadOnlyNotebookCell
+        id="traceback-code"
+        cellType="code"
+        source="raise Exception()"
+        outputs={[{ output_type: "error", ename: "E", evalue: "bad", traceback: [] }]}
+        resolveTracebackExecutionTarget={() => null}
+        onNavigateToTracebackCell={() => undefined}
+      />,
+    );
+
+    expect(screen.getByTestId("output-area")).toHaveAttribute(
+      "data-has-traceback-resolver",
+      "true",
+    );
+    expect(screen.getByTestId("output-area")).toHaveAttribute(
+      "data-has-traceback-navigator",
+      "true",
     );
   });
 

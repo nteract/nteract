@@ -130,6 +130,7 @@ interface Props {
 export interface TracebackCellTarget {
   cellId: string;
   label?: string;
+  executionCount?: number | null;
 }
 
 export type TracebackExecutionResolver = (
@@ -520,7 +521,8 @@ function LocationLabel({
   name?: string;
   onNavigateToCell?: TracebackCellNavigator;
 }) {
-  const showName = Boolean(name && name !== "<module>");
+  const displayName = typeof name === "string" ? name : undefined;
+  const showName = Boolean(displayName && displayName !== "<module>");
   const target = location.target && onNavigateToCell ? location.target : undefined;
   return (
     <span className="flex min-w-0 items-center gap-1.5" title={location.title}>
@@ -550,7 +552,7 @@ function LocationLabel({
       {showName && (
         <>
           <span className="shrink-0 text-muted-foreground">in</span>
-          <span className="truncate">{name}</span>
+          <span className="truncate">{displayName}</span>
         </>
       )}
     </span>
@@ -565,29 +567,34 @@ function sourceLocation(
   currentExecutionId: string | undefined,
   resolveExecutionTarget?: TracebackExecutionResolver,
 ): SourceLocation {
-  const sourceRef = source.source_ref;
-  const executionId = sourceRef?.execution_id ?? source.execution_id;
-  const sourceHash = sourceRef?.source_hash ?? source.source_hash;
-  const compiledFilename = sourceRef?.compiled_filename ?? source.filename;
+  const sourceRef = isObjectRecord(source.source_ref) ? source.source_ref : undefined;
+  const filename = asOptionalString(source.filename) ?? "Unknown source";
+  const executionId =
+    asOptionalString(sourceRef?.execution_id) ?? asOptionalString(source.execution_id);
+  const sourceHash =
+    asOptionalString(sourceRef?.source_hash) ?? asOptionalString(source.source_hash);
+  const compiledFilename = asOptionalString(sourceRef?.compiled_filename) ?? filename;
   const titleParts = [];
   if (executionId) titleParts.push(`Execution: ${executionId}`);
   if (sourceHash) titleParts.push(`Source: ${sourceHash}`);
   if (compiledFilename) titleParts.push(`Compiled file: ${compiledFilename}`);
 
   const isNotebookSource =
-    sourceRef?.kind === "notebook_execution" || isSyntheticNotebookFilename(source.filename);
+    sourceRef?.kind === "notebook_execution" || isSyntheticNotebookFilename(filename);
   const target = executionId ? (resolveExecutionTarget?.(executionId, sourceHash) ?? null) : null;
   if (target) titleParts.unshift(`Cell: ${target.cellId}`);
-  const title = titleParts.join("\n") || source.filename || "Unknown source";
+  const title = titleParts.join("\n") || filename;
 
   if (!isNotebookSource) {
-    return { kind: "file", label: source.filename || "Unknown source", title };
+    return {
+      kind: "file",
+      label: shortenPythonPath(filename),
+      title,
+    };
   }
 
   if (target) {
-    const label =
-      target.label ??
-      (executionId === currentExecutionId ? "Current Cell" : `Cell ${shortCellId(target.cellId)}`);
+    const label = target.label ?? notebookTargetLabel(target, executionId === currentExecutionId);
     return {
       kind: "notebook",
       label,
@@ -628,6 +635,25 @@ function sourceLocation(
 
 function shortCellId(cellId: string): string {
   return cellId.length <= 12 ? cellId : cellId.slice(0, 8);
+}
+
+function notebookTargetLabel(target: TracebackCellTarget, isCurrentExecution: boolean): string {
+  const label = isCurrentExecution ? "Current Cell" : `Cell ${shortCellId(target.cellId)}`;
+  if (typeof target.executionCount === "number" && Number.isFinite(target.executionCount)) {
+    return `${label} In[${target.executionCount}]`;
+  }
+  return label;
+}
+
+function shortenPythonPath(filename: string): string {
+  const normalized = filename.replace(/\\/g, "/");
+  const sitePackages = normalized.match(/(?:^|\/)(?:site-packages|dist-packages)\/(.+)$/);
+  const packagePath = sitePackages?.[1];
+  if (packagePath && /^[\w.-]+(?:\/[\w.-]+)*\.py[wi]?$/.test(packagePath)) {
+    return `python/${packagePath}`;
+  }
+
+  return filename;
 }
 
 function isSyntheticNotebookFilename(filename: string): boolean {
@@ -712,9 +738,17 @@ function copyLocationLine(
 }
 
 function isNotebookSource(source: Pick<Frame | SyntaxInfo, "filename" | "source_ref">): boolean {
-  return (
-    source.source_ref?.kind === "notebook_execution" || isSyntheticNotebookFilename(source.filename)
-  );
+  const sourceRef = isObjectRecord(source.source_ref) ? source.source_ref : undefined;
+  const filename = asOptionalString(source.filename) ?? "";
+  return sourceRef?.kind === "notebook_execution" || isSyntheticNotebookFilename(filename);
+}
+
+function asOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function highlightedSourceLine(lines: Line[] | undefined): string | undefined {
