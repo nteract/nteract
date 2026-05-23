@@ -19,7 +19,7 @@ import {
 } from "@/components/isolated";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe-libraries";
-import { jupyterOutputsToRenderPayloads } from "@/components/isolated/output-payloads";
+import { jupyterOutputToRenderPayload } from "@/components/isolated/output-payloads";
 import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-output";
 import { isSafeForMainDom } from "@/components/outputs/safe-mime-types";
 import { DEFAULT_PRIORITY, MediaRouter } from "@/components/outputs/media-router";
@@ -288,19 +288,37 @@ function outputNeedsIsolation(
   return false;
 }
 
-/**
- * Check if any outputs in the array need iframe isolation.
- * If any output needs isolation, ALL outputs should go to the iframe.
- *
- * Not exported: keeping every `.tsx` export limited to components and
- * hooks lets React Fast Refresh hot-patch this module instead of bailing
- * to a full reload on every edit.
- */
-function anyOutputNeedsIsolation(
+interface IndexedOutput {
+  output: JupyterOutput;
+  index: number;
+}
+
+interface OutputSegment {
+  kind: "dom" | "isolated";
+  items: IndexedOutput[];
+  key: string;
+}
+
+function splitOutputSegments(
   outputs: JupyterOutput[],
+  isolated: OutputAreaProps["isolated"],
   priority: readonly string[] = DEFAULT_PRIORITY,
-): boolean {
-  return outputs.some((output) => outputNeedsIsolation(output, priority));
+): OutputSegment[] {
+  const forceKind = isolated === true ? "isolated" : isolated === false ? "dom" : null;
+  const segments: OutputSegment[] = [];
+
+  for (let index = 0; index < outputs.length; index++) {
+    const output = outputs[index]!;
+    const kind = forceKind ?? (outputNeedsIsolation(output, priority) ? "isolated" : "dom");
+    const last = segments[segments.length - 1];
+    if (last?.kind === kind) {
+      last.items.push({ output, index });
+    } else {
+      segments.push({ kind, items: [{ output, index }], key: `${kind}-${index}` });
+    }
+  }
+
+  return segments;
 }
 
 /**
@@ -380,6 +398,325 @@ function renderOutput(
   }
 }
 
+interface IsolatedOutputSegmentProps {
+  items: IndexedOutput[];
+  hidden?: boolean;
+  cellId?: string;
+  executionCount?: number | null;
+  focused: boolean;
+  frameMaxHeight: number;
+  priority: readonly string[];
+  onLinkClick?: OutputAreaProps["onLinkClick"];
+  onWidgetUpdate?: OutputAreaProps["onWidgetUpdate"];
+  searchQuery?: string;
+  onSearchMatchCount?: OutputAreaProps["onSearchMatchCount"];
+  onIframeMouseDown?: OutputAreaProps["onIframeMouseDown"];
+  hostContext?: OutputAreaProps["hostContext"];
+}
+
+function IsolatedOutputSegment({
+  items,
+  hidden = false,
+  cellId,
+  executionCount,
+  focused,
+  frameMaxHeight,
+  priority,
+  onLinkClick,
+  onWidgetUpdate,
+  searchQuery,
+  onSearchMatchCount,
+  onIframeMouseDown,
+  hostContext,
+}: IsolatedOutputSegmentProps) {
+  const outputs = useMemo(() => items.map((item) => item.output), [items]);
+  const frameRef = useRef<IsolatedFrameHandle>(null);
+  const bridgeRef = useRef<CommBridgeManager | null>(null);
+  const staticFrameInteractionRef = useRef<HTMLDivElement>(null);
+  const injectedLibsRef = useRef(new Set<string>());
+  const renderGenRef = useRef(0);
+  const searchQueryRef = useRef(searchQuery);
+  searchQueryRef.current = searchQuery;
+  const [staticFrameInteractionActive, setStaticFrameInteractionActive] = useState(false);
+
+  const darkMode = useDarkMode();
+  const colorTheme = useColorTheme();
+  const darkModeRef = useRef(darkMode);
+  darkModeRef.current = darkMode;
+  const colorThemeRef = useRef(colorTheme);
+  colorThemeRef.current = colorTheme;
+
+  const widgetContext = useWidgetStore();
+  const hasWidgets = hasWidgetOutputs(outputs, priority);
+  const hasSiftOutputs = outputs.some((output) => outputUsesSift(output, priority));
+  const shouldUseBridge = !hidden && hasWidgets && widgetContext !== null;
+  const shouldUseScrollPassthroughFrame =
+    !hidden &&
+    !focused &&
+    !hasWidgets &&
+    outputs.every((output) => outputAllowsScrollPassthrough(output, priority));
+  const shouldScrollPassthroughFrame =
+    shouldUseScrollPassthroughFrame && !staticFrameInteractionActive;
+  const allowWheelBoundaryScroll =
+    !focused && !shouldScrollPassthroughFrame && !(hasSiftOutputs && staticFrameInteractionActive);
+  const showSiftInteractionCue =
+    hasSiftOutputs && shouldUseScrollPassthroughFrame && !staticFrameInteractionActive;
+  const siftFrameAccent = siftFocusAccent(darkMode, colorTheme);
+  const siftFrameStyle = hasSiftOutputs
+    ? ({
+        "--notebook-sift-focus": siftFrameAccent,
+        "--notebook-sift-focus-hover": `${siftFrameAccent}66`,
+        boxShadow: staticFrameInteractionActive
+          ? `0 0 0 2px ${siftFrameAccent}cc, 0 12px 30px ${siftFrameAccent}24`
+          : undefined,
+      } as React.CSSProperties)
+    : undefined;
+
+  const firstOutputIndex = items[0]?.index;
+  const frameName = cellId
+    ? `code-Out[${executionCount == null ? "*" : executionCount}]-${cellId}${
+        firstOutputIndex == null ? "" : `-${firstOutputIndex}`
+      }`
+    : undefined;
+
+  useEffect(() => {
+    if (!shouldUseScrollPassthroughFrame && staticFrameInteractionActive) {
+      setStaticFrameInteractionActive(false);
+    }
+  }, [shouldUseScrollPassthroughFrame, staticFrameInteractionActive]);
+
+  useEffect(() => {
+    if (!hasSiftOutputs) return;
+    frameRef.current?.send({
+      type: "interaction_state",
+      payload: { active: staticFrameInteractionActive },
+    });
+  }, [hasSiftOutputs, staticFrameInteractionActive]);
+
+  useEffect(() => {
+    if (!staticFrameInteractionActive) return;
+
+    const handlePointerDown = (event: globalThis.PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && staticFrameInteractionRef.current?.contains(target)) {
+        return;
+      }
+      setStaticFrameInteractionActive(false);
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    return () => document.removeEventListener("pointerdown", handlePointerDown, true);
+  }, [staticFrameInteractionActive]);
+
+  const activateStaticFrameInteraction = useCallback(() => {
+    if (shouldUseScrollPassthroughFrame) {
+      if (!staticFrameInteractionActive && hasSiftOutputs) {
+        scrollElementIntoComfortableView(staticFrameInteractionRef.current);
+      }
+      setStaticFrameInteractionActive(true);
+      staticFrameInteractionRef.current?.focus({ preventScroll: true });
+    }
+    onIframeMouseDown?.();
+  }, [
+    hasSiftOutputs,
+    shouldUseScrollPassthroughFrame,
+    staticFrameInteractionActive,
+    onIframeMouseDown,
+  ]);
+
+  const handleStaticFrameKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      setStaticFrameInteractionActive(false);
+    }
+  }, []);
+
+  const handleIframeMessage = useCallback(
+    (message: IframeToParentMessage) => {
+      if (bridgeRef.current) {
+        bridgeRef.current.handleIframeMessage(message);
+      }
+
+      if (message.type === "widget_update" && onWidgetUpdate) {
+        onWidgetUpdate(message.payload.commId, message.payload.state);
+      }
+
+      if (message.type === "search_results") {
+        onSearchMatchCount?.(message.payload.count);
+      }
+    },
+    [onWidgetUpdate, onSearchMatchCount],
+  );
+
+  const handleFrameReady = useCallback(
+    async (options: { resetInjectedPlugins?: boolean } = {}) => {
+      if (!frameRef.current) return;
+      const gen = ++renderGenRef.current;
+
+      if (shouldUseBridge && widgetContext && !bridgeRef.current) {
+        bridgeRef.current = new CommBridgeManager({
+          frame: frameRef.current,
+          store: widgetContext.store,
+          sendUpdate: widgetContext.sendUpdate,
+          sendCustom: widgetContext.sendCustom,
+          closeComm: widgetContext.closeComm,
+        });
+      }
+
+      frameRef.current.setTheme(darkModeRef.current, colorThemeRef.current ?? null);
+
+      if (options.resetInjectedPlugins) {
+        injectedLibsRef.current.clear();
+      }
+      const pluginMimes = new Set<string>();
+      for (const output of outputs) {
+        if (output.output_type === "execute_result" || output.output_type === "display_data") {
+          for (const mime of Object.keys(output.data)) {
+            if (needsPlugin(mime)) pluginMimes.add(mime);
+          }
+        }
+      }
+
+      if (widgetContext?.store) {
+        for (const output of outputs) {
+          if (
+            (output.output_type === "execute_result" || output.output_type === "display_data") &&
+            output.data?.["application/vnd.jupyter.widget-view+json"]
+          ) {
+            const widgetData = output.data["application/vnd.jupyter.widget-view+json"] as {
+              model_id?: string;
+            };
+            if (widgetData?.model_id) {
+              const model = widgetContext.store.getModel(widgetData.model_id);
+              if (model?.modelName === "OutputModel" && model.state.outputs) {
+                const widgetOutputs = model.state.outputs as Array<{
+                  output_type: string;
+                  data?: Record<string, unknown>;
+                }>;
+                for (const widgetOutput of widgetOutputs) {
+                  for (const mime of Object.keys(widgetOutput.data ?? {})) {
+                    if (needsPlugin(mime)) pluginMimes.add(mime);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (pluginMimes.size > 0) {
+        try {
+          await injectPluginsForMimes(frameRef.current, pluginMimes, injectedLibsRef.current);
+        } catch (error) {
+          if (gen !== renderGenRef.current) return;
+          console.error("[OutputArea] Failed to load renderer plugin:", error);
+          frameRef.current.renderBatch([
+            {
+              mimeType: "text/plain",
+              data: `Failed to load renderer plugin: ${formatPluginLoadError(error)}`,
+              metadata: { isError: true },
+              cellId,
+              outputIndex: firstOutputIndex ?? 0,
+            },
+          ]);
+          return;
+        }
+        if (gen !== renderGenRef.current) return;
+      }
+
+      const batch = items.flatMap((item) => {
+        const payload = jupyterOutputToRenderPayload(item.output, item.index, { cellId, priority });
+        return payload ? [payload] : [];
+      });
+      frameRef.current.renderBatch(batch);
+
+      if (searchQueryRef.current) {
+        frameRef.current.search(searchQueryRef.current);
+      }
+    },
+    [cellId, firstOutputIndex, items, outputs, priority, shouldUseBridge, widgetContext],
+  );
+
+  const handleIsolatedFrameReady = useCallback(() => {
+    void handleFrameReady({ resetInjectedPlugins: true });
+  }, [handleFrameReady]);
+
+  useEffect(() => {
+    return () => {
+      if (bridgeRef.current) {
+        bridgeRef.current.dispose();
+        bridgeRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (frameRef.current?.isReady) {
+      handleFrameReady();
+    }
+  }, [handleFrameReady]);
+
+  useEffect(() => {
+    if (frameRef.current?.isIframeReady) {
+      frameRef.current.search(searchQuery || "");
+    }
+  }, [searchQuery]);
+
+  return (
+    <div
+      ref={staticFrameInteractionRef}
+      className={cn(
+        hidden ? "hidden" : "relative outline-none transition-shadow",
+        hasSiftOutputs && "group/sift rounded-md overflow-hidden",
+        hasSiftOutputs &&
+          shouldUseScrollPassthroughFrame &&
+          !staticFrameInteractionActive &&
+          "hover:ring-1 hover:ring-[var(--notebook-sift-focus-hover)]",
+        hasSiftOutputs && staticFrameInteractionActive && "bg-background",
+      )}
+      style={siftFrameStyle}
+      data-frame-interaction-active={staticFrameInteractionActive ? "true" : undefined}
+      data-sift-output={hasSiftOutputs ? "true" : undefined}
+      tabIndex={shouldUseScrollPassthroughFrame ? -1 : undefined}
+      onPointerDown={shouldUseScrollPassthroughFrame ? activateStaticFrameInteraction : undefined}
+      onKeyDown={shouldUseScrollPassthroughFrame ? handleStaticFrameKeyDown : undefined}
+    >
+      <IsolatedFrame
+        ref={frameRef}
+        name={frameName}
+        darkMode={darkMode}
+        colorTheme={colorTheme}
+        minHeight={24}
+        maxHeight={frameMaxHeight}
+        autoHeight={!hidden && !focused}
+        allowWheelBoundaryScroll={allowWheelBoundaryScroll}
+        scrollPassthrough={shouldScrollPassthroughFrame}
+        onReady={handleIsolatedFrameReady}
+        onLinkClick={onLinkClick}
+        onMouseDown={activateStaticFrameInteraction}
+        onWidgetUpdate={onWidgetUpdate}
+        onMessage={handleIframeMessage}
+        onError={handleIframeError}
+        hostContext={hostContext}
+      />
+      {showSiftInteractionCue && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-end rounded-b-md pb-[9px] pr-[84px] opacity-0 transition-opacity duration-150 group-hover/sift:opacity-100 group-focus-within/sift:opacity-100">
+          <SiftScrollHandoffCue
+            className="pointer-events-auto"
+            onPointerDown={(event) => {
+              event.stopPropagation();
+              activateStaticFrameInteraction();
+            }}
+            onClick={(event) => {
+              event.stopPropagation();
+              activateStaticFrameInteraction();
+            }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * OutputArea renders multiple Jupyter outputs with proper layout.
  *
@@ -421,301 +758,35 @@ export function OutputArea({
   onNavigateToTracebackCell,
 }: OutputAreaProps) {
   const id = useId();
-  const frameRef = useRef<IsolatedFrameHandle>(null);
-  const bridgeRef = useRef<CommBridgeManager | null>(null);
   const inDomOutputRef = useRef<HTMLDivElement>(null);
-  const staticFrameInteractionRef = useRef<HTMLDivElement>(null);
-  const injectedLibsRef = useRef(new Set<string>());
-  const renderGenRef = useRef(0);
-  const searchQueryRef = useRef(searchQuery);
-  searchQueryRef.current = searchQuery;
-  const [staticFrameInteractionActive, setStaticFrameInteractionActive] = useState(false);
-
-  const darkMode = useDarkMode();
-  const colorTheme = useColorTheme();
   const focusedOutputWellMaxHeight = useOutputWellMaxHeight(FOCUSED_OUTPUT_WELL_VIEWPORT_RATIO);
-  const inDomMaxHeight = useOutputWell ? (maxHeight ?? null) : null;
-  const maxHeightStyle = useMemo<React.CSSProperties | undefined>(() => {
-    if (!inDomMaxHeight) return undefined;
-    return { maxHeight: `${inDomMaxHeight}px` };
-  }, [inDomMaxHeight]);
-  // Ref for reading current darkMode in callbacks without adding to deps
-  const darkModeRef = useRef(darkMode);
-  darkModeRef.current = darkMode;
-  const colorThemeRef = useRef(colorTheme);
-  colorThemeRef.current = colorTheme;
-
-  // Get widget store context (may be null if not in provider)
-  const widgetContext = useWidgetStore();
-
-  // Determine if we should use isolation (when we have outputs)
-  const shouldIsolate =
-    outputs.length > 0 &&
-    (isolated === true || (isolated === "auto" && anyOutputNeedsIsolation(outputs, priority)));
-  const shouldConstrainIsolatedOutput = shouldIsolate && (focused || maxHeight != null);
-  const isolatedOutputWellMaxHeight = focused
+  const segments = useMemo(
+    () => splitOutputSegments(outputs, isolated, priority),
+    [outputs, isolated, priority],
+  );
+  const hasIsolatedSegments = segments.some((segment) => segment.kind === "isolated");
+  const shouldConstrainOutputArea = hasIsolatedSegments && (focused || maxHeight != null);
+  const outputWellMaxHeight = focused
     ? focusedOutputWellMaxHeight
     : (maxHeight ?? focusedOutputWellMaxHeight);
-  const isolatedOutputWellStyle = shouldConstrainIsolatedOutput
+  const inDomMaxHeight = useOutputWell ? (maxHeight ?? null) : null;
+  const outputWellStyle = shouldConstrainOutputArea
     ? {
-        maxHeight: `${isolatedOutputWellMaxHeight}px`,
+        maxHeight: `${outputWellMaxHeight}px`,
         ...(focused ? { minHeight: `${MIN_OUTPUT_WELL_HEIGHT}px` } : {}),
       }
-    : undefined;
+    : inDomMaxHeight !== null
+      ? { maxHeight: `${inDomMaxHeight}px` }
+      : undefined;
 
   // When preloading, we render the iframe even with no outputs (hidden)
   // This allows it to bootstrap ahead of time for instant rendering
   const showPreloadedIframe = preloadIframe && !collapsed;
-
-  // Frame name for dev-tools picker. `code-Out[N]-{cellId}` mirrors the
-  // Jupyter `Out[N]` convention with the cell ID appended so the picker can
-  // distinguish reruns and concurrent cells. `*` matches Jupyter's queued /
-  // never-run indicator.
-  const frameName = cellId
-    ? `code-Out[${executionCount == null ? "*" : executionCount}]-${cellId}`
-    : undefined;
-
-  // Check if we have widgets and should set up comm bridge
-  const hasWidgets = hasWidgetOutputs(outputs, priority);
-  const hasSiftOutputs = outputs.some((output) => outputUsesSift(output, priority));
-  const shouldUseBridge = shouldIsolate && hasWidgets && widgetContext !== null;
-  const shouldUseScrollPassthroughFrame =
-    shouldIsolate &&
-    !focused &&
-    !hasWidgets &&
-    outputs.every((output) => outputAllowsScrollPassthrough(output, priority));
-  const shouldScrollPassthroughFrame =
-    shouldUseScrollPassthroughFrame && !staticFrameInteractionActive;
-  const allowWheelBoundaryScroll =
-    !focused && !shouldScrollPassthroughFrame && !(hasSiftOutputs && staticFrameInteractionActive);
-  const showSiftInteractionCue =
-    hasSiftOutputs && shouldUseScrollPassthroughFrame && !staticFrameInteractionActive;
-  const siftFrameAccent = siftFocusAccent(darkMode, colorTheme);
-  const siftFrameStyle = hasSiftOutputs
-    ? ({
-        "--notebook-sift-focus": siftFrameAccent,
-        "--notebook-sift-focus-hover": `${siftFrameAccent}66`,
-        boxShadow: staticFrameInteractionActive
-          ? `0 0 0 2px ${siftFrameAccent}cc, 0 12px 30px ${siftFrameAccent}24`
-          : undefined,
-      } as React.CSSProperties)
-    : undefined;
-
   const hasCollapseControl = onToggleCollapse !== undefined;
-
-  useEffect(() => {
-    if (!shouldUseScrollPassthroughFrame && staticFrameInteractionActive) {
-      setStaticFrameInteractionActive(false);
-    }
-  }, [shouldUseScrollPassthroughFrame, staticFrameInteractionActive]);
-
-  useEffect(() => {
-    if (!hasSiftOutputs) return;
-    frameRef.current?.send({
-      type: "interaction_state",
-      payload: { active: staticFrameInteractionActive },
-    });
-  }, [hasSiftOutputs, staticFrameInteractionActive]);
-
-  useEffect(() => {
-    if (!staticFrameInteractionActive) return;
-
-    const handlePointerDown = (event: globalThis.PointerEvent) => {
-      const target = event.target;
-      if (target instanceof Node && staticFrameInteractionRef.current?.contains(target)) {
-        return;
-      }
-      setStaticFrameInteractionActive(false);
-    };
-
-    document.addEventListener("pointerdown", handlePointerDown, true);
-    return () => document.removeEventListener("pointerdown", handlePointerDown, true);
-  }, [staticFrameInteractionActive]);
-
-  const activateStaticFrameInteraction = useCallback(() => {
-    if (shouldUseScrollPassthroughFrame) {
-      if (!staticFrameInteractionActive && hasSiftOutputs) {
-        scrollElementIntoComfortableView(staticFrameInteractionRef.current);
-      }
-      setStaticFrameInteractionActive(true);
-      // Move DOM focus off CodeMirror without scrolling; this wrapper owns
-      // focus until iframe pointer interaction is active.
-      staticFrameInteractionRef.current?.focus({ preventScroll: true });
-    }
-    onIframeMouseDown?.();
-  }, [
-    hasSiftOutputs,
-    shouldUseScrollPassthroughFrame,
-    staticFrameInteractionActive,
-    onIframeMouseDown,
-  ]);
-
-  const handleStaticFrameKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Escape") {
-      setStaticFrameInteractionActive(false);
-    }
-  }, []);
-
-  // Handle messages from iframe, routing widget messages to comm bridge
-  const handleIframeMessage = useCallback(
-    (message: IframeToParentMessage) => {
-      // Route widget messages to bridge
-      if (bridgeRef.current) {
-        bridgeRef.current.handleIframeMessage(message);
-      }
-
-      // Also handle widget_update for backward compatibility
-      if (message.type === "widget_update" && onWidgetUpdate) {
-        onWidgetUpdate(message.payload.commId, message.payload.state);
-      }
-
-      // Capture search result count from iframe
-      if (message.type === "search_results") {
-        onSearchMatchCount?.(message.payload.count);
-      }
-    },
-    [onWidgetUpdate, onSearchMatchCount],
-  );
-
-  // Callback when frame is ready - set up bridge and render outputs
-  const handleFrameReady = useCallback(
-    async (options: { resetInjectedPlugins?: boolean } = {}) => {
-      if (!frameRef.current) return;
-
-      // Bump generation so any in-flight async handleFrameReady from a
-      // previous outputs snapshot will bail out after it awaits.
-      const gen = ++renderGenRef.current;
-
-      // Set up comm bridge if we have widgets and widget context
-      if (shouldUseBridge && widgetContext && !bridgeRef.current) {
-        bridgeRef.current = new CommBridgeManager({
-          frame: frameRef.current,
-          store: widgetContext.store,
-          sendUpdate: widgetContext.sendUpdate,
-          sendCustom: widgetContext.sendCustom,
-          closeComm: widgetContext.closeComm,
-        });
-      }
-
-      // Ensure theme is in sync before re-rendering (fixes theme drift after cell moves)
-      // Use ref to avoid adding darkMode to deps which would cause re-renders on theme toggle
-      frameRef.current.setTheme(darkModeRef.current, colorThemeRef.current ?? null);
-
-      // Install renderer plugins required by the outputs (e.g. plotly, vega).
-      // Must happen before clear+render so the installRenderer messages arrive first.
-      if (options.resetInjectedPlugins) {
-        injectedLibsRef.current.clear();
-      }
-
-      // Collect MIME types that need renderer plugins from the cell's outputs
-      const pluginMimes = new Set<string>();
-      for (const output of outputs) {
-        if (output.output_type === "execute_result" || output.output_type === "display_data") {
-          for (const mime of Object.keys(output.data)) {
-            if (needsPlugin(mime)) pluginMimes.add(mime);
-          }
-        }
-      }
-
-      // Also scan output widgets for captured outputs that need plugins.
-      // A cell may output a widget view (application/vnd.jupyter.widget-view+json)
-      // whose OutputModel.outputs contain plotly/vega/etc MIME types.
-      if (widgetContext?.store) {
-        for (const output of outputs) {
-          if (
-            (output.output_type === "execute_result" || output.output_type === "display_data") &&
-            output.data?.["application/vnd.jupyter.widget-view+json"]
-          ) {
-            const widgetData = output.data["application/vnd.jupyter.widget-view+json"] as {
-              model_id?: string;
-            };
-            if (widgetData?.model_id) {
-              const model = widgetContext.store.getModel(widgetData.model_id);
-              if (model?.modelName === "OutputModel" && model.state.outputs) {
-                const widgetOutputs = model.state.outputs as Array<{
-                  output_type: string;
-                  data?: Record<string, unknown>;
-                }>;
-                for (const wo of widgetOutputs) {
-                  for (const mime of Object.keys(wo.data ?? {})) {
-                    if (needsPlugin(mime)) pluginMimes.add(mime);
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-
-      if (pluginMimes.size > 0) {
-        try {
-          await injectPluginsForMimes(frameRef.current, pluginMimes, injectedLibsRef.current);
-        } catch (error) {
-          if (gen !== renderGenRef.current) return;
-          console.error("[OutputArea] Failed to load renderer plugin:", error);
-          frameRef.current.renderBatch([
-            {
-              mimeType: "text/plain",
-              data: `Failed to load renderer plugin: ${formatPluginLoadError(error)}`,
-              metadata: { isError: true },
-              cellId,
-              outputIndex: 0,
-            },
-          ]);
-          return;
-        }
-        // Stale check: if outputs changed while we were loading the plugin,
-        // bail — a newer handleFrameReady call is already in flight.
-        if (gen !== renderGenRef.current) return;
-      }
-
-      // Build batch of render payloads and send atomically.
-      // This avoids the clear+re-render cycle that causes DOM thrashing
-      // (visible as flickering when interactive widgets update rapidly).
-      const batch = jupyterOutputsToRenderPayloads(outputs, { cellId, priority });
-
-      frameRef.current.renderBatch(batch);
-
-      // Re-apply search highlights after rendering new content
-      if (searchQueryRef.current) {
-        frameRef.current?.search(searchQueryRef.current);
-      }
-    },
-    [outputs, priority, shouldUseBridge, widgetContext],
-  );
-
-  const handleIsolatedFrameReady = useCallback(() => {
-    void handleFrameReady({ resetInjectedPlugins: true });
-  }, [handleFrameReady]);
-
-  // Clean up bridge on unmount
-  useEffect(() => {
-    return () => {
-      if (bridgeRef.current) {
-        bridgeRef.current.dispose();
-        bridgeRef.current = null;
-      }
-    };
-  }, []);
-
-  // Re-render outputs when they change (after initial ready)
-  useEffect(() => {
-    if (frameRef.current?.isReady) {
-      handleFrameReady();
-    }
-  }, [handleFrameReady]);
-
-  // Forward search query to the iframe (for isolated outputs)
-  useEffect(() => {
-    if (frameRef.current?.isIframeReady) {
-      frameRef.current.search(searchQuery || "");
-    }
-  }, [searchQuery]);
 
   // Highlight search matches in in-DOM outputs
   // Re-run when outputs array ref changes so new content gets highlighted
   useEffect(() => {
-    if (shouldIsolate) return; // iframe reports its own count via search_results
     if (!searchQuery || !inDomOutputRef.current || outputs.length === 0) {
       // Only report 0 if we were previously tracking matches for this cell
       if (searchQuery) onSearchMatchCount?.(0);
@@ -725,7 +796,7 @@ export function OutputArea({
     const count = inDomOutputRef.current.querySelectorAll(".global-find-match").length;
     onSearchMatchCount?.(count);
     return cleanup;
-  }, [searchQuery, shouldIsolate, outputs, onSearchMatchCount]);
+  }, [searchQuery, outputs, onSearchMatchCount]);
 
   // Empty state: render nothing (unless preloading iframe)
   if (outputs.length === 0 && !showPreloadedIframe) {
@@ -765,108 +836,86 @@ export function OutputArea({
       {/* Output content */}
       {!collapsed && (
         <div
+          ref={inDomOutputRef}
           id={id}
           className={cn(
             "space-y-2",
-            !shouldIsolate && inDomMaxHeight !== null && "overflow-y-auto",
-            shouldConstrainIsolatedOutput && "overflow-y-auto",
+            inDomMaxHeight !== null && "overflow-y-auto",
+            shouldConstrainOutputArea && "overflow-y-auto",
           )}
-          style={shouldIsolate ? isolatedOutputWellStyle : maxHeightStyle}
+          style={outputWellStyle}
         >
-          {/* Preloaded or active isolated frame */}
-          {(shouldIsolate || showPreloadedIframe) && (
-            <div
-              ref={staticFrameInteractionRef}
-              className={cn(
-                shouldIsolate ? "relative outline-none transition-shadow" : "hidden",
-                hasSiftOutputs && "group/sift rounded-md overflow-hidden",
-                hasSiftOutputs &&
-                  shouldUseScrollPassthroughFrame &&
-                  !staticFrameInteractionActive &&
-                  "hover:ring-1 hover:ring-[var(--notebook-sift-focus-hover)]",
-                hasSiftOutputs && staticFrameInteractionActive && "bg-background",
-              )}
-              style={siftFrameStyle}
-              data-frame-interaction-active={staticFrameInteractionActive ? "true" : undefined}
-              data-sift-output={hasSiftOutputs ? "true" : undefined}
-              tabIndex={shouldUseScrollPassthroughFrame ? -1 : undefined}
-              onPointerDown={
-                shouldUseScrollPassthroughFrame ? activateStaticFrameInteraction : undefined
-              }
-              onKeyDown={shouldUseScrollPassthroughFrame ? handleStaticFrameKeyDown : undefined}
-            >
-              <IsolatedFrame
-                ref={frameRef}
-                name={frameName}
-                darkMode={darkMode}
-                colorTheme={colorTheme}
-                minHeight={24}
-                maxHeight={isolatedOutputWellMaxHeight}
-                autoHeight={shouldIsolate && !focused}
-                allowWheelBoundaryScroll={allowWheelBoundaryScroll}
-                scrollPassthrough={shouldScrollPassthroughFrame}
-                onReady={handleIsolatedFrameReady}
-                onLinkClick={onLinkClick}
-                onMouseDown={activateStaticFrameInteraction}
-                onWidgetUpdate={onWidgetUpdate}
-                onMessage={handleIframeMessage}
-                onError={handleIframeError}
-                hostContext={hostContext}
-              />
-              {showSiftInteractionCue && (
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-end rounded-b-md pb-[9px] pr-[84px] opacity-0 transition-opacity duration-150 group-hover/sift:opacity-100 group-focus-within/sift:opacity-100">
-                  <SiftScrollHandoffCue
-                    className="pointer-events-auto"
-                    onPointerDown={(event) => {
-                      event.stopPropagation();
-                      activateStaticFrameInteraction();
-                    }}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      activateStaticFrameInteraction();
-                    }}
-                  />
-                </div>
-              )}
-            </div>
+          {showPreloadedIframe && outputs.length === 0 && (
+            <IsolatedOutputSegment
+              items={[]}
+              hidden
+              cellId={cellId}
+              executionCount={executionCount}
+              focused={focused}
+              frameMaxHeight={outputWellMaxHeight}
+              priority={priority}
+              onLinkClick={onLinkClick}
+              onWidgetUpdate={onWidgetUpdate}
+              searchQuery={searchQuery}
+              onSearchMatchCount={onSearchMatchCount}
+              onIframeMouseDown={onIframeMouseDown}
+              hostContext={hostContext}
+            />
           )}
 
-          {/* In-DOM outputs (when not using isolation) */}
-          {!shouldIsolate && (
-            <div ref={inDomOutputRef}>
-              {outputs.map((output, index) => {
-                // Prefer daemon-stamped output_id for stable React keys so a
-                // stream append doesn't re-mount sibling outputs. Fall back
-                // to positional when a render path skipped the id.
-                const key = output.output_id ?? `output-${index}`;
-                return (
-                  <div key={key} data-slot="output-item" data-output-index={index}>
-                    <ErrorBoundary
-                      resetKeys={[output]}
-                      fallback={(error, reset) => (
-                        <OutputErrorFallback error={error} outputIndex={index} onRetry={reset} />
-                      )}
-                      onError={(error, errorInfo) => {
-                        console.error(
-                          `[OutputArea] Error rendering output ${index}:`,
-                          error,
-                          errorInfo.componentStack,
-                        );
-                      }}
-                    >
-                      {renderOutput(
-                        output,
-                        index,
-                        renderers,
-                        priority,
-                        resolveTracebackExecutionTarget,
-                        onNavigateToTracebackCell,
-                      )}
-                    </ErrorBoundary>
-                  </div>
-                );
-              })}
-            </div>
+          {segments.map((segment) =>
+            segment.kind === "isolated" ? (
+              <IsolatedOutputSegment
+                key={segment.key}
+                items={segment.items}
+                cellId={cellId}
+                executionCount={executionCount}
+                focused={focused}
+                frameMaxHeight={outputWellMaxHeight}
+                priority={priority}
+                onLinkClick={onLinkClick}
+                onWidgetUpdate={onWidgetUpdate}
+                searchQuery={searchQuery}
+                onSearchMatchCount={onSearchMatchCount}
+                onIframeMouseDown={onIframeMouseDown}
+                hostContext={hostContext}
+              />
+            ) : (
+              <div key={segment.key} data-slot="output-segment" data-output-segment="dom">
+                {segment.items.map(({ output, index }) => {
+                  // Prefer daemon-stamped output_id for stable React keys so a
+                  // stream append doesn't re-mount sibling outputs. Fall back
+                  // to positional when a render path skipped the id.
+                  const key = output.output_id ?? `output-${index}`;
+                  return (
+                    <div key={key} data-slot="output-item" data-output-index={index}>
+                      <ErrorBoundary
+                        resetKeys={[output]}
+                        fallback={(error, reset) => (
+                          <OutputErrorFallback error={error} outputIndex={index} onRetry={reset} />
+                        )}
+                        onError={(error, errorInfo) => {
+                          console.error(
+                            `[OutputArea] Error rendering output ${index}:`,
+                            error,
+                            errorInfo.componentStack,
+                          );
+                        }}
+                      >
+                        {renderOutput(
+                          output,
+                          index,
+                          renderers,
+                          priority,
+                          resolveTracebackExecutionTarget,
+                          onNavigateToTracebackCell,
+                        )}
+                      </ErrorBoundary>
+                    </div>
+                  );
+                })}
+              </div>
+            ),
           )}
         </div>
       )}

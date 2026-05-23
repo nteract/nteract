@@ -90,6 +90,68 @@ function makeStreamOutput(text = "hey\n"): JupyterOutput[] {
   ];
 }
 
+function makeStreamThenHtmlOutput(): JupyterOutput[] {
+  return [
+    {
+      output_type: "stream",
+      name: "stdout",
+      text: "stream before\n",
+    },
+    {
+      output_type: "display_data",
+      data: { "text/html": "<b>unsafe html</b>" },
+      metadata: {},
+    },
+  ];
+}
+
+function makeHtmlThenTracebackOutput(): JupyterOutput[] {
+  return [
+    {
+      output_type: "display_data",
+      data: { "text/html": "<b>test</b>" },
+      metadata: {},
+    },
+    {
+      output_type: "error",
+      ename: "RecursionError",
+      evalue: "maximum recursion depth exceeded",
+      traceback: ["RecursionError: maximum recursion depth exceeded"],
+      rich: {
+        ename: "RecursionError",
+        evalue: "maximum recursion depth exceeded",
+        execution: { execution_id: "exec-run", execution_count: 6 },
+        frames: [
+          {
+            filename: "/var/folders/x/T/ipykernel_39879/258099874.py",
+            lineno: 4,
+            name: "<module>",
+            source_ref: {
+              kind: "notebook_execution",
+              execution_id: "exec-run",
+              execution_count: 6,
+              compiled_filename: "/var/folders/x/T/ipykernel_39879/258099874.py",
+            },
+            lines: [{ lineno: 4, source: "f(200)", highlight: true }],
+          },
+          {
+            filename: "/var/folders/x/T/ipykernel_39879/3398808089.py",
+            lineno: 4,
+            name: "f",
+            source_ref: {
+              kind: "notebook_execution",
+              execution_id: "exec-def",
+              execution_count: 3,
+              compiled_filename: "/var/folders/x/T/ipykernel_39879/3398808089.py",
+            },
+            lines: [{ lineno: 4, source: "return f(n) + f(n - 1)", highlight: true }],
+          },
+        ],
+      },
+    },
+  ];
+}
+
 function makeParquetOutput(): JupyterOutput[] {
   return [
     {
@@ -398,6 +460,54 @@ describe("OutputArea iframe theme sync", () => {
     const outputContent = getOutputContent(container);
     expect(outputContent.getAttribute("class") ?? "").not.toContain("overflow-y-auto");
     expect(outputContent.style.maxHeight).toBe("");
+  });
+
+  it("keeps safe stream outputs in-DOM before an isolated HTML output", async () => {
+    render(<OutputArea outputs={makeStreamThenHtmlOutput()} />);
+
+    expect(screen.getByText("stream before")).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
+        expect.objectContaining({
+          mimeType: "text/html",
+          data: "<b>unsafe html</b>",
+          outputIndex: 1,
+        }),
+      ]);
+    });
+
+    expect(mockFrameHandle.renderBatch).not.toHaveBeenCalledWith([
+      expect.objectContaining({ data: expect.stringContaining("stream before") }),
+    ]);
+  });
+
+  it("keeps rich tracebacks in-DOM when a sibling output needs isolation", async () => {
+    const onNavigateToTracebackCell = vi.fn();
+
+    render(
+      <OutputArea
+        outputs={makeHtmlThenTracebackOutput()}
+        resolveTracebackExecutionTarget={(executionId) => {
+          if (executionId === "exec-run") return { cellId: "cell-run" };
+          if (executionId === "exec-def") return { cellId: "cell-def" };
+          return null;
+        }}
+        onNavigateToTracebackCell={onNavigateToTracebackCell}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
+        expect.objectContaining({ mimeType: "text/html", data: "<b>test</b>", outputIndex: 0 }),
+      ]);
+    });
+
+    expect(screen.getByText("RecursionError")).toBeInTheDocument();
+    expect(screen.queryByText("In[6]")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Go to cell cell-def" }));
+
+    expect(onNavigateToTracebackCell).toHaveBeenCalledWith({ cellId: "cell-def" });
   });
 
   it("constrains isolated iframe outputs when maxHeight is explicit", () => {
