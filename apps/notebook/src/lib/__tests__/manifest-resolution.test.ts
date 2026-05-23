@@ -433,6 +433,22 @@ describe("resolveContentRef", () => {
       credentials: "include",
     });
   });
+
+  it.each([
+    ["application/vnd.apache.arrow.stream", "sha256:arrow"],
+    ["application/vnd.apache.parquet", "sha256:parquet"],
+  ])("resolves %s blob refs through the host URL resolver", async (mimeType, blob) => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response("should not fetch", { status: 200 }));
+    const resolver = createBlobResolver({
+      url: (ref) => `https://assets.example.test/blobs/${encodeURIComponent(ref.blob)}`,
+      fetchImpl,
+    });
+
+    const result = await resolveContentRef({ blob, size: 128 }, resolver, mimeType);
+
+    expect(result).toBe(`https://assets.example.test/blobs/${encodeURIComponent(blob)}`);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -499,6 +515,32 @@ describe("resolveDataBundle", () => {
         },
       ],
     });
+  });
+
+  it("keeps direct Arrow and Parquet blob refs as host-owned URLs", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response("should not fetch", { status: 200 }));
+    const resolver = createBlobResolver({
+      url: (ref) => `https://assets.example.test/blobs/${encodeURIComponent(ref.blob)}`,
+      fetchImpl,
+    });
+
+    const result = await resolveDataBundle(
+      {
+        "application/vnd.apache.arrow.stream": { blob: "sha256:arrow", size: 1024 },
+        "application/vnd.apache.parquet": { blob: "sha256:parquet", size: 2048 },
+        "text/plain": { inline: "shape: (25, 10)" },
+      },
+      resolver,
+    );
+
+    expect(result["application/vnd.apache.arrow.stream"]).toBe(
+      "https://assets.example.test/blobs/sha256%3Aarrow",
+    );
+    expect(result["application/vnd.apache.parquet"]).toBe(
+      "https://assets.example.test/blobs/sha256%3Aparquet",
+    );
+    expect(result["text/plain"]).toBe("shape: (25, 10)");
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("falls back to raw string for invalid JSON in json MIME type", async () => {
