@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { errorDetails, hostLog } from "../lib/host-log";
 
 interface HtmlOutputProps {
   html: string;
@@ -13,9 +14,18 @@ export function HtmlOutput({ html }: HtmlOutputProps) {
     const handleLoad = () => {
       try {
         const h = frame.contentDocument?.documentElement?.scrollHeight;
-        if (h) frame.style.height = `${h + 2}px`;
-      } catch {
-        /* cross-origin */
+        if (h) {
+          frame.style.height = `${h + 2}px`;
+          hostLog("debug", "html-output-iframe-resized", {
+            height: h + 2,
+          });
+        } else {
+          hostLog("warning", "html-output-iframe-missing-height");
+        }
+      } catch (error) {
+        hostLog("warning", "html-output-iframe-resize-failed", {
+          error: errorDetails(error),
+        });
       }
     };
     frame.addEventListener("load", handleLoad);

@@ -48,7 +48,7 @@ function AppFrame({ toolResult }: { toolResult: CallToolResult }) {
     const bridge = new AppBridge(
       null,
       { name: "nteract-dev-preview", version: "0.1.0" },
-      {},
+      { logging: {} },
       {
         hostContext: {
           theme: "dark",
@@ -56,6 +56,10 @@ function AppFrame({ toolResult }: { toolResult: CallToolResult }) {
       },
     );
     bridgeRef.current = bridge;
+
+    bridge.onloggingmessage = ({ level, logger, data }) => {
+      console.log(`[${logger ?? "mcp-app"}] ${level}`, data);
+    };
 
     // Resize iframe to match content
     bridge.onsizechange = ({ height: h }) => {
