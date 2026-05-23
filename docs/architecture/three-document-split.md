@@ -16,6 +16,14 @@ The split is load-bearing for sync bandwidth, write-frequency isolation, fan-out
 
 This ADR describes the real desktop application. The hosted prototype at `apps/notebook-cloud/` is parked and outside scope. A closing section sketches what changes when the same split runs in a multi-user deployment.
 
+Neighbors:
+
+- `docs/architecture/typed-frame-v4-wire-protocol.md` — the byte protocol that carries each doc's sync stream.
+- `docs/architecture/execution-pipeline.md` — how `RuntimeStateDoc` is written during cell execution.
+- `docs/architecture/blob-storage-and-content-addressing.md` — how output payloads are stored separately from the doc itself.
+- `docs/architecture/identity-and-trust.md` — the trust scopes the three-doc split makes expressible.
+- `docs/architecture/cleanup-punchlist.md` — open gaps in the split.
+
 ## Decision 1: Three documents, three sync streams, three frame types
 
 Each document syncs on its own Automerge channel, with its own peer-state object and its own frame type. The peer loop in `crates/runtimed/src/notebook_sync_server/peer_loop.rs` holds three independent `sync::State` values:

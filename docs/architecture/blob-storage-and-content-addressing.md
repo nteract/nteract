@@ -26,9 +26,23 @@ daemon-owned store. Snapshot publish artifacts pair `NotebookDoc` and
 
 This ADR captures the desktop-side decisions: hash algorithm, encoding, the
 disk layout, the inline threshold, the durability tag, retention, and the
-upload protocol. `docs/architecture/hosted-notebook-artifacts.md` builds on
-this for the cloud publish layer; `docs/architecture/identity-and-trust.md`
-covers how a connected peer earns the right to upload at all.
+upload protocol.
+
+Neighbors:
+
+- `docs/architecture/typed-frame-v4-wire-protocol.md` — the `PUT_BLOB` frame
+  shape and the per-type cap.
+- `docs/architecture/three-document-split.md` — which document each blob ref
+  comes from (`RuntimeStateDoc` executions / comms, `NotebookDoc` assets /
+  attachments).
+- `docs/architecture/execution-pipeline.md` — when the daemon decides to
+  blob an output vs. inline it.
+- `docs/architecture/hosted-notebook-artifacts.md` — how snapshot pairs and
+  R2 blob storage reuse the same hash addressing.
+- `docs/architecture/identity-and-trust.md` — the room-level auth gate that
+  blob HTTP currently leans on; how a connected peer earns the right to
+  upload at all.
+- `docs/architecture/cleanup-punchlist.md` — open gaps in blob handling.
 
 ## Decision 1: SHA-256 hex, content-addressed, two-level shard
 

@@ -14,6 +14,14 @@ Two facts make this pipeline unusual:
 
 This ADR captures the load-bearing decisions that make those facts work. Most of these rules live as paragraph-shaped invariants in `CLAUDE.md` and the `execution-pipeline` skill. Writing them down as decisions surfaces both the rationale and the gaps.
 
+Neighbors:
+
+- `docs/architecture/three-document-split.md` — why execution state lives in `RuntimeStateDoc` and not `NotebookDoc`, and why there are two writer paths into it.
+- `docs/architecture/typed-frame-v4-wire-protocol.md` — the framing the pipeline rides on; `Request`/`Response` correlation, `SessionControl` readiness phases.
+- `docs/architecture/blob-storage-and-content-addressing.md` — where stream and display outputs actually land once a manifest is committed.
+- `docs/architecture/identity-and-trust.md` — who can `ExecuteCell`, who can read outputs.
+- `docs/architecture/cleanup-punchlist.md` — open gaps in pipeline invariants.
+
 Three projects shaped the design:
 
 - **Jupyter's IOPub model**: status messages and outputs interleave on a single pub-sub channel from the kernel. The daemon has to peel apart what's "output transport" from what's "control plane" on the way out, because no Jupyter component does that for us.

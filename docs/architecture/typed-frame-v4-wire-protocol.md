@@ -8,7 +8,15 @@ Every peer in the nteract desktop world speaks the same byte protocol over a Uni
 
 The wire crate (`crates/notebook-wire/src/lib.rs`) is intentionally tiny: magic bytes, protocol-version constant, the `NotebookFrameType` enum, per-type size limits, and the `SessionControlMessage` shapes. Framing itself lives one crate up (`crates/notebook-protocol/src/connection/framing.rs`). Everything heavier (Automerge sync, JSON request/response, CBOR presence, blob uploads) is layered on top.
 
-This ADR pins down what every peer must agree on so the format does not silently drift between Rust, the `packages/runtimed` TypeScript surface, the Python client, and any future browser transport. Identity and access live in `docs/architecture/identity-and-trust.md`; this document is the framing layer underneath.
+This ADR pins down what every peer must agree on so the format does not silently drift between Rust, the `packages/runtimed` TypeScript surface, the Python client, and any future browser transport. The semantic neighbors:
+
+- `docs/architecture/identity-and-trust.md` — who is allowed to send which frame.
+- `docs/architecture/three-document-split.md` — what `AutomergeSync` / `RuntimeStateSync` / `PoolStateSync` actually carry.
+- `docs/architecture/execution-pipeline.md` — how `Request` / `Response` / `SessionControl` thread through cell execution.
+- `docs/architecture/blob-storage-and-content-addressing.md` — what `PUT_BLOB` is moving and where it lands.
+- `docs/architecture/cleanup-punchlist.md` — open gaps surfaced while writing this.
+
+This document is the framing layer underneath all of them.
 
 ## Decision 1: Preamble is 5 bytes, magic plus version byte
 
