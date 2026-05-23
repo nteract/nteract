@@ -497,17 +497,34 @@ async function materializeSnapshotRender(
     return json({ error: "runtime snapshot not found" }, 404);
   }
 
-  const render = await materializeSnapshotPairRender({
-    notebookId,
-    notebookHeadsHash: revision.notebook_heads_hash,
-    runtimeHeadsHash: revision.runtime_heads_hash,
-    notebookBytes: new Uint8Array(await notebookObject.arrayBuffer()),
-    runtimeStateBytes: new Uint8Array(await runtimeObject.arrayBuffer()),
-    blobResolver: createNotebookCloudBlobResolver({
-      baseUrl: request.url,
-      blobBasePath: notebookCloudBlobBasePath(notebookId),
-    }),
-  });
+  let render: Awaited<ReturnType<typeof materializeSnapshotPairRender>>;
+  try {
+    render = await materializeSnapshotPairRender({
+      notebookId,
+      notebookHeadsHash: revision.notebook_heads_hash,
+      runtimeHeadsHash: revision.runtime_heads_hash,
+      notebookBytes: new Uint8Array(await notebookObject.arrayBuffer()),
+      runtimeStateBytes: new Uint8Array(await runtimeObject.arrayBuffer()),
+      blobResolver: createNotebookCloudBlobResolver({
+        baseUrl: request.url,
+        blobBasePath: notebookCloudBlobBasePath(notebookId),
+      }),
+    });
+  } catch (error) {
+    console.warn("Unable to materialize notebook render", {
+      notebookId,
+      notebookHeadsHash: revision.notebook_heads_hash,
+      runtimeHeadsHash: revision.runtime_heads_hash,
+      error,
+    });
+    return json(
+      {
+        error: "render materialization failed",
+        details: errorMessage(error),
+      },
+      422,
+    );
+  }
   const body = JSON.stringify(render);
   await env.NOTEBOOK_SNAPSHOTS.put(renderKey(notebookId, revision.notebook_heads_hash), body, {
     httpMetadata: {
@@ -645,6 +662,10 @@ function json(value: unknown, status = 200): Response {
       headers: { "Content-Type": "application/json" },
     }),
   );
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function withCors(response: Response): Response {

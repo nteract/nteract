@@ -183,6 +183,57 @@ describe("Worker artifact routes", () => {
       "materialized render should be cached back into R2",
     );
   });
+
+  it("returns a structured error when persisted snapshots cannot be materialized", async () => {
+    const env = fakeEnv();
+    const corruptBytes = new TextEncoder().encode("not an automerge document");
+
+    const runtimePut = await ownerPut(
+      env,
+      "/api/n/corrupt-demo/runtime-snapshots/runtime-corrupt",
+      corruptBytes,
+    );
+    assert.equal(runtimePut.status, 201);
+
+    const notebookPut = await ownerPut(
+      env,
+      "/api/n/corrupt-demo/snapshots/heads-corrupt",
+      corruptBytes,
+      {
+        "X-Runtime-Heads-Hash": "runtime-corrupt",
+      },
+    );
+    assert.equal(notebookPut.status, 201);
+
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+    let response: Response;
+    try {
+      response = await worker.fetch(
+        new Request("http://localhost/api/n/corrupt-demo/render"),
+        env,
+        fakeContext(),
+      );
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(response.status, 422);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+    const body = (await response.json()) as { error: string; details: string };
+    assert.equal(body.error, "render materialization failed");
+    assert.match(body.details, /load|document|decode|automerge/i);
+    assert.equal(
+      env.NOTEBOOK_SNAPSHOTS.objects.has(renderKey("corrupt-demo", "heads-corrupt")),
+      false,
+      "failed materialization should not cache a render object",
+    );
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0][0], "Unable to materialize notebook render");
+  });
 });
 
 async function ownerPut(
