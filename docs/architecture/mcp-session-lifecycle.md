@@ -218,8 +218,8 @@ The error message is generated at the point of tool failure (`no_session_error()
 
 ### Cold start: Claude Code spawns owner-mode proxy
 
-1. Claude Code spawns `runt-mcp-proxy` over stdio. Proxy reads cached tool list from disk and returns it immediately to the MCP `tools/list` request, so Claude Code's tool registry is populated without waiting on the daemon.
-2. Proxy receives `notifications/initialized`. Spawns the `runt mcp` child.
+1. Claude Code spawns `mcp-supervisor` over stdio. The supervisor's internal `McpProxy` reads cached tool list from disk and returns it immediately to the MCP `tools/list` request, so Claude Code's tool registry is populated without waiting on the daemon.
+2. Supervisor receives `notifications/initialized`. Spawns the `runt mcp` child.
 3. Child connects to the daemon socket via peer creds, sees no `NTERACT_MCP_REJOIN_NOTEBOOK`, sits idle with `session = None`.
 4. Agent calls `connect_notebook { path: "/tmp/foo.ipynb" }`. Proxy forwards to child. Child opens a peer connection, daemon creates the room (or rebinds the path index to an existing resident room), child stores the `DocHandle` in `session`, returns the `notebook_id`.
 5. Proxy parses the response, stores `notebook_id` in `last_notebook_id`. This is the seed for the next restart.
@@ -255,7 +255,7 @@ The error message is generated at the point of tool failure (`no_session_error()
 ### Two MCP clients, attach mode
 
 1. Claude Code starts in `owner` mode, spawns the worktree daemon. Connects child to socket, opens a notebook.
-2. User starts Codex in `attach` mode against the same worktree. Codex's `runt-mcp-proxy` reads `NTERACT_DEV_MODE=attach`, asserts the daemon socket is reachable, spawns a child that connects without trying to start the daemon.
+2. User starts Codex in `attach` mode against the same worktree. Codex's `mcp-supervisor` reads `NTERACT_DEV_MODE=attach`, asserts the daemon socket is reachable, spawns a child that connects without trying to start the daemon.
 3. Both children have their own `NotebookSession` slots. Both can call `connect_notebook` on the same notebook; each becomes a separate peer on the room, with `active_peers` going from 1 to 2.
 4. One agent calls `execute_cell`; the other agent sees the cell-state changes via Automerge sync. There is no per-client routing, no per-client identity, no per-client scope (Decision 5 in `identity-and-trust.md` will eventually change this).
 5. If Claude Code exits, its child closes the socket, daemon decrements `active_peers` to 1. The daemon does *not* tear down because Codex is still connected. The daemon is now orphan-owned (Claude Code started it, Codex is using it). If Codex also exits, `active_peers` goes to 0 and the kernel-teardown timer starts.
