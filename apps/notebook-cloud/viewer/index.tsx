@@ -288,6 +288,7 @@ function ReadonlySource({ source, language }: { source: string; language: string
     <ReadOnlyCodeMirror
       value={source}
       language={cloudSourceLanguage(language)}
+      lineWrapping
       className="cloud-source-block"
     />
   );

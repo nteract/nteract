@@ -72,6 +72,10 @@ export interface CodeMirrorEditorProps {
   colorTheme?: ColorTheme;
 }
 
+function readOnlyExtensions(readOnly: boolean): Extension[] {
+  return readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : [];
+}
+
 /**
  * CodeMirror 6 editor component for notebook cells.
  *
@@ -240,7 +244,7 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
           themeCompartment.current.of(themeExtension),
           placeholderCompartment.current.of(placeholder ? placeholderExt(placeholder) : []),
           lineWrappingCompartment.current.of(lineWrapping ? EditorView.lineWrapping : []),
-          readOnlyCompartment.current.of(readOnly ? EditorView.editable.of(false) : []),
+          readOnlyCompartment.current.of(readOnlyExtensions(readOnly)),
           additionalCompartment.current.of(additionalExtensions ?? []),
           ...maxHeightTheme,
           updateListener,
@@ -332,11 +336,24 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
 
     useEffect(() => {
       viewRef.current?.dispatch({
-        effects: readOnlyCompartment.current.reconfigure(
-          readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : [],
-        ),
+        effects: readOnlyCompartment.current.reconfigure(readOnlyExtensions(readOnly)),
       });
     }, [readOnly]);
+
+    useEffect(() => {
+      const view = viewRef.current;
+      if (!view || !readOnly) return;
+
+      const currentValue = view.state.doc.toString();
+      if (currentValue === initialValue) return;
+
+      // Read-only consumers use initialValue as a controlled display value.
+      // Editable notebook cells remain uncontrolled; their sync is CRDT-owned.
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: initialValue },
+        annotations: externalChangeAnnotation.of(true),
+      });
+    }, [initialValue, readOnly]);
 
     useEffect(() => {
       viewRef.current?.dispatch({

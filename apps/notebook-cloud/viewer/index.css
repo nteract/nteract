@@ -40,7 +40,8 @@ body {
 }
 
 .cloud-source-block .cm-scroller {
-  overflow: visible;
+  overflow-x: hidden;
+  overflow-y: visible;
 }
 
 .cloud-source-block .cm-content {
