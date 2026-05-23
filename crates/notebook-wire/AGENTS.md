@@ -37,7 +37,7 @@ The frontend talks to the Tauri relay through `invoke()` calls and Tauri events.
    { "channel": "notebook_sync", "notebook_id": "/path/to/notebook.ipynb", "protocol": "v4" }
    ```
 
-   `Handshake` uses `#[serde(tag = "channel", rename_all = "snake_case")]`, so the wire form is flat. Optional fields (`working_dir`, `initial_metadata`) omit when `None`. Other variants: `Pool`, `SettingsSync`, `Blob`, `OpenNotebook { path }`, `CreateNotebook { runtime, … }`, `RuntimeAgent { … }`. `OpenNotebook` / `CreateNotebook` are the desktop paths; `NotebookSync` is used by programmatic clients (Python bindings).
+   `Handshake` uses `#[serde(tag = "channel", rename_all = "snake_case")]`, so the wire form is flat. Optional fields (`working_dir`, `initial_metadata`) omit when `None`. Other variants: `Pool`, `SettingsSync`, `OpenNotebook { path }`, `CreateNotebook { runtime, … }`, `RuntimeAgent { … }`. `OpenNotebook` / `CreateNotebook` are the desktop paths; `NotebookSync` is used by programmatic clients (Python bindings). Blob uploads ride the `NotebookSync` channel as `PUT_BLOB` (`0x08`) frames; the localhost blob HTTP port is a separate server on a different socket, not a handshake channel.
 
    The daemon responds with `NotebookConnectionInfo`:
 
@@ -61,7 +61,6 @@ The runtimed socket is **same-UID trusted**, not app-private. Unix permissions p
 | `NotebookSync` | Peer access to a notebook room and its runtime-state sync |
 | `OpenNotebook` | Load or create a file-backed notebook from a path |
 | `CreateNotebook` | Create an untitled or ephemeral notebook room |
-| `Blob` | Store blobs and query the localhost blob HTTP port |
 | `RuntimeAgent` | Attach a runtime-agent peer to a notebook room |
 
 A new handshake variant inherits this model. For tighter authority on a channel, design an explicit capability or guard instead of assuming "only the desktop app can reach it."
@@ -81,6 +80,8 @@ Every message is length-prefixed:
 ```
 
 Max frame: 100 MiB for data frames, 64 KiB for control/handshake frames.
+
+Not every handshake channel uses typed frames. `NotebookSync`, `OpenNotebook`, `CreateNotebook`, and `RuntimeAgent` enter the typed-frame protocol after the handshake JSON. `Pool` and `SettingsSync` use length-prefixed JSON or binary bodies with no leading type byte; they don't carry the typed-frame enum at all.
 
 ### Typed frames
 
