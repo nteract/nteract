@@ -66,6 +66,7 @@ try {
       {
         ok: true,
         baseUrl,
+        sourceMode: sourceNotebookId ? "existing-notebook-room" : "generated-live-preset",
         preset: sourceNotebookId ? "source-notebook" : preset,
         sourceNotebookId: sourceNotebookId ?? session.notebookId,
         notebookId,

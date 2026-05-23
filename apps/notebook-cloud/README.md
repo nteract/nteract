@@ -113,8 +113,11 @@ render API source check. Set
 `NOTEBOOK_CLOUD_EXPECTED_CATALOG_OWNER_PRINCIPAL=` and
 `NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_ACTOR_LABEL=` to skip the live-publish
 catalog provenance checks, or set them to the expected owner/actor for another
-published notebook. Set `NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM=0` when the target
-notebook does not include a Sift output.
+published notebook. `NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_NOTEBOOK_HEADS_HASH`
+and `NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_RUNTIME_HEADS_HASH` can pin the
+catalog check to a specific exported snapshot pair. Set
+`NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM=0` when the target notebook does not include a
+Sift output.
 
 `publish:live` exports a real synced notebook session through `@runtimed/node`,
 uploads its `NotebookDoc` + `RuntimeStateDoc` snapshot pair, walks the rendered
@@ -124,8 +127,10 @@ materializes the hosted render. By default it creates and executes a small
 to publish an already-open live notebook room instead.
 
 `smoke:hosted:live` composes the two live checks: it runs `publish:live`, reads
-the returned viewer URL, then runs `smoke:hosted` against that exact notebook.
-Use `NOTEBOOK_CLOUD_URL=https://nteract-notebook-cloud.rgbkrk.workers.dev` and
+the returned viewer URL and exported notebook/runtime heads, then runs
+`smoke:hosted` against that exact notebook while asserting the catalog latest
+revision still points at those heads. Use
+`NOTEBOOK_CLOUD_URL=https://nteract-notebook-cloud.rgbkrk.workers.dev` and
 `NOTEBOOK_CLOUD_DEV_TOKEN=...` to target the deployed prototype, or leave the
 defaults to target local Wrangler.
 

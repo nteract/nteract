@@ -33,6 +33,10 @@ const expectedCatalogOwnerPrincipal =
 const expectedLatestRevisionActorLabel =
   process.env.NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_ACTOR_LABEL ??
   DEFAULT_LATEST_REVISION_ACTOR_LABEL;
+const expectedLatestRevisionNotebookHeadsHash =
+  process.env.NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_NOTEBOOK_HEADS_HASH ?? "";
+const expectedLatestRevisionRuntimeHeadsHash =
+  process.env.NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_RUNTIME_HEADS_HASH ?? "";
 const requireSiftWasm = process.env.NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM !== "0";
 const screenshotPath = process.env.NOTEBOOK_CLOUD_SMOKE_SCREENSHOT;
 const timeoutMs = Number(process.env.NOTEBOOK_CLOUD_SMOKE_TIMEOUT_MS ?? 60_000);
@@ -118,10 +122,17 @@ async function main() {
     if (expectedRenderSource) {
       renderApiCheck = await checkHostedRenderApi(targetUrl, expectedRenderSource);
     }
-    if (expectedCatalogOwnerPrincipal || expectedLatestRevisionActorLabel) {
+    if (
+      expectedCatalogOwnerPrincipal ||
+      expectedLatestRevisionActorLabel ||
+      expectedLatestRevisionNotebookHeadsHash ||
+      expectedLatestRevisionRuntimeHeadsHash
+    ) {
       catalogApiCheck = await checkHostedCatalogApi(targetUrl, {
         expectedCatalogOwnerPrincipal,
         expectedLatestRevisionActorLabel,
+        expectedLatestRevisionNotebookHeadsHash,
+        expectedLatestRevisionRuntimeHeadsHash,
       });
     }
 
@@ -227,6 +238,8 @@ async function main() {
           expectedRenderSource,
           expectedCatalogOwnerPrincipal,
           expectedLatestRevisionActorLabel,
+          expectedLatestRevisionNotebookHeadsHash,
+          expectedLatestRevisionRuntimeHeadsHash,
           renderApiCheck,
           catalogApiCheck,
           executionCounts,
@@ -333,7 +346,12 @@ async function checkHostedRenderApi(viewerUrl, expectedSource) {
 
 async function checkHostedCatalogApi(
   viewerUrl,
-  { expectedCatalogOwnerPrincipal, expectedLatestRevisionActorLabel },
+  {
+    expectedCatalogOwnerPrincipal,
+    expectedLatestRevisionActorLabel,
+    expectedLatestRevisionNotebookHeadsHash,
+    expectedLatestRevisionRuntimeHeadsHash,
+  },
 ) {
   const catalogUrl = catalogApiUrlForViewer(viewerUrl);
   if (!catalogUrl) {
@@ -358,6 +376,8 @@ async function checkHostedCatalogApi(
   for (const failure of catalogExpectationFailures(summary, {
     expectedCatalogOwnerPrincipal,
     expectedLatestRevisionActorLabel,
+    expectedLatestRevisionNotebookHeadsHash,
+    expectedLatestRevisionRuntimeHeadsHash,
   })) {
     failures.push({
       ...failure,
