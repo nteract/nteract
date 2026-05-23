@@ -2842,6 +2842,11 @@ impl KernelConnection for JupyterKernel {
         let request = ExecuteRequest::new(source.to_string());
         let mut message: JupyterMessage = request.into();
         message.header.msg_id = execution_id.to_string();
+        message.metadata = serde_json::json!({
+            "nteract": {
+                "execution_id": execution_id,
+            },
+        });
 
         // Register execution_id BEFORE sending so IOPub can identify replies
         // without depending on notebook cell identity.

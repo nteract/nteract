@@ -588,7 +588,7 @@ async fn create_manifest_inner(
         if let Some(ue) = crate::user_error::UserErrorOutput::from_nbformat(output) {
             let (ename, evalue, traceback_strings) = ue.to_classic();
             let rich_payload = match &ue {
-                crate::user_error::UserErrorOutput::Rich(rt) => Some(rt.clone()),
+                crate::user_error::UserErrorOutput::Rich(rt) => Some(rt.as_ref().clone()),
                 _ => None,
             };
             let manifest = build_error_manifest(
