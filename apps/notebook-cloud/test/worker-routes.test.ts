@@ -99,6 +99,74 @@ describe("Worker artifact routes", () => {
     assert.equal(response.headers.get("Content-Type"), "application/wasm");
   });
 
+  it("supports HEAD requests for Worker-owned renderer sidecars", async () => {
+    const seenRequests: Array<{ method: string; pathname: string }> = [];
+    const env = fakeEnv({
+      ASSETS: {
+        fetch: async (request: Request) => {
+          seenRequests.push({
+            method: request.method,
+            pathname: new URL(request.url).pathname,
+          });
+          return new Response(null, {
+            headers: { "Content-Type": "application/wasm" },
+          });
+        },
+      },
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/renderer-assets/sift_wasm.wasm?v=test", { method: "HEAD" }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(seenRequests, [{ method: "HEAD", pathname: "/plugins/sift_wasm.wasm" }]);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+    assert.equal(response.headers.get("Content-Type"), "application/wasm");
+  });
+
+  it("rejects non-read asset requests before the assets binding", async () => {
+    const env = fakeEnv({
+      ASSETS: {
+        fetch: async () => new Response("should not be reached"),
+      },
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/renderer-assets/sift_wasm.wasm", { method: "POST" }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 405);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+    assert.deepEqual(await response.json(), { error: "method not allowed" });
+  });
+
+  it("rejects traversal-shaped renderer sidecar aliases before asset lookup", async () => {
+    const requests = [
+      "http://localhost/renderer-assets/%2e%2e%2fassets%2fnotebook-cloud-viewer.js",
+      "http://localhost/renderer-assets/nested/sift_wasm.wasm",
+      "http://localhost/plugins/%2e%2e%5csift_wasm.wasm",
+      "http://localhost/api/plugins/nested/sift_wasm.wasm",
+    ];
+
+    for (const request of requests) {
+      const env = fakeEnv({
+        ASSETS: {
+          fetch: async () => new Response("should not be reached"),
+        },
+      });
+
+      const response = await worker.fetch(new Request(request), env, fakeContext());
+
+      assert.equal(response.status, 404, request);
+      assert.deepEqual(await response.json(), { error: "not found" }, request);
+    }
+  });
+
   it("keeps the api plugin path as a compatibility alias for older viewers", async () => {
     const seenPaths: string[] = [];
     const env = fakeEnv({

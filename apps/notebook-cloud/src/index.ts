@@ -175,6 +175,9 @@ async function routeAsset(request: Request, env: Env): Promise<Response | null> 
   if (!assetPathname) {
     return null;
   }
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return json({ error: "method not allowed" }, 405);
+  }
   if (!env.ASSETS) {
     return json({ error: "viewer assets are not configured" }, 503);
   }
@@ -186,19 +189,37 @@ async function routeAsset(request: Request, env: Env): Promise<Response | null> 
 }
 
 function assetPathnameForRequest(pathname: string): string | null {
-  if (pathname.startsWith("/assets/") || pathname.startsWith("/plugins/")) {
+  if (pathname.startsWith("/assets/")) {
     return pathname;
   }
+  if (pathname.startsWith("/plugins/")) {
+    return pluginAssetPathname(pathname.slice("/plugins/".length));
+  }
   if (pathname.startsWith("/renderer-assets/")) {
-    return `/plugins/${pathname.slice("/renderer-assets/".length)}`;
+    return pluginAssetPathname(pathname.slice("/renderer-assets/".length));
   }
   if (pathname.startsWith("/api/assets/")) {
     return pathname.slice("/api".length);
   }
   if (pathname.startsWith("/api/plugins/")) {
-    return pathname.slice("/api".length);
+    return pluginAssetPathname(pathname.slice("/api/plugins/".length));
   }
   return null;
+}
+
+function pluginAssetPathname(rawName: string): string | null {
+  let name: string;
+  try {
+    name = decodeURIComponent(rawName);
+  } catch {
+    return null;
+  }
+
+  if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
+    return null;
+  }
+
+  return `/plugins/${name}`;
 }
 
 async function routeRoomSync(request: Request, env: Env): Promise<Response> {
