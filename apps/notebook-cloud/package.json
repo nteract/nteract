@@ -12,6 +12,7 @@
     "dev": "pnpm --workspace-root exec wrangler dev --config apps/notebook-cloud/wrangler.toml",
     "smoke": "node --import tsx scripts/smoke.mjs",
     "smoke:hosted": "node scripts/hosted-render-smoke.mjs",
+    "smoke:hosted:install": "playwright install chromium",
     "publish:demo": "node scripts/publish-demo.mjs",
     "publish:fixture": "node scripts/publish-fixture.mjs",
     "publish:live": "node --import tsx scripts/publish-live.mjs",
