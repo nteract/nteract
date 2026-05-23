@@ -13,7 +13,6 @@ import {
   ensureCatalogSchema,
   ensureNotebook,
   getNotebookCatalog,
-  listRoomEvents,
   recordBlob,
   recordRevision,
   renderKey,
@@ -115,11 +114,6 @@ const worker: ExportedHandler<Env> = {
     const catalogMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/?$/);
     if (catalogMatch && request.method === "GET") {
       return routeCatalog(env, decodeURIComponent(catalogMatch[1]));
-    }
-
-    const eventsMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/events$/);
-    if (eventsMatch && request.method === "GET") {
-      return routeRoomEvents(request, env, decodeURIComponent(eventsMatch[1]));
     }
 
     const latestRenderMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/render$/);
@@ -399,26 +393,6 @@ async function routeCatalog(env: Env, notebookId: string): Promise<Response> {
   }
 
   return json(catalog);
-}
-
-async function routeRoomEvents(request: Request, env: Env, notebookId: string): Promise<Response> {
-  const identity = authenticateRequestOrResponse(request, env);
-  if (identity instanceof Response) {
-    return identity;
-  }
-  if (!allowsPublish(identity.scope)) {
-    return json({ error: `${identity.scope} cannot read room events` }, 403);
-  }
-  if (!env.DB) {
-    return json({ error: "D1 binding DB is not configured" }, 503);
-  }
-
-  const url = new URL(request.url);
-  const limit = parseLimit(url.searchParams.get("limit"));
-  return json({
-    notebook_id: notebookId,
-    events: await listRoomEvents(env, notebookId, limit),
-  });
 }
 
 async function routeLatestRender(
@@ -827,19 +801,6 @@ function withCors(response: Response): Response {
   return response;
 }
 
-function parseLimit(value: string | null): number {
-  if (!value) {
-    return 25;
-  }
-
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed < 1) {
-    return 25;
-  }
-
-  return Math.min(parsed, 100);
-}
-
 function normalizedRuntimeHeadsHash(value: string | null): string | null {
   const trimmed = value?.trim();
   return trimmed && trimmed !== "none" ? trimmed : null;
@@ -931,10 +892,6 @@ function debugViewer(notebookId: string): Response {
         <h2>Catalog</h2>
         <pre id="catalog"></pre>
       </section>
-      <section>
-        <h2>Events</h2>
-        <pre id="events"></pre>
-      </section>
     </div>
   </main>
   <script type="module">
@@ -942,7 +899,6 @@ function debugViewer(notebookId: string): Response {
     const frameType = { presence: 0x04, sessionControl: 0x07 };
     const log = document.querySelector("#log");
     const catalog = document.querySelector("#catalog");
-    const events = document.querySelector("#events");
     const status = document.querySelector("#status");
     const urlCell = document.querySelector("#url");
     const base = new URL(location.href);
@@ -969,16 +925,10 @@ function debugViewer(notebookId: string): Response {
     });
     document.querySelector("#refresh").addEventListener("click", refreshCatalog);
     async function refreshCatalog() {
-      const [catalogResponse, eventsResponse] = await Promise.all([
-        fetch("/api/n/" + encodeURIComponent(notebookId)),
-        fetch("/api/n/" + encodeURIComponent(notebookId) + "/events?limit=10"),
-      ]);
+      const catalogResponse = await fetch("/api/n/" + encodeURIComponent(notebookId));
       catalog.textContent = catalogResponse.ok
         ? JSON.stringify(await catalogResponse.json(), null, 2)
         : "No catalog row yet";
-      events.textContent = eventsResponse.ok
-        ? JSON.stringify(await eventsResponse.json(), null, 2)
-        : "No room events yet";
     }
     refreshCatalog();
   </script>

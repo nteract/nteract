@@ -36,17 +36,6 @@ export interface BlobRow {
   uploaded_at: string;
 }
 
-export interface RoomEventRow {
-  id: string;
-  notebook_id: string;
-  peer_id: string;
-  actor_label: string;
-  connection_scope: string;
-  frame_type: number;
-  byte_length: number;
-  received_at: string;
-}
-
 const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS notebooks (
     id TEXT PRIMARY KEY,
@@ -75,17 +64,6 @@ const SCHEMA_STATEMENTS = [
     r2_key TEXT NOT NULL,
     uploaded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (notebook_id, hash),
-    FOREIGN KEY (notebook_id) REFERENCES notebooks(id)
-  )`,
-  `CREATE TABLE IF NOT EXISTS room_events (
-    id TEXT PRIMARY KEY,
-    notebook_id TEXT NOT NULL,
-    peer_id TEXT NOT NULL,
-    actor_label TEXT NOT NULL,
-    connection_scope TEXT NOT NULL,
-    frame_type INTEGER NOT NULL,
-    byte_length INTEGER NOT NULL,
-    received_at TEXT NOT NULL,
     FOREIGN KEY (notebook_id) REFERENCES notebooks(id)
   )`,
 ];
@@ -168,48 +146,6 @@ export async function ensureNotebook(
        ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at`,
   )
     .bind(notebookId, identity.principal, new Date().toISOString())
-    .run();
-}
-
-export async function recordRoomEvent(
-  env: Env,
-  event: {
-    notebookId: string;
-    peerId: string;
-    actorLabel: string;
-    connectionScope: string;
-    frameType: number;
-    byteLength: number;
-    receivedAt: string;
-  },
-): Promise<void> {
-  if (!env.DB) {
-    return;
-  }
-
-  await ensureCatalogSchema(env);
-  await env.DB.prepare(
-    `INSERT INTO room_events (
-       id,
-       notebook_id,
-       peer_id,
-       actor_label,
-       connection_scope,
-       frame_type,
-       byte_length,
-       received_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  )
-    .bind(
-      crypto.randomUUID(),
-      event.notebookId,
-      event.peerId,
-      event.actorLabel,
-      event.connectionScope,
-      event.frameType,
-      event.byteLength,
-      event.receivedAt,
-    )
     .run();
 }
 
@@ -346,36 +282,6 @@ export async function getNotebookCatalog(
     revisions: revisions.results ?? [],
     blobs: blobs.results ?? [],
   };
-}
-
-export async function listRoomEvents(
-  env: Env,
-  notebookId: string,
-  limit: number,
-): Promise<RoomEventRow[]> {
-  if (!env.DB) {
-    return [];
-  }
-
-  await ensureCatalogSchema(env);
-  const result = await env.DB.prepare(
-    `SELECT id,
-            notebook_id,
-            peer_id,
-            actor_label,
-            connection_scope,
-            frame_type,
-            byte_length,
-            received_at
-       FROM room_events
-       WHERE notebook_id = ?
-       ORDER BY received_at DESC
-       LIMIT ?`,
-  )
-    .bind(notebookId, limit)
-    .all<RoomEventRow>();
-
-  return result.results ?? [];
 }
 
 function encodePathComponent(value: string): string {

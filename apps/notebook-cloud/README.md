@@ -39,7 +39,6 @@ The smoke script proves:
 - Viewer-scope rejection for blob, request, and pool-state writes.
 - Explicit anonymous viewer identity (`anonymous:<session>/browser:<session>`).
 - Local-only anonymous presence: accepted to the sender, not broadcast or persisted.
-- D1 room-event readback.
 
 If the volatile frontend WASM package exists at `apps/notebook/src/wasm/runtimed-wasm`,
 the deeper roundtrip smoke sends real `runtimed-wasm` Automerge sync payloads through
@@ -181,16 +180,16 @@ Snapshot and blob reads are public in this prototype so `/n/:id` can act like a 
 Bindings in `wrangler.toml`:
 
 - `NOTEBOOK_ROOMS`: Durable Object namespace, one object per notebook id.
-- `DB`: D1 catalog for notebooks, revisions, blobs, and room event metadata.
+- `DB`: D1 catalog for notebooks, revisions, and blobs.
 - `NOTEBOOK_SNAPSHOTS`: R2 bucket for `NotebookDoc` snapshots, `RuntimeStateDoc` snapshots, generated render caches, and blobs.
 - `ASSETS`: Worker static assets for `/assets/notebook-cloud-viewer.js`, renderer chunks, and `/plugins/sift_wasm.wasm`.
 - `RENDERER_ASSETS_BASE_URL` (optional): base URL for renderer plugin assets such as `sift_wasm.wasm`. The prototype deployment points this at the dedicated `nteract-notebook-cloud-assets` Worker. If unset, the viewer uses the main Worker-owned `/renderer-assets/` route so sandboxed `srcdoc` iframes can fetch plugin WASM through explicit CORS headers.
 
 The dedicated renderer asset Worker serves only public, build-time sidecar files from the plugin asset bundle. It intentionally sends `Access-Control-Allow-Origin: *` so sandboxed `srcdoc` iframes with opaque origins can fetch renderer WASM. Do not serve authenticated, notebook-specific, or user-generated blobs from this origin; those belong behind the notebook host's blob resolver or a future signed output origin. Deploy the renderer asset Worker before the main Worker when `RENDERER_ASSETS_BASE_URL` points at the separate origin.
 
-Schema lives in `migrations/0001_initial.sql`. The Worker also creates the same tables lazily in local dev so the WebSocket path can run before applying migrations.
+Schema lives in `migrations/`. The Worker also creates the current catalog tables lazily in local dev so the WebSocket path can run before applying migrations.
 
-Accepted WebSocket frame payload caps mirror `notebook-wire` per-frame limits: Automerge sync and runtime-state frames may be up to 64 MiB, `PUT_BLOB` up to 32 MiB, request frames up to 16 MiB, and presence/pool-state/session-control frames up to 1 MiB. The Durable Object keeps only the latest 500 `frame:*` metadata entries in object storage; D1 room events are observability rows, not the replay log.
+Accepted WebSocket frame payload caps mirror `notebook-wire` per-frame limits: Automerge sync and runtime-state frames may be up to 64 MiB, `PUT_BLOB` up to 32 MiB, request frames up to 16 MiB, and presence/pool-state/session-control frames up to 1 MiB. The Durable Object keeps only the latest 500 `frame:*` metadata entries in object storage; D1 is not a frame replay log.
 
 Published revision artifacts follow `docs/architecture/hosted-notebook-artifacts.md`:
 
@@ -261,11 +260,10 @@ curl -X PUT "http://127.0.0.1:8787/api/n/demo/blobs/sha256abc" \
   --data-binary @output.bin
 ```
 
-Catalog and event readback:
+Catalog and render readback:
 
 ```bash
 curl "http://127.0.0.1:8787/api/n/demo"
-curl "http://127.0.0.1:8787/api/n/demo/events?limit=20"
 curl "http://127.0.0.1:8787/api/n/demo/render"
 ```
 
