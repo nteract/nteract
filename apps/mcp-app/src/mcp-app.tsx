@@ -13,6 +13,7 @@ import type { NteractContent } from "./types";
 import { Cell } from "./components/cell";
 import { SummaryHeader } from "./components/summary-header";
 import { hasRichOutput } from "./lib/rich-output";
+import { errorDetails, hostLog, setHostLogSink } from "./lib/host-log";
 
 /**
  * Collapse the widget to 0px when there's nothing to render.
@@ -32,6 +33,37 @@ function useCollapseWhenEmpty(hasCells: boolean) {
   }, [hasCells]);
 }
 
+function contentDetails(content: NteractContent | null): Record<string, unknown> {
+  const cells = content?.cells || (content?.cell ? [content.cell] : []);
+  const outputMimes = cells.flatMap((cell) =>
+    (cell.outputs ?? []).flatMap((output) => Object.keys(output.data ?? {})),
+  );
+
+  return {
+    cellCount: cells.length,
+    outputCount: cells.reduce((count, cell) => count + (cell.outputs?.length ?? 0), 0),
+    outputMimes,
+    hasBlobBaseUrl: typeof content?.blob_base_url === "string",
+  };
+}
+
+function layoutDetails(): Record<string, unknown> {
+  const html = document.documentElement;
+  const body = document.body;
+
+  return {
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+    documentRectHeight: Math.ceil(html.getBoundingClientRect().height),
+    documentScrollHeight: html.scrollHeight,
+    bodyRectHeight: Math.ceil(body.getBoundingClientRect().height),
+    bodyScrollHeight: body.scrollHeight,
+    htmlStyleHeight: html.style.height || null,
+    bodyStyleHeight: body.style.height || null,
+    bodyStyleOverflow: body.style.overflow || null,
+  };
+}
+
 function McpApp() {
   const [content, setContent] = useState<NteractContent | null>(null);
   const [allExpanded, setAllExpanded] = useState<boolean | null>(null);
@@ -41,7 +73,15 @@ function McpApp() {
 
     app.ontoolresult = (result: CallToolResult) => {
       const structured = result.structuredContent as NteractContent | undefined;
-      if (!structured) return;
+      if (!structured) {
+        hostLog("info", "tool-result-without-structured-content", {
+          contentItems: result.content?.length ?? 0,
+          isError: result.isError ?? false,
+          layout: layoutDetails(),
+        });
+        return;
+      }
+      hostLog("info", "tool-result-received", contentDetails(structured));
       setContent(structured);
       setAllExpanded(null); // Reset expand-all state for new content
     };
@@ -52,17 +92,41 @@ function McpApp() {
       if (ctx.styles?.css?.fonts) applyHostFonts(ctx.styles.css.fonts);
     };
 
-    app.onerror = console.error;
+    app.onerror = (error) => {
+      hostLog("error", "app-protocol-error", {
+        error: errorDetails(error),
+      });
+    };
 
     // Apply initial theme after connecting
-    app.connect().then(() => {
-      const ctx = app.getHostContext();
-      if (ctx?.theme) applyDocumentTheme(ctx.theme);
-      if (ctx?.styles?.variables) applyHostStyleVariables(ctx.styles.variables);
-      if (ctx?.styles?.css?.fonts) applyHostFonts(ctx.styles.css.fonts);
-    });
+    app
+      .connect()
+      .then(() => {
+        setHostLogSink({
+          sendLog: (params) => app.sendLog(params),
+        });
+        const ctx = app.getHostContext();
+        const capabilities = app.getHostCapabilities();
+        hostLog("info", "app-connected", {
+          host: app.getHostVersion(),
+          loggingAdvertised: capabilities?.logging !== undefined,
+          sandboxCsp: capabilities?.sandbox?.csp,
+          displayMode: ctx?.displayMode,
+          containerSize: ctx?.containerSize,
+        });
+        if (ctx?.theme) applyDocumentTheme(ctx.theme);
+        if (ctx?.styles?.variables) applyHostStyleVariables(ctx.styles.variables);
+        if (ctx?.styles?.css?.fonts) applyHostFonts(ctx.styles.css.fonts);
+      })
+      .catch((error) => {
+        hostLog("error", "app-connect-failed", {
+          error: errorDetails(error),
+        });
+      });
 
     return () => {
+      hostLog("debug", "app-dispose");
+      setHostLogSink(null);
       setContent(null);
     };
   }, []);
@@ -71,6 +135,16 @@ function McpApp() {
   const isMultiCell = cells.length > 1;
 
   useCollapseWhenEmpty(cells.length > 0);
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      hostLog("debug", "layout-measured", {
+        ...contentDetails(content),
+        layout: layoutDetails(),
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [content]);
 
   const blobBaseUrl = content?.blob_base_url;
 

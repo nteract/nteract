@@ -8,6 +8,7 @@ import { HtmlOutput } from "./html-output";
 import { ImageOutput } from "./image-output";
 import { JsonOutput } from "./json-output";
 import type { CellOutput } from "../types";
+import { errorDetails, hostLog, stringDetails } from "../lib/host-log";
 
 const ARROW_STREAM_MANIFEST_MIME = "application/vnd.nteract.arrow-stream-manifest+json";
 
@@ -19,9 +20,23 @@ interface MimeRendererProps {
 
 export function MimeRenderer({ data, blobBaseUrl }: MimeRendererProps) {
   const mime = selectMimeType(data);
-  if (!mime) return null;
-  const raw = data[mime];
-  if (raw == null) return null;
+  const raw = mime ? data[mime] : undefined;
+
+  useEffect(() => {
+    if (!mime) {
+      hostLog("warning", "mime-renderer-no-supported-mime", {
+        availableMimes: Object.keys(data),
+        hasBlobBaseUrl: blobBaseUrl !== undefined,
+      });
+    } else if (raw == null) {
+      hostLog("warning", "mime-renderer-missing-selected-data", {
+        mime,
+        availableMimes: Object.keys(data),
+      });
+    }
+  }, [data, mime, raw, blobBaseUrl]);
+
+  if (!mime || raw == null) return null;
 
   // Images: use blob URL directly as <img src>, no fetch needed
   if (mime.startsWith("image/") && mime !== "image/svg+xml") {
@@ -48,6 +63,13 @@ export function MimeRenderer({ data, blobBaseUrl }: MimeRendererProps) {
   return <FetchAndRender mime={mime} raw={String(raw)} plainFallback={plainFallback} />;
 }
 
+function outputValueDetails(value: string): Record<string, unknown> {
+  return {
+    isBlobUrl: isBlobUrl(value),
+    ...stringDetails(value),
+  };
+}
+
 /**
  * Load a daemon-served plugin via <script> tag and render data with it.
  * Loads plugin and fetches blob data in parallel.
@@ -69,6 +91,14 @@ function PluginRenderer({
 
   useEffect(() => {
     let cancelled = false;
+
+    hostLog("debug", "plugin-render-start", {
+      mime,
+      hasBlobBaseUrl: blobBaseUrl !== undefined,
+      raw: outputValueDetails(raw),
+      hasPlainFallback: plainFallback !== undefined,
+      plainFallbackIsBlobUrl: plainFallback ? isBlobUrl(plainFallback) : false,
+    });
 
     // Load plugin via <script> tag and fetch/parse data in parallel
     const pluginPromise = loadPluginForMime(mime, blobBaseUrl) ?? Promise.resolve();
@@ -93,6 +123,13 @@ function PluginRenderer({
     Promise.all([pluginPromise, dataPromise])
       .then(([, parsedData]) => {
         if (cancelled) return;
+        const hasRenderer = getPluginRenderer(mime) !== undefined;
+        hostLog(hasRenderer ? "info" : "error", "plugin-render-ready", {
+          mime,
+          hasRenderer,
+          dataType: typeof parsedData,
+          dataIsArray: Array.isArray(parsedData),
+        });
         setPluginReady(true);
         setData(
           mime === ARROW_STREAM_MANIFEST_MIME
@@ -100,14 +137,22 @@ function PluginRenderer({
             : parsedData,
         );
       })
-      .catch(() => {
+      .catch((error) => {
+        hostLog("error", "plugin-render-failed", {
+          mime,
+          blobBaseUrl,
+          raw: outputValueDetails(raw),
+          hasPlainFallback: plainFallback !== undefined,
+          plainFallbackIsBlobUrl: plainFallback ? isBlobUrl(plainFallback) : false,
+          error: errorDetails(error),
+        });
         if (!cancelled) setFailed(true);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [mime, raw, blobBaseUrl]);
+  }, [mime, raw, blobBaseUrl, plainFallback]);
 
   if (failed) {
     if (plainFallback) return <AnsiText text={plainFallback} />;
@@ -164,9 +209,18 @@ function FetchAndRender({
     if (isBlobUrl(raw)) {
       fetchBlobText(raw)
         .then(setContent)
-        .catch(() => setFailed(true));
+        .catch((error) => {
+          hostLog("error", "mime-blob-fetch-failed", {
+            mime,
+            raw: outputValueDetails(raw),
+            hasPlainFallback: plainFallback !== undefined,
+            plainFallbackIsBlobUrl: plainFallback ? isBlobUrl(plainFallback) : false,
+            error: errorDetails(error),
+          });
+          setFailed(true);
+        });
     }
-  }, [raw]);
+  }, [mime, raw, plainFallback]);
 
   if (failed) {
     if (plainFallback) return <AnsiText text={plainFallback} />;
@@ -197,7 +251,14 @@ export function StreamOutput({ output }: { output: CellOutput }) {
     if (isBlobUrl(raw)) {
       fetchBlobText(raw)
         .then(setText)
-        .catch(() => setText(raw));
+        .catch((error) => {
+          hostLog("error", "stream-blob-fetch-failed", {
+            streamName: output.name,
+            raw: outputValueDetails(raw),
+            error: errorDetails(error),
+          });
+          setText(raw);
+        });
     } else {
       setText(raw);
     }

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { AnsiText } from "./ansi-text";
 import { isBlobUrl } from "../lib/blob-fetch";
 import type { CellOutput } from "../types";
+import { errorDetails, hostLog, stringDetails } from "../lib/host-log";
 
 interface ErrorOutputProps {
   output: CellOutput;
@@ -23,7 +24,16 @@ export function ErrorOutput({ output }: ErrorOutputProps) {
         .then((lines: string[]) => {
           if (Array.isArray(lines)) setTracebackLines(lines);
         })
-        .catch(() => setFetchFailed(true));
+        .catch((error) => {
+          hostLog("error", "traceback-blob-fetch-failed", {
+            traceback: {
+              isBlobUrl: true,
+              ...stringDetails(tb),
+            },
+            error: errorDetails(error),
+          });
+          setFetchFailed(true);
+        });
     }
   }, [output.traceback]);
 
