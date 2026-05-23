@@ -9,7 +9,7 @@ The desktop notebook is a Tauri app: a Rust shell, a webview running React, and 
 Between the inbound frame and the on-screen pixel sit three reinforcing layers, all in `apps/notebook/src/`:
 
 1. **WASM peer** (`runtimed-wasm`). Owns a local `NotebookHandle` (Automerge document plus sync state). Decodes raw bytes into typed `FrameEvent`s, applies sync changes, emits a `CellChangeset` describing what changed at field granularity.
-2. **`SyncEngine`** (in the shared `runtimed` TS package). Single subscriber to the WASM demux output. Owns debounced outbound flush, coalescing of inbound changesets, and a bank of RxJS Observables, one per document concern (`cellChanges$`, `runtimeState$`, `executionViewChanges$`, `outputIdChanges$`, `poolState$`, `presence$`, `broadcasts$`, `sessionStatus$`, `initialSyncComplete$`).
+2. **`SyncEngine`** (in the shared `runtimed` TS package). Single subscriber to the WASM demux output. Owns debounced outbound flush, coalescing of inbound changesets, and a bank of RxJS Observables, one per document concern. The current set is: `cellChanges$`, `runtimeState$`, `executionViewChanges$`, `outputIdChanges$`, `poolState$`, `presence$`, `broadcasts$`, `sessionStatus$`, `initialSyncComplete$`, plus three the bridge does not (yet) subscribe to: `executionTransitions$`, `commBroadcasts$`, `commChanges$` (`packages/runtimed/src/sync-engine.ts:309, :334, :346`).
 3. **Sync store bridge** (`apps/notebook/src/lib/notebook-sync-store-bridge.ts`). One module-level subscriber that drains every engine Observable and writes into a set of `useSyncExternalStore`-backed stores. From here React reads through `useCell(id)`, `useCellIds()`, `useRuntimeState()`, `useOutputsVersion()`, etc.
 
 The bridge was extracted in commit `4baa957e` from `useAutomergeNotebook` (the hook that owns the WASM handle). Before extraction the subscription logic was inlined in a single `useEffect`, which meant unit tests had to spin up a React renderer to exercise materialization, and Rx errors surfaced as effect-cleanup races on unmount. The new shape is a plain TypeScript function whose surface is an options bag and a `{ resetReadiness, stop }` handle.
@@ -63,7 +63,7 @@ The bridge's responsibilities, in source order:
 - `outputIdChanges$` -> `applyOutputChangeset` (async; logged and swallowed on failure to keep the stream alive).
 - `poolState$` -> `setPoolState`.
 
-Cleanup is one `Subscription.unsubscribe()`. The bridge sets a `stopped` flag before tearing down so any async work in flight (`materializeChangeset`, `applyOutputChangeset`) checks it before writing to a store that may have been reset.
+Cleanup is one `Subscription.unsubscribe()`. The bridge sets a `stopped` flag before tearing down. `materializeChangeset` checks it before writing to a store; `applyOutputChangeset`'s subscription does **not** check `stopped` (`notebook-sync-store-bridge.ts:163`) — punchlist FSB-1 tracks adding either the guard or a structured retry. The hook's `useEffect` cleanup also calls `handleHost.clear()` (`useAutomergeNotebook.ts:326, :350`, `notebook-handle-host.ts:107, :121`), which nulls and frees the WASM handle. A subsequent re-mount creates a fresh peer, not a reused one.
 
 ### Why not just `useEffect` in the hook
 
@@ -159,7 +159,7 @@ This split is the reason an output flood in one cell does not re-render every ot
 
 ## Decision 6: Output area renders through the iframe boundary
 
-Output rendering goes through `IsolatedRendererProvider` (`src/components/outputs`). The boundary is real: every output renderer runs inside an iframe sandbox with its own React tree, its own plugin cache, and its own message-port-based blob resolver. Decision 2 exists in large part to keep this boundary intact across cell reorder.
+Output rendering goes through `IsolatedRendererProvider` (`src/components/isolated/isolated-renderer-context.tsx:46`, mounted at `apps/notebook/src/main.tsx:130`). The iframe itself is `IsolatedFrame` (`src/components/isolated/isolated-frame.tsx:281, :620`); the provider supplies it the renderer registry and host context. **Not every output runs in an iframe**: `OutputArea` (`src/components/cell/OutputArea.tsx:260, :268, :421`) only isolates when `shouldIsolate` is true. Stream output (stdout/stderr) and error tracebacks render in-page; rich MIME types (images, custom MIME, Sift tables, anywidget) take the sandbox path. The iframe boundary is real where it applies but not universal — Decision 2 exists in large part to keep it intact across cell reorder for the outputs that *do* use it.
 
 What that means for the bridge:
 

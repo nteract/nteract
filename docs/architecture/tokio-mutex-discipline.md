@@ -25,7 +25,7 @@ Three things shaped the rules:
 
 ## Decision 1: Tokio async-lock guards never live across `.await`
 
-A `tokio::sync::Mutex` guard or `tokio::sync::RwLock` read/write guard must be released before the next `.await` in the same scope. The lint accepts only one shape of compliance: drop the guard by leaving its block.
+A `tokio::sync::Mutex` guard or `tokio::sync::RwLock` read/write guard must be released before the next `.await` in the same scope. The lint accepts three shapes of compliance: leaving the guard's enclosing block, an explicit `drop(guard)` before the await, or shadowing the guard's binding. Project style prefers the block-scope shape for review-clarity reasons (see below), but all three structurally satisfy the lint.
 
 ```rust
 // OK - guard dropped at end of block, await happens after
@@ -79,7 +79,7 @@ In practice the daemon defaults to `std::sync::Mutex`. The handful of tokio lock
 | `crates/notebook-sync/src/handle.rs:73` | `std::sync::Mutex<SharedDocState>` | Automerge apply is sync; closure runs inside the scope; no `.await` inside |
 | `crates/runtime-doc/src/handle.rs` | `std::sync::Mutex` | Same shape as `DocHandle`: sync-only document mutation |
 | `crates/runtimed/src/notebook_sync_server/room.rs:345,357` | `std::sync::Mutex<Option<PersistDebouncer>>`, `std::sync::Mutex<HashMap<...>>` | Take channel handles or compare maps, sync only |
-| `crates/runtimed/src/jupyter_kernel.rs:327` | `Arc<tokio::sync::Mutex<StreamTerminals>>` | Held across async commits to the stream committer |
+| `crates/runtimed/src/jupyter_kernel.rs:327` | `Arc<tokio::sync::Mutex<StreamTerminals>>` | Owned by the kernel; the stream committer **drops the lock before awaiting `create_manifest_with_redactor`** (`stream_committer.rs:254-285, :327-337`) and reacquires after. The mutex is async only because IOPub-side push and commit-side flush want serialised mutation; the discipline holds. |
 | `crates/runtimed/src/daemon.rs:1097-1102` | `Arc<RwLock<...>>` for `settings`, `pool_doc` | Reads/writes from async tasks; both locks released in block scope before any await |
 | `crates/runtimed/src/notebook_sync_server/registry.rs` | `tokio::sync::Mutex` | Room registry mutation paired with async I/O |
 
@@ -153,7 +153,13 @@ What it does **not** check:
 4. **Parking lots and `lock_api`.** The lint targets tokio. `parking_lot::Mutex` is not async and not flagged. (It is also not currently used in the daemon.)
 5. **`std::sync::Mutex.lock().unwrap()`.** Not async, not flagged. Clippy has `clippy::await_holding_lock` for that; we leave it to clippy.
 
-The lint reached zero violations on 2026-04-08 (`runtimed/tests/tokio_mutex_lint.rs:8-12`) and CI keeps it there. New violations fail the test. Alternatives we considered:
+The lint reached zero violations on 2026-04-08 (`runtimed/tests/tokio_mutex_lint.rs:8-12`) and CI keeps it there. New violations fail the test.
+
+**Scope caveat: the lint does not recurse into subdirectories.** It uses `std::fs::read_dir(&src_dir)` with no recursion, where `src_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src")`. So only top-level files in `crates/runtimed/src/*.rs` are scanned. Subdirectory files including the entire `notebook_sync_server/` tree (`peer_loop.rs`, `peer_runtime_agent.rs`, `metadata.rs`, `room.rs`, `registry.rs`, `peer_writer.rs`, ~24 files), `runtime_agent/echo_suppression.rs`, and `requests/*.rs` are silently invisible to the lint. The "zero violations" claim is scoped to top-level files only. Several files cited elsewhere in this ADR — `room.rs`, `metadata.rs`, `registry.rs`, `peer_loop.rs`, `peer_runtime_agent.rs` — sit in subdirectories the lint never visits.
+
+Fixing the scope is a one-line `walkdir` change to `tokio_mutex_lint.rs`. It is on the cleanup punchlist as a Targeted PR.
+
+Alternatives we considered:
 
 - **Clippy `await_holding_lock`.** Catches `std::sync::Mutex`, not `tokio::sync::Mutex`. Wrong target.
 - **Custom rust-analyzer lint via `lints.toml`.** Did not exist as a stable API when we needed it. The async-rust-lsp tree-sitter rule did, and gave us the right semantics with a small dependency.
@@ -179,14 +185,15 @@ The runtime agent's loop is the model. Local state, channel-published deltas, ca
 
 ## Limitations
 
-The tokio mutex lint scans only `crates/runtimed/src/`. It does not scan:
+The tokio mutex lint scans only the top-level files of `crates/runtimed/src/`. It does not scan:
 
-- `crates/runtimed-client/`, `crates/runtimed-service/`, `crates/runtimed-py/`. The Python bindings hold async locks only inside `runtimed-py`'s pyo3 boundary, where the lint's structural matcher would not catch `dyn Future` returns anyway.
+- Subdirectories of `crates/runtimed/src/` (see the scope caveat in Decision 5). This is the most consequential gap because much of the daemon's async-lock surface lives there.
+- `crates/runtimed-client/`, `crates/runtimed-service/`, `crates/runtimed-py/`. **`runtimed-py`'s `session_core.rs` does hold `tokio::sync::Mutex<SessionState>` across awaited connection calls** outside the pyo3 wrapper (`crates/runtimed-py/src/session_core.rs:59-63, :214-240`); the lint does not see it.
 - `crates/notebook-sync/`. `DocHandle` uses `std::sync::Mutex` so the lint has no work to do there, but a future `tokio::sync::Mutex` in `sync_task.rs` would not be checked.
 - `crates/notebook-protocol/`, `crates/notebook-wire/`, `crates/notebook-doc/`. No async-lock usage today; nothing to scan.
 - The runtime agent uses `Arc<RwLock<PresenceState>>` (`runtime_agent.rs:110`). This is the one async RwLock in the agent's main file. The lint covers it.
 
-Extending the lint to additional crates is a small mechanical change to `tokio_mutex_lint.rs` (read multiple source roots, aggregate diagnostics). It has not been needed because tokio-mutex usage outside `runtimed/` is rare and reviewed.
+Extending the lint to subdirectories (`walkdir` instead of `read_dir`) and to additional crates (multiple source roots) is mechanical. It has not been done because the discipline has held under review; the lint-scope gap was surfaced while writing this ADR.
 
 Open gaps:
 

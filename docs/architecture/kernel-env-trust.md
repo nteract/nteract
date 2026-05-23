@@ -31,9 +31,11 @@ The constraints that shaped the design:
 `kernel-env` (`crates/kernel-env/src/`) is the layer that turns a declared dependency list into a working interpreter. Its surface is structural:
 
 - `UvDependencies`, `CondaDependencies`, `pixi::*` - parsed dep specs with optional pins, channels, and Python version.
-- `compute_unified_env_hash(deps, env_id)` - sha256 over sorted deps + resolver fields + per-notebook `env_id`, truncated to 16 hex chars.
-- `prepare_environment`, `prepare_environment_in` - install into a cache path keyed by that hash.
-- `UV_BASE_PACKAGES`, `CONDA_BASE_PACKAGES` - the constant set the daemon always installs alongside user deps (`ipykernel`, `ipywidgets`, `anywidget`, `nbformat`, `pyarrow>=14`, `uv`).
+- `kernel_env::uv::compute_unified_env_hash` and `kernel_env::conda::compute_unified_env_hash` - two ecosystem-specific functions (`crates/kernel-env/src/uv.rs:94`, `crates/kernel-env/src/conda.rs:99`). Each is sha256 over sorted deps + resolver fields + per-notebook `env_id`, truncated to 16 hex chars. These are the *unified* hash used by the captured-deps reopen path; the live `prepare_environment_in` cache path still uses the legacy `compute_env_hash` until callers are migrated (commented intent in `uv.rs:80-93`).
+- `prepare_environment`, `prepare_environment_in` - install into a cache path keyed by the per-ecosystem env hash.
+- `UV_BASE_PACKAGES` (`crates/kernel-env/src/uv.rs:71`) and `CONDA_BASE_PACKAGES` (`crates/kernel-env/src/conda.rs:57`) - two distinct constant sets:
+  - UV: `ipykernel`, `ipywidgets`, `anywidget`, `nbformat`, `pyarrow>=14`, `uv`.
+  - Conda: `ipykernel`, `ipywidgets`, `anywidget`, `pip`, `nbformat`, `pyarrow>=14`. Includes `pip`, omits `uv`.
 - `strip_base(installed, base)` - inverse function used at capture time to derive the user-intent dep set from a pool env's full install list.
 
 What `kernel-env` deliberately does not capture:
@@ -72,7 +74,11 @@ Four ecosystems are tracked: `pypi`, `conda`, `conda-channel`, `pixi-channel`. P
 - Strip extras and version operators (`requests[security]>=2` -> `requests`).
 - Lowercase, collapse `-`/`_`/`.` runs to a single `-`.
 
+These rules apply to **package** identities (the `pypi`, `conda` ecosystems, plus the pixi-pypi / pixi-conda mapping below). Channel identities (`conda-channel`, `pixi-channel`) are only `trim()`ed — case and separators are preserved (`trusted_packages.rs:278`). `conda-forge` and `Conda-Forge` are distinct channel rows; rename collisions matter at the channel layer in a way they do not for packages.
+
 The result is that the user approves `pandas` once and is covered for `pandas>=2`, `pandas[performance]`, `Pandas`, `pandas==2.1.0`, etc. The store is keyed by identity, not by spec.
+
+Pixi cross-ecosystem mapping: Pixi notebooks declare both conda-style and PyPI-style deps. The conda-style ones are recorded under the `conda` ecosystem; the PyPI-style ones under `pypi` (`trusted_packages.rs:243-244`). So approving `pandas` from a UV notebook *does* satisfy a Pixi notebook's `pypi` `pandas`; approving `pandas` from a Conda notebook also satisfies a Pixi notebook's `conda` `pandas`. The four ecosystem rows are the SQLite schema; the trust-namespace shape is closer to three (`pypi`, `conda`, plus channels).
 
 Filesystem hardening on Unix: the parent directory is created with mode `0o700` if the daemon created it, and the SQLite file itself is `chmod 0o600`. On Windows the file gets a DACL granting `SYSTEM`, the local admins group, and the owner. The store is owner-only.
 
@@ -93,9 +99,11 @@ The daemon does not crash on store failure. It logs the reason once at startup v
 - `Trusted` - every dep name and every channel in the declared lists is present in the local allowlist.
 - `Untrusted` - at least one name or channel is missing, or the allowlist could not be queried.
 
-There is no separate `NeedsApproval` state distinct from `Untrusted`. From the daemon's point of view, "the user has not approved this yet" and "the user has actively rejected this" are the same condition: deps are not in the allowlist. The frontend renders the same approval dialog in both cases; declining the dialog is the absence of an `ApproveTrust` request, not a recorded `Rejected` row.
+There is no `NeedsApproval` variant on `TrustStatus`. From the daemon's point of view, "the user has not approved this yet" and "the user has actively rejected this" are the same condition: deps are not in the allowlist. The frontend renders the same approval dialog in both cases; declining the dialog is the absence of an `ApproveTrust` request, not a recorded `Rejected` row.
 
-Trust is finalized by `finalize_trust_status(info, store)` in `crates/runtimed/src/notebook_sync_server/metadata.rs:1317`:
+The "needs approval" concept does exist as a **derived projection** on the persisted runtime-state, not as a separate enum state. `TrustRuntimeState.needs_approval` is a `bool` field on `RuntimeStateDoc.trust` (`crates/runtime-doc/src/doc.rs:244`), written by the daemon as `trust_needs_approval(&status)` = `!matches!(status, Trusted | NoDependencies)` (`metadata.rs:31, :84`). Persisted, but derived. The frontend reads `needs_approval` directly; it does not re-evaluate the enum.
+
+Trust is finalized by `finalize_trust_status(info, store)` in `crates/runtimed/src/notebook_sync_server/metadata.rs`:
 
 1. If `info.status == NoDependencies`, return `NoDependencies`.
 2. Otherwise ask the store `all_dependencies_approved(info)`:
@@ -103,11 +111,13 @@ Trust is finalized by `finalize_trust_status(info, store)` in `crates/runtimed/s
    - `Ok(false)` -> `Untrusted`.
    - `Err(_)` -> log a warn and return `Untrusted`. Fail-closed.
 
-The flow from declaration to verdict:
+The flow from declaration to verdict (the actual call order, `metadata.rs:1291`+):
 
-1. `runt_trust::extract_trust_info(metadata)` reads `metadata.runt.{uv,conda,pixi}` (with legacy `metadata.uv`/`metadata.conda` fallback) and returns a `TrustInfo` with raw dep lists and `status = NoDependencies | Untrusted`.
-2. `TrustedPackageStore::enrich_info(&mut info)` populates `approved_*_dependencies` and `approved_*_channels` with the subset that is already approved. These feed UI rendering ("3 of 5 approved").
-3. `finalize_trust_status(info, store)` returns the final verdict.
+1. `runt_trust::extract_trust_info(metadata)` reads `metadata.runt.{uv,conda,pixi}` (with legacy `metadata.uv`/`metadata.conda` fallback) and returns a `TrustInfo` with raw dep lists and a tentative `status`.
+2. `trust_state_from_metadata` calls `finalize_trust_status(info, store)` **first** — verdict is computed.
+3. `TrustedPackageStore::enrich_info(&mut info)` runs after, populating `approved_*_dependencies` and `approved_*_channels` with the subset that is already approved. These feed UI rendering ("3 of 5 approved").
+
+The order is verdict-then-enrichment, not enrichment-then-verdict. The two halves are independent: enrichment is purely for the UI surface; the verdict is what the launch gate consults.
 
 The verdict is cached on the room (`room.trust_state: RwLock<TrustState>`) and re-derived on every notebook sync message via `check_and_update_trust_state` (`metadata.rs:992`). Whenever the verdict changes, the daemon writes a `TrustRuntimeState` into RuntimeStateDoc.
 
@@ -141,8 +151,19 @@ The approval surface is the `NotebookRequest::ApproveTrust` RPC (`crates/runtime
 
 1. Reads the current NotebookDoc metadata snapshot.
 2. If the caller passed `observed_heads`, validates that the dep list at those heads matches the current dep list. This prevents the "I approved a different set of deps than what is in the doc now" race when a collaborator edits deps while the dialog is open. Mismatch yields `GuardRejected { reason: "Dependencies changed while the trust dialog was open. Review before approving." }`.
-3. Calls `TrustedPackageStore::add_from_info(&info, "trust_dialog")`. This inserts the normalized identities; existing rows have their `approved_at` and `source` columns updated via `ON CONFLICT DO UPDATE`.
+3. Calls `TrustedPackageStore::add_from_info(&info, "trust_dialog")`. This inserts the normalized identities; existing rows have their `approved_at` and `source` columns updated via `ON CONFLICT DO UPDATE` (`trusted_packages.rs:99-101`).
 4. Broadcasts a sync state change and calls `check_and_update_trust_state(room)` so the new verdict lands in RuntimeStateDoc immediately.
+
+Not every approval entry point runs all four steps. The four sources in the store are `trust_dialog`, `daemon-default`, `mcp_create_notebook`, `project_env_dialog`. The differences:
+
+| Entry | Allowlist write | Broadcast / recheck | Conflict policy |
+|---|---|---|---|
+| `ApproveTrust` (dialog) | yes | yes | `ON CONFLICT DO UPDATE` |
+| `seed_trust_from_doc_metadata` (MCP) | yes | yes (via subsequent notebook-doc frame) | `ON CONFLICT DO UPDATE` |
+| `seed_defaults` (startup) | yes, scoped to `pypi` and `conda` only (not channels) | no (no room exists at startup) | `ON CONFLICT DO NOTHING` so user approvals are preserved (`trusted_packages.rs:171`) |
+| `ApproveProjectEnvironment` (`environment.yml`) | yes | **no broadcast, no recheck** (`approve_project_environment.rs:38`) | `ON CONFLICT DO UPDATE` |
+
+`ApproveProjectEnvironment` not triggering a recheck means the user has to send a subsequent sync-driving action (cell edit, refresh) before the verdict updates. Worth flagging.
 
 The notebook doc is not mutated. The allowlist is the source of truth; the doc only declares what is wanted. Two implications:
 
@@ -188,7 +209,7 @@ The hot-sync flow at room eviction (the daemon flushing post-launch deps that we
 
 ## Decision 8: Environment cache identity is independent of trust
 
-The cache-path hash from `compute_unified_env_hash` is content-addressed: same deps + same `env_id` -> same path on disk. Trust does not participate in the hash.
+The cache-path hash is content-addressed: same deps + same `env_id` -> same path on disk. Today the live `prepare_environment_in` path uses the legacy `compute_env_hash` (see Decision 1); the newer `compute_unified_env_hash` flows through the captured-deps reopen path. Trust does not participate in either hash.
 
 This is deliberate. A trusted env and an untrusted env with the same dep set are byte-identical on disk; deduplicating them by hash saves space and avoids two prepare runs of the same packages. Trust gates the *act of preparing or launching*, not the *storage layout*. The result: a user on machine A who approves `pandas` and a user on machine B who has not yet approved `pandas` end up with the same hash if they ever do approve. Re-approval does not invalidate the on-disk env.
 
@@ -232,7 +253,7 @@ The notebook doc is unchanged. There is no field that says "this notebook is tru
 
 1. Claude calls `create_notebook(path, dependencies=["polars"])` via MCP.
 2. The user explicitly typed `polars` into the prompt. That typing is the consent.
-3. The daemon creates the notebook with `metadata.runt.uv.dependencies = ["polars"]`, then calls `seed_trust_from_doc_metadata(room, "mcp:create_notebook")`. The allowlist now has `(pypi, polars, ..., mcp:create_notebook)`.
+3. The daemon creates the notebook with `metadata.runt.uv.dependencies = ["polars"]`, then calls `seed_trust_from_doc_metadata(room, "mcp_create_notebook")`. The allowlist now has `(pypi, polars, ..., mcp_create_notebook)`.
 4. First sync message triggers `check_and_update_trust_state` -> `Trusted`.
 5. Auto-launch proceeds. No dialog appears.
 

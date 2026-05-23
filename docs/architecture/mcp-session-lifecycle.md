@@ -22,7 +22,7 @@ The MCP server is the only place all three meet. Tool calls are stateful by conv
 
 The shape that fell out:
 
-- A **proxy** (`runt-mcp-proxy`, also embedded by `mcp-supervisor` in dev) owns the child process and the daemon-version transition.
+- A **supervisor** (`mcp-supervisor` in dev — the stdio entry the MCP client actually connects to) owns the child process and the daemon-version transition. Internally it uses `McpProxy` (the `runt-mcp-proxy` crate, a library) to drive the child-monitor loop and to assemble the reconnection banner; `runt-mcp-proxy` is not a binary the MCP client spawns directly.
 - A **child** (`runt-mcp`, the `runt mcp` subcommand) holds the single active `NotebookSession` and runs the watch loop.
 - The **daemon** holds the room and runs the ghost-room reaper.
 
@@ -37,7 +37,8 @@ The MCP server has three processes / loops with disjoint lifetimes:
 ```
 [MCP client]            (stdio)
     |
-[runt-mcp-proxy]        Process supervisor. Owns the child process.
+[mcp-supervisor]        Process supervisor. Owns the child process.
+                        (Uses runt-mcp-proxy as a library for monitor + banner.)
     | tracks: last_notebook_id, last_daemon_version, restart_count
     | does:   spawn child, monitor transport, restart on EOF or EX_TEMPFAIL,
     |         seed NTERACT_MCP_REJOIN_NOTEBOOK, prepend reconnection banner
@@ -209,7 +210,7 @@ When a tool call lands and finds `session = None`, the error has to tell the age
 |--------|---------------|----------|
 | `Switched` | Agent called `connect_notebook` on a different notebook | Park slot may still have the previous one; call `connect_notebook` again with the old `notebook_id` |
 | `Evicted` | Room was reaped by the ghost-room sweep or evicted in `list_rooms` check | Notebook is gone; create a new one or open the file |
-| `Disconnected` | Daemon went away and rejoin failed | Wait for daemon to come back; the watch loop will retry on next `Connected` |
+| `Disconnected` | Daemon went away and rejoin failed; **also** set on user-initiated `disconnect_notebook` and on the immediate clear when `MarkDisconnected` fires (before any rejoin retry runs) | Wait for daemon to come back; the watch loop will retry on next `Connected`. For the user-initiated case there is no retry. |
 
 The error message is generated at the point of tool failure (`no_session_error()`), so the agent sees a reason that matches *the most recent* drop. The drop info is best-effort: if the session is cleared twice (e.g., disconnect followed by an evict on rejoin), the second one overwrites the first. The previous `notebook_id` and `notebook_path` are kept so the recovery message can name what was lost.
 
@@ -231,7 +232,7 @@ The error message is generated at the point of tool failure (`no_session_error()
 3. Watch loop classifies as `Exit(75)`. Process exits with `EX_TEMPFAIL`.
 4. Proxy's child monitor sees the transport close, calls `restart_child()`. Re-resolves the child binary (picks up new symlink target after upgrade), seeds `NTERACT_MCP_REJOIN_NOTEBOOK = <last_notebook_id>`, spawns the new child.
 5. New child's watch loop sees `initial_target = Some(<id>)`. On first `Connected`, classifies as `RejoinInitial`, runs `rejoin()`, installs new `NotebookSession`. Same `notebook_id`, fresh `DocHandle`.
-6. Proxy detects the daemon-version change across the child boundary (compares `ServerInfo.title` of old vs new child) and stamps a reconnection banner: `[nteract] Daemon upgraded (2.1.2 → 2.1.3); session re-established.`
+6. Supervisor detects the daemon-version change across the child boundary (compares `ServerInfo.title` of old vs new child) and stamps a reconnection banner. The actual string is `Daemon upgraded (2.1.2 -> 2.1.3), session reconnected` (`crates/runt-mcp-proxy/src/version.rs:35`), and it fires whenever `rejoin_target.is_some()`, before the rejoin's success is known.
 7. The agent's next tool result has the banner prepended. The agent sees one message; underneath, the child has been completely replaced.
 
 ### Last peer leaves, comes back during teardown
@@ -265,7 +266,7 @@ These are the architectural gaps surfaced while writing this ADR. None block the
 
 1. **Concurrent MCP clients per child process.** The session state is `Arc<RwLock<Option<NotebookSession>>>` - one slot. The "north star" line in the skill is "multiple concurrent MCP clients against the same daemon," and today's answer is "run one child per client" (attach mode). If two MCP clients ever share a child, every tool call needs a `notebook_id` parameter, the `require_handle!` macro needs notebook routing, and the proxy needs a session registry instead of `last_notebook_id`. Open question: do we ever want this, or is the attach-mode "one child per client, share the daemon" pattern enough?
 
-2. **Per-MCP-client peer identity.** Today every child connects to a room as a single peer with a single peer label (`runt-mcp:<pid>` or similar). If multiple clients share a child, they need distinct peer identities so presence works and so attribution is honest. This ties directly into Decision 1 of `identity-and-trust.md` (operator-per-actor labels), but the wiring from "MCP client identity" to "actor label" does not exist yet.
+2. **Per-MCP-client peer identity.** Today every child connects to a room as a single peer with a single peer label. The default is `"Inkwell"`, optionally overridden by the upstream MCP client's `Implementation.name` (e.g., `"Claude Code"`) - see `crates/runt-mcp/src/lib.rs:56-57, :83, :245-255`. If multiple clients share a child, they need distinct peer identities so presence works and attribution is honest. This ties directly into Decision 1 of `identity-and-trust.md` (operator-per-actor labels), but the wiring from "MCP client identity" to "actor label" does not exist yet.
 
 3. **Daemon ownership across attach/owner boundaries.** Attach-mode children do not know who owns the daemon. If the owner exits cleanly, the daemon may or may not exit too depending on whether anyone else is connected. There is no protocol-level "I am the owner, I am exiting now" signal. Today this is fine because the user is responsible for noticing. As we ship more agents that auto-spawn MCP clients, the implicit "first wins, others attach" rule will get racy.
 
