@@ -164,8 +164,8 @@ decision for public viewer presence is settled.
 
 ## Non-Goals
 
-- This ADR does not define ACL semantics; that belongs with identity and room
-  authorization.
+- This ADR does not define ACL semantics; hosted ACL shape and public-read
+  behavior live in `docs/architecture/hosted-room-authorization.md`.
 - This ADR does not require hosted rooms to run kernels. Runtime snapshots can
   be imported from a local daemon or future remote runtime peer.
 - This ADR does not define the final blob origin. `/api/n/:id/blobs/:hash` is a

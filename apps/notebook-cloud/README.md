@@ -271,6 +271,10 @@ curl "http://127.0.0.1:8787/api/n/demo/render"
 
 ## Next integration steps
 
-1. Move the Durable Object from byte relay to a real `runtimed-wasm` room peer.
-2. Publish a full Sift/Arrow fixture and verify blob-backed table rendering.
-3. Swap dev auth for OIDC/JupyterHub providers using the `nteract-identity` model.
+1. Land the hosted-room authorization plan in
+   `docs/architecture/hosted-room-authorization.md`.
+2. Add D1-backed ACL lookup so deployed scope comes from room grants, not dev
+   auth request parameters.
+3. Make public anonymous viewing an explicit ACL row.
+4. Move the Durable Object from byte relay to a real `runtimed-wasm` room peer.
+5. Swap dev auth for OIDC/JupyterHub providers using the `nteract-identity` model.

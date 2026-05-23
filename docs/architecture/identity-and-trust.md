@@ -70,14 +70,19 @@ Three properties fall out:
 
 1. Connection opens. Listener extracts a credential; the IdP validates it and yields a principal.
 2. Room-host looks up the principal in the ACL.
-3. If the principal is in the ACL, the connection inherits the ACL-stated scope. If not, the connection is rejected (or downgraded to anonymous `viewer` if the ACL has a public-read entry).
+3. If the principal is in the ACL, the connection inherits the ACL-stated scope. If not, the connection is rejected. An unauthenticated request may receive anonymous `viewer` scope when the room has a public-read ACL entry.
 4. The connection's `AuthenticatedConnection` carries that principal and scope for the life of the socket.
 
 What this changes from the older framing: rooms are no longer implicitly scoped to one IdP's principal space. They authenticate principals from whatever IdPs the host validates against, and the per-room ACL is the source of truth for who can do what. v1 enforces per-frame actor labels with a clone-preview validator before applying inbound `NotebookDoc` and `RuntimeStateDoc` sync frames. The Automerge fork patch tracked in `docs/architecture/automerge-fork-patches.md` remains the intended lower-cost replacement for that validator.
 
-### ACL mechanics (deferred)
+### ACL mechanics
 
-The minimum v1 ACL is a flat `Vec<(Principal, Scope)>`. The specifics of ACL editing (which principals may add/remove others), inheritance from a containing org, group expansion, anonymous public-read, and ACL persistence are deferred to a follow-up ADR. The protocol shape locked here is: rooms have ACLs, ACLs reference principals, principals authenticate against the host's configured IdPs.
+The minimum v1 ACL is a flat mapping from subject to scope. The hosted
+Cloudflare shape, including D1 rows, public-read entries, and scope derivation,
+is drafted in `docs/architecture/hosted-room-authorization.md`. The protocol
+shape locked here is: rooms have ACLs, ACLs reference principals or explicit
+public-read subjects, principals authenticate against the host's configured
+IdPs, and the room ACL is the source of truth for the connection scope.
 
 ## Decision 3: Authentication at connect, scope checks per frame
 
@@ -85,7 +90,7 @@ Authentication is connection-scoped. The IdP (Identity Provider) is consulted at
 
 1. Connection opens. Listener extracts the credential (bearer JWT for OIDC/Anaconda, cookie/OAuth token for JupyterHub, peer creds for Unix socket).
 2. Identity provider validates the credential. One round-trip (JWKS fetch for OIDC is cached; `/hub/api/user` for JupyterHub; userinfo for Anaconda).
-3. Room-host looks the validated principal up in the room's ACL. If present, the connection inherits the ACL scope; if absent, the connection is rejected (or downgraded to `viewer` if the ACL has a public-read entry).
+3. Room-host looks the validated principal up in the room's ACL. If present, the connection inherits the ACL scope; if absent, the connection is rejected. Unauthenticated requests may receive anonymous `viewer` scope when the room has a public-read ACL entry, such as the D1 public-read row defined in `hosted-room-authorization.md` for hosted rooms.
 4. Validation yields an `AuthenticatedConnection { principal, scope, allowed_operator_kinds }` in server memory, scoped to this socket.
 5. Handshake response includes the assembled actor label so the client knows what to author as.
 6. Every subsequent frame is checked against `AuthenticatedConnection.scope` for **scope-level legality** at the frame layer (frame type and emptiness of `Message.changes`). Inbound frames that carry changes are also applied to a cloned document first so the room-host can extract new change actors and reject principal forgery before mutating the real room document.
@@ -247,19 +252,19 @@ A connection carries exactly one scope, determined at authentication time. The f
 
 - `viewer` - read-only. May send and receive sync, presence, and session-control frames, **but inbound sync frames must carry no changes**. Automerge sync is bidirectional even when the client never authors: a read-only consumer still negotiates heads/have/need with the server, applies incoming changes from the server, and produces reply frames (see `crates/notebook-sync/src/sync_task.rs:680-724`). The trust gate rejects any inbound `0x00` or `0x05` frame from a viewer connection whose `Message.changes` is non-empty; empty negotiation frames pass. Request frames are limited to read-only operations. The server's outbound to the viewer is unrestricted.
   - Note on the upstream Automerge `read_only` API: `State::new_read_only()` and `MessageFlags::READ_ONLY` are **not** the right primitive here. Upstream `read_only` means "the holder of this state will not apply incoming changes but will still send its own" (publish-only semantics; see `rust/automerge/src/sync.rs:408` and `rust/automerge/src/sync/state.rs:65-67`). The viewer's read-only-ness is a server-side authorization policy enforced at ingress, not an Automerge sync-state mode.
-- `editor` - full live edit on `NotebookDoc`, plus a narrow allowed-write surface on `RuntimeStateDoc` for widget comm state. The widget surface is `doc.comms/*/state/*`, mediated client-side by the approved comm writer (`apps/notebook/src/App.tsx:465-477`, `set_comm_state_batch` + `triggerSync`). The daemon already accepts these writes (`crates/runtimed/src/notebook_sync_server/peer_runtime_sync.rs`). Outside that subtree, editor `RuntimeStateDoc` writes are rejected. v1 enforces the subtree client-side (via the comm-writer interface) and at the server only by scope; path-level server enforcement of the `doc.comms/*/state/*` subtree is future hardening.
+- `editor` - full live edit on `NotebookDoc`, plus a narrow allowed-write surface on `RuntimeStateDoc` for widget comm state. The widget surface is `doc.comms/*/state/*`, mediated client-side by the approved comm writer (`apps/notebook/src/App.tsx:465-477`, `set_comm_state_batch` + `triggerSync`). The daemon already accepts these writes (`crates/runtimed/src/notebook_sync_server/peer_runtime_sync.rs`). Outside that subtree, editor `RuntimeStateDoc` writes are rejected. The local same-UID daemon enforces the subtree client-side (via the comm-writer interface) and at the server only by scope; hosted multi-user rooms must add server-side `doc.comms/*/state/*` path enforcement before exposing editor-scope WebSockets to untrusted clients.
 - `runtime_peer` - permitted to write `RuntimeStateDoc` and emit kernel lifecycle broadcasts. Cannot edit `NotebookDoc`. Used by future remote-runtime services and by JupyterHub-spawned room-hosts when they connect a kernel.
 - `owner` - editor plus publish-revisions and manage-ACL requests.
 
 ### Where scope comes from
 
-Scope is determined by intersecting two sources: what the IdP says about the user (claims/roles in the validated credential) and what the room's ACL says about the principal. The narrower of the two wins. A principal that the IdP marks as `editor` but the ACL marks as `viewer` is a viewer in that room. A principal not present in the ACL at all is rejected at connection time (or downgraded to anonymous viewer if the ACL contains a public-read entry).
+Scope is determined by intersecting two sources: what the IdP says about the user (claims/roles in the validated credential) and what the room's ACL says about the principal. The narrower of the two wins. A principal that the IdP marks as `editor` but the ACL marks as `viewer` is a viewer in that room. A principal not present in the ACL at all is rejected at connection time. Anonymous viewer access is only considered for unauthenticated requests when the room contains a public-read entry.
 
 ### Scope enforcement points
 
 Scope is enforced server-side at three points, each with a clear boundary:
 
-1. **Frame ingress** (in `peer_notebook_sync.rs::handle_notebook_doc_frame` and equivalents): the validator already runs here. Extend it to consult `AuthenticatedConnection.scope` and reject frames that exceed the scope: viewer with non-empty changes on any doc, runtime_peer sending changes to `NotebookDoc`. Editor writes pass at the frame layer for both docs; the `RuntimeStateDoc` subtree restriction is enforced client-side via the comm-writer interface in v1 and is a candidate for server-side path enforcement later.
+1. **Frame ingress** (in `peer_notebook_sync.rs::handle_notebook_doc_frame` and equivalents): the validator already runs here. Extend it to consult `AuthenticatedConnection.scope` and reject frames that exceed the scope: viewer with non-empty changes on any doc, runtime_peer sending changes to `NotebookDoc`. Editor writes pass at the frame layer for both docs in the local same-UID daemon. Hosted multi-user rooms must additionally validate that editor `RuntimeStateDoc` changes touch only `doc.comms/*/state/*` before enabling untrusted editor clients.
 2. **Request dispatch**: each `NotebookRequest` variant declares its minimum required scope via an annotation or registry lookup. The request handler rejects with a typed `Unauthorized` response before any side effect. New scope-gated requests declare their requirement at the definition site; no scattered `if scope == ...` checks elsewhere.
 3. **ACL mutations** are owner-only. The room-host enforces this at the request-dispatch layer; no in-band ACL change is honored from a non-owner connection.
 
@@ -327,7 +332,7 @@ These follow-up ADRs and design decisions are tracked but not decided here:
 6. **Federation.** A notebook host trusting another notebook host's identity claims (e.g., JupyterHub Anaconda interop). Not v1.
 7. **`runtime_peer` connection topology.** Whether the kernel sidecar connects to the room directly with its own `runtime_peer` scope credential, or whether a separate runtime-coordination protocol relays writes. Tied to the future remote-runtime work.
 8. **Deployment topology.** How clients reach rooms (browser-direct WebSocket, local-daemon proxy, native client), where kernels run, TLS/CORS, credential keyring placement. Drafted in `docs/architecture/deployment-topology.md`.
-9. **ACL mechanics.** Editing semantics, owner transfer, group/org principals, anonymous public-read entries, persistence layout. Drafted in a separate ACL ADR (to be written).
+9. **ACL mechanics beyond the Cloudflare v1 shape.** `docs/architecture/hosted-room-authorization.md` defines the first D1-backed ACL shape. Still open: owner transfer UX, group/org expansion, inherited ACLs, and product policy for anonymous public presence.
 10. **Signed-change authorship across publish.** When Automerge gains signed changes (keyhive direction), publish flows could carry historical authorship across identity spaces with cryptographic verification. Until then, publish produces a fresh document in the destination space (see Decision 6).
 11. **Bearer-token replay mitigation.** DPoP / proof-of-possession tokens, mTLS for system-to-system, short token lifetimes. v1 inherits the bearer-token threat model; tightening it is future work.
 12. **Lower-cost actor-label validator.** Replace the v1 clone-preview validator with parsing of `automerge::sync::Message.changes` chunks (V1 and V2) before merge to reject changes whose actor's principal doesn't match the connection's authenticated principal. Deferred until we land a patch on our Automerge fork as part of the room-host crate extraction. Drafted in `docs/architecture/automerge-fork-patches.md`. Pairs with the filters work above for full attribution integrity once both are in.
