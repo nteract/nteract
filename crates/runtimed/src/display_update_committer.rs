@@ -47,6 +47,16 @@ pub(crate) struct DisplayUpdateCommitterHandle {
 }
 
 impl DisplayUpdateCommitterHandle {
+    /// Queue an `UpdateDisplayData` for coalesced commit.
+    ///
+    /// Per-`display_id` semantics: the pending map keeps the **latest** value
+    /// per id. A new request for an existing `display_id` overwrites the
+    /// previous `data`, `metadata`, **and `buffers`** — the earlier binary
+    /// buffers are dropped along with the earlier data. Correct under the
+    /// "only the latest update matters" semantics of
+    /// `update_display_data`, but the contract is implicit; making it
+    /// explicit here so a future reader does not assume buffers accumulate.
+    /// Punchlist EP-7.
     pub(crate) fn request_update(
         &self,
         display_id: String,
@@ -246,6 +256,10 @@ pub(crate) fn start_display_update_committer(
     });
     let (priority_tx, priority_rx) = mpsc::unbounded_channel();
     let worker_pending = pending.clone();
+    // Panic in the display-update committer also produces a `KernelDied`
+    // signal — same rationale as the stream committer: pending updates are
+    // lost, the queue must release. The runtime agent treats this identically
+    // to an IOPub-disconnect KernelDied. Punchlist EP-12.
     spawn_supervised(
         "display-update-committer",
         run_display_update_committer(

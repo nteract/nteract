@@ -224,6 +224,11 @@ pub(crate) fn start_stream_committer(
         lifecycle_tx: lifecycle_tx.clone(),
         output_redactor,
     };
+    // If the committer task panics, route `KernelDied` to the lifecycle
+    // channel so the queue releases. The runtime agent treats this signal
+    // as terminal in the same way it does an IOPub-disconnect KernelDied:
+    // the durable record was the previous output write, anything after the
+    // panic is lost, and the queue must not stay stuck. Punchlist EP-12.
     spawn_supervised(
         "stream-committer",
         run_stream_committer(periodic_rx, priority_rx, context),

@@ -325,6 +325,11 @@ fn route_incoming_frame(
 ///
 /// Request and PutBlob frames are never piped outbound to the frontend — the
 /// frontend sends them; the daemon never emits them to a client.
+///
+/// Distinct from the daemon's CLI "pipe mode"
+/// (`crates/runtimed/tests/integration.rs::test_pipe_mode_only_pipes_allowed_frame_types`),
+/// which is a debug tap that intentionally drops `Response`. Same verb, two
+/// different audiences. Punchlist WP-5.
 fn pipe_frame(frame_tx: &mpsc::UnboundedSender<Vec<u8>>, frame: &connection::TypedNotebookFrame) {
     match frame.frame_type {
         NotebookFrameType::AutomergeSync

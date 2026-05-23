@@ -140,6 +140,12 @@ pub(crate) fn extract_buffer_paths(data: &serde_json::Value) -> Vec<Vec<String>>
 /// `{"$blob": "<hash>"}` sentinels. This prevents catastrophically slow
 /// Automerge writes for large state (e.g., anywidget `_esm` JS bundles,
 /// Vega-Lite `spec` dicts with embedded datasets).
+///
+/// This is **independent** from `output_store::DEFAULT_INLINE_THRESHOLD`.
+/// Both happen to be 1024 today but they govern different decisions: this
+/// threshold decides comm-state externalization, the other decides text
+/// MIME inline-vs-blob in output manifests. A future tune to one will not
+/// move the other unless they are explicitly aligned. Punchlist BS-11.
 const COMM_STATE_BLOB_THRESHOLD: usize = 1024;
 
 /// Scan the top-level properties of a comm state object and replace any
