@@ -4,7 +4,7 @@ This app is a Cloudflare Worker prototype for hosted nteract notebook rooms. It 
 
 The current Durable Object does not host kernels and does not parse Automerge sync messages. It enforces connection scope, rewrites canonical CBOR presence through the shared `runtimed-wasm` helper, stores bounded frame metadata, and broadcasts accepted binary typed frames to other peers in the same room.
 
-`/n/:notebookId` is now a public read-only notebook viewer. The durable source of truth is a persisted `NotebookDoc` + `RuntimeStateDoc` snapshot pair in R2; `/api/n/:id/render` materializes that pair with `NotebookHandle.load_snapshot()` when a render cache is absent. Output blob refs stay host-neutral and are mapped to `/api/n/:id/blobs/:hash` through the shared `BlobResolver` surface. The browser viewer bundle uses the shared notebook display components (`CellContainer`, `OutputArea`, `ReadOnlyCodeMirror`, `MediaProvider`) so published source, markdown, stdout/stderr, rich display data, and blob-backed renderer manifests go through the same isolated output renderer path as the desktop notebook.
+`/n/:notebookId` is now a public read-only notebook viewer. The durable source of truth is a persisted `NotebookDoc` + `RuntimeStateDoc` snapshot pair in R2; `/api/n/:id/render` materializes that pair with `NotebookHandle.load_snapshot()` when a render cache is absent. Snapshot-pair publishes also pre-materialize the render cache before recording the catalog revision, so missing runtime snapshots, corrupt snapshot bytes, or missing output blobs fail the publish request instead of advertising a broken revision. Output blob refs stay host-neutral and are mapped to `/api/n/:id/blobs/:hash` through the shared `BlobResolver` surface. The browser viewer bundle uses the shared notebook display components (`CellContainer`, `OutputArea`, `ReadOnlyCodeMirror`, `MediaProvider`) so published source, markdown, stdout/stderr, rich display data, and blob-backed renderer manifests go through the same isolated output renderer path as the desktop notebook.
 
 ## Local dev
 
@@ -159,7 +159,10 @@ n/{id}/blobs/{sha256}
 n/{id}/renders/{notebookHeadsHash}.json
 ```
 
-The render path is optional. If it is missing, the Worker loads the snapshot pair through `runtimed-wasm` and returns a materialized render response.
+The render path is derived. Snapshot-pair publishes pre-materialize it to prove
+the pair and all referenced blobs are complete before recording a revision. If
+the render object is later missing, the Worker can load the snapshot pair
+through `runtimed-wasm` and regenerate the materialized render response.
 
 ## Prototype deployment
 

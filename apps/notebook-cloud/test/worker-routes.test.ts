@@ -16,7 +16,7 @@ import type {
   R2PutOptions,
 } from "../src/cloudflare-types.ts";
 import { initializeRuntimedWasm } from "../src/runtimed-wasm.ts";
-import { renderKey } from "../src/storage.ts";
+import { renderKey, snapshotKey } from "../src/storage.ts";
 
 const wasmBytes = await readFile(
   new URL("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm", import.meta.url),
@@ -155,6 +155,11 @@ describe("Worker artifact routes", () => {
       },
     );
     assert.equal(notebookPut.status, 201);
+    assert.equal(
+      env.NOTEBOOK_SNAPSHOTS.objects.has(renderKey("route-demo", "heads-fixture")),
+      true,
+      "snapshot publish should pre-materialize a render cache for complete snapshot pairs",
+    );
 
     const response = await worker.fetch(
       new Request("http://localhost/api/n/route-demo/render"),
@@ -184,7 +189,37 @@ describe("Worker artifact routes", () => {
     );
   });
 
-  it("returns a structured error when persisted snapshots cannot be materialized", async () => {
+  it("rejects snapshot publish when the referenced runtime snapshot is missing", async () => {
+    const env = fakeEnv();
+    const notebookBytes = await readFile(
+      new URL(
+        "../../../packages/runtimed/tests/fixtures/output_streaming/doc.bin",
+        import.meta.url,
+      ),
+    );
+
+    const response = await ownerPut(
+      env,
+      "/api/n/missing-runtime-demo/snapshots/heads-fixture",
+      notebookBytes,
+      {
+        "X-Runtime-Heads-Hash": "runtime-missing",
+      },
+    );
+
+    assert.equal(response.status, 424);
+    const body = (await response.json()) as { error: string; runtime_heads_hash: string };
+    assert.equal(body.error, "snapshot publish missing runtime-state snapshot");
+    assert.equal(body.runtime_heads_hash, "runtime-missing");
+    assert.equal(env.DB.revisions.length, 0);
+    assert.equal(
+      env.NOTEBOOK_SNAPSHOTS.objects.has(snapshotKey("missing-runtime-demo", "heads-fixture")),
+      false,
+      "rejected snapshot publish should not leave an orphan notebook snapshot",
+    );
+  });
+
+  it("rejects snapshot publish when the persisted pair cannot be materialized", async () => {
     const env = fakeEnv();
     const corruptBytes = new TextEncoder().encode("not an automerge document");
 
@@ -195,16 +230,6 @@ describe("Worker artifact routes", () => {
     );
     assert.equal(runtimePut.status, 201);
 
-    const notebookPut = await ownerPut(
-      env,
-      "/api/n/corrupt-demo/snapshots/heads-corrupt",
-      corruptBytes,
-      {
-        "X-Runtime-Heads-Hash": "runtime-corrupt",
-      },
-    );
-    assert.equal(notebookPut.status, 201);
-
     const originalWarn = console.warn;
     const warnings: unknown[][] = [];
     console.warn = (...args: unknown[]) => {
@@ -212,11 +237,9 @@ describe("Worker artifact routes", () => {
     };
     let response: Response;
     try {
-      response = await worker.fetch(
-        new Request("http://localhost/api/n/corrupt-demo/render"),
-        env,
-        fakeContext(),
-      );
+      response = await ownerPut(env, "/api/n/corrupt-demo/snapshots/heads-corrupt", corruptBytes, {
+        "X-Runtime-Heads-Hash": "runtime-corrupt",
+      });
     } finally {
       console.warn = originalWarn;
     }
@@ -226,16 +249,22 @@ describe("Worker artifact routes", () => {
     const body = (await response.json()) as { error: string; details: string };
     assert.equal(body.error, "render materialization failed");
     assert.match(body.details, /load|document|decode|automerge/i);
+    assert.equal(env.DB.revisions.length, 0);
+    assert.equal(
+      env.NOTEBOOK_SNAPSHOTS.objects.has(snapshotKey("corrupt-demo", "heads-corrupt")),
+      false,
+      "rejected snapshot publish should not leave a corrupt notebook snapshot",
+    );
     assert.equal(
       env.NOTEBOOK_SNAPSHOTS.objects.has(renderKey("corrupt-demo", "heads-corrupt")),
       false,
-      "failed materialization should not cache a render object",
+      "failed publish materialization should not cache a render object",
     );
     assert.equal(warnings.length, 1);
     assert.equal(warnings[0][0], "Unable to materialize notebook render");
   });
 
-  it("fails materialization when snapshot blob refs are missing from R2", async () => {
+  it("rejects snapshot publish when materialized blob refs are missing from R2", async () => {
     const env = fakeEnv();
     const [notebookBytes, runtimeStateBytes, manifestBytes] = await Promise.all([
       readFile(
@@ -269,16 +298,6 @@ describe("Worker artifact routes", () => {
     );
     assert.equal(runtimePut.status, 201);
 
-    const notebookPut = await ownerPut(
-      env,
-      "/api/n/missing-blob-demo/snapshots/heads-fixture",
-      notebookBytes,
-      {
-        "X-Runtime-Heads-Hash": "runtime-fixture",
-      },
-    );
-    assert.equal(notebookPut.status, 201);
-
     const originalWarn = console.warn;
     const warnings: unknown[][] = [];
     console.warn = (...args: unknown[]) => {
@@ -286,10 +305,13 @@ describe("Worker artifact routes", () => {
     };
     let response: Response;
     try {
-      response = await worker.fetch(
-        new Request("http://localhost/api/n/missing-blob-demo/render"),
+      response = await ownerPut(
         env,
-        fakeContext(),
+        "/api/n/missing-blob-demo/snapshots/heads-fixture",
+        notebookBytes,
+        {
+          "X-Runtime-Heads-Hash": "runtime-fixture",
+        },
       );
     } finally {
       console.warn = originalWarn;
@@ -305,6 +327,12 @@ describe("Worker artifact routes", () => {
     assert.deepEqual(
       body.missing_blobs.map((blob) => blob.hash),
       [missingHash],
+    );
+    assert.equal(env.DB.revisions.length, 0);
+    assert.equal(
+      env.NOTEBOOK_SNAPSHOTS.objects.has(snapshotKey("missing-blob-demo", "heads-fixture")),
+      false,
+      "rejected snapshot publish should not leave an orphan notebook snapshot",
     );
     assert.equal(
       env.NOTEBOOK_SNAPSHOTS.objects.has(renderKey("missing-blob-demo", "heads-fixture")),

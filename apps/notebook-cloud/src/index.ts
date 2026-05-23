@@ -43,6 +43,17 @@ interface MissingRenderBlob {
   media_type: string | null;
 }
 
+type RenderMaterializationResult =
+  | {
+      ok: true;
+      body: string;
+    }
+  | {
+      ok: false;
+      status: number;
+      body: Record<string, unknown>;
+    };
+
 const worker: ExportedHandler<Env> = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -258,6 +269,8 @@ async function routeSnapshot(
   const body = await request.arrayBuffer();
   const runtimeHeadsHash = normalizedRuntimeHeadsHash(request.headers.get("x-runtime-heads-hash"));
   const runtimeKey = runtimeHeadsHash ? runtimeSnapshotKey(notebookId, runtimeHeadsHash) : null;
+  const renderCacheKey = renderKey(notebookId, headsHash);
+  let renderCacheWritten = false;
   await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
     httpMetadata: {
       contentType: request.headers.get("content-type") ?? "application/octet-stream",
@@ -268,6 +281,37 @@ async function routeSnapshot(
       notebook_heads_hash: headsHash,
     },
   });
+
+  if (runtimeHeadsHash && runtimeKey) {
+    const runtimeObject = await env.NOTEBOOK_SNAPSHOTS.get(runtimeKey);
+    if (!runtimeObject) {
+      await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
+      return json(
+        {
+          error: "snapshot publish missing runtime-state snapshot",
+          runtime_heads_hash: runtimeHeadsHash,
+        },
+        424,
+      );
+    }
+
+    const materialized = await materializeSnapshotRenderCache({
+      request,
+      env,
+      notebookId,
+      notebookHeadsHash: headsHash,
+      runtimeHeadsHash,
+      notebookBytes: new Uint8Array(body),
+      runtimeStateBytes: new Uint8Array(await runtimeObject.arrayBuffer()),
+      immutable: true,
+    });
+    if (!materialized.ok) {
+      await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
+      return json(materialized.body, materialized.status);
+    }
+    renderCacheWritten = true;
+  }
+
   let revisionId: string;
   try {
     revisionId = await recordRevision(env, {
@@ -280,6 +324,9 @@ async function routeSnapshot(
     });
   } catch (error) {
     await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
+    if (renderCacheWritten) {
+      await env.NOTEBOOK_SNAPSHOTS.delete(renderCacheKey).catch(() => undefined);
+    }
     throw error;
   }
 
@@ -504,69 +551,22 @@ async function materializeSnapshotRender(
     return json({ error: "runtime snapshot not found" }, 404);
   }
 
-  let render: Awaited<ReturnType<typeof materializeSnapshotPairRender>>;
-  try {
-    render = await materializeSnapshotPairRender({
-      notebookId,
-      notebookHeadsHash: revision.notebook_heads_hash,
-      runtimeHeadsHash: revision.runtime_heads_hash,
-      notebookBytes: new Uint8Array(await notebookObject.arrayBuffer()),
-      runtimeStateBytes: new Uint8Array(await runtimeObject.arrayBuffer()),
-      blobResolver: createNotebookCloudBlobResolver({
-        baseUrl: request.url,
-        blobBasePath: notebookCloudBlobBasePath(notebookId),
-      }),
-    });
-  } catch (error) {
-    console.warn("Unable to materialize notebook render", {
-      notebookId,
-      notebookHeadsHash: revision.notebook_heads_hash,
-      runtimeHeadsHash: revision.runtime_heads_hash,
-      error,
-    });
-    return json(
-      {
-        error: "render materialization failed",
-        details: errorMessage(error),
-      },
-      422,
-    );
-  }
-
-  const missingBlobs = await findMissingRenderBlobs(env, notebookId, render.cells);
-  if (missingBlobs.length > 0) {
-    console.warn("Unable to materialize notebook render: missing blobs", {
-      notebookId,
-      notebookHeadsHash: revision.notebook_heads_hash,
-      runtimeHeadsHash: revision.runtime_heads_hash,
-      missingBlobs,
-    });
-    return json(
-      {
-        error: "render materialization missing blobs",
-        missing_blobs: missingBlobs,
-      },
-      424,
-    );
-  }
-
-  const body = JSON.stringify(render);
-  await env.NOTEBOOK_SNAPSHOTS.put(renderKey(notebookId, revision.notebook_heads_hash), body, {
-    httpMetadata: {
-      contentType: "application/json; charset=utf-8",
-      cacheControl: immutable
-        ? "public, max-age=31536000, immutable"
-        : "public, max-age=30, stale-while-revalidate=300",
-    },
-    customMetadata: {
-      notebook_id: notebookId,
-      notebook_heads_hash: revision.notebook_heads_hash,
-      runtime_heads_hash: revision.runtime_heads_hash ?? "",
-      artifact: "materialized-render",
-    },
+  const materialized = await materializeSnapshotRenderCache({
+    request,
+    env,
+    notebookId,
+    notebookHeadsHash: revision.notebook_heads_hash,
+    runtimeHeadsHash: revision.runtime_heads_hash,
+    notebookBytes: new Uint8Array(await notebookObject.arrayBuffer()),
+    runtimeStateBytes: new Uint8Array(await runtimeObject.arrayBuffer()),
+    immutable,
   });
+  if (!materialized.ok) {
+    return json(materialized.body, materialized.status);
+  }
+
   return withCors(
-    new Response(body, {
+    new Response(materialized.body, {
       headers: {
         "Cache-Control": immutable
           ? "public, max-age=31536000, immutable"
@@ -575,6 +575,91 @@ async function materializeSnapshotRender(
       },
     }),
   );
+}
+
+async function materializeSnapshotRenderCache(options: {
+  request: Request;
+  env: Env;
+  notebookId: string;
+  notebookHeadsHash: string;
+  runtimeHeadsHash: string | null;
+  notebookBytes: Uint8Array;
+  runtimeStateBytes: Uint8Array;
+  immutable: boolean;
+}): Promise<RenderMaterializationResult> {
+  const bucket = options.env.NOTEBOOK_SNAPSHOTS;
+  if (!bucket) {
+    return {
+      ok: false,
+      status: 503,
+      body: { error: "R2 binding NOTEBOOK_SNAPSHOTS is not configured" },
+    };
+  }
+
+  let render: Awaited<ReturnType<typeof materializeSnapshotPairRender>>;
+  try {
+    render = await materializeSnapshotPairRender({
+      notebookId: options.notebookId,
+      notebookHeadsHash: options.notebookHeadsHash,
+      runtimeHeadsHash: options.runtimeHeadsHash,
+      notebookBytes: options.notebookBytes,
+      runtimeStateBytes: options.runtimeStateBytes,
+      blobResolver: createNotebookCloudBlobResolver({
+        baseUrl: options.request.url,
+        blobBasePath: notebookCloudBlobBasePath(options.notebookId),
+      }),
+    });
+  } catch (error) {
+    console.warn("Unable to materialize notebook render", {
+      notebookId: options.notebookId,
+      notebookHeadsHash: options.notebookHeadsHash,
+      runtimeHeadsHash: options.runtimeHeadsHash,
+      error,
+    });
+    return {
+      ok: false,
+      status: 422,
+      body: {
+        error: "render materialization failed",
+        details: errorMessage(error),
+      },
+    };
+  }
+
+  const missingBlobs = await findMissingRenderBlobs(options.env, options.notebookId, render.cells);
+  if (missingBlobs.length > 0) {
+    console.warn("Unable to materialize notebook render: missing blobs", {
+      notebookId: options.notebookId,
+      notebookHeadsHash: options.notebookHeadsHash,
+      runtimeHeadsHash: options.runtimeHeadsHash,
+      missingBlobs,
+    });
+    return {
+      ok: false,
+      status: 424,
+      body: {
+        error: "render materialization missing blobs",
+        missing_blobs: missingBlobs,
+      },
+    };
+  }
+
+  const body = JSON.stringify(render);
+  await bucket.put(renderKey(options.notebookId, options.notebookHeadsHash), body, {
+    httpMetadata: {
+      contentType: "application/json; charset=utf-8",
+      cacheControl: options.immutable
+        ? "public, max-age=31536000, immutable"
+        : "public, max-age=30, stale-while-revalidate=300",
+    },
+    customMetadata: {
+      notebook_id: options.notebookId,
+      notebook_heads_hash: options.notebookHeadsHash,
+      runtime_heads_hash: options.runtimeHeadsHash ?? "",
+      artifact: "materialized-render",
+    },
+  });
+  return { ok: true, body };
 }
 
 async function findMissingRenderBlobs(
