@@ -71,16 +71,15 @@ export type SyncedSettings = {
    */
   install_default_data_packages: boolean;
   /**
-   * Enable the nteract data-experience kernel bootstrap.
-   * When true, the daemon launches kernels via `nteract_kernel_launcher`
-   * so the vendored launcher can register rich display formatters before
-   * the first user cell. Default: false.
+   * Disable the nteract kernel launcher and fall back to the legacy
+   * `ipykernel_launcher` entry point.
    *
-   * Mirrors `FeatureFlags::bootstrap_dx`. Flattened on the wire so the
-   * settings JSON and Automerge document keep a flat layout even as new
-   * feature flags are added.
+   * The nteract launcher is now the default path so Python kernels can
+   * register rich DataFrame and exception formatters before the first user
+   * cell. This opt-out flag is an escape hatch for environments that need
+   * vanilla IPython launch behavior.
    */
-  bootstrap_dx: boolean;
+  disable_nteract_launcher: boolean;
   /**
    * Redact eligible environment variable values from text outputs for newly
    * launched or restarted kernels.

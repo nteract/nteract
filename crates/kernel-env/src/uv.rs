@@ -66,8 +66,8 @@ pub async fn check_uv_available() -> bool {
 /// The `dx` PyPI package is no longer installed — its behavior (DataFrame
 /// formatters, buffer hooks, nteract renderers) is provided by the vendored
 /// `nteract_kernel_launcher` package that the daemon injects via PYTHONPATH.
-/// The `bootstrap_dx` feature flag now gates launcher-vs-vanilla, not a
-/// PyPI install.
+/// `disable_nteract_launcher` is the escape hatch back to vanilla IPython;
+/// it does not change this base package set.
 pub const UV_BASE_PACKAGES: &[&str] = &[
     "ipykernel",
     "ipywidgets",

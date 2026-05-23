@@ -1,7 +1,7 @@
 /**
  * DX bootstrap LLM formatter E2E test.
  *
- * This spec must run with the `bootstrap_dx` setting enabled before the daemon
+ * This spec must run with `disable_nteract_launcher` off before the daemon
  * starts. That makes the Python kernel launch through nteract_kernel_launcher,
  * which installs the `text/llm+plain` display formatter.
  */

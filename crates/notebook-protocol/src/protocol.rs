@@ -14,21 +14,19 @@ use serde::{Deserialize, Serialize};
 
 // ── Data structs referenced by protocol enums ───────────────────────────────
 
-/// Optional runtime behaviors toggled by the user.
+/// Optional runtime behaviors captured for a kernel launch.
 ///
-/// Single source of truth for feature-flag state across the daemon,
-/// settings UI, and kernel launch pipeline. Each flag defaults to `false`,
-/// so adding a new flag is one extra field here, no new arguments threaded
-/// through call sites.
+/// The daemon derives these from settings before launch and stores the
+/// materialized values in `LaunchedEnvConfig` so restart and drift checks know
+/// which runtime behavior produced the active kernel.
 ///
 /// Serialized flat via `#[serde(flatten)]` in parent structs, so the
 /// on-wire JSON and Automerge keys stay at the top level (`bootstrap_dx`)
 /// for backward compatibility.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeatureFlags {
-    /// Install `nteract-kernel-launcher` and `dx` into UV kernels, launch
-    /// via `nteract_kernel_launcher`, and register dx display formatters
-    /// before the first user cell.
+    /// Launch via `nteract_kernel_launcher` so rich display formatters are
+    /// registered before the first user cell.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub bootstrap_dx: bool,
 }
