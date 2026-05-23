@@ -155,7 +155,7 @@ becomes:
 user:dev:alice%40example.com/desktop:local
 ```
 
-For browser-only testing, the same values can be supplied as query params:
+For local browser-only testing, the same values can be supplied as query params:
 
 ```text
 /n/demo/sync?user=alice&operator=desktop:browser&scope=viewer
@@ -163,7 +163,7 @@ For browser-only testing, the same values can be supplied as query params:
 
 `X-Principal` or `principal` may be used to provide a full principal directly. The Worker stamps internal `x-nteract-*` headers before forwarding to the Durable Object, modeling the ADR boundary where the room host trusts an upstream-authenticated identity.
 
-Dev credentials are accepted without an extra token only from Wrangler local development (`localhost`, `127.0.0.1`, `::1`, or `DEPLOYMENT_ENV=development`). Deployed prototype environments require the `NOTEBOOK_CLOUD_DEV_TOKEN` Worker secret to match either the `X-Notebook-Cloud-Dev-Token` header or `dev_token` query parameter. If no scope is supplied, dev auth defaults to `viewer`. Write and publish paths must ask for `editor`, `runtime_peer`, or `owner` explicitly.
+Dev credentials are accepted without an extra token only from Wrangler local development (`localhost`, `127.0.0.1`, `::1`, or `DEPLOYMENT_ENV=development`). Deployed prototype environments require the `NOTEBOOK_CLOUD_DEV_TOKEN` Worker secret to match either the `X-Notebook-Cloud-Dev-Token` header or a WebSocket subprotocol named `nteract-dev-token.<base64url-token>`. URL-carried `dev_token` credentials are rejected on deployed hosts so prototype owner credentials do not appear in URLs. If no scope is supplied, dev auth defaults to `viewer`. Write and publish paths must ask for `editor`, `runtime_peer`, or `owner` explicitly.
 
 Requests with no dev credential become anonymous public viewers. The Worker derives:
 

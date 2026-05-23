@@ -111,12 +111,10 @@ async function connect(notebookId, user, operator, scope) {
   url.searchParams.set("user", user);
   url.searchParams.set("operator", operator);
   url.searchParams.set("scope", scope);
-  if (devAuthToken) {
-    url.searchParams.set("dev_token", devAuthToken);
-  }
-  const safeUrl = redactDevToken(url);
+  const safeUrl = url.href;
+  const protocols = devAuthProtocols();
 
-  const socket = new WebSocket(url);
+  const socket = protocols ? new WebSocket(url, protocols) : new WebSocket(url);
   socket.binaryType = "arraybuffer";
   const queue = [];
   const waiters = [];
@@ -219,10 +217,12 @@ async function closeClient(client) {
   });
 }
 
-function redactDevToken(url) {
-  const copy = new URL(url.href);
-  copy.searchParams.delete("dev_token");
-  return copy.href;
+function devAuthProtocols() {
+  return devAuthToken ? [`nteract-dev-token.${base64Url(devAuthToken)}`] : undefined;
+}
+
+function base64Url(value) {
+  return Buffer.from(value, "utf8").toString("base64url");
 }
 
 function assert(condition, message) {
