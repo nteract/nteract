@@ -219,7 +219,6 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
       if (!cell.executionId) continue;
       targets.set(cell.executionId, {
         cellId: cell.id,
-        executionCount: cell.executionCount,
       });
     }
     return targets;

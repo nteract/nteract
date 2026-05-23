@@ -130,7 +130,6 @@ interface Props {
 export interface TracebackCellTarget {
   cellId: string;
   label?: string;
-  executionCount?: number | null;
 }
 
 export type TracebackExecutionResolver = (
@@ -594,7 +593,9 @@ function sourceLocation(
   }
 
   if (target) {
-    const label = target.label ?? notebookTargetLabel(target, executionId === currentExecutionId);
+    const label =
+      target.label ??
+      (executionId === currentExecutionId ? "Current Cell" : `Cell ${shortCellId(target.cellId)}`);
     return {
       kind: "notebook",
       label,
@@ -635,14 +636,6 @@ function sourceLocation(
 
 function shortCellId(cellId: string): string {
   return cellId.length <= 12 ? cellId : cellId.slice(0, 8);
-}
-
-function notebookTargetLabel(target: TracebackCellTarget, isCurrentExecution: boolean): string {
-  const label = isCurrentExecution ? "Current Cell" : `Cell ${shortCellId(target.cellId)}`;
-  if (typeof target.executionCount === "number" && Number.isFinite(target.executionCount)) {
-    return `${label} In[${target.executionCount}]`;
-  }
-  return label;
 }
 
 function shortenPythonPath(filename: string): string {

@@ -50,12 +50,6 @@ const resolveExecutionTarget = (executionId: string) => {
   return null;
 };
 
-const resolveExecutionTargetWithCounts = (executionId: string) => {
-  if (executionId === "exec-run") return { cellId: "cell-run", executionCount: 3 };
-  if (executionId === "exec-def") return { cellId: "cell-def", executionCount: 2 };
-  return null;
-};
-
 describe("TracebackOutput", () => {
   beforeEach(() => {
     Object.defineProperty(window, "matchMedia", {
@@ -77,15 +71,6 @@ describe("TracebackOutput", () => {
     expect(container.textContent).toContain("Line5inCell cell-defing");
     expect(container.textContent).not.toContain("In[");
     expect(container.textContent).not.toContain("/var/folders/x/T/ipykernel_39879");
-  });
-
-  it("shows execution counts when traceback cell targets include them", () => {
-    const { container } = render(
-      <TracebackOutput data={payload} resolveExecutionTarget={resolveExecutionTargetWithCounts} />,
-    );
-
-    expect(container.textContent).toContain("Line1inCurrent Cell In[3]");
-    expect(container.textContent).toContain("Line5inCell cell-def In[2]ing");
   });
 
   it("shortens displayed Python package paths", () => {
