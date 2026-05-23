@@ -4,11 +4,15 @@
   "type": "module",
   "scripts": {
     "wasm": "cargo xtask wasm runtimed --skip-renderer-plugins",
+    "renderer-plugins": "cargo xtask renderer-plugins",
+    "build:viewer": "vp build -c vite.config.ts && node scripts/copy-viewer-assets.mjs",
+    "build": "pnpm run wasm && pnpm run renderer-plugins && pnpm run build:viewer",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm run wasm && node --import tsx --test test/*.test.ts",
     "dev": "pnpm --workspace-root exec wrangler dev --config apps/notebook-cloud/wrangler.toml",
     "smoke": "node --import tsx scripts/smoke.mjs",
     "publish:demo": "node scripts/publish-demo.mjs",
+    "publish:fixture": "node scripts/publish-fixture.mjs",
     "wasm:roundtrip": "node --import tsx scripts/wasm-roundtrip.mjs"
   },
   "dependencies": {
@@ -17,6 +21,8 @@
   "devDependencies": {
     "@types/node": "^20.10.0",
     "tsx": "^4.21.0",
-    "typescript": "~5.8.3"
+    "typescript": "~5.8.3",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
   }
 }

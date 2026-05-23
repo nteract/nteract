@@ -4,7 +4,7 @@ This app is a Cloudflare Worker prototype for hosted nteract notebook rooms. It 
 
 The current Durable Object does not host kernels and does not parse Automerge sync messages. It enforces connection scope, rewrites canonical CBOR presence through the shared `runtimed-wasm` helper, stores bounded frame metadata, and broadcasts accepted binary typed frames to other peers in the same room.
 
-`/n/:notebookId` is now a public read-only notebook viewer. The durable source of truth is a persisted `NotebookDoc` + `RuntimeStateDoc` snapshot pair in R2; `/api/n/:id/render` materializes that pair with `NotebookHandle.load_snapshot()` when a render cache is absent. Output blob refs stay host-neutral and are mapped to `/api/n/:id/blobs/:hash` through the shared `BlobResolver` surface.
+`/n/:notebookId` is now a public read-only notebook viewer. The durable source of truth is a persisted `NotebookDoc` + `RuntimeStateDoc` snapshot pair in R2; `/api/n/:id/render` materializes that pair with `NotebookHandle.load_snapshot()` when a render cache is absent. Output blob refs stay host-neutral and are mapped to `/api/n/:id/blobs/:hash` through the shared `BlobResolver` surface. The browser viewer bundle uses `createNteractOutputEmbed()` so published markdown, stdout/stderr, rich display data, and blob-backed renderer manifests go through the shared isolated output renderer path.
 
 ## Local dev
 
@@ -12,6 +12,7 @@ The current Durable Object does not host kernels and does not parse Automerge sy
 pnpm --dir apps/notebook-cloud typecheck
 pnpm --dir apps/notebook-cloud test
 pnpm --dir apps/notebook-cloud wasm
+pnpm --dir apps/notebook-cloud build:viewer
 pnpm --dir apps/notebook-cloud dev
 ```
 
@@ -20,6 +21,7 @@ With Wrangler running:
 ```bash
 pnpm --dir apps/notebook-cloud smoke
 pnpm --dir apps/notebook-cloud publish:demo
+pnpm --dir apps/notebook-cloud publish:fixture
 ```
 
 The smoke script proves:
@@ -64,6 +66,16 @@ http://127.0.0.1:8787/n/nteract-cloud-demo
 
 `/` redirects to that demo notebook id.
 
+`publish:fixture` defaults to `packages/runtimed/tests/fixtures/output_streaming`
+and publishes a notebook revision with real `RuntimeStateDoc` output manifests:
+
+```text
+http://127.0.0.1:8787/n/nteract-cloud-fixture-output_streaming
+```
+
+Set `NOTEBOOK_CLOUD_FIXTURE=<fixture-dir>` and
+`NOTEBOOK_CLOUD_NOTEBOOK_ID=<id>` to publish another fixture pair.
+
 ## Dev auth
 
 The edge Worker maps dev credentials into the same identity shape as `crates/nteract-identity`:
@@ -107,6 +119,7 @@ Bindings in `wrangler.toml`:
 - `NOTEBOOK_ROOMS`: Durable Object namespace, one object per notebook id.
 - `DB`: D1 catalog for notebooks, revisions, blobs, and room event metadata.
 - `NOTEBOOK_SNAPSHOTS`: R2 bucket for `NotebookDoc` snapshots, `RuntimeStateDoc` snapshots, generated render caches, and blobs.
+- `ASSETS`: Worker static assets for `/assets/notebook-cloud-viewer.js`, renderer chunks, and `/plugins/sift_wasm.wasm`.
 
 Schema lives in `migrations/0001_initial.sql`. The Worker also creates the same tables lazily in local dev so the WebSocket path can run before applying migrations.
 
@@ -146,7 +159,7 @@ Deploy with:
 printf "%s" "$NOTEBOOK_CLOUD_DEV_TOKEN" \
   | pnpm --workspace-root exec wrangler secret put NOTEBOOK_CLOUD_DEV_TOKEN \
       --config apps/notebook-cloud/wrangler.toml
-pnpm --dir apps/notebook-cloud wasm
+pnpm --dir apps/notebook-cloud build
 pnpm --workspace-root exec wrangler deploy --config apps/notebook-cloud/wrangler.toml
 ```
 
@@ -184,6 +197,5 @@ curl "http://127.0.0.1:8787/api/n/demo/render"
 ## Next integration steps
 
 1. Move the Durable Object from byte relay to a real `runtimed-wasm` room peer.
-2. Connect the HTML viewer to the shared isolated output renderer bundle.
-3. Publish a full Sift/Arrow fixture and verify blob-backed output rendering.
-4. Swap dev auth for OIDC/JupyterHub providers using the `nteract-identity` model.
+2. Publish a full Sift/Arrow fixture and verify blob-backed table rendering.
+3. Swap dev auth for OIDC/JupyterHub providers using the `nteract-identity` model.

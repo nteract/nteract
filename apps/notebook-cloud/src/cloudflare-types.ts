@@ -2,8 +2,13 @@ export interface Env {
   NOTEBOOK_ROOMS: DurableObjectNamespace;
   DB?: D1Database;
   NOTEBOOK_SNAPSHOTS?: R2Bucket;
+  ASSETS?: WorkerAssets;
   DEPLOYMENT_ENV?: string;
   NOTEBOOK_CLOUD_DEV_TOKEN?: string;
+}
+
+export interface WorkerAssets {
+  fetch(request: Request): Promise<Response>;
 }
 
 export interface ExecutionContext {

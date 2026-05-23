@@ -23,5 +23,9 @@ database_id = "59decd97-a3d4-4442-abe7-50b465cb347e"
 binding = "NOTEBOOK_SNAPSHOTS"
 bucket_name = "nteract-notebook-cloud-prototype"
 
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+
 [vars]
 DEPLOYMENT_ENV = "prototype"
