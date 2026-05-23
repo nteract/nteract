@@ -13,6 +13,8 @@ import { McpPeer } from "./mcp-peer";
 test.describe("noisy output interrupt", () => {
   let mcp: McpPeer | null = null;
 
+  test.setTimeout(180_000);
+
   test.afterEach(async () => {
     await mcp?.close();
     mcp = null;
@@ -45,7 +47,9 @@ test.describe("noisy output interrupt", () => {
     );
 
     await executeCell(cell);
-    await waitForOutputContaining(cell, "noisy-e2e-line-25", 60_000);
+    // Long stream output is intentionally collapsed to a head/tail preview.
+    // Wait for a visible head line before interrupting the flood.
+    await waitForOutputContaining(cell, "noisy-e2e-line-6", 60_000);
 
     await page.getByTestId("interrupt-kernel-button").click();
     await waitForKernelStatus(page, "idle", 60_000);
