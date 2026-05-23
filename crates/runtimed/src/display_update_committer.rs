@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, oneshot, Notify};
 use tracing::{debug, error, warn};
 
 use crate::blob_store::BlobStore;
-use crate::output_prep::QueueCommand;
+use crate::output_prep::LifecycleSignal;
 use crate::output_prep::{
     apply_display_manifest_updates, build_display_manifest_updates, collect_display_update_targets,
 };
@@ -247,7 +247,7 @@ pub(crate) fn start_display_update_committer(
     state: RuntimeStateHandle,
     blob_store: Arc<BlobStore>,
     kernel_actor_id: String,
-    lifecycle_tx: mpsc::UnboundedSender<QueueCommand>,
+    lifecycle_tx: mpsc::UnboundedSender<LifecycleSignal>,
     output_redactor: Arc<OutputRedactor>,
 ) -> DisplayUpdateCommitterHandle {
     let pending = Arc::new(SharedPending {
@@ -271,7 +271,7 @@ pub(crate) fn start_display_update_committer(
             output_redactor,
         ),
         move |_| {
-            let _ = lifecycle_tx.send(QueueCommand::KernelDied);
+            let _ = lifecycle_tx.send(LifecycleSignal::KernelDied);
         },
     );
     DisplayUpdateCommitterHandle {

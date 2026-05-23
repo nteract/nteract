@@ -15,7 +15,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{debug, warn};
 
 use crate::blob_store::BlobStore;
-use crate::output_prep::QueueCommand;
+use crate::output_prep::LifecycleSignal;
 use crate::output_redaction::OutputRedactor;
 use crate::output_store::{self, ContentRef, OutputManifest, DEFAULT_INLINE_THRESHOLD};
 use crate::stream_flush::PendingStreamFlush;
@@ -27,7 +27,7 @@ const STREAM_COMMITTER_QUEUE_CAPACITY: usize = 32;
 #[derive(Debug)]
 struct PriorityStreamCommit {
     flushes: Vec<PendingStreamFlush>,
-    signal: Option<QueueCommand>,
+    signal: Option<LifecycleSignal>,
     ack: Option<oneshot::Sender<()>>,
 }
 
@@ -36,7 +36,7 @@ struct StreamCommitterContext {
     blob_store: Arc<BlobStore>,
     stream_terminals: Arc<Mutex<StreamTerminals>>,
     kernel_actor_id: String,
-    lifecycle_tx: mpsc::UnboundedSender<QueueCommand>,
+    lifecycle_tx: mpsc::UnboundedSender<LifecycleSignal>,
     output_redactor: Arc<OutputRedactor>,
 }
 
@@ -44,7 +44,7 @@ struct StreamCommitterContext {
 pub(crate) struct StreamCommitterHandle {
     periodic_tx: mpsc::Sender<PendingStreamFlush>,
     priority_tx: mpsc::UnboundedSender<PriorityStreamCommit>,
-    lifecycle_tx: mpsc::UnboundedSender<QueueCommand>,
+    lifecycle_tx: mpsc::UnboundedSender<LifecycleSignal>,
 }
 
 impl StreamCommitterHandle {
@@ -97,11 +97,15 @@ impl StreamCommitterHandle {
     /// Used for `ExecutionDone`: queue release must remain causally after the
     /// final stream output commit, but the IOPub reader itself should keep
     /// reading instead of awaiting output transport.
-    pub(crate) fn flush_then_signal(&self, flushes: Vec<PendingStreamFlush>, signal: QueueCommand) {
-        debug_assert!(
-            signal.is_lifecycle(),
-            "stream committer may only release lifecycle signals"
-        );
+    pub(crate) fn flush_then_signal(
+        &self,
+        flushes: Vec<PendingStreamFlush>,
+        signal: LifecycleSignal,
+    ) {
+        // The signal type (LifecycleSignal) was previously QueueCommand with a
+        // runtime debug_assert!(signal.is_lifecycle()); the split into
+        // LifecycleSignal vs WorkCommand makes that assertion structural.
+        // See output_prep.rs and execution-pipeline.md Decision 2.
 
         if flushes.is_empty() {
             let _ = self.lifecycle_tx.send(signal);
@@ -127,7 +131,7 @@ async fn commit_priority_streams(
     blob_store: &BlobStore,
     stream_terminals: &Arc<Mutex<StreamTerminals>>,
     kernel_actor_id: &str,
-    lifecycle_tx: &mpsc::UnboundedSender<QueueCommand>,
+    lifecycle_tx: &mpsc::UnboundedSender<LifecycleSignal>,
     output_redactor: &OutputRedactor,
 ) {
     for flush in request.flushes {
@@ -210,7 +214,7 @@ pub(crate) fn start_stream_committer(
     blob_store: Arc<BlobStore>,
     stream_terminals: Arc<Mutex<StreamTerminals>>,
     kernel_actor_id: String,
-    lifecycle_tx: mpsc::UnboundedSender<QueueCommand>,
+    lifecycle_tx: mpsc::UnboundedSender<LifecycleSignal>,
     output_redactor: Arc<OutputRedactor>,
 ) -> StreamCommitterHandle {
     let (periodic_tx, periodic_rx) = mpsc::channel(STREAM_COMMITTER_QUEUE_CAPACITY);
@@ -233,7 +237,7 @@ pub(crate) fn start_stream_committer(
         "stream-committer",
         run_stream_committer(periodic_rx, priority_rx, context),
         move |_| {
-            let _ = panic_lifecycle_tx.send(QueueCommand::KernelDied);
+            let _ = panic_lifecycle_tx.send(LifecycleSignal::KernelDied);
         },
     );
     StreamCommitterHandle {
@@ -384,7 +388,7 @@ mod tests {
                 execution_id: "exec-1".to_string(),
                 stream_name: "stdout".to_string(),
             }],
-            QueueCommand::ExecutionDone {
+            LifecycleSignal::ExecutionDone {
                 execution_id: "exec-1".to_string(),
             },
         );
@@ -393,7 +397,7 @@ mod tests {
             .await
             .expect("signal timeout")
             .expect("signal");
-        assert!(matches!(received, QueueCommand::ExecutionDone { .. }));
+        assert!(matches!(received, LifecycleSignal::ExecutionDone { .. }));
 
         let outputs = state
             .read(|sd| sd.get_outputs("exec-1"))
@@ -479,7 +483,7 @@ mod tests {
 
         handle.flush_then_signal(
             Vec::new(),
-            QueueCommand::ExecutionDone {
+            LifecycleSignal::ExecutionDone {
                 execution_id: "exec-1".to_string(),
             },
         );
@@ -487,7 +491,7 @@ mod tests {
         let received = lifecycle_rx.try_recv().expect("lifecycle signal");
         assert!(matches!(
             received,
-            QueueCommand::ExecutionDone {
+            LifecycleSignal::ExecutionDone {
                 execution_id
             } if execution_id == "exec-1"
         ));

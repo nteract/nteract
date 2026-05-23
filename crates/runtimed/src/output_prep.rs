@@ -447,21 +447,39 @@ impl std::fmt::Display for KernelStatus {
     }
 }
 
-/// Commands from iopub/shell handlers for queue state management.
+/// Control-plane signals sent from iopub/shell handlers to the runtime agent.
 ///
-/// These are sent from spawned tasks and must be processed by code
-/// that has access to the kernel (e.g., the runtime agent).
+/// Each variant is rare (zero or one per execution) and must not be dropped:
+/// missing a `KernelIdle` leaves the queue stuck busy; missing an
+/// `ExecutionDone` leaves the cell in `running` indefinitely. The lifecycle
+/// channel is unbounded for that reason.
+///
+/// `LifecycleSignal` is structurally distinct from [`WorkCommand`] so the
+/// channel types enforce at compile time what `QueueCommand::is_lifecycle()`
+/// used to enforce at runtime via `debug_assert!`. See `execution-pipeline.md`
+/// Decision 2 for the rationale.
 #[derive(Debug)]
-pub enum QueueCommand {
-    /// A cell finished executing (received status=idle from kernel)
+pub enum LifecycleSignal {
+    /// A cell finished executing (received status=idle from kernel).
     ExecutionDone { execution_id: String },
     /// The kernel reported idle. Used to release execution after interrupt.
     KernelIdle { execution_id: Option<String> },
-    /// A cell produced an error (for stop-on-error behavior)
+    /// A cell produced an error (for stop-on-error behavior).
     CellError { execution_id: String },
-    /// The kernel process died (iopub connection lost).
+    /// The kernel process died (iopub connection lost or supervisor panic).
     /// Unblocks the execution queue and notifies the frontend.
     KernelDied,
+}
+
+/// Best-effort widget replay sent from the IOPub task to the kernel's shell
+/// channel via the runtime agent.
+///
+/// Unlike [`LifecycleSignal`], `WorkCommand` is lossy: under widget storms the
+/// work channel saturates and `try_send` drops update entries. The next
+/// update for the same widget will carry the latest state, so per-message
+/// loss does not corrupt durable state.
+#[derive(Debug)]
+pub enum WorkCommand {
     /// Send a comm_msg(update) to the kernel via the shell channel.
     /// Used by the IOPub task to sync Output widget captured outputs back.
     SendCommUpdate {
@@ -472,26 +490,22 @@ pub enum QueueCommand {
     },
 }
 
-impl QueueCommand {
-    pub fn is_lifecycle(&self) -> bool {
-        !matches!(self, QueueCommand::SendCommUpdate { .. })
-    }
-}
-
 /// Receivers for kernel task commands.
 ///
 /// Lifecycle events are control-plane signals: they must not share bounded
-/// output/work transport with potentially noisy widget output replay.
+/// output/work transport with potentially noisy widget output replay. The
+/// separation is now enforced by the channel types themselves
+/// ([`LifecycleSignal`] vs [`WorkCommand`]) rather than by a runtime check.
 pub struct QueueCommandReceivers {
-    pub lifecycle_rx: mpsc::UnboundedReceiver<QueueCommand>,
-    pub work_rx: mpsc::Receiver<QueueCommand>,
+    pub lifecycle_rx: mpsc::UnboundedReceiver<LifecycleSignal>,
+    pub work_rx: mpsc::Receiver<WorkCommand>,
 }
 
 pub fn queue_command_channels(
     work_capacity: usize,
 ) -> (
-    mpsc::UnboundedSender<QueueCommand>,
-    mpsc::Sender<QueueCommand>,
+    mpsc::UnboundedSender<LifecycleSignal>,
+    mpsc::Sender<WorkCommand>,
     QueueCommandReceivers,
 ) {
     let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
@@ -590,7 +604,7 @@ mod tests {
         let (lifecycle_tx, work_tx, mut receivers) = queue_command_channels(1);
 
         work_tx
-            .try_send(QueueCommand::SendCommUpdate {
+            .try_send(WorkCommand::SendCommUpdate {
                 comm_id: "comm-a".to_string(),
                 state: serde_json::json!({}),
                 buffer_paths: vec![],
@@ -598,7 +612,7 @@ mod tests {
             })
             .expect("first work item should fit");
         assert!(work_tx
-            .try_send(QueueCommand::SendCommUpdate {
+            .try_send(WorkCommand::SendCommUpdate {
                 comm_id: "comm-b".to_string(),
                 state: serde_json::json!({}),
                 buffer_paths: vec![],
@@ -607,20 +621,21 @@ mod tests {
             .is_err());
 
         lifecycle_tx
-            .send(QueueCommand::KernelIdle {
+            .send(LifecycleSignal::KernelIdle {
                 execution_id: Some("exec-1".to_string()),
             })
             .expect("lifecycle signal should not share work channel capacity");
 
-        let command = receivers
+        let signal = receivers
             .lifecycle_rx
             .recv()
             .await
-            .expect("lifecycle command should be delivered");
-        assert!(command.is_lifecycle());
+            .expect("lifecycle signal should be delivered");
+        // The signal's type itself proves it's a LifecycleSignal — the
+        // structural split replaces the previous runtime is_lifecycle() check.
         assert!(matches!(
-            command,
-            QueueCommand::KernelIdle {
+            signal,
+            LifecycleSignal::KernelIdle {
                 execution_id: Some(ref execution_id)
             } if execution_id == "exec-1"
         ));
