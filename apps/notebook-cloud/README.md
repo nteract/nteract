@@ -98,18 +98,23 @@ runtime-derived execution count, that sandboxed output iframes expose expected
 notebook content, and that Sift's WASM sidecar loads from the configured
 renderer asset origin with CORS. It also checks the backing `/api/n/:id/render`
 document reports `source: "snapshot-pair"` so the smoke proves the page is using
-a materialized NotebookDoc + RuntimeStateDoc snapshot pair. Override the target
-with `NOTEBOOK_CLOUD_HOSTED_URL` or a positional URL argument. Set
-`NOTEBOOK_CLOUD_SMOKE_SCREENSHOT=/tmp/notebook-cloud.png` to save a visual
-artifact.
+a materialized NotebookDoc + RuntimeStateDoc snapshot pair, and checks the
+catalog owner/latest revision actor match the live publish path. Override the
+target with `NOTEBOOK_CLOUD_HOSTED_URL` or a positional URL argument. Set
+`NOTEBOOK_CLOUD_SMOKE_SCREENSHOT=/tmp/notebook-cloud.png` to save a
+visual artifact.
 
 For non-MathNet published notebooks, customize the hosted smoke expectations
 with `NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT`,
 `NOTEBOOK_CLOUD_EXPECTED_EXECUTION_COUNT`, and
 `NOTEBOOK_CLOUD_EXPECTED_FRAME_TEXTS`. Frame texts can be a JSON string array or
 a `|`-delimited list. Set `NOTEBOOK_CLOUD_EXPECTED_RENDER_SOURCE=` to skip the
-render API source check. Set `NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM=0` when the
-target notebook does not include a Sift output.
+render API source check. Set
+`NOTEBOOK_CLOUD_EXPECTED_CATALOG_OWNER_PRINCIPAL=` and
+`NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_ACTOR_LABEL=` to skip the live-publish
+catalog provenance checks, or set them to the expected owner/actor for another
+published notebook. Set `NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM=0` when the target
+notebook does not include a Sift output.
 
 `publish:live` exports a real synced notebook session through `@runtimed/node`,
 uploads its `NotebookDoc` + `RuntimeStateDoc` snapshot pair, walks the rendered
