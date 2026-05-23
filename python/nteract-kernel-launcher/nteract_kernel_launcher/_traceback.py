@@ -56,6 +56,7 @@ _MAX_CELL_REGISTRY_ENTRIES = 512
 
 _CELL_REGISTRY_ATTR = "_nteract_traceback_cell_registry"
 _CELL_REGISTRY_HOOK_ATTR = "_nteract_traceback_cell_registry_hook"
+_NOTEBOOK_EXECUTION_SOURCE_KIND = "notebook_execution"
 
 _REDACT_ENV_VALUES_FLAG = "NTERACT_REDACT_ENV_VALUES_IN_OUTPUTS"
 _REDACTION_MARKER = "[redacted env]"
@@ -234,7 +235,7 @@ def _filename_for_cell_source(raw_cell: str) -> str | None:
         return None
 
 
-def _cell_registry(ip: Any) -> dict[str, dict[str, str]]:
+def _cell_registry(ip: Any) -> dict[str, dict[str, Any]]:
     registry = getattr(ip, _CELL_REGISTRY_ATTR, None)
     if not isinstance(registry, dict):
         registry = {}
@@ -254,9 +255,18 @@ def _register_cell_source(
     if not filename:
         return
 
+    source_hash = _source_hash(raw_cell)
+    source_ref = {
+        "kind": _NOTEBOOK_EXECUTION_SOURCE_KIND,
+        "execution_id": execution_id,
+        "source_hash": source_hash,
+        "compiled_filename": filename,
+    }
+    source_ref = {key: value for key, value in source_ref.items() if value}
     provenance = {
         "execution_id": execution_id,
-        "source_hash": _source_hash(raw_cell),
+        "source_hash": source_hash,
+        "source_ref": source_ref,
     }
     provenance = {key: value for key, value in provenance.items() if value}
     if not provenance:
@@ -269,7 +279,7 @@ def _register_cell_source(
             registry.pop(next(iter(registry)))
 
 
-def _provenance_for_filename(ip: Any | None, filename: str) -> dict[str, str]:
+def _provenance_for_filename(ip: Any | None, filename: str) -> dict[str, Any]:
     if ip is None or not filename:
         return {}
     registry = getattr(ip, _CELL_REGISTRY_ATTR, None)

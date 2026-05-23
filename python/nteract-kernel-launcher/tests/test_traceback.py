@@ -343,6 +343,12 @@ def test_install_registers_pre_run_cell_provenance_hook(monkeypatch):
     registry = getattr(ip, _traceback._CELL_REGISTRY_ATTR)
     assert registry["/tmp/ipykernel_1/abc.py"]["execution_id"] == "exec-1"
     assert registry["/tmp/ipykernel_1/abc.py"]["source_hash"].startswith("sha256:")
+    assert registry["/tmp/ipykernel_1/abc.py"]["source_ref"] == {
+        "kind": "notebook_execution",
+        "execution_id": "exec-1",
+        "source_hash": registry["/tmp/ipykernel_1/abc.py"]["source_hash"],
+        "compiled_filename": "/tmp/ipykernel_1/abc.py",
+    }
 
 
 def test_build_payload_attaches_execution_provenance_to_prior_function_frame():
@@ -362,6 +368,12 @@ def test_build_payload_attaches_execution_provenance_to_prior_function_frame():
             filename: {
                 "execution_id": "exec-def",
                 "source_hash": "sha256:def",
+                "source_ref": {
+                    "kind": "notebook_execution",
+                    "execution_id": "exec-def",
+                    "source_hash": "sha256:def",
+                    "compiled_filename": filename,
+                },
             }
         },
     )
@@ -377,6 +389,8 @@ def test_build_payload_attaches_execution_provenance_to_prior_function_frame():
     frame = next(frame for frame in payload["frames"] if frame["filename"] == filename)
     assert frame["execution_id"] == "exec-def"
     assert frame["source_hash"] == "sha256:def"
+    assert frame["source_ref"]["kind"] == "notebook_execution"
+    assert frame["source_ref"]["compiled_filename"] == filename
     assert payload["execution"] == {"execution_id": "exec-run"}
 
 
@@ -390,6 +404,12 @@ def test_syntax_error_payload_attaches_execution_provenance():
             filename: {
                 "execution_id": "exec-syntax",
                 "source_hash": "sha256:syntax",
+                "source_ref": {
+                    "kind": "notebook_execution",
+                    "execution_id": "exec-syntax",
+                    "source_hash": "sha256:syntax",
+                    "compiled_filename": filename,
+                },
             }
         },
     )
@@ -401,6 +421,7 @@ def test_syntax_error_payload_attaches_execution_provenance():
 
     assert payload["syntax"]["execution_id"] == "exec-syntax"
     assert payload["syntax"]["source_hash"] == "sha256:syntax"
+    assert payload["syntax"]["source_ref"]["kind"] == "notebook_execution"
 
 
 def test_install_replaces_showtraceback_and_tags_for_idempotency(monkeypatch):

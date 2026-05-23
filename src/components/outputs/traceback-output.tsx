@@ -31,7 +31,7 @@ interface Line {
 
 /** A single frame in the call stack. */
 interface Frame {
-  /** Absolute or relative path of the file the frame lives in. */
+  /** Interpreter filename for the frame. Notebook executions may be synthetic. */
   filename: string;
   /** Line number of the failing call. */
   lineno: number;
@@ -40,6 +40,7 @@ interface Frame {
   /** Execution provenance for clients that want to jump to source. */
   execution_id?: string;
   source_hash?: string;
+  source_ref?: SourceRef;
   /** Optional source-context window — lines around `lineno`. */
   lines?: Line[];
   /** Optional "in library code" flag; lets the UI dim non-user frames. */
@@ -59,6 +60,7 @@ interface SyntaxInfo {
   offset: number;
   execution_id?: string;
   source_hash?: string;
+  source_ref?: SourceRef;
   /**
    * End of the offending token (Python 3.11+). 0 means "absent" — the
    * renderer falls back to a single-column caret. When set, we underline
@@ -84,9 +86,7 @@ interface TracebackPayload {
    * ship "typescript" here. Unknown values fall back to plain text.
    */
   language?: string;
-  execution?: {
-    execution_id?: string;
-  };
+  execution?: ExecutionInfo;
   /**
    * Paste-ready plain text version of the traceback — ANSI-stripped,
    * in the same shape the kernel would emit as `text/llm+plain`. Used
@@ -101,6 +101,17 @@ interface TracebackPayload {
    * (source line + caret) instead of a frame list.
    */
   syntax?: SyntaxInfo;
+}
+
+interface ExecutionInfo {
+  execution_id?: string;
+}
+
+interface SourceRef {
+  kind?: string;
+  execution_id?: string;
+  source_hash?: string;
+  compiled_filename?: string;
 }
 
 interface Props {
@@ -175,6 +186,7 @@ export function TracebackOutput({ data, className }: Props) {
   // two-line layout. Independent of frame count — a short evalue next
   // to the ename reads better whether we show frames below or not.
   const inlineEvalue = Boolean(payload.evalue) && !payload.evalue.includes("\n");
+  const currentExecutionId = payload.execution?.execution_id;
 
   return (
     <div
@@ -210,6 +222,7 @@ export function TracebackOutput({ data, className }: Props) {
                 cluster={cluster}
                 defaultOpen={shouldOpen(cluster, i)}
                 language={language}
+                currentExecutionId={currentExecutionId}
               />
             ))}
           </ol>
@@ -387,13 +400,16 @@ function FrameRow({
   cluster,
   defaultOpen,
   language,
+  currentExecutionId,
 }: {
   cluster: Cluster;
   defaultOpen: boolean;
   language: string;
+  currentExecutionId?: string;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const { frame, count } = cluster;
+  const location = frameLocation(frame, currentExecutionId);
   return (
     <li className={cn("px-3 py-1.5", frame.library && "opacity-60")}>
       <button
@@ -409,7 +425,9 @@ function FrameRow({
             open && "rotate-90",
           )}
         />
-        <span className="truncate text-muted-foreground">{frame.filename}</span>
+        <span className="truncate text-muted-foreground" title={location.title}>
+          {location.label}
+        </span>
         <span className="text-muted-foreground">:</span>
         <span className="tabular-nums text-muted-foreground">{frame.lineno}</span>
         <span className="text-muted-foreground">in</span>
@@ -430,6 +448,46 @@ function FrameRow({
         <SourceBlock lines={frame.lines} language={language} />
       )}
     </li>
+  );
+}
+
+function frameLocation(
+  frame: Frame,
+  currentExecutionId: string | undefined,
+): { label: string; title: string } {
+  const sourceRef = frame.source_ref;
+  const executionId = sourceRef?.execution_id ?? frame.execution_id;
+  const sourceHash = sourceRef?.source_hash ?? frame.source_hash;
+  const compiledFilename = sourceRef?.compiled_filename ?? frame.filename;
+  const titleParts = [];
+  if (executionId) titleParts.push(`Execution: ${executionId}`);
+  if (sourceHash) titleParts.push(`Source: ${sourceHash}`);
+  if (compiledFilename) titleParts.push(`Compiled file: ${compiledFilename}`);
+  const title = titleParts.join("\n") || frame.filename || "Unknown source";
+
+  const isNotebookSource =
+    sourceRef?.kind === "notebook_execution" || isSyntheticNotebookFilename(frame.filename);
+
+  if (!isNotebookSource) {
+    return { label: frame.filename || "Unknown source", title };
+  }
+
+  if (executionId && executionId === currentExecutionId) {
+    return { label: "Current cell", title };
+  }
+
+  if (executionId) {
+    return { label: "Earlier cell execution", title };
+  }
+
+  return { label: "Notebook cell", title };
+}
+
+function isSyntheticNotebookFilename(filename: string): boolean {
+  if (!filename) return false;
+  return (
+    /^<ipython-input-\d+-[^>]+>$/.test(filename) ||
+    /(?:^|[/\\])ipykernel_\d+[/\\][^/\\]+\.py$/.test(filename)
   );
 }
 
@@ -517,6 +575,7 @@ function toPayload(data: unknown): TracebackPayload | null {
     evalue: o.evalue,
     frames: Array.isArray(o.frames) ? (o.frames as Frame[]) : undefined,
     language: typeof o.language === "string" ? o.language : undefined,
+    execution: isExecutionInfo(o.execution) ? o.execution : undefined,
     text: typeof o.text === "string" ? o.text : undefined,
     raw: Array.isArray(o.raw) ? (o.raw as string[]) : undefined,
     syntax: isSyntaxInfo(o.syntax) ? o.syntax : undefined,
@@ -534,6 +593,12 @@ function isSyntaxInfo(v: unknown): v is SyntaxInfo {
     typeof s.msg === "string"
   );
   // end_lineno / end_offset are optional — we don't require them.
+}
+
+function isExecutionInfo(v: unknown): v is ExecutionInfo {
+  if (!v || typeof v !== "object") return false;
+  const e = v as Record<string, unknown>;
+  return e.execution_id === undefined || typeof e.execution_id === "string";
 }
 
 function safeStringify(x: unknown): string {

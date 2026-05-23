@@ -39,6 +39,18 @@ pub struct RichLine {
     pub highlight: bool,
 }
 
+/// Stable source identity for notebook-compiled frames.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RichSourceRef {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiled_filename: Option<String>,
+}
+
 /// A single frame in a rich traceback.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RichFrame {
@@ -50,6 +62,8 @@ pub struct RichFrame {
     pub execution_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<RichSourceRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lines: Option<Vec<RichLine>>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -73,6 +87,8 @@ pub struct RichSyntax {
     pub execution_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<RichSourceRef>,
     #[serde(default)]
     pub end_lineno: u32,
     #[serde(default)]
@@ -118,7 +134,7 @@ pub enum UserErrorOutput {
         traceback: Vec<String>,
     },
     /// Launcher-emitted rich payload.
-    Rich(RichTraceback),
+    Rich(Box<RichTraceback>),
 }
 
 impl UserErrorOutput {
@@ -140,8 +156,12 @@ impl UserErrorOutput {
                 evalue: err.evalue.clone(),
                 traceback: err.traceback.clone(),
             }),
-            J::DisplayData(dd) => media_rich(&dd.data).map(UserErrorOutput::Rich),
-            J::ExecuteResult(er) => media_rich(&er.data).map(UserErrorOutput::Rich),
+            J::DisplayData(dd) => {
+                media_rich(&dd.data).map(|rt| UserErrorOutput::Rich(Box::new(rt)))
+            }
+            J::ExecuteResult(er) => {
+                media_rich(&er.data).map(|rt| UserErrorOutput::Rich(Box::new(rt)))
+            }
             _ => None,
         }
     }
@@ -179,7 +199,7 @@ impl UserErrorOutput {
             }
             "display_data" | "execute_result" => {
                 let raw = output.get("data")?.get(TRACEBACK_MIME)?;
-                rich_from_value(raw).map(UserErrorOutput::Rich)
+                rich_from_value(raw).map(|rt| UserErrorOutput::Rich(Box::new(rt)))
             }
             _ => None,
         }
@@ -217,7 +237,7 @@ impl UserErrorOutput {
     /// to build one (no frames parsed out of the ANSI strings).
     pub fn to_rich(&self) -> Option<RichTraceback> {
         match self {
-            UserErrorOutput::Rich(rt) => Some(rt.clone()),
+            UserErrorOutput::Rich(rt) => Some(rt.as_ref().clone()),
             UserErrorOutput::Classic {
                 ename,
                 evalue,
@@ -363,6 +383,7 @@ impl PendingFrame {
             name: self.name,
             execution_id: None,
             source_hash: None,
+            source_ref: None,
             lines: if self.lines.is_empty() {
                 None
             } else {
@@ -792,7 +813,13 @@ mod tests {
                         "lineno": 2,
                         "name": "boom",
                         "execution_id": "exec-def",
-                        "source_hash": "sha256:abc"
+                        "source_hash": "sha256:abc",
+                        "source_ref": {
+                            "kind": "notebook_execution",
+                            "execution_id": "exec-def",
+                            "source_hash": "sha256:abc",
+                            "compiled_filename": "/tmp/ipykernel_1/123.py"
+                        }
                     }],
                     "text": "RuntimeError: bad"
                 }
@@ -810,6 +837,13 @@ mod tests {
         );
         assert_eq!(rt.frames[0].execution_id.as_deref(), Some("exec-def"));
         assert_eq!(rt.frames[0].source_hash.as_deref(), Some("sha256:abc"));
+        assert_eq!(
+            rt.frames[0]
+                .source_ref
+                .as_ref()
+                .map(|source_ref| source_ref.kind.as_str()),
+            Some("notebook_execution")
+        );
     }
 
     #[test]
@@ -837,7 +871,7 @@ mod tests {
             text: "Traceback (most recent call last):\n  File \"/tmp/x.py\", line 1, in <module>\n    1/0\nZeroDivisionError: division by zero".into(),
             syntax: None,
         };
-        let ue = UserErrorOutput::Rich(rt);
+        let ue = UserErrorOutput::Rich(Box::new(rt));
         let (ename, evalue, tb) = ue.to_classic();
         assert_eq!(ename, "ZeroDivisionError");
         assert_eq!(evalue, "division by zero");
@@ -1041,7 +1075,7 @@ mod tests {
             text: "Traceback (most recent call last):\n  File \"/tmp/x.py\", line 1, in t\n    assert False, \"line one\\nline two\\nline three\"\nAssertionError: line one\nline two\nline three".into(),
             syntax: None,
         };
-        let (ename, evalue, tb) = UserErrorOutput::Rich(rt).to_classic();
+        let (ename, evalue, tb) = UserErrorOutput::Rich(Box::new(rt)).to_classic();
         assert_eq!(ename, "AssertionError");
         assert!(evalue.contains("line one") && evalue.contains("line three"));
         // Interior blank lines would become empty strings in the array;
@@ -1067,7 +1101,7 @@ mod tests {
             text: "line1\nline2\n".into(),
             syntax: None,
         };
-        let (_, _, tb) = UserErrorOutput::Rich(rt).to_classic();
+        let (_, _, tb) = UserErrorOutput::Rich(Box::new(rt)).to_classic();
         // "line1\n" "line2\n" → ["line1", "line2"].
         // `split_inclusive` does NOT produce a trailing empty entry for
         // "foo\n", so we get exactly two strings.
