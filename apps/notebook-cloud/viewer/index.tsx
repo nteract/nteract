@@ -141,8 +141,6 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
     kind: "loading",
     message: "Loading notebook snapshot...",
   });
-  const [connection, setConnection] = useState("anonymous viewer connecting");
-  const [revision, setRevision] = useState("");
   const [cells, setCells] = useState<ResolvedCell[]>([]);
 
   useEffect(() => {
@@ -173,7 +171,6 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         );
         if (cancelled) return;
 
-        setRevision(render.heads_hash ? `Revision ${render.heads_hash}` : "");
         setCells(resolvedCells);
         if (resolvedCells.length === 0) {
           setStatus({ kind: "empty", message: "This published notebook has no cells." });
@@ -198,42 +195,22 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
   }, [blobResolver, config.renderEndpoint]);
 
   useEffect(
-    () => connectAnonymousViewer(config.syncEndpoint, setConnection),
+    () => connectAnonymousViewer(config.syncEndpoint, () => undefined),
     [config.syncEndpoint],
   );
 
   return (
     <main className="flex min-h-screen w-full flex-col py-4">
-      <header className="mb-4 flex flex-col gap-3 px-8 pr-4 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-normal">nteract cloud notebook</h1>
-          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
-            <span>
-              Notebook <code className="text-foreground">{config.notebookId}</code>
-            </span>
-            {revision ? <span>{revision}</span> : null}
-            <span>{connection}</span>
-          </div>
-        </div>
-        <nav className="flex flex-wrap gap-2" aria-label="Notebook links">
-          <a
-            className="cloud-link-button"
-            href={`/n/${encodeURIComponent(config.notebookId)}/debug`}
-          >
-            Debug
-          </a>
-          <a className="cloud-link-button" href={`/api/n/${encodeURIComponent(config.notebookId)}`}>
-            Catalog JSON
-          </a>
-        </nav>
-      </header>
+      <h1 className="sr-only">nteract cloud notebook {config.notebookId}</h1>
 
-      <div className="cloud-state mx-8 mr-4" data-kind={status.kind}>
-        {status.message}
-      </div>
+      {status.kind === "ready" ? null : (
+        <div className="cloud-state mx-8 mr-4" data-kind={status.kind}>
+          {status.message}
+        </div>
+      )}
 
       <section
-        className="mt-4 flex min-h-0 flex-1 flex-col overflow-x-clip overscroll-x-contain pl-8 pr-2"
+        className="flex min-h-0 flex-1 flex-col overflow-x-clip overscroll-x-contain pl-8 pr-2"
         aria-label="Notebook cells"
       >
         {cells.map((cell, index) => (

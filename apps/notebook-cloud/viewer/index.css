@@ -30,15 +30,6 @@ body {
   background: color-mix(in srgb, #b42318 8%, var(--background));
 }
 
-.cloud-link-button {
-  border: 1px solid color-mix(in srgb, var(--foreground) 22%, transparent);
-  border-radius: 6px;
-  color: var(--foreground);
-  padding: 0.45rem 0.65rem;
-  text-decoration: none;
-  font-size: 0.8125rem;
-}
-
 .cloud-cell {
   margin-inline: -1rem;
   padding-inline: 1rem;
