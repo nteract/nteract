@@ -117,12 +117,15 @@ describe("message type whitelist completeness", () => {
       "render_complete",
       "resize",
       "link_click",
+      "traceback_navigate",
+      "dblclick",
       "widget_update",
       "error",
       "renderer_ready",
       "widget_ready",
       "widget_comm_msg",
       "widget_comm_close",
+      "search_results",
     ];
 
     for (const type of allIframeMessageTypes) {

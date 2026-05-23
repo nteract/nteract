@@ -5,6 +5,7 @@ import { OutputArea, type JupyterOutput } from "../OutputArea";
 
 let mockDarkMode = false;
 let mockColorTheme: string | undefined;
+let lastFrameMessageHandler: ((message: unknown) => void) | undefined;
 
 const mockFrameHandle = {
   send: vi.fn(),
@@ -40,11 +41,12 @@ vi.mock("@/components/isolated", async () => {
       allowWheelBoundaryScroll?: boolean;
       autoHeight?: boolean;
       hostContext?: unknown;
+      onMessage?: (message: unknown) => void;
       scrollPassthrough?: boolean;
       onReady?: () => void;
     }
   >(function MockIsolatedFrame(
-    { allowWheelBoundaryScroll, autoHeight, hostContext, scrollPassthrough, onReady },
+    { allowWheelBoundaryScroll, autoHeight, hostContext, onMessage, scrollPassthrough, onReady },
     ref,
   ) {
     React.useImperativeHandle(ref, () => mockFrameHandle);
@@ -52,6 +54,15 @@ vi.mock("@/components/isolated", async () => {
     React.useEffect(() => {
       onReady?.();
     }, [onReady]);
+
+    React.useEffect(() => {
+      lastFrameMessageHandler = onMessage;
+      return () => {
+        if (lastFrameMessageHandler === onMessage) {
+          lastFrameMessageHandler = undefined;
+        }
+      };
+    }, [onMessage]);
 
     return (
       <div
@@ -90,7 +101,7 @@ function makeStreamOutput(text = "hey\n"): JupyterOutput[] {
   ];
 }
 
-function makeStreamThenHtmlOutput(): JupyterOutput[] {
+function makeMixedIsolatedOutputs(): JupyterOutput[] {
   return [
     {
       output_type: "stream",
@@ -100,16 +111,6 @@ function makeStreamThenHtmlOutput(): JupyterOutput[] {
     {
       output_type: "display_data",
       data: { "text/html": "<b>unsafe html</b>" },
-      metadata: {},
-    },
-  ];
-}
-
-function makeHtmlThenTracebackOutput(): JupyterOutput[] {
-  return [
-    {
-      output_type: "display_data",
-      data: { "text/html": "<b>test</b>" },
       metadata: {},
     },
     {
@@ -129,22 +130,9 @@ function makeHtmlThenTracebackOutput(): JupyterOutput[] {
             source_ref: {
               kind: "notebook_execution",
               execution_id: "exec-run",
-              execution_count: 6,
-              compiled_filename: "/var/folders/x/T/ipykernel_39879/258099874.py",
+              source_hash: "source-hash-run",
             },
             lines: [{ lineno: 4, source: "f(200)", highlight: true }],
-          },
-          {
-            filename: "/var/folders/x/T/ipykernel_39879/3398808089.py",
-            lineno: 4,
-            name: "f",
-            source_ref: {
-              kind: "notebook_execution",
-              execution_id: "exec-def",
-              execution_count: 3,
-              compiled_filename: "/var/folders/x/T/ipykernel_39879/3398808089.py",
-            },
-            lines: [{ lineno: 4, source: "return f(n) + f(n - 1)", highlight: true }],
           },
         ],
       },
@@ -194,6 +182,7 @@ describe("OutputArea iframe theme sync", () => {
     mockFrameHandle.clear.mockClear();
     mockFrameHandle.search.mockClear();
     mockFrameHandle.searchNavigate.mockClear();
+    lastFrameMessageHandler = undefined;
     vi.mocked(injectPluginsForMimes).mockResolvedValue(undefined);
     vi.mocked(needsPlugin).mockReturnValue(false);
   });
@@ -462,52 +451,62 @@ describe("OutputArea iframe theme sync", () => {
     expect(outputContent.style.maxHeight).toBe("");
   });
 
-  it("keeps safe stream outputs in-DOM before an isolated HTML output", async () => {
-    render(<OutputArea outputs={makeStreamThenHtmlOutput()} />);
-
-    expect(screen.getByText("stream before")).toBeInTheDocument();
-
-    await waitFor(() => {
-      expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
-        expect.objectContaining({
-          mimeType: "text/html",
-          data: "<b>unsafe html</b>",
-          outputIndex: 1,
-        }),
-      ]);
-    });
-
-    expect(mockFrameHandle.renderBatch).not.toHaveBeenCalledWith([
-      expect.objectContaining({ data: expect.stringContaining("stream before") }),
-    ]);
-  });
-
-  it("keeps rich tracebacks in-DOM when a sibling output needs isolation", async () => {
+  it("keeps mixed auto-isolated outputs together in one iframe render batch", async () => {
     const onNavigateToTracebackCell = vi.fn();
 
     render(
       <OutputArea
-        outputs={makeHtmlThenTracebackOutput()}
-        resolveTracebackExecutionTarget={(executionId) => {
-          if (executionId === "exec-run") return { cellId: "cell-run" };
-          if (executionId === "exec-def") return { cellId: "cell-def" };
-          return null;
-        }}
+        outputs={makeMixedIsolatedOutputs()}
+        resolveTracebackExecutionTarget={(executionId, sourceHash) =>
+          executionId === "exec-run" && sourceHash === "source-hash-run"
+            ? { cellId: "cell-run", label: "Run Cell" }
+            : null
+        }
         onNavigateToTracebackCell={onNavigateToTracebackCell}
       />,
     );
 
     await waitFor(() => {
       expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
-        expect.objectContaining({ mimeType: "text/html", data: "<b>test</b>", outputIndex: 0 }),
+        expect.objectContaining({
+          mimeType: "text/plain",
+          data: "stream before\n",
+          outputIndex: 0,
+        }),
+        expect.objectContaining({
+          mimeType: "text/html",
+          data: "<b>unsafe html</b>",
+          outputIndex: 1,
+        }),
+        expect.objectContaining({
+          mimeType: "application/vnd.nteract.traceback+json",
+          data: expect.objectContaining({ ename: "RecursionError" }),
+          metadata: expect.objectContaining({
+            tracebackExecutionTargets: [
+              {
+                execution_id: "exec-run",
+                source_hash: "source-hash-run",
+                target: { cellId: "cell-run", label: "Run Cell" },
+              },
+            ],
+          }),
+          outputIndex: 2,
+        }),
       ]);
     });
 
-    expect(screen.getByText("RecursionError")).toBeInTheDocument();
-    expect(screen.queryByText("In[6]")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Go to cell cell-def" }));
+    expect(screen.queryByText("stream before")).toBeNull();
+    expect(screen.queryByText("RecursionError")).toBeNull();
 
-    expect(onNavigateToTracebackCell).toHaveBeenCalledWith({ cellId: "cell-def" });
+    lastFrameMessageHandler?.({
+      type: "traceback_navigate",
+      payload: { target: { cellId: "cell-run", label: "Run Cell" } },
+    });
+
+    expect(onNavigateToTracebackCell).toHaveBeenCalledWith({
+      cellId: "cell-run",
+      label: "Run Cell",
+    });
   });
 
   it("constrains isolated iframe outputs when maxHeight is explicit", () => {

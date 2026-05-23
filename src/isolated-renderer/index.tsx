@@ -49,7 +49,11 @@ import { ImageOutput } from "@/components/outputs/image-output";
 import { JavaScriptOutput } from "@/components/outputs/javascript-output";
 import { JsonOutput } from "@/components/outputs/json-output";
 import { PdfOutput } from "@/components/outputs/pdf-output";
-import { TracebackOutput } from "@/components/outputs/traceback-output";
+import {
+  TracebackOutput,
+  type TracebackCellTarget,
+  type TracebackExecutionResolver,
+} from "@/components/outputs/traceback-output";
 import { VideoOutput } from "@/components/outputs/video-output";
 import { SvgOutput } from "@/components/outputs/svg-output";
 import { WidgetView } from "@/components/widgets/widget-view";
@@ -620,6 +624,53 @@ function IsolatedRendererApp() {
   );
 }
 
+interface TracebackExecutionTargetEntry {
+  execution_id: string;
+  source_hash?: string;
+  target: TracebackCellTarget;
+}
+
+function tracebackTargetKey(executionId: string, sourceHash?: string): string {
+  return `${executionId}\u0000${sourceHash ?? ""}`;
+}
+
+function tracebackExecutionResolver(
+  metadata: RenderPayload["metadata"],
+): TracebackExecutionResolver | undefined {
+  const entries = metadata?.tracebackExecutionTargets;
+  if (!Array.isArray(entries)) return undefined;
+
+  const targets = new Map<string, TracebackCellTarget>();
+  for (const entry of entries) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry as Partial<TracebackExecutionTargetEntry>;
+    if (typeof record.execution_id !== "string") continue;
+    if (record.source_hash != null && typeof record.source_hash !== "string") continue;
+    const target = record.target;
+    if (typeof target !== "object" || target === null || typeof target.cellId !== "string") {
+      continue;
+    }
+    targets.set(tracebackTargetKey(record.execution_id, record.source_hash), target);
+  }
+
+  if (targets.size === 0) return undefined;
+
+  return (executionId, sourceHash) =>
+    targets.get(tracebackTargetKey(executionId, sourceHash)) ??
+    targets.get(tracebackTargetKey(executionId)) ??
+    null;
+}
+
+function postTracebackNavigation(target: TracebackCellTarget): void {
+  window.parent.postMessage(
+    {
+      type: "traceback_navigate",
+      payload: { target },
+    },
+    "*",
+  );
+}
+
 /**
  * Render a single output based on its MIME type.
  * Uses direct component imports (not lazy loading) for isolated iframe compatibility.
@@ -648,7 +699,13 @@ function OutputRenderer({
   // fallback so cells that mix rich outputs with errors (e.g., display
   // HTML then raise) still get the rich render inside the iframe.
   if (mimeType === "application/vnd.nteract.traceback+json") {
-    return <TracebackOutput data={data} />;
+    return (
+      <TracebackOutput
+        data={data}
+        resolveExecutionTarget={tracebackExecutionResolver(metadata)}
+        onNavigateToCell={postTracebackNavigation}
+      />
+    );
   }
 
   // Handle error output (classic ANSI path — fallback when no rich

@@ -22,6 +22,7 @@ export type {
   RenderPayload,
   ResizeMessage,
   ThemeMessage,
+  TracebackNavigateMessage,
   WidgetStateMessage,
   WidgetUpdateMessage,
 } from "./frame-bridge";
