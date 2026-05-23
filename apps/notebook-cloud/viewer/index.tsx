@@ -3,11 +3,11 @@ import { createRoot } from "react-dom/client";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { ExecutionCount } from "@/components/cell/ExecutionCount";
 import { OutputArea } from "@/components/cell/OutputArea";
-import { StaticCodeBlock } from "@/components/editor/static-highlight";
+import { ReadOnlyCodeMirror } from "@/components/editor/readonly-codemirror";
+import type { SupportedLanguage } from "@/components/editor/languages";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { MediaProvider } from "@/components/outputs/media-provider";
-import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
 import { resolveCell, type RenderCell, type ResolvedCell } from "./render-resolution";
@@ -284,18 +284,17 @@ function renderCellSource(
 }
 
 function ReadonlySource({ source, language }: { source: string; language: string }) {
-  const isDark = useDarkMode();
-  const colorTheme = (useColorTheme() ?? "classic") as "classic" | "cream";
-
   return (
-    <StaticCodeBlock
-      code={source}
-      language={language}
-      isDark={isDark}
-      colorTheme={colorTheme}
+    <ReadOnlyCodeMirror
+      value={source}
+      language={cloudSourceLanguage(language)}
       className="cloud-source-block"
     />
   );
+}
+
+function cloudSourceLanguage(language: string): SupportedLanguage {
+  return language === "python" ? "ipython" : "plain";
 }
 
 function connectAnonymousViewer(

@@ -4,6 +4,7 @@ export {
   type CodeMirrorEditorRef,
   externalChangeAnnotation,
 } from "./codemirror-editor";
+export { ReadOnlyCodeMirror, type ReadOnlyCodeMirrorProps } from "./readonly-codemirror";
 export {
   coreSetup,
   defaultExtensions,

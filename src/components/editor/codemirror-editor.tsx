@@ -1,4 +1,4 @@
-import { Annotation, type Extension, Compartment } from "@codemirror/state";
+import { Annotation, type Extension, Compartment, EditorState } from "@codemirror/state";
 import {
   EditorView,
   type KeyBinding,
@@ -333,7 +333,7 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
     useEffect(() => {
       viewRef.current?.dispatch({
         effects: readOnlyCompartment.current.reconfigure(
-          readOnly ? EditorView.editable.of(false) : [],
+          readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : [],
         ),
       });
     }, [readOnly]);
