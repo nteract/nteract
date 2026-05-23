@@ -39,6 +39,7 @@ interface Frame {
   name: string;
   /** Execution provenance for clients that want to jump to source. */
   execution_id?: string;
+  execution_count?: number;
   source_hash?: string;
   source_ref?: SourceRef;
   /** Optional source-context window — lines around `lineno`. */
@@ -59,6 +60,7 @@ interface SyntaxInfo {
   lineno: number;
   offset: number;
   execution_id?: string;
+  execution_count?: number;
   source_hash?: string;
   source_ref?: SourceRef;
   /**
@@ -88,11 +90,13 @@ interface TracebackPayload {
   language?: string;
   execution?: ExecutionInfo;
   /**
-   * Paste-ready plain text version of the traceback — ANSI-stripped,
-   * in the same shape the kernel would emit as `text/llm+plain`. Used
-   * by the Copy button. Kernel owns this; we don't re-synthesize.
+   * Paste/LLM-ready plain text version of the traceback. The launcher
+   * normalizes notebook source refs here so copy paths avoid ipykernel
+   * temp filenames.
    */
   text?: string;
+  /** Raw Python `traceback.format_exception` output for debugging. */
+  raw_text?: string;
   /** Raw traceback strings, for cases where we couldn't parse. */
   raw?: string[];
   /**
@@ -105,11 +109,13 @@ interface TracebackPayload {
 
 interface ExecutionInfo {
   execution_id?: string;
+  execution_count?: number;
 }
 
 interface SourceRef {
   kind?: string;
   execution_id?: string;
+  execution_count?: number;
   source_hash?: string;
   compiled_filename?: string;
 }
@@ -174,13 +180,6 @@ export function TracebackOutput({ data, className }: Props) {
     return !c.frame.library;
   };
 
-  // Single-frame polish: when there's exactly one user frame named
-  // `<module>` (cell top-level), skip the chevron row and render the
-  // source block directly. Most real cell errors are this shape; the
-  // ceremonial per-frame row is just noise.
-  const collapseSingleFrame =
-    clusters.length === 1 && clusters[0].frame.name === "<module>" && !clusters[0].frame.library;
-
   // Inline `ename: evalue` on one line when the evalue fits. Multi-line
   // evalues (pytest diffs, chained SQL errors) fall through to the
   // two-line layout. Independent of frame count — a short evalue next
@@ -208,11 +207,11 @@ export function TracebackOutput({ data, className }: Props) {
         inlineEvalue={inlineEvalue || Boolean(payload.syntax?.msg)}
       />
       {payload.syntax ? (
-        <SyntaxErrorBlock syntax={payload.syntax} language={language} />
-      ) : collapseSingleFrame && clusters[0].frame.lines && clusters[0].frame.lines.length > 0 ? (
-        <div className="px-3 pb-2">
-          <SourceBlock lines={clusters[0].frame.lines} language={language} />
-        </div>
+        <SyntaxErrorBlock
+          syntax={payload.syntax}
+          language={language}
+          currentExecutionId={currentExecutionId}
+        />
       ) : (
         clusters.length > 0 && (
           <ol className="divide-y divide-destructive/15">
@@ -290,7 +289,15 @@ function Header({
  * that'd be useful). If `text` is empty (older Python versions don't
  * always populate it), we show just the header.
  */
-function SyntaxErrorBlock({ syntax, language }: { syntax: SyntaxInfo; language: string }) {
+function SyntaxErrorBlock({
+  syntax,
+  language,
+  currentExecutionId,
+}: {
+  syntax: SyntaxInfo;
+  language: string;
+  currentExecutionId?: string;
+}) {
   const isDark = useDarkMode();
   const rawTheme = useColorTheme();
   const colorTheme = rawTheme === "cream" ? "cream" : "classic";
@@ -314,39 +321,45 @@ function SyntaxErrorBlock({ syntax, language }: { syntax: SyntaxInfo; language: 
   const underline = "^".repeat(underlineLen);
 
   const gutterWidth = String(syntax.lineno || 1).length;
+  const location = sourceLocation(syntax, currentExecutionId);
 
   return (
-    <pre
-      className={cn(
-        "mx-3 mb-2 overflow-x-auto rounded border border-destructive/15 bg-muted/40",
-        "px-2 py-1.5 leading-5",
-      )}
-      style={{ fontFamily: CM_FONT_FAMILY, fontSize: "13px" }}
-    >
-      <div className="grid grid-cols-[auto_1fr] gap-x-3 border-l-2 border-destructive bg-destructive/10 pl-1.5">
-        <span
-          className="select-none text-right font-semibold tabular-nums text-destructive"
-          style={{ minWidth: `${gutterWidth}ch` }}
-        >
-          ▸{String(syntax.lineno || 1).padStart(gutterWidth, " ")}
-        </span>
-        <code className="whitespace-pre">
-          {highlight(syntax.text, language, isDark, colorTheme)}
-        </code>
+    <div className="px-3 pb-2">
+      <div className="mb-1.5 font-mono text-xs text-muted-foreground" title={location.title}>
+        <LocationLabel location={location} line={syntax.lineno || 1} />
       </div>
-      <div className="grid grid-cols-[auto_1fr] gap-x-3 border-l-2 border-transparent pl-1.5">
-        <span
-          className="select-none text-right tabular-nums text-muted-foreground/50"
-          style={{ minWidth: `${gutterWidth}ch` }}
-        >
-          {" ".repeat(gutterWidth + 1)}
-        </span>
-        <code className="whitespace-pre font-semibold text-destructive">
-          {underlinePadding}
-          <span aria-hidden="true">{underline}</span>
-        </code>
-      </div>
-    </pre>
+      <pre
+        className={cn(
+          "overflow-x-auto rounded border border-destructive/15 bg-muted/40",
+          "px-2 py-1.5 leading-5",
+        )}
+        style={{ fontFamily: CM_FONT_FAMILY, fontSize: "13px" }}
+      >
+        <div className="grid grid-cols-[auto_1fr] gap-x-3 border-l-2 border-destructive bg-destructive/10 pl-1.5">
+          <span
+            className="select-none text-right font-semibold tabular-nums text-destructive"
+            style={{ minWidth: `${gutterWidth}ch` }}
+          >
+            ▸{String(syntax.lineno || 1).padStart(gutterWidth, " ")}
+          </span>
+          <code className="whitespace-pre">
+            {highlight(syntax.text, language, isDark, colorTheme)}
+          </code>
+        </div>
+        <div className="grid grid-cols-[auto_1fr] gap-x-3 border-l-2 border-transparent pl-1.5">
+          <span
+            className="select-none text-right tabular-nums text-muted-foreground/50"
+            style={{ minWidth: `${gutterWidth}ch` }}
+          >
+            {" ".repeat(gutterWidth + 1)}
+          </span>
+          <code className="whitespace-pre font-semibold text-destructive">
+            {underlinePadding}
+            <span aria-hidden="true">{underline}</span>
+          </code>
+        </div>
+      </pre>
+    </div>
   );
 }
 
@@ -354,14 +367,7 @@ function CopyButton({ payload }: { payload: TracebackPayload }) {
   const [copied, setCopied] = useState(false);
 
   const onClick = async () => {
-    // Paste-ready text comes from the payload. The kernel already has
-    // the ANSI-stripped traceback in the shape every AI and search
-    // engine expects — re-synthesizing it here would just drift.
-    const text =
-      payload.text ??
-      (payload.raw && payload.raw.length > 0
-        ? `${payload.raw.join("\n")}\n${payload.ename}: ${payload.evalue}`
-        : `${payload.ename}: ${payload.evalue}`);
+    const text = tracebackCopyText(payload);
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
@@ -409,7 +415,7 @@ function FrameRow({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const { frame, count } = cluster;
-  const location = frameLocation(frame, currentExecutionId);
+  const location = sourceLocation(frame, currentExecutionId);
   return (
     <li className={cn("px-3 py-1.5", frame.library && "opacity-60")}>
       <button
@@ -425,13 +431,7 @@ function FrameRow({
             open && "rotate-90",
           )}
         />
-        <span className="truncate text-muted-foreground" title={location.title}>
-          {location.label}
-        </span>
-        <span className="text-muted-foreground">:</span>
-        <span className="tabular-nums text-muted-foreground">{frame.lineno}</span>
-        <span className="text-muted-foreground">in</span>
-        <span className="truncate">{frame.name}</span>
+        <LocationLabel location={location} line={frame.lineno} name={frame.name} />
         {count > 1 && (
           <span
             className={cn(
@@ -451,36 +451,94 @@ function FrameRow({
   );
 }
 
-function frameLocation(
-  frame: Frame,
+interface SourceLocation {
+  kind: "notebook" | "file";
+  label: string;
+  executionLabel?: string;
+  title: string;
+}
+
+function LocationLabel({
+  location,
+  line,
+  name,
+}: {
+  location: SourceLocation;
+  line: number;
+  name?: string;
+}) {
+  const showName = Boolean(name && name !== "<module>");
+  return (
+    <span className="flex min-w-0 items-center gap-1.5" title={location.title}>
+      <span className="shrink-0 text-muted-foreground">Line</span>
+      <span className="shrink-0 tabular-nums text-muted-foreground">{line}</span>
+      <span className="shrink-0 text-muted-foreground">in</span>
+      <span className="truncate text-muted-foreground">{location.label}</span>
+      {location.executionLabel && (
+        <code className="shrink-0 rounded bg-muted px-1 py-0.5 text-[11px] text-muted-foreground">
+          {location.executionLabel}
+        </code>
+      )}
+      {showName && (
+        <>
+          <span className="shrink-0 text-muted-foreground">in</span>
+          <span className="truncate">{name}</span>
+        </>
+      )}
+    </span>
+  );
+}
+
+function sourceLocation(
+  source: Pick<
+    Frame | SyntaxInfo,
+    "filename" | "execution_id" | "execution_count" | "source_hash" | "source_ref"
+  >,
   currentExecutionId: string | undefined,
-): { label: string; title: string } {
-  const sourceRef = frame.source_ref;
-  const executionId = sourceRef?.execution_id ?? frame.execution_id;
-  const sourceHash = sourceRef?.source_hash ?? frame.source_hash;
-  const compiledFilename = sourceRef?.compiled_filename ?? frame.filename;
+): SourceLocation {
+  const sourceRef = source.source_ref;
+  const executionId = sourceRef?.execution_id ?? source.execution_id;
+  const executionCount = sourceRef?.execution_count ?? source.execution_count;
+  const sourceHash = sourceRef?.source_hash ?? source.source_hash;
+  const compiledFilename = sourceRef?.compiled_filename ?? source.filename;
   const titleParts = [];
   if (executionId) titleParts.push(`Execution: ${executionId}`);
+  if (executionCount !== undefined) titleParts.push(`Input: In[${executionCount}]`);
   if (sourceHash) titleParts.push(`Source: ${sourceHash}`);
   if (compiledFilename) titleParts.push(`Compiled file: ${compiledFilename}`);
-  const title = titleParts.join("\n") || frame.filename || "Unknown source";
+  const title = titleParts.join("\n") || source.filename || "Unknown source";
 
   const isNotebookSource =
-    sourceRef?.kind === "notebook_execution" || isSyntheticNotebookFilename(frame.filename);
+    sourceRef?.kind === "notebook_execution" || isSyntheticNotebookFilename(source.filename);
 
   if (!isNotebookSource) {
-    return { label: frame.filename || "Unknown source", title };
+    return { kind: "file", label: source.filename || "Unknown source", title };
   }
 
   if (executionId && executionId === currentExecutionId) {
-    return { label: "Current cell", title };
+    return {
+      kind: "notebook",
+      label: "Current Cell",
+      executionLabel: executionCount === undefined ? undefined : `In[${executionCount}]`,
+      title,
+    };
   }
 
   if (executionId) {
-    return { label: "Earlier cell execution", title };
+    return {
+      kind: "notebook",
+      label: "Earlier Cell",
+      executionLabel: executionCount === undefined ? undefined : `In[${executionCount}]`,
+      title,
+    };
   }
 
-  return { label: "Notebook cell", title };
+  return {
+    kind: "notebook",
+    label: "Notebook Cell",
+    executionLabel: executionCount === undefined ? undefined : `In[${executionCount}]`,
+    title,
+  };
 }
 
 function isSyntheticNotebookFilename(filename: string): boolean {
@@ -489,6 +547,87 @@ function isSyntheticNotebookFilename(filename: string): boolean {
     /^<ipython-input-\d+-[^>]+>$/.test(filename) ||
     /(?:^|[/\\])ipykernel_\d+[/\\][^/\\]+\.py$/.test(filename)
   );
+}
+
+function tracebackCopyText(payload: TracebackPayload): string {
+  const synthesized = synthesizeTracebackText(payload);
+  if (synthesized) return synthesized;
+  return (
+    payload.text ??
+    (payload.raw && payload.raw.length > 0
+      ? `${payload.raw.join("\n")}\n${payload.ename}: ${payload.evalue}`
+      : `${payload.ename}: ${payload.evalue}`)
+  );
+}
+
+function synthesizeTracebackText(payload: TracebackPayload): string | null {
+  const frames = payload.frames ?? [];
+  const currentExecutionId = payload.execution?.execution_id;
+  const hasNotebookSource =
+    (payload.syntax && isNotebookSource(payload.syntax)) || frames.some(isNotebookSource);
+  if (!hasNotebookSource) {
+    return null;
+  }
+
+  const out = ["Traceback (most recent call last):"];
+  if (payload.syntax) {
+    out.push(`  ${copyLocationLine(payload.syntax, currentExecutionId)}`);
+    if (payload.syntax.text) {
+      out.push(`    ${payload.syntax.text}`);
+      const caret = syntaxCaretLine(payload.syntax);
+      if (caret) out.push(`    ${caret}`);
+    }
+  } else {
+    for (const frame of frames) {
+      out.push(`  ${copyLocationLine(frame, currentExecutionId, frame.name)}`);
+      const source = highlightedSourceLine(frame.lines);
+      if (source) out.push(`    ${source}`);
+    }
+  }
+  out.push(`${payload.ename}: ${payload.evalue}`);
+  return out.join("\n");
+}
+
+function copyLocationLine(
+  source: Pick<
+    Frame | SyntaxInfo,
+    "filename" | "lineno" | "execution_id" | "execution_count" | "source_ref"
+  >,
+  currentExecutionId: string | undefined,
+  name?: string,
+): string {
+  if (!isNotebookSource(source)) {
+    return `File "${source.filename || "<unknown>"}", line ${source.lineno}, in ${
+      name || "<module>"
+    }`;
+  }
+
+  const location = sourceLocation(source, currentExecutionId);
+  let line = `Line ${source.lineno} in ${location.label}`;
+  if (location.executionLabel) line += ` (${location.executionLabel})`;
+  if (name && name !== "<module>") line += `, in ${name}`;
+  return line;
+}
+
+function isNotebookSource(source: Pick<Frame | SyntaxInfo, "filename" | "source_ref">): boolean {
+  return (
+    source.source_ref?.kind === "notebook_execution" || isSyntheticNotebookFilename(source.filename)
+  );
+}
+
+function highlightedSourceLine(lines: Line[] | undefined): string | undefined {
+  if (!lines || lines.length === 0) return undefined;
+  return lines.find((line) => line.highlight)?.source ?? lines[0]?.source;
+}
+
+function syntaxCaretLine(syntax: SyntaxInfo): string | undefined {
+  if (!syntax.text) return undefined;
+  const lineLen = syntax.text.length;
+  const startCol = Math.max(1, Math.min(syntax.offset || 1, lineLen + 1));
+  const sameLine = !syntax.end_lineno || syntax.end_lineno === syntax.lineno;
+  const endColRaw = syntax.end_offset ?? 0;
+  const endCol = sameLine && endColRaw > startCol ? Math.min(endColRaw, lineLen + 1) : startCol + 1;
+  return " ".repeat(startCol - 1) + "^".repeat(Math.max(1, endCol - startCol));
 }
 
 function SourceBlock({ lines, language }: { lines: Line[]; language: string }) {
@@ -577,6 +716,7 @@ function toPayload(data: unknown): TracebackPayload | null {
     language: typeof o.language === "string" ? o.language : undefined,
     execution: isExecutionInfo(o.execution) ? o.execution : undefined,
     text: typeof o.text === "string" ? o.text : undefined,
+    raw_text: typeof o.raw_text === "string" ? o.raw_text : undefined,
     raw: Array.isArray(o.raw) ? (o.raw as string[]) : undefined,
     syntax: isSyntaxInfo(o.syntax) ? o.syntax : undefined,
   };
@@ -598,7 +738,10 @@ function isSyntaxInfo(v: unknown): v is SyntaxInfo {
 function isExecutionInfo(v: unknown): v is ExecutionInfo {
   if (!v || typeof v !== "object") return false;
   const e = v as Record<string, unknown>;
-  return e.execution_id === undefined || typeof e.execution_id === "string";
+  return (
+    (e.execution_id === undefined || typeof e.execution_id === "string") &&
+    (e.execution_count === undefined || typeof e.execution_count === "number")
+  );
 }
 
 function safeStringify(x: unknown): string {

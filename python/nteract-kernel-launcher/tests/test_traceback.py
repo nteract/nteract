@@ -267,11 +267,13 @@ def test_syntax_error_emits_syntax_slot_and_no_frames():
 
 
 def test_syntax_error_text_still_present_for_copy_button():
-    # The `text` field (what the Copy button writes) must still round-trip
-    # the canonical "Traceback ..." output so pasting to an LLM works.
+    # The `text` field is what the Copy button writes, so it remains
+    # traceback-shaped even when we sanitize source locations.
     exc = _capture_syntax_error()
     payload = build_rich_payload(type(exc), exc, exc.__traceback__)
     assert "SyntaxError" in payload["text"]
+    assert "Traceback (most recent call last):" in payload["text"]
+    assert "raw_text" in payload
 
 
 def test_indentation_error_takes_syntax_path():
@@ -316,6 +318,7 @@ class _FakeKernelShell(_FakeShell):
         super().__init__()
         self.parent = parent
         self.events = _FakeEvents()
+        self.execution_count = 2
 
     def get_parent(self):
         return self.parent
@@ -338,14 +341,16 @@ def test_install_registers_pre_run_cell_provenance_hook(monkeypatch):
     callbacks = ip.events.callbacks["pre_run_cell"]
     assert len(callbacks) == 1
 
-    callbacks[0](SimpleNamespace(raw_cell="x = 1"))
+    callbacks[0](SimpleNamespace(raw_cell="x = 1", store_history=True, silent=False))
 
     registry = getattr(ip, _traceback._CELL_REGISTRY_ATTR)
     assert registry["/tmp/ipykernel_1/abc.py"]["execution_id"] == "exec-1"
+    assert registry["/tmp/ipykernel_1/abc.py"]["execution_count"] == 1
     assert registry["/tmp/ipykernel_1/abc.py"]["source_hash"].startswith("sha256:")
     assert registry["/tmp/ipykernel_1/abc.py"]["source_ref"] == {
         "kind": "notebook_execution",
         "execution_id": "exec-1",
+        "execution_count": 1,
         "source_hash": registry["/tmp/ipykernel_1/abc.py"]["source_hash"],
         "compiled_filename": "/tmp/ipykernel_1/abc.py",
     }
@@ -356,10 +361,11 @@ def test_build_payload_attaches_execution_provenance_to_prior_function_frame():
     source = "def defined_elsewhere():\n    raise RuntimeError('from definition')\n"
     linecache.cache[filename] = (len(source), None, source.splitlines(True), filename)
     ip = SimpleNamespace(
+        execution_count=4,
         parent_header={
             "metadata": {},
             "header": {"msg_id": "exec-run"},
-        }
+        },
     )
     setattr(
         ip,
@@ -367,10 +373,12 @@ def test_build_payload_attaches_execution_provenance_to_prior_function_frame():
         {
             filename: {
                 "execution_id": "exec-def",
+                "execution_count": 2,
                 "source_hash": "sha256:def",
                 "source_ref": {
                     "kind": "notebook_execution",
                     "execution_id": "exec-def",
+                    "execution_count": 2,
                     "source_hash": "sha256:def",
                     "compiled_filename": filename,
                 },
@@ -388,25 +396,37 @@ def test_build_payload_attaches_execution_provenance_to_prior_function_frame():
 
     frame = next(frame for frame in payload["frames"] if frame["filename"] == filename)
     assert frame["execution_id"] == "exec-def"
+    assert frame["execution_count"] == 2
     assert frame["source_hash"] == "sha256:def"
     assert frame["source_ref"]["kind"] == "notebook_execution"
     assert frame["source_ref"]["compiled_filename"] == filename
-    assert payload["execution"] == {"execution_id": "exec-run"}
+    assert "Line 2 in Earlier Cell (In[2]), in defined_elsewhere" in payload["text"]
+    assert filename not in payload["text"]
+    assert filename in payload["raw_text"]
+    assert payload["execution"] == {"execution_id": "exec-run", "execution_count": 3}
 
 
 def test_syntax_error_payload_attaches_execution_provenance():
     filename = "/tmp/ipykernel_1/syntax.py"
-    ip = SimpleNamespace()
+    ip = SimpleNamespace(
+        execution_count=6,
+        parent_header={
+            "metadata": {"nteract": {"execution_id": "exec-syntax"}},
+            "header": {"msg_id": "exec-syntax"},
+        },
+    )
     setattr(
         ip,
         _traceback._CELL_REGISTRY_ATTR,
         {
             filename: {
                 "execution_id": "exec-syntax",
+                "execution_count": 5,
                 "source_hash": "sha256:syntax",
                 "source_ref": {
                     "kind": "notebook_execution",
                     "execution_id": "exec-syntax",
+                    "execution_count": 5,
                     "source_hash": "sha256:syntax",
                     "compiled_filename": filename,
                 },
@@ -420,8 +440,12 @@ def test_syntax_error_payload_attaches_execution_provenance():
         payload = build_rich_payload(type(exc), exc, exc.__traceback__, ip)
 
     assert payload["syntax"]["execution_id"] == "exec-syntax"
+    assert payload["syntax"]["execution_count"] == 5
     assert payload["syntax"]["source_hash"] == "sha256:syntax"
     assert payload["syntax"]["source_ref"]["kind"] == "notebook_execution"
+    assert "Line 1 in Current Cell (In[5])" in payload["text"]
+    assert filename not in payload["text"]
+    assert filename in payload["raw_text"]
 
 
 def test_install_replaces_showtraceback_and_tags_for_idempotency(monkeypatch):

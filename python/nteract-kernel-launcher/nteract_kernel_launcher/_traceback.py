@@ -180,6 +180,37 @@ def _coerce_metadata_str(value: Any) -> str | None:
     return None
 
 
+def _coerce_execution_count(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value >= 0:
+        return value
+    if isinstance(value, str) and value.isdecimal():
+        return int(value)
+    return None
+
+
+def _current_input_count(ip: Any | None) -> int | None:
+    """Return the current user-visible `In[N]` count when IPython exposes it."""
+    if ip is None:
+        return None
+    count = _coerce_execution_count(getattr(ip, "execution_count", None))
+    if count is None:
+        return None
+    # IPython increments `shell.execution_count` before firing pre_run_cell and
+    # before running user code. The visible prompt for the active cell is one
+    # behind that value.
+    return count - 1 if count > 0 else count
+
+
+def _execution_count_for_info(ip: Any, info: Any) -> int | None:
+    if getattr(info, "silent", False):
+        return None
+    if not getattr(info, "store_history", True):
+        return None
+    return _current_input_count(ip)
+
+
 def _source_hash(source: str) -> str:
     return "sha256:" + hashlib.sha256(source.encode("utf-8")).hexdigest()
 
@@ -212,15 +243,16 @@ def _current_parent(ip: Any | None) -> dict[str, Any]:
     return parent if isinstance(parent, dict) else {}
 
 
-def _current_execution_context(ip: Any | None) -> dict[str, str]:
+def _current_execution_context(ip: Any | None) -> dict[str, Any]:
     parent = _current_parent(ip)
     metadata = _parent_metadata(parent)
     header = parent.get("header") if isinstance(parent, dict) else None
     header = header if isinstance(header, dict) else {}
 
-    context = {
+    context: dict[str, Any] = {
         "execution_id": _metadata_execution_id(metadata)
         or _coerce_metadata_str(header.get("msg_id")),
+        "execution_count": _current_input_count(ip),
     }
     return {key: value for key, value in context.items() if value}
 
@@ -248,6 +280,7 @@ def _register_cell_source(
     raw_cell: Any,
     *,
     execution_id: str | None,
+    execution_count: int | None,
 ) -> None:
     if not isinstance(raw_cell, str):
         return
@@ -259,12 +292,14 @@ def _register_cell_source(
     source_ref = {
         "kind": _NOTEBOOK_EXECUTION_SOURCE_KIND,
         "execution_id": execution_id,
+        "execution_count": execution_count,
         "source_hash": source_hash,
         "compiled_filename": filename,
     }
     source_ref = {key: value for key, value in source_ref.items() if value}
     provenance = {
         "execution_id": execution_id,
+        "execution_count": execution_count,
         "source_hash": source_hash,
         "source_ref": source_ref,
     }
@@ -313,10 +348,12 @@ def _install_cell_registry_hook(ip: Any) -> None:
             execution_id = _metadata_execution_id(metadata) or _coerce_metadata_str(
                 header.get("msg_id")
             )
+            execution_count = _execution_count_for_info(ip, info)
             _register_cell_source(
                 ip,
                 getattr(info, "raw_cell", None),
                 execution_id=execution_id,
+                execution_count=execution_count,
             )
         except BaseException as err:  # noqa: BLE001
             log.debug("rich traceback cell registry hook failed: %r", err)
@@ -397,6 +434,128 @@ def _strip_leading_library_frames(frames: list[dict[str, Any]]) -> list[dict[str
     return frames
 
 
+def _is_notebook_source(item: dict[str, Any]) -> bool:
+    source_ref = item.get("source_ref")
+    return (
+        isinstance(source_ref, dict) and source_ref.get("kind") == _NOTEBOOK_EXECUTION_SOURCE_KIND
+    )
+
+
+def _execution_count_label(item: dict[str, Any]) -> str | None:
+    source_ref = item.get("source_ref")
+    count = None
+    if isinstance(source_ref, dict):
+        count = _coerce_execution_count(source_ref.get("execution_count"))
+    if count is None:
+        count = _coerce_execution_count(item.get("execution_count"))
+    return f"In[{count}]" if count is not None else None
+
+
+def _notebook_source_label(item: dict[str, Any], current_execution_id: str | None) -> str:
+    source_ref = item.get("source_ref")
+    execution_id = item.get("execution_id")
+    if isinstance(source_ref, dict):
+        execution_id = source_ref.get("execution_id") or execution_id
+    if execution_id and execution_id == current_execution_id:
+        return "Current Cell"
+    if execution_id:
+        return "Earlier Cell"
+    return "Notebook Cell"
+
+
+def _format_traceback_location(
+    item: dict[str, Any],
+    *,
+    current_execution_id: str | None,
+    function_name: str | None = None,
+) -> str:
+    lineno = item.get("lineno") or 0
+    if _is_notebook_source(item):
+        label = _notebook_source_label(item, current_execution_id)
+        count_label = _execution_count_label(item)
+        location = f"Line {lineno} in {label}"
+        if count_label:
+            location += f" ({count_label})"
+        if function_name and function_name != "<module>":
+            location += f", in {function_name}"
+        return location
+
+    filename = item.get("filename") or "<unknown>"
+    function = function_name or "<module>"
+    return f'File "{filename}", line {lineno}, in {function}'
+
+
+def _highlighted_source_line(lines: Any) -> str | None:
+    if not isinstance(lines, list):
+        return None
+    for line in lines:
+        if isinstance(line, dict) and line.get("highlight"):
+            source = line.get("source")
+            return source if isinstance(source, str) else None
+    for line in lines:
+        if isinstance(line, dict):
+            source = line.get("source")
+            return source if isinstance(source, str) else None
+    return None
+
+
+def _caret_line(syntax: dict[str, Any]) -> str | None:
+    text = syntax.get("text")
+    if not isinstance(text, str) or not text:
+        return None
+    line_len = len(text)
+    offset = _coerce_execution_count(syntax.get("offset")) or 1
+    start_col = max(1, min(offset, line_len + 1))
+    end_lineno = _coerce_execution_count(syntax.get("end_lineno"))
+    end_offset = _coerce_execution_count(syntax.get("end_offset")) or 0
+    same_line = not end_lineno or end_lineno == syntax.get("lineno")
+    end_col = (
+        min(end_offset, line_len + 1) if same_line and end_offset > start_col else start_col + 1
+    )
+    return " " * (start_col - 1) + "^" * max(1, end_col - start_col)
+
+
+def _format_rich_traceback_text(
+    ename: str,
+    evalue: str,
+    *,
+    frames: list[dict[str, Any]],
+    syntax: dict[str, Any] | None,
+    current_execution_id: str | None,
+) -> str:
+    out = ["Traceback (most recent call last):"]
+    if syntax is not None:
+        out.append(
+            "  "
+            + _format_traceback_location(
+                syntax,
+                current_execution_id=current_execution_id,
+            )
+        )
+        text = syntax.get("text")
+        if isinstance(text, str) and text:
+            out.append(f"    {text}")
+            caret = _caret_line(syntax)
+            if caret:
+                out.append(f"    {caret}")
+    else:
+        for frame in frames:
+            name = frame.get("name") if isinstance(frame.get("name"), str) else "<module>"
+            out.append(
+                "  "
+                + _format_traceback_location(
+                    frame,
+                    current_execution_id=current_execution_id,
+                    function_name=name,
+                )
+            )
+            source = _highlighted_source_line(frame.get("lines"))
+            if source:
+                out.append(f"    {source}")
+    out.append(f"{ename}: {evalue}")
+    return "\n".join(out)
+
+
 def _build_syntax_error_payload(
     etype: Any,
     evalue: Any,
@@ -447,15 +606,27 @@ def _build_syntax_error_payload(
         "msg": msg,
     }
     syntax.update(_provenance_for_filename(ip, filename))
+    execution = _current_execution_context(ip)
+    current_execution_id = execution.get("execution_id")
+    raw_text = "".join(_pytraceback.format_exception(etype, evalue, tb))
+    ename = etype.__name__ if isinstance(etype, type) else str(etype)
     payload: dict[str, Any] = {
-        "ename": etype.__name__ if isinstance(etype, type) else str(etype),
+        "ename": ename,
         "evalue": str(evalue),
         "frames": [],
         "language": "python",
-        "text": "".join(_pytraceback.format_exception(etype, evalue, tb)),
+        "text": _format_rich_traceback_text(
+            ename,
+            str(evalue),
+            frames=[],
+            syntax=syntax,
+            current_execution_id=current_execution_id
+            if isinstance(current_execution_id, str)
+            else None,
+        ),
+        "raw_text": raw_text,
         "syntax": syntax,
     }
-    execution = _current_execution_context(ip)
     if execution:
         payload["execution"] = execution
     return payload
@@ -494,16 +665,26 @@ def build_rich_payload(
         frame.update(_provenance_for_filename(ip, f.filename))
         raw_frames.append(frame)
     frames = _clip_frames(_strip_leading_library_frames(raw_frames))
-    text = "".join(_pytraceback.format_exception(etype, evalue, tb))
+    raw_text = "".join(_pytraceback.format_exception(etype, evalue, tb))
     ename = etype.__name__ if isinstance(etype, type) else str(etype)
+    execution = _current_execution_context(ip)
+    current_execution_id = execution.get("execution_id")
     payload: dict[str, Any] = {
         "ename": ename,
         "evalue": str(evalue),
         "frames": frames,
         "language": "python",
-        "text": text,
+        "text": _format_rich_traceback_text(
+            ename,
+            str(evalue),
+            frames=frames,
+            syntax=None,
+            current_execution_id=current_execution_id
+            if isinstance(current_execution_id, str)
+            else None,
+        ),
+        "raw_text": raw_text,
     }
-    execution = _current_execution_context(ip)
     if execution:
         payload["execution"] = execution
     return _redact_payload(payload)

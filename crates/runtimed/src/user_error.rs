@@ -46,6 +46,8 @@ pub struct RichSourceRef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compiled_filename: Option<String>,
@@ -60,6 +62,8 @@ pub struct RichFrame {
     /// Execution provenance for frames compiled from notebook source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_count: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -86,6 +90,8 @@ pub struct RichSyntax {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_ref: Option<RichSourceRef>,
@@ -107,9 +113,13 @@ pub struct RichTraceback {
     pub language: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<RichExecutionContext>,
-    /// Paste-ready plain text — the ANSI-stripped `traceback.format_exception`
-    /// output. Frontend Copy button writes this verbatim.
+    /// Paste/LLM-ready plain text with notebook source locations normalized.
     pub text: String,
+    /// Raw `traceback.format_exception` output kept for debugging. This may
+    /// contain interpreter-compiled temp paths, so user-facing paths prefer
+    /// [`RichTraceback::text`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_text: Option<String>,
     /// Present for parse errors. When set, the renderer shows a
     /// dedicated source-line + caret layout instead of a frame list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -121,6 +131,8 @@ pub struct RichTraceback {
 pub struct RichExecutionContext {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_count: Option<u32>,
 }
 
 /// A user-code error, regardless of wire shape.
@@ -215,9 +227,10 @@ impl UserErrorOutput {
                 traceback,
             } => (ename.clone(), evalue.clone(), traceback.clone()),
             UserErrorOutput::Rich(rt) => {
-                // `rt.text` is `traceback.format_exception` joined — the
-                // canonical `.ipynb` traceback form. Split on newlines so
-                // it round-trips through the string-array nbformat slot.
+                // `rt.text` is the user-facing traceback text. The launcher
+                // normalizes notebook execution locations here so classic
+                // projections and LLM-oriented paths avoid interpreter temp
+                // filenames while staying nbformat-compatible.
                 let tb: Vec<String> = if rt.text.is_empty() {
                     Vec::new()
                 } else {
@@ -317,6 +330,7 @@ pub fn parse_ansi_traceback(
         language: Some("python".to_string()),
         execution: None,
         text,
+        raw_text: None,
         syntax: None,
     })
 }
@@ -382,6 +396,7 @@ impl PendingFrame {
             lineno: self.lineno,
             name: self.name,
             execution_id: None,
+            execution_count: None,
             source_hash: None,
             source_ref: None,
             lines: if self.lines.is_empty() {
@@ -806,17 +821,20 @@ mod tests {
                     "ename": "RuntimeError",
                     "evalue": "bad",
                     "execution": {
-                        "execution_id": "exec-run"
+                        "execution_id": "exec-run",
+                        "execution_count": 3
                     },
                     "frames": [{
                         "filename": "/tmp/ipykernel_1/123.py",
                         "lineno": 2,
                         "name": "boom",
                         "execution_id": "exec-def",
+                        "execution_count": 2,
                         "source_hash": "sha256:abc",
                         "source_ref": {
                             "kind": "notebook_execution",
                             "execution_id": "exec-def",
+                            "execution_count": 2,
                             "source_hash": "sha256:abc",
                             "compiled_filename": "/tmp/ipykernel_1/123.py"
                         }
@@ -835,7 +853,14 @@ mod tests {
                 .and_then(|execution| execution.execution_id.as_deref()),
             Some("exec-run")
         );
+        assert_eq!(
+            rt.execution
+                .as_ref()
+                .and_then(|execution| execution.execution_count),
+            Some(3)
+        );
         assert_eq!(rt.frames[0].execution_id.as_deref(), Some("exec-def"));
+        assert_eq!(rt.frames[0].execution_count, Some(2));
         assert_eq!(rt.frames[0].source_hash.as_deref(), Some("sha256:abc"));
         assert_eq!(
             rt.frames[0]
@@ -843,6 +868,13 @@ mod tests {
                 .as_ref()
                 .map(|source_ref| source_ref.kind.as_str()),
             Some("notebook_execution")
+        );
+        assert_eq!(
+            rt.frames[0]
+                .source_ref
+                .as_ref()
+                .and_then(|source_ref| source_ref.execution_count),
+            Some(2)
         );
     }
 
@@ -869,6 +901,7 @@ mod tests {
             language: Some("python".into()),
             execution: None,
             text: "Traceback (most recent call last):\n  File \"/tmp/x.py\", line 1, in <module>\n    1/0\nZeroDivisionError: division by zero".into(),
+            raw_text: None,
             syntax: None,
         };
         let ue = UserErrorOutput::Rich(Box::new(rt));
@@ -1073,6 +1106,7 @@ mod tests {
             language: Some("python".into()),
             execution: None,
             text: "Traceback (most recent call last):\n  File \"/tmp/x.py\", line 1, in t\n    assert False, \"line one\\nline two\\nline three\"\nAssertionError: line one\nline two\nline three".into(),
+            raw_text: None,
             syntax: None,
         };
         let (ename, evalue, tb) = UserErrorOutput::Rich(Box::new(rt)).to_classic();
@@ -1099,6 +1133,7 @@ mod tests {
             language: Some("python".into()),
             execution: None,
             text: "line1\nline2\n".into(),
+            raw_text: None,
             syntax: None,
         };
         let (_, _, tb) = UserErrorOutput::Rich(Box::new(rt)).to_classic();
