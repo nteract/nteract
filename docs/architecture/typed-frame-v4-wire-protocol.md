@@ -101,7 +101,7 @@ Every frame type has a hard cap (reject) and a soft warn threshold (log, continu
 | `Request` | 16 MiB | 256 KiB | `SendComm` envelope: widget buffers JSON-expand from binary ~4x |
 | `Response` | 64 MiB | 16 MiB | `DocBytes`, `HistoryResult`, completions, env-sync replies |
 | `Broadcast` | 16 MiB | 4 MiB | `Comm` custom widget broadcasts with inline buffers |
-| `Presence` | 1 MiB | 256 KiB | Cursor/selection/focus updates (typically <100 bytes CBOR) |
+| `Presence` | 4 KiB | 1 KiB | Cursor/selection/focus updates (typically <100 bytes CBOR); matches semantic cap in `notebook-doc::presence` |
 | `RuntimeStateSync` | 64 MiB | 16 MiB | Snapshots of `RuntimeStateDoc` with output manifests |
 | `PoolStateSync` | 1 MiB | 256 KiB | Daemon pool state is small (counts, errors, env paths) |
 | `SessionControl` | 1 MiB | 256 KiB | Tiny readiness JSON |
@@ -311,7 +311,7 @@ The phase fields are deliberately ordered so a later snapshot never represents l
 
 2. **AGENTS.md drift on `Handshake::Blob`.** `crates/notebook-wire/AGENTS.md` lists a `Blob` handshake variant for "Store blobs and query the localhost blob HTTP port." No such variant exists in `crates/notebook-protocol/src/connection/handshake.rs`. Blob uploads ride the `NotebookSync` channel as `0x08` frames; blob downloads go over the daemon's HTTP server (`GET /blob/{hash}`). The AGENTS.md row is stale.
 
-3. **Presence size cap is duplicated.** `frame_size_limits(PRESENCE).cap = 1 MiB` (wire-level) but `notebook_doc::presence::MAX_PRESENCE_FRAME_SIZE = 4 KiB` (semantic). There are now two presence limits with three orders of magnitude between them. The 4 KiB check sits inside `notebook-doc`; the 1 MiB check sits at the framing layer. A 5 KiB CBOR presence frame passes the wire cap and fails the semantic check (or vice versa, depending on the path). Worth consolidating.
+3. ~~**Presence size cap is duplicated.**~~ **Resolved** by punchlist WP-2: the wire-layer cap was reduced from 1 MiB to 4 KiB to match `notebook-doc::presence::MAX_PRESENCE_FRAME_SIZE`. Two layers still hold the constant but the values agree, and the WP-3 contract test (next stack PR) prevents drift.
 
 4. **`Request` cap of 16 MiB feels high.** It exists because `SendComm` envelopes carry widget buffers that JSON-expand ~4x from binary. A 4 MiB widget buffer becomes ~16 MiB on the wire. Moving widget buffers off the `Request` channel and onto `PutBlob` (with comm IDs that reference the resulting blob hash) would let `Request` drop to ~1 MiB. Tracked as a follow-up.
 

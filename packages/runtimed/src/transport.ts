@@ -75,7 +75,10 @@ export function frameSizeLimits(frameType: number): FrameSizeLimits {
     case FrameType.BROADCAST:
       return { cap: 16 * MIB, warn: 4 * MIB };
     case FrameType.PRESENCE:
-      return { cap: 1 * MIB, warn: 256 * KIB };
+      // Matches notebook_doc::presence::MAX_PRESENCE_FRAME_SIZE. Two
+      // layers, one limit. The Rust crate's WP-3 contract test enforces
+      // parity with the Rust frame_size_limits table.
+      return { cap: 4 * KIB, warn: 1 * KIB };
     case FrameType.RUNTIME_STATE_SYNC:
       return { cap: 64 * MIB, warn: 16 * MIB };
     case FrameType.POOL_STATE_SYNC:

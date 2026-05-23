@@ -74,9 +74,14 @@ pub fn frame_size_limits(type_byte: u8) -> FrameSizeLimits {
             cap: 16 * MIB,
             warn: 4 * MIB,
         },
+        // Presence is CBOR-encoded `PresenceMessage` (cursor / selection /
+        // focus / heartbeat). Real-world payloads are ~100 bytes. The cap
+        // matches `notebook-doc::presence::MAX_PRESENCE_FRAME_SIZE`, which
+        // is the semantic-layer ceiling enforced by `decode_message`. Both
+        // values must stay in sync; the WP-3 contract test guards drift.
         frame_types::PRESENCE => FrameSizeLimits {
-            cap: MIB,
-            warn: 256 * KIB,
+            cap: 4 * KIB,
+            warn: KIB,
         },
         frame_types::RUNTIME_STATE_SYNC => FrameSizeLimits {
             cap: 64 * MIB,

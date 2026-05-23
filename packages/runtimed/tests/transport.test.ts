@@ -69,8 +69,8 @@ describe("frameSizeLimits", () => {
       warn: 4 * mib,
     });
     expect(frameSizeLimits(FrameType.PRESENCE)).toEqual({
-      cap: 1 * mib,
-      warn: 256 * kib,
+      cap: 4 * kib,
+      warn: 1 * kib,
     });
     expect(frameSizeLimits(FrameType.RUNTIME_STATE_SYNC)).toEqual({
       cap: 64 * mib,
