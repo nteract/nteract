@@ -18,7 +18,7 @@ import {
   type TypedFrame,
 } from "./protocol.ts";
 import { rewritePresenceIngress } from "./runtimed-wasm.ts";
-import { ensureNotebook, recordRoomEvent } from "./storage.ts";
+import { ensureNotebook } from "./storage.ts";
 
 interface Peer {
   id: string;
@@ -302,7 +302,7 @@ export class NotebookRoom {
     }
 
     try {
-      await this.persistFrame(notebookId, peer, normalizedFrame, receivedAt);
+      await this.persistFrame(peer, normalizedFrame, receivedAt);
     } catch (error) {
       this.rejectFrame(
         notebookId,
@@ -346,12 +346,7 @@ export class NotebookRoom {
     }
   }
 
-  private async persistFrame(
-    notebookId: string,
-    peer: Peer,
-    frame: TypedFrame,
-    receivedAt: string,
-  ): Promise<void> {
+  private async persistFrame(peer: Peer, frame: TypedFrame, receivedAt: string): Promise<void> {
     const operation = this.framePersistQueue
       .catch(() => undefined)
       .then(async () => {
@@ -372,18 +367,6 @@ export class NotebookRoom {
         this.nextFrameSequence = sequence;
         this.state.waitUntil(
           this.evictStoredFrame(sequence - MAX_STORED_FRAMES).catch(() => undefined),
-        );
-        // D1 event rows are observability only; relay delivery must not depend on D1.
-        this.state.waitUntil(
-          recordRoomEvent(this.env, {
-            notebookId,
-            peerId: peer.id,
-            actorLabel: peer.identity.actorLabel,
-            connectionScope: peer.identity.scope,
-            frameType: frame.type,
-            byteLength: frame.payload.byteLength,
-            receivedAt,
-          }).catch(() => undefined),
         );
       });
 

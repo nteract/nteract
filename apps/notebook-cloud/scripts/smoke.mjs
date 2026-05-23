@@ -202,15 +202,6 @@ const leakedAnonymousPresence = await bob
   .catch(() => undefined);
 assert(leakedAnonymousPresence === undefined, "anonymous presence was broadcast to room peers");
 
-const events = await waitForEvents(
-  roomId,
-  (event) => event.frame_type === FrameType.AUTOMERGE_SYNC,
-);
-assert(
-  events.events.some((event) => event.frame_type === FrameType.AUTOMERGE_SYNC),
-  "D1 event readback did not include the accepted sync frame",
-);
-
 const snapshotHeads = `heads-${roomId}`;
 const runtimeHeads = `runtime-${roomId}`;
 const runtimePath = `/api/n/${encodeURIComponent(roomId)}/runtime-snapshots/${encodeURIComponent(runtimeHeads)}`;
@@ -298,7 +289,6 @@ console.log(
         "anonymous_viewer_identity",
         "anonymous_viewer_write_rejection",
         "anonymous_presence_local_only",
-        "d1_room_event_readback",
         "invalid_auth_structured_rejection",
         "r2_runtime_snapshot_roundtrip",
         "r2_snapshot_roundtrip",
@@ -488,20 +478,6 @@ async function fetchHead(pathname) {
   const response = await fetch(url, { method: "HEAD" });
   assert(response.ok, `${url.href} returned ${response.status}`);
   return response;
-}
-
-async function waitForEvents(notebookId, predicate, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs;
-  const pathname = `/api/n/${encodeURIComponent(notebookId)}/events?limit=20`;
-  let lastEvents;
-  while (Date.now() < deadline) {
-    lastEvents = await fetchJson(pathname);
-    if (lastEvents.events.some(predicate)) {
-      return lastEvents;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  return lastEvents ?? { events: [] };
 }
 
 function assertBytesEqual(actual, expected, message) {

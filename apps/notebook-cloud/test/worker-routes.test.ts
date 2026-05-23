@@ -122,44 +122,16 @@ describe("Worker artifact routes", () => {
     assert.deepEqual(seenPaths, ["/plugins/sift_wasm.wasm"]);
   });
 
-  it("keeps room event observability owner-scoped", async () => {
+  it("does not expose prototype room event observability", async () => {
     const env = fakeEnv();
 
-    const anonymous = await worker.fetch(
+    const response = await worker.fetch(
       new Request("http://localhost/api/n/route-demo/events"),
       env,
       fakeContext(),
     );
-    assert.equal(anonymous.status, 403);
-    assert.deepEqual(await anonymous.json(), { error: "viewer cannot read room events" });
-
-    const viewer = await worker.fetch(
-      new Request("http://localhost/api/n/route-demo/events", {
-        headers: {
-          "X-User": "alice",
-          "X-Operator": "desktop:test",
-          "X-Scope": "viewer",
-        },
-      }),
-      env,
-      fakeContext(),
-    );
-    assert.equal(viewer.status, 403);
-    assert.deepEqual(await viewer.json(), { error: "viewer cannot read room events" });
-
-    const owner = await worker.fetch(
-      new Request("http://localhost/api/n/route-demo/events", {
-        headers: {
-          "X-User": "alice",
-          "X-Operator": "desktop:test",
-          "X-Scope": "owner",
-        },
-      }),
-      env,
-      fakeContext(),
-    );
-    assert.equal(owner.status, 200);
-    assert.deepEqual(await owner.json(), { notebook_id: "route-demo", events: [] });
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { error: "not found" });
   });
 
   it("publishes a snapshot pair and materializes render JSON through the route layer", async () => {
