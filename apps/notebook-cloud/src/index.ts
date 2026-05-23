@@ -801,6 +801,73 @@ function withCors(response: Response): Response {
   return response;
 }
 
+function withBrowserSecurityHeaders(response: Response, contentSecurityPolicy?: string): Response {
+  response.headers.set("X-Content-Type-Options", "nosniff");
+  response.headers.set("Referrer-Policy", "no-referrer");
+  response.headers.set(
+    "Permissions-Policy",
+    [
+      "accelerometer=()",
+      "ambient-light-sensor=()",
+      "autoplay=()",
+      "camera=()",
+      "display-capture=()",
+      "encrypted-media=()",
+      "fullscreen=()",
+      "geolocation=()",
+      "gyroscope=()",
+      "magnetometer=()",
+      "microphone=()",
+      "midi=()",
+      "payment=()",
+      "picture-in-picture=()",
+      "publickey-credentials-get=()",
+      "screen-wake-lock=()",
+      "usb=()",
+      "web-share=()",
+      "xr-spatial-tracking=()",
+    ].join(", "),
+  );
+  if (contentSecurityPolicy) {
+    response.headers.set("Content-Security-Policy", contentSecurityPolicy);
+  }
+  return response;
+}
+
+function viewerContentSecurityPolicy(env: Env): string {
+  const connectSources = new Set(["'self'", "ws:", "wss:"]);
+  const rendererAssetOrigin = absoluteOrigin(rendererAssetsBasePath(env));
+  if (rendererAssetOrigin) {
+    connectSources.add(rendererAssetOrigin);
+  }
+
+  // The shared isolated output renderer currently boots from about:srcdoc,
+  // which inherits the parent page CSP. Do not set default-src/script-src here:
+  // that blocks the sandboxed renderer bootstrap unless the iframe moves to a
+  // separate origin or every generated script carries a matching nonce/hash.
+  return [
+    "base-uri 'none'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https:",
+    "font-src 'self' data:",
+    `connect-src ${Array.from(connectSources).join(" ")}`,
+    "worker-src 'self' blob:",
+    "frame-src 'self' blob: data:",
+    "form-action 'none'",
+  ].join("; ");
+}
+
+function absoluteOrigin(value: string): string | null {
+  try {
+    const url = new URL(value);
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
 function normalizedRuntimeHeadsHash(value: string | null): string | null {
   const trimmed = value?.trim();
   return trimmed && trimmed !== "none" ? trimmed : null;
@@ -836,9 +903,12 @@ function viewer(notebookId: string, env: Env, headsHash?: string): Response {
 </html>`;
 
   return withCors(
-    new Response(html, {
-      headers: { "Content-Type": "text/html; charset=utf-8" },
-    }),
+    withBrowserSecurityHeaders(
+      new Response(html, {
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      }),
+      viewerContentSecurityPolicy(env),
+    ),
   );
 }
 
@@ -936,9 +1006,11 @@ function debugViewer(notebookId: string): Response {
 </html>`;
 
   return withCors(
-    new Response(html, {
-      headers: { "Content-Type": "text/html; charset=utf-8" },
-    }),
+    withBrowserSecurityHeaders(
+      new Response(html, {
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      }),
+    ),
   );
 }
 

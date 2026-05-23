@@ -35,8 +35,21 @@ describe("HTML script serialization", () => {
     const html = await response.text();
 
     assert.equal(response.status, 200);
+    assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
+    assert.equal(response.headers.get("Referrer-Policy"), "no-referrer");
+    assert.match(response.headers.get("Permissions-Policy") ?? "", /camera=\(\)/);
+    assert.match(response.headers.get("Permissions-Policy") ?? "", /microphone=\(\)/);
+    assert.match(response.headers.get("Content-Security-Policy") ?? "", /object-src 'none'/);
+    assert.match(response.headers.get("Content-Security-Policy") ?? "", /frame-ancestors 'none'/);
+    assert.doesNotMatch(response.headers.get("Content-Security-Policy") ?? "", /default-src/);
+    assert.doesNotMatch(response.headers.get("Content-Security-Policy") ?? "", /script-src/);
+    assert.match(
+      response.headers.get("Content-Security-Policy") ?? "",
+      /connect-src 'self' ws: wss:/,
+    );
     assert.match(html, /id="root"/);
     assert.match(html, /id="nteract-cloud-viewer-config"/);
+    assert.match(html, /id="nteract-cloud-viewer-config" type="application\/json"/);
     assert.match(html, /href="\/assets\/notebook-cloud-viewer\.css"/);
     assert.match(html, /src="\/assets\/notebook-cloud-viewer\.js"/);
     assert.match(html, /"renderEndpoint":"\/api\/n\/demo\/renders\/heads-123"/);
@@ -58,6 +71,24 @@ describe("HTML script serialization", () => {
 
     assert.equal(response.status, 200);
     assert.match(html, /"rendererAssetsBasePath":"https:\/\/outputs\.example\/plugins\/"/);
+    assert.match(
+      response.headers.get("Content-Security-Policy") ?? "",
+      /connect-src 'self' ws: wss: https:\/\/outputs\.example/,
+    );
+  });
+
+  it("serves the debug shell with browser hardening headers but no broad page CSP", async () => {
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/demo/debug"),
+      fakeEnv(),
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
+    assert.equal(response.headers.get("Referrer-Policy"), "no-referrer");
+    assert.match(response.headers.get("Permissions-Policy") ?? "", /camera=\(\)/);
+    assert.equal(response.headers.get("Content-Security-Policy"), null);
   });
 });
 
