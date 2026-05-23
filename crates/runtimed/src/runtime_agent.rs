@@ -25,7 +25,7 @@
 //! 1. Runtime agent connects to daemon socket, sends `Handshake::RuntimeAgent`
 //! 2. Initial sync for NotebookDoc and RuntimeStateDoc
 //! 3. Runtime agent waits for `LaunchKernel` RPC
-//! 4. Main select loop: socket frames, QueueCommands, RuntimeStateDoc changes
+//! 4. Main select loop: socket frames, LifecycleSignals, WorkCommands, RuntimeStateDoc changes
 //! 5. Watches for new `status=queued` execution entries after each sync
 //! 6. On shutdown or daemon disconnect, runtime agent exits
 
