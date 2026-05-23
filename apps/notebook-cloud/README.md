@@ -134,6 +134,12 @@ revision still points at those heads. Use
 `NOTEBOOK_CLOUD_DEV_TOKEN=...` to target the deployed prototype, or leave the
 defaults to target local Wrangler.
 
+`smoke:hosted:source-room` covers the already-open room path. It creates and
+executes the same live MathNet notebook first, then calls `smoke:hosted:live`
+with `NOTEBOOK_CLOUD_SOURCE_NOTEBOOK_ID=<created-room-id>` so `publish:live`
+must reopen and export that existing room instead of creating its own preset
+session.
+
 ## Dev auth
 
 The edge Worker maps dev credentials into the same identity shape as `crates/nteract-identity`:

@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import { access, readFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { collectBlobRefs } from "../src/blob-refs.ts";
+import { createLiveNotebookFixture } from "./live-notebook-fixture.mjs";
+import { loadRuntimedNode } from "./runtimed-node-loader.mjs";
 
-const require = createRequire(import.meta.url);
 const rt = loadRuntimedNode();
 
 const baseUrl = process.env.NOTEBOOK_CLOUD_URL ?? "http://127.0.0.1:8787";
@@ -31,7 +31,7 @@ const session = sourceNotebookId
   ? await rt.openNotebook(sourceNotebookId, {
       description: "notebook-cloud live publish",
     })
-  : await createPresetNotebook();
+  : await createLiveNotebookFixture(rt, { preset });
 
 try {
   const snapshot = await session.exportSnapshotPair();
@@ -91,55 +91,6 @@ try {
     await session.shutdownNotebook().catch(() => {});
   }
   await session.close().catch(() => {});
-}
-
-async function createPresetNotebook() {
-  if (preset !== "mathnet") {
-    throw new Error(`Unknown NOTEBOOK_CLOUD_LIVE_PRESET ${preset}`);
-  }
-
-  const session = await rt.createNotebook({
-    runtime: "python",
-    description: "notebook-cloud live publish",
-    dependencies: ["polars", "pyarrow", "datasets", "pillow"],
-    packageManager: "uv",
-    environmentMode: "notebook",
-  });
-
-  await session.createCell(
-    [
-      "# MathNet via notebook-cloud",
-      "",
-      "This notebook was executed through a live local runtimed session, exported as a NotebookDoc + RuntimeStateDoc snapshot pair, and published to the Cloudflare notebook-cloud worker.",
-    ].join("\n"),
-    { cellType: "markdown" },
-  );
-  await session.approveTrust();
-  await session.syncEnvironment();
-  await session.runCell(
-    [
-      "import polars as pl",
-      "from datasets import load_dataset",
-      "",
-      "def summarize_value(value):",
-      "    if value is None or isinstance(value, (str, int, float, bool)):",
-      "        return value",
-      "    if hasattr(value, 'size') and hasattr(value, 'mode'):",
-      '        return f"Image({value.size[0]}x{value.size[1]}, {value.mode})"',
-      "    if isinstance(value, list):",
-      '        return f"list[{len(value)}]"',
-      "    text = str(value)",
-      "    return text if len(text) <= 240 else text[:237] + '...'",
-      "",
-      "dataset = load_dataset('ShadenA/MathNet', 'all', split='train[:25]')",
-      "rows = [{key: summarize_value(value) for key, value in example.items()} for example in dataset]",
-      "df = pl.DataFrame(rows)",
-      "print(f'Loaded {df.height} rows and {df.width} columns from ShadenA/MathNet')",
-      "df",
-    ].join("\n"),
-    { timeoutMs: 10 * 60 * 1000 },
-  );
-  return session;
 }
 
 async function cellsFromSnapshotPair(notebookBytes, runtimeStateBytes) {
@@ -249,18 +200,5 @@ async function assertWasmBuildExists() {
 function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
-  }
-}
-
-function loadRuntimedNode() {
-  try {
-    return require("@runtimed/node");
-  } catch (error) {
-    if (error?.code !== "MODULE_NOT_FOUND") {
-      throw error;
-    }
-    return require(
-      fileURLToPath(new URL("../../../packages/runtimed-node/src/index.cjs", import.meta.url)),
-    );
   }
 }
