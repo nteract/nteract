@@ -169,6 +169,63 @@ describe("cloud viewer render resolution", () => {
     assert.equal(cell.executionCount, 7);
   });
 
+  it("uses the first finite execute_result count as the output fallback", async () => {
+    const cell = await resolveCell(
+      {
+        id: "multiple-results",
+        cell_type: "code",
+        source: "a\nb",
+        execution_count: "null",
+        outputs: [
+          {
+            output_type: "execute_result",
+            execution_count: 7,
+            data: { "text/plain": "a" },
+            metadata: {},
+          },
+          {
+            output_type: "execute_result",
+            execution_count: 8,
+            data: { "text/plain": "b" },
+            metadata: {},
+          },
+        ],
+      },
+      rejectingBlobResolver(),
+      0,
+    );
+
+    assert.equal(cell.executionCount, 7);
+  });
+
+  it("does not derive execution counts from non-result outputs", async () => {
+    const cell = await resolveCell(
+      {
+        id: "no-result-count",
+        cell_type: "code",
+        source: "display(df)",
+        execution_count: "null",
+        outputs: [
+          {
+            output_type: "stream",
+            name: "stdout",
+            text: "loaded\n",
+          },
+          {
+            output_type: "display_data",
+            execution_count: 99,
+            data: { "text/plain": "display only" },
+            metadata: {},
+          },
+        ],
+      },
+      rejectingBlobResolver(),
+      0,
+    );
+
+    assert.equal(cell.executionCount, null);
+  });
+
   it("keeps an explicit cell execution count over output fallbacks", async () => {
     const cell = await resolveCell(
       {

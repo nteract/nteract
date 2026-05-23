@@ -114,17 +114,16 @@ function normalizeExecutionCount(value: unknown): number | null {
 }
 
 function executionCountFromOutputs(outputs: JupyterOutput[]): number | null {
-  let count: number | null = null;
   for (const output of outputs) {
     if (
-      (output.output_type === "execute_result" || output.output_type === "display_data") &&
+      output.output_type === "execute_result" &&
       typeof output.execution_count === "number" &&
       Number.isFinite(output.execution_count)
     ) {
-      count = output.execution_count;
+      return output.execution_count;
     }
   }
-  return count;
+  return null;
 }
 
 function normalizeMetadata(value: unknown): Record<string, unknown> {

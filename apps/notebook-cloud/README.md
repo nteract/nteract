@@ -86,11 +86,21 @@ MathNet notebook by default:
 https://nteract-notebook-cloud.rgbkrk.workers.dev/n/nteract-cloud-live-mathnet
 ```
 
+Install the Chromium browser once before running the hosted smoke from a fresh
+checkout:
+
+```bash
+pnpm --dir apps/notebook-cloud smoke:hosted:install
+```
+
 It verifies that the hosted viewer renders the live-published code cell with a
-runtime-derived execution count, that sandboxed output iframes expose the
-MathNet stdout and Sift table content, and that Sift's WASM sidecar loads from
-the configured renderer asset origin with CORS. Override the target with
-`NOTEBOOK_CLOUD_HOSTED_URL` or a positional URL argument. Set
+runtime-derived execution count, that sandboxed output iframes expose expected
+notebook content, and that Sift's WASM sidecar loads from the configured
+renderer asset origin with CORS. Override the target with
+`NOTEBOOK_CLOUD_HOSTED_URL` or a positional URL argument. Override the content
+contract with `NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT`,
+`NOTEBOOK_CLOUD_EXPECTED_EXECUTION_COUNT`, and
+`NOTEBOOK_CLOUD_EXPECTED_FRAME_TEXTS` (`|` separated). Set
 `NOTEBOOK_CLOUD_SMOKE_SCREENSHOT=/tmp/notebook-cloud.png` to save a visual
 artifact.
 
@@ -159,6 +169,8 @@ Bindings in `wrangler.toml`:
 - `NOTEBOOK_SNAPSHOTS`: R2 bucket for `NotebookDoc` snapshots, `RuntimeStateDoc` snapshots, generated render caches, and blobs.
 - `ASSETS`: Worker static assets for `/assets/notebook-cloud-viewer.js`, renderer chunks, and `/plugins/sift_wasm.wasm`.
 - `RENDERER_ASSETS_BASE_URL` (optional): base URL for renderer plugin assets such as `sift_wasm.wasm`. The prototype deployment points this at the dedicated `nteract-notebook-cloud-assets` Worker. If unset, the viewer uses the main Worker-owned `/renderer-assets/` route so sandboxed `srcdoc` iframes can fetch plugin WASM through explicit CORS headers.
+
+The dedicated renderer asset Worker serves only public, build-time sidecar files from the plugin asset bundle. It intentionally sends `Access-Control-Allow-Origin: *` so sandboxed `srcdoc` iframes with opaque origins can fetch renderer WASM. Do not serve authenticated, notebook-specific, or user-generated blobs from this origin; those belong behind the notebook host's blob resolver or a future signed output origin. Deploy the renderer asset Worker before the main Worker when `RENDERER_ASSETS_BASE_URL` points at the separate origin.
 
 Schema lives in `migrations/0001_initial.sql`. The Worker also creates the same tables lazily in local dev so the WebSocket path can run before applying migrations.
 
