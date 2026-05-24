@@ -143,12 +143,13 @@ The listener peels off the credential subprotocol, validates the token, and
 selects the real application protocol (`nteract.v4`) in the response. The
 credential subprotocol is not echoed back.
 
-The "not echoed back" rule is a production requirement. The hosted prototype's
-current `nteract-access-token.*` and `nteract-dev-token.*` paths are
-credential-bearing subprotocols and may be echoed by the current room code. That
-must be fixed before those paths carry real long-lived credentials: the listener
-should strip the credential prefix, authenticate from it, and return only a
-non-sensitive application protocol such as `nteract.v4`.
+The "not echoed back" rule is also a prototype requirement. The hosted Worker
+strips the current `nteract-access-token.*` and `nteract-dev-token.*`
+credential-bearing subprotocols before it forwards the upgrade to the room
+host. If the client offered the non-sensitive application protocol, the Worker
+selects only `nteract.v4`; if it did not, the Worker selects no subprotocol.
+Tests must assert that credential-bearing protocol elements are never returned
+in upgrade responses or trusted room headers.
 
 This is better than `?token=...` because the bearer does not enter the URL,
 browser history, referrer paths, or ordinary route metrics. It is still a
@@ -293,7 +294,9 @@ Minimum policy:
   still leak notebook contents to a malicious page if ambient cookies are
   enough to authenticate it.
 - Maintain an allowlist of notebook application origins that are allowed to
-  initiate room WebSockets.
+  initiate room WebSockets. The hosted Worker treats same-origin notebook pages
+  as allowed by default and extends that set with
+  `NOTEBOOK_CLOUD_ALLOWED_ORIGINS`.
 - Do not allow sandboxed output iframes or renderer asset origins to open
   authenticated notebook-room WebSockets.
 - Keep renderer asset origins separate from notebook-room origins.
@@ -309,15 +312,15 @@ checks, but they do not rely on ambient cookies and therefore reduce CSRF risk.
    - `NOTEBOOK_CLOUD_ACCESS_AUD`
    - `NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN`
    - optional pinned `NOTEBOOK_CLOUD_ACCESS_JWKS_JSON`
-4. Strip credential subprotocols from any upgrade response that uses them. The
-   listener must return only a non-sensitive application protocol such as
-   `nteract.v4`, never `nteract-access-token.*`, `nteract-dev-token.*`, or
-   `nteract-bearer.*`.
+4. Keep credential subprotocol stripping covered by tests. The listener must
+   return only a non-sensitive application protocol such as `nteract.v4`, never
+   `nteract-access-token.*`, `nteract-dev-token.*`, or `nteract-bearer.*`.
 5. Add a deployment-level principal namespace decision:
    - Access-scoped by default;
    - Anaconda-scoped only with a stable Anaconda subject claim or direct
      Anaconda token validation.
-6. Add an origin allowlist for browser WebSocket upgrades.
+6. Configure `NOTEBOOK_CLOUD_ALLOWED_ORIGINS` for any notebook application
+   origin that is not the Worker origin itself.
 7. Keep notebook sharing in D1 ACL rows:
    - owner row created at publish/import;
    - explicit collaborator rows for editors;

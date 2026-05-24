@@ -1,4 +1,6 @@
-CREATE TABLE IF NOT EXISTS notebook_acl (
+DROP TABLE IF EXISTS notebook_acl_new;
+
+CREATE TABLE notebook_acl_new (
   notebook_id TEXT NOT NULL,
   subject_kind TEXT NOT NULL CHECK (subject_kind IN ('principal', 'public')),
   subject TEXT NOT NULL,
@@ -11,42 +13,29 @@ CREATE TABLE IF NOT EXISTS notebook_acl (
   CHECK (subject_kind != 'public' OR (subject = 'anonymous' AND scope = 'viewer'))
 );
 
+INSERT OR IGNORE INTO notebook_acl_new (
+  notebook_id,
+  subject_kind,
+  subject,
+  scope,
+  created_at,
+  updated_at,
+  created_by_actor_label
+)
+SELECT notebook_id,
+       subject_kind,
+       subject,
+       scope,
+       created_at,
+       updated_at,
+       created_by_actor_label
+  FROM notebook_acl
+ WHERE subject_kind != 'public'
+    OR (subject = 'anonymous' AND scope = 'viewer');
+
+DROP TABLE notebook_acl;
+
+ALTER TABLE notebook_acl_new RENAME TO notebook_acl;
+
 CREATE INDEX IF NOT EXISTS notebook_acl_subject_idx
   ON notebook_acl (subject_kind, subject, notebook_id);
-
-INSERT OR IGNORE INTO notebook_acl (
-  notebook_id,
-  subject_kind,
-  subject,
-  scope,
-  created_at,
-  updated_at,
-  created_by_actor_label
-)
-SELECT id,
-       'principal',
-       owner_principal,
-       'owner',
-       created_at,
-       updated_at,
-       'system/schema:notebook-cloud-owner-acl-backfill'
-  FROM notebooks;
-
-INSERT OR IGNORE INTO notebook_acl (
-  notebook_id,
-  subject_kind,
-  subject,
-  scope,
-  created_at,
-  updated_at,
-  created_by_actor_label
-)
-SELECT id,
-       'public',
-       'anonymous',
-       'viewer',
-       created_at,
-       updated_at,
-       'system/schema:notebook-cloud-public-acl-backfill'
-  FROM notebooks
- WHERE latest_revision_id IS NOT NULL;

@@ -41,7 +41,7 @@ describe("cloud collaborator auth", () => {
     assert.equal(state.mode, "dev");
     assert.equal(auth.user, "alice");
     assert.equal(auth.requestedScope, "editor");
-    assert.deepEqual(auth.protocols, ["nteract-dev-token.c2VjcmV0"]);
+    assert.deepEqual(auth.protocols, ["nteract-dev-token.c2VjcmV0", "nteract.v4"]);
   });
 
   it("preserves every explicit connection scope supported by the protocol", () => {

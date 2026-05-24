@@ -1,6 +1,7 @@
 import {
   ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
+  NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
   isConnectionScope,
   type ConnectionScope,
 } from "./auth-shared.ts";
@@ -8,6 +9,7 @@ import {
 export {
   ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
+  NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
   type ConnectionScope,
 } from "./auth-shared.ts";
 
@@ -120,6 +122,9 @@ export async function authenticateRequestWithProviders(
 ): Promise<AuthenticatedConnection> {
   const accessCredential = accessCredentialFromRequest(request);
   if (accessCredential && accessConfigFromEnv(env)) {
+    if (hasDevIdentityCredential(request) || hasDevCredentialTransport(request)) {
+      throw new AuthError("multiple identity credentials presented", 400);
+    }
     return authenticateCloudflareAccessRequest(request, env, accessCredential);
   }
 
@@ -216,8 +221,10 @@ export function stampTrustedIdentity(request: Request, identity: AuthenticatedCo
   headers.set(TRUSTED_SCOPE_HEADER, identity.scope);
   if (identity.webSocketProtocol) {
     headers.set(TRUSTED_WEBSOCKET_PROTOCOL_HEADER, identity.webSocketProtocol);
+    headers.set("Sec-WebSocket-Protocol", identity.webSocketProtocol);
   } else {
     headers.delete(TRUSTED_WEBSOCKET_PROTOCOL_HEADER);
+    headers.delete("Sec-WebSocket-Protocol");
   }
   return new Request(request, { headers });
 }
@@ -372,6 +379,26 @@ function hasDevCredential(request: Request): boolean {
   );
 }
 
+function hasDevIdentityCredential(request: Request): boolean {
+  const url = new URL(request.url);
+  return [
+    ["x-principal", "principal"],
+    ["x-user", "user"],
+  ].some(
+    ([headerName, queryName]) => request.headers.has(headerName) || url.searchParams.has(queryName),
+  );
+}
+
+function hasDevCredentialTransport(request: Request): boolean {
+  return (
+    request.headers.has(DEV_AUTH_TOKEN_HEADER) ||
+    hasWebSocketCredentialProtocol(
+      request.headers.get("sec-websocket-protocol"),
+      DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
+    )
+  );
+}
+
 function authenticateDevCredential(
   request: Request,
   env: IdentityEnvironment,
@@ -380,7 +407,7 @@ function authenticateDevCredential(
     const webSocketProtocol = tokenFromWebSocketProtocol(
       request.headers.get("sec-websocket-protocol"),
     );
-    return webSocketProtocol ? { webSocketProtocol: webSocketProtocol.protocol } : {};
+    return webSocketProtocol ? { webSocketProtocol: webSocketProtocol.webSocketProtocol } : {};
   }
 
   return validDevTokenCredential(request, env);
@@ -409,19 +436,27 @@ function validDevTokenCredential(
     request.headers.get("sec-websocket-protocol"),
   );
   if (webSocketProtocol && timingSafeStringEqual(webSocketProtocol.token, expected)) {
-    return { webSocketProtocol: webSocketProtocol.protocol };
+    return { webSocketProtocol: webSocketProtocol.webSocketProtocol };
   }
 
   return undefined;
 }
 
 function accessCredentialFromRequest(request: Request): AccessCredential | undefined {
-  const headerToken =
-    request.headers.get(CLOUDFLARE_ACCESS_JWT_HEADER) ??
-    bearerTokenFromAuthorization(request.headers.get("authorization")) ??
-    cookieValue(request.headers.get("cookie"), "CF_Authorization");
-  if (headerToken) {
-    return { token: headerToken };
+  const candidates: AccessCredential[] = [];
+  const assertionToken = request.headers.get(CLOUDFLARE_ACCESS_JWT_HEADER)?.trim() || undefined;
+  if (assertionToken) {
+    candidates.push({ token: assertionToken });
+  }
+
+  const bearerToken = bearerTokenFromAuthorization(request.headers.get("authorization"));
+  if (bearerToken) {
+    candidates.push({ token: bearerToken });
+  }
+
+  const cookieToken = cookieValue(request.headers.get("cookie"), "CF_Authorization");
+  if (cookieToken && !assertionToken) {
+    candidates.push({ token: cookieToken });
   }
 
   const webSocketProtocol = tokenFromWebSocketProtocol(
@@ -429,10 +464,17 @@ function accessCredentialFromRequest(request: Request): AccessCredential | undef
     ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
   );
   if (webSocketProtocol) {
-    return { token: webSocketProtocol.token, webSocketProtocol: webSocketProtocol.protocol };
+    candidates.push({
+      token: webSocketProtocol.token,
+      webSocketProtocol: webSocketProtocol.webSocketProtocol,
+    });
   }
 
-  return undefined;
+  if (candidates.length > 1) {
+    throw new AuthError("multiple identity credentials presented", 400);
+  }
+
+  return candidates[0];
 }
 
 function accessConfigFromEnv(env: IdentityEnvironment): AccessConfig | undefined {
@@ -617,18 +659,34 @@ function cookieValue(value: string | null, name: string): string | undefined {
 function tokenFromWebSocketProtocol(
   value: string | null,
   prefix = DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
-): { protocol: string; token: string } | undefined {
+): { token: string; webSocketProtocol?: string } | undefined {
   if (!value) return undefined;
 
+  const webSocketProtocol = applicationWebSocketProtocolFromHeader(value);
+  let credential: { token: string; webSocketProtocol?: string } | undefined;
   for (const protocol of value.split(",")) {
     const trimmed = protocol.trim();
     if (!trimmed.startsWith(prefix)) continue;
     const token = decodeBase64Url(trimmed.slice(prefix.length));
     if (!token) continue;
-    return { protocol: trimmed, token };
+    if (credential) {
+      throw new AuthError("multiple WebSocket credential subprotocols presented", 400);
+    }
+    credential = webSocketProtocol ? { token, webSocketProtocol } : { token };
   }
 
-  return undefined;
+  return credential;
+}
+
+function hasWebSocketCredentialProtocol(value: string | null, prefix: string): boolean {
+  if (!value) return false;
+  return value.split(",").some((protocol) => protocol.trim().startsWith(prefix));
+}
+
+function applicationWebSocketProtocolFromHeader(value: string): string | undefined {
+  return value.split(",").some((protocol) => protocol.trim() === NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL)
+    ? NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL
+    : undefined;
 }
 
 function decodeBase64Url(value: string): string | undefined {

@@ -93,7 +93,8 @@ const SCHEMA_STATEMENTS = [
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     created_by_actor_label TEXT NOT NULL,
     PRIMARY KEY (notebook_id, subject_kind, subject, scope),
-    FOREIGN KEY (notebook_id) REFERENCES notebooks(id)
+    FOREIGN KEY (notebook_id) REFERENCES notebooks(id),
+    CHECK (subject_kind != 'public' OR (subject = 'anonymous' AND scope = 'viewer'))
   )`,
   `CREATE INDEX IF NOT EXISTS notebook_acl_subject_idx
     ON notebook_acl (subject_kind, subject, notebook_id)`,
@@ -364,27 +365,19 @@ export async function createNotebookWithOwnerAcl(
 
   await ensureCatalogSchema(env);
   const now = new Date().toISOString();
-  await env.DB.prepare(
-    `INSERT INTO notebooks (id, owner_principal, created_at, updated_at)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(id) DO NOTHING`,
-  )
-    .bind(notebookId, identity.principal, now, now)
-    .run();
-
-  const notebook = await getNotebookRow(env, notebookId);
-  if (notebook?.owner_principal !== identity.principal) {
-    return;
-  }
-
-  await notebookAclInsert(env, {
-    notebookId,
-    subjectKind: "principal",
-    subject: identity.principal,
-    scope: "owner",
-    actorLabel: identity.actorLabel,
-    timestamp: now,
-  }).run();
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO notebooks (id, owner_principal, created_at, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(id) DO NOTHING`,
+    ).bind(notebookId, identity.principal, now, now),
+    notebookOwnerAclInsert(env, {
+      notebookId,
+      subject: identity.principal,
+      actorLabel: identity.actorLabel,
+      timestamp: now,
+    }),
+  ]);
 }
 
 function notebookAclInsert(
@@ -420,6 +413,47 @@ function notebookAclInsert(
       row.timestamp,
       row.timestamp,
       row.actorLabel,
+    );
+}
+
+function notebookOwnerAclInsert(
+  env: Env,
+  row: {
+    notebookId: string;
+    subject: string;
+    actorLabel: string;
+    timestamp: string;
+  },
+): D1PreparedStatement {
+  return env
+    .DB!.prepare(
+      `INSERT INTO notebook_acl (
+       notebook_id,
+       subject_kind,
+       subject,
+       scope,
+       created_at,
+       updated_at,
+       created_by_actor_label
+     )
+     SELECT ?, 'principal', ?, 'owner', ?, ?, ?
+      WHERE EXISTS (
+        SELECT 1
+          FROM notebooks
+         WHERE id = ?
+           AND owner_principal = ?
+      )
+     ON CONFLICT(notebook_id, subject_kind, subject, scope) DO UPDATE SET
+       updated_at = excluded.updated_at`,
+    )
+    .bind(
+      row.notebookId,
+      row.subject,
+      row.timestamp,
+      row.timestamp,
+      row.actorLabel,
+      row.notebookId,
+      row.subject,
     );
 }
 

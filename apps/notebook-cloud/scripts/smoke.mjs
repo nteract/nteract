@@ -537,7 +537,7 @@ function devAuthHeaders() {
 }
 
 function devAuthProtocols() {
-  return devAuthToken ? [`nteract-dev-token.${base64Url(devAuthToken)}`] : undefined;
+  return devAuthToken ? [`nteract-dev-token.${base64Url(devAuthToken)}`, "nteract.v4"] : undefined;
 }
 
 function base64Url(value) {
