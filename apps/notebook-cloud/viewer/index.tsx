@@ -413,22 +413,23 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
     });
   }, []);
   const canEditMarkdown = canEditLiveNotebook(connectionScope);
+  const getLiveNotebookHandle = useCallback(() => liveRuntimeRef.current?.handle ?? null, []);
   const handleMarkdownSourceChange = useCallback(
     (cellId: string, source: string) => {
       if (!canEditMarkdown) return;
-      const liveRuntime = liveRuntimeRef.current;
-      if (!liveRuntime) return;
       const currentCell = cellsRef.current.find((cell) => cell.id === cellId);
       if (currentCell?.cellType !== "markdown") return;
-      if (!liveRuntime.handle.update_source(cellId, source)) return;
 
       setCells((current) =>
         current.map((cell) => (cell.id === cellId ? { ...cell, source } : cell)),
       );
-      liveRuntime.engine.scheduleFlush();
     },
     [canEditMarkdown],
   );
+  const handleMarkdownSyncNeeded = useCallback(() => {
+    if (!canEditMarkdown) return;
+    liveRuntimeRef.current?.engine.scheduleFlush();
+  }, [canEditMarkdown]);
   const handlePresenceCursor = useCallback((cellId: string, line: number, column: number) => {
     liveRuntimeRef.current?.sendCursorPresence(cellId, line, column);
   }, []);
@@ -512,7 +513,9 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
           hostContext={outputHostContext}
           showCode={showCode}
           livePresence={livePresence}
+          getHandle={getLiveNotebookHandle}
           onMarkdownSourceChange={handleMarkdownSourceChange}
+          onMarkdownSyncNeeded={handleMarkdownSyncNeeded}
           onPresenceCursor={handlePresenceCursor}
           onPresenceSelection={handlePresenceSelection}
           resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
@@ -661,7 +664,9 @@ function CloudLiveNotebook({
   priority,
   hostContext,
   showCode,
+  getHandle,
   onMarkdownSourceChange,
+  onMarkdownSyncNeeded,
   livePresence,
   onPresenceCursor,
   onPresenceSelection,
@@ -672,8 +677,10 @@ function CloudLiveNotebook({
   priority: readonly string[];
   hostContext: NteractEmbedHostContextPatch;
   showCode: boolean;
+  getHandle: () => CloudSyncRuntime["handle"] | null;
   livePresence: CloudLivePresenceSnapshot;
   onMarkdownSourceChange: (cellId: string, source: string) => void;
+  onMarkdownSyncNeeded: () => void;
   onPresenceCursor: (cellId: string, line: number, column: number) => void;
   onPresenceSelection: (
     cellId: string,
@@ -715,6 +722,8 @@ function CloudLiveNotebook({
               className="cloud-cell cloud-editable-markdown-cell"
               sourceClassName="cloud-source-block"
               onSourceChange={onMarkdownSourceChange}
+              onSyncNeeded={onMarkdownSyncNeeded}
+              getHandle={getHandle}
               remotePresence={presenceForCell(livePresence, cell.id)}
               onPresenceCursor={onPresenceCursor}
               onPresenceSelection={onPresenceSelection}
