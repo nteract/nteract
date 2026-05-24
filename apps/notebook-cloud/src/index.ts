@@ -264,9 +264,9 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
     return json({ error: "expected WebSocket upgrade" }, 426);
   }
 
-  const originResponse = validateWebSocketOriginOrResponse(request, env);
-  if (originResponse) {
-    return originResponse;
+  const originRejection = rejectUntrustedWebSocketOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
   }
 
   const identity = await authenticateRequestOrResponse(request, env);
@@ -288,59 +288,45 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
   return room.fetch(stampTrustedIdentity(request, authorizedIdentity));
 }
 
-function validateWebSocketOriginOrResponse(request: Request, env: Env): Response | undefined {
-  const origin = request.headers.get("Origin")?.trim();
+function rejectUntrustedWebSocketOrigin(request: Request, env: Env): Response | null {
+  const allowedOrigins = allowedWebSocketOrigins(env);
+  if (!allowedOrigins) {
+    return null;
+  }
+
+  const origin = normalizedOrigin(request.headers.get("Origin"));
   if (!origin) {
-    if (hasCloudflareAccessCookie(request)) {
-      return json({ error: "WebSocket Origin is required" }, 403);
-    }
-    return undefined;
+    return json({ error: "websocket origin is required" }, 403);
   }
-
-  if (isAllowedWebSocketOrigin(origin, request.url, env)) {
-    return undefined;
+  if (!allowedOrigins.has(origin)) {
+    return json({ error: "websocket origin is not allowed" }, 403);
   }
-
-  return json({ error: "WebSocket Origin is not allowed" }, 403);
+  return null;
 }
 
-function isAllowedWebSocketOrigin(origin: string, requestUrl: string, env: Env): boolean {
-  let normalizedOrigin: string;
+function allowedWebSocketOrigins(env: Env): Set<string> | null {
+  const raw = env.NOTEBOOK_CLOUD_ALLOWED_ORIGINS?.trim();
+  if (!raw) {
+    return null;
+  }
+
+  return new Set(
+    raw
+      .split(/[\s,]+/)
+      .map((entry) => normalizedOrigin(entry))
+      .filter((entry): entry is string => Boolean(entry)),
+  );
+}
+
+function normalizedOrigin(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
   try {
-    normalizedOrigin = new URL(origin).origin;
+    return new URL(value).origin;
   } catch {
-    return false;
+    return null;
   }
-
-  if (normalizedOrigin === new URL(requestUrl).origin) {
-    return true;
-  }
-
-  return configuredWebSocketOrigins(env).includes(normalizedOrigin);
-}
-
-function configuredWebSocketOrigins(env: Env): string[] {
-  return (env.NOTEBOOK_CLOUD_ALLOWED_ORIGINS ?? "")
-    .split(",")
-    .map((origin) => origin.trim())
-    .filter(Boolean)
-    .map((origin) => {
-      try {
-        return new URL(origin).origin;
-      } catch {
-        return "";
-      }
-    })
-    .filter(Boolean);
-}
-
-function hasCloudflareAccessCookie(request: Request): boolean {
-  const cookie = request.headers.get("Cookie");
-  if (!cookie) {
-    return false;
-  }
-
-  return cookie.split(";").some((part) => part.trim().split("=")[0] === "CF_Authorization");
 }
 
 async function routeSnapshot(

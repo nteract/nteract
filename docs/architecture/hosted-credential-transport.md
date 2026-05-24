@@ -306,6 +306,10 @@ checks, but they do not rely on ambient cookies and therefore reduce CSRF risk.
 
 ## Operational path for the Anaconda demo
 
+The exact deployment steps, Anaconda endpoints, Worker variables, origin
+allowlist, and hosted Access smoke command live in
+`docs/architecture/hosted-access-anaconda-demo-runbook.md`.
+
 1. Configure Cloudflare Access for the notebook-cloud Worker.
 2. Add Anaconda OIDC as the Access identity provider.
 3. Configure Worker Access validation:
@@ -343,8 +347,8 @@ configuration.
    Anaconda subject claim, define the exact claim name and migration strategy
    before using it as the principal id.
 3. **Invite-by-email.** D1 ACLs key by principal, but people share by email.
-   A pending-invite table or provider lookup can bridge email to principal
-   without making email the principal.
+   `docs/architecture/hosted-sharing-invites.md` sketches the pending-invite
+   table, first-login resolution, display metadata, and public viewer UX.
 4. **Provider maximum capabilities.** The hosted prototype currently treats
    dev credentials as effectively owner-bounded and relies on ACL rows. Real
    OIDC/JupyterHub providers should expose provider maximum capabilities
@@ -362,6 +366,10 @@ configuration.
   actor validation, and base credential vocabulary.
 - `docs/architecture/hosted-room-authorization.md` - room ACLs and scope
   derivation.
+- `docs/architecture/hosted-access-anaconda-demo-runbook.md` - exact
+  Cloudflare Access + Anaconda demo deployment and smoke steps.
+- `docs/architecture/hosted-sharing-invites.md` - email invite to principal ACL
+  resolution.
 - `apps/notebook-cloud/src/identity.ts` - current Cloudflare Access JWT and
   dev-token credential extraction.
 - Cloudflare WebSockets docs:
@@ -369,7 +377,7 @@ configuration.
 - Cloudflare Access authorization cookie docs:
   `https://developers.cloudflare.com/cloudflare-one/identity/authorization-cookie/`
 - Cloudflare Access JWT validation docs:
-  `https://developers.cloudflare.com/cloudflare-one/identity/authorization-cookie/validating-json/`
+  `https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/`
 - JupyterHub services auth implementation:
   `jupyterhub/services/auth.py`
 - PR #2801 review discussion:

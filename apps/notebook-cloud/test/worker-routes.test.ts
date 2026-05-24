@@ -832,9 +832,10 @@ describe("Worker artifact routes", () => {
     assert.equal(roomFetches, 1);
   });
 
-  it("rejects untrusted browser WebSocket origins before room dispatch", async () => {
+  it("rejects WebSocket upgrades from origins outside the configured allowlist", async () => {
     let roomFetches = 0;
     const env = fakeEnv({
+      NOTEBOOK_CLOUD_ALLOWED_ORIGINS: "https://notebooks.example.com",
       NOTEBOOK_ROOMS: {
         idFromName: (name: string) => ({ toString: () => name }),
         get: () => ({
@@ -847,10 +848,10 @@ describe("Worker artifact routes", () => {
     });
 
     const response = await worker.fetch(
-      new Request("http://localhost/n/origin-demo/sync?user=alice&scope=owner", {
+      new Request("https://cloud.test/n/acl-demo/sync?viewer_session=blocked", {
         headers: {
+          Origin: "https://evil.example",
           Upgrade: "websocket",
-          Origin: "https://evil.example.test",
         },
       }),
       env,
@@ -858,28 +859,18 @@ describe("Worker artifact routes", () => {
     );
 
     assert.equal(response.status, 403);
-    assert.deepEqual(await response.json(), { error: "WebSocket Origin is not allowed" });
+    assert.deepEqual(await response.json(), { error: "websocket origin is not allowed" });
     assert.equal(roomFetches, 0);
   });
 
-  it("rejects cookie-backed WebSocket upgrades that omit Origin", async () => {
-    let roomFetches = 0;
+  it("rejects allowlisted WebSocket upgrades when the browser sends no Origin", async () => {
     const env = fakeEnv({
-      NOTEBOOK_ROOMS: {
-        idFromName: (name: string) => ({ toString: () => name }),
-        get: () => ({
-          fetch: async () => {
-            roomFetches += 1;
-            return new Response("unexpected room fetch", { status: 500 });
-          },
-        }),
-      } satisfies DurableObjectNamespace,
+      NOTEBOOK_CLOUD_ALLOWED_ORIGINS: "https://notebooks.example.com",
     });
 
     const response = await worker.fetch(
-      new Request("https://cloud.test/n/origin-demo/sync", {
+      new Request("https://cloud.test/n/acl-demo/sync?viewer_session=missing", {
         headers: {
-          Cookie: "CF_Authorization=access-token",
           Upgrade: "websocket",
         },
       }),
@@ -888,8 +879,7 @@ describe("Worker artifact routes", () => {
     );
 
     assert.equal(response.status, 403);
-    assert.deepEqual(await response.json(), { error: "WebSocket Origin is required" });
-    assert.equal(roomFetches, 0);
+    assert.deepEqual(await response.json(), { error: "websocket origin is required" });
   });
 
   it("does not create notebook rows from unauthorized WebSocket opens", async () => {

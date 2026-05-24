@@ -608,6 +608,11 @@ function accessCredentialFromRequest(request: Request): AccessCredential | undef
     });
   }
 
+  const accessToken = request.headers.get("cf-access-token")?.trim() || undefined;
+  if (accessToken) {
+    candidates.push({ token: accessToken });
+  }
+
   const bearerToken = bearerTokenFromAuthorization(request.headers.get("authorization"));
   if (bearerToken) {
     candidates.push({ token: bearerToken, transport: "access-bearer" });
