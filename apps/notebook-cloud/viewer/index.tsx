@@ -299,17 +299,17 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         livePresenceStore = new CloudLivePresenceStore(liveRuntime.peerId);
         setLivePresence(livePresenceStore.snapshot());
         subscriptions = [
-          liveRuntime.engine.cellChanges$.subscribe(() => {
-            void materializeLiveCells(liveRuntime);
-          }),
-          liveRuntime.engine.runtimeState$.subscribe(() => {
-            void materializeLiveCells(liveRuntime);
-          }),
           liveRuntime.engine.presence$.subscribe((payload) => {
             const snapshot = livePresenceStore?.handlePresence(payload);
             if (snapshot) {
               setLivePresence(snapshot);
             }
+          }),
+          liveRuntime.engine.cellChanges$.subscribe(() => {
+            void materializeLiveCells(liveRuntime);
+          }),
+          liveRuntime.engine.runtimeState$.subscribe(() => {
+            void materializeLiveCells(liveRuntime);
           }),
         ];
         void materializeLiveCells(liveRuntime);
@@ -375,7 +375,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
       block: "center",
     });
   }, []);
-  const canEditMarkdown = connectionScope === "editor" || connectionScope === "owner";
+  const canEditMarkdown = canEditLiveNotebook(connectionScope);
   const handleMarkdownSourceChange = useCallback(
     (cellId: string, source: string) => {
       if (!canEditMarkdown) return;
@@ -618,6 +618,10 @@ const EMPTY_REMOTE_CELL_PRESENCE: RemoteCellPresence = {
   cursors: [],
   selections: [],
 };
+
+function canEditLiveNotebook(connectionScope: string | null): boolean {
+  return connectionScope === "editor" || connectionScope === "owner";
+}
 
 function ViewerStartupError({ message }: { message: string }) {
   return (

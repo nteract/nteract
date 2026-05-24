@@ -2,7 +2,7 @@
 
 This app is a Cloudflare Worker prototype for hosted nteract notebook rooms. It is intentionally small: the Worker authenticates a dev, Cloudflare Access, or anonymous viewer connection, authorizes that principal through the D1 room ACL, stamps a trusted `<principal>/<operator>` actor label, and routes `/n/:notebookId/sync` to a Durable Object keyed by notebook id.
 
-The current Durable Object does not host kernels. It owns a `runtimed-wasm` room host for the notebook's `NotebookDoc` + `RuntimeStateDoc`, syncs peers with typed-frame v4, rejects unauthorized Automerge changes before mutating the room, checkpoints the materialized document pair in Durable Object storage, rewrites canonical CBOR presence through the shared helper, and stores bounded frame metadata. Editor-scope live `NotebookDoc` writes are deliberately limited to existing markdown-cell source edits in this prototype; code cells and structural document changes remain read-only unless the connection has owner scope. Runtime peers use a separate `RuntimeStatePeerHandle` authoring surface: they can sync execution/output state into `RuntimeStateDoc` but cannot edit `NotebookDoc` or acquire the frontend notebook editing API.
+The current Durable Object does not host kernels. It owns a `runtimed-wasm` room host for the notebook's `NotebookDoc` + `RuntimeStateDoc`, syncs peers with typed-frame v4, rejects unauthorized Automerge changes before mutating the room, checkpoints the materialized document pair in Durable Object storage, rewrites canonical CBOR presence through the shared helper, and stores bounded frame metadata. Viewer-scope peers use the normal sync exchange so they can materialize live room updates, while the room host uses read-only peer state as a protocol hint and still rejects any viewer-authored changes explicitly. Editor-scope live `NotebookDoc` writes are deliberately limited to existing markdown-cell source edits in this prototype; code cells and structural document changes remain read-only unless the connection has owner scope. Runtime peers use a separate `RuntimeStatePeerHandle` authoring surface: they can sync execution/output state into `RuntimeStateDoc` but cannot edit `NotebookDoc` or acquire the frontend notebook editing API.
 
 `/n/:notebookId` is now a public read-only notebook viewer. The durable source of truth is a persisted `NotebookDoc` + `RuntimeStateDoc` snapshot pair in R2; `/api/n/:id/render` materializes that pair with `NotebookHandle.load_snapshot()` when a render cache is absent. Snapshot-pair publishes also pre-materialize the render cache before recording the catalog revision, so missing runtime snapshots, corrupt snapshot bytes, or missing output blobs fail the publish request instead of advertising a broken revision. Output blob refs stay host-neutral and are mapped to `/api/n/:id/blobs/:hash` through the shared `BlobResolver` surface. The browser viewer bundle uses the shared notebook display components (`CellContainer`, `OutputArea`, `ReadOnlyCodeMirror`, `MediaProvider`) so published source, markdown, stdout/stderr, rich display data, and blob-backed renderer manifests go through the same isolated output renderer path as the desktop notebook.
 
@@ -317,6 +317,80 @@ pnpm --workspace-root exec wrangler deploy --config apps/notebook-cloud/wrangler
 pnpm --workspace-root exec wrangler deploy --config apps/notebook-cloud/wrangler.toml
 ```
 
+## Operational observability
+
+The Worker emits Cloudflare-safe structured console records with the prefix
+`[notebook-cloud]`. Records include `service`, `event`, `timestamp`, and
+event-specific dimensions such as `notebook_id`, `peer_id`, `scope`,
+`frame_type`, `duration_ms`, and log-derived counters (`counter` +
+`counter_delta`). Do not add request bodies, auth tokens, raw WebSocket payloads,
+or notebook source text to these logs.
+
+Tail the deployed prototype with:
+
+```bash
+pnpm --workspace-root exec wrangler tail nteract-notebook-cloud \
+  --config apps/notebook-cloud/wrangler.toml \
+  --format pretty
+```
+
+Useful events while debugging collaboration:
+
+- `room.connection.accepted` / `room.connection.closed` - peer lifecycle and
+  `room_peer_count`.
+- `room.peer_sync.completed` / `room.peer_sync.failed` - bootstrap sync latency
+  and reconnect churn.
+- `room.frame.rejected` - scope validation, malformed frames, and room-host
+  write rejection. Count by `counter=rejected_frames`.
+- `room.materialized_frame.applied` - `NotebookDoc` / `RuntimeStateDoc` frame
+  application duration, changed flags, and outbound fanout.
+- `room.materializer.loaded`, `room.materializer.checkpoint.saved`, and
+  `room.materializer.snapshot_pair_missing` - Durable Object materialization and
+  persisted snapshot health.
+- `render.materialization.completed`, `render.materialization.failed`, and
+  `render.materialization.missing_blobs` - render-cache generation health and
+  missing output blob diagnosis.
+- `asset.fetch.completed` - viewer, `runtimed-wasm`, and renderer-plugin sidecar
+  asset delivery. Filter by `asset_kind=renderer_plugin` for Sift WASM loading.
+- `blob.read.missing`, `blob.upload.completed`, and `blob.upload.rejected` -
+  output blob resolution and runtime/upload behavior.
+- `authz.denied`, `acl.grant.completed`, and `acl.revoke.completed` - ACL
+  decisions and owner mutations.
+
+Quick deployed runbook:
+
+```bash
+NOTEBOOK_CLOUD_URL=https://nteract-notebook-cloud.rgbkrk.workers.dev \
+NOTEBOOK_CLOUD_DEV_TOKEN=... \
+pnpm --dir apps/notebook-cloud smoke
+
+NOTEBOOK_CLOUD_URL=https://nteract-notebook-cloud.rgbkrk.workers.dev \
+NOTEBOOK_CLOUD_DEV_TOKEN=... \
+pnpm --dir apps/notebook-cloud wasm:roundtrip
+
+NOTEBOOK_CLOUD_URL=https://nteract-notebook-cloud.rgbkrk.workers.dev \
+NOTEBOOK_CLOUD_DEV_TOKEN=... \
+pnpm --dir apps/notebook-cloud smoke:hosted:live
+
+NOTEBOOK_CLOUD_HOSTED_URL=https://nteract-notebook-cloud.rgbkrk.workers.dev/n/<id> \
+NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM=0 \
+pnpm --dir apps/notebook-cloud smoke:hosted
+```
+
+`wasm:roundtrip` refuses to target a deployed Worker without
+`NOTEBOOK_CLOUD_DEV_TOKEN` in the environment, because deployed dev credentials
+must never travel in URLs. Its JSON result includes `timings_ms` for owner
+seeding, ACL grants, peer connection, and both Alice/Bob/anonymous convergence
+directions; use those values with `room.peer_sync.completed` and
+`room.materialized_frame.applied` logs to separate WebSocket latency from room
+materialization cost.
+
+Use `GET /api/n/{id}/acl` with an owner credential to confirm editor/viewer
+grants. A healthy throwaway collaboration run should show editor
+`room.materialized_frame.applied` records, viewer `room.peer_sync.completed`
+records, no unexpected `room.frame.rejected` records for Alice/Bob, and
+anonymous viewer presence logged only as `room.presence.local_only`.
+
 Snapshot and blob stubs:
 
 ```bash
@@ -349,10 +423,13 @@ curl "http://127.0.0.1:8787/api/n/demo/render"
 
 ## Next integration steps
 
-1. Land the hosted-room authorization plan in
-   `docs/architecture/hosted-room-authorization.md`.
-2. Add D1-backed ACL lookup so deployed scope comes from room grants, not dev
-   auth request parameters.
-3. Make public anonymous viewing an explicit ACL row.
-4. Move the Durable Object from byte relay to a real `runtimed-wasm` room peer.
-5. Swap dev auth for OIDC/JupyterHub providers using the `nteract-identity` model.
+1. Verify the deployed Alice/Bob/anonymous viewer trial against the current
+   Worker after each live-sync change.
+2. Promote the Cloudflare Access path from prototype configuration to the
+   default hosted-room auth path.
+3. Replace flat ACL rows with the relationship model chosen for hosted
+   notebooks.
+4. Decide the runtime-peer upload flow for presigned blob writes and remote
+   runtime agents.
+5. Move notebook-specific output blobs to signed URLs or a dedicated private
+   output origin before hosting private notebooks at scale.

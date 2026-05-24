@@ -117,7 +117,7 @@ export async function connectCloudSyncRuntime({
       logger: consoleSyncLogger,
     });
 
-    engine.start();
+    startCloudBootstrapSync(engine);
 
     return {
       actorLabel: ready.actor_label,
@@ -174,6 +174,18 @@ export function normalizeConnectionScope(value: string): ConnectionScope {
     `[notebook-cloud] unknown connection scope ${JSON.stringify(value)}; falling back to viewer`,
   );
   return "viewer";
+}
+
+export function startCloudBootstrapSync(
+  engine: Pick<SyncEngine, "start" | "resetForBootstrap" | "flush">,
+): void {
+  engine.start();
+  // Match the desktop `useAutomergeNotebook` bootstrap path: a newly-created
+  // bootstrap handle must initiate the sync exchange before it can materialize
+  // the room. Viewer-scope peers still use normal sync state so incoming
+  // changes apply locally; the room host rejects any viewer-authored changes.
+  engine.resetForBootstrap();
+  engine.flush();
 }
 
 export async function withReadyTimeout<T>(
@@ -373,7 +385,7 @@ const consoleSyncLogger = {
   error: (message: string, ...args: unknown[]) => console.error(message, ...args),
 };
 
-function syncableCloudHandle(handle: NotebookHandle): SyncableHandle {
+export function syncableCloudHandle(handle: NotebookHandle): SyncableHandle {
   return {
     receive_frame: (bytes) =>
       handle.receive_frame(bytes) as ReturnType<SyncableHandle["receive_frame"]>,
@@ -382,9 +394,13 @@ function syncableCloudHandle(handle: NotebookHandle): SyncableHandle {
     flush_runtime_state_sync: () => handle.flush_runtime_state_sync() ?? null,
     cancel_last_runtime_state_flush: () => handle.cancel_last_runtime_state_flush(),
     generate_runtime_state_sync_reply: () => handle.generate_runtime_state_sync_reply() ?? null,
-    flush_pool_state_sync: () => handle.flush_pool_state_sync() ?? null,
-    cancel_last_pool_state_flush: () => handle.cancel_last_pool_state_flush(),
-    generate_pool_state_sync_reply: () => handle.generate_pool_state_sync_reply() ?? null,
+    // notebook-cloud does not host or display daemon pool state. The shared
+    // SyncEngine flushes pool sync opportunistically for Desktop, so the cloud
+    // adapter intentionally presents PoolDoc as absent instead of sending a
+    // frame the Durable Object should reject for viewer/editor scopes.
+    flush_pool_state_sync: () => null,
+    cancel_last_pool_state_flush: () => undefined,
+    generate_pool_state_sync_reply: () => null,
     reset_sync_state: () => handle.reset_sync_state(),
     cell_count: () => handle.cell_count(),
     get_heads_hex: () => handle.get_heads_hex(),

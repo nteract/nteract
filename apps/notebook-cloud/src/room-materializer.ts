@@ -7,6 +7,7 @@ import {
   allowsRuntimeStateWrite,
   type AuthenticatedConnection,
 } from "./identity.ts";
+import { cloudLog, durationMs, errorMessage } from "./observability.ts";
 
 const ROOM_HOST_ACTOR_LABEL = "system/schema:notebook-cloud-room";
 const CHECKPOINT_NOTEBOOK_KEY = "room-host:notebook-doc";
@@ -50,7 +51,15 @@ export class RoomMaterializer {
   ) {}
 
   async syncPeer(peer: RoomPeer): Promise<RoomHostFrameResult> {
-    return this.withHost((host) => normalizeResult(host.sync_peer(peer.id)));
+    return this.withHost((host) =>
+      normalizeResult(
+        host.sync_peer(
+          peer.id,
+          allowsNotebookWrite(peer.identity.scope),
+          allowsRuntimeStateWrite(peer.identity.scope),
+        ),
+      ),
+    );
   }
 
   async removePeer(peerId: string): Promise<void> {
@@ -80,6 +89,7 @@ export class RoomMaterializer {
   }
 
   async checkpoint(): Promise<void> {
+    const startedAt = Date.now();
     await this.withHost(async (host) => {
       const [notebookBytes, runtimeStateBytes] = [
         toStoredArrayBuffer(host.save_notebook()),
@@ -96,6 +106,16 @@ export class RoomMaterializer {
         this.state.storage.put(CHECKPOINT_RUNTIME_STATE_KEY, runtimeStateBytes),
         this.state.storage.put(CHECKPOINT_META_KEY, metadata),
       ]);
+      cloudLog("debug", "room.materializer.checkpoint.saved", {
+        notebook_id: this.notebookId,
+        duration_ms: durationMs(startedAt),
+        notebook_byte_length: notebookBytes.byteLength,
+        runtime_state_byte_length: runtimeStateBytes.byteLength,
+        notebook_head_count: metadata.notebook_heads.length,
+        runtime_state_head_count: metadata.runtime_state_heads.length,
+        counter: "materializer_checkpoints_saved",
+        counter_delta: 1,
+      });
     });
   }
 
@@ -117,17 +137,57 @@ export class RoomMaterializer {
   }
 
   private async loadHostFromStorage(): Promise<RoomHostHandle> {
-    const checkpoint = await this.loadCheckpoint();
-    if (checkpoint) {
-      return loadRoomHostSnapshot(checkpoint.notebookBytes, checkpoint.runtimeStateBytes);
-    }
+    const startedAt = Date.now();
+    try {
+      const checkpoint = await this.loadCheckpoint();
+      if (checkpoint) {
+        const host = loadRoomHostSnapshot(checkpoint.notebookBytes, checkpoint.runtimeStateBytes);
+        cloudLog("info", "room.materializer.loaded", {
+          notebook_id: this.notebookId,
+          source: "durable_object_checkpoint",
+          duration_ms: durationMs(startedAt),
+          notebook_byte_length: checkpoint.notebookBytes.byteLength,
+          runtime_state_byte_length: checkpoint.runtimeStateBytes.byteLength,
+          counter: "materializer_loads",
+          counter_delta: 1,
+        });
+        return host;
+      }
 
-    const published = await this.loadLatestPublishedSnapshotPair();
-    if (published) {
-      return loadRoomHostSnapshot(published.notebookBytes, published.runtimeStateBytes);
-    }
+      const published = await this.loadLatestPublishedSnapshotPair();
+      if (published) {
+        const host = loadRoomHostSnapshot(published.notebookBytes, published.runtimeStateBytes);
+        cloudLog("info", "room.materializer.loaded", {
+          notebook_id: this.notebookId,
+          source: "published_snapshot_pair",
+          duration_ms: durationMs(startedAt),
+          notebook_byte_length: published.notebookBytes.byteLength,
+          runtime_state_byte_length: published.runtimeStateBytes.byteLength,
+          counter: "materializer_loads",
+          counter_delta: 1,
+        });
+        return host;
+      }
 
-    return createEmptyRoomHost(this.notebookId, ROOM_HOST_ACTOR_LABEL);
+      const host = createEmptyRoomHost(this.notebookId, ROOM_HOST_ACTOR_LABEL);
+      cloudLog("info", "room.materializer.loaded", {
+        notebook_id: this.notebookId,
+        source: "empty_room",
+        duration_ms: durationMs(startedAt),
+        counter: "materializer_loads",
+        counter_delta: 1,
+      });
+      return host;
+    } catch (error) {
+      cloudLog("warn", "room.materializer.load_failed", {
+        notebook_id: this.notebookId,
+        duration_ms: durationMs(startedAt),
+        error: errorMessage(error),
+        counter: "materializer_load_failures",
+        counter_delta: 1,
+      });
+      throw error;
+    }
   }
 
   private async loadCheckpoint(): Promise<{
@@ -170,6 +230,13 @@ export class RoomMaterializer {
       this.env.NOTEBOOK_SNAPSHOTS.get(latest.runtime_snapshot_key),
     ]);
     if (!notebookObject || !runtimeObject) {
+      cloudLog("warn", "room.materializer.snapshot_pair_missing", {
+        notebook_id: this.notebookId,
+        notebook_snapshot_missing: !notebookObject,
+        runtime_state_snapshot_missing: !runtimeObject,
+        counter: "materializer_snapshot_pair_missing",
+        counter_delta: 1,
+      });
       return null;
     }
 

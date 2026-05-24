@@ -75,6 +75,47 @@ describe("RoomHostHandle", () => {
     assert.equal(cells[0].source, "Edited collaboratively\n");
   });
 
+  it("pushes later document changes to an already-connected viewer", async () => {
+    const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
+    const owner = NotebookHandle.create_bootstrap("user:dev:alice/desktop:owner");
+    const viewer = NotebookHandle.create_bootstrap("user:dev:carol/desktop:viewer");
+
+    syncHostWithClient(host, "peer-owner", "user:dev:alice", true, true, owner);
+    syncHostWithClient(host, "peer-viewer", "user:dev:carol", false, false, viewer);
+    assert.deepEqual(JSON.parse(viewer.get_cells_json()), []);
+
+    owner.add_cell(0, "live-markdown", "markdown");
+    owner.update_source("live-markdown", "Live read-only viewers should update.\n");
+    const message = owner.flush_local_changes();
+    assert.ok(message);
+
+    const result = host.receive_peer_frame(
+      "peer-owner",
+      "user:dev:alice",
+      true,
+      true,
+      encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
+    ) as {
+      changed: boolean;
+      outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: number[] }>;
+    };
+
+    assert.equal(result.changed, true);
+    assert.ok(
+      result.outbound.some(
+        (frame) => frame.peer_id === "peer-viewer" && frame.frame_type === FrameType.AUTOMERGE_SYNC,
+      ),
+      "room host did not queue the editor change for the viewer",
+    );
+
+    applyOutboundToClient(result.outbound, "peer-viewer", viewer);
+    const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
+    assert.deepEqual(
+      cells.map((cell) => [cell.id, cell.source]),
+      [["live-markdown", "Live read-only viewers should update.\n"]],
+    );
+  });
+
   it("rejects editor-scoped source edits to code cells", async () => {
     const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
     const owner = NotebookHandle.create_bootstrap("user:dev:alice/desktop:owner");
@@ -148,10 +189,10 @@ describe("RoomHostHandle", () => {
 
   it("rejects viewer-authored document changes", async () => {
     const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
-    const viewer = NotebookHandle.create_bootstrap("user:dev:alice/desktop:a");
-    syncHostWithClient(host, "peer-viewer", "user:dev:alice", false, false, viewer);
-    viewer.add_cell(0, "cell-viewer", "markdown");
-    const message = viewer.flush_local_changes();
+    const forgedWriter = NotebookHandle.create_bootstrap("user:dev:alice/desktop:a");
+    syncHostWithClient(host, "peer-writer", "user:dev:alice", true, true, forgedWriter);
+    forgedWriter.add_cell(0, "cell-viewer", "markdown");
+    const message = forgedWriter.flush_local_changes();
     assert.ok(message);
 
     assert.throws(
@@ -264,7 +305,14 @@ describe("RoomHostHandle", () => {
   it("rejects runtime peers that try to edit the NotebookDoc", async () => {
     const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
     const runtime = NotebookHandle.create_bootstrap("user:dev:runtime-service/runtime:py-3.12");
-    syncHostWithClient(host, "peer-runtime", "user:dev:runtime-service", false, false, runtime);
+    syncHostWithClient(
+      host,
+      "peer-runtime-writer",
+      "user:dev:runtime-service",
+      true,
+      true,
+      runtime,
+    );
 
     runtime.add_cell(0, "runtime-cell", "markdown");
     const message = runtime.flush_local_changes();
@@ -389,7 +437,7 @@ function syncHostWithClient(
   canWriteAllNotebookChanges: boolean,
   client: NotebookHandle,
 ): void {
-  let result = host.sync_peer(peerId) as {
+  let result = host.sync_peer(peerId, canWrite, canWrite) as {
     outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: number[] }>;
   };
   for (let round = 0; round < 8; round += 1) {
@@ -506,7 +554,7 @@ function syncRuntimeHostWithClient(
     outbound.push(...reply.outbound);
   }
 
-  const hostSync = host.sync_peer(peerId) as {
+  const hostSync = host.sync_peer(peerId, false, canWrite) as {
     outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: number[] }>;
   };
   outbound.push(...hostSync.outbound);
@@ -541,7 +589,7 @@ function syncRuntimeHostWithRuntimePeer(
   canWriteAllNotebookChanges: boolean,
   runtime: RuntimeStatePeerHandle,
 ): void {
-  let result = host.sync_peer(peerId) as {
+  let result = host.sync_peer(peerId, false, canWrite) as {
     outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: number[] }>;
   };
   for (let round = 0; round < 8; round += 1) {
