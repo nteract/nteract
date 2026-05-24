@@ -30,7 +30,7 @@ A captured environment's identity is not the cache path. It is:
 2. the full resolver-affecting dependency intent stored in notebook metadata, and
 3. `metadata.runt.env_id`.
 
-The full dependency intent matters. For UV, `dependencies`, `requires-python`, and `prerelease` all feed the unified hash. For Conda, `dependencies`, `channels`, and `python` all feed the unified hash. Dropping resolver fields would silently point a notebook at a different cache path after metadata edits.
+The full dependency intent matters. For UV, `dependencies`, `requires-python`, and `prerelease` all feed the unified hash. For Conda, `dependencies`, `channels`, `python`, and the conditional GIL-enforcement ABI marker all feed the unified hash. `compute_unified_env_hash()` is authoritative for the exact field list. Dropping resolver fields would silently point a notebook at a different cache path after metadata edits.
 
 Cache paths are derived from this identity:
 
