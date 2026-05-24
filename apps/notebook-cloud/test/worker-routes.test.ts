@@ -930,7 +930,8 @@ describe("Worker artifact routes", () => {
       "failed publish materialization should not cache a render object",
     );
     assert.equal(warnings.length, 1);
-    assert.equal(warnings[0][0], "Unable to materialize notebook render");
+    assert.equal(warnings[0][0], "[notebook-cloud]");
+    assert.equal((warnings[0][1] as { event: string }).event, "render.materialization.failed");
   });
 
   it("rejects snapshot publish when materialized blob refs are missing from R2", async () => {
@@ -1009,7 +1010,11 @@ describe("Worker artifact routes", () => {
       "failed blob validation should not cache a render object",
     );
     assert.equal(warnings.length, 1);
-    assert.equal(warnings[0][0], "Unable to materialize notebook render: missing blobs");
+    assert.equal(warnings[0][0], "[notebook-cloud]");
+    assert.equal(
+      (warnings[0][1] as { event: string }).event,
+      "render.materialization.missing_blobs",
+    );
   });
 });
 

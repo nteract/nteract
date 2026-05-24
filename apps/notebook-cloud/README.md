@@ -317,6 +317,72 @@ pnpm --workspace-root exec wrangler deploy --config apps/notebook-cloud/wrangler
 pnpm --workspace-root exec wrangler deploy --config apps/notebook-cloud/wrangler.toml
 ```
 
+## Operational observability
+
+The Worker emits Cloudflare-safe structured console records with the prefix
+`[notebook-cloud]`. Records include `service`, `event`, `timestamp`, and
+event-specific dimensions such as `notebook_id`, `peer_id`, `scope`,
+`frame_type`, `duration_ms`, and log-derived counters (`counter` +
+`counter_delta`). Do not add request bodies, auth tokens, raw WebSocket payloads,
+or notebook source text to these logs.
+
+Tail the deployed prototype with:
+
+```bash
+pnpm --workspace-root exec wrangler tail nteract-notebook-cloud \
+  --config apps/notebook-cloud/wrangler.toml \
+  --format pretty
+```
+
+Useful events while debugging collaboration:
+
+- `room.connection.accepted` / `room.connection.closed` - peer lifecycle and
+  `room_peer_count`.
+- `room.peer_sync.completed` / `room.peer_sync.failed` - bootstrap sync latency
+  and reconnect churn.
+- `room.frame.rejected` - scope validation, malformed frames, and room-host
+  write rejection. Count by `counter=rejected_frames`.
+- `room.materialized_frame.applied` - `NotebookDoc` / `RuntimeStateDoc` frame
+  application duration, changed flags, and outbound fanout.
+- `room.materializer.loaded`, `room.materializer.checkpoint.saved`, and
+  `room.materializer.snapshot_pair_missing` - Durable Object materialization and
+  persisted snapshot health.
+- `render.materialization.completed`, `render.materialization.failed`, and
+  `render.materialization.missing_blobs` - render-cache generation health and
+  missing output blob diagnosis.
+- `asset.fetch.completed` - viewer, `runtimed-wasm`, and renderer-plugin sidecar
+  asset delivery. Filter by `asset_kind=renderer_plugin` for Sift WASM loading.
+- `blob.read.missing`, `blob.upload.completed`, and `blob.upload.rejected` -
+  output blob resolution and runtime/upload behavior.
+- `authz.denied`, `acl.grant.completed`, and `acl.revoke.completed` - ACL
+  decisions and owner mutations.
+
+Quick deployed runbook:
+
+```bash
+NOTEBOOK_CLOUD_URL=https://nteract-notebook-cloud.rgbkrk.workers.dev \
+NOTEBOOK_CLOUD_DEV_TOKEN=... \
+pnpm --dir apps/notebook-cloud smoke
+
+NOTEBOOK_CLOUD_URL=https://nteract-notebook-cloud.rgbkrk.workers.dev \
+NOTEBOOK_CLOUD_DEV_TOKEN=... \
+pnpm --dir apps/notebook-cloud wasm:roundtrip
+
+NOTEBOOK_CLOUD_URL=https://nteract-notebook-cloud.rgbkrk.workers.dev \
+NOTEBOOK_CLOUD_DEV_TOKEN=... \
+pnpm --dir apps/notebook-cloud smoke:hosted:live
+
+NOTEBOOK_CLOUD_HOSTED_URL=https://nteract-notebook-cloud.rgbkrk.workers.dev/n/<id> \
+NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM=0 \
+pnpm --dir apps/notebook-cloud smoke:hosted
+```
+
+Use `GET /api/n/{id}/acl` with an owner credential to confirm editor/viewer
+grants. A healthy throwaway collaboration run should show editor
+`room.materialized_frame.applied` records, viewer `room.peer_sync.completed`
+records, no unexpected `room.frame.rejected` records for Alice/Bob, and
+anonymous viewer presence logged only as `room.presence.local_only`.
+
 Snapshot and blob stubs:
 
 ```bash
@@ -349,10 +415,13 @@ curl "http://127.0.0.1:8787/api/n/demo/render"
 
 ## Next integration steps
 
-1. Land the hosted-room authorization plan in
-   `docs/architecture/hosted-room-authorization.md`.
-2. Add D1-backed ACL lookup so deployed scope comes from room grants, not dev
-   auth request parameters.
-3. Make public anonymous viewing an explicit ACL row.
-4. Move the Durable Object from byte relay to a real `runtimed-wasm` room peer.
-5. Swap dev auth for OIDC/JupyterHub providers using the `nteract-identity` model.
+1. Verify the deployed Alice/Bob/anonymous viewer trial against the current
+   Worker after each live-sync change.
+2. Promote the Cloudflare Access path from prototype configuration to the
+   default hosted-room auth path.
+3. Replace flat ACL rows with the relationship model chosen for hosted
+   notebooks.
+4. Decide the runtime-peer upload flow for presigned blob writes and remote
+   runtime agents.
+5. Move notebook-specific output blobs to signed URLs or a dedicated private
+   output origin before hosting private notebooks at scale.

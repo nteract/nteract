@@ -16,6 +16,7 @@ import {
   type SessionControlMessage,
   type TypedFrame,
 } from "./protocol.ts";
+import { cloudLog, durationMs, errorMessage } from "./observability.ts";
 import { rewritePresenceIngress } from "./runtimed-wasm.ts";
 import {
   isMaterializedSyncFrame,
@@ -97,6 +98,15 @@ export class NotebookRoom {
 
     this.acceptPeerSocket(notebookId, peer);
     this.peers.set(peer.id, peer);
+    cloudLog("info", "room.connection.accepted", {
+      notebook_id: notebookId,
+      peer_id: peer.id,
+      principal: identity.principal,
+      scope: identity.scope,
+      room_peer_count: this.peers.size,
+      counter: "connections_accepted",
+      counter_delta: 1,
+    });
 
     this.sendControl(notebookId, peer, {
       type: "cloud_room_ready",
@@ -168,6 +178,11 @@ export class NotebookRoom {
         socket,
         identity: attachment.identity,
         connectedAt: attachment.connectedAt,
+      });
+    }
+    if (sockets.length > 0) {
+      cloudLog("info", "room.hibernation.restored_peers", {
+        restored_peer_count: this.peers.size,
       });
     }
   }
@@ -293,6 +308,16 @@ export class NotebookRoom {
     if (!shouldBroadcastFrame(normalizedFrame, peer.identity)) {
       // Anonymous public viewers are read-only observers. Their presence is
       // acknowledged locally but not broadcast or persisted as room activity.
+      cloudLog("debug", "room.presence.local_only", {
+        notebook_id: notebookId,
+        peer_id: peer.id,
+        principal: peer.identity.principal,
+        scope: peer.identity.scope,
+        frame_type: frameTypeName(normalizedFrame.type),
+        byte_length: normalizedFrame.payload.byteLength,
+        counter: "local_only_presence_frames",
+        counter_delta: 1,
+      });
       this.sendControl(notebookId, peer, {
         type: "cloud_frame_accepted",
         notebook_id: notebookId,
@@ -307,6 +332,7 @@ export class NotebookRoom {
     if (isMaterializedSyncFrame(normalizedFrame.type)) {
       let result: RoomHostFrameResult;
       const materializer = this.materializerFor(notebookId);
+      const startedAt = Date.now();
       try {
         result = await materializer.receiveFrame(peer, normalizedFrame);
       } catch (error) {
@@ -318,6 +344,21 @@ export class NotebookRoom {
         );
         return;
       }
+      cloudLog("debug", "room.materialized_frame.applied", {
+        notebook_id: notebookId,
+        peer_id: peer.id,
+        principal: peer.identity.principal,
+        scope: peer.identity.scope,
+        frame_type: frameTypeName(normalizedFrame.type),
+        byte_length: normalizedFrame.payload.byteLength,
+        duration_ms: durationMs(startedAt),
+        changed: result.changed,
+        notebook_changed: result.notebook_changed,
+        runtime_state_changed: result.runtime_state_changed,
+        outbound_frame_count: result.outbound.length,
+        counter: "materialized_frames_applied",
+        counter_delta: 1,
+      });
 
       this.state.waitUntil(
         this.persistFrame(peer, normalizedFrame, receivedAt).catch(() => undefined),
@@ -386,9 +427,31 @@ export class NotebookRoom {
   }
 
   private async syncPeerFromRoomHost(notebookId: string, peer: Peer): Promise<void> {
+    const startedAt = Date.now();
     try {
-      this.deliverRoomHostFrames(notebookId, await this.materializerFor(notebookId).syncPeer(peer));
-    } catch {
+      const result = await this.materializerFor(notebookId).syncPeer(peer);
+      cloudLog("debug", "room.peer_sync.completed", {
+        notebook_id: notebookId,
+        peer_id: peer.id,
+        principal: peer.identity.principal,
+        scope: peer.identity.scope,
+        duration_ms: durationMs(startedAt),
+        outbound_frame_count: result.outbound.length,
+        counter: "peer_sync_completed",
+        counter_delta: 1,
+      });
+      this.deliverRoomHostFrames(notebookId, result);
+    } catch (error) {
+      cloudLog("warn", "room.peer_sync.failed", {
+        notebook_id: notebookId,
+        peer_id: peer.id,
+        principal: peer.identity.principal,
+        scope: peer.identity.scope,
+        duration_ms: durationMs(startedAt),
+        error: errorMessage(error),
+        counter: "peer_sync_failed",
+        counter_delta: 1,
+      });
       this.removePeer(notebookId, peer);
     }
   }
@@ -467,6 +530,17 @@ export class NotebookRoom {
     frameType: number | undefined,
     reason: string,
   ): void {
+    cloudLog("warn", "room.frame.rejected", {
+      notebook_id: notebookId,
+      peer_id: peer.id,
+      principal: peer.identity.principal,
+      scope: peer.identity.scope,
+      frame_type: frameType === undefined ? "unknown" : frameTypeName(frameType),
+      reason,
+      room_peer_count: this.peers.size,
+      counter: "rejected_frames",
+      counter_delta: 1,
+    });
     this.sendControl(notebookId, peer, {
       type: "cloud_frame_rejected",
       notebook_id: notebookId,
@@ -509,6 +583,15 @@ export class NotebookRoom {
 
   private sendFrameToPeer(notebookId: string, peer: Peer, frame: Uint8Array): void {
     if (!this.trySendFrame(peer, frame)) {
+      cloudLog("warn", "room.peer_send.failed", {
+        notebook_id: notebookId,
+        peer_id: peer.id,
+        principal: peer.identity.principal,
+        scope: peer.identity.scope,
+        frame_byte_length: frame.byteLength,
+        counter: "peer_send_failed",
+        counter_delta: 1,
+      });
       this.removePeer(notebookId, peer);
     }
   }
@@ -560,6 +643,16 @@ export class NotebookRoom {
     } catch {
       // Socket is already gone; the peer has still been removed from room state.
     }
+
+    cloudLog("info", "room.connection.closed", {
+      notebook_id: notebookId,
+      peer_id: peer.id,
+      principal: peer.identity.principal,
+      scope: peer.identity.scope,
+      room_peer_count: this.peers.size,
+      counter: "connections_closed",
+      counter_delta: 1,
+    });
 
     this.broadcastControl(notebookId, {
       type: "cloud_peer_left",

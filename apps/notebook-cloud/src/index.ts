@@ -37,6 +37,7 @@ import {
   withTrailingSlash,
 } from "./blob-resolver.ts";
 import { collectBlobRefs } from "./blob-refs.ts";
+import { cloudLog, durationMs } from "./observability.ts";
 
 export { NotebookRoom };
 
@@ -203,6 +204,14 @@ async function routeAsset(request: Request, env: Env): Promise<Response | null> 
   const assetUrl = new URL(request.url);
   assetUrl.pathname = assetPathname;
   const response = await env.ASSETS.fetch(new Request(assetUrl, request));
+  cloudLog(response.status >= 400 ? "warn" : "debug", "asset.fetch.completed", {
+    asset_kind: assetKind(assetPathname),
+    asset_pathname: assetPathname,
+    request_pathname: url.pathname,
+    status: response.status,
+    counter: "asset_fetches",
+    counter_delta: 1,
+  });
   return withCors(new Response(response.body, response));
 }
 
@@ -238,6 +247,16 @@ function pluginAssetPathname(rawName: string): string | null {
   }
 
   return `/plugins/${name}`;
+}
+
+function assetKind(pathname: string): string {
+  if (pathname.startsWith("/plugins/")) {
+    return "renderer_plugin";
+  }
+  if (pathname.endsWith(".wasm")) {
+    return "wasm";
+  }
+  return "viewer_asset";
 }
 
 async function routeRoomSync(request: Request, env: Env): Promise<Response> {
@@ -469,6 +488,17 @@ async function routeNotebookAcl(request: Request, env: Env, notebookId: string):
       }
       return json({ error: "owner ACL row was not removed; retry the request" }, 409);
     }
+    cloudLog("info", "acl.revoke.completed", {
+      notebook_id: notebookId,
+      principal: identity.principal,
+      actor_label: identity.actorLabel,
+      acl_subject_kind: aclInput.subject_kind,
+      acl_subject: aclInput.subject,
+      acl_scope: aclInput.scope,
+      revoked,
+      counter: "acl_revocations",
+      counter_delta: 1,
+    });
     return json({
       ok: true,
       notebook_id: notebookId,
@@ -482,6 +512,16 @@ async function routeNotebookAcl(request: Request, env: Env, notebookId: string):
     subject: aclInput.subject,
     scope: aclInput.scope,
     actorLabel: identity.actorLabel,
+  });
+  cloudLog("info", "acl.grant.completed", {
+    notebook_id: notebookId,
+    principal: identity.principal,
+    actor_label: identity.actorLabel,
+    acl_subject_kind: aclInput.subject_kind,
+    acl_subject: aclInput.subject,
+    acl_scope: aclInput.scope,
+    counter: "acl_grants",
+    counter_delta: 1,
   });
   return json(
     {
@@ -659,6 +699,7 @@ async function materializeSnapshotRenderCache(options: {
   runtimeStateBytes: Uint8Array;
   immutable: boolean;
 }): Promise<RenderMaterializationResult> {
+  const startedAt = Date.now();
   const bucket = options.env.NOTEBOOK_SNAPSHOTS;
   if (!bucket) {
     return {
@@ -682,11 +723,14 @@ async function materializeSnapshotRenderCache(options: {
       }),
     });
   } catch (error) {
-    console.warn("Unable to materialize notebook render", {
-      notebookId: options.notebookId,
-      notebookHeadsHash: options.notebookHeadsHash,
-      runtimeHeadsHash: options.runtimeHeadsHash,
-      error,
+    cloudLog("warn", "render.materialization.failed", {
+      notebook_id: options.notebookId,
+      notebook_heads_hash: options.notebookHeadsHash,
+      runtime_heads_hash: options.runtimeHeadsHash,
+      duration_ms: durationMs(startedAt),
+      error: errorMessage(error),
+      counter: "render_materialization_failures",
+      counter_delta: 1,
     });
     return {
       ok: false,
@@ -700,11 +744,15 @@ async function materializeSnapshotRenderCache(options: {
 
   const missingBlobs = await findMissingRenderBlobs(bucket, options.notebookId, render.cells);
   if (missingBlobs.length > 0) {
-    console.warn("Unable to materialize notebook render: missing blobs", {
-      notebookId: options.notebookId,
-      notebookHeadsHash: options.notebookHeadsHash,
-      runtimeHeadsHash: options.runtimeHeadsHash,
-      missingBlobs,
+    cloudLog("warn", "render.materialization.missing_blobs", {
+      notebook_id: options.notebookId,
+      notebook_heads_hash: options.notebookHeadsHash,
+      runtime_heads_hash: options.runtimeHeadsHash,
+      duration_ms: durationMs(startedAt),
+      missing_blob_count: missingBlobs.length,
+      missing_blob_hashes: missingBlobs.map((blob) => blob.hash).slice(0, 20),
+      counter: "render_materialization_missing_blobs",
+      counter_delta: 1,
     });
     return {
       ok: false,
@@ -730,6 +778,17 @@ async function materializeSnapshotRenderCache(options: {
       runtime_heads_hash: options.runtimeHeadsHash ?? "",
       artifact: "materialized-render",
     },
+  });
+  cloudLog("info", "render.materialization.completed", {
+    notebook_id: options.notebookId,
+    notebook_heads_hash: options.notebookHeadsHash,
+    runtime_heads_hash: options.runtimeHeadsHash,
+    duration_ms: durationMs(startedAt),
+    cell_count: Array.isArray(render.cells) ? render.cells.length : undefined,
+    blob_ref_count: Object.keys(render.blob_urls).length,
+    byte_length: body.length,
+    counter: "render_materializations",
+    counter_delta: 1,
   });
   return { ok: true, body };
 }
@@ -780,6 +839,13 @@ async function routeBlob(
     }
     const object = await env.NOTEBOOK_SNAPSHOTS?.head(key);
     if (!object) {
+      cloudLog("warn", "blob.read.missing", {
+        notebook_id: notebookId,
+        hash,
+        method: "HEAD",
+        counter: "blob_read_misses",
+        counter_delta: 1,
+      });
       return json({ error: "blob not found" }, 404);
     }
 
@@ -799,6 +865,13 @@ async function routeBlob(
     }
     const object = await env.NOTEBOOK_SNAPSHOTS?.get(key);
     if (!object) {
+      cloudLog("warn", "blob.read.missing", {
+        notebook_id: notebookId,
+        hash,
+        method: "GET",
+        counter: "blob_read_misses",
+        counter_delta: 1,
+      });
       return json({ error: "blob not found" }, 404);
     }
 
@@ -829,6 +902,15 @@ async function routeBlob(
   const body = await request.arrayBuffer();
   const digest = await sha256Hex(body);
   if (hash !== digest) {
+    cloudLog("warn", "blob.upload.rejected", {
+      notebook_id: notebookId,
+      hash,
+      actual_hash: digest,
+      reason: "hash_mismatch",
+      byte_length: body.byteLength,
+      counter: "blob_upload_rejections",
+      counter_delta: 1,
+    });
     return json(
       {
         error: "blob hash mismatch",
@@ -863,6 +945,16 @@ async function routeBlob(
     size: body.byteLength,
     contentType,
     r2Key: key,
+  });
+  cloudLog("info", "blob.upload.completed", {
+    notebook_id: notebookId,
+    hash,
+    byte_length: body.byteLength,
+    content_type: contentType,
+    principal: authorizedIdentity.principal,
+    scope: authorizedIdentity.scope,
+    counter: "blob_uploads",
+    counter_delta: 1,
   });
 
   return json({ ok: true, key, size: body.byteLength }, 201);
@@ -1018,6 +1110,16 @@ async function authorizeIdentityOrResponse(
     return await authorizeNotebookAccess(env, notebookId, identity, requestedScope);
   } catch (error) {
     if (error instanceof AuthorizationError) {
+      cloudLog(error.status >= 500 ? "warn" : "info", "authz.denied", {
+        notebook_id: notebookId,
+        principal: identity.principal,
+        scope: identity.scope,
+        requested_scope: requestedScope,
+        status: error.status,
+        reason: error.message,
+        counter: "authorization_denials",
+        counter_delta: 1,
+      });
       return json({ error: error.message }, error.status);
     }
     throw error;
@@ -1055,6 +1157,13 @@ async function authorizePublishOrCreate(
   }
 
   await createNotebookWithOwnerAcl(env, notebookId, identity);
+  cloudLog("info", "notebook.created", {
+    notebook_id: notebookId,
+    owner_principal: identity.principal,
+    actor_label: identity.actorLabel,
+    counter: "notebooks_created",
+    counter_delta: 1,
+  });
   return authorizeIdentityOrResponse(env, notebookId, identity, "owner");
 }
 
