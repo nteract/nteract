@@ -146,6 +146,14 @@ Subprotocol bearer tokens are appropriate for:
 They are not needed for same-origin Cloudflare Access browser sessions, where
 the Access cookie plus `Cf-Access-Jwt-Assertion` path is simpler.
 
+`nteract-bearer.*` is the proposed generic bearer-token convention. The hosted
+prototype currently has narrower prefixes for already-implemented paths:
+`nteract-access-token.*` for Access JWTs and `nteract-dev-token.*` for deployed
+dev-token smoke tests. Those prefixes can coexist while direct OIDC/JupyterHub
+bearer support lands. A later cleanup may migrate them behind the generic
+`nteract-bearer.*` prefix once the credential payload carries enough issuer
+metadata to dispatch safely.
+
 ## Decision 4: One-time tickets are an optional bridge
 
 One-time tickets are useful when a browser cannot safely or conveniently present
@@ -180,7 +188,7 @@ For Cloudflare Access browser sessions:
 
 - the cookie is the Access application session, not a notebook room token;
 - the Worker validates `Cf-Access-Jwt-Assertion`, not arbitrary user headers;
-- write-capable WebSocket upgrades must pass an explicit `Origin` allowlist;
+- cookie-backed WebSocket upgrades must pass an explicit `Origin` allowlist;
 - public viewer sockets may still use the same origin checks when cookies are
   present, so public read does not accidentally become authenticated write.
 
@@ -247,8 +255,10 @@ origin gate for WebSocket upgrades.
 
 Minimum policy:
 
-- Reject cookie-backed write-capable WebSocket upgrades with missing or
-  untrusted `Origin`.
+- Reject cookie-backed WebSocket upgrades with missing or untrusted `Origin`.
+  This applies to viewer and writer connections. A private viewer socket can
+  still leak notebook contents to a malicious page if ambient cookies are
+  enough to authenticate it.
 - Maintain an allowlist of notebook application origins that are allowed to
   initiate room WebSockets.
 - Do not allow sandboxed output iframes or renderer asset origins to open
