@@ -129,6 +129,13 @@ The listener peels off the credential subprotocol, validates the token, and
 selects the real application protocol (`nteract.v4`) in the response. The
 credential subprotocol is not echoed back.
 
+The "not echoed back" rule is a production requirement. The hosted prototype's
+current `nteract-access-token.*` and `nteract-dev-token.*` paths are
+credential-bearing subprotocols and may be echoed by the current room code. That
+must be fixed before those paths carry real long-lived credentials: the listener
+should strip the credential prefix, authenticate from it, and return only a
+non-sensitive application protocol such as `nteract.v4`.
+
 This is better than `?token=...` because the bearer does not enter the URL,
 browser history, referrer paths, or ordinary route metrics. It is still a
 bearer token visible to JavaScript and potentially to infrastructure that logs
@@ -173,6 +180,13 @@ Flow:
 The ticket may appear in the WebSocket URL, but it is not the real credential.
 It should expire within seconds, be single use, and be scoped to the target
 room and requested role.
+
+Ticket validation and consumption must happen before the WebSocket upgrade is
+accepted. The URL can still appear in CDN, WAF, browser, or Worker analytics
+before the Worker consumes it, so tickets are a narrow fallback rather than the
+preferred path for sensitive deployments. Deployments that cannot tolerate even
+short-lived opaque ticket exposure should use Cloudflare Access cookie/assertion
+auth or bearer-in-subprotocol auth with non-echoed credential subprotocols.
 
 Tickets are not the default for the Cloudflare Access demo because Access
 already handles the browser session. They remain the preferred fallback when a
