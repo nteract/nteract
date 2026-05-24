@@ -7,7 +7,7 @@
  */
 
 import Plotly from "plotly.js-dist-min";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { cn } from "@/lib/utils";
 
 // --- Theme helpers ---
@@ -66,13 +66,19 @@ interface RendererProps {
   mimeType: string;
 }
 
+const DEFAULT_UI_REVISION = "nteract-display-update";
+
 // --- PlotlyRenderer component ---
 
 function PlotlyRenderer({ data: rawData }: RendererProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const plottedElementRef = useRef<HTMLDivElement | null>(null);
 
-  const data =
-    typeof rawData === "string" ? (JSON.parse(rawData) as PlotlyData) : (rawData as PlotlyData);
+  const data = useMemo(
+    () =>
+      typeof rawData === "string" ? (JSON.parse(rawData) as PlotlyData) : (rawData as PlotlyData),
+    [rawData],
+  );
 
   // Pre-size the container to match the user's explicit dimensions (if any).
   // Plotly's `responsive: true` config installs a parent ResizeObserver and
@@ -83,9 +89,29 @@ function PlotlyRenderer({ data: rawData }: RendererProps) {
   // the chart. Setting the container's CSS height up front means plotly
   // sees its target dimensions from the first paint and the responsive
   // observer simply confirms what's already there.
-  const userLayout = (data?.layout ?? {}) as Record<string, unknown>;
+  const userLayout = useMemo(() => (data?.layout ?? {}) as Record<string, unknown>, [data]);
   const explicitHeight = typeof userLayout.height === "number" ? userLayout.height : undefined;
   const explicitWidth = typeof userLayout.width === "number" ? userLayout.width : undefined;
+
+  const setContainerRef = useCallback((node: HTMLDivElement | null) => {
+    const previous = containerRef.current;
+    if (!node && previous && plottedElementRef.current === previous) {
+      Plotly.purge(previous);
+      plottedElementRef.current = null;
+    }
+
+    containerRef.current = node;
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      const el = plottedElementRef.current;
+      if (el) {
+        Plotly.purge(el);
+      }
+      plottedElementRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (!containerRef.current || !data?.data) return;
@@ -102,6 +128,9 @@ function PlotlyRenderer({ data: rawData }: RendererProps) {
       ...userLayout,
       ...darkLayoutOverrides(isDark),
     };
+    if (layout.uirevision === undefined) {
+      layout.uirevision = DEFAULT_UI_REVISION;
+    }
 
     const config: Record<string, unknown> = {
       responsive: true,
@@ -110,12 +139,24 @@ function PlotlyRenderer({ data: rawData }: RendererProps) {
       ...data.config,
     };
 
-    Plotly.newPlot(el, {
+    const figure = {
       data: data.data as Plotly.Data[],
       layout: layout as Partial<Plotly.Layout>,
       config: config as Partial<Plotly.Config>,
       frames: data.frames as Plotly.Frame[],
-    });
+    };
+
+    if (plottedElementRef.current === el) {
+      Plotly.react(el, figure);
+    } else {
+      Plotly.newPlot(el, figure);
+      plottedElementRef.current = el;
+    }
+  }, [data, userLayout]);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || !data?.data) return;
 
     const themeObserver = new MutationObserver(() => {
       const nowDark = document.documentElement.classList.contains("dark");
@@ -126,11 +167,8 @@ function PlotlyRenderer({ data: rawData }: RendererProps) {
       attributeFilter: ["class"],
     });
 
-    return () => {
-      themeObserver.disconnect();
-      Plotly.purge(el);
-    };
-  }, [data, userLayout]);
+    return () => themeObserver.disconnect();
+  }, [data?.data]);
 
   if (!data?.data) return null;
 
@@ -141,7 +179,7 @@ function PlotlyRenderer({ data: rawData }: RendererProps) {
 
   return (
     <div
-      ref={containerRef}
+      ref={setContainerRef}
       data-slot="plotly-output"
       className={cn("not-prose py-2 max-w-full")}
       style={containerStyle}
