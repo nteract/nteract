@@ -38,6 +38,7 @@ Severity legend:
 | 3D-4 | `RuntimeStateDoc` editor-scope writes are restricted by client convention only. The daemon's ingress validator (`peer_runtime_sync.rs:80-107`) checks actor-principal forgery but not paths. A custom client crafting changes to `executions/*/status` would pass. | Design | `crates/runtimed/src/notebook_sync_server/peer_runtime_sync.rs` |
 | 3D-5 | No cross-doc heads correlation is produced or stored. Snapshot/audit/replay flows need a `(notebook_heads, runtime_heads)` pair; nothing writes one. | Design | snapshot publishing path |
 | 3D-6 | `PoolDoc` does not participate in the clone-preview validator. Mitigation is `strip_changes`, not `validate`. Future write-bearing pool features would need the validator path wired back in. | Design | `crates/runtimed/src/notebook_sync_server/` |
+| 3D-7 | Hosted runtime execution needs a request-routing contract that targets the active `runtime_peer` through the room host or `RuntimeStateDoc`, not the local `RuntimeAgent` socket. The audit in `runtime-peer-and-blob-authority-audit.md` narrows this to contract work before code. | Design | hosted runtime request dispatch |
 
 ## Execution pipeline
 
@@ -81,6 +82,8 @@ Severity legend:
 | BS-9 | `MAX_BLOB_SIZE = 100 MiB` only gates the in-process `BlobStore::put()` API. The multipart finalize path validates against the caller's `expected_size` and the per-peer 256 MiB staging budget but does not enforce a 100 MiB ceiling on the completed blob. A peer can multipart-upload a 200 MiB blob today. | Design | `crates/runtimed/src/blob_upload.rs` finalize path |
 | BS-10 | Save-to-`.ipynb` externalizes Arrow IPC and Parquet only via `BLOB_REF_MIME`; every other binary MIME is base64-inlined in the saved file. A user opening the saved `.ipynb` outside nteract gets self-contained binary for non-Arrow/Parquet but broken refs for the rest unless they keep the colocated blob store. | Design | `output_store.rs:62-89` |
 | ~~BS-11~~ | **Done** in cleanup/inline-pass. `COMM_STATE_BLOB_THRESHOLD`'s doc comment now explicitly cross-references `DEFAULT_INLINE_THRESHOLD` and explains that the shared value is coincidence, not coupling. | Done | `crates/runtimed/src/output_prep.rs:143` |
+| BS-12 | `PutBlob` frames and multipart upload requests are not scope-gated in the local daemon peer loop today. Local same-UID clients authenticate as owner, but hosted multi-user rooms must reject viewer uploads and allow editor/runtime-peer uploads only as precursors to authorized references. | Design | `peer_loop.rs`, `peer_writer.rs`, hosted room host |
+| BS-13 | Blob metadata such as `media_type` is mutable on duplicate put. That is intentional for single-user desktop, but a hosted or remote-peer backend must prevent a lower-scope peer from changing how an existing hash is served to other users. | Design | blob backend / hosted resolver |
 
 ## Triage summary
 
@@ -89,7 +92,7 @@ Severity legend:
 - **Done:** WP-1, WP-5, WP-9, EP-7, EP-12, BS-8, BS-11. Seven landed via #2813 + cleanup/inline-pass.
 - **Refuted:** EP-4 (log levels are correct per `.claude/rules/logging.md`), EP-13 (warn/debug asymmetry matches the actual severity of `Full` vs `Closed`).
 - **Targeted PRs (one per smell):** WP-6, WP-7, WP-11, WP-12, 3D-1, 3D-2, EP-1, EP-8, EP-10, EP-11, BS-3, BS-7, TMD-1, TMD-2, MSL-1, MSL-3, FSB-1, FSB-2. Eighteen open. (WP-2 and WP-3 landed in stacks 2 and 3; EP-2 and BS-1 landed in stacks 5 and 6.)
-- **Design (resolve in ADR or memo first):** WP-4, WP-8, WP-10, 3D-3, 3D-4, 3D-5, 3D-6, EP-3, EP-5, EP-6, EP-9, BS-2, BS-4, BS-5, BS-6, BS-9, BS-10, MSL-2, MSL-4. Nineteen open.
+- **Design (resolve in ADR or memo first):** WP-4, WP-8, WP-10, 3D-3, 3D-4, 3D-5, 3D-6, 3D-7, EP-3, EP-5, EP-6, EP-9, BS-2, BS-4, BS-5, BS-6, BS-9, BS-10, BS-12, BS-13, MSL-2, MSL-4. Twenty-two open.
 
 ## Next steps
 

@@ -18,6 +18,9 @@ layers:
   JupyterHub, browser WebSockets, and native clients present credentials.
 - `hosted-notebook-artifacts.md` defines the durable snapshot pair and blob
   layout.
+- `runtime-peer-and-blob-authority-audit.md` clarifies that `runtime_peer` is
+  the room role, `RuntimeAgent` is local daemon machinery, and `PutBlob` is not
+  runtime topology.
 
 The old notebook-URI direction was useful because it recognized that a notebook
 room needs a stable address and that daemons should not independently mutate the
