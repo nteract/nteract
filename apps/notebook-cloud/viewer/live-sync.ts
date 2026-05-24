@@ -92,65 +92,83 @@ export async function connectCloudSyncRuntime({
   const url = syncUrl(syncEndpoint, sessionId, auth);
   const transport = new CloudWebSocketTransport(url, auth.protocols, onControl);
   const ready = await transport.ready;
-  const handle = await createBootstrapNotebookHandle(
-    ready.actor_label,
-    new URL(runtimedWasmModulePath, location.href),
-    new URL(runtimedWasmPath, location.href),
-  );
-  const syncHandle = syncableCloudHandle(handle);
-  const peerLabel = actorPeerLabel(ready.actor_label);
-  const heartbeatPeerId = ready.peer_id;
-  const engine = new SyncEngine({
-    getHandle: () => syncHandle,
-    transport,
-    presenceHeartbeat: {
-      intervalMs: 15_000,
-      encode: () => encodeHeartbeatPresenceAfterInit(heartbeatPeerId),
-    },
-    logger: consoleSyncLogger,
-  });
+  try {
+    const handle = await createBootstrapNotebookHandle(
+      ready.actor_label,
+      new URL(runtimedWasmModulePath, location.href),
+      new URL(runtimedWasmPath, location.href),
+    );
+    const syncHandle = syncableCloudHandle(handle);
+    const peerLabel = actorPeerLabel(ready.actor_label);
+    const heartbeatPeerId = ready.peer_id;
+    const connectionScope = normalizeConnectionScope(ready.connection_scope);
+    const engine = new SyncEngine({
+      getHandle: () => syncHandle,
+      transport,
+      presenceHeartbeat: {
+        intervalMs: 15_000,
+        encode: () => encodeHeartbeatPresenceAfterInit(heartbeatPeerId),
+      },
+      logger: consoleSyncLogger,
+    });
 
-  engine.start();
+    engine.start();
 
-  return {
-    actorLabel: ready.actor_label,
-    connectionScope: ready.connection_scope as ConnectionScope,
-    peerId: ready.peer_id,
-    peerLabel,
-    handle,
-    engine,
-    transport,
-    sendCursorPresence: (cellId, line, column) => {
-      const payload = encodeCursorPresenceAfterInit(
-        heartbeatPeerId,
-        peerLabel,
-        ready.actor_label,
-        cellId,
-        line,
-        column,
-      );
-      void transport
-        .sendFrame(FrameType.PRESENCE, payload)
-        .catch((error: unknown) => console.warn("[notebook-cloud] cursor presence failed", error));
-    },
-    sendSelectionPresence: (cellId, anchorLine, anchorCol, headLine, headCol) => {
-      const payload = encodeSelectionPresenceAfterInit(
-        heartbeatPeerId,
-        peerLabel,
-        ready.actor_label,
-        cellId,
-        anchorLine,
-        anchorCol,
-        headLine,
-        headCol,
-      );
-      void transport
-        .sendFrame(FrameType.PRESENCE, payload)
-        .catch((error: unknown) =>
-          console.warn("[notebook-cloud] selection presence failed", error),
+    return {
+      actorLabel: ready.actor_label,
+      connectionScope,
+      peerId: ready.peer_id,
+      peerLabel,
+      handle,
+      engine,
+      transport,
+      sendCursorPresence: (cellId, line, column) => {
+        const payload = encodeCursorPresenceAfterInit(
+          heartbeatPeerId,
+          peerLabel,
+          ready.actor_label,
+          cellId,
+          line,
+          column,
         );
-    },
-  };
+        void transport
+          .sendFrame(FrameType.PRESENCE, payload)
+          .catch((error: unknown) =>
+            console.warn("[notebook-cloud] cursor presence failed", error),
+          );
+      },
+      sendSelectionPresence: (cellId, anchorLine, anchorCol, headLine, headCol) => {
+        const payload = encodeSelectionPresenceAfterInit(
+          heartbeatPeerId,
+          peerLabel,
+          ready.actor_label,
+          cellId,
+          anchorLine,
+          anchorCol,
+          headLine,
+          headCol,
+        );
+        void transport
+          .sendFrame(FrameType.PRESENCE, payload)
+          .catch((error: unknown) =>
+            console.warn("[notebook-cloud] selection presence failed", error),
+          );
+      },
+    };
+  } catch (error) {
+    transport.disconnect();
+    throw error;
+  }
+}
+
+export function normalizeConnectionScope(value: string): ConnectionScope {
+  if (isConnectionScope(value)) {
+    return value;
+  }
+  console.warn(
+    `[notebook-cloud] unknown connection scope ${JSON.stringify(value)}; falling back to viewer`,
+  );
+  return "viewer";
 }
 
 export class CloudWebSocketTransport implements NotebookTransport {
