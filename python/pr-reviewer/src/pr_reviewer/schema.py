@@ -15,58 +15,6 @@ Severity = Literal["blocker", "high", "medium", "low"]
 Confidence = Literal["high", "medium", "low"]
 
 
-REVIEW_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["verdict", "terminal_reason", "findings", "summary"],
-    "properties": {
-        "verdict": {
-            "type": "string",
-            "enum": ["clear", "findings", "needs_human", "infra_uncertain"],
-        },
-        "terminal_reason": {
-            "type": "string",
-            "enum": [
-                "review_complete",
-                "actionable_findings",
-                "needs_human",
-                "budget_exhausted",
-                "infra_uncertain",
-            ],
-        },
-        "summary": {"type": "string"},
-        "findings": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": [
-                    "severity",
-                    "file",
-                    "line",
-                    "title",
-                    "evidence",
-                    "suggested_fix",
-                    "confidence",
-                ],
-                "properties": {
-                    "severity": {
-                        "type": "string",
-                        "enum": ["blocker", "high", "medium", "low"],
-                    },
-                    "file": {"type": "string"},
-                    "line": {"type": ["integer", "null"]},
-                    "title": {"type": "string"},
-                    "evidence": {"type": "string"},
-                    "suggested_fix": {"type": ["string", "null"]},
-                    "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
-                },
-            },
-        },
-    },
-}
-
-
 @dataclass(frozen=True)
 class Finding:
     severity: Severity

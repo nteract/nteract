@@ -19,8 +19,8 @@ Set terminal_reason to explain how the review ended:
 - budget_exhausted: you could not finish before the turn/context budget.
 - infra_uncertain: review could not be trusted because of tooling or environment uncertainty.
 
-You may use Read, Glob, Grep, and Bash inside this isolated disposable review
-workspace. Prefer read-only inspection, but use Bash freely when it helps you
+You are running through opencode inside an isolated disposable review workspace.
+Prefer read-only inspection, but use shell inspection when it helps you
 understand the diff. Do not intentionally edit source files; this review should
 produce findings, not patches.
 """
@@ -46,8 +46,25 @@ Diff stat:
 {workspace.reviewed_diff.diff_stat or "(empty)"}
 
 You are in the PR workspace. Inspect files as needed and compare the PR against
-the full diff below. Return only the structured review result requested by the
-host.
+the full diff below. Return exactly one JSON object and no prose, markdown, or
+code fence. The JSON shape is:
+{{
+  "verdict": "clear" | "findings" | "needs_human" | "infra_uncertain",
+  "terminal_reason": "review_complete" | "actionable_findings" |
+    "needs_human" | "budget_exhausted" | "infra_uncertain",
+  "summary": "short review summary",
+  "findings": [
+    {{
+      "severity": "blocker" | "high" | "medium" | "low",
+      "file": "path/to/file",
+      "line": 123,
+      "title": "short issue title",
+      "evidence": "why this is a real bug or risk",
+      "suggested_fix": "concrete fix, or null",
+      "confidence": "high" | "medium" | "low"
+    }}
+  ]
+}}
 
 Full diff:
 {workspace.diff_patch or "(empty)"}

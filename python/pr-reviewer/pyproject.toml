@@ -1,16 +1,14 @@
 [project]
 name = "pr-reviewer"
 version = "0.0.0"
-description = "Internal Bedrock-backed Claude Agent SDK PR reviewer"
+description = "Internal opencode-backed PR reviewer"
 readme = "README.md"
 license = "BSD-3-Clause"
 authors = [
     { name = "Kyle Kelley", email = "rgbkrk@gmail.com" }
 ]
 requires-python = ">=3.10"
-dependencies = [
-    "claude-agent-sdk>=0.1.80",
-]
+dependencies = []
 
 [project.scripts]
 pr-review = "pr_reviewer.cli:main"
