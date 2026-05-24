@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { Code2, Eye, EyeOff, KeyRound, RotateCcw, UsersRound } from "lucide-react";
+import { Code2, Copy, Eye, EyeOff, KeyRound, RotateCcw, UsersRound } from "lucide-react";
 import {
   ReadOnlyNotebook,
   type ReadOnlyNotebookCellData,
@@ -19,6 +19,7 @@ import {
   clearCloudPrototypeDevAuth,
   cloudPrototypeAuthFromWindow,
   cloudSyncAuthFromPrototypeAuthState,
+  prototypeAuthDiagnostics,
   prototypeAuthSummary,
   storeCloudPrototypeDevAuth,
   validatePrototypeToken,
@@ -482,6 +483,8 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         <div className="cloud-toolbar-actions">
           <CloudAuthControls
             authState={authState}
+            connectionActorLabel={connectionActorLabel}
+            connectionError={connectionError}
             connectionScope={connectionScope}
             onAuthStateChange={() => setAuthState(cloudPrototypeAuthFromWindow())}
           />
@@ -572,10 +575,14 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
 
 function CloudAuthControls({
   authState,
+  connectionActorLabel,
+  connectionError,
   connectionScope,
   onAuthStateChange,
 }: {
   authState: CloudPrototypeAuthState;
+  connectionActorLabel: string | null;
+  connectionError: string | null;
   connectionScope: string | null;
   onAuthStateChange: () => void;
 }) {
@@ -583,12 +590,21 @@ function CloudAuthControls({
   const [user, setUser] = useState(authState.user ?? "alice");
   const [scope, setScope] = useState<ConnectionScope>(authState.requestedScope ?? "editor");
   const [formError, setFormError] = useState<string | null>(null);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const summary =
     authState.mode === "dev"
       ? `Dev ${authState.user ?? "browser-editor"}`
       : authState.mode === "invalid"
         ? "Auth needs attention"
         : "Anonymous";
+  const diagnostics = prototypeAuthDiagnostics(authState, {
+    actorLabel: connectionActorLabel,
+    connectionError,
+    connectionScope,
+  });
+  useEffect(() => {
+    setCopyState("idle");
+  }, [authState, connectionActorLabel, connectionError, connectionScope]);
 
   const applyDevAuth = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -610,6 +626,15 @@ function CloudAuthControls({
     onAuthStateChange();
   };
 
+  const copyDiagnostics = async () => {
+    try {
+      await navigator.clipboard.writeText(diagnostics.copyText);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  };
+
   return (
     <details className="cloud-auth-menu">
       <summary title="Prototype collaborator identity">
@@ -618,7 +643,14 @@ function CloudAuthControls({
       </summary>
       <form onSubmit={applyDevAuth}>
         <p>{prototypeAuthSummary(authState)}</p>
-        {connectionScope ? <p>Connected as {connectionScope}.</p> : <p>Live room not connected.</p>}
+        <dl className="cloud-auth-diagnostics" aria-label="Prototype auth diagnostics">
+          {diagnostics.rows.map((row) => (
+            <div key={row.label} data-tone={row.tone ?? "default"}>
+              <dt>{row.label}</dt>
+              <dd>{row.value}</dd>
+            </div>
+          ))}
+        </dl>
         <label>
           <span>Dev token</span>
           <input
@@ -659,6 +691,14 @@ function CloudAuthControls({
           <button type="submit">
             <KeyRound aria-hidden="true" />
             Use dev identity
+          </button>
+          <button type="button" onClick={() => void copyDiagnostics()}>
+            <Copy aria-hidden="true" />
+            {copyState === "copied"
+              ? "Copied"
+              : copyState === "failed"
+                ? "Copy failed"
+                : "Copy diagnostics"}
           </button>
           <button type="button" onClick={resetAuth}>
             <RotateCcw aria-hidden="true" />

@@ -35,6 +35,23 @@ export interface CloudPrototypeAuthInput {
   scope: ConnectionScope;
 }
 
+export interface CloudPrototypeConnectionDiagnostics {
+  actorLabel: string | null;
+  connectionError: string | null;
+  connectionScope: string | null;
+}
+
+export interface CloudPrototypeAuthDiagnosticRow {
+  label: string;
+  value: string;
+  tone?: "default" | "warning" | "success";
+}
+
+export interface CloudPrototypeAuthDiagnostics {
+  rows: CloudPrototypeAuthDiagnosticRow[];
+  copyText: string;
+}
+
 export function cloudPrototypeAuthFromWindow(): CloudPrototypeAuthState {
   if (typeof window === "undefined") {
     return anonymousAuthState();
@@ -133,6 +150,100 @@ export function prototypeAuthSummary(state: CloudPrototypeAuthState): string {
   return "Anonymous read-only viewer";
 }
 
+export function prototypeAuthDiagnostics(
+  state: CloudPrototypeAuthState,
+  connection: CloudPrototypeConnectionDiagnostics,
+): CloudPrototypeAuthDiagnostics {
+  const rows: CloudPrototypeAuthDiagnosticRow[] = [];
+  if (state.mode === "dev") {
+    rows.push(
+      {
+        label: "Requested principal",
+        value: devPrincipalLabel(state.user ?? "browser-editor"),
+      },
+      {
+        label: "Requested scope",
+        value: state.requestedScope ?? "editor",
+      },
+      {
+        label: "Dev token",
+        value: "Stored locally; sent as a WebSocket subprotocol, never in the URL.",
+      },
+    );
+  } else if (state.mode === "invalid") {
+    rows.push(
+      {
+        label: "Stored identity",
+        value: `${devPrincipalLabel(state.user ?? "browser-editor")} requesting ${
+          state.requestedScope ?? "editor"
+        }`,
+        tone: "warning",
+      },
+      {
+        label: "Dev token",
+        value: state.problem ?? "Stored token is invalid.",
+        tone: "warning",
+      },
+      {
+        label: "Effective auth",
+        value: "Anonymous viewer until the token is replaced or reset.",
+        tone: "warning",
+      },
+    );
+  } else {
+    rows.push(
+      {
+        label: "Effective auth",
+        value: "Anonymous read-only viewer.",
+      },
+      {
+        label: "Dev token",
+        value: "Not stored.",
+      },
+    );
+  }
+
+  if (connection.connectionScope) {
+    rows.push({
+      label: "Connected scope",
+      value: connection.connectionScope,
+      tone: "success",
+    });
+  } else if (connection.connectionError) {
+    rows.push({
+      label: "Connected scope",
+      value: "Offline",
+      tone: "warning",
+    });
+  } else {
+    rows.push({
+      label: "Connected scope",
+      value: "Connecting...",
+    });
+  }
+
+  if (connection.actorLabel) {
+    rows.push({
+      label: "Room actor",
+      value: connection.actorLabel,
+      tone: "success",
+    });
+  }
+
+  if (connection.connectionError) {
+    rows.push({
+      label: "Last connection error",
+      value: connection.connectionError,
+      tone: "warning",
+    });
+  }
+
+  return {
+    rows,
+    copyText: rows.map((row) => `${row.label}: ${row.value}`).join("\n"),
+  };
+}
+
 function anonymousAuthState(): CloudPrototypeAuthState {
   return {
     mode: "anonymous",
@@ -154,4 +265,8 @@ function base64UrlEncode(value: string): string {
     binary += String.fromCharCode(byte);
   }
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+function devPrincipalLabel(user: string): string {
+  return `user:dev:${encodeURIComponent(user.trim() || "browser-editor")}`;
 }
