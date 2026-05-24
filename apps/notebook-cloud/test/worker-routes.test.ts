@@ -139,6 +139,26 @@ describe("Worker artifact routes", () => {
     assert.equal(await response.text(), "wasm");
   });
 
+  it("allows Cloudflare Access token headers during API preflight", async () => {
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/n/preflight-demo/acl", {
+        method: "OPTIONS",
+        headers: {
+          Origin: "https://notebooks.example.com",
+          "Access-Control-Request-Method": "POST",
+          "Access-Control-Request-Headers": "CF-Access-Token, Content-Type",
+        },
+      }),
+      fakeEnv(),
+      fakeContext(),
+    );
+
+    const allowedHeaders = response.headers.get("Access-Control-Allow-Headers") ?? "";
+    assert.equal(response.status, 204);
+    assert.match(allowedHeaders, /\bCF-Access-Token\b/);
+    assert.match(allowedHeaders, /\bContent-Type\b/);
+  });
+
   it("serves renderer sidecar assets through a Worker-owned route", async () => {
     const seenPaths: string[] = [];
     const env = fakeEnv({

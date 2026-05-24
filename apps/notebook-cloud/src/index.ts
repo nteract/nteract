@@ -1316,7 +1316,7 @@ function withCors(response: Response): Response {
   response.headers.set("Access-Control-Allow-Methods", "DELETE, GET, HEAD, POST, PUT, OPTIONS");
   response.headers.set(
     "Access-Control-Allow-Headers",
-    `Authorization, Cf-Access-Jwt-Assertion, Content-Type, X-User, X-Principal, X-Operator, X-Scope, X-Viewer-Session, X-Runtime-Heads-Hash, ${DEV_AUTH_TOKEN_HEADER}`,
+    `Authorization, Cf-Access-Jwt-Assertion, CF-Access-Token, Content-Type, X-User, X-Principal, X-Operator, X-Scope, X-Viewer-Session, X-Runtime-Heads-Hash, ${DEV_AUTH_TOKEN_HEADER}`,
   );
   return response;
 }
