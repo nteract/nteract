@@ -11,8 +11,9 @@ import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-co
 import { MediaProvider } from "@/components/outputs/media-provider";
 import type { TracebackCellTarget } from "@/components/outputs/traceback-output";
 import { ErrorBoundary } from "@/lib/error-boundary";
+import { isTextAttributionEvent } from "runtimed";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
-import { EditableMarkdownCell } from "./editable-markdown-cell";
+import { EditableMarkdownCell, type CloudTextAttributionQueue } from "./editable-markdown-cell";
 import type { RemoteCellPresence } from "@/components/editor/presence-state";
 import {
   clearCloudPrototypeDevAuth,
@@ -168,11 +169,16 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
   const [presence, setPresence] = useState(initialCloudViewerPresence);
   const [livePresence, setLivePresence] = useState(emptyCloudLivePresenceSnapshot);
   const [connectionScope, setConnectionScope] = useState<string | null>(null);
+  const [connectionActorLabel, setConnectionActorLabel] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [textAttributionQueue, setTextAttributionQueue] = useState<CloudTextAttributionQueue>(
+    () => ({ batches: [] }),
+  );
   const [connectAttempt, setConnectAttempt] = useState(0);
   const [authState, setAuthState] = useState<CloudPrototypeAuthState>(() =>
     cloudPrototypeAuthFromWindow(),
   );
+  const textAttributionSequenceRef = useRef(0);
 
   useEffect(() => {
     cellsRef.current = cells;
@@ -257,6 +263,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
       console.warn("[notebook-cloud] live room connection closed", reason);
       setPresence((state) => reduceCloudViewerConnection(state, "disconnected"));
       setConnectionScope(null);
+      setConnectionActorLabel(null);
       setConnectionError(reason.message);
       disposeCurrentRuntime();
       if (reconnectTimer) return;
@@ -300,6 +307,8 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
     setPresence(initialCloudViewerPresence());
     setLivePresence(emptyCloudLivePresenceSnapshot());
     setConnectionError(null);
+    setConnectionActorLabel(null);
+    setTextAttributionQueue({ batches: [] });
     void connectCloudSyncRuntime({
       syncEndpoint: config.syncEndpoint,
       runtimedWasmModulePath: config.runtimedWasmModulePath,
@@ -319,6 +328,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         if (message.type === "cloud_room_ready") {
           setConnectionError(null);
           setConnectionScope(message.connection_scope);
+          setConnectionActorLabel(message.actor_label);
         }
         if (message.type === "cloud_frame_rejected") {
           setStatus({ kind: "error", message: `Room rejected a frame: ${message.reason}` });
@@ -332,9 +342,20 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         }
         liveRuntimeRef.current = liveRuntime;
         setConnectionScope(liveRuntime.connectionScope);
+        setConnectionActorLabel(liveRuntime.actorLabel);
         livePresenceStore = new CloudLivePresenceStore(liveRuntime.peerId);
         setLivePresence(livePresenceStore.snapshot());
         subscriptions = [
+          liveRuntime.engine.broadcasts$.subscribe((payload) => {
+            if (!isTextAttributionEvent(payload)) return;
+            const sequence = ++textAttributionSequenceRef.current;
+            setTextAttributionQueue((queue) => {
+              const nextBatch = { sequence, attributions: payload.attributions };
+              return {
+                batches: [...queue.batches.slice(-63), nextBatch],
+              };
+            });
+          }),
           liveRuntime.engine.presence$.subscribe((payload) => {
             const snapshot = livePresenceStore?.handlePresence(payload);
             if (snapshot) {
@@ -354,6 +375,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         if (disposed) return;
         setPresence((state) => reduceCloudViewerConnection(state, "disconnected"));
         setConnectionScope(null);
+        setConnectionActorLabel(null);
         setConnectionError(error instanceof Error ? error.message : String(error));
         console.warn("[notebook-cloud] live room connection failed", error);
       });
@@ -413,22 +435,23 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
     });
   }, []);
   const canEditMarkdown = canEditLiveNotebook(connectionScope);
+  const getLiveNotebookHandle = useCallback(() => liveRuntimeRef.current?.handle ?? null, []);
   const handleMarkdownSourceChange = useCallback(
     (cellId: string, source: string) => {
       if (!canEditMarkdown) return;
-      const liveRuntime = liveRuntimeRef.current;
-      if (!liveRuntime) return;
       const currentCell = cellsRef.current.find((cell) => cell.id === cellId);
       if (currentCell?.cellType !== "markdown") return;
-      if (!liveRuntime.handle.update_source(cellId, source)) return;
 
       setCells((current) =>
         current.map((cell) => (cell.id === cellId ? { ...cell, source } : cell)),
       );
-      liveRuntime.engine.scheduleFlush();
     },
     [canEditMarkdown],
   );
+  const handleMarkdownSyncNeeded = useCallback(() => {
+    if (!canEditMarkdown) return;
+    liveRuntimeRef.current?.engine.scheduleFlush();
+  }, [canEditMarkdown]);
   const handlePresenceCursor = useCallback((cellId: string, line: number, column: number) => {
     liveRuntimeRef.current?.sendCursorPresence(cellId, line, column);
   }, []);
@@ -512,7 +535,11 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
           hostContext={outputHostContext}
           showCode={showCode}
           livePresence={livePresence}
+          getHandle={getLiveNotebookHandle}
+          localActorLabel={connectionActorLabel}
+          textAttributionQueue={textAttributionQueue}
           onMarkdownSourceChange={handleMarkdownSourceChange}
+          onMarkdownSyncNeeded={handleMarkdownSyncNeeded}
           onPresenceCursor={handlePresenceCursor}
           onPresenceSelection={handlePresenceSelection}
           resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
@@ -661,7 +688,11 @@ function CloudLiveNotebook({
   priority,
   hostContext,
   showCode,
+  getHandle,
+  localActorLabel,
+  textAttributionQueue,
   onMarkdownSourceChange,
+  onMarkdownSyncNeeded,
   livePresence,
   onPresenceCursor,
   onPresenceSelection,
@@ -672,8 +703,12 @@ function CloudLiveNotebook({
   priority: readonly string[];
   hostContext: NteractEmbedHostContextPatch;
   showCode: boolean;
+  getHandle: () => CloudSyncRuntime["handle"] | null;
+  localActorLabel: string | null;
+  textAttributionQueue: CloudTextAttributionQueue;
   livePresence: CloudLivePresenceSnapshot;
   onMarkdownSourceChange: (cellId: string, source: string) => void;
+  onMarkdownSyncNeeded: () => void;
   onPresenceCursor: (cellId: string, line: number, column: number) => void;
   onPresenceSelection: (
     cellId: string,
@@ -715,6 +750,10 @@ function CloudLiveNotebook({
               className="cloud-cell cloud-editable-markdown-cell"
               sourceClassName="cloud-source-block"
               onSourceChange={onMarkdownSourceChange}
+              onSyncNeeded={onMarkdownSyncNeeded}
+              getHandle={getHandle}
+              localActorLabel={localActorLabel}
+              textAttributionQueue={textAttributionQueue}
               remotePresence={presenceForCell(livePresence, cell.id)}
               onPresenceCursor={onPresenceCursor}
               onPresenceSelection={onPresenceSelection}

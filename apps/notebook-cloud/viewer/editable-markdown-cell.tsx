@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
-import { externalChangeAnnotation, CodeMirrorEditor } from "@/components/editor/codemirror-editor";
+import { CodeMirrorEditor } from "@/components/editor/codemirror-editor";
 import type { CodeMirrorEditorRef } from "@/components/editor";
 import {
   remoteCursorsExtension,
@@ -7,15 +7,33 @@ import {
   setRemoteSelections,
 } from "@/components/editor/remote-cursors";
 import type { RemoteCellPresence } from "@/components/editor/presence-state";
+import {
+  createCrdtBridge,
+  remoteChangesFromTextAttributions,
+  type TextAttributionLike,
+} from "../../notebook/src/lib/crdt-editor-bridge";
 import { presenceSenderExtension } from "../../notebook/src/lib/presence-sender";
 import type { ResolvedCell } from "./render-resolution";
-import { minimalTextReplacement } from "./text-change";
+import type { NotebookHandle } from "./runtimed-wasm-client";
+
+export interface CloudTextAttributionBatch {
+  sequence: number;
+  attributions: readonly TextAttributionLike[];
+}
+
+export interface CloudTextAttributionQueue {
+  batches: readonly CloudTextAttributionBatch[];
+}
 
 export interface EditableMarkdownCellProps {
   cell: ResolvedCell;
   className?: string;
   sourceClassName?: string;
   onSourceChange: (cellId: string, source: string) => void;
+  onSyncNeeded: () => void;
+  getHandle: () => NotebookHandle | null;
+  localActorLabel?: string | null;
+  textAttributionQueue?: CloudTextAttributionQueue;
   remotePresence?: RemoteCellPresence;
   onPresenceCursor?: (cellId: string, line: number, column: number) => void;
   onPresenceSelection?: (
@@ -32,15 +50,40 @@ export function EditableMarkdownCell({
   className,
   sourceClassName,
   onSourceChange,
+  onSyncNeeded,
+  getHandle,
+  localActorLabel,
+  textAttributionQueue,
   remotePresence,
   onPresenceCursor,
   onPresenceSelection,
 }: EditableMarkdownCellProps) {
   const editorRef = useRef<CodeMirrorEditorRef>(null);
+  const getHandleRef = useRef(getHandle);
+  const onSourceChangeRef = useRef(onSourceChange);
+  const onSyncNeededRef = useRef(onSyncNeeded);
+  const lastAppliedAttributionSequenceRef = useRef(0);
+
+  useLayoutEffect(() => {
+    getHandleRef.current = getHandle;
+    onSourceChangeRef.current = onSourceChange;
+    onSyncNeededRef.current = onSyncNeeded;
+  });
+
+  const bridge = useMemo(
+    () =>
+      createCrdtBridge({
+        getHandle: () => getHandleRef.current(),
+        cellId: cell.id,
+        onSourceChanged: (source) => onSourceChangeRef.current(cell.id, source),
+        onSyncNeeded: () => onSyncNeededRef.current(),
+      }),
+    [cell.id],
+  );
   const extensions = useMemo(() => {
     // The presence sender captures the cell id; the parent keys this component
     // by cell id so a real id change remounts the editor instead of retargeting it.
-    const editorExtensions = [...remoteCursorsExtension()];
+    const editorExtensions = [bridge.extension, ...remoteCursorsExtension()];
     if (onPresenceCursor && onPresenceSelection) {
       editorExtensions.push(
         presenceSenderExtension(cell.id, {
@@ -50,21 +93,27 @@ export function EditableMarkdownCell({
       );
     }
     return editorExtensions;
-  }, [cell.id, onPresenceCursor, onPresenceSelection]);
+  }, [bridge.extension, cell.id, onPresenceCursor, onPresenceSelection]);
 
   useLayoutEffect(() => {
-    const view = editorRef.current?.getEditor();
-    if (!view) return;
+    if (!textAttributionQueue) return;
 
-    const current = view.state.doc.toString();
-    const changes = minimalTextReplacement(current, cell.source);
-    if (!changes) return;
+    for (const batch of textAttributionQueue.batches) {
+      if (batch.sequence <= lastAppliedAttributionSequenceRef.current) continue;
 
-    view.dispatch({
-      changes,
-      annotations: externalChangeAnnotation.of(true),
-    });
-  }, [cell.source]);
+      const changes = remoteChangesFromTextAttributions(
+        batch.attributions,
+        cell.id,
+        localActorLabel,
+      );
+      bridge.applyRemoteChanges(changes);
+      lastAppliedAttributionSequenceRef.current = batch.sequence;
+    }
+  }, [bridge, cell.id, localActorLabel, textAttributionQueue]);
+
+  useLayoutEffect(() => {
+    bridge.applyFullSource(cell.source);
+  }, [bridge, cell.source]);
 
   useEffect(() => {
     const view = editorRef.current?.getEditor();
@@ -87,7 +136,6 @@ export function EditableMarkdownCell({
           language="markdown"
           lineWrapping
           extensions={extensions}
-          onValueChange={(source) => onSourceChange(cell.id, source)}
           className="cloud-markdown-editor min-h-[2rem]"
         />
       </div>

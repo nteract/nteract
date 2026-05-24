@@ -160,6 +160,28 @@ ${bobMarker}
     }
     checks.push(`ping_pong_editors_exactly_converged_${convergenceRounds}_rounds`);
 
+    const overlapAliceMarker = `Alice overlap ${Date.now()}`;
+    const overlapBobMarker = `Bob overlap ${Date.now()}`;
+    const overlapBase = expectedText.trimEnd();
+    await timed("overlap_dual_edit", () =>
+      Promise.all([
+        replaceMarkdown(
+          alice.page,
+          `${overlapBase}\n\n${overlapAliceMarker}\n`,
+          overlapAliceMarker,
+        ),
+        replaceMarkdown(bob.page, `${overlapBase}\n\n${overlapBobMarker}\n`, overlapBobMarker),
+      ]),
+    );
+    await timed("overlap_editors_converged", () =>
+      waitForEditorsEqualContaining([alice.page, bob.page], [overlapAliceMarker, overlapBobMarker]),
+    );
+    await timed("overlap_anonymous", async () => {
+      await waitForPageText(anonymous.page, overlapAliceMarker, "anonymous viewer");
+      await waitForPageText(anonymous.page, overlapBobMarker, "anonymous viewer");
+    });
+    checks.push("overlap_editors_converged");
+
     const charlie = await timed("charlie_open", () =>
       openNotebookContext({
         browser,
@@ -347,6 +369,38 @@ async function waitForEditableMarkdownExactText(page, expectedText) {
     [selector, expectedText],
     { timeout: timeoutMs },
   );
+}
+
+async function waitForEditorsEqualContaining(pages, expectedMarkers) {
+  const deadline = Date.now() + timeoutMs;
+  let lastTexts = [];
+  while (Date.now() < deadline) {
+    lastTexts = await Promise.all(pages.map((page) => editableMarkdownText(page)));
+    const [first, ...rest] = lastTexts.map((text) => text.trimEnd());
+    if (
+      first &&
+      rest.every((text) => text === first) &&
+      expectedMarkers.every((marker) => first.includes(marker))
+    ) {
+      return;
+    }
+    await pages[0].waitForTimeout(250);
+  }
+  throw new Error(
+    `editors did not converge with expected markers:\n${JSON.stringify(lastTexts, null, 2)}`,
+  );
+}
+
+async function editableMarkdownText(page) {
+  const selector = "[data-slot='cloud-editable-markdown-cell'] .cm-content[contenteditable='true']";
+  await page.locator(selector).first().waitFor({ state: "visible", timeout: timeoutMs });
+  return page.evaluate((contentSelector) => {
+    const content = document.querySelector(contentSelector);
+    if (!content) return "";
+    return Array.from(content.querySelectorAll(".cm-line"))
+      .map((line) => line.textContent ?? "")
+      .join("\n");
+  }, selector);
 }
 
 async function assertNoEditableMarkdown(page) {
