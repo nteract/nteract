@@ -231,9 +231,21 @@ principal is `user:cloudflare-access:<sub>`, and the requested `scope` is still
 only a request: the room ACL decides whether that principal may enter as
 `viewer`, `editor`, `runtime_peer`, or `owner`.
 
+The Access principal namespace names the authority validated by the Worker:
+`user:cloudflare-access:<encoded-sub>`. Access `email` and `name` claims are
+stamped as display/audit metadata on the trusted room connection; they are not
+used as ACL subjects. The Durable Object receives provider, transport,
+principal namespace, display name, and email only through Worker-stamped
+trusted headers, and the `cloud_room_ready` control frame may expose that
+non-secret metadata to clients.
+
 Browser WebSocket upgrades must come from the Worker origin or an origin listed
 in `NOTEBOOK_CLOUD_ALLOWED_ORIGINS` as a comma-separated list. Cookie-backed
 WebSocket upgrades without an `Origin` header are rejected.
+
+The viewer auth menu has a "Use browser session" mode for Cloudflare Access
+trials. It stores only the requested room scope in localStorage; the credential
+remains the browser's Access session and is validated by the Worker.
 
 Requests with no dev credential become anonymous public viewers. The Worker derives:
 

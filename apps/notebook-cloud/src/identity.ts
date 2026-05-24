@@ -24,6 +24,7 @@ export interface AuthenticatedConnection {
   operator: string;
   actorLabel: string;
   scope: ConnectionScope;
+  metadata: AuthenticatedConnectionMetadata;
   webSocketProtocol?: string;
 }
 
@@ -35,17 +36,40 @@ export interface IdentityEnvironment {
   NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN?: string;
 }
 
+export interface AuthenticatedConnectionMetadata {
+  provider: "anonymous" | "dev" | "cloudflare-access";
+  transport:
+    | "anonymous"
+    | "loopback-dev"
+    | "dev-token-header"
+    | "dev-token-subprotocol"
+    | "access-assertion"
+    | "access-bearer"
+    | "access-cookie"
+    | "access-cookie-assertion"
+    | "access-subprotocol";
+  principalNamespace: string;
+  displayName?: string;
+  email?: string;
+}
+
 const ANONYMOUS_PRINCIPAL_PREFIX = "anonymous:";
 
 export const TRUSTED_PRINCIPAL_HEADER = "x-nteract-principal";
 export const TRUSTED_OPERATOR_HEADER = "x-nteract-operator";
 export const TRUSTED_SCOPE_HEADER = "x-nteract-scope";
 export const TRUSTED_WEBSOCKET_PROTOCOL_HEADER = "x-nteract-websocket-protocol";
+export const TRUSTED_IDENTITY_PROVIDER_HEADER = "x-nteract-identity-provider";
+export const TRUSTED_CREDENTIAL_TRANSPORT_HEADER = "x-nteract-credential-transport";
+export const TRUSTED_PRINCIPAL_NAMESPACE_HEADER = "x-nteract-principal-namespace";
+export const TRUSTED_DISPLAY_NAME_HEADER = "x-nteract-display-name";
+export const TRUSTED_EMAIL_HEADER = "x-nteract-email";
 export const CLOUDFLARE_ACCESS_JWT_HEADER = "cf-access-jwt-assertion";
 export const DEV_AUTH_TOKEN_HEADER = "x-notebook-cloud-dev-token";
 
 interface AccessCredential {
   token: string;
+  transport: AuthenticatedConnectionMetadata["transport"];
   webSocketProtocol?: string;
 }
 
@@ -70,6 +94,7 @@ interface AccessJwtPayload {
   email?: string;
   exp?: number;
   iss?: string;
+  name?: string;
   nbf?: number;
   sub?: string;
 }
@@ -111,9 +136,16 @@ export function authenticateRequest(
   }
 
   const identity = authenticateDevRequest(request);
+  const authenticated = {
+    ...identity,
+    metadata: {
+      ...identity.metadata,
+      transport: devCredential.transport,
+    },
+  };
   return devCredential.webSocketProtocol
-    ? { ...identity, webSocketProtocol: devCredential.webSocketProtocol }
-    : identity;
+    ? { ...authenticated, webSocketProtocol: devCredential.webSocketProtocol }
+    : authenticated;
 }
 
 export async function authenticateRequestWithProviders(
@@ -164,6 +196,15 @@ export async function authenticateCloudflareAccessRequest(
     operator,
     actorLabel: `${principal}/${operator}`,
     scope,
+    metadata: {
+      provider: "cloudflare-access" as const,
+      transport: credential.transport,
+      principalNamespace: "user:cloudflare-access",
+      ...(payload.name?.trim() || payload.email?.trim()
+        ? { displayName: payload.name?.trim() || payload.email?.trim() || undefined }
+        : {}),
+      ...(payload.email?.trim() ? { email: payload.email.trim() } : {}),
+    },
   };
   return credential.webSocketProtocol
     ? { ...identity, webSocketProtocol: credential.webSocketProtocol }
@@ -186,6 +227,12 @@ export function authenticateDevRequest(request: Request): AuthenticatedConnectio
     operator,
     actorLabel: `${principal}/${operator}`,
     scope,
+    metadata: {
+      provider: "dev",
+      transport: "loopback-dev",
+      principalNamespace: "user:dev",
+      displayName: user,
+    },
   };
 }
 
@@ -207,6 +254,12 @@ export function authenticateAnonymousViewer(request: Request): AuthenticatedConn
     operator,
     actorLabel: `${principal}/${operator}`,
     scope: "viewer",
+    metadata: {
+      provider: "anonymous",
+      transport: "anonymous",
+      principalNamespace: "anonymous",
+      displayName: "Anonymous",
+    },
   };
 }
 
@@ -219,6 +272,11 @@ export function stampTrustedIdentity(request: Request, identity: AuthenticatedCo
   headers.set(TRUSTED_PRINCIPAL_HEADER, identity.principal);
   headers.set(TRUSTED_OPERATOR_HEADER, identity.operator);
   headers.set(TRUSTED_SCOPE_HEADER, identity.scope);
+  headers.set(TRUSTED_IDENTITY_PROVIDER_HEADER, identity.metadata.provider);
+  headers.set(TRUSTED_CREDENTIAL_TRANSPORT_HEADER, identity.metadata.transport);
+  headers.set(TRUSTED_PRINCIPAL_NAMESPACE_HEADER, identity.metadata.principalNamespace);
+  setOptionalTrustedHeader(headers, TRUSTED_DISPLAY_NAME_HEADER, identity.metadata.displayName);
+  setOptionalTrustedHeader(headers, TRUSTED_EMAIL_HEADER, identity.metadata.email);
   if (identity.webSocketProtocol) {
     headers.set(TRUSTED_WEBSOCKET_PROTOCOL_HEADER, identity.webSocketProtocol);
     headers.set("Sec-WebSocket-Protocol", identity.webSocketProtocol);
@@ -234,8 +292,13 @@ export function readTrustedIdentity(request: Request): AuthenticatedConnection {
   const operator = request.headers.get(TRUSTED_OPERATOR_HEADER);
   const scope = request.headers.get(TRUSTED_SCOPE_HEADER);
   const webSocketProtocol = request.headers.get(TRUSTED_WEBSOCKET_PROTOCOL_HEADER) ?? undefined;
+  const provider = request.headers.get(TRUSTED_IDENTITY_PROVIDER_HEADER);
+  const transport = request.headers.get(TRUSTED_CREDENTIAL_TRANSPORT_HEADER);
+  const principalNamespace = request.headers.get(TRUSTED_PRINCIPAL_NAMESPACE_HEADER);
+  const displayName = request.headers.get(TRUSTED_DISPLAY_NAME_HEADER) ?? undefined;
+  const email = request.headers.get(TRUSTED_EMAIL_HEADER) ?? undefined;
 
-  if (!principal || !operator || !scope) {
+  if (!principal || !operator || !scope || !provider || !transport || !principalNamespace) {
     throw new Error("missing trusted identity headers");
   }
 
@@ -248,6 +311,7 @@ export function readTrustedIdentity(request: Request): AuthenticatedConnection {
     operator,
     actorLabel: `${principal}/${operator}`,
     scope: parsedScope,
+    metadata: parseTrustedMetadata(provider, transport, principalNamespace, displayName, email),
   };
   return webSocketProtocol ? { ...identity, webSocketProtocol } : identity;
 }
@@ -368,6 +432,75 @@ function headerOrQuery(
   return request.headers.get(headerName) ?? url.searchParams.get(queryName) ?? undefined;
 }
 
+function setOptionalTrustedHeader(headers: Headers, name: string, value: string | undefined): void {
+  const headerValue = sanitizeTrustedMetadataHeader(value);
+  if (headerValue) {
+    headers.set(name, headerValue);
+  } else {
+    headers.delete(name);
+  }
+}
+
+function sanitizeTrustedMetadataHeader(value: string | undefined): string | undefined {
+  let sanitized = "";
+  for (const char of value ?? "") {
+    const code = char.charCodeAt(0);
+    if (code === 0 || code === 10 || code === 13) {
+      if (!sanitized.endsWith(" ")) {
+        sanitized += " ";
+      }
+      continue;
+    }
+    sanitized += char;
+  }
+  sanitized = sanitized.trim();
+  if (!sanitized) {
+    return undefined;
+  }
+  return sanitized.slice(0, 512);
+}
+
+function parseTrustedMetadata(
+  provider: string,
+  transport: string,
+  principalNamespace: string,
+  displayName: string | undefined,
+  email: string | undefined,
+): AuthenticatedConnectionMetadata {
+  if (!isMetadataProvider(provider)) {
+    throw new Error(`unknown trusted identity provider: ${provider}`);
+  }
+  if (!isMetadataTransport(transport)) {
+    throw new Error(`unknown trusted credential transport: ${transport}`);
+  }
+
+  return {
+    provider,
+    transport,
+    principalNamespace,
+    ...(displayName ? { displayName } : {}),
+    ...(email ? { email } : {}),
+  };
+}
+
+function isMetadataProvider(value: string): value is AuthenticatedConnectionMetadata["provider"] {
+  return value === "anonymous" || value === "dev" || value === "cloudflare-access";
+}
+
+function isMetadataTransport(value: string): value is AuthenticatedConnectionMetadata["transport"] {
+  return (
+    value === "anonymous" ||
+    value === "loopback-dev" ||
+    value === "dev-token-header" ||
+    value === "dev-token-subprotocol" ||
+    value === "access-assertion" ||
+    value === "access-bearer" ||
+    value === "access-cookie" ||
+    value === "access-cookie-assertion" ||
+    value === "access-subprotocol"
+  );
+}
+
 function hasDevCredential(request: Request): boolean {
   const url = new URL(request.url);
   return [
@@ -402,12 +535,22 @@ function hasDevCredentialTransport(request: Request): boolean {
 function authenticateDevCredential(
   request: Request,
   env: IdentityEnvironment,
-): { webSocketProtocol?: string } | undefined {
+):
+  | {
+      transport: Extract<
+        AuthenticatedConnectionMetadata["transport"],
+        "loopback-dev" | "dev-token-header" | "dev-token-subprotocol"
+      >;
+      webSocketProtocol?: string;
+    }
+  | undefined {
   if (isLocalDevRequest(request)) {
     const webSocketProtocol = tokenFromWebSocketProtocol(
       request.headers.get("sec-websocket-protocol"),
     );
-    return webSocketProtocol ? { webSocketProtocol: webSocketProtocol.webSocketProtocol } : {};
+    return webSocketProtocol
+      ? { transport: "loopback-dev", webSocketProtocol: webSocketProtocol.webSocketProtocol }
+      : { transport: "loopback-dev" };
   }
 
   return validDevTokenCredential(request, env);
@@ -421,7 +564,15 @@ function isLocalDevRequest(request: Request): boolean {
 function validDevTokenCredential(
   request: Request,
   env: IdentityEnvironment,
-): { webSocketProtocol?: string } | undefined {
+):
+  | {
+      transport: Extract<
+        AuthenticatedConnectionMetadata["transport"],
+        "dev-token-header" | "dev-token-subprotocol"
+      >;
+      webSocketProtocol?: string;
+    }
+  | undefined {
   const expected = env.NOTEBOOK_CLOUD_DEV_TOKEN?.trim();
   if (!expected) {
     return undefined;
@@ -429,14 +580,17 @@ function validDevTokenCredential(
 
   const headerToken = request.headers.get(DEV_AUTH_TOKEN_HEADER) ?? undefined;
   if (timingSafeStringEqual(headerToken, expected)) {
-    return {};
+    return { transport: "dev-token-header" };
   }
 
   const webSocketProtocol = tokenFromWebSocketProtocol(
     request.headers.get("sec-websocket-protocol"),
   );
   if (webSocketProtocol && timingSafeStringEqual(webSocketProtocol.token, expected)) {
-    return { webSocketProtocol: webSocketProtocol.webSocketProtocol };
+    return {
+      transport: "dev-token-subprotocol",
+      webSocketProtocol: webSocketProtocol.webSocketProtocol,
+    };
   }
 
   return undefined;
@@ -446,17 +600,22 @@ function accessCredentialFromRequest(request: Request): AccessCredential | undef
   const candidates: AccessCredential[] = [];
   const assertionToken = request.headers.get(CLOUDFLARE_ACCESS_JWT_HEADER)?.trim() || undefined;
   if (assertionToken) {
-    candidates.push({ token: assertionToken });
+    candidates.push({
+      token: assertionToken,
+      transport: cookieValue(request.headers.get("cookie"), "CF_Authorization")
+        ? "access-cookie-assertion"
+        : "access-assertion",
+    });
   }
 
   const bearerToken = bearerTokenFromAuthorization(request.headers.get("authorization"));
   if (bearerToken) {
-    candidates.push({ token: bearerToken });
+    candidates.push({ token: bearerToken, transport: "access-bearer" });
   }
 
   const cookieToken = cookieValue(request.headers.get("cookie"), "CF_Authorization");
   if (cookieToken && !assertionToken) {
-    candidates.push({ token: cookieToken });
+    candidates.push({ token: cookieToken, transport: "access-cookie" });
   }
 
   const webSocketProtocol = tokenFromWebSocketProtocol(
@@ -466,6 +625,7 @@ function accessCredentialFromRequest(request: Request): AccessCredential | undef
   if (webSocketProtocol) {
     candidates.push({
       token: webSocketProtocol.token,
+      transport: "access-subprotocol",
       webSocketProtocol: webSocketProtocol.webSocketProtocol,
     });
   }
