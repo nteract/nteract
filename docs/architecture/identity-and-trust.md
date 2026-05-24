@@ -213,20 +213,24 @@ A user adds an entry once (paste a key, OAuth flow, JupyterHub session forward) 
 
 Browsers cannot set custom request headers on `new WebSocket(url, subprotocols)`. The credential has to arrive via one of these mechanisms. Parsing each of them is a **listener-side concern**, not a provider concern: the listener (Cloudflare Worker, Unix socket, etc.) inspects the upgrade request and produces a normalized `Credential` that the provider then validates.
 
-1. **Subprotocol smuggling** (the Kubernetes pattern). Client opens `new WebSocket(url, ["bearer.<base64url-token>", "nteract.v4"])`. Server reads `Sec-WebSocket-Protocol`, peels off the `bearer.*` element, validates the decoded token, and echoes back `nteract.v4` as the selected subprotocol. The token is not in the URL, not in the referer, not in server access logs. The token is still visible to any JS in the browser that can construct a WebSocket, which is the same trust boundary every other credential mechanism shares.
+`docs/architecture/hosted-credential-transport.md` is the deployment-level ADR
+for choosing among these transports. This section only records the base
+credential vocabulary.
+
+1. **Subprotocol smuggling** (the Kubernetes pattern). Client opens `new WebSocket(url, ["nteract-bearer.<base64url-token>", "nteract.v4"])`. Server reads `Sec-WebSocket-Protocol`, peels off the credential element, validates the decoded token, and echoes back only `nteract.v4` as the selected subprotocol. The token is not in the URL, not in the referer, not in server access logs. The token is still visible to any JS in the browser that can construct a WebSocket, which is the same trust boundary every other credential mechanism shares.
 
 2. **One-time ticket**. Client POSTs `/api/session-tickets` with the real bearer (header-set, normal CORS). Server returns a short-lived (~10s, single-use) ticket. Client opens `wss://host/n/<id>?ticket=<one-time>`. Server validates the ticket, consumes it, and the connection is authenticated as the original user. The real bearer never appears in the WebSocket URL. Costs one extra round trip; the server tracks outstanding tickets in memory or D1.
 
-3. **Cookie**. Browsers send cookies automatically on the WS upgrade when same-site (or with the right CORS dance). This is the path JupyterHub already provides because Hub login issues a signed session cookie. No client code needed.
+3. **Cookie**. Browsers send cookies automatically on the WS upgrade when same-site. This is useful for deployments such as Cloudflare Access where the cookie is part of the perimeter session and the Worker validates a forwarded assertion. It is deployment-specific for providers such as JupyterHub because provider cookies also bring CSRF and origin handling.
 
 4. **`Authorization` header** (system-to-system only). Native clients (desktop daemon, agents, CLI) set `Authorization: Bearer ...` directly on the upgrade request. Browsers cannot. This is the trivial path for the desktop daemon connecting to an Anaconda-hosted or JupyterHub-hosted room on the user's behalf.
 
-Recommendation by provider:
+Base options by provider:
 
 | Provider | Browser clients | System clients |
 |----------|-----------------|----------------|
-| `Oidc` (Anaconda, Cloudflare Access, Clerk, ...) | Subprotocol smuggling; tickets as a deployment opt-in for high-security setups | `Authorization` header |
-| `JupyterHub` | Cookie (Hub already issues one) | `Authorization` header with Hub-issued token |
+| `Oidc` (Anaconda, Cloudflare Access, Clerk, ...) | Cloudflare Access assertion, subprotocol bearer token, or one-time ticket depending on deployment | `Authorization` header |
+| `JupyterHub` | Hub-issued token via subprotocol or ticket; cookie only when the deployment owns CSRF/origin policy | `Authorization` header with Hub-issued token |
 | `Local` | N/A (no WS) | Unix peer creds |
 
 The Worker DO extracts the credential at upgrade time, validates via the configured `IdentityProvider`, and rejects the upgrade with HTTP 401 (or closes immediately with a typed close code) if validation fails. After upgrade, the WebSocket carries no further auth; per-frame validation runs against the in-memory `AuthenticatedConnection`.
@@ -322,7 +326,7 @@ The repo currently persists `.automerge` only for untitled ephemeral notebooks. 
 These follow-up ADRs and design decisions are tracked but not decided here:
 
 1. **Room-host crate extraction.** Pulling `runtimed::notebook_sync_server::room` into `nteract-room-host` with pluggable `Listener` and `SnapshotStore` traits. Tracked in a separate ADR.
-2. **Identity provider selection for Anaconda hosted v1.** Likely OIDC against Anaconda's existing SSO. Confirmed when the runtimed.com prototype lands.
+2. **Identity provider selection for Anaconda hosted v1.** Likely OIDC against Anaconda's existing SSO, with Cloudflare Access as the first browser session layer for the hosted Worker. `docs/architecture/hosted-credential-transport.md` tracks the exact credential transport and principal-namespace decision.
 3. **Anonymous viewer scope.** Whether read-only public publish URLs require a session or run un-authenticated under a synthetic `system:anonymous` principal.
 4. **Revocation signal and historical-change subduction.** Two parts. First, the wire signal: the exact `SESSION_CONTROL` close frame and the channel for admin revokes / plan downgrades. Second, what happens to changes a revoked principal already authored. The Automerge `filters` work (`origin/filters` branch, `rust/automerge/src/filter.rs`) is the natural primitive: install a `Filter::with_author(revoked, Rule::AllowUpTo { heads: validated })` to subduct edits authored after revocation while keeping causal integrity intact. Wait for `filters` to land in main before depending on it; until then, revocation is a hard connection close with no post-hoc audit hiding.
 5. **Connection-scope field on the wire.** Optional handshake response field so UIs can render "read-only" badges without inferring from request failures.
