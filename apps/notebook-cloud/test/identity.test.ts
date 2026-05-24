@@ -450,6 +450,23 @@ describe("Cloudflare Access identity", () => {
     assert.equal(identity.metadata.transport, "access-token-header");
   });
 
+  it("prefers explicit Access token headers over ambient Access cookies", async () => {
+    const { env, token } = await accessTokenFixture({ subject: "alice" });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?operator=smoke:owner&scope=owner", {
+        headers: {
+          "CF-Access-Token": token,
+          Cookie: `CF_Authorization=${token}`,
+        },
+      }),
+      env,
+    );
+
+    assert.equal(identity.actorLabel, "user:cloudflare-access:alice/smoke:owner");
+    assert.equal(identity.metadata.transport, "access-token-header");
+  });
+
   it("rejects Access tokens with the wrong audience", async () => {
     const { env, token } = await accessTokenFixture({
       audience: "wrong-audience",
@@ -487,10 +504,49 @@ describe("Cloudflare Access identity", () => {
     assert.equal(identity.scope, "viewer");
   });
 
+  it("rejects Access credentials when Access env is only partially configured", async () => {
+    const { token } = await accessTokenFixture({ subject: "alice" });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              "Cf-Access-Jwt-Assertion": token,
+            },
+          }),
+          { NOTEBOOK_CLOUD_ACCESS_AUD: "notebook-cloud-aud" },
+        ),
+      (error) =>
+        error instanceof AuthError &&
+        error.status === 503 &&
+        /not fully configured/.test(error.message),
+    );
+  });
+
   it("tries matching RSA keys when a rotating Access JWT omits kid", async () => {
     const { env, token } = await accessTokenFixture({
       includeKid: false,
       includeUnmatchedKey: true,
+      subject: "alice",
+    });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?operator=desktop:a", {
+        headers: {
+          "Cf-Access-Jwt-Assertion": token,
+        },
+      }),
+      env,
+    );
+
+    assert.equal(identity.actorLabel, "user:cloudflare-access:alice/desktop:a");
+  });
+
+  it("skips malformed Access JWKS candidates and tries the next matching key", async () => {
+    const { env, token } = await accessTokenFixture({
+      includeKid: false,
+      includeMalformedKey: true,
       subject: "alice",
     });
 

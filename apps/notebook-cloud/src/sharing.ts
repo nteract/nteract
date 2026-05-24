@@ -105,23 +105,23 @@ export function resolvePendingInvitesForLogin({
   login: AuthenticatedLoginProfile;
   now?: string;
 }): InviteResolution {
+  const normalizedEmail = safeNormalizeInviteEmail(login.email);
+  const loginProvider = normalizeProvider(login.provider);
   const profile: PrincipalProfile = {
     principal: login.principal,
-    provider: normalizeProvider(login.provider),
-    email: login.email ? normalizeInviteEmail(login.email) : null,
+    provider: loginProvider,
+    email: normalizedEmail,
     displayName: login.displayName?.trim() || null,
     firstSeenAt: now,
     lastSeenAt: now,
   };
 
-  if (!login.email || !login.emailVerified) {
+  if (!normalizedEmail || !login.emailVerified) {
     return { profile, acceptedInvites: [], aclGrants: [] };
   }
 
-  const loginEmail = normalizeInviteEmail(login.email);
-  const loginProvider = normalizeProvider(login.provider);
   const acceptedInvites = invites
-    .filter((invite) => inviteMatchesLogin(invite, loginEmail, loginProvider, now))
+    .filter((invite) => inviteMatchesLogin(invite, normalizedEmail, loginProvider, now))
     .map((invite) => ({
       ...invite,
       status: "accepted" as const,
@@ -177,10 +177,11 @@ export function shareTargetDisplay(input: {
     };
   }
   if (input.pendingInvite) {
+    const email = safeNormalizeInviteEmail(input.pendingInvite.email);
     return {
       kind: "pending_invite",
-      label: normalizeInviteEmail(input.pendingInvite.email),
-      email: normalizeInviteEmail(input.pendingInvite.email),
+      label: email ?? "Unknown invitee",
+      email: email ?? "",
     };
   }
   throw new Error("share target display requires a profile, pending invite, or public viewer flag");
@@ -195,14 +196,25 @@ function inviteMatchesLogin(
   if (invite.status !== "pending") {
     return false;
   }
-  if (invite.expiresAt && invite.expiresAt <= now) {
+  const nowMs = Date.parse(now);
+  if (!Number.isFinite(nowMs)) {
     return false;
   }
-  if (normalizeInviteEmail(invite.email) !== loginEmail) {
+  if (invite.expiresAt) {
+    const expiresAtMs = Date.parse(invite.expiresAt);
+    if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) {
+      return false;
+    }
+  }
+  const inviteEmail = safeNormalizeInviteEmail(invite.email);
+  if (inviteEmail !== loginEmail) {
     return false;
   }
-  const providerHint = normalizeProviderHint(invite.providerHint);
-  return !providerHint || providerHint === loginProvider;
+  const providerHint = safeNormalizeProviderHint(invite.providerHint);
+  if (!providerHint.ok) {
+    return false;
+  }
+  return !providerHint.value || providerHint.value === loginProvider;
 }
 
 function normalizeProvider(provider: string): string {
@@ -211,4 +223,25 @@ function normalizeProvider(provider: string): string {
     throw new Error("login provider is invalid");
   }
   return normalized;
+}
+
+function safeNormalizeInviteEmail(email: string | null | undefined): string | null {
+  if (!email) {
+    return null;
+  }
+  try {
+    return normalizeInviteEmail(email);
+  } catch {
+    return null;
+  }
+}
+
+function safeNormalizeProviderHint(
+  provider: string | null,
+): { ok: true; value: string | null } | { ok: false; value: null } {
+  try {
+    return { ok: true, value: normalizeProviderHint(provider) };
+  } catch {
+    return { ok: false, value: null };
+  }
 }

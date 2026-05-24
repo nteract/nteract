@@ -60,6 +60,43 @@ describe("hosted notebook sharing prototype", () => {
     );
   });
 
+  it("does not throw when an unverified login has a malformed email claim", () => {
+    const resolution = resolvePendingInvitesForLogin({
+      invites: [pendingInvite()],
+      login: accessLogin({ email: "noatsign", emailVerified: false }),
+    });
+
+    assert.equal(resolution.profile.email, null);
+    assert.equal(resolution.aclGrants.length, 0);
+  });
+
+  it("skips malformed stored invites while resolving other valid invites", () => {
+    const validInvite = pendingInvite({ id: "invite-valid" });
+    const resolution = resolvePendingInvitesForLogin({
+      invites: [
+        pendingInvite({ id: "invite-bad-provider", providerHint: "okta/sso" }),
+        pendingInvite({ id: "invite-bad-email", email: "bad invite" }),
+        validInvite,
+      ],
+      login: accessLogin(),
+    });
+
+    assert.deepEqual(
+      resolution.acceptedInvites.map((invite) => invite.id),
+      ["invite-valid"],
+    );
+  });
+
+  it("expires invites with numeric time comparisons instead of ISO string ordering", () => {
+    const resolution = resolvePendingInvitesForLogin({
+      invites: [pendingInvite({ expiresAt: "2026-05-24T00:00:00Z" })],
+      login: accessLogin(),
+      now: "2026-05-24T00:00:00.000Z",
+    });
+
+    assert.equal(resolution.aclGrants.length, 0);
+  });
+
   it("normalizes provider hints before resolving pending invites", () => {
     const invite = pendingInvite({ providerHint: " Cloudflare-Access " });
 
@@ -109,6 +146,14 @@ describe("hosted notebook sharing prototype", () => {
     assert.equal(principal.label, "Alice Example");
     assert.equal(pending.label, "bob@example.com");
     assert.deepEqual(publicViewer, { kind: "public_viewer", label: "Anyone with the link" });
+  });
+
+  it("uses a placeholder display label for malformed pending invite rows", () => {
+    assert.deepEqual(shareTargetDisplay({ pendingInvite: { email: "" } }), {
+      kind: "pending_invite",
+      label: "Unknown invitee",
+      email: "",
+    });
   });
 });
 

@@ -154,7 +154,11 @@ export async function authenticateRequestWithProviders(
   env: IdentityEnvironment = {},
 ): Promise<AuthenticatedConnection> {
   const accessCredential = accessCredentialFromRequest(request);
-  if (accessCredential && accessConfigFromEnv(env)) {
+  const accessConfig = accessConfigFromEnv(env);
+  if (accessCredential && !accessConfig && hasPartialAccessConfig(env)) {
+    throw new AuthError("Cloudflare Access auth is not fully configured", 503);
+  }
+  if (accessCredential && accessConfig) {
     if (hasDevIdentityCredential(request) || hasDevCredentialTransport(request)) {
       throw new AuthError("multiple identity credentials presented", 400);
     }
@@ -600,13 +604,12 @@ function validDevTokenCredential(
 
 function accessCredentialFromRequest(request: Request): AccessCredential | undefined {
   const candidates: AccessCredential[] = [];
+  const cookieToken = cookieValue(request.headers.get("cookie"), "CF_Authorization");
   const assertionToken = request.headers.get(CLOUDFLARE_ACCESS_JWT_HEADER)?.trim() || undefined;
   if (assertionToken) {
     candidates.push({
       token: assertionToken,
-      transport: cookieValue(request.headers.get("cookie"), "CF_Authorization")
-        ? "access-cookie-assertion"
-        : "access-assertion",
+      transport: cookieToken ? "access-cookie-assertion" : "access-assertion",
     });
   }
 
@@ -620,13 +623,7 @@ function accessCredentialFromRequest(request: Request): AccessCredential | undef
     candidates.push({ token: bearerToken, transport: "access-bearer" });
   }
 
-  const accessToken = request.headers.get("cf-access-token")?.trim() || undefined;
-  if (accessToken) {
-    candidates.push({ token: accessToken, transport: "access-token-header" });
-  }
-
-  const cookieToken = cookieValue(request.headers.get("cookie"), "CF_Authorization");
-  if (cookieToken && !assertionToken) {
+  if (cookieToken && candidates.length === 0) {
     candidates.push({ token: cookieToken, transport: "access-cookie" });
   }
 
@@ -647,6 +644,16 @@ function accessCredentialFromRequest(request: Request): AccessCredential | undef
   }
 
   return candidates[0];
+}
+
+function hasPartialAccessConfig(env: IdentityEnvironment): boolean {
+  const audience = env.NOTEBOOK_CLOUD_ACCESS_AUD?.trim();
+  const rawTeamDomain = env.NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN?.trim();
+  const jwksJson = env.NOTEBOOK_CLOUD_ACCESS_JWKS_JSON?.trim();
+  if (!audience && !rawTeamDomain && !jwksJson) {
+    return false;
+  }
+  return !audience || !rawTeamDomain;
 }
 
 function accessConfigFromEnv(env: IdentityEnvironment): AccessConfig | undefined {
@@ -771,22 +778,26 @@ async function verifyWithAnyAccessKey(
   signature: Uint8Array,
 ): Promise<boolean> {
   for (const key of keys) {
-    const cryptoKey = await crypto.subtle.importKey(
-      "jwk",
-      key,
-      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-      false,
-      ["verify"],
-    );
-    if (
-      await crypto.subtle.verify(
-        "RSASSA-PKCS1-v1_5",
-        cryptoKey,
-        signature,
-        new TextEncoder().encode(signingInput),
-      )
-    ) {
-      return true;
+    try {
+      const cryptoKey = await crypto.subtle.importKey(
+        "jwk",
+        key,
+        { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+        false,
+        ["verify"],
+      );
+      if (
+        await crypto.subtle.verify(
+          "RSASSA-PKCS1-v1_5",
+          cryptoKey,
+          signature,
+          new TextEncoder().encode(signingInput),
+        )
+      ) {
+        return true;
+      }
+    } catch {
+      continue;
     }
   }
   return false;

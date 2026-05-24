@@ -11,6 +11,7 @@ export async function accessTokenFixture(options: {
   audience?: string;
   email?: string;
   includeKid?: boolean;
+  includeMalformedKey?: boolean;
   includeUnmatchedKey?: boolean;
   name?: string;
   subject: string;
@@ -72,6 +73,7 @@ export async function accessTokenFixture(options: {
       NOTEBOOK_CLOUD_ACCESS_AUD: audience,
       NOTEBOOK_CLOUD_ACCESS_JWKS_JSON: JSON.stringify({
         keys: [
+          ...(options.includeMalformedKey ? [{ alg: "RS256", kty: "RSA", use: "sig" }] : []),
           ...(unmatchedPublicJwk
             ? [{ ...unmatchedPublicJwk, alg: "RS256", kid: "unmatched", use: "sig" }]
             : []),

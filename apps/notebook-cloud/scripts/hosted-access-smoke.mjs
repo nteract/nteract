@@ -8,7 +8,6 @@ import { FrameType } from "runtimed";
 
 import {
   accessAuthHeaders,
-  accessEmailFromJwt,
   accessPrincipalFromJwt,
   assertHostedAccessSmokeEnv,
   webSocketUpgradeRequestHeaders,
@@ -145,15 +144,10 @@ console.log(
       origin: smokeOrigin,
       roomId,
       viewerUrl: new URL(`/n/${encodeURIComponent(roomId)}`, baseUrl).href,
-      principals: {
-        owner: ownerPrincipal,
-        editor: editorPrincipal,
-        viewer: viewerPrincipal,
-      },
-      emails: {
-        owner: accessEmailFromJwt(ownerToken),
-        editor: accessEmailFromJwt(editorToken),
-        viewer: accessEmailFromJwt(viewerToken),
+      principal_fingerprints: {
+        owner: fingerprintPrincipal(ownerPrincipal),
+        editor: fingerprintPrincipal(editorPrincipal),
+        viewer: fingerprintPrincipal(viewerPrincipal),
       },
       checks: [
         "cloudflare_access_jwt_validated_by_worker",
@@ -328,17 +322,34 @@ async function connectAnonymous(notebookId, viewerSession) {
 async function clientForSocket(socket, safeUrl) {
   const queue = [];
   const waiters = [];
-  socket.addEventListener("message", async (event) => {
-    const frame = await decodeFrame(event.data);
-    const index = waiters.findIndex((waiter) => waiter.predicate(frame));
-    if (index === -1) {
-      queue.push(frame);
-      return;
+  let fatalError = null;
+  const failWaiters = (error) => {
+    fatalError = error;
+    while (waiters.length > 0) {
+      const waiter = waiters.shift();
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
     }
+  };
+  socket.addEventListener("message", async (event) => {
+    try {
+      const frame = await decodeFrame(event.data);
+      const index = waiters.findIndex((waiter) => waiter.predicate(frame));
+      if (index === -1) {
+        queue.push(frame);
+        return;
+      }
 
-    const [waiter] = waiters.splice(index, 1);
-    clearTimeout(waiter.timer);
-    waiter.resolve(frame);
+      const [waiter] = waiters.splice(index, 1);
+      clearTimeout(waiter.timer);
+      waiter.resolve(frame);
+    } catch (error) {
+      failWaiters(error);
+      socket.close();
+    }
+  });
+  socket.addEventListener("error", (event) => {
+    failWaiters(event.error ?? new Error(`WebSocket error from ${safeUrl}`));
   });
 
   if (socket.readyState !== RawWebSocketClient.OPEN) {
@@ -353,6 +364,9 @@ async function clientForSocket(socket, safeUrl) {
   return {
     socket,
     nextFrame(predicate, timeoutMs = 5_000) {
+      if (fatalError) {
+        return Promise.reject(fatalError);
+      }
       const queued = queue.findIndex(predicate);
       if (queued !== -1) {
         const [frame] = queue.splice(queued, 1);
@@ -367,7 +381,7 @@ async function clientForSocket(socket, safeUrl) {
           }
           reject(new Error(`timed out waiting for frame from ${safeUrl}`));
         }, timeoutMs);
-        waiters.push({ predicate, resolve, timer });
+        waiters.push({ predicate, resolve, reject, timer });
       });
     },
   };
@@ -393,6 +407,9 @@ async function decodeFrame(data) {
   }
 
   const bytes = new Uint8Array(buffer);
+  if (bytes.byteLength === 0) {
+    throw new Error("empty WebSocket message");
+  }
   const type = bytes[0];
   const payload = bytes.slice(1);
   let json;
@@ -427,7 +444,7 @@ async function closeClient(client) {
 
 function safeWebSocketUrl(url) {
   const safe = new URL(url.href);
-  for (const [key, value] of safe.searchParams) {
+  for (const [key, value] of Array.from(safe.searchParams.entries())) {
     if (key.toLowerCase().includes("token") || value.startsWith("eyJ")) {
       safe.searchParams.set(key, "<redacted>");
     }
@@ -535,6 +552,7 @@ class RawWebSocketClient {
     this.readyState = RawWebSocketClient.OPEN;
     this.listeners = new Map();
     this.buffer = initialBuffer ?? Buffer.alloc(0);
+    this.fragmentedMessage = null;
     this.socket.on("data", (chunk) => this.receive(chunk));
     this.socket.on("close", () => {
       this.readyState = RawWebSocketClient.CLOSED;
@@ -586,6 +604,7 @@ class RawWebSocketClient {
     while (this.buffer.length >= 2) {
       const first = this.buffer[0];
       const second = this.buffer[1];
+      const fin = Boolean(first & 0x80);
       const opcode = first & 0x0f;
       const masked = Boolean(second & 0x80);
       let length = second & 0x7f;
@@ -626,14 +645,38 @@ class RawWebSocketClient {
         this.socket.end();
         this.dispatch("close", {});
       } else if (opcode === 0x9) {
+        assert(fin, "fragmented WebSocket ping is invalid");
         this.socket.write(encodeClientFrame(0x0a, payload));
-      } else if (opcode === 0x2) {
-        this.dispatch("message", { data: new Uint8Array(payload) });
-      } else if (opcode === 0x1) {
-        this.dispatch("message", { data: payload.toString("utf8") });
+      } else if (opcode === 0x0) {
+        assert(this.fragmentedMessage, "unexpected WebSocket continuation frame");
+        this.fragmentedMessage.chunks.push(payload);
+        if (fin) {
+          const message = this.fragmentedMessage;
+          this.fragmentedMessage = null;
+          this.dispatchMessage(message.opcode, Buffer.concat(message.chunks));
+        }
+      } else if (opcode === 0x2 || opcode === 0x1) {
+        assert(!this.fragmentedMessage, "new WebSocket message started before continuation ended");
+        if (fin) {
+          this.dispatchMessage(opcode, payload);
+        } else {
+          this.fragmentedMessage = { opcode, chunks: [payload] };
+        }
       }
     }
   }
+
+  dispatchMessage(opcode, payload) {
+    if (opcode === 0x2) {
+      this.dispatch("message", { data: new Uint8Array(payload) });
+    } else if (opcode === 0x1) {
+      this.dispatch("message", { data: payload.toString("utf8") });
+    }
+  }
+}
+
+function fingerprintPrincipal(principal) {
+  return createHash("sha256").update(principal).digest("hex").slice(0, 16);
 }
 
 function encodeClientFrame(opcode, payload) {
