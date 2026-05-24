@@ -373,13 +373,14 @@ def test_load_extension_invokes_the_install_steps(monkeypatch):
         _bootstrap, "_install_dataframe_formatters", lambda ip: calls.append("formatters")
     )
     monkeypatch.setattr(_bootstrap, "_install_buffer_hooks", lambda ip: calls.append("hooks"))
+    monkeypatch.setattr(_bootstrap._output_redaction, "install", lambda ip: calls.append("redact"))
     monkeypatch.setattr(
         _bootstrap, "_enable_third_party_renderers", lambda: calls.append("renderers")
     )
     monkeypatch.setattr(_bootstrap._traceback, "install", lambda ip: calls.append("traceback"))
 
     _bootstrap.load_ipython_extension(SimpleNamespace())
-    assert calls == ["llm", "formatters", "hooks", "renderers", "traceback"]
+    assert calls == ["llm", "formatters", "hooks", "redact", "renderers", "traceback"]
 
 
 def test_load_extension_swallows_per_step_failures(monkeypatch):
@@ -394,12 +395,13 @@ def test_load_extension_swallows_per_step_failures(monkeypatch):
     monkeypatch.setattr(_bootstrap, "_install_llm_formatter", boom)
     monkeypatch.setattr(_bootstrap, "_install_dataframe_formatters", boom)
     monkeypatch.setattr(_bootstrap, "_install_buffer_hooks", lambda ip: called.append("hooks"))
+    monkeypatch.setattr(_bootstrap._output_redaction, "install", lambda ip: called.append("redact"))
     monkeypatch.setattr(_bootstrap, "_enable_third_party_renderers", lambda: called.append("r"))
     monkeypatch.setattr(_bootstrap._traceback, "install", lambda ip: called.append("traceback"))
 
     # Must not raise.
     _bootstrap.load_ipython_extension(SimpleNamespace())
-    assert called == ["hooks", "r", "traceback"]
+    assert called == ["hooks", "redact", "r", "traceback"]
 
 
 def test_enable_third_party_renderers_configures_loaded_modules(monkeypatch):

@@ -28,6 +28,8 @@ import traceback as _pytraceback
 import types
 from typing import Any
 
+import nteract_kernel_launcher._redact as _redact
+
 log = logging.getLogger("nteract_kernel_launcher")
 
 TRACEBACK_MIME = "application/vnd.nteract.traceback+json"
@@ -58,118 +60,17 @@ _CELL_REGISTRY_ATTR = "_nteract_traceback_cell_registry"
 _CELL_REGISTRY_HOOK_ATTR = "_nteract_traceback_cell_registry_hook"
 _NOTEBOOK_EXECUTION_SOURCE_KIND = "notebook_execution"
 
-_REDACT_ENV_VALUES_FLAG = "NTERACT_REDACT_ENV_VALUES_IN_OUTPUTS"
-_REDACTION_MARKER = "[redacted env]"
-_MIN_REDACTION_VALUE_LEN = 8
-_COMMON_ENV_VALUES = {
-    "localhost",
-    "127.0.0.1",
-    "0.0.0.0",
-    "disabled",
-    "enabled",
-}
-
-_KNOWN_NON_SECRET_ENV_KEYS = {
-    "_",
-    "__CF_USER_TEXT_ENCODING",
-    "CARGO_HOME",
-    "COLORFGBG",
-    "COLORTERM",
-    "CONDA_DEFAULT_ENV",
-    "CONDA_EXE",
-    "CONDA_PREFIX",
-    "CONDA_PYTHON_EXE",
-    "DISPLAY",
-    "GOPATH",
-    "GOROOT",
-    "HOME",
-    "LANG",
-    "LANGUAGE",
-    "LOGNAME",
-    "OLDPWD",
-    "PATH",
-    "PWD",
-    "PYENV_ROOT",
-    "PYTHONHOME",
-    "PYTHONPATH",
-    "RUSTUP_HOME",
-    "SHELL",
-    "SHLVL",
-    "SSH_AUTH_SOCK",
-    "TEMP",
-    "TERM",
-    "TMP",
-    "TMPDIR",
-    "USER",
-    "USERNAME",
-    "VIRTUAL_ENV",
-    "XPC_FLAGS",
-    "XPC_SERVICE_NAME",
-}
-
-
-# ─── Environment value redaction ───────────────────────────────────────────
-
-
-def _redaction_enabled() -> bool:
-    raw = os.environ.get(_REDACT_ENV_VALUES_FLAG)
-    if raw is None:
-        return True
-    return raw.strip().lower() not in {"0", "false", "no", "off"}
-
-
-def _is_known_non_secret_env_key(key: str) -> bool:
-    key = key.upper()
-    return (
-        key in _KNOWN_NON_SECRET_ENV_KEYS
-        or key.startswith("LC_")
-        or key.startswith("TERM_PROGRAM")
-        or key.startswith("XDG_")
-    )
-
-
-def _eligible_env_values() -> list[str]:
-    if not _redaction_enabled():
-        return []
-
-    values = set()
-    for key, raw in os.environ.items():
-        if _is_known_non_secret_env_key(key):
-            continue
-        value = raw
-        if len(value) < _MIN_REDACTION_VALUE_LEN:
-            continue
-        if value.strip() != value:
-            continue
-        if value.lower() in _COMMON_ENV_VALUES:
-            continue
-        values.add(value)
-
-    return sorted(values, key=lambda value: (-len(value), value))
-
-
-def _redact_text(text: str, values: list[str]) -> str:
-    for value in values:
-        text = text.replace(value, _REDACTION_MARKER)
-    return text
-
-
-def _redact_payload_value(value: Any, values: list[str]) -> Any:
-    if isinstance(value, str):
-        return _redact_text(value, values)
-    if isinstance(value, list):
-        return [_redact_payload_value(item, values) for item in value]
-    if isinstance(value, dict):
-        return {key: _redact_payload_value(item, values) for key, item in value.items()}
-    return value
-
-
-def _redact_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    values = _eligible_env_values()
-    if not values:
-        return payload
-    return _redact_payload_value(payload, values)
-
+_REDACT_ENV_VALUES_FLAG = _redact.REDACT_ENV_VALUES_FLAG
+_REDACTION_MARKER = _redact.REDACTION_MARKER
+_MIN_REDACTION_VALUE_LEN = _redact.MIN_REDACTION_VALUE_LEN
+_COMMON_ENV_VALUES = _redact.COMMON_ENV_VALUES
+_KNOWN_NON_SECRET_ENV_KEYS = _redact.KNOWN_NON_SECRET_ENV_KEYS
+_redaction_enabled = _redact.redaction_enabled
+_is_known_non_secret_env_key = _redact.is_known_non_secret_env_key
+_eligible_env_values = _redact.eligible_env_values
+_redact_text = _redact.redact_text
+_redact_payload_value = _redact.redact_payload_value
+_redact_payload = _redact.redact_payload
 
 # ─── Payload construction ───────────────────────────────────────────────────
 
