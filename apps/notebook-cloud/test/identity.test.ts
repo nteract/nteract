@@ -355,7 +355,7 @@ describe("Cloudflare Access identity", () => {
     });
   });
 
-  it("accepts browser WebSocket Access tokens through subprotocols", async () => {
+  it("accepts browser WebSocket Access tokens through subprotocols without echoing credentials", async () => {
     const { env, token } = await accessTokenFixture({ subject: "alice" });
     const protocol = `${ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url(token)}`;
 
@@ -431,6 +431,23 @@ describe("Cloudflare Access identity", () => {
 
     assert.equal(identity.actorLabel, "user:cloudflare-access:alice/browser:tab");
     assert.equal(identity.scope, "viewer");
+  });
+
+  it("accepts Cloudflare Access CLI tokens from the cf-access-token header", async () => {
+    const { env, token } = await accessTokenFixture({ subject: "alice" });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?operator=smoke:owner&scope=owner", {
+        headers: {
+          "CF-Access-Token": token,
+        },
+      }),
+      env,
+    );
+
+    assert.equal(identity.actorLabel, "user:cloudflare-access:alice/smoke:owner");
+    assert.equal(identity.scope, "owner");
+    assert.equal(identity.metadata.transport, "access-token-header");
   });
 
   it("rejects Access tokens with the wrong audience", async () => {

@@ -31,7 +31,7 @@ Three constraints shape every decision below:
 
 Two projects shaped the design:
 
-- **`automerge-repo`'s `DocHandle` / `RepoContext`**. The upstream pattern wires React directly to handle changes via `useDocument`. We learned from intheloop that this works fine for a single doc but pulls every consumer through one re-render path: a runtime-state tick competes with a cell edit competes with a presence frame. We split those into independent stores.
+- **`automerge-repo`'s `DocHandle` / `RepoContext`**. The upstream pattern wires React directly to handle changes via `useDocument`. We learned from [intheloop](https://github.com/runtimed/intheloop) that this works fine for a single doc but pulls every consumer through one re-render path: a runtime-state tick competes with a cell edit competes with a presence frame. We split those into independent stores.
 - **Zustand and Jotai's external-store ergonomics**. The split-store pattern in `notebook-cells.ts` is shaped to match how Zustand exposes per-slice selectors. We didn't pull in a library because the WASM peer already produces typed diffs; the store is a one-call wrapper around `useSyncExternalStore`.
 
 ## Decision 1: Bridge engine streams into stores; do not bind React to Automerge

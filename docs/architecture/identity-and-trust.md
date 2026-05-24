@@ -9,8 +9,8 @@
 
 The identity design is highly guided by these projects:
 
-- **runtimed/intheloop** validates an OIDC bearer JWT via JWKS at WebSocket open. The validated `sub` claim becomes the actor identifier. No per-message re-validation.
-- **runtimed/anaconda** validates bearer tokens against Anaconda's userinfo endpoint and maps Anaconda scopes to runtimed scopes.
+- **[`runtimed/intheloop`](https://github.com/runtimed/intheloop)** validates an OIDC bearer JWT via JWKS at WebSocket open. The validated `sub` claim becomes the actor identifier. No per-message re-validation.
+- **[`runtimed/anaconda`](https://github.com/runtimed/anaconda)** validates bearer tokens against Anaconda's userinfo endpoint and maps Anaconda scopes to runtimed scopes.
 - **JupyterHub** stamps spawned single-user servers via environment variables at launch, and the spawned server validates user identity by calling back to `/hub/api/user`. No `X-Forwarded-User` header is trusted.
 
 As a result, our rule is to never trust a locally-stamped identity claim. We validate against the upstream authority that issued the credential. The other modern concern is that nteract is very agent centric. A human user has many operators acting on their behalf: the desktop app, a TUI, Agents enabled via MCP, the runtimed bindings for bespoke agent usage, and scheduled notebook jobs. All of those actors are legitimately authoring edits "on behalf of" the user. Since, token wise, they operate "as" the user, attribution must distinguish operators while the trust gate enforces the user.
@@ -398,8 +398,8 @@ This section records the audit against Automerge and automerge-repo so the trust
 - `crates/notebook-doc/src/diff.rs:439` - `extract_change_actors`, the post-apply attribution primitive used by both `TextAttribution` and the v1 clone-preview actor validator.
 - `automerge::sync::Message` (rust/automerge/src/sync.rs:516-588) - the `ChunkList` wire shape backing per-frame validation.
 - `crates/notebook-doc/src/presence.rs` - presence frame shape.
-- intheloop `backend/auth.ts`, `backend/sync.ts` - bearer-JWT validation + connection-time auth model.
-- runtimed/anaconda `api_key.ts` - Anaconda userinfo validation + scope mapping.
+- [`runtimed/intheloop`](https://github.com/runtimed/intheloop) `backend/auth.ts`, `backend/sync.ts` - bearer-JWT validation + connection-time auth model.
+- [`runtimed/anaconda`](https://github.com/runtimed/anaconda) `api_key.ts` - Anaconda userinfo validation + scope mapping.
 - JupyterHub `jupyterhub/services/auth.py` - Hub cookie/token validation, no `X-Forwarded-User`.
 - Automerge `filters` branch (`origin/filters` on `automerge/automerge`), specifically `rust/automerge/src/filter.rs` - the subduction primitive that complements (but does not replace) our pre-apply gate, and the natural home for runtime revocation.
 - automerge-repo `DocSynchronizer.receiveSyncMessage` and `NetworkAdapterInterface` - confirms there is no built-in per-message authorization hook; any gate has to sit above the synchronizer.

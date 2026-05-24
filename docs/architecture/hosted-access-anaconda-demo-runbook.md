@@ -1,0 +1,418 @@
+# Hosted Cloudflare Access + Anaconda Demo Runbook
+
+**Status:** Draft, verified against provider metadata on 2026-05-24.
+
+This is the operational path for the Anaconda-hosted notebook-cloud demo:
+Cloudflare Access owns the browser login session, Anaconda is the Access OIDC
+identity provider, and the notebook-cloud Worker independently validates the
+Access JWT before consulting the per-notebook D1 ACL.
+
+Related design docs:
+
+- `docs/architecture/hosted-credential-transport.md`
+- `docs/architecture/hosted-room-authorization.md`
+- `docs/architecture/hosted-notebook-artifacts.md`
+- `docs/architecture/identity-and-trust.md`
+
+## Target Topology
+
+Use one notebook application hostname for the demo:
+
+```text
+https://<notebook-host>
+```
+
+Examples:
+
+```text
+https://notebooks.example.com
+https://nteract-notebook-cloud.rgbkrk.workers.dev
+```
+
+The Access application protects that host. Browser users authenticate through
+Anaconda OIDC in Cloudflare Access. Cloudflare forwards Access assertions to the
+Worker, and the Worker maps the Access subject to:
+
+```text
+user:cloudflare-access:<encoded-access-sub>
+```
+
+Email and display name are profile metadata. They are not ACL subjects.
+
+Renderer sidecar assets may stay on a separate public asset origin:
+
+```text
+https://nteract-notebook-cloud-assets.rgbkrk.workers.dev/renderer-assets/
+```
+
+Do not add the renderer asset origin to the notebook WebSocket origin allowlist.
+It serves public build artifacts only; notebook room traffic belongs to the
+notebook application origin.
+
+## Cloudflare Access Application
+
+Create a Cloudflare Access self-hosted application for the notebook host.
+
+1. In Cloudflare Zero Trust, go to `Access controls > Applications`.
+2. Add an application and choose `Self-hosted`.
+3. Name it, for example `nteract notebook cloud`.
+4. Set the public hostname:
+
+   ```text
+   https://<notebook-host>
+   ```
+
+5. Use a session duration suitable for a live demo, for example `8 hours`.
+6. Add an `Allow` policy for the demo cohort:
+   - Identity provider: the Anaconda OIDC provider configured below.
+   - Include: exact demo emails, an Anaconda-backed email domain, or an Access
+     group used only for the demo.
+   - Require: optional device posture or MFA if the account policy demands it.
+7. Copy the application's `Audience Tag`. This is the Worker value:
+
+   ```text
+   NOTEBOOK_CLOUD_ACCESS_AUD=<Access application Audience Tag>
+   ```
+
+8. Record the Cloudflare One team domain:
+
+   ```text
+   NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN=<team-name>.cloudflareaccess.com
+   ```
+
+Cloudflare's Access docs describe self-hosted apps, Access cookies, and Access
+JWT validation here:
+
+- `https://developers.cloudflare.com/cloudflare-one/applications/configure-apps/self-hosted-apps/`
+- `https://developers.cloudflare.com/cloudflare-one/identity/authorization-cookie/`
+- `https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/`
+
+## Anaconda OIDC Provider In Access
+
+Add Anaconda as a generic OIDC identity provider in Cloudflare Access.
+
+1. In Cloudflare Zero Trust, go to `Settings > Authentication` or
+   `Integrations > Identity providers`.
+2. Add an identity provider and choose `OpenID Connect`.
+3. In the Anaconda OIDC client, register this redirect URI:
+
+   ```text
+   https://<team-name>.cloudflareaccess.com/cdn-cgi/access/callback
+   ```
+
+4. Configure Cloudflare Access with the Anaconda client ID and client secret.
+   These stay in Cloudflare Access. They are not Worker secrets.
+5. Use these production endpoints:
+
+   ```text
+   Issuer:        https://auth.anaconda.com/api/auth
+   Auth URL:      https://auth.anaconda.com/api/auth/oauth2/authorize
+   Token URL:     https://auth.anaconda.com/api/auth/oauth2/token
+   Certificate:   https://auth.anaconda.com/api/auth/.well-known/jwks.json
+   Userinfo:      https://auth.anaconda.com/api/auth/oauth2/userinfo
+   Scopes:        openid email profile
+   Client auth:   client_secret_basic or client_secret_post
+   Discovery:     https://auth.anaconda.com/api/auth/.well-known/openid-configuration
+   ```
+
+6. For staging, use the same paths under `https://auth.stage.anaconda.com`:
+
+   ```text
+   Issuer:        https://auth.stage.anaconda.com/api/auth
+   Discovery:     https://auth.stage.anaconda.com/api/auth/.well-known/openid-configuration
+   ```
+
+Cloudflare's generic OIDC setup requires the IdP redirect URI above and the
+authorization, token, and JWKS endpoints from the provider discovery document:
+
+```text
+https://developers.cloudflare.com/cloudflare-one/identity/idp-integration/generic-oidc/
+```
+
+## Worker Environment
+
+Set these Worker variables for an Access-backed deployment:
+
+```toml
+[vars]
+DEPLOYMENT_ENV = "prototype"
+NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN = "<team-name>.cloudflareaccess.com"
+NOTEBOOK_CLOUD_ACCESS_AUD = "<Access application Audience Tag>"
+NOTEBOOK_CLOUD_ALLOWED_ORIGINS = "https://<notebook-host>"
+RENDERER_ASSETS_BASE_URL = "https://<asset-host>/renderer-assets/"
+RUNTIMED_WASM_BASE_URL = "https://<asset-host>/renderer-assets/"
+```
+
+`NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN` and `NOTEBOOK_CLOUD_ACCESS_AUD` are not
+secrets. They tell the Worker which Access issuer and audience to accept.
+
+Do not set `NOTEBOOK_CLOUD_ACCESS_JWKS_JSON` in normal production operation.
+When unset, the Worker fetches:
+
+```text
+https://<team-name>.cloudflareaccess.com/cdn-cgi/access/certs
+```
+
+Use `NOTEBOOK_CLOUD_ACCESS_JWKS_JSON` only for pinned/offline tests or an
+emergency where fetching the Access JWKS is intentionally disabled.
+
+`NOTEBOOK_CLOUD_DEV_TOKEN` is for the old deployed prototype and local smoke
+scripts. It is not part of the Access + Anaconda demo auth path. Keep it only
+if you still need the dev-token prototype scripts:
+
+```bash
+printf "%s" "$NOTEBOOK_CLOUD_DEV_TOKEN" \
+  | pnpm --workspace-root exec wrangler secret put NOTEBOOK_CLOUD_DEV_TOKEN \
+      --config apps/notebook-cloud/wrangler.toml
+```
+
+## Allowed Origins
+
+For an Access-backed browser deployment, set:
+
+```text
+NOTEBOOK_CLOUD_ALLOWED_ORIGINS=https://<notebook-host>
+```
+
+Use a comma-separated list only when the same Worker must accept browser
+WebSockets from more than one notebook application origin:
+
+```text
+NOTEBOOK_CLOUD_ALLOWED_ORIGINS=https://notebooks.example.com,https://preview-notebooks.example.com
+```
+
+Rules:
+
+- Include the notebook application origin that renders `/n/:id`.
+- The Worker treats same-origin notebook pages as allowed by default and uses
+  this variable only to add more notebook application origins.
+- Include loopback origins only for local Wrangler development.
+- Do not include the renderer asset Worker origin.
+- Do not include sandboxed output iframe origins.
+- Do not use `*`.
+- Leaving the variable unset keeps the same-origin default only. Cookie-backed
+  Access WebSockets still reject missing or untrusted `Origin`.
+
+The Worker checks `Origin` before WebSocket auth when a browser sends one, when
+the allowlist is set, or when an ambient `CF_Authorization` cookie is present.
+When the allowlist is set, every WebSocket client, including CLI smoke and
+future native clients, must send an `Origin` that normalizes to the notebook
+application origin or one of the configured values. Browser Access-cookie
+sessions must come from an allowed origin so a malicious site cannot use an
+ambient Access cookie to open a private room socket.
+
+## Deploy
+
+From the repository root:
+
+```bash
+pnpm --dir apps/notebook-cloud build
+pnpm --workspace-root exec wrangler d1 migrations apply nteract-notebook-cloud-prototype-db \
+  --config apps/notebook-cloud/wrangler.toml \
+  --remote
+pnpm --workspace-root exec wrangler deploy \
+  --config apps/notebook-cloud/wrangler.renderer-assets.toml
+pnpm --workspace-root exec wrangler deploy \
+  --config apps/notebook-cloud/wrangler.toml
+```
+
+Use the deployment's actual D1 database name, Worker config, and asset Worker
+config if they differ from the prototype names above.
+
+## ACL Bootstrap Model
+
+The Worker does not grant notebook roles from Anaconda groups or Access
+policies. Access authenticates the user. D1 grants the notebook role.
+
+For a demo notebook:
+
+1. Create or publish the notebook with an owner ACL row.
+2. Grant collaborators by principal:
+
+   ```json
+   {
+     "subject_kind": "principal",
+     "subject": "user:cloudflare-access:<encoded-access-sub>",
+     "scope": "editor"
+   }
+   ```
+
+3. Grant a viewer by principal:
+
+   ```json
+   {
+     "subject_kind": "principal",
+     "subject": "user:cloudflare-access:<encoded-access-sub>",
+     "scope": "viewer"
+   }
+   ```
+
+4. Public viewer is a separate explicit row, and only applies when the request
+   can reach the Worker without being blocked by Access:
+
+   ```json
+   {
+     "subject_kind": "public",
+     "subject": "anonymous",
+     "scope": "viewer"
+   }
+   ```
+
+A hostname protected entirely by Access will not admit anonymous public viewers
+at the Cloudflare edge. For public published notebooks, use an unprotected
+public viewer hostname, a bypass policy for the public viewer route, or a
+separate public deployment that still relies on the Worker ACL row before
+serving room state.
+
+## Hosted Access Smoke
+
+The Access smoke proves that:
+
+- the Worker accepts a Cloudflare Access application JWT;
+- the Access JWT maps to `user:cloudflare-access:<sub>`, not email;
+- owner, editor, and viewer ACL rows are honored;
+- owner and editor can write real `NotebookDoc` Automerge frames;
+- the granted Access viewer receives the live edit stream;
+- no token is put in the WebSocket URL.
+
+Install `cloudflared` and authenticate to the Access application:
+
+```bash
+cloudflared access login https://<notebook-host>
+export NOTEBOOK_CLOUD_ACCESS_JWT="$(cloudflared access token -app=https://<notebook-host>)"
+```
+
+For a single-user smoke, the owner token is reused as editor and viewer. For a
+multi-user demo, run the token command under each user session:
+
+```bash
+export NOTEBOOK_CLOUD_ACCESS_EDITOR_JWT="<second user's Access token>"
+export NOTEBOOK_CLOUD_ACCESS_VIEWER_JWT="<third user's Access token>"
+```
+
+Build the volatile WASM package and run the smoke:
+
+```bash
+cargo xtask wasm runtimed --skip-renderer-plugins
+
+NOTEBOOK_CLOUD_URL=https://<notebook-host> \
+NOTEBOOK_CLOUD_ACCESS_ORIGIN=https://<notebook-host> \
+NOTEBOOK_CLOUD_ACCESS_NOTEBOOK_ID=access-demo-$(date +%Y%m%d%H%M%S) \
+NOTEBOOK_CLOUD_ACCESS_JWT="$NOTEBOOK_CLOUD_ACCESS_JWT" \
+pnpm --dir apps/notebook-cloud smoke:hosted:access
+```
+
+The script sends:
+
+- `CF-Access-Token: <jwt>` so Cloudflare Access can admit the HTTP and
+  WebSocket requests;
+- `Origin: https://<notebook-host>` for the WebSocket origin allowlist;
+
+It intentionally sends only one Worker-visible Access credential transport per
+request. The Worker also supports `Authorization: Bearer <jwt>` and
+`nteract-access-token.<base64url-jwt>` as separate deployment/client modes, but
+they must not be combined with `CF-Access-Token` on the same request.
+
+Expected JSON shape:
+
+```json
+{
+  "ok": true,
+  "auth_mode": "cloudflare_access",
+  "viewerUrl": "https://<notebook-host>/n/<id>",
+  "checks": [
+    "cloudflare_access_jwt_validated_by_worker",
+    "owner_acl_room_seeded",
+    "editor_principal_acl_granted",
+    "viewer_principal_acl_granted",
+    "real_automerge_sync_payload",
+    "access_owner_seeded_markdown",
+    "access_editor_edited_markdown",
+    "access_viewer_live_convergence",
+    "actor_principals_match_access_subjects"
+  ]
+}
+```
+
+To also prove anonymous public viewer convergence on a host that permits
+unauthenticated public room access, add:
+
+```bash
+NOTEBOOK_CLOUD_ACCESS_PUBLIC_SMOKE=1
+```
+
+Do not enable that flag against a hostname fully protected by Access; the
+anonymous WebSocket should be blocked before it reaches the Worker.
+
+## Browser Cookie Smoke
+
+The CLI smoke proves token validation and ACL behavior. The browser cookie path
+should also be checked manually for the demo host:
+
+1. Open `https://<notebook-host>/n/<id>` in a normal browser profile.
+2. Complete the Cloudflare Access login through Anaconda.
+3. Confirm the WebSocket connects without putting tokens in the URL.
+4. Confirm a granted editor can edit an existing markdown cell.
+5. Confirm a granted viewer sees the edit but cannot edit.
+
+For the browser path, Cloudflare Access should forward
+`Cf-Access-Jwt-Assertion` to the Worker. The Worker validates that assertion
+against `NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN` and `NOTEBOOK_CLOUD_ACCESS_AUD`,
+then D1 decides the requested notebook scope.
+
+## Troubleshooting
+
+`401 missing/invalid Cloudflare Access token`
+
+- Confirm `NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN` is the Cloudflare One team domain,
+  not the notebook hostname.
+- Confirm `NOTEBOOK_CLOUD_ACCESS_AUD` is the Access application's Audience Tag.
+- Confirm the Access token was minted for the same app:
+
+  ```bash
+  cloudflared access token -app=https://<notebook-host>
+  ```
+
+`403 websocket origin is not allowed`
+
+- Confirm `NOTEBOOK_CLOUD_ALLOWED_ORIGINS` contains exactly the notebook app
+  origin, including scheme.
+- Confirm `NOTEBOOK_CLOUD_ACCESS_ORIGIN` matches that origin in the smoke.
+- Do not use the renderer asset origin as the smoke origin.
+
+`403 notebook access denied`
+
+- Authentication succeeded, but D1 has no ACL row for the requested principal
+  and scope.
+- Decode the smoke output `principals` field and grant that exact principal.
+- Do not grant email strings as `notebook_acl.subject`.
+
+`404 or failed render for public viewers`
+
+- A public viewer needs both network reachability and the explicit ACL row:
+  `subject_kind = public`, `subject = anonymous`, `scope = viewer`.
+- A fully Access-protected hostname blocks anonymous requests at the edge before
+  Worker ACLs run.
+
+`Missing apps/notebook/src/wasm/runtimed-wasm output`
+
+- Run:
+
+  ```bash
+  cargo xtask wasm runtimed --skip-renderer-plugins
+  ```
+
+## References
+
+- Cloudflare self-hosted Access apps:
+  `https://developers.cloudflare.com/cloudflare-one/applications/configure-apps/self-hosted-apps/`
+- Cloudflare generic OIDC IdP:
+  `https://developers.cloudflare.com/cloudflare-one/identity/idp-integration/generic-oidc/`
+- Cloudflare Access JWT validation:
+  `https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/`
+- Cloudflare CLI Access tokens:
+  `https://developers.cloudflare.com/cloudflare-one/tutorials/cli/`
+- Anaconda production OIDC discovery:
+  `https://auth.anaconda.com/api/auth/.well-known/openid-configuration`
+- Anaconda stage OIDC discovery:
+  `https://auth.stage.anaconda.com/api/auth/.well-known/openid-configuration`
