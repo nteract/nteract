@@ -9,6 +9,7 @@ import {
 import type { RemoteCellPresence } from "@/components/editor/presence-state";
 import { presenceSenderExtension } from "../../notebook/src/lib/presence-sender";
 import type { ResolvedCell } from "./render-resolution";
+import { minimalTextReplacement } from "./text-change";
 
 export interface EditableMarkdownCellProps {
   cell: ResolvedCell;
@@ -54,14 +55,11 @@ export function EditableMarkdownCell({
     if (!view) return;
 
     const current = view.state.doc.toString();
-    if (current === cell.source) return;
+    const changes = minimalTextReplacement(current, cell.source);
+    if (!changes) return;
 
     view.dispatch({
-      changes: {
-        from: 0,
-        to: view.state.doc.length,
-        insert: cell.source,
-      },
+      changes,
       annotations: externalChangeAnnotation.of(true),
     });
   }, [cell.source]);

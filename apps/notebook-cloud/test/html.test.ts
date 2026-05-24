@@ -79,6 +79,31 @@ describe("HTML script serialization", () => {
     );
   });
 
+  it("allows the host to place runtimed WASM assets on a separate origin", async () => {
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/demo"),
+      fakeEnv({
+        RUNTIMED_WASM_BASE_URL: "https://wasm.example/runtime",
+      }),
+      fakeContext(),
+    );
+    const html = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(
+      html,
+      /"runtimedWasmModulePath":"https:\/\/wasm\.example\/runtime\/runtimed_wasm\.js"/,
+    );
+    assert.match(
+      html,
+      /"runtimedWasmPath":"https:\/\/wasm\.example\/runtime\/runtimed_wasm_bg\.wasm"/,
+    );
+    assert.match(
+      response.headers.get("Content-Security-Policy") ?? "",
+      /connect-src 'self' ws: wss: https:\/\/wasm\.example/,
+    );
+  });
+
   it("serves the debug shell with browser hardening headers but no broad page CSP", async () => {
     const response = await worker.fetch(
       new Request("https://cloud.test/n/demo/debug"),

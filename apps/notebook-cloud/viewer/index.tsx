@@ -291,8 +291,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
     })
       .then((liveRuntime) => {
         if (disposed) {
-          liveRuntime.engine.stop();
-          liveRuntime.transport.disconnect();
+          disposeCloudSyncRuntime(liveRuntime);
           return;
         }
         liveRuntimeRef.current = liveRuntime;
@@ -327,8 +326,9 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
       for (const subscription of subscriptions) {
         subscription.unsubscribe();
       }
-      liveRuntimeRef.current?.engine.stop();
-      liveRuntimeRef.current?.transport.disconnect();
+      if (liveRuntimeRef.current) {
+        disposeCloudSyncRuntime(liveRuntimeRef.current);
+      }
       liveRuntimeRef.current = null;
       livePresenceStore = null;
       setPresence((state) => reduceCloudViewerConnection(state, "disconnected"));
@@ -474,6 +474,12 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
       )}
     </main>
   );
+}
+
+function disposeCloudSyncRuntime(liveRuntime: CloudSyncRuntime): void {
+  liveRuntime.engine.stop();
+  liveRuntime.transport.disconnect();
+  liveRuntime.handle.free();
 }
 
 function findCellElement(cellId: string): HTMLElement | null {

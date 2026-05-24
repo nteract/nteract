@@ -9,6 +9,7 @@ export interface Env {
   NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN?: string;
   NOTEBOOK_CLOUD_DEV_TOKEN?: string;
   RENDERER_ASSETS_BASE_URL?: string;
+  RUNTIMED_WASM_BASE_URL?: string;
 }
 
 export interface WorkerAssets {
