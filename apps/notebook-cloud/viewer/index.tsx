@@ -298,13 +298,8 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         setConnectionScope(liveRuntime.connectionScope);
         livePresenceStore = new CloudLivePresenceStore(liveRuntime.peerId);
         setLivePresence(livePresenceStore.snapshot());
+        const shouldMaterializeLiveCells = canEditLiveNotebook(liveRuntime.connectionScope);
         subscriptions = [
-          liveRuntime.engine.cellChanges$.subscribe(() => {
-            void materializeLiveCells(liveRuntime);
-          }),
-          liveRuntime.engine.runtimeState$.subscribe(() => {
-            void materializeLiveCells(liveRuntime);
-          }),
           liveRuntime.engine.presence$.subscribe((payload) => {
             const snapshot = livePresenceStore?.handlePresence(payload);
             if (snapshot) {
@@ -312,7 +307,17 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
             }
           }),
         ];
-        void materializeLiveCells(liveRuntime);
+        if (shouldMaterializeLiveCells) {
+          subscriptions.push(
+            liveRuntime.engine.cellChanges$.subscribe(() => {
+              void materializeLiveCells(liveRuntime);
+            }),
+            liveRuntime.engine.runtimeState$.subscribe(() => {
+              void materializeLiveCells(liveRuntime);
+            }),
+          );
+          void materializeLiveCells(liveRuntime);
+        }
       })
       .catch((error: unknown) => {
         if (disposed) return;
@@ -375,7 +380,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
       block: "center",
     });
   }, []);
-  const canEditMarkdown = connectionScope === "editor" || connectionScope === "owner";
+  const canEditMarkdown = canEditLiveNotebook(connectionScope);
   const handleMarkdownSourceChange = useCallback(
     (cellId: string, source: string) => {
       if (!canEditMarkdown) return;
@@ -618,6 +623,10 @@ const EMPTY_REMOTE_CELL_PRESENCE: RemoteCellPresence = {
   cursors: [],
   selections: [],
 };
+
+function canEditLiveNotebook(connectionScope: string | null): boolean {
+  return connectionScope === "editor" || connectionScope === "owner";
+}
 
 function ViewerStartupError({ message }: { message: string }) {
   return (

@@ -1,6 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeConnectionScope, withReadyTimeout } from "../viewer/live-sync.ts";
+import {
+  normalizeConnectionScope,
+  startCloudBootstrapSync,
+  withReadyTimeout,
+} from "../viewer/live-sync.ts";
 
 describe("cloud live sync", () => {
   it("accepts known connection scopes", () => {
@@ -36,5 +40,44 @@ describe("cloud live sync", () => {
     await assert.doesNotReject(
       withReadyTimeout(Promise.resolve("ready"), 1_000, "should not fire"),
     );
+  });
+
+  it("starts bootstrap sync with the same fresh-handle exchange desktop uses", () => {
+    const calls: string[] = [];
+
+    startCloudBootstrapSync({
+      start: () => {
+        calls.push("start");
+      },
+      resetForBootstrap: () => {
+        calls.push("resetForBootstrap");
+      },
+      flush: () => {
+        calls.push("flush");
+      },
+    });
+
+    assert.deepEqual(calls, ["start", "resetForBootstrap", "flush"]);
+  });
+
+  it("starts viewer sockets without initiating a writable document sync exchange", () => {
+    const calls: string[] = [];
+
+    startCloudBootstrapSync(
+      {
+        start: () => {
+          calls.push("start");
+        },
+        resetForBootstrap: () => {
+          calls.push("resetForBootstrap");
+        },
+        flush: () => {
+          calls.push("flush");
+        },
+      },
+      { initiateDocumentSync: false },
+    );
+
+    assert.deepEqual(calls, ["start"]);
   });
 });

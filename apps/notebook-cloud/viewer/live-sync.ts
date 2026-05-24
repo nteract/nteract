@@ -117,7 +117,9 @@ export async function connectCloudSyncRuntime({
       logger: consoleSyncLogger,
     });
 
-    engine.start();
+    startCloudBootstrapSync(engine, {
+      initiateDocumentSync: canInitiateBootstrapSync(connectionScope),
+    });
 
     return {
       actorLabel: ready.actor_label,
@@ -174,6 +176,24 @@ export function normalizeConnectionScope(value: string): ConnectionScope {
     `[notebook-cloud] unknown connection scope ${JSON.stringify(value)}; falling back to viewer`,
   );
   return "viewer";
+}
+
+export function startCloudBootstrapSync(
+  engine: Pick<SyncEngine, "start" | "resetForBootstrap" | "flush">,
+  options: { initiateDocumentSync?: boolean } = {},
+): void {
+  engine.start();
+  if (options.initiateDocumentSync === false) {
+    return;
+  }
+  // Match the desktop `useAutomergeNotebook` bootstrap path: a newly-created
+  // bootstrap handle must initiate the sync exchange before it can edit cells.
+  engine.resetForBootstrap();
+  engine.flush();
+}
+
+function canInitiateBootstrapSync(connectionScope: ConnectionScope): boolean {
+  return connectionScope === "editor" || connectionScope === "owner";
 }
 
 export async function withReadyTimeout<T>(
