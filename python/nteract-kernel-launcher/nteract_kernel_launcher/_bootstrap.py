@@ -46,7 +46,9 @@ from typing import Any
 from IPython.core.formatters import BaseFormatter
 from traitlets import ObjectName, Unicode
 
-from nteract_kernel_launcher import _buffer_hook, _output_redaction, _traceback
+import nteract_kernel_launcher._buffer_hook as _buffer_hook
+import nteract_kernel_launcher._output_redaction as _output_redaction
+import nteract_kernel_launcher._traceback as _traceback
 from nteract_kernel_launcher._buffer_hook import pending_buffers
 from nteract_kernel_launcher._format import (
     ARROW_STREAM_MANIFEST_MIME,

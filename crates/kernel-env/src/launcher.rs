@@ -60,10 +60,20 @@ pub const LAUNCHER_FILES: &[(&str, &str)] = &[
         include_str!("../../../python/nteract-kernel-launcher/nteract_kernel_launcher/_format.py"),
     ),
     (
+        "_output_redaction.py",
+        include_str!(
+            "../../../python/nteract-kernel-launcher/nteract_kernel_launcher/_output_redaction.py"
+        ),
+    ),
+    (
         "_progressive.py",
         include_str!(
             "../../../python/nteract-kernel-launcher/nteract_kernel_launcher/_progressive.py"
         ),
+    ),
+    (
+        "_redact.py",
+        include_str!("../../../python/nteract-kernel-launcher/nteract_kernel_launcher/_redact.py"),
     ),
     (
         "_refs.py",
@@ -224,6 +234,14 @@ mod tests {
             .find(|(n, _)| *n == "_bootstrap.py")
             .expect("_bootstrap.py must be included");
         assert!(boot.1.contains("def load_ipython_extension"));
+    }
+
+    #[test]
+    fn launcher_ships_output_redaction_modules() {
+        let names: std::collections::HashSet<&str> =
+            LAUNCHER_FILES.iter().map(|(name, _)| *name).collect();
+        assert!(names.contains("_redact.py"));
+        assert!(names.contains("_output_redaction.py"));
     }
 
     #[tokio::test]

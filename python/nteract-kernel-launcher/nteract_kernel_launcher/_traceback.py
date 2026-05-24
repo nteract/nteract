@@ -28,7 +28,7 @@ import traceback as _pytraceback
 import types
 from typing import Any
 
-from nteract_kernel_launcher import _redact
+import nteract_kernel_launcher._redact as _redact
 
 log = logging.getLogger("nteract_kernel_launcher")
 
