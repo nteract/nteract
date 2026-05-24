@@ -9,6 +9,11 @@ tests against a running kernel.
 from __future__ import annotations
 
 import hashlib
+import importlib
+import importlib.abc
+import sys
+import types
+from importlib.machinery import ModuleSpec
 from types import SimpleNamespace
 
 import pytest
@@ -311,6 +316,21 @@ def test_llm_formatter_supports_for_type_registration():
 # ─── load_ipython_extension contract ─────────────────────────────────────
 
 
+def _isolate_renderer_import_hook(monkeypatch, _bootstrap):
+    monkeypatch.setattr(
+        sys,
+        "meta_path",
+        [
+            finder
+            for finder in sys.meta_path
+            if not getattr(finder, "_nteract_renderer_import_hook", False)
+        ],
+    )
+    monkeypatch.setattr(_bootstrap, "_renderer_import_hook", None)
+    for name in ("altair", "plotly", "plotly.io"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+
+
 def test_load_extension_invokes_the_install_steps(monkeypatch):
     from nteract_kernel_launcher import _bootstrap
 
@@ -346,6 +366,94 @@ def test_load_extension_swallows_per_step_failures(monkeypatch):
     # Must not raise.
     _bootstrap.load_ipython_extension(SimpleNamespace())
     assert called == ["hooks", "r"]
+
+
+def test_enable_third_party_renderers_configures_loaded_modules(monkeypatch):
+    from nteract_kernel_launcher import _bootstrap
+
+    _isolate_renderer_import_hook(monkeypatch, _bootstrap)
+
+    enabled = []
+
+    class FakeAltairRenderers:
+        def enable(self, name):
+            enabled.append(name)
+
+    class FakePlotlyRenderers:
+        def __init__(self):
+            self.default = "plotly_mimetype"
+
+    fake_alt = types.ModuleType("altair")
+    fake_alt.renderers = FakeAltairRenderers()
+    fake_pio = types.ModuleType("plotly.io")
+    fake_pio.renderers = FakePlotlyRenderers()
+    monkeypatch.setitem(sys.modules, "altair", fake_alt)
+    monkeypatch.setitem(sys.modules, "plotly.io", fake_pio)
+
+    _bootstrap._enable_third_party_renderers()
+
+    assert enabled == ["nteract"]
+    assert fake_pio.renderers.default == "nteract"
+
+
+def test_enable_third_party_renderers_lazily_configures_modules(monkeypatch):
+    from nteract_kernel_launcher import _bootstrap
+
+    _isolate_renderer_import_hook(monkeypatch, _bootstrap)
+    enabled = []
+
+    class FakeAltairRenderers:
+        def enable(self, name):
+            enabled.append(name)
+
+    class FakePlotlyRenderers:
+        def __init__(self):
+            self.default = "plotly_mimetype"
+
+    class FakeLoader(importlib.abc.Loader):
+        def __init__(self, configure):
+            self.configure = configure
+
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
+            self.configure(module)
+
+    class FakeFinder:
+        def __init__(self):
+            self.requests = []
+
+        def find_spec(self, fullname, path=None, target=None):
+            self.requests.append(fullname)
+            if fullname == "altair":
+                return ModuleSpec(
+                    fullname,
+                    FakeLoader(lambda module: setattr(module, "renderers", FakeAltairRenderers())),
+                )
+            if fullname == "plotly":
+                spec = ModuleSpec(fullname, FakeLoader(lambda _module: None), is_package=True)
+                spec.submodule_search_locations = []
+                return spec
+            if fullname == "plotly.io":
+                return ModuleSpec(
+                    fullname,
+                    FakeLoader(lambda module: setattr(module, "renderers", FakePlotlyRenderers())),
+                )
+            return None
+
+    fake_finder = FakeFinder()
+    sys.meta_path.insert(0, fake_finder)
+
+    _bootstrap._enable_third_party_renderers()
+
+    assert fake_finder.requests == []
+
+    importlib.import_module("altair")
+    pio = importlib.import_module("plotly.io")
+
+    assert enabled == ["nteract"]
+    assert pio.renderers.default == "nteract"
 
 
 def test_install_registers_iterable_dataset_formatter():

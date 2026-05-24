@@ -20,8 +20,9 @@ user code runs. Four things happen on ``load_ipython_extension``:
    pick up table buffers from the same pending-bytes stash.
 
 4. Third-party visualization libraries (altair, plotly) are flipped to
-   their ``"nteract"`` renderer if they happen to be importable. Each
-   is guarded so the bootstrap stays a no-op in minimal envs.
+   their ``"nteract"`` renderer if they are already imported, or lazily
+   when they are first imported by user code. The bootstrap never imports
+   these optional packages on the kernel startup path.
 
 No ``ipython_display_formatter`` handlers. The dx wheel needed one to
 divert bare-``df``-on-last-line from the bufferless displayhook path
@@ -36,8 +37,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import sys
 import threading
 from collections.abc import Callable
+from time import perf_counter
 from typing import Any
 
 from IPython.core.formatters import BaseFormatter
@@ -67,6 +70,8 @@ log = logging.getLogger("nteract_kernel_launcher")
 
 # Server-side blob ceiling is ~100 MiB; leave ~10 MiB for overhead.
 _MAX_PAYLOAD_BYTES = int(os.environ.get("DX_MAX_PAYLOAD_BYTES", str(90 * 1024 * 1024)))
+_RENDERER_IMPORT_TARGETS = frozenset({"altair", "plotly.io"})
+_renderer_import_hook: Any | None = None
 
 
 class LLMFormatter(BaseFormatter):
@@ -506,32 +511,139 @@ def _install_buffer_hooks(ip: Any) -> None:
     _buffer_hook.install(ip)
 
 
-def _enable_third_party_renderers() -> None:
-    """Flip altair / plotly to their ``"nteract"`` renderer if present.
-
-    ImportError-guarded; safe in a minimal env. Non-ImportError failures
-    get logged at debug level — a missing renderer shouldn't crash the
-    kernel startup.
-    """
+def _enable_altair_renderer(alt: Any) -> None:
     try:
-        import altair as alt  # ty: ignore[unresolved-import]
-
         alt.renderers.enable("nteract")
         log.debug("enabled altair 'nteract' renderer")
-    except ImportError:
-        pass
     except Exception as exc:  # noqa: BLE001
         log.debug("altair 'nteract' renderer enable failed: %s", exc)
 
-    try:
-        import plotly.io as pio
 
+def _enable_plotly_renderer(pio: Any) -> None:
+    try:
         pio.renderers.default = "nteract"
         log.debug("set plotly default renderer to 'nteract'")
-    except ImportError:
-        pass
     except Exception as exc:  # noqa: BLE001
         log.debug("plotly 'nteract' renderer set failed: %s", exc)
+
+
+def _enable_loaded_renderer_modules() -> None:
+    alt = sys.modules.get("altair")
+    if alt is not None:
+        _enable_altair_renderer(alt)
+
+    pio = sys.modules.get("plotly.io")
+    if pio is not None:
+        _enable_plotly_renderer(pio)
+
+
+def _enable_renderer_for_module(fullname: str, module: Any) -> None:
+    if fullname == "altair":
+        _enable_altair_renderer(module)
+    elif fullname == "plotly.io":
+        _enable_plotly_renderer(module)
+
+
+class _RendererLoader:
+    """Loader wrapper that configures renderers after optional imports complete."""
+
+    def __init__(self, loader: Any, fullname: str) -> None:
+        self._loader = loader
+        self._fullname = fullname
+
+    def create_module(self, spec: Any) -> Any:
+        create_module = getattr(self._loader, "create_module", None)
+        if create_module is None:
+            return None
+        return create_module(spec)
+
+    def exec_module(self, module: Any) -> None:
+        self._loader.exec_module(module)
+        _enable_renderer_for_module(self._fullname, module)
+
+    def load_module(self, fullname: str) -> Any:
+        module = self._loader.load_module(fullname)
+        _enable_renderer_for_module(fullname, module)
+        return module
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._loader, name)
+
+
+class _RendererImportHook:
+    """Meta-path hook that defers optional renderer setup until first import."""
+
+    _nteract_renderer_import_hook = True
+
+    def find_spec(self, fullname: str, path: Any = None, target: Any = None) -> Any:
+        if fullname not in _RENDERER_IMPORT_TARGETS:
+            return None
+
+        for finder in sys.meta_path:
+            if getattr(finder, "_nteract_renderer_import_hook", False):
+                continue
+            find_spec = getattr(finder, "find_spec", None)
+            if find_spec is None:
+                continue
+            spec = find_spec(fullname, path, target)
+            if spec is None:
+                continue
+            loader = spec.loader
+            if (
+                loader is not None
+                and not isinstance(loader, _RendererLoader)
+                and getattr(loader, "exec_module", None) is not None
+            ):
+                spec.loader = _RendererLoader(loader, fullname)
+            return spec
+
+        return None
+
+
+def _install_renderer_import_hook() -> None:
+    global _renderer_import_hook
+
+    for finder in sys.meta_path:
+        if getattr(finder, "_nteract_renderer_import_hook", False):
+            _renderer_import_hook = finder
+            return
+
+    hook = _RendererImportHook()
+    sys.meta_path.insert(0, hook)
+    _renderer_import_hook = hook
+
+
+def _uninstall_renderer_import_hook() -> None:
+    global _renderer_import_hook
+
+    sys.meta_path[:] = [
+        finder
+        for finder in sys.meta_path
+        if not getattr(finder, "_nteract_renderer_import_hook", False)
+    ]
+    _renderer_import_hook = None
+
+
+def _enable_third_party_renderers() -> None:
+    """Flip altair / plotly to their ``"nteract"`` renderer without importing them.
+
+    Already-loaded modules are configured immediately. Otherwise a tiny import
+    hook configures each renderer after the corresponding optional module is
+    first imported by user code.
+    """
+    _enable_loaded_renderer_modules()
+    _install_renderer_import_hook()
+
+
+def _run_bootstrap_step(name: str, step: Callable[[], Any]) -> None:
+    started = perf_counter()
+    try:
+        step()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("%s failed: %s", name, exc)
+    finally:
+        elapsed_ms = (perf_counter() - started) * 1000
+        log.debug("bootstrap %s took %.2fms", name, elapsed_ms)
 
 
 # ─── IPython extension contract ────────────────────────────────────────────
@@ -545,32 +657,14 @@ def load_ipython_extension(ip: Any) -> None:
     further guard each install step so a single failure doesn't abort
     the others.
     """
-    try:
-        _install_llm_formatter(ip)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("LLM formatter install failed: %s", exc)
-
-    try:
-        _install_dataframe_formatters(ip)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("dataframe formatter install failed: %s", exc)
-
-    try:
-        _install_buffer_hooks(ip)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("buffer hook install failed: %s", exc)
-
-    try:
-        _enable_third_party_renderers()
-    except Exception as exc:  # noqa: BLE001
-        log.warning("third-party renderer enable failed: %s", exc)
+    _run_bootstrap_step("LLM formatter install", lambda: _install_llm_formatter(ip))
+    _run_bootstrap_step("dataframe formatter install", lambda: _install_dataframe_formatters(ip))
+    _run_bootstrap_step("buffer hook install", lambda: _install_buffer_hooks(ip))
+    _run_bootstrap_step("third-party renderer enable", _enable_third_party_renderers)
 
     # Traceback install goes last so earlier failures can't prevent it.
     # The wrapper itself is bulletproof — see `_traceback.install`.
-    try:
-        _traceback.install(ip)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("traceback install failed: %s", exc)
+    _run_bootstrap_step("traceback install", lambda: _traceback.install(ip))
 
 
 def unload_ipython_extension(ip: Any) -> None:
@@ -589,3 +683,4 @@ def unload_ipython_extension(ip: Any) -> None:
                         unregister(h)
     except Exception as exc:  # noqa: BLE001
         log.debug("unload cleanup: %s", exc)
+    _uninstall_renderer_import_hook()
