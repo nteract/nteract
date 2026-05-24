@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeConnectionScope } from "../viewer/live-sync.ts";
+import { normalizeConnectionScope, withReadyTimeout } from "../viewer/live-sync.ts";
 
 describe("cloud live sync", () => {
   it("accepts known connection scopes", () => {
@@ -23,5 +23,18 @@ describe("cloud live sync", () => {
     }
 
     assert.equal(warnings.length, 1);
+  });
+
+  it("times out a silent ready promise", async () => {
+    await assert.rejects(
+      withReadyTimeout(new Promise(() => undefined), 1, "silent socket"),
+      /silent socket/,
+    );
+  });
+
+  it("returns a ready value before the timeout", async () => {
+    await assert.doesNotReject(
+      withReadyTimeout(Promise.resolve("ready"), 1_000, "should not fire"),
+    );
   });
 });

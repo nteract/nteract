@@ -56,6 +56,7 @@ export interface CloudSyncConnectOptions {
 
 type FrameListener = Parameters<NotebookTransport["onFrame"]>[0];
 
+const LIVE_SYNC_READY_TIMEOUT_MS = 30_000;
 export const NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY = "nteract:notebook-cloud:dev-token";
 export const NOTEBOOK_CLOUD_USER_STORAGE_KEY = "nteract:notebook-cloud:user";
 export const NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY = "nteract:notebook-cloud:scope";
@@ -91,8 +92,12 @@ export async function connectCloudSyncRuntime({
 }: CloudSyncConnectOptions): Promise<CloudSyncRuntime> {
   const url = syncUrl(syncEndpoint, sessionId, auth);
   const transport = new CloudWebSocketTransport(url, auth.protocols, onControl);
-  const ready = await transport.ready;
   try {
+    const ready = await withReadyTimeout(
+      transport.ready,
+      LIVE_SYNC_READY_TIMEOUT_MS,
+      `notebook cloud WebSocket did not become ready within ${LIVE_SYNC_READY_TIMEOUT_MS}ms`,
+    );
     const handle = await createBootstrapNotebookHandle(
       ready.actor_label,
       new URL(runtimedWasmModulePath, location.href),
@@ -169,6 +174,24 @@ export function normalizeConnectionScope(value: string): ConnectionScope {
     `[notebook-cloud] unknown connection scope ${JSON.stringify(value)}; falling back to viewer`,
   );
   return "viewer";
+}
+
+export async function withReadyTimeout<T>(
+  ready: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  try {
+    return await Promise.race([ready, timeout]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
 }
 
 export class CloudWebSocketTransport implements NotebookTransport {

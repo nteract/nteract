@@ -527,7 +527,7 @@ function CloudLiveNotebook({
     >
       {cells.map((cell, index) => (
         <ErrorBoundary
-          key={`${cell.id}:${index}`}
+          key={cell.id}
           resetKeys={[
             cell.id,
             cell.cellType,

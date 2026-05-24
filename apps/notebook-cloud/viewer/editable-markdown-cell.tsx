@@ -38,6 +38,8 @@ export function EditableMarkdownCell({
 }: EditableMarkdownCellProps) {
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const extensions = useMemo(() => {
+    // The presence sender captures the cell id; the parent keys this component
+    // by cell id so a real id change remounts the editor instead of retargeting it.
     const editorExtensions = [...remoteCursorsExtension()];
     if (onPresenceCursor && onPresenceSelection) {
       editorExtensions.push(
