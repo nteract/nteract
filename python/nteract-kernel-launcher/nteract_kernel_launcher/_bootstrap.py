@@ -46,7 +46,7 @@ from typing import Any
 from IPython.core.formatters import BaseFormatter
 from traitlets import ObjectName, Unicode
 
-from nteract_kernel_launcher import _buffer_hook, _traceback
+from nteract_kernel_launcher import _buffer_hook, _output_redaction, _traceback
 from nteract_kernel_launcher._buffer_hook import pending_buffers
 from nteract_kernel_launcher._format import (
     ARROW_STREAM_MANIFEST_MIME,
@@ -678,6 +678,7 @@ def load_ipython_extension(ip: Any) -> None:
     _run_bootstrap_step("LLM formatter install", lambda: _install_llm_formatter(ip))
     _run_bootstrap_step("dataframe formatter install", lambda: _install_dataframe_formatters(ip))
     _run_bootstrap_step("buffer hook install", lambda: _install_buffer_hooks(ip))
+    _run_bootstrap_step("output redaction install", lambda: _output_redaction.install(ip))
     _run_bootstrap_step("third-party renderer enable", _enable_third_party_renderers)
 
     # Traceback install goes last so earlier failures can't prevent it.

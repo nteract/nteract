@@ -109,6 +109,47 @@ def test_display_arrow_stream_single_chunk_publishes_complete_once():
     assert "llm" not in manifest
 
 
+def test_display_arrow_stream_splits_oversized_batches():
+    pa = pytest.importorskip("pyarrow")
+    from nteract_kernel_launcher import _buffer_hook
+    from nteract_kernel_launcher._format import ARROW_STREAM_MANIFEST_MIME
+    from nteract_kernel_launcher._progressive import display_arrow_stream
+
+    messages = []
+
+    class Handle:
+        def update(self, obj, **kwargs):
+            messages.append(("update", obj, kwargs))
+
+    def fake_display(obj, **kwargs):
+        messages.append(("display", obj, kwargs))
+        return Handle()
+
+    _buffer_hook.pending_buffers().clear()
+    table = pa.table({"text": ["x" * 64 for _ in range(5)]})
+    batches = table.to_batches(max_chunksize=table.num_rows)
+    assert len(batches) == 1
+
+    reader = pa.RecordBatchReader.from_batches(table.schema, batches)
+    display_arrow_stream(
+        reader,
+        display_fn=fake_display,
+        max_chunk_bytes=max(1, batches[0].nbytes // 2),
+        total_rows=table.num_rows,
+    )
+
+    manifest = messages[-1][1][ARROW_STREAM_MANIFEST_MIME]
+    assert manifest["complete"] is True
+    assert len(manifest["chunks"]) > 1
+
+    decoded = [
+        pa.ipc.open_stream(io.BytesIO(_buffer_hook.pending_buffers()[chunk["hash"]])).read_all()
+        for chunk in manifest["chunks"]
+    ]
+    assert sum(table.num_rows for table in decoded) == 5
+    assert all(table.num_rows < 5 for table in decoded)
+
+
 def test_display_arrow_stream_is_exported_from_package():
     import nteract_kernel_launcher
 
