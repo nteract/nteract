@@ -43,6 +43,10 @@ function makeColumns(): Column[] {
 
 function makeTableData(rows: unknown[][]): TableData {
   const columns = makeColumns();
+  return makeTableDataWithColumns(rows, columns);
+}
+
+function makeTableDataWithColumns(rows: unknown[][], columns: Column[]): TableData {
   return {
     columns,
     rowCount: rows.length,
@@ -481,6 +485,115 @@ describe("createTable", () => {
       expect(onChange).toHaveBeenCalled();
       const state = onChange.mock.calls.at(-1)?.[0];
       expect(state.filters).toHaveLength(1);
+    });
+
+    it("replaceData swaps same-schema rows without remounting chrome", async () => {
+      const oldDispose = vi.fn();
+      data.dispose = oldDispose;
+      await flushRAF();
+      const viewport = container.querySelector(".sift-viewport");
+
+      engine.setSort("score", "desc");
+      engine.setFilter(1, { kind: "set", values: new Set(["Person 1"]) });
+      await flushRAF();
+
+      const nextData = makeTableData([
+        [101, "Person 1", 12, true],
+        [102, "Other", 98, false],
+      ]);
+      engine.replaceData(nextData);
+      await flushRAF();
+
+      expect(container.querySelector(".sift-viewport")).toBe(viewport);
+      expect(oldDispose).toHaveBeenCalledTimes(1);
+      expect(engine.getSort()).toEqual({ column: "score", direction: "desc" });
+      expect(engine.getFilters()).toHaveLength(1);
+      expect(engine.getState()).toMatchObject({ filteredCount: 1, totalCount: 2 });
+      expect(container.textContent).toContain("Person 1");
+      expect(container.textContent).not.toContain("Person 0");
+    });
+
+    it("replaceData keeps only sort and filters whose key and type survive", async () => {
+      await flushRAF();
+      engine.setSort("score", "desc");
+      engine.setFilter(1, { kind: "set", values: new Set(["Person 1"]) });
+      engine.setFilter(2, { kind: "range", min: 0, max: 50 });
+      await flushRAF();
+
+      const [idColumn, nameColumn, , activeColumn] = makeColumns();
+      const nextData = makeTableDataWithColumns(
+        [
+          [1, "Person 1", true],
+          [2, "Other", false],
+        ],
+        [idColumn, nameColumn, activeColumn],
+      );
+      engine.replaceData(nextData);
+      await flushRAF();
+
+      expect(engine.getSort()).toBeNull();
+      expect(engine.getFilters()).toEqual([
+        { column: "name", filter: { kind: "set", values: new Set(["Person 1"]) } },
+      ]);
+      expect(engine.getState()).toMatchObject({ filteredCount: 1, totalCount: 2 });
+      const labels = Array.from(container.querySelectorAll(".sift-th-label")).map(
+        (label) => label.textContent,
+      );
+      expect(labels).toEqual(["ID", "Name", "Active"]);
+    });
+
+    it("replaceData drops sort and filters for columns whose type changes", async () => {
+      await flushRAF();
+      engine.setSort("score", "desc");
+      engine.setFilter(2, { kind: "range", min: 0, max: 50 });
+      await flushRAF();
+
+      const [idColumn, nameColumn, scoreColumn, activeColumn] = makeColumns();
+      const categoricalScore = {
+        ...scoreColumn,
+        numeric: false,
+        columnType: "categorical" as const,
+      };
+      const nextData = makeTableDataWithColumns(
+        [
+          [1, "Person 1", "low", true],
+          [2, "Person 2", "high", false],
+        ],
+        [idColumn, nameColumn, categoricalScore, activeColumn],
+      );
+      engine.replaceData(nextData);
+      await flushRAF();
+
+      expect(engine.getSort()).toBeNull();
+      expect(engine.getFilters()).toEqual([]);
+      expect(engine.getState()).toMatchObject({ filteredCount: 2, totalCount: 2 });
+    });
+
+    it("replaceData clears cached cells and renders values from the new data", async () => {
+      const firstRows = [
+        [1, "Alice", 10, true],
+        [2, "Bob", 20, false],
+      ];
+      const secondRows = [
+        [1, "Carol", 30, true],
+        [2, "Dave", 40, false],
+      ];
+      const cacheContainer = document.createElement("div");
+      document.body.appendChild(cacheContainer);
+      const cacheEngine = createTable(cacheContainer, makeTableData(firstRows));
+      const viewport = cacheContainer.querySelector<HTMLElement>(".sift-viewport")!;
+      Object.defineProperty(viewport, "clientHeight", { value: 400, configurable: true });
+      viewport.dispatchEvent(new Event("scroll"));
+      await vi.advanceTimersByTimeAsync(20);
+      expect(cacheContainer.textContent).toContain("Alice");
+
+      cacheEngine.replaceData(makeTableData(secondRows));
+      await vi.advanceTimersByTimeAsync(20);
+
+      expect(cacheContainer.textContent).toContain("Carol");
+      expect(cacheContainer.textContent).not.toContain("Alice");
+      cacheEngine.destroy();
+      cacheContainer.remove();
     });
   });
 

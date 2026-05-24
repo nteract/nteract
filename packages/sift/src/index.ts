@@ -61,6 +61,7 @@ export type {
   ColumnType,
   NumericColumnSummary,
   RangeFilter,
+  ReplaceDataOptions,
   SetFilter,
   TableData,
   TableEngine,

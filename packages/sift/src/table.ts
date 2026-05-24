@@ -124,10 +124,18 @@ export type TableEngineOptions = {
   footerControl?: HTMLElement;
 };
 
+export type ReplaceDataOptions = {
+  /** Drop sort state even when the sorted column survives in the new data. */
+  resetSort?: boolean;
+  /** Drop filters even when filtered columns survive in the new data. */
+  resetFilters?: boolean;
+};
+
 export type TableEngine = {
   onBatchAppended(): void;
   /** Signal that all batches have been loaded and streaming is complete. */
   setStreamingDone(): void;
+  replaceData(newData: TableData, options?: ReplaceDataOptions): void;
   destroy(): void;
   setFilter(colIndex: number, filter: ColumnFilter): void;
   clearFilter(colIndex: number): void;
@@ -222,16 +230,17 @@ function measureMaxElementHeight(): number {
 
 export function createTable(
   container: HTMLElement,
-  data: TableData,
+  initialData: TableData,
   options?: TableEngineOptions,
 ): TableEngine {
-  const { columns } = data;
+  let data = initialData;
+  let columns = data.columns;
 
   // Mutable row count — grows as batches arrive
   let rowCount = data.rowCount;
 
   // Filter state — one per column, null = no filter
-  const filters: ColumnFilter[] = columns.map(() => null);
+  let filters: ColumnFilter[] = columns.map(() => null);
   let filteredCount = rowCount;
 
   // Unfiltered summaries (saved so we can restore when filters are cleared)
@@ -2034,7 +2043,7 @@ export function createTable(
     unfilteredSummaries = [...data.columnSummaries];
 
     // If filters are active, recompute from filtered rows
-    if (hasActiveFilters()) {
+    if (hasActiveFilters() && data.recomputeFilteredSummaries) {
       recomputeFilteredSummaries();
     }
 
@@ -2081,6 +2090,142 @@ export function createTable(
     // Notify consumers — totalCount may have grown across row groups, and
     // host UIs that size their container based on row count want to settle
     // on the final value rather than the first batch.
+    notifyChange();
+  }
+
+  function findSurvivingColumnIndices(newColumns: Column[]): Map<number, number> {
+    const unusedNewIndices = new Set(newColumns.map((_, index) => index));
+    const survivors = new Map<number, number>();
+    for (let oldIndex = 0; oldIndex < columns.length; oldIndex++) {
+      const oldColumn = columns[oldIndex];
+      for (const newIndex of unusedNewIndices) {
+        const newColumn = newColumns[newIndex];
+        if (oldColumn.key === newColumn.key && oldColumn.columnType === newColumn.columnType) {
+          survivors.set(oldIndex, newIndex);
+          unusedNewIndices.delete(newIndex);
+          break;
+        }
+      }
+    }
+    return survivors;
+  }
+
+  function preserveStateFor(
+    newColumns: Column[],
+    replaceOptions: ReplaceDataOptions | undefined,
+  ): {
+    sort: TableEngineState["sort"];
+    filters: TableEngineState["filters"];
+  } {
+    const survivors = findSurvivingColumnIndices(newColumns);
+    const preservedFilters: TableEngineState["filters"] = [];
+    if (!replaceOptions?.resetFilters) {
+      for (let oldIndex = 0; oldIndex < filters.length; oldIndex++) {
+        const newIndex = survivors.get(oldIndex);
+        if (newIndex === undefined || !filters[oldIndex]) continue;
+        preservedFilters.push({
+          column: newColumns[newIndex].key,
+          filter: filters[oldIndex],
+        });
+      }
+    }
+
+    let preservedSort: TableEngineState["sort"] = null;
+    if (!replaceOptions?.resetSort && sortState) {
+      const newSortIndex = survivors.get(sortState.col);
+      if (newSortIndex !== undefined) {
+        preservedSort = {
+          column: newColumns[newSortIndex].key,
+          direction: sortState.dir,
+        };
+      }
+    }
+
+    return { sort: preservedSort, filters: preservedFilters };
+  }
+
+  function sameColumnShape(newColumns: Column[]): boolean {
+    return (
+      columns.length === newColumns.length &&
+      columns.every(
+        (column, index) =>
+          column.key === newColumns[index].key &&
+          column.columnType === newColumns[index].columnType,
+      )
+    );
+  }
+
+  function hidePooledRows() {
+    for (const pr of pool) {
+      pr.assignedRow = -1;
+      pr.el.style.display = "none";
+    }
+  }
+
+  function replaceData(newData: TableData, replaceOptions?: ReplaceDataOptions) {
+    const preserved = preserveStateFor(newData.columns, replaceOptions);
+
+    if (!sameColumnShape(newData.columns)) {
+      destroy();
+      const replacement = createTable(container, newData, options);
+      Object.assign(api, replacement);
+      if (preserved.sort) {
+        replacement.setSort(preserved.sort.column, preserved.sort.direction);
+      }
+      for (const preservedFilter of preserved.filters) {
+        const newIndex = newData.columns.findIndex(
+          (column) => column.key === preservedFilter.column,
+        );
+        if (newIndex !== -1) replacement.setFilter(newIndex, preservedFilter.filter);
+      }
+      return;
+    }
+
+    const oldData = data;
+    data = newData;
+    columns = newData.columns;
+    rowCount = newData.rowCount;
+    growBuffers(rowCount);
+    filteredCount = rowCount;
+    unfilteredSummaries = [...newData.columnSummaries];
+
+    if (replaceOptions?.resetSort) {
+      sortState = null;
+    }
+    if (replaceOptions?.resetFilters) {
+      filters = columns.map(() => null);
+    }
+
+    cellCaches.length = 0;
+    focusedDataRow = null;
+    lastVisFirst = -1;
+    lastVisLast = -1;
+    pendingScrollAnchor = null;
+
+    for (let c = 0; c < columns.length; c++) {
+      const label = headerCells[c].querySelector(".sift-th-label");
+      if (label) label.textContent = columns[c].label;
+      const typeIcon = headerCells[c].querySelector(".sift-type-icon");
+      if (typeIcon) {
+        typeIcon.textContent = typeIconChar(columns[c].columnType);
+        typeIcon.setAttribute("title", columns[c].columnType);
+      }
+    }
+
+    applyFilterAndSort();
+    if (hasActiveFilters() && data.recomputeFilteredSummaries) {
+      recomputeFilteredSummaries();
+    }
+    updateSortUI();
+    updateRowCountDisplay();
+    rebuildFilterPills();
+    renderAllSummaries();
+    updateFilteredLabels();
+    hidePooledRows();
+    viewport.scrollTop = 0;
+    heightsDirty = true;
+    scheduleRender();
+    if (oldData !== newData) oldData.dispose?.();
     notifyChange();
   }
 
@@ -2680,9 +2825,10 @@ export function createTable(
   // notifyChange on sort / filter / append.
   options?.onChange?.(getState());
 
-  return {
+  const api: TableEngine = {
     onBatchAppended,
     setStreamingDone,
+    replaceData,
     destroy,
     setFilter,
     clearFilter,
@@ -2694,4 +2840,5 @@ export function createTable(
     getFocusedDataRow: () => focusedDataRow,
     setFocusedDataRow,
   };
+  return api;
 }

@@ -30,6 +30,7 @@ import {
   type ColumnFilter,
   type ColumnType,
   createTable,
+  type ReplaceDataOptions,
   type TableData,
   type TableEngine,
   type TableEngineState,
@@ -278,6 +279,7 @@ export function SiftTable({
 }: SiftTableProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<TableEngine | null>(null);
+  const engineDivRef = useRef<HTMLDivElement | null>(null);
   const footerControlRef = useRef<HTMLDivElement | null>(null);
   const footerControlRootRef = useRef<Root | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
@@ -301,6 +303,18 @@ export function SiftTable({
     return footerControlRef.current;
   }, [hasFooterControl]);
 
+  const getEngineElement = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return null;
+    if (!engineDivRef.current) {
+      const engineDiv = document.createElement("div");
+      engineDiv.style.height = "100%";
+      container.appendChild(engineDiv);
+      engineDivRef.current = engineDiv;
+    }
+    return engineDivRef.current;
+  }, []);
+
   useEffect(() => {
     if (hasFooterControl) {
       getFooterControlElement();
@@ -310,6 +324,10 @@ export function SiftTable({
 
   useEffect(() => {
     return () => {
+      engineRef.current?.destroy();
+      engineRef.current = null;
+      engineDivRef.current?.remove();
+      engineDivRef.current = null;
       footerControlRootRef.current?.unmount();
       footerControlRootRef.current = null;
       footerControlRef.current = null;
@@ -325,29 +343,21 @@ export function SiftTable({
   useEffect(() => {
     if (!dataSource || !containerRef.current) return;
 
-    // Clean up previous engine
     if (engineRef.current) {
-      engineRef.current.destroy();
-      engineRef.current = null;
+      engineRef.current.replaceData(dataSource);
+      setStatus("ready");
+      return;
     }
 
-    // Create a dedicated div for the engine so it doesn't conflict with React's DOM
-    const engineDiv = document.createElement("div");
-    engineDiv.style.height = "100%";
-    containerRef.current.appendChild(engineDiv);
+    const engineDiv = getEngineElement();
+    if (!engineDiv) return;
 
     engineRef.current = createTable(engineDiv, dataSource, {
       onChange: stableOnChange,
       footerControl: getFooterControlElement(),
     });
     setStatus("ready");
-
-    return () => {
-      engineRef.current?.destroy();
-      engineRef.current = null;
-      engineDiv.remove();
-    };
-  }, [dataSource, stableOnChange, getFooterControlElement]);
+  }, [dataSource, stableOnChange, getFooterControlElement, getEngineElement]);
 
   // Load Arrow stream manifest chunks through the appendable WASM store.
   useEffect(() => {
@@ -355,24 +365,21 @@ export function SiftTable({
 
     const manifest = manifestSource;
     let cancelled = false;
-    const container = containerRef.current;
-    let engineDiv: HTMLDivElement | null = null;
     let disposePendingStore: (() => void) | null = null;
 
     function mountEngine(tableData: TableData) {
       if (engineRef.current) {
-        engineRef.current.destroy();
-        engineRef.current = null;
+        engineRef.current.replaceData(tableData);
+        disposePendingStore = null;
+        return;
       }
-      engineDiv?.remove();
-      engineDiv = document.createElement("div");
-      engineDiv.style.height = "100%";
-      container.appendChild(engineDiv);
-      disposePendingStore = null;
+      const engineDiv = getEngineElement();
+      if (!engineDiv) return;
       engineRef.current = createTable(engineDiv, tableData, {
         onChange: stableOnChange,
         footerControl: getFooterControlElement(),
       });
+      disposePendingStore = null;
     }
 
     async function fetchChunkBytes(chunk: ArrowStreamManifestChunk, index: number) {
@@ -458,11 +465,8 @@ export function SiftTable({
       cancelled = true;
       disposePendingStore?.();
       disposePendingStore = null;
-      engineRef.current?.destroy();
-      engineRef.current = null;
-      engineDiv?.remove();
     };
-  }, [manifestKey, columnOverrides, stableOnChange, getFooterControlElement]);
+  }, [manifestKey, columnOverrides, stableOnChange, getFooterControlElement, getEngineElement]);
 
   // Load from URL when `url` prop is provided.
   // Detects format via Content-Type header + magic byte fallback:
@@ -473,24 +477,21 @@ export function SiftTable({
 
     const sourceUrl = urlSource;
     let cancelled = false;
-    const container = containerRef.current;
-    let engineDiv: HTMLDivElement | null = null;
     let disposePendingStore: (() => void) | null = null;
 
     function mountEngine(tableData: TableData) {
       if (engineRef.current) {
-        engineRef.current.destroy();
-        engineRef.current = null;
+        engineRef.current.replaceData(tableData);
+        disposePendingStore = null;
+        return;
       }
-      engineDiv?.remove();
-      engineDiv = document.createElement("div");
-      engineDiv.style.height = "100%";
-      container.appendChild(engineDiv);
-      disposePendingStore = null;
+      const engineDiv = getEngineElement();
+      if (!engineDiv) return;
       engineRef.current = createTable(engineDiv, tableData, {
         onChange: stableOnChange,
         footerControl: getFooterControlElement(),
       });
+      disposePendingStore = null;
     }
 
     async function loadParquet(parquetBytes: Uint8Array) {
@@ -628,11 +629,15 @@ export function SiftTable({
       cancelled = true;
       disposePendingStore?.();
       disposePendingStore = null;
-      engineRef.current?.destroy();
-      engineRef.current = null;
-      engineDiv?.remove();
     };
-  }, [urlSource, typeOverrides, columnOverrides, stableOnChange, getFooterControlElement]);
+  }, [
+    urlSource,
+    typeOverrides,
+    columnOverrides,
+    stableOnChange,
+    getFooterControlElement,
+    getEngineElement,
+  ]);
 
   return (
     <div ref={containerRef} className={className} style={{ height: "100%", ...style }}>
@@ -673,4 +678,12 @@ export {
   predicateToSQL,
 } from "./filter-schema";
 // Re-export key types and utilities for consumer convenience
-export type { Column, ColumnFilter, ColumnType, TableData, TableEngine, TableEngineState };
+export type {
+  Column,
+  ColumnFilter,
+  ColumnType,
+  ReplaceDataOptions,
+  TableData,
+  TableEngine,
+  TableEngineState,
+};
