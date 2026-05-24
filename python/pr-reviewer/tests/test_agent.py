@@ -98,6 +98,32 @@ def test_run_review_uses_opencode_output(monkeypatch, tmp_path: Path) -> None:
     assert calls[0][2] == config
 
 
+def test_run_review_preserves_malformed_output_as_infra_uncertain(
+    monkeypatch, tmp_path: Path
+) -> None:
+    async def fake_run_opencode(
+        prompt: str, *, cwd: Path, config: ReviewerConfig
+    ) -> OpencodeRunResult:
+        return OpencodeRunResult(
+            text='{"verdict" "clear"}',
+            session_id="ses-review",
+            cost_usd=0.34,
+        )
+
+    monkeypatch.setattr(agent, "run_opencode", fake_run_opencode)
+    config = ReviewerConfig(model="amazon-bedrock/model", aws_region="us-west-2")
+
+    report = asyncio.run(run_review(make_workspace(tmp_path), config=config))
+
+    assert report.verdict == "infra_uncertain"
+    assert report.terminal_reason == "infra_uncertain"
+    assert "Reviewer returned malformed structured output:" in report.summary
+    assert report.findings == []
+    assert report.session_id == "ses-review"
+    assert report.cost_usd == 0.34
+    assert report.raw_result == '{"verdict" "clear"}'
+
+
 def test_run_doctor_uses_opencode(monkeypatch) -> None:
     calls = []
 

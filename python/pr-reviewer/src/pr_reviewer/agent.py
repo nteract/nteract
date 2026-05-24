@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 from dataclasses import dataclass
+from json import JSONDecodeError
 from pathlib import Path
 from typing import Any
 
@@ -126,6 +127,27 @@ def parse_structured_review_json(text: str) -> dict[str, Any]:
     return parsed
 
 
+def build_infra_uncertain_report(
+    *,
+    workspace: ReviewWorkspace,
+    config: ReviewerConfig,
+    run: OpencodeRunResult,
+    error: Exception,
+) -> ReviewReport:
+    return ReviewReport(
+        verdict="infra_uncertain",
+        terminal_reason="infra_uncertain",
+        summary=f"Reviewer returned malformed structured output: {error}",
+        findings=[],
+        reviewed_diff=workspace.reviewed_diff,
+        model=config.model,
+        session_id=run.session_id,
+        workspace=str(workspace.path),
+        cost_usd=run.cost_usd,
+        raw_result=run.text,
+    )
+
+
 async def run_opencode(
     prompt: str,
     *,
@@ -171,9 +193,17 @@ async def run_review(
 ) -> ReviewReport:
     prompt = f"{SYSTEM_PROMPT}\n\n{build_review_prompt(workspace, extra_prompt=extra_prompt)}"
     run = await run_opencode(prompt, cwd=workspace.path, config=config)
-    verdict, terminal_reason, summary, findings = normalize_structured_output(
-        parse_structured_review_json(run.text)
-    )
+    try:
+        verdict, terminal_reason, summary, findings = normalize_structured_output(
+            parse_structured_review_json(run.text)
+        )
+    except (JSONDecodeError, ValueError) as exc:
+        return build_infra_uncertain_report(
+            workspace=workspace,
+            config=config,
+            run=run,
+            error=exc,
+        )
     return ReviewReport(
         verdict=verdict,
         terminal_reason=terminal_reason,
