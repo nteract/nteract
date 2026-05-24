@@ -433,6 +433,23 @@ describe("Cloudflare Access identity", () => {
     assert.equal(identity.scope, "viewer");
   });
 
+  it("accepts Cloudflare Access CLI tokens from the cf-access-token header", async () => {
+    const { env, token } = await accessTokenFixture({ subject: "alice" });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?operator=smoke:owner&scope=owner", {
+        headers: {
+          "CF-Access-Token": token,
+        },
+      }),
+      env,
+    );
+
+    assert.equal(identity.actorLabel, "user:cloudflare-access:alice/smoke:owner");
+    assert.equal(identity.scope, "owner");
+    assert.equal(identity.metadata.transport, "access-token-header");
+  });
+
   it("rejects Access tokens with the wrong audience", async () => {
     const { env, token } = await accessTokenFixture({
       audience: "wrong-audience",

@@ -43,6 +43,7 @@ answers "what may this principal do in this notebook room?"
 The listener normalizes transport-specific inputs into a credential:
 
 - Access assertion header from Cloudflare Access.
+- Access token header from `cloudflared access token` / CLI clients.
 - Bearer token from `Authorization` for native clients.
 - Bearer token from a WebSocket subprotocol for browser clients that already
   hold a token.
