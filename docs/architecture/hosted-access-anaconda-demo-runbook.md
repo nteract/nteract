@@ -184,18 +184,22 @@ NOTEBOOK_CLOUD_ALLOWED_ORIGINS=https://notebooks.example.com,https://preview-not
 Rules:
 
 - Include the notebook application origin that renders `/n/:id`.
+- The Worker treats same-origin notebook pages as allowed by default and uses
+  this variable only to add more notebook application origins.
 - Include loopback origins only for local Wrangler development.
 - Do not include the renderer asset Worker origin.
 - Do not include sandboxed output iframe origins.
 - Do not use `*`.
-- Leaving the variable unset disables the origin gate and should be limited to
-  local development or throwaway prototype hosts.
+- Leaving the variable unset keeps the same-origin default only. Cookie-backed
+  Access WebSockets still reject missing or untrusted `Origin`.
 
-The Worker checks `Origin` before WebSocket auth when the allowlist is set. In
-that mode every WebSocket client, including CLI smoke and future native clients,
-must send an `Origin` that normalizes to one of these values. Browser
-Access-cookie sessions must come from an allowed origin so a malicious site
-cannot use an ambient Access cookie to open a private room socket.
+The Worker checks `Origin` before WebSocket auth when a browser sends one, when
+the allowlist is set, or when an ambient `CF_Authorization` cookie is present.
+When the allowlist is set, every WebSocket client, including CLI smoke and
+future native clients, must send an `Origin` that normalizes to the notebook
+application origin or one of the configured values. Browser Access-cookie
+sessions must come from an allowed origin so a malicious site cannot use an
+ambient Access cookie to open a private room socket.
 
 ## Deploy
 
@@ -302,10 +306,12 @@ The script sends:
 
 - `CF-Access-Token: <jwt>` so Cloudflare Access can admit the HTTP and
   WebSocket requests;
-- `Authorization: Bearer <jwt>` as a direct-Worker fallback;
 - `Origin: https://<notebook-host>` for the WebSocket origin allowlist;
-- `nteract-access-token.<base64url-jwt>` as the Worker-level WebSocket bearer
-  fallback when the hostname is not fronted by Access.
+
+It intentionally sends only one Worker-visible Access credential transport per
+request. The Worker also supports `Authorization: Bearer <jwt>` and
+`nteract-access-token.<base64url-jwt>` as separate deployment/client modes, but
+they must not be combined with `CF-Access-Token` on the same request.
 
 Expected JSON shape:
 

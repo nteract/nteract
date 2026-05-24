@@ -289,13 +289,12 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
 }
 
 function rejectUntrustedWebSocketOrigin(request: Request, env: Env): Response | null {
-  const allowedOrigins = allowedWebSocketOrigins(env);
-  if (!allowedOrigins) {
-    return null;
-  }
-
+  const allowedOrigins = allowedWebSocketOrigins(request, env);
   const origin = normalizedOrigin(request.headers.get("Origin"));
   if (!origin) {
+    if (!requiresWebSocketOrigin(request, env)) {
+      return null;
+    }
     return json({ error: "websocket origin is required" }, 403);
   }
   if (!allowedOrigins.has(origin)) {
@@ -304,18 +303,24 @@ function rejectUntrustedWebSocketOrigin(request: Request, env: Env): Response | 
   return null;
 }
 
-function allowedWebSocketOrigins(env: Env): Set<string> | null {
+function requiresWebSocketOrigin(request: Request, env: Env): boolean {
+  return Boolean(env.NOTEBOOK_CLOUD_ALLOWED_ORIGINS?.trim()) || hasCloudflareAccessCookie(request);
+}
+
+function allowedWebSocketOrigins(request: Request, env: Env): Set<string> {
+  const origins = new Set<string>([new URL(request.url).origin]);
   const raw = env.NOTEBOOK_CLOUD_ALLOWED_ORIGINS?.trim();
   if (!raw) {
-    return null;
+    return origins;
   }
 
-  return new Set(
-    raw
-      .split(/[\s,]+/)
-      .map((entry) => normalizedOrigin(entry))
-      .filter((entry): entry is string => Boolean(entry)),
-  );
+  for (const origin of raw
+    .split(/[\s,]+/)
+    .map((entry) => normalizedOrigin(entry))
+    .filter((entry): entry is string => Boolean(entry))) {
+    origins.add(origin);
+  }
+  return origins;
 }
 
 function normalizedOrigin(value: string | null): string | null {
@@ -327,6 +332,15 @@ function normalizedOrigin(value: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+function hasCloudflareAccessCookie(request: Request): boolean {
+  const cookie = request.headers.get("Cookie");
+  if (!cookie) {
+    return false;
+  }
+
+  return cookie.split(";").some((part) => part.trim().split("=")[0] === "CF_Authorization");
 }
 
 async function routeSnapshot(

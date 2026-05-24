@@ -447,6 +447,7 @@ describe("Cloudflare Access identity", () => {
 
     assert.equal(identity.actorLabel, "user:cloudflare-access:alice/smoke:owner");
     assert.equal(identity.scope, "owner");
+    assert.equal(identity.metadata.transport, "access-token-header");
   });
 
   it("rejects Access tokens with the wrong audience", async () => {

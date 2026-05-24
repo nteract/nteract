@@ -796,6 +796,44 @@ describe("Worker artifact routes", () => {
     );
   });
 
+  it("allows same-origin cookie-backed Access WebSocket upgrades by default", async () => {
+    const { env: accessEnv, token } = await accessTokenFixture({ subject: "alice" });
+    let roomFetches = 0;
+    const env = fakeEnv({
+      ...accessEnv,
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async () => {
+            roomFetches += 1;
+            return new Response("room ok");
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedNotebook(env, "cookie-origin-demo");
+    seedAcl(env, {
+      notebookId: "cookie-origin-demo",
+      subject: "user:cloudflare-access:alice",
+      scope: "owner",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/cookie-origin-demo/sync?operator=browser:tab&scope=owner", {
+        headers: {
+          Cookie: `CF_Authorization=${token}`,
+          Origin: "https://cloud.test",
+          Upgrade: "websocket",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(roomFetches, 1);
+  });
+
   it("allows configured browser WebSocket origins", async () => {
     let roomFetches = 0;
     const env = fakeEnv({
@@ -850,6 +888,71 @@ describe("Worker artifact routes", () => {
     const response = await worker.fetch(
       new Request("https://cloud.test/n/acl-demo/sync?viewer_session=blocked", {
         headers: {
+          Origin: "https://evil.example",
+          Upgrade: "websocket",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { error: "websocket origin is not allowed" });
+    assert.equal(roomFetches, 0);
+  });
+
+  it("rejects cookie-backed WebSocket upgrades with no Origin before room dispatch", async () => {
+    const { env: accessEnv, token } = await accessTokenFixture({ subject: "alice" });
+    let roomFetches = 0;
+    const env = fakeEnv({
+      ...accessEnv,
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async () => {
+            roomFetches += 1;
+            return new Response("unexpected room fetch", { status: 500 });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/cookie-origin-demo/sync?operator=browser:tab&scope=owner", {
+        headers: {
+          Cookie: `CF_Authorization=${token}`,
+          Upgrade: "websocket",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { error: "websocket origin is required" });
+    assert.equal(roomFetches, 0);
+  });
+
+  it("rejects cookie-backed WebSocket upgrades from untrusted origins by default", async () => {
+    const { env: accessEnv, token } = await accessTokenFixture({ subject: "alice" });
+    let roomFetches = 0;
+    const env = fakeEnv({
+      ...accessEnv,
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async () => {
+            roomFetches += 1;
+            return new Response("unexpected room fetch", { status: 500 });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/cookie-origin-demo/sync?operator=browser:tab&scope=owner", {
+        headers: {
+          Cookie: `CF_Authorization=${token}`,
           Origin: "https://evil.example",
           Upgrade: "websocket",
         },

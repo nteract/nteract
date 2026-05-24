@@ -26,7 +26,6 @@ export function accessEmailFromJwt(token) {
 
 export function accessAuthHeaders(token, { operator, scope, contentType } = {}) {
   const headers = {
-    Authorization: `Bearer ${token}`,
     "CF-Access-Token": token,
   };
   if (operator) {
@@ -39,6 +38,30 @@ export function accessAuthHeaders(token, { operator, scope, contentType } = {}) 
     headers["Content-Type"] = contentType;
   }
   return headers;
+}
+
+export function webSocketUpgradeRequestHeaders(
+  target,
+  { key, origin, accessToken, protocols = [] } = {},
+) {
+  const requestHeaders = [
+    `GET ${target.pathname}${target.search} HTTP/1.1`,
+    `Host: ${target.host}`,
+    "Upgrade: websocket",
+    "Connection: Upgrade",
+    `Sec-WebSocket-Key: ${key}`,
+    "Sec-WebSocket-Version: 13",
+  ];
+  if (origin) {
+    requestHeaders.push(`Origin: ${origin}`);
+  }
+  if (accessToken) {
+    requestHeaders.push(`CF-Access-Token: ${accessToken}`);
+  }
+  if (protocols.length > 0) {
+    requestHeaders.push(`Sec-WebSocket-Protocol: ${protocols.join(", ")}`);
+  }
+  return requestHeaders;
 }
 
 export function accessAuthProtocols(token) {

@@ -44,6 +44,7 @@ export interface AuthenticatedConnectionMetadata {
     | "dev-token-header"
     | "dev-token-subprotocol"
     | "access-assertion"
+    | "access-token-header"
     | "access-bearer"
     | "access-cookie"
     | "access-cookie-assertion"
@@ -494,6 +495,7 @@ function isMetadataTransport(value: string): value is AuthenticatedConnectionMet
     value === "dev-token-header" ||
     value === "dev-token-subprotocol" ||
     value === "access-assertion" ||
+    value === "access-token-header" ||
     value === "access-bearer" ||
     value === "access-cookie" ||
     value === "access-cookie-assertion" ||
@@ -610,7 +612,7 @@ function accessCredentialFromRequest(request: Request): AccessCredential | undef
 
   const accessToken = request.headers.get("cf-access-token")?.trim() || undefined;
   if (accessToken) {
-    candidates.push({ token: accessToken });
+    candidates.push({ token: accessToken, transport: "access-token-header" });
   }
 
   const bearerToken = bearerTokenFromAuthorization(request.headers.get("authorization"));

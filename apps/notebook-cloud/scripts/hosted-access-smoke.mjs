@@ -8,10 +8,10 @@ import { FrameType } from "runtimed";
 
 import {
   accessAuthHeaders,
-  accessAuthProtocols,
   accessEmailFromJwt,
   accessPrincipalFromJwt,
   assertHostedAccessSmokeEnv,
+  webSocketUpgradeRequestHeaders,
 } from "./hosted-access-smoke-env.mjs";
 
 const DEFAULT_BASE_URL = "https://nteract-notebook-cloud.rgbkrk.workers.dev";
@@ -305,7 +305,6 @@ async function connectAccess(notebookId, token, operator, scope) {
   const socket = await openWebSocket(url, {
     accessToken: token,
     origin: smokeOrigin,
-    protocols: accessAuthProtocols(token),
   });
   const client = await clientForSocket(socket, safeWebSocketUrl(url));
   const ready = await client.nextFrame(
@@ -450,22 +449,12 @@ async function openWebSocket(url, { accessToken, origin, protocols = [] } = {}) 
   const target = new URL(url);
   const key = randomBytes(16).toString("base64");
   const socket = await openTcpSocket(target);
-  const requestHeaders = [
-    `GET ${target.pathname}${target.search} HTTP/1.1`,
-    `Host: ${target.host}`,
-    "Upgrade: websocket",
-    "Connection: Upgrade",
-    `Sec-WebSocket-Key: ${key}`,
-    "Sec-WebSocket-Version: 13",
-    `Origin: ${origin}`,
-  ];
-  if (accessToken) {
-    requestHeaders.push(`CF-Access-Token: ${accessToken}`);
-    requestHeaders.push(`Authorization: Bearer ${accessToken}`);
-  }
-  if (protocols.length > 0) {
-    requestHeaders.push(`Sec-WebSocket-Protocol: ${protocols.join(", ")}`);
-  }
+  const requestHeaders = webSocketUpgradeRequestHeaders(target, {
+    key,
+    origin,
+    accessToken,
+    protocols,
+  });
   socket.write(`${requestHeaders.join("\r\n")}\r\n\r\n`);
 
   const { headers, leftover } = await readUpgradeResponse(socket);
