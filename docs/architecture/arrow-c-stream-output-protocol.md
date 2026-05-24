@@ -33,15 +33,17 @@ Neighbors:
 The launcher should consider any object with callable `__arrow_c_stream__` to
 be a table-like rich output candidate.
 
-The default path is:
+The preferred public pyarrow path is:
 
 ```python
 reader = pyarrow.RecordBatchReader.from_stream(obj)
 ```
 
 or, on pyarrow versions without that public helper, the narrow PyCapsule import
-fallback. pandas, polars, pyarrow tables/readers, narwhals wrappers, DuckDB,
-DataFusion, cuDF, and future producers can then share one formatter path.
+fallback. Both paths are part of the v1 launcher behavior; the fallback is an
+implementation compatibility bridge, not a separate producer contract. pandas,
+polars, pyarrow tables/readers, narwhals wrappers, DuckDB, DataFusion, cuDF,
+and future producers can then share one formatter path.
 
 Producer-specific type registrations are not the default table path. They are
 allowed only when the output needs domain semantics beyond generic Arrow, such
@@ -117,6 +119,20 @@ Summary hints in manifests should be cheap and explicit:
 
 If a future first-paint path emits only a head sample, the manifest must say
 that honestly rather than pretending the table is complete.
+
+## Decision 6: Vendor MIME is the incubation boundary
+
+The upstreamable part of this ADR is the producer contract and transport split:
+
+1. Producers expose `__arrow_c_stream__`.
+2. The kernel imports that stream once.
+3. Notebook transport stores Arrow IPC stream bytes plus manifest/ref metadata.
+4. Text summaries remain advisory sibling MIME values.
+
+The current nteract MIME names and manifest fields are an incubation vehicle.
+The manifest itself is versioned by the blob-ref/chunk-manifest protocol; the
+Arrow producer contract should evolve additively unless an upstream proposal
+chooses a new transport shape.
 
 ## Consequences
 

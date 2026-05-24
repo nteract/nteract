@@ -12,7 +12,7 @@ BLOB_REF_MIME = "application/vnd.nteract.blob-ref+json"
 class BlobRef:
     """A content-addressed reference to a blob in the daemon's blob store.
 
-    ``hash`` is the persistent identity (e.g. ``"sha256:abc123..."``).
+    ``hash`` is the persistent identity as lowercase SHA-256 hex.
     ``size`` is the blob's byte length as reported by the runtime agent.
 
     No URL is stored. The frontend derives the blob-server URL from the hash
