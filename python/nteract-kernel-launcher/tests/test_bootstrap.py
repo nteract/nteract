@@ -540,10 +540,10 @@ def test_plotly_entrypoint_imports_lazily_configure_plotly_io(monkeypatch, entry
 
 
 def test_real_plotly_express_import_lazily_configures_plotly_io(monkeypatch):
-    pytest.importorskip("plotly.express")
-
     from nteract_kernel_launcher import _bootstrap
 
+    _isolate_renderer_import_hook(monkeypatch, _bootstrap)
+    pytest.importorskip("plotly.express")
     _isolate_renderer_import_hook(monkeypatch, _bootstrap)
     _bootstrap._enable_third_party_renderers()
 
