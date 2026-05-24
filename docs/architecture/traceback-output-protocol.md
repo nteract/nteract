@@ -22,6 +22,12 @@ Neighbors:
 
 - `python/nteract-kernel-launcher/nteract_kernel_launcher/_traceback.py` -
   current producer.
+- `python/nteract-kernel-launcher/nteract_kernel_launcher/_redact.py` -
+  producer-side environment value scrubber for traceback payloads.
+- `crates/runtimed/src/output_redaction.rs` - daemon-side durable output
+  redaction before RuntimeStateDoc and blob-store writes.
+- `docs/superpowers/specs/2026-05-24-runtime-redaction-refresh-design.md` -
+  follow-up design for runtime-created redaction candidates.
 - `docs/architecture/execution-pipeline.md` - output ordering and runtime
   manifest durability.
 - `docs/architecture/frontend-sync-bridge.md` - output rendering boundaries.
@@ -146,10 +152,20 @@ sensitive output:
   useful secrets;
 - redaction can be disabled explicitly for debugging.
 
-Redaction is best-effort traceback output hygiene, not a security boundary.
-Kernel code already has access to the user's process environment. Other output
-channels need their own producer-side policy if they should get the same
-scrubbing before entering runtime state or blob storage.
+Traceback redaction is an early producer-side hygiene layer, not the durable
+storage boundary. Kernel code already has access to the user's process
+environment, and the launcher can only observe the Python process. The daemon is
+the final durable-output redaction authority: before RuntimeStateDoc or blob
+storage writes, it redacts eligible launch-time environment values from stream,
+error, display, and execute-result text payloads while preserving binary MIME
+skips and the explicit debug setting that disables environment-value redaction.
+
+That split is intentional. Producer-side traceback redaction reduces exposure
+before rich traceback payloads leave Python; daemon-side redaction gives all
+kernels the same persistence boundary. Runtime-created secrets, such as values
+loaded later by dotenv or SDK credential refreshers, remain best-effort unless a
+producer reports them to the daemon through the follow-up runtime candidate
+refresh design.
 
 ## Decision 6: Vendor MIME is the incubation boundary
 
@@ -178,5 +194,5 @@ part is the payload contract and failure behavior:
 2. Which `source_ref.kind` values should be treated as well-known across
    scripts, magics, generated code, and non-Python kernels.
 3. Which redaction controls belong in IPython, ipykernel, or frontend policy,
-   and whether the same environment-value scrubbing should apply to stream
-   outputs before they enter runtime state.
+   given that nteract now has both Python producer-side traceback hygiene and a
+   daemon-side durable-output redaction boundary.
