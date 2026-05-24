@@ -199,6 +199,42 @@ users only receive that scope when the notebook has an explicit public
 `notebook_acl` row. Production hosts should move output blobs to signed URLs or
 a dedicated output origin before accepting private notebook data at scale.
 
+## ACL management
+
+The prototype exposes a small owner-only ACL API:
+
+```text
+GET    /api/n/{notebookId}/acl
+POST   /api/n/{notebookId}/acl
+DELETE /api/n/{notebookId}/acl
+```
+
+`GET` returns the current flat D1 ACL rows. `POST` grants one row and `DELETE`
+revokes one row using this JSON body:
+
+```json
+{
+  "subject_kind": "principal",
+  "subject": "user:cloudflare-access:alice",
+  "scope": "editor"
+}
+```
+
+Public read is explicit:
+
+```json
+{
+  "subject_kind": "public",
+  "subject": "anonymous",
+  "scope": "viewer"
+}
+```
+
+Public rows may only grant `viewer`, and principal rows cannot target `system`
+or anonymous principals. Deleting the final owner row is rejected. Group/org
+expansion, owner transfer workflow, audit events, and Zanzibar/Authzed-style
+relationship evaluation remain outside this prototype API.
+
 ## Storage shape
 
 Bindings in `wrangler.toml`:

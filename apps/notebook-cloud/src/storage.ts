@@ -46,6 +46,14 @@ export interface NotebookAclRow {
   created_by_actor_label: string;
 }
 
+export interface NotebookAclInput {
+  notebookId: string;
+  subjectKind: NotebookAclRow["subject_kind"];
+  subject: string;
+  scope: NotebookAclRow["scope"];
+  actorLabel: string;
+}
+
 const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS notebooks (
     id TEXT PRIMARY KEY,
@@ -271,6 +279,65 @@ export async function getPublicNotebookAclRows(
     .bind(notebookId)
     .all<NotebookAclRow>();
   return rows.results ?? [];
+}
+
+export async function getNotebookAclRows(env: Env, notebookId: string): Promise<NotebookAclRow[]> {
+  if (!env.DB) {
+    return [];
+  }
+
+  await ensureCatalogSchema(env);
+  const rows = await env.DB.prepare(
+    `SELECT notebook_id,
+            subject_kind,
+            subject,
+            scope,
+            created_at,
+            updated_at,
+            created_by_actor_label
+       FROM notebook_acl
+       WHERE notebook_id = ?
+       ORDER BY subject_kind, subject, scope`,
+  )
+    .bind(notebookId)
+    .all<NotebookAclRow>();
+  return rows.results ?? [];
+}
+
+export async function grantNotebookAclRow(env: Env, row: NotebookAclInput): Promise<void> {
+  if (!env.DB) {
+    return;
+  }
+
+  await ensureCatalogSchema(env);
+  await notebookAclInsert(env, {
+    notebookId: row.notebookId,
+    subjectKind: row.subjectKind,
+    subject: row.subject,
+    scope: row.scope,
+    actorLabel: row.actorLabel,
+    timestamp: new Date().toISOString(),
+  }).run();
+}
+
+export async function revokeNotebookAclRow(
+  env: Env,
+  row: Omit<NotebookAclInput, "actorLabel">,
+): Promise<void> {
+  if (!env.DB) {
+    return;
+  }
+
+  await ensureCatalogSchema(env);
+  await env.DB.prepare(
+    `DELETE FROM notebook_acl
+       WHERE notebook_id = ?
+         AND subject_kind = ?
+         AND subject = ?
+         AND scope = ?`,
+  )
+    .bind(row.notebookId, row.subjectKind, row.subject, row.scope)
+    .run();
 }
 
 export async function createNotebookWithOwnerAcl(

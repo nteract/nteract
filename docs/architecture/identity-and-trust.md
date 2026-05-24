@@ -77,12 +77,9 @@ What this changes from the older framing: rooms are no longer implicitly scoped 
 
 ### ACL mechanics
 
-The minimum v1 ACL is a flat mapping from subject to scope. The hosted
-Cloudflare shape, including D1 rows, public-read entries, and scope derivation,
-is drafted in `docs/architecture/hosted-room-authorization.md`. The protocol
-shape locked here is: rooms have ACLs, ACLs reference principals or explicit
-public-read subjects, principals authenticate against the host's configured
-IdPs, and the room ACL is the source of truth for the connection scope.
+The minimum v1 ACL is a flat set of rows keyed by `(room, subject_kind, subject, scope)`. The hosted Worker prototype persists those rows in D1 as `notebook_acl`. Owner-scoped HTTP requests can inspect, grant, and revoke individual rows; anonymous public read is represented as a normal row with `subject_kind = public`, `subject = anonymous`, and `scope = viewer`. Public rows cannot grant write scopes, and the prototype rejects removal of the final owner row.
+
+The protocol shape locked here is: rooms have ACLs, ACLs reference principals or explicit public-read subjects, principals authenticate against the host's configured IdPs, and the room ACL is the source of truth for the connection scope. Inheritance from a containing org, group expansion, owner-transfer workflow, audit events, and Zanzibar/Authzed-style relationship evaluation are future layers on top of the flat ACL.
 
 ## Decision 3: Authentication at connect, scope checks per frame
 
@@ -266,7 +263,7 @@ Scope is enforced server-side at three points, each with a clear boundary:
 
 1. **Frame ingress** (in `peer_notebook_sync.rs::handle_notebook_doc_frame` and equivalents): the validator already runs here. Extend it to consult `AuthenticatedConnection.scope` and reject frames that exceed the scope: viewer with non-empty changes on any doc, runtime_peer sending changes to `NotebookDoc`. Editor writes pass at the frame layer for both docs in the local same-UID daemon. Hosted multi-user rooms must additionally validate that editor `RuntimeStateDoc` changes touch only `doc.comms/*/state/*` before enabling untrusted editor clients.
 2. **Request dispatch**: each `NotebookRequest` variant declares its minimum required scope via an annotation or registry lookup. The request handler rejects with a typed `Unauthorized` response before any side effect. New scope-gated requests declare their requirement at the definition site; no scattered `if scope == ...` checks elsewhere.
-3. **ACL mutations** are owner-only. The room-host enforces this at the request-dispatch layer; no in-band ACL change is honored from a non-owner connection.
+3. **ACL mutations** are owner-only. The hosted Worker prototype exposes owner-only HTTP ACL management for individual D1 rows. No in-band Automerge ACL change is honored from a non-owner connection.
 
 ### Adding new scope-gated functionality
 
@@ -332,7 +329,7 @@ These follow-up ADRs and design decisions are tracked but not decided here:
 6. **Federation.** A notebook host trusting another notebook host's identity claims (e.g., JupyterHub Anaconda interop). Not v1.
 7. **`runtime_peer` connection topology.** The hosted prototype now supports direct `runtime_peer` `RuntimeStateDoc` ingress into the room. Still open: whether the production kernel sidecar connects to the room directly with its own `runtime_peer` scope credential, or whether a separate runtime-coordination protocol relays writes. Tied to the future remote-runtime work.
 8. **Deployment topology.** How clients reach rooms (browser-direct WebSocket, local-daemon proxy, native client), where kernels run, TLS/CORS, credential keyring placement. Drafted in `docs/architecture/deployment-topology.md`.
-9. **ACL mechanics beyond the Cloudflare v1 shape.** `docs/architecture/hosted-room-authorization.md` defines the first D1-backed ACL shape. Still open: owner transfer UX, group/org expansion, inherited ACLs, and product policy for anonymous public presence.
+9. **ACL mechanics beyond the Cloudflare v1 shape.** The hosted prototype covers flat D1 rows, public-read rows, and owner-only row mutation. Still open: owner transfer UX, group/org expansion, inherited ACLs, audit event retention, Zanzibar/Authzed-style evaluation, and product policy for anonymous public presence.
 10. **Signed-change authorship across publish.** When Automerge gains signed changes (keyhive direction), publish flows could carry historical authorship across identity spaces with cryptographic verification. Until then, publish produces a fresh document in the destination space (see Decision 6).
 11. **Bearer-token replay mitigation.** DPoP / proof-of-possession tokens, mTLS for system-to-system, short token lifetimes. v1 inherits the bearer-token threat model; tightening it is future work.
 12. **Lower-cost actor-label validator.** Replace the v1 clone-preview validator with parsing of `automerge::sync::Message.changes` chunks (V1 and V2) before merge to reject changes whose actor's principal doesn't match the connection's authenticated principal. Deferred until we land a patch on our Automerge fork as part of the room-host crate extraction. Drafted in `docs/architecture/automerge-fork-patches.md`. Pairs with the filters work above for full attribution integrity once both are in.

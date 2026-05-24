@@ -20,6 +20,7 @@ import { initializeRuntimedWasm } from "../src/runtimed-wasm.ts";
 import {
   blobKey,
   createNotebookWithOwnerAcl,
+  getNotebookAclRows,
   getNotebookAclRowsForPrincipal,
   renderKey,
   snapshotKey,
@@ -424,6 +425,171 @@ describe("Worker artifact routes", () => {
     assert.equal(catalog.notebook.id, "access-demo");
   });
 
+  it("lets owners inspect and grant principal ACL rows", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "acl-demo");
+    seedAcl(env, {
+      notebookId: "acl-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+
+    const before = await aclRequest(env, "GET", undefined);
+    assert.equal(before.status, 200);
+    const beforeBody = (await before.json()) as { notebook_id: string; acl: NotebookAclRow[] };
+    assert.equal(beforeBody.notebook_id, "acl-demo");
+    assert.deepEqual(
+      beforeBody.acl.map((row) => [row.subject_kind, row.subject, row.scope]),
+      [["principal", "user:dev:alice", "owner"]],
+    );
+
+    const grant = await aclRequest(env, "POST", {
+      subject_kind: "principal",
+      subject: "user:dev:bob",
+      scope: "editor",
+    });
+    assert.equal(grant.status, 201);
+    assert.deepEqual(
+      (await getNotebookAclRowsForPrincipal(env, "acl-demo", "user:dev:bob")).map(
+        (row) => row.scope,
+      ),
+      ["editor"],
+    );
+
+    const bobCatalog = await worker.fetch(
+      new Request("http://localhost/api/n/acl-demo?user=bob&operator=desktop:b&scope=editor"),
+      env,
+      fakeContext(),
+    );
+    assert.equal(bobCatalog.status, 200);
+  });
+
+  it("lets owners grant and revoke explicit public viewer ACL rows", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "public-acl-demo");
+    seedAcl(env, {
+      notebookId: "public-acl-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+
+    const hidden = await worker.fetch(
+      new Request("http://localhost/api/n/public-acl-demo?viewer_session=anon-a"),
+      env,
+      fakeContext(),
+    );
+    assert.equal(hidden.status, 404);
+
+    const grant = await aclRequest(
+      env,
+      "POST",
+      {
+        subject_kind: "public",
+        subject: "anonymous",
+        scope: "viewer",
+      },
+      "public-acl-demo",
+    );
+    assert.equal(grant.status, 201);
+
+    const visible = await worker.fetch(
+      new Request("http://localhost/api/n/public-acl-demo?viewer_session=anon-a"),
+      env,
+      fakeContext(),
+    );
+    assert.equal(visible.status, 200);
+
+    const revoke = await aclRequest(
+      env,
+      "DELETE",
+      {
+        subject_kind: "public",
+        subject: "anonymous",
+        scope: "viewer",
+      },
+      "public-acl-demo",
+    );
+    assert.equal(revoke.status, 200);
+
+    const hiddenAgain = await worker.fetch(
+      new Request("http://localhost/api/n/public-acl-demo?viewer_session=anon-a"),
+      env,
+      fakeContext(),
+    );
+    assert.equal(hiddenAgain.status, 404);
+  });
+
+  it("keeps ACL management owner-only and public grants viewer-only", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "acl-private-demo");
+    seedAcl(env, {
+      notebookId: "acl-private-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    seedAcl(env, {
+      notebookId: "acl-private-demo",
+      subject: "user:dev:bob",
+      scope: "editor",
+    });
+
+    const bobGrant = await aclRequest(
+      env,
+      "POST",
+      {
+        subject_kind: "principal",
+        subject: "user:dev:mallory",
+        scope: "viewer",
+      },
+      "acl-private-demo",
+      {
+        "X-User": "bob",
+        "X-Scope": "editor",
+      },
+    );
+    assert.equal(bobGrant.status, 403);
+
+    const publicEditor = await aclRequest(
+      env,
+      "POST",
+      {
+        subject_kind: "public",
+        subject: "anonymous",
+        scope: "editor",
+      },
+      "acl-private-demo",
+    );
+    assert.equal(publicEditor.status, 400);
+    assert.deepEqual(await publicEditor.json(), {
+      error: "public ACL rows may only grant viewer scope",
+    });
+  });
+
+  it("rejects deleting the last owner ACL row", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "last-owner-demo");
+    seedAcl(env, {
+      notebookId: "last-owner-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+
+    const response = await aclRequest(
+      env,
+      "DELETE",
+      {
+        subject_kind: "principal",
+        subject: "user:dev:alice",
+        scope: "owner",
+      },
+      "last-owner-demo",
+    );
+
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), { error: "cannot remove the last owner ACL row" });
+    assert.equal((await getNotebookAclRows(env, "last-owner-demo")).length, 1);
+  });
+
   it("does not grant owner ACL to a principal that loses notebook creation", async () => {
     const env = fakeEnv();
     const alice = authenticateDevRequest(
@@ -728,6 +894,34 @@ async function ownerPut(
   });
 }
 
+async function aclRequest(
+  env: FakeEnv,
+  method: "GET" | "POST" | "DELETE",
+  body: Record<string, unknown> | undefined,
+  notebookId = "acl-demo",
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  const init: RequestInit = {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      "X-User": "alice",
+      "X-Operator": "desktop:test",
+      "X-Scope": "owner",
+      ...headers,
+    },
+  };
+  if (body !== undefined) {
+    init.body = JSON.stringify(body);
+  }
+
+  return worker.fetch(
+    new Request(new URL(`/api/n/${notebookId}/acl`, "http://localhost"), init),
+    env,
+    fakeContext(),
+  );
+}
+
 async function scopedPut(
   env: FakeEnv,
   pathname: string,
@@ -928,6 +1122,23 @@ class FakeD1Statement implements D1PreparedStatement {
         updated_at: updatedAt,
         created_by_actor_label: actorLabel,
       });
+    } else if (this.query.includes("DELETE FROM notebook_acl")) {
+      const [notebookId, subjectKind, subject, scope] = this.values as [
+        string,
+        NotebookAclRow["subject_kind"],
+        string,
+        NotebookAclRow["scope"],
+      ];
+      const retained = this.db.acl.filter(
+        (row) =>
+          !(
+            row.notebook_id === notebookId &&
+            row.subject_kind === subjectKind &&
+            row.subject === subject &&
+            row.scope === scope
+          ),
+      );
+      this.db.acl.splice(0, this.db.acl.length, ...retained);
     } else if (this.query.includes("INSERT INTO notebooks")) {
       const [id, ownerPrincipal, createdAtOrUpdatedAt, maybeUpdatedAt] = this.values as [
         string,
@@ -1030,6 +1241,12 @@ class FakeD1Statement implements D1PreparedStatement {
   async all<T = unknown>(): Promise<D1Result<T>> {
     if (this.query.includes("FROM notebook_acl")) {
       const notebookId = this.values[0] as string;
+      if (
+        !this.query.includes("subject_kind = 'principal'") &&
+        !this.query.includes("subject_kind = 'public'")
+      ) {
+        return okResult(this.db.acl.filter((row) => row.notebook_id === notebookId) as T[]);
+      }
       if (this.query.includes("subject_kind = 'principal'")) {
         const principal = this.values[1] as string;
         return okResult(
