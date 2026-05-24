@@ -159,6 +159,28 @@ describe("SiftTable", () => {
     expect(container.innerHTML).toBe("");
   });
 
+  it("reuses the mounted engine when table data props change", async () => {
+    const firstData = makeTableData([[1, "Alice", 95]]);
+    const firstDispose = vi.fn();
+    firstData.dispose = firstDispose;
+    const secondData = makeTableData([
+      [2, "Bob", 88],
+      [3, "Carol", 91],
+    ]);
+    const onChange = vi.fn();
+
+    const { container, rerender } = render(<SiftTable data={firstData} onChange={onChange} />);
+    await vi.advanceTimersByTimeAsync(0);
+    const viewport = container.querySelector(".sift-viewport");
+
+    rerender(<SiftTable data={secondData} onChange={onChange} />);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(container.querySelector(".sift-viewport")).toBe(viewport);
+    expect(firstDispose).toHaveBeenCalledTimes(1);
+    expect(onChange.mock.calls.at(-1)?.[0]).toMatchObject({ totalCount: 2 });
+  });
+
   it("renders container for url prop without loading flash", async () => {
     // Mock fetch to never resolve (simulating slow load)
     vi.stubGlobal("fetch", () => new Promise(() => {}));
