@@ -5,7 +5,11 @@
 
 ## Context
 
-`NotebookDoc` and `RuntimeStateDoc` sync between peers via typed-frame v4 over a Unix socket today, with same-UID trust covering attribution. We want to extend the same protocol to hosted multi-user rooms (Anaconda hosted, JupyterHub-spawned, future deployments) without forking the wire format, and we want every change in the document to carry verifiable authorship.
+`NotebookDoc` and `RuntimeStateDoc` sync between peers via typed-frame v4 over
+a Unix socket today, with same-UID trust covering attribution. We want to
+extend the same protocol to hosted multi-user rooms (Anaconda hosted,
+JupyterHub-backed compute, future deployments) without forking the wire format,
+and we want every change in the document to carry verifiable authorship.
 
 The identity design is highly guided by these projects:
 
@@ -42,13 +46,19 @@ This also lends us to better audit logging.
 
 ## Decision 2: Rooms are entities; access is a per-room ACL
 
-A notebook room is an entity in its own right, identified by a host-derived URI:
+A notebook room is an entity in its own right, addressed by a room locator:
 
-- `local-daemon:<uuid>` or `local-daemon:<path>` for rooms served by the local daemon.
+- `local-daemon:<uuid>` or `local-daemon:<path>` for rooms served by the local
+  daemon.
 - `runtimed.com/n/<uuid>` (or similar) for Anaconda-hosted rooms.
-- `hub.example.com/<user>/n/<uuid>` for JupyterHub-spawned rooms.
+- `hub.example.com/<user>/n/<uuid>` only when that Hub deployment explicitly
+  runs the room host. A JupyterHub runtime sidecar attached to an
+  Anaconda-hosted room is not encoded in the room locator.
 
-The URI says *where the room lives*, not *who can access it*. Access is governed by a **per-room ACL** that maps principals to scopes.
+The locator says *where to reach the room host*, not *who can access it*, where
+compute runs, or which blob store backs output bytes. The room host is the live
+document authority for `NotebookDoc` and `RuntimeStateDoc`. Access is governed
+by a **per-room ACL** that maps principals to scopes.
 
 ```
 room: runtimed.com/n/9f3a...
@@ -62,7 +72,8 @@ The ACL can reference principals from any identity provider the host is configur
 
 Three properties fall out:
 
-1. **Room URIs are stable across ownership changes.** Changing the owner principal mutates the ACL, not the URI. Existing links keep working.
+1. **Room locators are stable across ownership changes.** Changing the owner
+   principal mutates the ACL, not the locator. Existing links keep working.
 2. **Rooms can mix principals from multiple IdPs** when the host is configured to validate more than one. Cross-IdP collaboration (e.g., an Anaconda-hosted room shared with a JupyterHub user) is a deployment decision, not a protocol invention.
 3. **Future organizational principals** (`org:acme:engineering`, group memberships, etc.) slot into the ACL as additional principal kinds without changing the wire or the validator.
 

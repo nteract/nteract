@@ -56,6 +56,18 @@ The existing `notebooks.owner_principal` column becomes catalog metadata. It is
 useful for listing and provenance, but it is not the authorization source of
 truth. The owner permission is an ACL row with `scope = 'owner'`.
 
+This keeps the hosted authority split explicit:
+
+- The room URL addresses a room host; it does not grant access.
+- The Durable Object is document authority; it materializes and validates live
+  `NotebookDoc` and `RuntimeStateDoc` state for the room.
+- The ACL is access authority; it decides whether a validated principal may
+  connect as `viewer`, `editor`, `runtime_peer`, or `owner`.
+- JupyterHub and other compute providers authorize their own compute resources,
+  then attach as scoped runtime peers when the room ACL permits it.
+- Blob uploads are subordinate to the connection scope and the later document
+  path that references the uploaded hash.
+
 ## Decision 2: ACL rows are explicit D1 records
 
 The next schema migration adds `notebook_acl`:
@@ -275,6 +287,9 @@ bridge, or JupyterHub sidecar. A runtime peer:
 
 This keeps kernel attachment separate from document editing. A hosted room can
 exist without a runtime peer and still render/persist notebook state.
+It also keeps JupyterHub out of the document-authority path for the preferred
+Anaconda-hosted topology: Hub grants access to compute, while the room ACL
+grants `runtime_peer` access to the room.
 
 ## Decision 9: Blob and plugin origins stay separate
 
