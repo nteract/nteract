@@ -177,6 +177,29 @@ for deployments that cannot expose a stable Hub-backed runtime principal to the
 room ACL. In both paths, the nteract room sees a validated principal requesting
 `runtime_peer`, and the room ACL decides whether that connection is allowed.
 
+### Runtime attachment topologies
+
+Hosted v1:
+
+```text
+browser/desktop/agent -> Cloudflare DO room host <- JupyterHub runtime_peer sidecar
+```
+
+Daemon-mediated / SSH future:
+
+```text
+local client/daemon -> room host or bridge <-> remote daemon(runtime_peer)
+  -> runtime agent local to remote daemon -> kernel
+```
+
+`runtime_peer` is the protocol and product role: an authenticated room
+connection allowed to publish runtime state and output. `RuntimeAgent` is a
+local daemon implementation detail for supervising kernels near the daemon that
+owns them. Cross-machine boundaries should be daemon or room-host boundaries,
+not `RuntimeAgent` socket boundaries. `PutBlob` is the byte-transfer primitive
+used by authorized write and runtime peers; it is not itself the runtime
+topology.
+
 ## Decision 3: Clients can connect directly or through a local bridge
 
 The identity model does not require a local daemon bridge for hosted rooms.
