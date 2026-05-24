@@ -97,6 +97,7 @@ async function main() {
     await waitForEditableMarkdown(bob.page);
     checks.push("alice_markdown_editor_available", "bob_markdown_editor_available");
 
+    await focusEditableMarkdown(bob.page);
     const aliceMarker = `Alice propagated ${Date.now()}`;
     const aliceText = `# Browser collaboration smoke
 
@@ -104,11 +105,17 @@ ${aliceMarker}
 `;
     await timed("alice_edit", () => replaceMarkdown(alice.page, aliceText, aliceMarker));
     await timed("alice_to_bob", () => waitForPageText(bob.page, aliceMarker, "Bob"));
+    await timed("alice_to_bob_editor", () => waitForEditableMarkdownText(bob.page, aliceMarker));
     await timed("alice_to_anonymous", () =>
       waitForPageText(anonymous.page, aliceMarker, "anonymous viewer"),
     );
-    checks.push("alice_edit_reached_bob", "alice_edit_reached_anonymous");
+    checks.push(
+      "alice_edit_reached_bob",
+      "alice_edit_reached_bob_editor",
+      "alice_edit_reached_anonymous",
+    );
 
+    await focusEditableMarkdown(alice.page);
     const bobMarker = `Bob propagated ${Date.now()}`;
     const bobText = `# Browser collaboration smoke
 
@@ -118,10 +125,15 @@ ${bobMarker}
 `;
     await timed("bob_edit", () => replaceMarkdown(bob.page, bobText, bobMarker));
     await timed("bob_to_alice", () => waitForPageText(alice.page, bobMarker, "Alice"));
+    await timed("bob_to_alice_editor", () => waitForEditableMarkdownText(alice.page, bobMarker));
     await timed("bob_to_anonymous", () =>
       waitForPageText(anonymous.page, bobMarker, "anonymous viewer"),
     );
-    checks.push("bob_edit_reached_alice", "bob_edit_reached_anonymous");
+    checks.push(
+      "bob_edit_reached_alice",
+      "bob_edit_reached_alice_editor",
+      "bob_edit_reached_anonymous",
+    );
 
     const charlie = await timed("charlie_open", () =>
       openNotebookContext({
@@ -269,6 +281,29 @@ async function waitForEditableMarkdown(page) {
     .locator("[data-slot='cloud-editable-markdown-cell'] .cm-content[contenteditable='true']")
     .first()
     .waitFor({ state: "visible", timeout: timeoutMs });
+}
+
+async function focusEditableMarkdown(page) {
+  const editor = page
+    .locator("[data-slot='cloud-editable-markdown-cell'] .cm-content[contenteditable='true']")
+    .first();
+  await editor.waitFor({ state: "visible", timeout: timeoutMs });
+  await editor.click();
+}
+
+async function waitForEditableMarkdownText(page, expectedText) {
+  const editor = page
+    .locator("[data-slot='cloud-editable-markdown-cell'] .cm-content[contenteditable='true']")
+    .first();
+  await editor.waitFor({ state: "visible", timeout: timeoutMs });
+  await page.waitForFunction(
+    ([selector, expected]) => document.querySelector(selector)?.textContent?.includes(expected),
+    [
+      "[data-slot='cloud-editable-markdown-cell'] .cm-content[contenteditable='true']",
+      expectedText,
+    ],
+    { timeout: timeoutMs },
+  );
 }
 
 async function assertNoEditableMarkdown(page) {
