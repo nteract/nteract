@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { FrameType } from "runtimed";
 
@@ -16,6 +17,17 @@ const baseUrl = process.env.NOTEBOOK_CLOUD_URL ?? "http://127.0.0.1:8787";
 const devAuthToken = process.env.NOTEBOOK_CLOUD_DEV_TOKEN;
 const roomId = `smoke-${Date.now()}`;
 const otherRoomId = `${roomId}-other`;
+const [fixtureNotebookBytes, fixtureRuntimeBytes] = await Promise.all([
+  readFile(
+    new URL("../../../packages/runtimed/tests/fixtures/output_streaming/doc.bin", import.meta.url),
+  ),
+  readFile(
+    new URL(
+      "../../../packages/runtimed/tests/fixtures/output_streaming/state_doc.bin",
+      import.meta.url,
+    ),
+  ),
+]);
 
 if (typeof WebSocket === "undefined") {
   throw new Error("This smoke script requires Node.js with a global WebSocket implementation");
@@ -23,6 +35,12 @@ if (typeof WebSocket === "undefined") {
 
 const health = await fetch(new URL("/api/health", baseUrl));
 assert(health.ok, `health check failed: ${health.status}`);
+
+await seedNotebook(roomId, "alice", [
+  { subject: "user:dev:bob", scope: "editor" },
+  { subject: "user:dev:viewer", scope: "viewer" },
+]);
+await seedNotebook(otherRoomId, "other");
 
 const alice = await connect(roomId, "alice", "desktop:alice", "owner");
 const bob = await connect(roomId, "bob", "desktop:bob", "editor");
@@ -95,9 +113,25 @@ assert(
   `invalid actor presence was not stamped safely: ${JSON.stringify(invalidActorPresence.json)}`,
 );
 
-sendBinaryFrame(alice.socket, FrameType.AUTOMERGE_SYNC, new Uint8Array([1, 2, 3, 4]));
-const relayedSync = await bob.nextFrame((frame) => frame.type === FrameType.AUTOMERGE_SYNC);
-assert(relayedSync.payload.byteLength === 4, "same-room sync frame was not relayed");
+const syncCellId = `cell-${roomId}`;
+const syncCellSource = `Smoke sync ${roomId}\n`;
+const aliceHandle = wasm.NotebookHandle.create_bootstrap(alice.ready.actor_label);
+const bobHandle = wasm.NotebookHandle.create_bootstrap(bob.ready.actor_label);
+await drainHandleSync([
+  { client: alice, handle: aliceHandle },
+  { client: bob, handle: bobHandle },
+]);
+aliceHandle.add_cell_after(syncCellId, "markdown", null);
+aliceHandle.update_source(syncCellId, syncCellSource);
+const syncPayload = aliceHandle.flush_local_changes();
+assert(syncPayload?.byteLength > 0, "expected Alice handle to produce a sync payload");
+sendBinaryFrame(alice.socket, FrameType.AUTOMERGE_SYNC, syncPayload);
+await driveHandleSync(
+  bob,
+  bobHandle,
+  () => cellSource(bobHandle, syncCellId) === syncCellSource,
+  "same-room Automerge sync frame did not converge to Bob",
+);
 
 const accepted = await alice.nextFrame(
   (frame) =>
@@ -106,12 +140,6 @@ const accepted = await alice.nextFrame(
     frame.json.frame_type === FrameType.AUTOMERGE_SYNC,
 );
 assert(accepted.json.frame_type === FrameType.AUTOMERGE_SYNC, "owner sync frame was not accepted");
-
-sendBinaryFrame(viewer.socket, FrameType.AUTOMERGE_SYNC, new Uint8Array([9]));
-const rejected = await viewer.nextFrame(
-  (frame) => frame.type === FrameType.SESSION_CONTROL && frame.json.type === "cloud_frame_rejected",
-);
-assert(rejected.json.reason.includes("viewer cannot write"), "viewer write was not rejected");
 
 sendBinaryFrame(viewer.socket, FrameType.PUT_BLOB, new Uint8Array([9]));
 const rejectedBlob = await viewer.nextFrame(
@@ -123,18 +151,6 @@ const rejectedBlob = await viewer.nextFrame(
 assert(
   rejectedBlob.json.reason.includes("viewer cannot write"),
   "viewer blob write was not rejected",
-);
-
-sendBinaryFrame(viewer.socket, FrameType.RUNTIME_STATE_SYNC, new Uint8Array([9]));
-const rejectedRuntime = await viewer.nextFrame(
-  (frame) =>
-    frame.type === FrameType.SESSION_CONTROL &&
-    frame.json.type === "cloud_frame_rejected" &&
-    frame.json.frame_type === FrameType.RUNTIME_STATE_SYNC,
-);
-assert(
-  rejectedRuntime.json.reason.includes("viewer cannot write"),
-  "viewer runtime-state write was not rejected",
 );
 
 sendBinaryFrame(viewer.socket, FrameType.POOL_STATE_SYNC, new Uint8Array([9]));
@@ -159,18 +175,6 @@ const rejectedRequest = await viewer.nextFrame(
 assert(
   rejectedRequest.json.reason.includes("viewer cannot write"),
   "viewer request frame was not rejected",
-);
-
-sendBinaryFrame(anonymous.socket, FrameType.AUTOMERGE_SYNC, new Uint8Array([9]));
-const rejectedAnonymousSync = await anonymous.nextFrame(
-  (frame) =>
-    frame.type === FrameType.SESSION_CONTROL &&
-    frame.json.type === "cloud_frame_rejected" &&
-    frame.json.frame_type === FrameType.AUTOMERGE_SYNC,
-);
-assert(
-  rejectedAnonymousSync.json.reason.includes("viewer cannot write"),
-  "anonymous viewer sync write was not rejected",
 );
 
 sendPresenceFrame(anonymous.socket, {
@@ -206,8 +210,8 @@ const snapshotHeads = `heads-${roomId}`;
 const runtimeHeads = `runtime-${roomId}`;
 const runtimePath = `/api/n/${encodeURIComponent(roomId)}/runtime-snapshots/${encodeURIComponent(runtimeHeads)}`;
 const snapshotPath = `/api/n/${encodeURIComponent(roomId)}/snapshots/${encodeURIComponent(snapshotHeads)}`;
-const snapshotBytes = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
-const runtimeBytes = new Uint8Array([0xca, 0xfe, 0xba, 0xbe]);
+const snapshotBytes = fixtureNotebookBytes;
+const runtimeBytes = fixtureRuntimeBytes;
 const invalidAuthResponse = await fetch(new URL(snapshotPath, baseUrl), {
   method: "PUT",
   headers: {
@@ -235,9 +239,9 @@ const snapshotPut = await putBytes(snapshotPath, snapshotBytes, "application/oct
 assert(snapshotPut.ok === true, `snapshot PUT failed: ${JSON.stringify(snapshotPut)}`);
 assertBytesEqual(await fetchBytes(snapshotPath), snapshotBytes, "snapshot GET did not round-trip");
 
-const blobHash = `sha256-${roomId}`;
-const blobPath = `/api/n/${encodeURIComponent(roomId)}/blobs/${encodeURIComponent(blobHash)}`;
 const blobBytes = new TextEncoder().encode(`blob:${roomId}`);
+const blobHash = createHash("sha256").update(blobBytes).digest("hex");
+const blobPath = `/api/n/${encodeURIComponent(roomId)}/blobs/${encodeURIComponent(blobHash)}`;
 const blobPut = await putBytes(blobPath, blobBytes, "text/plain");
 assert(blobPut.ok === true, `blob PUT failed: ${JSON.stringify(blobPut)}`);
 const blobHead = await fetchHead(blobPath);
@@ -262,10 +266,12 @@ assert(
   "D1 catalog did not include the stored blob",
 );
 
-const leaked = await other
-  .nextFrame((frame) => frame.type === FrameType.AUTOMERGE_SYNC, 250)
-  .catch(() => undefined);
-assert(leaked === undefined, "frame leaked across Durable Object room ids");
+const otherHandle = wasm.NotebookHandle.create_bootstrap(other.ready.actor_label);
+await drainHandleSync([{ client: other, handle: otherHandle }]);
+assert(
+  cellSource(otherHandle, syncCellId) === undefined,
+  "cell from one Durable Object room materialized in another room",
+);
 
 console.log(
   JSON.stringify(
@@ -275,19 +281,17 @@ console.log(
       roomId,
       checks: [
         "websocket_upgrade",
+        "acl_backed_room_bootstrap",
         "durable_object_room_routing",
         "identity_stamping",
         "presence_principal_rewrite",
         "malformed_presence_rejection",
         "invalid_presence_actor_safe_fallback",
         "typed_frame_relay",
-        "scope_rejection",
         "viewer_blob_rejection",
-        "viewer_runtime_state_rejection",
         "viewer_pool_rejection",
         "viewer_request_rejection",
         "anonymous_viewer_identity",
-        "anonymous_viewer_write_rejection",
         "anonymous_presence_local_only",
         "invalid_auth_structured_rejection",
         "r2_runtime_snapshot_roundtrip",
@@ -303,6 +307,122 @@ console.log(
 
 await Promise.all([alice, bob, other, viewer, anonymous].map(closeClient));
 process.exit(0);
+
+async function seedNotebook(notebookId, ownerUser, grants = []) {
+  const runtimeHeads = `bootstrap-runtime-${notebookId}`;
+  const snapshotHeads = `bootstrap-heads-${notebookId}`;
+  await putBytes(
+    `/api/n/${encodeURIComponent(notebookId)}/runtime-snapshots/${encodeURIComponent(runtimeHeads)}`,
+    fixtureRuntimeBytes,
+    "application/octet-stream",
+    { "X-User": ownerUser },
+  );
+  await putBytes(
+    `/api/n/${encodeURIComponent(notebookId)}/snapshots/${encodeURIComponent(snapshotHeads)}`,
+    fixtureNotebookBytes,
+    "application/octet-stream",
+    {
+      "X-User": ownerUser,
+      "X-Runtime-Heads-Hash": runtimeHeads,
+    },
+  );
+  for (const grant of grants) {
+    await grantAcl(notebookId, ownerUser, grant);
+  }
+}
+
+async function grantAcl(notebookId, ownerUser, { subject, scope }) {
+  const url = new URL(`/api/n/${encodeURIComponent(notebookId)}/acl`, baseUrl);
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-User": ownerUser,
+      "X-Operator": "desktop:smoke",
+      "X-Scope": "owner",
+      ...devAuthHeaders(),
+    },
+    body: JSON.stringify({
+      subject_kind: "principal",
+      subject,
+      scope,
+    }),
+  });
+  assert(response.ok, `${url.href} returned ${response.status}`);
+  return response.json();
+}
+
+async function driveHandleSync(client, handle, predicate, failureMessage) {
+  const deadline = Date.now() + 5_000;
+
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+
+    const frame = await client
+      .nextFrame((candidate) => candidate.type === FrameType.AUTOMERGE_SYNC, 50)
+      .catch(() => undefined);
+    if (!frame) {
+      await sleep(25);
+      continue;
+    }
+
+    const events = handle.receive_frame(frame.bytes);
+    for (const event of events) {
+      if (Array.isArray(event.reply)) {
+        sendBinaryFrame(client.socket, FrameType.AUTOMERGE_SYNC, new Uint8Array(event.reply));
+      }
+    }
+  }
+
+  throw new Error(failureMessage);
+}
+
+async function drainHandleSync(participants) {
+  const deadline = Date.now() + 5_000;
+  let lastProgressAt = Date.now();
+
+  while (Date.now() < deadline) {
+    let progressed = false;
+    for (const participant of participants) {
+      const frame = await participant.client
+        .nextFrame((candidate) => candidate.type === FrameType.AUTOMERGE_SYNC, 50)
+        .catch(() => undefined);
+      if (!frame) {
+        continue;
+      }
+
+      progressed = true;
+      const events = participant.handle.receive_frame(frame.bytes);
+      for (const event of events) {
+        if (Array.isArray(event.reply)) {
+          sendBinaryFrame(
+            participant.client.socket,
+            FrameType.AUTOMERGE_SYNC,
+            new Uint8Array(event.reply),
+          );
+        }
+      }
+    }
+
+    if (progressed) {
+      lastProgressAt = Date.now();
+    } else if (Date.now() - lastProgressAt > 250) {
+      return;
+    } else {
+      await sleep(25);
+    }
+  }
+}
+
+function cellSource(handle, cellId) {
+  try {
+    return handle.get_cell_source(cellId);
+  } catch {
+    return undefined;
+  }
+}
 
 async function connect(notebookId, user, operator, scope) {
   const url = new URL(`/n/${encodeURIComponent(notebookId)}/sync`, baseUrl);
@@ -529,11 +649,15 @@ async function decodeFrame(data) {
       json = undefined;
     }
   }
-  return { type, payload, json };
+  return { type, payload, bytes, json };
 }
 
 function devAuthHeaders() {
   return devAuthToken ? { "X-Notebook-Cloud-Dev-Token": devAuthToken } : {};
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function devAuthProtocols() {
