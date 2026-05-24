@@ -547,3 +547,5 @@ elsewhere, some are surfaced here for the first time.
   artifacts, the matching cloud resolver.
 - `docs/architecture/identity-and-trust.md` - room-level auth that gates the
   socket the `PUT_BLOB` frame rides on.
+- `docs/architecture/runtime-peer-and-blob-authority-audit.md` - hosted
+  scope-gating and reference-authority audit for `PutBlob` and runtime peers.
