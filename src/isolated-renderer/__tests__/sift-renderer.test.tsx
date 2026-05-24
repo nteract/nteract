@@ -1,4 +1,4 @@
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import type { ComponentType } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import type {
@@ -62,5 +62,76 @@ describe("Sift renderer plugin", () => {
     expect(siftMocks.setWasmUrl).toHaveBeenLastCalledWith(
       "https://outputs.example/renderer-assets/sift_wasm.wasm?v=dev",
     );
+  });
+
+  it("fits the table inside the iframe max height from host context", () => {
+    let Renderer: ComponentType<RendererProps> | undefined;
+
+    install({
+      register: (_mimeTypes, component) => {
+        Renderer = component;
+      },
+      registerPattern: vi.fn(),
+      getHostContext: () => ({
+        containerDimensions: {
+          maxHeight: 400,
+        },
+      }),
+      subscribeHostContext: () => () => undefined,
+    });
+
+    expect(Renderer).toBeDefined();
+    render(
+      <Renderer
+        data="https://notebooks.example/api/n/demo/blobs/sha256-host-height"
+        mimeType="application/vnd.apache.parquet"
+      />,
+    );
+
+    expect(screen.getByTestId("sift-table").parentElement).toHaveStyle({ height: "398px" });
+  });
+
+  it("subtracts earlier iframe outputs from the table max height", () => {
+    let Renderer: ComponentType<RendererProps> | undefined;
+    const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
+    HTMLElement.prototype.getBoundingClientRect = function getBoundingClientRect() {
+      if (this.id === "root") {
+        return { ...originalGetBoundingClientRect.call(this), top: 0, bottom: 400 };
+      }
+      if (this instanceof HTMLElement && this.dataset.slot === "sift-output") {
+        return { ...originalGetBoundingClientRect.call(this), top: 80, bottom: 400 };
+      }
+      return originalGetBoundingClientRect.call(this);
+    };
+
+    try {
+      install({
+        register: (_mimeTypes, component) => {
+          Renderer = component;
+        },
+        registerPattern: vi.fn(),
+        getHostContext: () => ({
+          containerDimensions: {
+            maxHeight: 400,
+          },
+        }),
+        subscribeHostContext: () => () => undefined,
+      });
+
+      expect(Renderer).toBeDefined();
+      render(
+        <div id="root">
+          <div style={{ height: 80 }}>stream text</div>
+          <Renderer
+            data="https://notebooks.example/api/n/demo/blobs/sha256-host-offset"
+            mimeType="application/vnd.apache.parquet"
+          />
+        </div>,
+      );
+
+      expect(screen.getByTestId("sift-table").parentElement).toHaveStyle({ height: "318px" });
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = originalGetBoundingClientRect;
+    }
   });
 });
