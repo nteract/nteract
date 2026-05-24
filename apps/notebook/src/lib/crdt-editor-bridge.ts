@@ -50,6 +50,15 @@ export interface RemoteChange {
   deleted: number;
 }
 
+/** Minimal text-attribution shape emitted by WASM sync. */
+export interface TextAttributionLike {
+  cell_id: string;
+  index: number;
+  text: string;
+  deleted: number;
+  actors: string[];
+}
+
 /** Configuration for the CRDT bridge. */
 export interface CrdtBridgeConfig {
   /** Read the current WASM NotebookHandle (null during bootstrap). */
@@ -105,6 +114,32 @@ export interface CrdtBridge {
 /** Check if a transaction is a reconcile (inbound from CRDT). */
 function isReconcileTx(tr: Transaction): boolean {
   return !!tr.annotation(externalChangeAnnotation);
+}
+
+/**
+ * Convert WASM text attributions into CodeMirror remote changes for one cell.
+ *
+ * Desktop and cloud both use this so self-echo filtering and attribution patch
+ * ordering stay aligned across hosts.
+ */
+export function remoteChangesFromTextAttributions(
+  attributions: readonly TextAttributionLike[],
+  cellId: string,
+  localActor: string | null | undefined,
+): RemoteChange[] {
+  const changes: RemoteChange[] = [];
+  for (const attr of attributions) {
+    if (attr.cell_id !== cellId) continue;
+    if (localActor && attr.actors.length === 1 && attr.actors[0] === localActor) {
+      continue;
+    }
+    changes.push({
+      index: attr.index,
+      text: attr.text,
+      deleted: attr.deleted,
+    });
+  }
+  return changes;
 }
 
 // ── Bridge factory ───────────────────────────────────────────────────

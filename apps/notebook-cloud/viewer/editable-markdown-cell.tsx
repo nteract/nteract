@@ -7,10 +7,23 @@ import {
   setRemoteSelections,
 } from "@/components/editor/remote-cursors";
 import type { RemoteCellPresence } from "@/components/editor/presence-state";
-import { createCrdtBridge } from "../../notebook/src/lib/crdt-editor-bridge";
+import {
+  createCrdtBridge,
+  remoteChangesFromTextAttributions,
+  type TextAttributionLike,
+} from "../../notebook/src/lib/crdt-editor-bridge";
 import { presenceSenderExtension } from "../../notebook/src/lib/presence-sender";
 import type { ResolvedCell } from "./render-resolution";
 import type { NotebookHandle } from "./runtimed-wasm-client";
+
+export interface CloudTextAttributionBatch {
+  sequence: number;
+  attributions: readonly TextAttributionLike[];
+}
+
+export interface CloudTextAttributionQueue {
+  batches: readonly CloudTextAttributionBatch[];
+}
 
 export interface EditableMarkdownCellProps {
   cell: ResolvedCell;
@@ -19,6 +32,8 @@ export interface EditableMarkdownCellProps {
   onSourceChange: (cellId: string, source: string) => void;
   onSyncNeeded: () => void;
   getHandle: () => NotebookHandle | null;
+  localActorLabel?: string | null;
+  textAttributionQueue?: CloudTextAttributionQueue;
   remotePresence?: RemoteCellPresence;
   onPresenceCursor?: (cellId: string, line: number, column: number) => void;
   onPresenceSelection?: (
@@ -37,6 +52,8 @@ export function EditableMarkdownCell({
   onSourceChange,
   onSyncNeeded,
   getHandle,
+  localActorLabel,
+  textAttributionQueue,
   remotePresence,
   onPresenceCursor,
   onPresenceSelection,
@@ -45,10 +62,13 @@ export function EditableMarkdownCell({
   const getHandleRef = useRef(getHandle);
   const onSourceChangeRef = useRef(onSourceChange);
   const onSyncNeededRef = useRef(onSyncNeeded);
+  const lastAppliedAttributionSequenceRef = useRef(0);
 
-  getHandleRef.current = getHandle;
-  onSourceChangeRef.current = onSourceChange;
-  onSyncNeededRef.current = onSyncNeeded;
+  useLayoutEffect(() => {
+    getHandleRef.current = getHandle;
+    onSourceChangeRef.current = onSourceChange;
+    onSyncNeededRef.current = onSyncNeeded;
+  });
 
   const bridge = useMemo(
     () =>
@@ -74,6 +94,22 @@ export function EditableMarkdownCell({
     }
     return editorExtensions;
   }, [bridge.extension, cell.id, onPresenceCursor, onPresenceSelection]);
+
+  useLayoutEffect(() => {
+    if (!textAttributionQueue) return;
+
+    for (const batch of textAttributionQueue.batches) {
+      if (batch.sequence <= lastAppliedAttributionSequenceRef.current) continue;
+
+      const changes = remoteChangesFromTextAttributions(
+        batch.attributions,
+        cell.id,
+        localActorLabel,
+      );
+      bridge.applyRemoteChanges(changes);
+      lastAppliedAttributionSequenceRef.current = batch.sequence;
+    }
+  }, [bridge, cell.id, localActorLabel, textAttributionQueue]);
 
   useLayoutEffect(() => {
     bridge.applyFullSource(cell.source);

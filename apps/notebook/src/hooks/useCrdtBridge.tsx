@@ -18,7 +18,11 @@
 import type { Extension } from "@codemirror/state";
 import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef } from "react";
 import { isTextAttributionEvent } from "runtimed";
-import { type CrdtBridge, createCrdtBridge, type RemoteChange } from "../lib/crdt-editor-bridge";
+import {
+  type CrdtBridge,
+  createCrdtBridge,
+  remoteChangesFromTextAttributions,
+} from "../lib/crdt-editor-bridge";
 import { logger } from "../lib/logger";
 import { updateCellById } from "../lib/notebook-cells";
 import { subscribeBroadcast } from "../lib/notebook-frame-bus";
@@ -127,18 +131,7 @@ export function useCrdtBridge(cellId: string): {
       // only actor is the local human actor. CodeMirror already has these
       // changes, so applying them again would corrupt the editor state.
       const localActor = ctxRef.current.localActor;
-      const changes: RemoteChange[] = [];
-      for (const attr of payload.attributions) {
-        if (attr.cell_id !== cellId) continue;
-        if (attr.actors.length === 1 && attr.actors[0] === localActor) {
-          continue;
-        }
-        changes.push({
-          index: attr.index,
-          text: attr.text,
-          deleted: attr.deleted,
-        });
-      }
+      const changes = remoteChangesFromTextAttributions(payload.attributions, cellId, localActor);
 
       if (changes.length > 0) {
         const view = bridge.getView();
