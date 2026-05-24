@@ -10,7 +10,7 @@
 
 use automerge::sync;
 use automerge::sync::SyncDoc;
-use notebook_doc::diff::{diff_doc, CellChangeset, TextPatch};
+use notebook_doc::diff::{diff_doc, extract_change_actors, CellChangeset, TextPatch};
 use notebook_doc::mime::{is_binary_mime, ResolvedContentRef};
 use notebook_doc::pool_state::{PoolDoc, PoolState};
 use notebook_doc::presence;
@@ -226,6 +226,399 @@ pub enum FrameEvent {
     },
     /// Unknown frame type — frontend can log and ignore.
     Unknown { frame_type: u8 },
+}
+
+/// Outbound frame produced by [`RoomHostHandle`].
+///
+/// The Worker owns WebSocket I/O; the WASM room host owns document state and
+/// per-peer Automerge sync state. Each event tells the Worker which peer should
+/// receive which typed-frame payload.
+#[derive(Serialize)]
+pub struct RoomHostOutboundFrame {
+    pub peer_id: String,
+    pub frame_type: u8,
+    pub payload: Vec<u8>,
+}
+
+/// Result returned after the room host processes one peer frame.
+#[derive(Serialize)]
+pub struct RoomHostFrameResult {
+    pub changed: bool,
+    pub notebook_changed: bool,
+    pub runtime_state_changed: bool,
+    pub outbound: Vec<RoomHostOutboundFrame>,
+}
+
+impl RoomHostFrameResult {
+    fn empty() -> Self {
+        Self {
+            changed: false,
+            notebook_changed: false,
+            runtime_state_changed: false,
+            outbound: Vec::new(),
+        }
+    }
+}
+
+/// Durable-Object room host for NotebookDoc + RuntimeStateDoc sync.
+///
+/// Unlike [`NotebookHandle`], this is not a frontend/client handle. It owns the
+/// authoritative document pair for one room and keeps a separate Automerge
+/// `sync::State` per connected peer. That per-peer state is load-bearing:
+/// sharing one sync state across browser tabs would make the Worker acknowledge
+/// the wrong heads and eventually suppress valid sync messages.
+#[wasm_bindgen]
+pub struct RoomHostHandle {
+    doc: NotebookDoc,
+    state_doc: RuntimeStateDoc,
+    notebook_peer_states: HashMap<String, sync::State>,
+    runtime_peer_states: HashMap<String, sync::State>,
+}
+
+#[wasm_bindgen]
+impl RoomHostHandle {
+    /// Create an empty room host from the canonical schema seeds.
+    pub fn create_empty(notebook_id: &str, actor_label: &str) -> Result<RoomHostHandle, JsError> {
+        Ok(RoomHostHandle {
+            doc: NotebookDoc::new_with_actor(notebook_id, actor_label),
+            state_doc: RuntimeStateDoc::try_new_empty()
+                .map_err(|e| JsError::new(&format!("create runtime state doc failed: {e}")))?,
+            notebook_peer_states: HashMap::new(),
+            runtime_peer_states: HashMap::new(),
+        })
+    }
+
+    /// Load a room host from persisted NotebookDoc + RuntimeStateDoc bytes.
+    pub fn load_snapshot(
+        notebook_bytes: &[u8],
+        runtime_state_bytes: &[u8],
+    ) -> Result<RoomHostHandle, JsError> {
+        let doc = NotebookDoc::load_with_encoding(
+            notebook_bytes,
+            notebook_doc::TextEncoding::Utf16CodeUnit,
+        )
+        .map_err(|e| JsError::new(&format!("load notebook snapshot failed: {e}")))?;
+        let runtime_doc = automerge::AutoCommit::load(runtime_state_bytes)
+            .map_err(|e| JsError::new(&format!("load runtime snapshot failed: {e}")))?;
+        Ok(RoomHostHandle {
+            doc,
+            state_doc: RuntimeStateDoc::from_doc(runtime_doc),
+            notebook_peer_states: HashMap::new(),
+            runtime_peer_states: HashMap::new(),
+        })
+    }
+
+    /// Drop all sync state for a disconnected peer.
+    pub fn remove_peer(&mut self, peer_id: &str) {
+        self.notebook_peer_states.remove(peer_id);
+        self.runtime_peer_states.remove(peer_id);
+    }
+
+    /// Generate current sync frames for a peer.
+    ///
+    /// The Worker calls this immediately after accepting a socket and after the
+    /// peer receives `cloud_room_ready`. It lets read-only viewers receive the
+    /// current document without authoring any local Automerge changes.
+    pub fn sync_peer(&mut self, peer_id: &str) -> Result<JsValue, JsError> {
+        let mut result = RoomHostFrameResult::empty();
+        self.queue_current_sync_for_peer(peer_id, &mut result.outbound)?;
+        serialize_to_js(&result).map_err(|e| JsError::new(&format!("serialize room result: {e}")))
+    }
+
+    /// Apply a typed-frame from a peer to the room host.
+    ///
+    /// `can_write` is the server-side scope decision for this document stream.
+    /// Viewers and runtime peers may still send empty sync acks/needs so the
+    /// Automerge protocol can converge, but any message carrying changes is
+    /// rejected unless `can_write` is true.
+    pub fn receive_peer_frame(
+        &mut self,
+        peer_id: &str,
+        principal: &str,
+        can_write: bool,
+        frame_bytes: &[u8],
+    ) -> Result<JsValue, JsError> {
+        if frame_bytes.is_empty() {
+            return Err(JsError::new("typed frame cannot be empty"));
+        }
+
+        let frame_type = frame_bytes[0];
+        let payload = &frame_bytes[1..];
+        let result = match frame_type {
+            frame_types::AUTOMERGE_SYNC => {
+                self.receive_notebook_sync(peer_id, principal, can_write, payload)?
+            }
+            frame_types::RUNTIME_STATE_SYNC => {
+                self.receive_runtime_state_sync(peer_id, principal, can_write, payload)?
+            }
+            _ => RoomHostFrameResult::empty(),
+        };
+
+        serialize_to_js(&result).map_err(|e| JsError::new(&format!("serialize room result: {e}")))
+    }
+
+    /// Export the current NotebookDoc bytes for room checkpointing.
+    pub fn save_notebook(&mut self) -> Vec<u8> {
+        self.doc.save()
+    }
+
+    /// Export the current RuntimeStateDoc bytes for room checkpointing.
+    pub fn save_runtime_state_doc(&mut self) -> Vec<u8> {
+        self.state_doc.doc_mut().save()
+    }
+
+    /// Current NotebookDoc heads as hex strings.
+    pub fn get_heads_hex(&mut self) -> Vec<String> {
+        self.doc.get_heads_hex()
+    }
+
+    /// Current RuntimeStateDoc heads as hex strings.
+    pub fn get_runtime_state_heads_hex(&mut self) -> Vec<String> {
+        self.state_doc
+            .get_heads()
+            .into_iter()
+            .map(|head| hex::encode(head.as_ref()))
+            .collect()
+    }
+}
+
+impl RoomHostHandle {
+    fn receive_notebook_sync(
+        &mut self,
+        peer_id: &str,
+        principal: &str,
+        can_write: bool,
+        payload: &[u8],
+    ) -> Result<RoomHostFrameResult, JsError> {
+        let message = sync::Message::decode(payload)
+            .map_err(|e| JsError::new(&format!("decode notebook sync: {e}")))?;
+        let has_changes = !message.changes.is_empty();
+        if has_changes && !can_write {
+            return Err(JsError::new(
+                "connection scope cannot write NotebookDoc changes",
+            ));
+        }
+        if has_changes {
+            let heads_before = self.doc.get_heads();
+            let peer_state = self
+                .notebook_peer_states
+                .entry(peer_id.to_string())
+                .or_insert_with(sync::State::new);
+            let mut preview = NotebookDoc::wrap(self.doc.doc().clone());
+            let mut preview_peer_state = peer_state.clone();
+            preview
+                .receive_sync_message_recovering(
+                    &mut preview_peer_state,
+                    message.clone(),
+                    "cloud-room-doc-auth-preview",
+                )
+                .map_err(|e| JsError::new(&format!("notebook auth preview failed: {e}")))?;
+            let actors = extract_change_actors(preview.doc_mut(), &heads_before);
+            validate_room_actor_labels(principal, actors.iter().map(String::as_str))?;
+        }
+
+        let heads_before = self.doc.get_heads();
+        {
+            let peer_state = self
+                .notebook_peer_states
+                .entry(peer_id.to_string())
+                .or_insert_with(sync::State::new);
+            self.doc
+                .receive_sync_message_recovering(peer_state, message, "cloud-room-doc-receive-sync")
+                .map_err(|e| JsError::new(&format!("receive notebook sync: {e}")))?;
+        }
+        let heads_after = self.doc.get_heads();
+        let changed = heads_before != heads_after;
+
+        let mut result = RoomHostFrameResult {
+            changed,
+            notebook_changed: changed,
+            runtime_state_changed: false,
+            outbound: Vec::new(),
+        };
+        self.queue_notebook_sync_for_peer(peer_id, &mut result.outbound)?;
+        if changed {
+            self.queue_notebook_sync_for_other_peers(peer_id, &mut result.outbound)?;
+        }
+        Ok(result)
+    }
+
+    fn receive_runtime_state_sync(
+        &mut self,
+        peer_id: &str,
+        principal: &str,
+        can_write: bool,
+        payload: &[u8],
+    ) -> Result<RoomHostFrameResult, JsError> {
+        let message = sync::Message::decode(payload)
+            .map_err(|e| JsError::new(&format!("decode runtime state sync: {e}")))?;
+        let has_changes = !message.changes.is_empty();
+        if has_changes && !can_write {
+            return Err(JsError::new(
+                "connection scope cannot write RuntimeStateDoc changes",
+            ));
+        }
+        if has_changes {
+            let heads_before = self.state_doc.get_heads();
+            let peer_state = self
+                .runtime_peer_states
+                .entry(peer_id.to_string())
+                .or_insert_with(sync::State::new);
+            let mut preview = RuntimeStateDoc::from_doc(self.state_doc.doc().clone());
+            let mut preview_peer_state = peer_state.clone();
+            preview
+                .receive_sync_message_with_changes_recovering(
+                    &mut preview_peer_state,
+                    message.clone(),
+                    "cloud-room-state-auth-preview",
+                )
+                .map_err(|e| JsError::new(&format!("runtime state auth preview failed: {e}")))?;
+            let actors = extract_change_actors(preview.doc_mut(), &heads_before);
+            validate_room_actor_labels(principal, actors.iter().map(String::as_str))?;
+        }
+
+        let heads_before = self.state_doc.get_heads();
+        {
+            let peer_state = self
+                .runtime_peer_states
+                .entry(peer_id.to_string())
+                .or_insert_with(sync::State::new);
+            self.state_doc
+                .receive_sync_message_with_changes_recovering(
+                    peer_state,
+                    message,
+                    "cloud-room-state-receive-sync",
+                )
+                .map_err(|e| JsError::new(&format!("receive runtime state sync: {e}")))?;
+        }
+        let heads_after = self.state_doc.get_heads();
+        let changed = heads_before != heads_after;
+
+        let mut result = RoomHostFrameResult {
+            changed,
+            notebook_changed: false,
+            runtime_state_changed: changed,
+            outbound: Vec::new(),
+        };
+        self.queue_runtime_state_sync_for_peer(peer_id, &mut result.outbound)?;
+        if changed {
+            self.queue_runtime_state_sync_for_other_peers(peer_id, &mut result.outbound)?;
+        }
+        Ok(result)
+    }
+
+    fn queue_current_sync_for_peer(
+        &mut self,
+        peer_id: &str,
+        outbound: &mut Vec<RoomHostOutboundFrame>,
+    ) -> Result<(), JsError> {
+        self.queue_notebook_sync_for_peer(peer_id, outbound)?;
+        self.queue_runtime_state_sync_for_peer(peer_id, outbound)?;
+        Ok(())
+    }
+
+    fn queue_notebook_sync_for_peer(
+        &mut self,
+        peer_id: &str,
+        outbound: &mut Vec<RoomHostOutboundFrame>,
+    ) -> Result<(), JsError> {
+        let peer_state = self
+            .notebook_peer_states
+            .entry(peer_id.to_string())
+            .or_insert_with(sync::State::new);
+        if let Some(message) = self
+            .doc
+            .generate_sync_message_recovering(peer_state, "cloud-room-doc-sync-outbound")
+            .map_err(|e| JsError::new(&format!("generate notebook sync: {e}")))?
+        {
+            outbound.push(RoomHostOutboundFrame {
+                peer_id: peer_id.to_string(),
+                frame_type: frame_types::AUTOMERGE_SYNC,
+                payload: message.encode(),
+            });
+        }
+        Ok(())
+    }
+
+    fn queue_notebook_sync_for_other_peers(
+        &mut self,
+        changed_peer_id: &str,
+        outbound: &mut Vec<RoomHostOutboundFrame>,
+    ) -> Result<(), JsError> {
+        let peers: Vec<String> = self.notebook_peer_states.keys().cloned().collect();
+        for peer_id in peers {
+            if peer_id == changed_peer_id {
+                continue;
+            }
+            self.queue_notebook_sync_for_peer(&peer_id, outbound)?;
+        }
+        Ok(())
+    }
+
+    fn queue_runtime_state_sync_for_peer(
+        &mut self,
+        peer_id: &str,
+        outbound: &mut Vec<RoomHostOutboundFrame>,
+    ) -> Result<(), JsError> {
+        let peer_state = self
+            .runtime_peer_states
+            .entry(peer_id.to_string())
+            .or_insert_with(sync::State::new);
+        if let Some(message) = self
+            .state_doc
+            .generate_sync_message_recovering(peer_state, "cloud-room-state-sync-outbound")
+            .map_err(|e| JsError::new(&format!("generate runtime state sync: {e}")))?
+        {
+            outbound.push(RoomHostOutboundFrame {
+                peer_id: peer_id.to_string(),
+                frame_type: frame_types::RUNTIME_STATE_SYNC,
+                payload: message.encode(),
+            });
+        }
+        Ok(())
+    }
+
+    fn queue_runtime_state_sync_for_other_peers(
+        &mut self,
+        changed_peer_id: &str,
+        outbound: &mut Vec<RoomHostOutboundFrame>,
+    ) -> Result<(), JsError> {
+        let peers: Vec<String> = self.runtime_peer_states.keys().cloned().collect();
+        for peer_id in peers {
+            if peer_id == changed_peer_id {
+                continue;
+            }
+            self.queue_runtime_state_sync_for_peer(&peer_id, outbound)?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_room_actor_labels<'a>(
+    principal: &str,
+    labels: impl IntoIterator<Item = &'a str>,
+) -> Result<(), JsError> {
+    let expected = Principal::new(principal.to_string())
+        .map_err(|e| JsError::new(&format!("authenticated principal is invalid: {e}")))?;
+    for label in labels {
+        match ActorLabel::parse(label.to_string()) {
+            Ok(actor) if actor.principal() == Principal::SYSTEM => {}
+            Ok(actor) if actor.principal() == expected.as_str() => {}
+            Ok(actor) => {
+                return Err(JsError::new(&format!(
+                    "actor principal {} is not authorized for authenticated principal {}",
+                    actor.principal(),
+                    expected
+                )));
+            }
+            Err(error) => {
+                return Err(JsError::new(&format!(
+                    "actor label {label:?} is invalid: {error}"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A handle to a local Automerge notebook document.
