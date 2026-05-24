@@ -24,6 +24,7 @@ import {
   renderKey,
   snapshotKey,
 } from "../src/storage.ts";
+import { accessTokenFixture } from "./access-jwt-fixture.ts";
 
 const wasmBytes = await readFile(
   new URL("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm", import.meta.url),
@@ -396,6 +397,31 @@ describe("Worker artifact routes", () => {
     assert.deepEqual(await authenticated.json(), {
       error: "user:dev:bob cannot access public-demo",
     });
+  });
+
+  it("authorizes Cloudflare Access principals through notebook ACL rows", async () => {
+    const { env: accessEnv, token } = await accessTokenFixture({ subject: "alice" });
+    const env = fakeEnv(accessEnv);
+    seedNotebook(env, "access-demo");
+    seedAcl(env, {
+      notebookId: "access-demo",
+      subject: "user:cloudflare-access:alice",
+      scope: "viewer",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/n/access-demo?scope=viewer", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const catalog = (await response.json()) as { notebook: { id: string } };
+    assert.equal(catalog.notebook.id, "access-demo");
   });
 
   it("does not grant owner ACL to a principal that loses notebook creation", async () => {

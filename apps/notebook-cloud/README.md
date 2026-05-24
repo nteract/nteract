@@ -165,6 +165,25 @@ For local browser-only testing, the same values can be supplied as query params:
 
 Dev credentials are accepted without an extra token only from loopback Wrangler local development (`localhost`, `127.0.0.1`, or `::1`). Deployed prototype environments require the `NOTEBOOK_CLOUD_DEV_TOKEN` Worker secret to match either the `X-Notebook-Cloud-Dev-Token` header or a WebSocket subprotocol named `nteract-dev-token.<base64url-token>`. `DEPLOYMENT_ENV=development` does not bypass this host check, and URL-carried `dev_token` credentials are rejected on deployed hosts so prototype owner credentials do not appear in URLs. If no scope is supplied, dev auth defaults to `viewer`. Write and publish paths must ask for `editor`, `runtime_peer`, or `owner` explicitly. Blob upload is allowed for runtime-state writers (`editor`, `runtime_peer`, `owner`) and verifies that the uploaded bytes match the SHA-256 digest in the blob route before writing to R2.
 
+## Cloudflare Access auth
+
+When `NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN` and `NOTEBOOK_CLOUD_ACCESS_AUD`
+are configured, the Worker can authenticate Cloudflare Access/OIDC-style JWTs
+before running the D1 ACL lookup. Tokens are accepted from:
+
+- `Cf-Access-Jwt-Assertion` for Cloudflare Access-protected requests
+- `Authorization: Bearer <jwt>` for native/system clients
+- WebSocket subprotocol `nteract-access-token.<base64url-jwt>` for browser
+  WebSockets that cannot set custom headers
+- `CF_Authorization` cookie as a browser fallback
+
+URL-carried Access tokens are intentionally ignored. The JWT must validate with
+RS256 against `https://<team-domain>/cdn-cgi/access/certs`, with `iss` matching
+the team domain and `aud` matching `NOTEBOOK_CLOUD_ACCESS_AUD`. The resulting
+principal is `user:cloudflare-access:<sub>`, and the requested `scope` is still
+only a request: the room ACL decides whether that principal may enter as
+`viewer`, `editor`, `runtime_peer`, or `owner`.
+
 Requests with no dev credential become anonymous public viewers. The Worker derives:
 
 ```text
@@ -173,7 +192,10 @@ anonymous:<session>/browser:<session>
 
 from the `viewer_session` query parameter, `X-Viewer-Session` header, or a generated UUID. This is intentionally not `system`: `system` is reserved for seed/import authorship, while anonymous viewers are real room connections with read-only `viewer` scope. Anonymous viewers cannot write `NotebookDoc`, `RuntimeStateDoc`, blob, pool, or request frames. Anonymous presence is local-only so public page views do not appear as collaborators to editors.
 
-Snapshot and blob reads are public in this prototype so `/n/:id` can act like a publish viewer without a product auth flow. Production hosts should move those reads behind viewer-or-better auth, signed URLs, or a dedicated output origin before accepting private notebooks.
+Snapshot, render, and blob reads require `viewer` authorization. Anonymous
+users only receive that scope when the notebook has an explicit public
+`notebook_acl` row. Production hosts should move output blobs to signed URLs or
+a dedicated output origin before accepting private notebook data at scale.
 
 ## Storage shape
 

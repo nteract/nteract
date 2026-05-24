@@ -17,6 +17,9 @@ export interface AuthenticatedConnection {
 export interface IdentityEnvironment {
   DEPLOYMENT_ENV?: string;
   NOTEBOOK_CLOUD_DEV_TOKEN?: string;
+  NOTEBOOK_CLOUD_ACCESS_AUD?: string;
+  NOTEBOOK_CLOUD_ACCESS_JWKS_JSON?: string;
+  NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN?: string;
 }
 
 const ANONYMOUS_PRINCIPAL_PREFIX = "anonymous:";
@@ -25,8 +28,50 @@ export const TRUSTED_PRINCIPAL_HEADER = "x-nteract-principal";
 export const TRUSTED_OPERATOR_HEADER = "x-nteract-operator";
 export const TRUSTED_SCOPE_HEADER = "x-nteract-scope";
 export const TRUSTED_WEBSOCKET_PROTOCOL_HEADER = "x-nteract-websocket-protocol";
+export const ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX = "nteract-access-token.";
+export const CLOUDFLARE_ACCESS_JWT_HEADER = "cf-access-jwt-assertion";
 export const DEV_AUTH_TOKEN_HEADER = "x-notebook-cloud-dev-token";
 export const DEV_AUTH_TOKEN_PROTOCOL_PREFIX = "nteract-dev-token.";
+
+interface AccessCredential {
+  token: string;
+  webSocketProtocol?: string;
+}
+
+interface AccessConfig {
+  audience: string;
+  issuer: string;
+  jwksJson?: string;
+}
+
+interface JsonWebKeySet {
+  keys?: JsonWebKey[];
+}
+
+interface JwtHeader {
+  alg?: string;
+  kid?: string;
+  typ?: string;
+}
+
+interface AccessJwtPayload {
+  aud?: string | string[];
+  email?: string;
+  exp?: number;
+  iss?: string;
+  nbf?: number;
+  sub?: string;
+}
+
+const ACCESS_CLOCK_TOLERANCE_SECONDS = 60;
+const ACCESS_JWKS_CACHE_TTL_MS = 5 * 60 * 1000;
+const accessJwksCache = new Map<
+  string,
+  {
+    expiresAt: number;
+    ready: Promise<JsonWebKeySet>;
+  }
+>();
 
 export class AuthError extends Error {
   constructor(
@@ -57,6 +102,57 @@ export function authenticateRequest(
   const identity = authenticateDevRequest(request);
   return devCredential.webSocketProtocol
     ? { ...identity, webSocketProtocol: devCredential.webSocketProtocol }
+    : identity;
+}
+
+export async function authenticateRequestWithProviders(
+  request: Request,
+  env: IdentityEnvironment = {},
+): Promise<AuthenticatedConnection> {
+  const accessCredential = accessCredentialFromRequest(request);
+  if (accessCredential && accessConfigFromEnv(env)) {
+    return authenticateCloudflareAccessRequest(request, env, accessCredential);
+  }
+
+  return authenticateRequest(request, env);
+}
+
+export async function authenticateCloudflareAccessRequest(
+  request: Request,
+  env: IdentityEnvironment,
+  credential = accessCredentialFromRequest(request),
+): Promise<AuthenticatedConnection> {
+  if (!credential) {
+    throw new AuthError("missing Cloudflare Access token", 401);
+  }
+
+  const config = accessConfigFromEnv(env);
+  if (!config) {
+    throw new AuthError("Cloudflare Access auth is not configured", 503);
+  }
+
+  const payload = await verifyCloudflareAccessJwt(credential.token, config);
+  const subject = payload.sub?.trim();
+  if (!subject) {
+    throw new AuthError("Cloudflare Access token is missing sub", 401);
+  }
+
+  const url = new URL(request.url);
+  const principal = `user:cloudflare-access:${encodePrincipalComponent(subject)}`;
+  const operator = headerOrQuery(request, url, "x-operator", "operator") ?? defaultOperator();
+  const scope = parseScope(headerOrQuery(request, url, "x-scope", "scope") ?? "viewer");
+
+  validatePrincipal(principal);
+  validateOperator(operator);
+
+  const identity = {
+    principal,
+    operator,
+    actorLabel: `${principal}/${operator}`,
+    scope,
+  };
+  return credential.webSocketProtocol
+    ? { ...identity, webSocketProtocol: credential.webSocketProtocol }
     : identity;
 }
 
@@ -312,15 +408,215 @@ function validDevTokenCredential(
   return undefined;
 }
 
+function accessCredentialFromRequest(request: Request): AccessCredential | undefined {
+  const headerToken =
+    request.headers.get(CLOUDFLARE_ACCESS_JWT_HEADER) ??
+    bearerTokenFromAuthorization(request.headers.get("authorization")) ??
+    cookieValue(request.headers.get("cookie"), "CF_Authorization");
+  if (headerToken) {
+    return { token: headerToken };
+  }
+
+  const webSocketProtocol = tokenFromWebSocketProtocol(
+    request.headers.get("sec-websocket-protocol"),
+    ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
+  );
+  if (webSocketProtocol) {
+    return { token: webSocketProtocol.token, webSocketProtocol: webSocketProtocol.protocol };
+  }
+
+  return undefined;
+}
+
+function accessConfigFromEnv(env: IdentityEnvironment): AccessConfig | undefined {
+  const audience = env.NOTEBOOK_CLOUD_ACCESS_AUD?.trim();
+  const rawTeamDomain = env.NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN?.trim();
+  if (!audience || !rawTeamDomain) {
+    return undefined;
+  }
+
+  return {
+    audience,
+    issuer: normalizeAccessIssuer(rawTeamDomain),
+    jwksJson: env.NOTEBOOK_CLOUD_ACCESS_JWKS_JSON,
+  };
+}
+
+function normalizeAccessIssuer(value: string): string {
+  if (value.startsWith("https://")) {
+    return value.replace(/\/+$/, "");
+  }
+  const host = value.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  return `https://${host}`;
+}
+
+async function verifyCloudflareAccessJwt(
+  token: string,
+  config: AccessConfig,
+): Promise<AccessJwtPayload> {
+  const { header, payload, signingInput, signature } = decodeJwt(token);
+  if (header.alg !== "RS256") {
+    throw new AuthError("Cloudflare Access token must use RS256", 401);
+  }
+
+  const keys = selectAccessJwks(await loadAccessJwks(config), header);
+  const verified = await verifyWithAnyAccessKey(keys, signingInput, signature);
+  if (!verified) {
+    throw new AuthError("Cloudflare Access token signature is invalid", 401);
+  }
+
+  validateAccessJwtClaims(payload, config);
+  return payload;
+}
+
+function decodeJwt(token: string): {
+  header: JwtHeader;
+  payload: AccessJwtPayload;
+  signingInput: string;
+  signature: Uint8Array;
+} {
+  const [encodedHeader, encodedPayload, encodedSignature] = token.split(".");
+  if (!encodedHeader || !encodedPayload || !encodedSignature) {
+    throw new AuthError("Cloudflare Access token must be a JWT", 401);
+  }
+
+  return {
+    header: decodeBase64UrlJson<JwtHeader>(encodedHeader),
+    payload: decodeBase64UrlJson<AccessJwtPayload>(encodedPayload),
+    signingInput: `${encodedHeader}.${encodedPayload}`,
+    signature: decodeBase64UrlBytes(encodedSignature),
+  };
+}
+
+async function loadAccessJwks(config: AccessConfig): Promise<JsonWebKeySet> {
+  if (config.jwksJson?.trim()) {
+    return parseJwks(config.jwksJson);
+  }
+
+  const url = `${config.issuer}/cdn-cgi/access/certs`;
+  const cached = accessJwksCache.get(url);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.ready;
+  }
+
+  const ready = fetch(url)
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new AuthError(`Cloudflare Access JWKS fetch failed: ${response.status}`, 503);
+      }
+      return parseJwks(await response.text());
+    })
+    .catch((error: unknown) => {
+      accessJwksCache.delete(url);
+      throw error;
+    });
+  accessJwksCache.set(url, {
+    expiresAt: Date.now() + ACCESS_JWKS_CACHE_TTL_MS,
+    ready,
+  });
+  return ready;
+}
+
+function parseJwks(value: string): JsonWebKeySet {
+  try {
+    const parsed = JSON.parse(value) as JsonWebKeySet;
+    if (!Array.isArray(parsed.keys)) {
+      throw new Error("JWKS keys must be an array");
+    }
+    return parsed;
+  } catch (error) {
+    throw new AuthError(`Cloudflare Access JWKS is invalid: ${String(error)}`, 503);
+  }
+}
+
+function selectAccessJwks(jwks: JsonWebKeySet, header: JwtHeader): JsonWebKey[] {
+  const keys = jwks.keys ?? [];
+  const candidates = keys.filter((key) => {
+    if (key.kty !== "RSA") return false;
+    if (key.alg && key.alg !== "RS256") return false;
+    if (header.kid && (key as JsonWebKey & { kid?: string }).kid !== header.kid) return false;
+    return true;
+  });
+
+  if (candidates.length === 0) {
+    throw new AuthError("Cloudflare Access signing key was not found", 401);
+  }
+  return candidates;
+}
+
+async function verifyWithAnyAccessKey(
+  keys: JsonWebKey[],
+  signingInput: string,
+  signature: Uint8Array,
+): Promise<boolean> {
+  for (const key of keys) {
+    const cryptoKey = await crypto.subtle.importKey(
+      "jwk",
+      key,
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["verify"],
+    );
+    if (
+      await crypto.subtle.verify(
+        "RSASSA-PKCS1-v1_5",
+        cryptoKey,
+        signature,
+        new TextEncoder().encode(signingInput),
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function validateAccessJwtClaims(payload: AccessJwtPayload, config: AccessConfig): void {
+  if (payload.iss !== config.issuer) {
+    throw new AuthError("Cloudflare Access token issuer is invalid", 401);
+  }
+
+  const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+  if (!audiences.includes(config.audience)) {
+    throw new AuthError("Cloudflare Access token audience is invalid", 401);
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  if (typeof payload.exp !== "number" || payload.exp <= now - ACCESS_CLOCK_TOLERANCE_SECONDS) {
+    throw new AuthError("Cloudflare Access token is expired", 401);
+  }
+  if (typeof payload.nbf === "number" && payload.nbf > now + ACCESS_CLOCK_TOLERANCE_SECONDS) {
+    throw new AuthError("Cloudflare Access token is not valid yet", 401);
+  }
+}
+
+function bearerTokenFromAuthorization(value: string | null): string | undefined {
+  if (!value) return undefined;
+  const match = value.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || undefined;
+}
+
+function cookieValue(value: string | null, name: string): string | undefined {
+  if (!value) return undefined;
+  for (const part of value.split(";")) {
+    const [rawKey, ...rawValue] = part.trim().split("=");
+    if (rawKey === name) {
+      return rawValue.join("=") || undefined;
+    }
+  }
+  return undefined;
+}
+
 function tokenFromWebSocketProtocol(
   value: string | null,
+  prefix = DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
 ): { protocol: string; token: string } | undefined {
   if (!value) return undefined;
 
   for (const protocol of value.split(",")) {
     const trimmed = protocol.trim();
-    if (!trimmed.startsWith(DEV_AUTH_TOKEN_PROTOCOL_PREFIX)) continue;
-    const token = decodeBase64Url(trimmed.slice(DEV_AUTH_TOKEN_PROTOCOL_PREFIX.length));
+    if (!trimmed.startsWith(prefix)) continue;
+    const token = decodeBase64Url(trimmed.slice(prefix.length));
     if (!token) continue;
     return { protocol: trimmed, token };
   }
@@ -332,14 +628,30 @@ function decodeBase64Url(value: string): string | undefined {
   if (value.length === 0) return undefined;
 
   try {
-    const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
-    const binary = atob(padded);
-    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    const bytes = decodeBase64UrlBytes(value);
     return new TextDecoder().decode(bytes);
   } catch {
     return undefined;
   }
+}
+
+function decodeBase64UrlJson<T>(value: string): T {
+  const decoded = decodeBase64Url(value);
+  if (!decoded) {
+    throw new AuthError("Cloudflare Access token contains invalid base64url JSON", 401);
+  }
+  try {
+    return JSON.parse(decoded) as T;
+  } catch (error) {
+    throw new AuthError(`Cloudflare Access token contains invalid JSON: ${String(error)}`, 401);
+  }
+}
+
+function decodeBase64UrlBytes(value: string): Uint8Array {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
+  const binary = atob(padded);
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
 }
 
 function defaultOperator(): string {

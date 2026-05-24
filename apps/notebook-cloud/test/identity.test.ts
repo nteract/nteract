@@ -1,11 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
   AuthError,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
   authenticateAnonymousViewer,
   authenticateDevRequest,
   authenticateRequest,
+  authenticateRequestWithProviders,
   isAnonymousViewer,
   parseActorLabel,
   parseScope,
@@ -16,6 +18,7 @@ import {
   validateOperator,
   validatePrincipal,
 } from "../src/identity.ts";
+import { accessTokenFixture, base64Url } from "./access-jwt-fixture.ts";
 
 describe("dev identity", () => {
   it("uses explicit anonymous viewer auth when no dev credential is presented", () => {
@@ -252,11 +255,109 @@ describe("dev identity", () => {
   });
 });
 
-function base64Url(value: string): string {
-  const bytes = new TextEncoder().encode(value);
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
+describe("Cloudflare Access identity", () => {
+  it("validates Access JWT assertions and maps sub to a room principal", async () => {
+    const { env, token } = await accessTokenFixture({ subject: "user/123" });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?operator=desktop:a&scope=editor", {
+        headers: {
+          "Cf-Access-Jwt-Assertion": token,
+        },
+      }),
+      env,
+    );
+
+    assert.deepEqual(identity, {
+      principal: "user:cloudflare-access:user%2F123",
+      operator: "desktop:a",
+      actorLabel: "user:cloudflare-access:user%2F123/desktop:a",
+      scope: "editor",
+    });
+  });
+
+  it("accepts browser WebSocket Access tokens through subprotocols", async () => {
+    const { env, token } = await accessTokenFixture({ subject: "alice" });
+    const protocol = `${ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url(token)}`;
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?operator=browser:tab&scope=viewer", {
+        headers: {
+          "Sec-WebSocket-Protocol": `other-proto, ${protocol}`,
+        },
+      }),
+      env,
+    );
+
+    assert.equal(identity.actorLabel, "user:cloudflare-access:alice/browser:tab");
+    assert.equal(identity.webSocketProtocol, protocol);
+  });
+
+  it("rejects Access tokens with the wrong audience", async () => {
+    const { env, token } = await accessTokenFixture({
+      audience: "wrong-audience",
+      subject: "alice",
+    });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          env,
+        ),
+      (error) =>
+        error instanceof AuthError && error.status === 401 && /audience/.test(error.message),
+    );
+  });
+
+  it("ignores bearer tokens when Access auth is not configured", async () => {
+    const { token } = await accessTokenFixture({ subject: "alice" });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?viewer_session=anon-bearer", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      {},
+    );
+
+    assert.equal(identity.actorLabel, "anonymous:anon-bearer/browser:anon-bearer");
+    assert.equal(identity.scope, "viewer");
+  });
+
+  it("tries matching RSA keys when a rotating Access JWT omits kid", async () => {
+    const { env, token } = await accessTokenFixture({
+      includeKid: false,
+      includeUnmatchedKey: true,
+      subject: "alice",
+    });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?operator=desktop:a", {
+        headers: {
+          "Cf-Access-Jwt-Assertion": token,
+        },
+      }),
+      env,
+    );
+
+    assert.equal(identity.actorLabel, "user:cloudflare-access:alice/desktop:a");
+  });
+
+  it("does not treat URL-carried Access tokens as credentials", async () => {
+    const { env, token } = await accessTokenFixture({ subject: "alice" });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request(`https://cloud.test/n/demo/sync?access_token=${encodeURIComponent(token)}`),
+      env,
+    );
+
+    assert.equal(identity.principal.startsWith("anonymous:"), true);
+    assert.equal(identity.scope, "viewer");
+  });
+});
