@@ -1,5 +1,5 @@
 import type { AuthenticatedConnection } from "./identity.ts";
-import type { Env } from "./cloudflare-types.ts";
+import type { D1PreparedStatement, Env } from "./cloudflare-types.ts";
 
 export interface NotebookCatalog {
   notebook: NotebookRow;
@@ -36,6 +36,16 @@ export interface BlobRow {
   uploaded_at: string;
 }
 
+export interface NotebookAclRow {
+  notebook_id: string;
+  subject_kind: "principal" | "public";
+  subject: string;
+  scope: AuthenticatedConnection["scope"];
+  created_at: string;
+  updated_at: string;
+  created_by_actor_label: string;
+}
+
 const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS notebooks (
     id TEXT PRIMARY KEY,
@@ -66,6 +76,19 @@ const SCHEMA_STATEMENTS = [
     PRIMARY KEY (notebook_id, hash),
     FOREIGN KEY (notebook_id) REFERENCES notebooks(id)
   )`,
+  `CREATE TABLE IF NOT EXISTS notebook_acl (
+    notebook_id TEXT NOT NULL,
+    subject_kind TEXT NOT NULL CHECK (subject_kind IN ('principal', 'public')),
+    subject TEXT NOT NULL,
+    scope TEXT NOT NULL CHECK (scope IN ('viewer', 'editor', 'runtime_peer', 'owner')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    created_by_actor_label TEXT NOT NULL,
+    PRIMARY KEY (notebook_id, subject_kind, subject, scope),
+    FOREIGN KEY (notebook_id) REFERENCES notebooks(id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS notebook_acl_subject_idx
+    ON notebook_acl (subject_kind, subject, notebook_id)`,
 ];
 
 const SCHEMA_MIGRATIONS = [
@@ -114,6 +137,7 @@ export async function ensureCatalogSchema(env: Env): Promise<void> {
 async function initializeCatalogSchema(env: Env): Promise<void> {
   await Promise.all(SCHEMA_STATEMENTS.map((statement) => env.DB!.prepare(statement).run()));
   await runCatalogMigrations(env);
+  await backfillNotebookAcl(env);
 }
 
 async function runCatalogMigrations(env: Env): Promise<void> {
@@ -130,7 +154,126 @@ async function tableHasColumn(env: Env, table: string, column: string): Promise<
   return result.results?.some((row) => row.name === column) ?? false;
 }
 
-export async function ensureNotebook(
+async function backfillNotebookAcl(env: Env): Promise<void> {
+  await env
+    .DB!.prepare(
+      `INSERT OR IGNORE INTO notebook_acl (
+       notebook_id,
+       subject_kind,
+       subject,
+       scope,
+       created_at,
+       updated_at,
+       created_by_actor_label
+     )
+     SELECT id,
+            'principal',
+            owner_principal,
+            'owner',
+            created_at,
+            updated_at,
+            'system/schema:notebook-cloud-owner-acl-backfill'
+       FROM notebooks`,
+    )
+    .run();
+
+  await env
+    .DB!.prepare(
+      `INSERT OR IGNORE INTO notebook_acl (
+       notebook_id,
+       subject_kind,
+       subject,
+       scope,
+       created_at,
+       updated_at,
+       created_by_actor_label
+     )
+     SELECT id,
+            'public',
+            'anonymous',
+            'viewer',
+            created_at,
+            updated_at,
+            'system/schema:notebook-cloud-public-acl-backfill'
+       FROM notebooks
+       WHERE latest_revision_id IS NOT NULL`,
+    )
+    .run();
+}
+
+export async function getNotebookRow(env: Env, notebookId: string): Promise<NotebookRow | null> {
+  if (!env.DB) {
+    return null;
+  }
+
+  await ensureCatalogSchema(env);
+  return await env.DB.prepare(
+    `SELECT id, owner_principal, title, created_at, updated_at, latest_revision_id
+       FROM notebooks
+       WHERE id = ?`,
+  )
+    .bind(notebookId)
+    .first<NotebookRow>();
+}
+
+export async function getNotebookAclRowsForPrincipal(
+  env: Env,
+  notebookId: string,
+  principal: string,
+): Promise<NotebookAclRow[]> {
+  if (!env.DB) {
+    return [];
+  }
+
+  await ensureCatalogSchema(env);
+  const rows = await env.DB.prepare(
+    `SELECT notebook_id,
+            subject_kind,
+            subject,
+            scope,
+            created_at,
+            updated_at,
+            created_by_actor_label
+       FROM notebook_acl
+       WHERE notebook_id = ?
+         AND subject_kind = 'principal'
+         AND subject = ?
+       ORDER BY scope`,
+  )
+    .bind(notebookId, principal)
+    .all<NotebookAclRow>();
+  return rows.results ?? [];
+}
+
+export async function getPublicNotebookAclRows(
+  env: Env,
+  notebookId: string,
+): Promise<NotebookAclRow[]> {
+  if (!env.DB) {
+    return [];
+  }
+
+  await ensureCatalogSchema(env);
+  const rows = await env.DB.prepare(
+    `SELECT notebook_id,
+            subject_kind,
+            subject,
+            scope,
+            created_at,
+            updated_at,
+            created_by_actor_label
+       FROM notebook_acl
+       WHERE notebook_id = ?
+         AND subject_kind = 'public'
+         AND subject = 'anonymous'
+       ORDER BY scope`,
+  )
+    .bind(notebookId)
+    .all<NotebookAclRow>();
+  return rows.results ?? [];
+}
+
+export async function createNotebookWithOwnerAcl(
   env: Env,
   notebookId: string,
   identity: AuthenticatedConnection,
@@ -140,13 +283,64 @@ export async function ensureNotebook(
   }
 
   await ensureCatalogSchema(env);
+  const now = new Date().toISOString();
   await env.DB.prepare(
-    `INSERT INTO notebooks (id, owner_principal, updated_at)
-       VALUES (?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at`,
+    `INSERT INTO notebooks (id, owner_principal, created_at, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(id) DO NOTHING`,
   )
-    .bind(notebookId, identity.principal, new Date().toISOString())
+    .bind(notebookId, identity.principal, now, now)
     .run();
+
+  const notebook = await getNotebookRow(env, notebookId);
+  if (notebook?.owner_principal !== identity.principal) {
+    return;
+  }
+
+  await notebookAclInsert(env, {
+    notebookId,
+    subjectKind: "principal",
+    subject: identity.principal,
+    scope: "owner",
+    actorLabel: identity.actorLabel,
+    timestamp: now,
+  }).run();
+}
+
+function notebookAclInsert(
+  env: Env,
+  row: {
+    notebookId: string;
+    subjectKind: NotebookAclRow["subject_kind"];
+    subject: string;
+    scope: NotebookAclRow["scope"];
+    actorLabel: string;
+    timestamp: string;
+  },
+): D1PreparedStatement {
+  return env
+    .DB!.prepare(
+      `INSERT INTO notebook_acl (
+       notebook_id,
+       subject_kind,
+       subject,
+       scope,
+       created_at,
+       updated_at,
+       created_by_actor_label
+     ) VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(notebook_id, subject_kind, subject, scope) DO UPDATE SET
+       updated_at = excluded.updated_at`,
+    )
+    .bind(
+      row.notebookId,
+      row.subjectKind,
+      row.subject,
+      row.scope,
+      row.timestamp,
+      row.timestamp,
+      row.actorLabel,
+    );
 }
 
 export async function recordRevision(
@@ -158,6 +352,7 @@ export async function recordRevision(
     snapshotKey: string;
     runtimeSnapshotKey: string | null;
     actorLabel: string;
+    publishPublic?: boolean;
   },
 ): Promise<string> {
   if (!env.DB) {
@@ -192,6 +387,18 @@ export async function recordRevision(
        SET latest_revision_id = ?, updated_at = ?
        WHERE id = ?`,
     ).bind(revisionId, createdAt, revision.notebookId),
+    ...(revision.publishPublic
+      ? [
+          notebookAclInsert(env, {
+            notebookId: revision.notebookId,
+            subjectKind: "public",
+            subject: "anonymous",
+            scope: "viewer",
+            actorLabel: revision.actorLabel,
+            timestamp: createdAt,
+          }),
+        ]
+      : []),
   ]);
   return revisionId;
 }
