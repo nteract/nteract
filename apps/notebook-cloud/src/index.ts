@@ -453,16 +453,15 @@ async function routeNotebookAcl(request: Request, env: Env, notebookId: string):
   }
 
   if (request.method === "DELETE") {
-    if (await wouldRemoveLastOwner(env, notebookId, aclInput)) {
-      return json({ error: "cannot remove the last owner ACL row" }, 409);
-    }
-
-    await revokeNotebookAclRow(env, {
+    const revoked = await revokeNotebookAclRow(env, {
       notebookId,
       subjectKind: aclInput.subject_kind,
       subject: aclInput.subject,
       scope: aclInput.scope,
     });
+    if (!revoked && (await isOnlyRemainingOwner(env, notebookId, aclInput))) {
+      return json({ error: "cannot remove the last owner ACL row" }, 409);
+    }
     return json({
       ok: true,
       notebook_id: notebookId,
@@ -943,7 +942,7 @@ function stringField(value: unknown, fieldName: string): string | Response {
   return value.trim();
 }
 
-async function wouldRemoveLastOwner(
+async function isOnlyRemainingOwner(
   env: Env,
   notebookId: string,
   row: ParsedNotebookAclInput,
@@ -953,13 +952,10 @@ async function wouldRemoveLastOwner(
   }
 
   const rows = await getNotebookAclRows(env, notebookId);
-  const remainingOwners = rows.filter(
-    (candidate) =>
-      candidate.subject_kind === "principal" &&
-      candidate.scope === "owner" &&
-      candidate.subject !== row.subject,
+  const ownerRows = rows.filter(
+    (candidate) => candidate.subject_kind === "principal" && candidate.scope === "owner",
   );
-  return remainingOwners.length === 0;
+  return ownerRows.length === 1 && ownerRows[0]?.subject === row.subject;
 }
 
 async function safeEnsureCatalogSchema(env: Env, ctx: ExecutionContext): Promise<void> {

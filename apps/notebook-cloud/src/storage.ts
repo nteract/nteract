@@ -323,21 +323,34 @@ export async function grantNotebookAclRow(env: Env, row: NotebookAclInput): Prom
 export async function revokeNotebookAclRow(
   env: Env,
   row: Omit<NotebookAclInput, "actorLabel">,
-): Promise<void> {
+): Promise<boolean> {
   if (!env.DB) {
-    return;
+    return false;
   }
 
   await ensureCatalogSchema(env);
-  await env.DB.prepare(
+  const result = await env.DB.prepare(
     `DELETE FROM notebook_acl
        WHERE notebook_id = ?
          AND subject_kind = ?
          AND subject = ?
-         AND scope = ?`,
+         AND scope = ?
+         AND (
+           subject_kind != 'principal'
+           OR scope != 'owner'
+           OR (
+             SELECT COUNT(*)
+               FROM notebook_acl
+              WHERE notebook_id = ?
+                AND subject_kind = 'principal'
+                AND scope = 'owner'
+                AND subject != ?
+           ) > 0
+         )`,
   )
-    .bind(row.notebookId, row.subjectKind, row.subject, row.scope)
+    .bind(row.notebookId, row.subjectKind, row.subject, row.scope, row.notebookId, row.subject)
     .run();
+  return d1Changes(result) > 0;
 }
 
 export async function createNotebookWithOwnerAcl(
@@ -560,4 +573,9 @@ export async function getNotebookCatalog(
 
 function encodePathComponent(value: string): string {
   return encodeURIComponent(value).replaceAll("%2F", "%252F");
+}
+
+function d1Changes(result: { meta: Record<string, unknown> }): number {
+  const changes = result.meta.changes;
+  return typeof changes === "number" ? changes : 0;
 }

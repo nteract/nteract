@@ -590,6 +590,50 @@ describe("Worker artifact routes", () => {
     assert.equal((await getNotebookAclRows(env, "last-owner-demo")).length, 1);
   });
 
+  it("allows owner revocation only while another owner row remains", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "two-owner-demo");
+    seedAcl(env, {
+      notebookId: "two-owner-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    seedAcl(env, {
+      notebookId: "two-owner-demo",
+      subject: "user:dev:bob",
+      scope: "owner",
+    });
+
+    const removeBob = await aclRequest(
+      env,
+      "DELETE",
+      {
+        subject_kind: "principal",
+        subject: "user:dev:bob",
+        scope: "owner",
+      },
+      "two-owner-demo",
+    );
+    assert.equal(removeBob.status, 200);
+    assert.deepEqual(
+      (await getNotebookAclRows(env, "two-owner-demo")).map((row) => row.subject),
+      ["user:dev:alice"],
+    );
+
+    const removeAlice = await aclRequest(
+      env,
+      "DELETE",
+      {
+        subject_kind: "principal",
+        subject: "user:dev:alice",
+        scope: "owner",
+      },
+      "two-owner-demo",
+    );
+    assert.equal(removeAlice.status, 409);
+    assert.deepEqual(await removeAlice.json(), { error: "cannot remove the last owner ACL row" });
+  });
+
   it("does not grant owner ACL to a principal that loses notebook creation", async () => {
     const env = fakeEnv();
     const alice = authenticateDevRequest(
@@ -1129,6 +1173,21 @@ class FakeD1Statement implements D1PreparedStatement {
         string,
         NotebookAclRow["scope"],
       ];
+      if (
+        subjectKind === "principal" &&
+        scope === "owner" &&
+        !this.db.acl.some(
+          (row) =>
+            row.notebook_id === notebookId &&
+            row.subject_kind === "principal" &&
+            row.scope === "owner" &&
+            row.subject !== subject,
+        )
+      ) {
+        return okResult(undefined, { changes: 0 });
+      }
+
+      const countBefore = this.db.acl.length;
       const retained = this.db.acl.filter(
         (row) =>
           !(
@@ -1139,6 +1198,7 @@ class FakeD1Statement implements D1PreparedStatement {
           ),
       );
       this.db.acl.splice(0, this.db.acl.length, ...retained);
+      return okResult(undefined, { changes: countBefore - retained.length });
     } else if (this.query.includes("INSERT INTO notebooks")) {
       const [id, ownerPrincipal, createdAtOrUpdatedAt, maybeUpdatedAt] = this.values as [
         string,
@@ -1294,11 +1354,11 @@ interface BlobRow {
   uploaded_at: string;
 }
 
-function okResult<T = unknown>(results?: T[]): D1Result<T> {
+function okResult<T = unknown>(results?: T[], meta: Record<string, unknown> = {}): D1Result<T> {
   return {
     results,
     success: true,
-    meta: {},
+    meta,
   };
 }
 
