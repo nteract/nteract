@@ -5,7 +5,7 @@ Subclasses ``IPKernelApp``/``IPythonKernel``/``ZMQInteractiveShell``/
 
 - A hook chain on the shell's displayhook (lets ``execute_result`` carry
   buffers, matching ``display_data``'s existing hook chain).
-- An auto-loaded bootstrap extension that registers DataFrame formatters
+- An auto-loaded bootstrap extension that registers Arrow stream formatters
   and publisher hooks for the nteract data-experience integration.
 
 The daemon invokes this module in place of ``ipykernel_launcher`` by default.

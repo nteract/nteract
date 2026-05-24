@@ -7,10 +7,11 @@ user code runs. Four things happen on ``load_ipython_extension``:
    ``_repr_llm_``. This mirrors the original ``repr_llm`` convention while
    keeping the launcher self-contained.
 
-2. ``mimebundle_formatter`` entries for pandas / polars / narwhals /
-   datasets are registered by **dotted type name** (no eager imports).
-   IPython binds them lazily on first encounter — dx's historical
-   ``import pandas as pd`` at install time becomes unnecessary.
+2. Generic Arrow stream MIME formatters look for ``__arrow_c_stream__`` on
+   every object. pandas, polars, pyarrow, narwhals, and other producers that
+   implement the PyCapsule protocol all flow through the same path. The only
+   dotted type registrations left are for HuggingFace datasets, where nteract
+   adds dataset-specific summary semantics.
 
 3. :func:`_buffer_hook.install` registers the single buffer-attachment
    hook on *both* ``ip.display_pub`` and ``ip.displayhook``. With the
@@ -35,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -47,11 +49,11 @@ from nteract_kernel_launcher._format import (
     ARROW_STREAM_MANIFEST_MIME,
     ARROW_STREAM_MIME,
     DEFAULT_ARROW_CHUNK_BYTES,
+    arrow_stream_row_count,
     build_arrow_stream_manifest,
     build_arrow_stream_manifest_from_chunks,
-    iter_arrow_table_chunks,
-    serialize_arrow_table,
-    serialize_dataframe,
+    has_arrow_stream_protocol,
+    iter_arrow_stream_chunks,
 )
 from nteract_kernel_launcher._refs import (
     BLOB_REF_MIME,
@@ -77,34 +79,115 @@ class LLMFormatter(BaseFormatter):
     format_type = Unicode("text/llm+plain")
     print_method = ObjectName("_repr_llm_")
 
+    def __init__(self, *args, arrow_state: _ArrowFormatterState | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._arrow_state = arrow_state
 
-# ─── mimebundle formatters (lazy-bound via for_type_by_name) ──────────────
+    def __call__(self, obj: Any) -> Any:
+        data = super().__call__(obj)
+        if data is not None or self._arrow_state is None:
+            return data
+        return self._arrow_state.value_for(obj, "text/llm+plain")
 
 
-def _pandas_mimebundle(df: Any, include=None, exclude=None) -> dict | None:
-    return _emit_dataframe(df, total_rows=len(df))
+class ArrowBlobRefFormatter(BaseFormatter):
+    """Per-MIME formatter that emits nteract blob refs for Arrow streams."""
+
+    format_type = Unicode(BLOB_REF_MIME)
+
+    def __init__(self, *args, arrow_state: _ArrowFormatterState, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._arrow_state = arrow_state
+
+    def __call__(self, obj: Any) -> Any:
+        if not self.enabled:
+            return None
+        try:
+            printer = self.lookup(obj)
+        except KeyError:
+            return self._arrow_state.value_for(obj, BLOB_REF_MIME)
+        return printer(obj)
 
 
-def _polars_mimebundle(df: Any, include=None, exclude=None) -> dict | None:
-    return _emit_dataframe(df, total_rows=df.height)
+class ArrowStreamManifestFormatter(BaseFormatter):
+    """Per-MIME formatter that emits Arrow stream manifests."""
+
+    format_type = Unicode(ARROW_STREAM_MANIFEST_MIME)
+
+    def __init__(self, *args, arrow_state: _ArrowFormatterState, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._arrow_state = arrow_state
+
+    def __call__(self, obj: Any) -> Any:
+        if not self.enabled:
+            return None
+        try:
+            printer = self.lookup(obj)
+        except KeyError:
+            return self._arrow_state.value_for(obj, ARROW_STREAM_MANIFEST_MIME)
+        return printer(obj)
 
 
-def _narwhals_mimebundle(df: Any, include=None, exclude=None) -> dict | None:
-    native, total_rows = _unwrap_narwhals(df)
-    if native is None:
+class _ArrowFormatterState:
+    """Share one serialized Arrow bundle across per-MIME formatter calls."""
+
+    def __init__(self) -> None:
+        self._tls = threading.local()
+
+    def _cached_bundle(self, obj: Any) -> dict[str, Any] | None:
+        cache = getattr(self._tls, "cache", None)
+        if isinstance(cache, dict) and cache.get("obj") is obj:
+            bundle = cache.get("bundle")
+            return bundle if isinstance(bundle, dict) else None
         return None
-    return _emit_dataframe(native, total_rows=total_rows)
+
+    def _set_cache(self, obj: Any, bundle: dict[str, Any]) -> None:
+        self._tls.cache = {
+            "obj": obj,
+            "bundle": bundle,
+            "remaining": {
+                mime
+                for mime in (BLOB_REF_MIME, ARROW_STREAM_MANIFEST_MIME, "text/llm+plain")
+                if mime in bundle
+            },
+        }
+
+    def _mark_used(self, obj: Any, mime: str) -> None:
+        cache = getattr(self._tls, "cache", None)
+        if not isinstance(cache, dict) or cache.get("obj") is not obj:
+            return
+        remaining = cache.get("remaining")
+        if isinstance(remaining, set):
+            remaining.discard(mime)
+            if not remaining:
+                self._tls.cache = None
+
+    def value_for(self, obj: Any, mime: str) -> Any | None:
+        bundle = self._cached_bundle(obj)
+        if bundle is None:
+            bundle = _arrow_stream_mimebundle(obj)
+            if not bundle:
+                return None
+            self._set_cache(obj, bundle)
+        value = bundle.get(mime)
+        self._mark_used(obj, mime)
+        return value
 
 
-def _pyarrow_table_mimebundle(table: Any, include=None, exclude=None) -> dict | None:
-    return _emit_arrow_table(table, total_rows=table.num_rows)
+def _arrow_state_for(ip: Any) -> _ArrowFormatterState:
+    display_formatter = ip.display_formatter
+    state = getattr(display_formatter, "_nteract_arrow_state", None)
+    if not isinstance(state, _ArrowFormatterState):
+        state = _ArrowFormatterState()
+        display_formatter._nteract_arrow_state = state
+    return state
 
 
-def _pyarrow_record_batch_mimebundle(batch: Any, include=None, exclude=None) -> dict | None:
-    import pyarrow as pa
+# ─── formatters ──────────────────────────────────────────────────────────
 
-    table = pa.Table.from_batches([batch])
-    return _emit_arrow_table(table, total_rows=table.num_rows)
+
+def _arrow_stream_mimebundle(source: Any, include=None, exclude=None) -> dict | None:
+    return _emit_arrow_stream(source)
 
 
 def _dataset_mimebundle(ds: Any, include=None, exclude=None) -> dict | None:
@@ -133,143 +216,73 @@ def _dataset_mimebundle(ds: Any, include=None, exclude=None) -> dict | None:
     return _emit_arrow_table(table, total_rows=total_rows, summary_fn=summary)
 
 
-def _unwrap_narwhals(nw_df: Any) -> tuple[Any, int] | tuple[None, int]:
-    """Return ``(native_df, row_count)`` for a ``narwhals.DataFrame``.
-
-    Fast path: native is pandas or polars — pass through. Fallback:
-    round-trip via ``.to_pandas()`` for any backend narwhals understands
-    (pyarrow, modin, dask, cudf). ``LazyFrame`` isn't handled here —
-    displaying a lazy query would force ``.collect()``, which has side
-    effects.
-    """
-    try:
-        native = nw_df.to_native()
-    except Exception as exc:  # noqa: BLE001
-        log.debug("narwhals to_native failed: %s", exc)
-        return None, 0
-
-    try:
-        import pandas as pd
-
-        if isinstance(native, pd.DataFrame):
-            return native, len(native)
-    except ImportError:
-        pass
-    try:
-        import polars as pl
-
-        if isinstance(native, pl.DataFrame):
-            return native, native.height
-    except ImportError:
-        pass
-
-    try:
-        as_pandas = nw_df.to_pandas()
-        return as_pandas, len(as_pandas)
-    except Exception as exc:  # noqa: BLE001
-        log.debug("narwhals to_pandas failed: %s", exc)
-        return None, 0
-
-
-def _emit_dataframe(df: Any, *, total_rows: int) -> dict | None:
-    """Serialize → stash bytes keyed by sha256 → return ref-mime bundle.
-
-    When Arrow IPC serialization fails (e.g. pyarrow missing), fall back to
-    a summary-only ``text/llm+plain`` bundle so agents still get column
-    stats instead of a raw repr. IPython's default formatter chain merges
-    pandas' ``text/html`` / ``text/plain`` on top for host-side fallback.
-    """
-    try:
-        data, content_type, included_rows = serialize_dataframe(df, max_bytes=_MAX_PAYLOAD_BYTES)
-    except Exception as exc:  # noqa: BLE001
-        log.debug("serialize failed: %s — emitting summary-only bundle", exc)
-        try:
-            llm = summarize_dataframe(
-                df, total_rows=total_rows, included_rows=total_rows, sampled=False
-            )
-            return {"text/llm+plain": llm}
-        except Exception:  # noqa: BLE001
-            return None
-
-    return _emit_table_bytes(
-        data,
-        content_type=content_type,
-        total_rows=total_rows,
-        included_rows=included_rows,
-        summary_fn=lambda included, sampled: summarize_dataframe(
-            df, total_rows=total_rows, included_rows=included, sampled=sampled
-        ),
-    )
-
-
-def _emit_arrow_table(
-    table: Any,
+def _emit_arrow_stream(
+    source: Any,
     *,
-    total_rows: int,
-    summary_fn: Callable[[], str] | None = None,
+    total_rows: int | None = None,
+    summary_fn: Callable[..., str] | None = None,
 ) -> dict | None:
-    """Serialize a ``pa.Table`` to Arrow IPC, preserving schema KV metadata.
+    """Serialize any Arrow stream producer into a nteract output bundle."""
+    if not has_arrow_stream_protocol(source):
+        return None
 
-    Distinct from :func:`_emit_dataframe` because the dataframe path runs
-    bytes through the Arrow PyCapsule stream protocol or a ``pa.Table`` fallback,
-    so the ``huggingface`` key survives for Sift's rich-type detection.
-
-    ``summary_fn`` lets callers (notably ``_dataset_mimebundle``) provide
-    a richer per-domain summary (HF features) instead of the generic
-    pandas-style preview.
-    """
     try:
-        data, content_type, included_rows = serialize_arrow_table(
-            table, max_bytes=_MAX_PAYLOAD_BYTES
+        chunks = list(
+            iter_arrow_stream_chunks(
+                source,
+                max_chunk_bytes=min(DEFAULT_ARROW_CHUNK_BYTES, _MAX_PAYLOAD_BYTES),
+            )
         )
     except Exception as exc:  # noqa: BLE001
-        log.debug("arrow serialize failed: %s — emitting summary-only bundle", exc)
-        if summary_fn is not None:
-            try:
-                return {"text/llm+plain": summary_fn()}
-            except Exception:  # noqa: BLE001
-                return None
+        log.debug("arrow stream emit failed: %s", exc)
         return None
+
+    included_rows = sum(chunk.row_count for chunk in chunks)
+    if total_rows is None:
+        total_rows = arrow_stream_row_count(source)
+    if total_rows is None:
+        total_rows = included_rows
 
     def _summary(included: int, sampled: bool) -> str:
         if summary_fn is not None:
-            return summary_fn()
-        return _summarize_arrow_table(
-            table, total_rows=total_rows, included_rows=included, sampled=sampled
+            try:
+                return summary_fn(included, sampled)
+            except TypeError:
+                return summary_fn()
+        return _summarize_arrow_source(
+            source,
+            total_rows=total_rows,
+            included_rows=included,
+            sampled=sampled,
         )
 
-    if content_type == ARROW_STREAM_MIME and included_rows != total_rows:
-        try:
-            return _emit_arrow_table_chunks(
-                table,
-                total_rows=total_rows,
-                summary_fn=_summary,
-            )
-        except Exception as exc:  # noqa: BLE001
-            log.debug("arrow chunked emit failed: %s — keeping sampled bundle", exc)
+    if len(chunks) == 1:
+        chunk = chunks[0]
+        return _emit_table_bytes(
+            chunk.data,
+            content_type=ARROW_STREAM_MIME,
+            total_rows=total_rows,
+            included_rows=included_rows,
+            record_batch_count=chunk.record_batch_count,
+            summary_fn=_summary,
+        )
 
-    return _emit_table_bytes(
-        data,
-        content_type=content_type,
+    return _emit_arrow_stream_chunks(
+        chunks,
         total_rows=total_rows,
-        included_rows=included_rows,
         summary_fn=_summary,
     )
 
 
-def _emit_arrow_table_chunks(
-    table: Any,
+def _emit_arrow_stream_chunks(
+    chunks: list[Any],
     *,
     total_rows: int,
     summary_fn: Callable[[int, bool], str],
 ) -> dict:
-    """Emit a complete multi-chunk Arrow stream manifest for a pyarrow Table."""
-    chunks = list(
-        iter_arrow_table_chunks(
-            table,
-            max_chunk_bytes=min(DEFAULT_ARROW_CHUNK_BYTES, _MAX_PAYLOAD_BYTES),
-        )
-    )
+    """Emit a complete multi-chunk Arrow stream manifest."""
+    if not chunks:
+        raise ValueError("at least one Arrow stream chunk is required")
     included_rows = sum(chunk.row_count for chunk in chunks)
     sampled = included_rows != total_rows
     llm_text: str | None = None
@@ -295,7 +308,6 @@ def _emit_arrow_table_chunks(
             chunks,
             complete=True,
             summary=summary_hints,
-            schema=table.schema,
         ),
     }
     if llm_text is not None:
@@ -305,6 +317,65 @@ def _emit_arrow_table_chunks(
     for chunk in chunks:
         pending[chunk.content_hash] = chunk.data
     return bundle
+
+
+def _emit_arrow_table(
+    table: Any,
+    *,
+    total_rows: int,
+    summary_fn: Callable[[], str] | None = None,
+) -> dict | None:
+    """Compatibility wrapper for dataset-backed Arrow tables."""
+    return _emit_arrow_stream(table, total_rows=total_rows, summary_fn=summary_fn)
+
+
+def _summary_source(source: Any) -> Any:
+    to_native = getattr(source, "to_native", None)
+    if callable(to_native):
+        try:
+            native = to_native()
+            if native is not source:
+                return native
+        except Exception as exc:  # noqa: BLE001
+            log.debug("to_native summary unwrap failed: %s", exc)
+    return source
+
+
+def _summarize_arrow_source(
+    source: Any, *, total_rows: int, included_rows: int, sampled: bool
+) -> str:
+    source = _summary_source(source)
+    try:
+        import pyarrow as pa
+
+        if isinstance(source, pa.Table):
+            return _summarize_arrow_table(
+                source,
+                total_rows=total_rows,
+                included_rows=included_rows,
+                sampled=sampled,
+            )
+        if isinstance(source, pa.RecordBatch):
+            table = pa.Table.from_batches([source])
+            return _summarize_arrow_table(
+                table,
+                total_rows=total_rows,
+                included_rows=included_rows,
+                sampled=sampled,
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.debug("pyarrow summary conversion failed: %s", exc)
+
+    try:
+        return summarize_dataframe(
+            source,
+            total_rows=total_rows,
+            included_rows=included_rows,
+            sampled=sampled,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.debug("dataframe summary failed: %s", exc)
+        return f"Arrow stream table: {included_rows} rows"
 
 
 def _summarize_arrow_table(
@@ -328,6 +399,7 @@ def _emit_table_bytes(
     content_type: str,
     total_rows: int,
     included_rows: int,
+    record_batch_count: int | None = None,
     summary_fn: Callable[[int, bool], str],
 ) -> dict:
     """Stash bytes, build the ref bundle, attach a summary.
@@ -361,6 +433,7 @@ def _emit_table_bytes(
                 content_hash=h,
                 content_size=len(data),
                 row_count=included_rows,
+                record_batch_count=record_batch_count,
                 summary=summary_hints,
             )
         except Exception as exc:  # noqa: BLE001
@@ -381,57 +454,44 @@ def _install_llm_formatter(ip: Any) -> BaseFormatter | None:
     formatters = getattr(display_formatter, "formatters", None)
     if not isinstance(formatters, dict):
         return None
+    arrow_state = _arrow_state_for(ip)
 
     existing = formatters.get("text/llm+plain")
     if existing is not None:
+        if isinstance(existing, LLMFormatter) and existing._arrow_state is None:
+            existing._arrow_state = arrow_state
         return existing
 
-    llm_formatter = LLMFormatter(parent=display_formatter)
+    llm_formatter = LLMFormatter(parent=display_formatter, arrow_state=arrow_state)
     formatters["text/llm+plain"] = llm_formatter
     return llm_formatter
 
 
 def _install_dataframe_formatters(ip: Any) -> None:
-    """Register mimebundle formatters lazily via ``for_type_by_name``.
+    """Install generic Arrow stream formatters and dataset summaries."""
+    display_formatter = ip.display_formatter
+    formatters = getattr(display_formatter, "formatters", None)
+    if isinstance(formatters, dict):
+        arrow_state = _arrow_state_for(ip)
+        if not isinstance(formatters.get(BLOB_REF_MIME), ArrowBlobRefFormatter):
+            formatters[BLOB_REF_MIME] = ArrowBlobRefFormatter(
+                parent=display_formatter,
+                arrow_state=arrow_state,
+            )
+        if not isinstance(
+            formatters.get(ARROW_STREAM_MANIFEST_MIME),
+            ArrowStreamManifestFormatter,
+        ):
+            formatters[ARROW_STREAM_MANIFEST_MIME] = ArrowStreamManifestFormatter(
+                parent=display_formatter,
+                arrow_state=arrow_state,
+            )
 
-    IPython's ``for_type_by_name`` keys on ``type.__module__`` + class
-    name. Library-by-library that's:
-
-    - pandas: ``pandas`` (pandas sets ``DataFrame.__module__ = "pandas"``)
-    - polars: ``polars.dataframe.frame``
-    - narwhals: ``narwhals.dataframe``
-    - pyarrow: ``pyarrow.lib`` (Table / RecordBatch are C-extension types)
-    - datasets: ``datasets.arrow_dataset`` / ``datasets.iterable_dataset``
-
-    We register the definitive module each library stamps on the class,
-    plus a short-name fallback for pandas/polars/narwhals/pyarrow. Short
-    names cover both conservative stamping by the library and any future
-    flattening. Registration is cheap and idempotent, so the spray
-    costs nothing.
-    """
     mimebundle = ip.display_formatter.mimebundle_formatter
 
-    # (module_path, type_name, formatter). Keep definitive entries first so
-    # a first-dispatch lookup short-circuits before the fallbacks matter.
+    # Datasets remain type-registered because they add HuggingFace feature
+    # summaries in addition to the generic Arrow stream payload.
     for module_path, type_name, fn in (
-        # pandas — public DataFrame ships with __module__ == "pandas".
-        ("pandas", "DataFrame", _pandas_mimebundle),
-        ("pandas.core.frame", "DataFrame", _pandas_mimebundle),
-        # polars — class module is the deep path; register both.
-        ("polars.dataframe.frame", "DataFrame", _polars_mimebundle),
-        ("polars", "DataFrame", _polars_mimebundle),
-        # narwhals — class lives in narwhals.dataframe.
-        ("narwhals.dataframe", "DataFrame", _narwhals_mimebundle),
-        ("narwhals", "DataFrame", _narwhals_mimebundle),
-        # pyarrow — Table / RecordBatch are stamped to pyarrow.lib by
-        # the C extension. Preserves schema KV metadata end-to-end so
-        # Sift's HF rich-type detection lights up for Arrow-native tables.
-        ("pyarrow.lib", "Table", _pyarrow_table_mimebundle),
-        ("pyarrow", "Table", _pyarrow_table_mimebundle),
-        ("pyarrow.lib", "RecordBatch", _pyarrow_record_batch_mimebundle),
-        ("pyarrow", "RecordBatch", _pyarrow_record_batch_mimebundle),
-        # datasets — materialized datasets can emit parquet; iterable
-        # datasets fall back to summary-only because they have no table.
         ("datasets.arrow_dataset", "Dataset", _dataset_mimebundle),
         ("datasets.iterable_dataset", "IterableDataset", _dataset_mimebundle),
     ):

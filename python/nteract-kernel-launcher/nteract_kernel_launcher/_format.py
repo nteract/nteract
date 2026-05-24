@@ -1,22 +1,18 @@
-"""DataFrame / Arrow serialization (best-available encoder).
+"""Arrow stream serialization helpers.
 
 Arrow IPC stream is the canonical rich table payload. Producers that implement
-the Arrow PyCapsule stream protocol are imported through ``__arrow_c_stream__``;
-pandas and polars keep direct fallbacks for older versions. If the serialized
-payload would exceed ``max_bytes``, the serializer downsamples via ``head(n)`` /
-``slice(0, n)`` with a halving loop and the caller advertises the partial-data
-state in the ``text/llm+plain`` summary and the ref-MIME ``summary`` hints.
+the Arrow PyCapsule stream protocol are imported through ``__arrow_c_stream__``.
+The formatter layer handles small streams as one blob and larger streams as an
+Arrow manifest with multiple independently decodable stream chunks.
 """
 
 from __future__ import annotations
 
 import hashlib
-import io
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
-PARQUET_MIME = "application/vnd.apache.parquet"
 ARROW_STREAM_MIME = "application/vnd.apache.arrow.stream"
 ARROW_STREAM_MANIFEST_MIME = "application/vnd.nteract.arrow-stream-manifest+json"
 DEFAULT_ARROW_CHUNK_BYTES = 8 * 1024 * 1024
@@ -44,11 +40,6 @@ class ArrowStreamChunk:
         }
 
 
-def _detect_flavor(df: Any) -> str:
-    mod = type(df).__module__.split(".")[0]
-    return mod if mod in ("pandas", "polars") else "unknown"
-
-
 def _row_count(obj: Any) -> int | None:
     for attr in ("num_rows", "height"):
         value = getattr(obj, attr, None)
@@ -65,20 +56,21 @@ def _row_count(obj: Any) -> int | None:
         return None
 
 
-def _limit_rows(obj: Any, rows: int) -> Any:
-    head = getattr(obj, "head", None)
-    if callable(head):
-        return head(rows)
+def arrow_stream_row_count(obj: Any) -> int | None:
+    """Return the best available row count for an Arrow stream producer."""
+    return _row_count(obj)
 
-    slice_ = getattr(obj, "slice", None)
-    if callable(slice_):
-        return slice_(0, rows)
 
-    limit = getattr(obj, "limit", None)
-    if callable(limit):
-        return limit(rows)
+def has_arrow_stream_protocol(obj: Any) -> bool:
+    """Return ``True`` when ``obj`` can be consumed as an Arrow stream."""
+    if callable(getattr(obj, "__arrow_c_stream__", None)):
+        return True
+    try:
+        import pyarrow as pa
 
-    raise TypeError(f"{type(obj).__module__}.{type(obj).__name__} cannot be row-limited")
+        return isinstance(obj, pa.RecordBatchReader)
+    except Exception:
+        return False
 
 
 def _record_batch_reader_from_stream(source: Any) -> Any:
@@ -97,16 +89,6 @@ def _record_batch_reader_from_stream(source: Any) -> Any:
         return import_capsule(source.__arrow_c_stream__())
 
     raise TypeError("pyarrow does not support Arrow PyCapsule stream import")
-
-
-def _serialize_record_batch_reader(reader: Any) -> bytes:
-    import pyarrow as pa
-
-    sink = pa.BufferOutputStream()
-    with pa.ipc.new_stream(sink, reader.schema) as writer:
-        for batch in reader:
-            writer.write_batch(batch)
-    return sink.getvalue().to_pybytes()
 
 
 def _serialize_record_batches(schema: Any, batches: list[Any]) -> bytes:
@@ -129,6 +111,23 @@ def _record_batch_estimated_bytes(batch: Any) -> int:
         if isinstance(size, int):
             return size
     return 0
+
+
+def _split_record_batch(batch: Any, *, max_chunk_bytes: int) -> Iterator[Any]:
+    batch_rows = getattr(batch, "num_rows", 0)
+    if batch_rows <= 1:
+        yield batch
+        return
+
+    batch_bytes = _record_batch_estimated_bytes(batch)
+    if batch_bytes <= max_chunk_bytes:
+        yield batch
+        return
+
+    bytes_per_row = max(1, batch_bytes // batch_rows)
+    rows_per_chunk = max(1, max_chunk_bytes // bytes_per_row)
+    for offset in range(0, batch_rows, rows_per_chunk):
+        yield batch.slice(offset, min(rows_per_chunk, batch_rows - offset))
 
 
 def _make_arrow_stream_chunk(
@@ -157,8 +156,8 @@ def iter_arrow_stream_chunks(
     """Yield independently decodable Arrow IPC stream chunks from ``source``.
 
     The source is consumed once as a ``RecordBatchReader``. Chunk boundaries are
-    record-batch boundaries; this intentionally avoids splitting serialized IPC
-    bytes after the fact.
+    record-batch boundaries unless a single batch is itself too large, in which
+    case the batch is sliced into smaller Arrow batches before IPC encoding.
     """
     if max_chunk_bytes <= 0:
         raise ValueError("max_chunk_bytes must be positive")
@@ -171,6 +170,33 @@ def iter_arrow_stream_chunks(
     estimated_bytes = 0
 
     for batch in reader:
+        if (
+            _record_batch_estimated_bytes(batch) > max_chunk_bytes
+            and getattr(batch, "num_rows", 0) > 1
+        ):
+            if batches:
+                yield _make_arrow_stream_chunk(
+                    index=chunk_index,
+                    schema=schema,
+                    batches=batches,
+                    row_count=row_count,
+                )
+                chunk_index += 1
+                batches = []
+                row_count = 0
+                estimated_bytes = 0
+
+            for piece in _split_record_batch(batch, max_chunk_bytes=max_chunk_bytes):
+                piece_rows = getattr(piece, "num_rows", 0)
+                yield _make_arrow_stream_chunk(
+                    index=chunk_index,
+                    schema=schema,
+                    batches=[piece],
+                    row_count=piece_rows,
+                )
+                chunk_index += 1
+            continue
+
         batch_rows = getattr(batch, "num_rows", 0)
         batch_bytes = _record_batch_estimated_bytes(batch)
         if batches and estimated_bytes + batch_bytes > max_chunk_bytes:
@@ -196,69 +222,6 @@ def iter_arrow_stream_chunks(
             batches=batches,
             row_count=row_count,
         )
-
-
-def iter_arrow_table_chunks(
-    table: Any,
-    *,
-    max_chunk_bytes: int = DEFAULT_ARROW_CHUNK_BYTES,
-) -> Iterator[ArrowStreamChunk]:
-    """Yield bounded Arrow IPC stream chunks from a pyarrow Table."""
-    if max_chunk_bytes <= 0:
-        raise ValueError("max_chunk_bytes must be positive")
-    if table.num_rows == 0:
-        yield from iter_arrow_stream_chunks(table, max_chunk_bytes=max_chunk_bytes)
-        return
-
-    table_bytes = getattr(table, "nbytes", 0)
-    bytes_per_row = max(1, table_bytes // table.num_rows)
-    rows_per_chunk = max(1, max_chunk_bytes // bytes_per_row)
-    for index, batch in enumerate(table.to_batches(max_chunksize=rows_per_chunk)):
-        yield _make_arrow_stream_chunk(
-            index=index,
-            schema=table.schema,
-            batches=[batch],
-            row_count=batch.num_rows,
-        )
-
-
-def _serialize_arrow_stream_exportable(source: Any, rows: int | None = None) -> bytes:
-    if rows is not None:
-        source = _limit_rows(source, rows)
-    reader = _record_batch_reader_from_stream(source)
-    return _serialize_record_batch_reader(reader)
-
-
-def _serialize_arrow_table_direct(table: Any) -> bytes:
-    import pyarrow as pa
-
-    sink = pa.BufferOutputStream()
-    with pa.ipc.new_stream(sink, table.schema) as writer:
-        writer.write_table(table)
-    return sink.getvalue().to_pybytes()
-
-
-def _serialize_pandas(df: Any, rows: int | None = None) -> bytes:
-    import pyarrow as pa
-
-    if rows is not None:
-        df = df.head(rows)
-    table = pa.Table.from_pandas(df)
-    return _serialize_arrow_table_direct(table)
-
-
-def _serialize_polars(df: Any, rows: int | None = None) -> bytes:
-    if rows is not None:
-        df = df.head(rows)
-    buf = io.BytesIO()
-    df.write_ipc_stream(buf)
-    return buf.getvalue()
-
-
-def _serialize_arrow_stream_table(table: Any, rows: int | None = None) -> bytes:
-    if rows is not None:
-        table = table.slice(0, rows)
-    return _serialize_arrow_table_direct(table)
 
 
 def build_arrow_stream_manifest(
@@ -340,77 +303,44 @@ def build_arrow_stream_manifest_from_chunks(
     return manifest
 
 
-def _downsample_loop(
-    encode: Callable[..., bytes], total_rows: int, *, max_bytes: int
-) -> tuple[bytes, int]:
-    """Encode at full size; if too big, halve target rows up to four rounds.
+def serialize_arrow_stream(source: Any, *, max_bytes: int) -> tuple[bytes, str, int, int]:
+    """Serialize an Arrow stream producer into one IPC stream blob.
 
-    Compression and Arrow encoding overhead are non-linear in row count, so the
-    first guess (``rows * max_bytes / full_bytes``) tends to overshoot. Halving
-    from there converges quickly; bottoming out at one row keeps this from
-    raising for sampling.
+    Returns ``(bytes, content_type, row_count, record_batch_count)``. Raises
+    ``ValueError`` when the stream needs multiple chunks; callers that can emit
+    manifests should use :func:`iter_arrow_stream_chunks` instead.
     """
-    full = encode()
-    if len(full) <= max_bytes:
-        return full, total_rows
-    if total_rows <= 1:
-        return full, total_rows
-    target_rows = max(1, int(total_rows * (max_bytes / len(full))))
-    for _ in range(4):
-        sampled = encode(rows=target_rows)
-        if len(sampled) <= max_bytes:
-            return sampled, target_rows
-        target_rows = max(1, target_rows // 2)
-    return encode(rows=1), 1
+    chunks = list(iter_arrow_stream_chunks(source, max_chunk_bytes=max_bytes))
+    if len(chunks) != 1 or chunks[0].size > max_bytes:
+        raise ValueError("Arrow stream exceeds max_bytes; chunked manifest is required")
+    chunk = chunks[0]
+    return chunk.data, ARROW_STREAM_MIME, chunk.row_count, chunk.record_batch_count
 
 
 def serialize_dataframe(df: Any, *, max_bytes: int) -> tuple[bytes, str, int]:
-    """Serialize ``df`` to Arrow IPC; downsample if it would exceed ``max_bytes``.
+    """Serialize an Arrow-stream-capable dataframe-like object to Arrow IPC.
 
     Returns ``(bytes, content_type, included_rows)``. Raises ``ValueError`` for
-    unsupported DataFrame types.
+    objects that do not expose the Arrow stream protocol or that need a chunked
+    manifest.
     """
-    flavor = _detect_flavor(df)
-    if flavor == "polars":
-        encoder = _serialize_polars
-        n = df.height
-    elif flavor == "pandas":
-        encoder = _serialize_pandas
-        n = len(df)
-    elif hasattr(df, "__arrow_c_stream__"):
-        n = _row_count(df)
-        if n is None:
-            raise ValueError(
-                f"unsupported row count for: {type(df).__module__}.{type(df).__name__}"
-            )
-        data = _serialize_arrow_stream_exportable(df)
-        if len(data) > max_bytes:
-            raise ValueError(
-                "generic Arrow PyCapsule stream exceeds max_bytes; progressive chunking is required"
-            )
-        return data, ARROW_STREAM_MIME, n
-    else:
+    if not has_arrow_stream_protocol(df):
         raise ValueError(f"unsupported DataFrame type: {type(df).__module__}.{type(df).__name__}")
-
-    if n is None:
-        raise ValueError(f"unsupported row count for: {type(df).__module__}.{type(df).__name__}")
-
-    data, included_rows = _downsample_loop(
-        lambda rows=None: encoder(df, rows=rows), n, max_bytes=max_bytes
+    data, content_type, included_rows, _record_batch_count = serialize_arrow_stream(
+        df,
+        max_bytes=max_bytes,
     )
-    return data, ARROW_STREAM_MIME, included_rows
+    return data, content_type, included_rows
 
 
 def serialize_arrow_table(table: Any, *, max_bytes: int) -> tuple[bytes, str, int]:
-    """Serialize ``pa.Table`` to Arrow IPC stream bytes.
+    """Serialize an Arrow table-like object to one Arrow IPC stream blob.
 
-    Same downsample semantics as :func:`serialize_dataframe`. Schema KV metadata
-    (``huggingface``, ``content_defined_chunking``, etc.) survives because the
-    stream carries the Arrow schema directly.
+    Schema KV metadata (``huggingface``, ``content_defined_chunking``, etc.)
+    survives because the stream carries the Arrow schema directly.
     """
-    data, included_rows = _downsample_loop(
-        lambda rows=None: _serialize_arrow_stream_table(table, rows=rows),
-        table.num_rows,
+    data, content_type, included_rows, _record_batch_count = serialize_arrow_stream(
+        table,
         max_bytes=max_bytes,
     )
-    return data, ARROW_STREAM_MIME, included_rows
+    return data, content_type, included_rows

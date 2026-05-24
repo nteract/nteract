@@ -1,7 +1,7 @@
 """Generate ``text/llm+plain`` summaries for DataFrames, computed Python-side.
 
 Python has direct access to the schema, dtypes, and null counts; deriving the
-summary in-place is far simpler than reparsing parquet server-side. The
+summary in-place is far simpler than reparsing Arrow IPC server-side. The
 ``repr-llm`` crate remains the fallback when dx is not in the loop.
 """
 
@@ -298,7 +298,7 @@ def summarize_dataframe(
     """Produce a ``text/llm+plain`` summary for ``df``.
 
     The summary includes shape, per-column dtype + stats + null count, and a
-    small head sample. If the serialized parquet was downsampled, the header
+    small head sample. If the serialized Arrow payload was sampled, the header
     explicitly calls that out.
     """
     flavor = _detect_flavor(df)
