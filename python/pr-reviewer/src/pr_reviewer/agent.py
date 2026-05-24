@@ -30,6 +30,16 @@ PASSTHROUGH_ENV_KEYS = {
 REVIEW_OUTPUT_KEYS = {"verdict", "terminal_reason", "summary", "findings"}
 
 
+def build_read_only_opencode_config() -> dict[str, Any]:
+    return {
+        "$schema": "https://opencode.ai/config.json",
+        "permission": {
+            "bash": "allow",
+            "edit": "deny",
+        },
+    }
+
+
 @dataclass(frozen=True)
 class OpencodeRunResult:
     text: str
@@ -42,28 +52,20 @@ def build_opencode_env(config: ReviewerConfig, config_dir: Path) -> dict[str, st
     config_path = config_dir / "opencode-reviewer.json"
     # Keep opencode's normal provider/auth config, but block file edits while
     # still allowing shell inspection in the disposable review workspace.
-    config_path.write_text(
-        json.dumps(
-            {
-                "$schema": "https://opencode.ai/config.json",
-                "permission": {
-                    "bash": "allow",
-                    "edit": "deny",
-                },
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n"
-    )
+    reviewer_config = build_read_only_opencode_config()
+    config_path.write_text(json.dumps(reviewer_config, indent=2, sort_keys=True) + "\n")
 
     env = {
         key: value
         for key, value in os.environ.items()
         if key in PASSTHROUGH_ENV_KEYS
         or key.startswith("AWS_")
-        or (key.startswith("OPENCODE_") and key != "OPENCODE_CONFIG")
+        or (
+            key.startswith("OPENCODE_")
+            and key not in {"OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT"}
+        )
     }
+    env["OPENCODE_CONFIG_CONTENT"] = json.dumps(reviewer_config, sort_keys=True)
     env["OPENCODE_CONFIG"] = str(config_path)
     if config.aws_region:
         env["AWS_REGION"] = config.aws_region
@@ -201,7 +203,7 @@ async def run_opencode(
                 proc.communicate(prompt.encode("utf-8")),
                 timeout=config.effective_timeout_seconds(),
             )
-        except TimeoutError as exc:
+        except (TimeoutError, asyncio.TimeoutError) as exc:
             proc.kill()
             await proc.wait()
             raise RuntimeError(

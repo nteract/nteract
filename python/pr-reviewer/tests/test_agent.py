@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from pathlib import Path
 
@@ -185,6 +186,7 @@ def test_build_opencode_env_writes_read_only_config(monkeypatch, tmp_path: Path)
     monkeypatch.setenv("AWS_PROFILE", "reviewer")
     monkeypatch.setenv("OPENCODE_TOKEN", "token")
     monkeypatch.setenv("OPENCODE_CONFIG", "/tmp/caller-config.json")
+    monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", '{"permission":"allow"}')
     config = ReviewerConfig(model="amazon-bedrock/model", aws_region="us-west-2")
 
     env = agent.build_opencode_env(config, tmp_path)
@@ -198,6 +200,13 @@ def test_build_opencode_env_writes_read_only_config(monkeypatch, tmp_path: Path)
     assert env["AWS_PROFILE"] == "reviewer"
     assert env["OPENCODE_TOKEN"] == "token"
     assert env["OPENCODE_CONFIG"] == str(config_path)
+    assert json.loads(env["OPENCODE_CONFIG_CONTENT"]) == {
+        "$schema": "https://opencode.ai/config.json",
+        "permission": {
+            "bash": "allow",
+            "edit": "deny",
+        },
+    }
     assert env["PATH"] == "/usr/bin"
     assert "UNRELATED_SECRET" not in env
 
