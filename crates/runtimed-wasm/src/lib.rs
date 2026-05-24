@@ -260,6 +260,160 @@ impl RoomHostFrameResult {
     }
 }
 
+/// WASM-side authoring handle for a runtime peer.
+///
+/// This is intentionally separate from [`NotebookHandle`]: hosted runtime
+/// agents need to publish execution/output state without acquiring a frontend
+/// notebook editing surface.
+#[wasm_bindgen]
+pub struct RuntimeStatePeerHandle {
+    state_doc: RuntimeStateDoc,
+    state_sync_state: sync::State,
+}
+
+#[derive(Serialize)]
+struct RuntimeStatePeerFrameResult {
+    changed: bool,
+    reply: Option<Vec<u8>>,
+}
+
+#[wasm_bindgen]
+impl RuntimeStatePeerHandle {
+    #[wasm_bindgen(constructor)]
+    pub fn new(actor_label: &str) -> Result<RuntimeStatePeerHandle, JsError> {
+        let mut state_doc = RuntimeStateDoc::try_new_empty()
+            .map_err(|e| JsError::new(&format!("create runtime peer state doc: {e}")))?;
+        state_doc.set_actor(actor_label);
+        Ok(RuntimeStatePeerHandle {
+            state_doc,
+            state_sync_state: sync::State::new(),
+        })
+    }
+
+    pub fn load(
+        runtime_state_bytes: &[u8],
+        actor_label: &str,
+    ) -> Result<RuntimeStatePeerHandle, JsError> {
+        let runtime_doc = automerge::AutoCommit::load(runtime_state_bytes)
+            .map_err(|e| JsError::new(&format!("load runtime state doc: {e}")))?;
+        let mut state_doc = RuntimeStateDoc::from_doc(runtime_doc);
+        state_doc.set_actor(actor_label);
+        Ok(RuntimeStatePeerHandle {
+            state_doc,
+            state_sync_state: sync::State::new(),
+        })
+    }
+
+    pub fn set_actor(&mut self, actor_label: &str) {
+        self.state_doc.set_actor(actor_label);
+    }
+
+    pub fn receive_frame(&mut self, frame_bytes: &[u8]) -> Result<JsValue, JsError> {
+        if frame_bytes.is_empty() {
+            return Err(JsError::new("typed frame cannot be empty"));
+        }
+        if frame_bytes[0] != frame_types::RUNTIME_STATE_SYNC {
+            return Err(JsError::new(
+                "runtime peer only accepts RuntimeStateDoc sync frames",
+            ));
+        }
+
+        let message = sync::Message::decode(&frame_bytes[1..])
+            .map_err(|e| JsError::new(&format!("decode runtime state sync: {e}")))?;
+        let heads_before = self.state_doc.get_heads();
+        self.state_doc
+            .receive_sync_message_with_changes_recovering(
+                &mut self.state_sync_state,
+                message,
+                "runtime-peer-receive-sync",
+            )
+            .map_err(|e| JsError::new(&format!("receive runtime state sync: {e}")))?;
+        let changed = heads_before != self.state_doc.get_heads();
+        let result = RuntimeStatePeerFrameResult {
+            changed,
+            reply: self.generate_runtime_state_sync_reply(),
+        };
+        serialize_to_js(&result)
+            .map_err(|e| JsError::new(&format!("serialize runtime peer result: {e}")))
+    }
+
+    pub fn flush_runtime_state_sync(&mut self) -> Option<Vec<u8>> {
+        self.state_doc
+            .generate_sync_message(&mut self.state_sync_state)
+            .map(|msg| msg.encode())
+    }
+
+    pub fn generate_runtime_state_sync_reply(&mut self) -> Option<Vec<u8>> {
+        self.state_doc
+            .generate_sync_message(&mut self.state_sync_state)
+            .map(|msg| msg.encode())
+    }
+
+    pub fn cancel_last_runtime_state_flush(&mut self) {
+        self.state_sync_state.in_flight = false;
+        self.state_sync_state.sent_hashes.clear();
+    }
+
+    pub fn save(&mut self) -> Vec<u8> {
+        self.state_doc.doc_mut().save()
+    }
+
+    pub fn get_runtime_state(&self) -> JsValue {
+        serialize_to_js(&self.state_doc.read_state()).unwrap_or(JsValue::UNDEFINED)
+    }
+
+    pub fn create_execution(&mut self, execution_id: &str) -> Result<(), JsError> {
+        self.state_doc
+            .create_execution(execution_id)
+            .map_err(|e| JsError::new(&format!("create execution failed: {e}")))
+    }
+
+    pub fn create_execution_with_source(
+        &mut self,
+        execution_id: &str,
+        source: &str,
+        seq: u32,
+    ) -> Result<bool, JsError> {
+        self.state_doc
+            .create_execution_with_source(execution_id, source, seq.into())
+            .map_err(|e| JsError::new(&format!("create execution with source failed: {e}")))
+    }
+
+    pub fn set_execution_running(&mut self, execution_id: &str) -> Result<(), JsError> {
+        self.state_doc
+            .set_execution_running(execution_id)
+            .map_err(|e| JsError::new(&format!("set execution running failed: {e}")))
+    }
+
+    pub fn set_execution_count(
+        &mut self,
+        execution_id: &str,
+        execution_count: i32,
+    ) -> Result<(), JsError> {
+        self.state_doc
+            .set_execution_count(execution_id, execution_count.into())
+            .map_err(|e| JsError::new(&format!("set execution count failed: {e}")))
+    }
+
+    pub fn set_execution_done(&mut self, execution_id: &str, success: bool) -> Result<(), JsError> {
+        self.state_doc
+            .set_execution_done(execution_id, success)
+            .map_err(|e| JsError::new(&format!("set execution done failed: {e}")))
+    }
+
+    pub fn append_output_json(
+        &mut self,
+        execution_id: &str,
+        manifest_json: &str,
+    ) -> Result<String, JsError> {
+        let manifest: serde_json::Value = serde_json::from_str(manifest_json)
+            .map_err(|e| JsError::new(&format!("decode output manifest json: {e}")))?;
+        self.state_doc
+            .append_output(execution_id, &manifest)
+            .map_err(|e| JsError::new(&format!("append output failed: {e}")))
+    }
+}
+
 /// Durable-Object room host for NotebookDoc + RuntimeStateDoc sync.
 ///
 /// Unlike [`NotebookHandle`], this is not a frontend/client handle. It owns the

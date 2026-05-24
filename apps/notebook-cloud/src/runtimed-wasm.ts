@@ -4,6 +4,7 @@ import initWasm, {
   rewrite_presence_ingress,
   NotebookHandle,
   RoomHostHandle,
+  RuntimeStatePeerHandle,
 } from "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
 
 let initialized: Promise<void> | undefined;
@@ -75,4 +76,4 @@ export async function loadRoomHostSnapshot(
   return RoomHostHandle.load_snapshot(notebookBytes, runtimeStateBytes);
 }
 
-export { NotebookHandle, RoomHostHandle };
+export { NotebookHandle, RoomHostHandle, RuntimeStatePeerHandle };
