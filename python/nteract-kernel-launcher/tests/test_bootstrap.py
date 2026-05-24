@@ -327,8 +327,14 @@ def _isolate_renderer_import_hook(monkeypatch, _bootstrap):
         ],
     )
     monkeypatch.setattr(_bootstrap, "_renderer_import_hook", None)
-    for name in ("altair", "plotly", "plotly.io"):
-        monkeypatch.delitem(sys.modules, name, raising=False)
+    for name in list(sys.modules):
+        if (
+            name == "altair"
+            or name.startswith("altair.")
+            or name == "plotly"
+            or name.startswith("plotly.")
+        ):
+            monkeypatch.delitem(sys.modules, name, raising=False)
 
 
 def test_load_extension_invokes_the_install_steps(monkeypatch):
@@ -453,6 +459,70 @@ def test_enable_third_party_renderers_lazily_configures_modules(monkeypatch):
     pio = importlib.import_module("plotly.io")
 
     assert enabled == ["nteract"]
+    assert pio.renderers.default == "nteract"
+
+
+@pytest.mark.parametrize(
+    "entrypoint",
+    ["plotly.express", "plotly.graph_objects", "plotly.graph_objs"],
+)
+def test_plotly_entrypoint_imports_lazily_configure_plotly_io(monkeypatch, entrypoint):
+    from nteract_kernel_launcher import _bootstrap
+
+    _isolate_renderer_import_hook(monkeypatch, _bootstrap)
+
+    class FakePlotlyRenderers:
+        def __init__(self):
+            self.default = "plotly_mimetype"
+
+    class FakeLoader(importlib.abc.Loader):
+        def __init__(self, configure=lambda _module: None):
+            self.configure = configure
+
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
+            self.configure(module)
+
+    class FakeFinder:
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == "plotly":
+                spec = ModuleSpec(fullname, FakeLoader(), is_package=True)
+                spec.submodule_search_locations = []
+                return spec
+            if fullname == "plotly.io":
+                return ModuleSpec(
+                    fullname,
+                    FakeLoader(lambda module: setattr(module, "renderers", FakePlotlyRenderers())),
+                )
+            if fullname == entrypoint:
+                return ModuleSpec(fullname, FakeLoader())
+            return None
+
+    sys.meta_path.insert(0, FakeFinder())
+    _bootstrap._enable_third_party_renderers()
+
+    assert "plotly.io" not in sys.modules
+
+    importlib.import_module(entrypoint)
+
+    pio = sys.modules["plotly.io"]
+    assert pio.renderers.default == "nteract"
+
+
+def test_real_plotly_express_import_lazily_configures_plotly_io(monkeypatch):
+    pytest.importorskip("plotly.express")
+
+    from nteract_kernel_launcher import _bootstrap
+
+    _isolate_renderer_import_hook(monkeypatch, _bootstrap)
+    _bootstrap._enable_third_party_renderers()
+
+    import plotly.express as px
+    import plotly.io as pio
+
+    assert px.__name__ == "plotly.express"
     assert pio.renderers.default == "nteract"
 
 

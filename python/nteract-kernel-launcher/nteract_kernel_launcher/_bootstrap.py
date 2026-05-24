@@ -70,7 +70,10 @@ log = logging.getLogger("nteract_kernel_launcher")
 
 # Server-side blob ceiling is ~100 MiB; leave ~10 MiB for overhead.
 _MAX_PAYLOAD_BYTES = int(os.environ.get("DX_MAX_PAYLOAD_BYTES", str(90 * 1024 * 1024)))
-_RENDERER_IMPORT_TARGETS = frozenset({"altair", "plotly.io"})
+_PLOTLY_RENDERER_ENTRYPOINTS = frozenset(
+    {"plotly.express", "plotly.graph_objects", "plotly.graph_objs"}
+)
+_RENDERER_IMPORT_TARGETS = frozenset({"altair", "plotly.io"}) | _PLOTLY_RENDERER_ENTRYPOINTS
 _renderer_import_hook: Any | None = None
 
 
@@ -535,6 +538,19 @@ def _enable_loaded_renderer_modules() -> None:
     pio = sys.modules.get("plotly.io")
     if pio is not None:
         _enable_plotly_renderer(pio)
+    elif any(name in sys.modules for name in _PLOTLY_RENDERER_ENTRYPOINTS):
+        _enable_plotly_renderer_from_entrypoint()
+
+
+def _enable_plotly_renderer_from_entrypoint() -> None:
+    try:
+        import plotly.io as pio
+
+        _enable_plotly_renderer(pio)
+    except ImportError:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        log.debug("plotly.io import for nteract renderer failed: %s", exc)
 
 
 def _enable_renderer_for_module(fullname: str, module: Any) -> None:
@@ -542,6 +558,8 @@ def _enable_renderer_for_module(fullname: str, module: Any) -> None:
         _enable_altair_renderer(module)
     elif fullname == "plotly.io":
         _enable_plotly_renderer(module)
+    elif fullname in _PLOTLY_RENDERER_ENTRYPOINTS:
+        _enable_plotly_renderer_from_entrypoint()
 
 
 class _RendererLoader:
