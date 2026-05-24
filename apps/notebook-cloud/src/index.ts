@@ -1,11 +1,13 @@
 import type { Env, ExecutionContext, ExportedHandler } from "./cloudflare-types.ts";
 import { NotebookRoom } from "./notebook-room.ts";
 import {
+  ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
   AuthError,
   allowsBlobUpload,
   allowsPublish,
   authenticateRequestWithProviders,
   DEV_AUTH_TOKEN_HEADER,
+  DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
   parseScope,
   stampTrustedIdentity,
   type AuthenticatedConnection,
@@ -289,10 +291,14 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
 }
 
 function rejectUntrustedWebSocketOrigin(request: Request, env: Env): Response | null {
-  const allowedOrigins = allowedWebSocketOrigins(request, env);
-  const origin = normalizedOrigin(request.headers.get("Origin"));
+  const rawOrigin = request.headers.get("Origin");
+  const allowedOrigins = allowedTrustedOrigins(request, env);
+  const origin = normalizedOrigin(rawOrigin);
+  if (hasOriginHeader(rawOrigin) && !origin) {
+    return json({ error: "websocket origin is not allowed" }, 403);
+  }
   if (!origin) {
-    if (!requiresWebSocketOrigin(request, env)) {
+    if (!requiresWebSocketOrigin(request)) {
       return null;
     }
     return json({ error: "websocket origin is required" }, 403);
@@ -303,11 +309,30 @@ function rejectUntrustedWebSocketOrigin(request: Request, env: Env): Response | 
   return null;
 }
 
-function requiresWebSocketOrigin(request: Request, env: Env): boolean {
-  return Boolean(env.NOTEBOOK_CLOUD_ALLOWED_ORIGINS?.trim()) || hasCloudflareAccessCookie(request);
+function requiresWebSocketOrigin(request: Request): boolean {
+  return hasCloudflareAccessCookie(request) || hasCredentialWebSocketSubprotocol(request);
 }
 
-function allowedWebSocketOrigins(request: Request, env: Env): Set<string> {
+function rejectUntrustedMutationOrigin(request: Request, env: Env): Response | null {
+  const rawOrigin = request.headers.get("Origin");
+  const allowedOrigins = allowedTrustedOrigins(request, env);
+  const origin = normalizedOrigin(rawOrigin);
+  if (hasOriginHeader(rawOrigin) && !origin) {
+    return json({ error: "request origin is not allowed" }, 403);
+  }
+  if (!origin) {
+    if (hasCloudflareAccessCookie(request)) {
+      return json({ error: "request origin is required" }, 403);
+    }
+    return null;
+  }
+  if (!allowedOrigins.has(origin)) {
+    return json({ error: "request origin is not allowed" }, 403);
+  }
+  return null;
+}
+
+function allowedTrustedOrigins(request: Request, env: Env): Set<string> {
   const origins = new Set<string>([new URL(request.url).origin]);
   const raw = env.NOTEBOOK_CLOUD_ALLOWED_ORIGINS?.trim();
   if (!raw) {
@@ -334,6 +359,10 @@ function normalizedOrigin(value: string | null): string | null {
   }
 }
 
+function hasOriginHeader(value: string | null): boolean {
+  return Boolean(value?.trim());
+}
+
 function hasCloudflareAccessCookie(request: Request): boolean {
   const cookie = request.headers.get("Cookie");
   if (!cookie) {
@@ -341,6 +370,20 @@ function hasCloudflareAccessCookie(request: Request): boolean {
   }
 
   return cookie.split(";").some((part) => part.trim().split("=")[0] === "CF_Authorization");
+}
+
+function hasCredentialWebSocketSubprotocol(request: Request): boolean {
+  const protocol = request.headers.get("Sec-WebSocket-Protocol");
+  if (!protocol) {
+    return false;
+  }
+  return protocol
+    .split(",")
+    .some((part) =>
+      [ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX, DEV_AUTH_TOKEN_PROTOCOL_PREFIX].some((prefix) =>
+        part.trim().startsWith(prefix),
+      ),
+    );
 }
 
 async function routeSnapshot(
@@ -511,6 +554,13 @@ async function routeRuntimeSnapshot(
 async function routeNotebookAcl(request: Request, env: Env, notebookId: string): Promise<Response> {
   if (!env.DB) {
     return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  if (request.method === "POST" || request.method === "DELETE") {
+    const originRejection = rejectUntrustedMutationOrigin(request, env);
+    if (originRejection) {
+      return originRejection;
+    }
   }
 
   const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "owner");
