@@ -39,6 +39,8 @@ const DEMO_NOTEBOOK_ID = "nteract-cloud-demo";
 // Worker-owned route by default so sandboxed srcdoc iframes can fetch sidecar
 // assets with explicit CORS, and let hosts replace it with a dedicated origin.
 const DEFAULT_RENDERER_ASSETS_BASE_PATH = "/renderer-assets/";
+const VIEWER_RUNTIMED_WASM_MODULE_PATH = "/assets/runtimed_wasm.js";
+const VIEWER_RUNTIMED_WASM_PATH = "/assets/runtimed_wasm_bg.wasm";
 const RENDER_BLOB_HEAD_CONCURRENCY = 16;
 
 interface MissingRenderBlob {
@@ -988,6 +990,8 @@ function viewer(notebookId: string, env: Env, headsHash?: string): Response {
     syncEndpoint: `/n/${encodeURIComponent(notebookId)}/sync`,
     blobBasePath: notebookCloudBlobBasePath(notebookId),
     rendererAssetsBasePath: rendererAssetsBasePath(env),
+    runtimedWasmModulePath: VIEWER_RUNTIMED_WASM_MODULE_PATH,
+    runtimedWasmPath: VIEWER_RUNTIMED_WASM_PATH,
   };
   const html = `<!doctype html>
 <html lang="en">

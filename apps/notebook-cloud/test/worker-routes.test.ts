@@ -56,6 +56,56 @@ describe("Worker artifact routes", () => {
     assert.equal(await response.text(), "console.log('viewer')");
   });
 
+  it("serves the viewer runtimed WASM asset through the Worker assets binding", async () => {
+    const seenPaths: string[] = [];
+    const env = fakeEnv({
+      ASSETS: {
+        fetch: async (request: Request) => {
+          seenPaths.push(new URL(request.url).pathname);
+          return new Response("wasm", {
+            headers: { "Content-Type": "application/wasm" },
+          });
+        },
+      },
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/assets/runtimed_wasm_bg.wasm"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(seenPaths, ["/assets/runtimed_wasm_bg.wasm"]);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+    assert.equal(response.headers.get("Content-Type"), "application/wasm");
+  });
+
+  it("serves the viewer runtimed WASM module through the Worker assets binding", async () => {
+    const seenPaths: string[] = [];
+    const env = fakeEnv({
+      ASSETS: {
+        fetch: async (request: Request) => {
+          seenPaths.push(new URL(request.url).pathname);
+          return new Response("export default async function init() {}", {
+            headers: { "Content-Type": "application/javascript" },
+          });
+        },
+      },
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/assets/runtimed_wasm.js"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(seenPaths, ["/assets/runtimed_wasm.js"]);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+    assert.equal(response.headers.get("Content-Type"), "application/javascript");
+  });
+
   it("adds CORS when plugin assets are routed through the Worker", async () => {
     const seenPaths: string[] = [];
     const env = fakeEnv({

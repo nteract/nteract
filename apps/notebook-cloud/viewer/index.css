@@ -122,6 +122,29 @@ body {
   padding-block: 0.25rem 1rem;
 }
 
+.cloud-editable-markdown-cell {
+  padding-block: 0.25rem 1rem;
+}
+
+.cloud-editable-markdown-cell .cm-editor {
+  border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--background) 97%, var(--foreground) 3%) !important;
+}
+
+.cloud-editable-markdown-cell .cm-focused {
+  border-color: color-mix(in srgb, var(--ring) 60%, transparent);
+}
+
+.cloud-editable-markdown-cell .cm-content {
+  min-height: 2.25rem;
+  padding: 0.5rem 0.625rem !important;
+}
+
+.cloud-editable-markdown-cell .cm-line {
+  padding-inline: 0 !important;
+}
+
 .cloud-source-block .cm-editor {
   background: transparent !important;
   margin-top: 0 !important;
@@ -138,6 +161,17 @@ body {
 
 .cloud-source-block .cm-line {
   padding-inline: 0 !important;
+}
+
+.cloud-editable-markdown-cell .cloud-source-block .cm-editor {
+  border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--background) 97%, var(--foreground) 3%) !important;
+}
+
+.cloud-editable-markdown-cell .cloud-source-block .cm-content {
+  min-height: 2.25rem;
+  padding: 0.5rem 0.625rem !important;
 }
 
 .cloud-output-block {

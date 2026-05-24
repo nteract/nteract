@@ -1,7 +1,26 @@
 declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
   export default function init(moduleOrPath?: unknown): Promise<unknown>;
   export function decode_presence_frame(payload: Uint8Array): unknown;
+  export function encode_cursor_presence(
+    peerId: string,
+    peerLabel: string,
+    actorLabel: string,
+    cellId: string,
+    line: number,
+    column: number,
+  ): Uint8Array;
+  export function encode_heartbeat_presence(peerId: string): Uint8Array;
   export function encode_presence_frame(message: unknown): Uint8Array;
+  export function encode_selection_presence(
+    peerId: string,
+    peerLabel: string,
+    actorLabel: string,
+    cellId: string,
+    anchorLine: number,
+    anchorCol: number,
+    headLine: number,
+    headCol: number,
+  ): Uint8Array;
   export function rewrite_presence_ingress(
     payload: Uint8Array,
     peerId: string,
@@ -11,11 +30,61 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
   ): Uint8Array;
 
   export class NotebookHandle {
+    static create_bootstrap(actorLabel: string): NotebookHandle;
     static load_snapshot(notebookBytes: Uint8Array, runtimeStateBytes: Uint8Array): NotebookHandle;
+    cell_count(): number;
+    cancel_last_flush(): void;
+    cancel_last_pool_state_flush(): void;
+    cancel_last_runtime_state_flush(): void;
+    flush_local_changes(): Uint8Array | undefined;
+    flush_pool_state_sync(): Uint8Array | undefined;
+    flush_runtime_state_sync(): Uint8Array | undefined;
+    generate_pool_state_sync_reply(): Uint8Array | undefined;
+    generate_runtime_state_sync_reply(): Uint8Array | undefined;
     get_cells_json(): string;
-    get_heads_hex(): string;
+    get_dependency_fingerprint(): string | undefined;
+    get_heads_hex(): string[];
     get_metadata_snapshot_json(): string | undefined;
-    get_runtime_state_heads_hex(): string;
+    get_runtime_state_heads_hex(): string[];
+    receive_frame(frameBytes: Uint8Array): unknown;
+    reset_sync_state(): void;
+    update_source(cellId: string, source: string): boolean;
+    free(): void;
+  }
+
+  export class RoomHostHandle {
+    static create_empty(notebookId: string, actorLabel: string): RoomHostHandle;
+    static load_snapshot(notebookBytes: Uint8Array, runtimeStateBytes: Uint8Array): RoomHostHandle;
+    get_heads_hex(): string[];
+    get_runtime_state_heads_hex(): string[];
+    receive_peer_frame(
+      peerId: string,
+      principal: string,
+      canWrite: boolean,
+      canWriteAllNotebookChanges: boolean,
+      frameBytes: Uint8Array,
+    ): unknown;
+    remove_peer(peerId: string): void;
+    save_notebook(): Uint8Array;
+    save_runtime_state_doc(): Uint8Array;
+    sync_peer(peerId: string): unknown;
+    free(): void;
+  }
+
+  export class RuntimeStatePeerHandle {
+    constructor(actorLabel: string);
+    append_output_json(executionId: string, manifestJson: string): string;
+    cancel_last_runtime_state_flush(): void;
+    create_execution(executionId: string): void;
+    create_execution_with_source(executionId: string, source: string, seq: number): boolean;
+    flush_runtime_state_sync(): Uint8Array | undefined;
+    generate_runtime_state_sync_reply(): Uint8Array | undefined;
+    receive_frame(frameBytes: Uint8Array): unknown;
+    save(): Uint8Array;
+    set_actor(actorLabel: string): void;
+    set_execution_count(executionId: string, executionCount: number): void;
+    set_execution_done(executionId: string, success: boolean): void;
+    set_execution_running(executionId: string): void;
     free(): void;
   }
 }

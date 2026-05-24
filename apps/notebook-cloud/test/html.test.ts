@@ -55,6 +55,8 @@ describe("HTML script serialization", () => {
     assert.match(html, /"renderEndpoint":"\/api\/n\/demo\/renders\/heads-123"/);
     assert.match(html, /"blobBasePath":"\/api\/n\/demo\/blobs\/"/);
     assert.match(html, /"rendererAssetsBasePath":"\/renderer-assets\/"/);
+    assert.match(html, /"runtimedWasmModulePath":"\/assets\/runtimed_wasm\.js"/);
+    assert.match(html, /"runtimedWasmPath":"\/assets\/runtimed_wasm_bg\.wasm"/);
     assert.doesNotMatch(html, /function renderNotebook/);
     assert.doesNotMatch(html, /id="notebook"/);
   });
