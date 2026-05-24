@@ -38,6 +38,7 @@ loro_fractional_index = { workspace = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dirs = "6"
+aho-corasick = "1"
 
 # Jupyter kernel management
 jupyter-protocol = { workspace = true }

@@ -4,10 +4,12 @@
 //! process environment. Output storage calls this before writing text into
 //! RuntimeStateDoc or the blob store.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::process::Command;
 
+use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use notebook_doc::mime::{mime_kind, MimeKind};
 use serde_json::Value;
 
@@ -18,6 +20,7 @@ const MIN_VALUE_LEN: usize = 8;
 pub(crate) struct OutputRedactor {
     enabled: bool,
     values: Vec<String>,
+    matcher: Option<AhoCorasick>,
 }
 
 impl OutputRedactor {
@@ -25,6 +28,7 @@ impl OutputRedactor {
         Self {
             enabled: false,
             values: Vec::new(),
+            matcher: None,
         }
     }
 
@@ -45,10 +49,7 @@ impl OutputRedactor {
 
         let mut values: Vec<String> = values.into_iter().collect();
         values.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
-        Self {
-            enabled: true,
-            values,
-        }
+        Self::from_values(enabled, values)
     }
 
     #[cfg(test)]
@@ -60,10 +61,7 @@ impl OutputRedactor {
             .into_iter()
             .collect();
         values.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
-        Self {
-            enabled: true,
-            values,
-        }
+        Self::from_values(true, values)
     }
 
     #[cfg(test)]
@@ -76,28 +74,45 @@ impl OutputRedactor {
         }
         let mut values: Vec<String> = candidates.into_iter().collect();
         values.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
-        Self {
-            enabled: true,
-            values,
-        }
+        Self::from_values(true, values)
     }
 
     pub(crate) fn is_enabled(&self) -> bool {
         self.enabled
     }
 
-    pub(crate) fn redact_text(&self, text: &str) -> String {
+    fn from_values(enabled: bool, values: Vec<String>) -> Self {
+        let matcher = build_matcher(&values);
+        Self {
+            enabled,
+            values,
+            matcher,
+        }
+    }
+
+    pub(crate) fn redact_text<'a>(&self, text: &'a str) -> Cow<'a, str> {
         if self.values.is_empty() {
-            return text.to_string();
+            return Cow::Borrowed(text);
         }
 
-        let mut redacted = text.to_string();
-        for value in &self.values {
-            if redacted.contains(value) {
-                redacted = redacted.replace(value, REDACTION_MARKER);
-            }
+        let Some(matcher) = &self.matcher else {
+            return redact_text_sequential(text, &self.values);
+        };
+
+        let mut matches = matcher.find_iter(text).peekable();
+        if matches.peek().is_none() {
+            return Cow::Borrowed(text);
         }
-        redacted
+
+        let mut redacted = String::with_capacity(text.len());
+        let mut last_end = 0;
+        for mat in matches {
+            redacted.push_str(&text[last_end..mat.start()]);
+            redacted.push_str(REDACTION_MARKER);
+            last_end = mat.end();
+        }
+        redacted.push_str(&text[last_end..]);
+        Cow::Owned(redacted)
     }
 
     pub(crate) fn redact_output_value(&self, output: &Value) -> Value {
@@ -173,6 +188,30 @@ fn add_value_candidate(value: &OsStr, values: &mut HashSet<String>) {
     };
     if is_eligible(value) {
         values.insert(value.to_string());
+    }
+}
+
+fn build_matcher(values: &[String]) -> Option<AhoCorasick> {
+    if values.is_empty() {
+        return None;
+    }
+    AhoCorasickBuilder::new()
+        .match_kind(MatchKind::LeftmostLongest)
+        .build(values)
+        .ok()
+}
+
+fn redact_text_sequential<'a>(text: &'a str, values: &[String]) -> Cow<'a, str> {
+    let mut redacted = None;
+    for value in values {
+        let current = redacted.as_deref().unwrap_or(text);
+        if current.contains(value) {
+            redacted = Some(current.replace(value, REDACTION_MARKER));
+        }
+    }
+    match redacted {
+        Some(redacted) => Cow::Owned(redacted),
+        None => Cow::Borrowed(text),
     }
 }
 
@@ -259,7 +298,7 @@ fn redact_data_bundle(redactor: &OutputRedactor, value: &mut Value) {
 fn redact_json_strings(redactor: &OutputRedactor, value: &mut Value) {
     match value {
         Value::String(text) => {
-            *text = redactor.redact_text(text);
+            *text = redactor.redact_text(text).into_owned();
         }
         Value::Array(items) => {
             for item in items {
@@ -279,6 +318,7 @@ fn redact_json_strings(redactor: &OutputRedactor, value: &mut Value) {
 mod tests {
     use super::*;
     use base64::Engine as _;
+    use std::borrow::Cow;
 
     #[test]
     fn redacts_eligible_values() {
@@ -290,6 +330,24 @@ mod tests {
             redactor.redact_text("a secret-token-123 and other-secret"),
             "a [redacted env] and [redacted env]"
         );
+    }
+
+    #[test]
+    fn borrows_text_when_no_candidate_matches() {
+        let redactor = OutputRedactor::from_values_for_test(vec!["secret-token-123".to_string()]);
+        let redacted = redactor.redact_text("plain output without a token");
+        assert!(matches!(
+            redacted,
+            Cow::Borrowed("plain output without a token")
+        ));
+    }
+
+    #[test]
+    fn owns_text_when_redaction_changes_output() {
+        let redactor = OutputRedactor::from_values_for_test(vec!["secret-token-123".to_string()]);
+        let redacted = redactor.redact_text("token=secret-token-123");
+        assert!(matches!(redacted, Cow::Owned(_)));
+        assert_eq!(redacted, "token=[redacted env]");
     }
 
     #[test]
