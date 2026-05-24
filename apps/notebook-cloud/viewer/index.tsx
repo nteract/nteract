@@ -298,7 +298,6 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         setConnectionScope(liveRuntime.connectionScope);
         livePresenceStore = new CloudLivePresenceStore(liveRuntime.peerId);
         setLivePresence(livePresenceStore.snapshot());
-        const shouldMaterializeLiveCells = canEditLiveNotebook(liveRuntime.connectionScope);
         subscriptions = [
           liveRuntime.engine.presence$.subscribe((payload) => {
             const snapshot = livePresenceStore?.handlePresence(payload);
@@ -306,18 +305,14 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
               setLivePresence(snapshot);
             }
           }),
+          liveRuntime.engine.cellChanges$.subscribe(() => {
+            void materializeLiveCells(liveRuntime);
+          }),
+          liveRuntime.engine.runtimeState$.subscribe(() => {
+            void materializeLiveCells(liveRuntime);
+          }),
         ];
-        if (shouldMaterializeLiveCells) {
-          subscriptions.push(
-            liveRuntime.engine.cellChanges$.subscribe(() => {
-              void materializeLiveCells(liveRuntime);
-            }),
-            liveRuntime.engine.runtimeState$.subscribe(() => {
-              void materializeLiveCells(liveRuntime);
-            }),
-          );
-          void materializeLiveCells(liveRuntime);
-        }
+        void materializeLiveCells(liveRuntime);
       })
       .catch((error: unknown) => {
         if (disposed) return;

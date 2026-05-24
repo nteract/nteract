@@ -67,7 +67,7 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
     remove_peer(peerId: string): void;
     save_notebook(): Uint8Array;
     save_runtime_state_doc(): Uint8Array;
-    sync_peer(peerId: string): unknown;
+    sync_peer(peerId: string, canWriteNotebook: boolean, canWriteRuntimeState: boolean): unknown;
     free(): void;
   }
 

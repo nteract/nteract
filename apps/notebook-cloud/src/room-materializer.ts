@@ -50,7 +50,15 @@ export class RoomMaterializer {
   ) {}
 
   async syncPeer(peer: RoomPeer): Promise<RoomHostFrameResult> {
-    return this.withHost((host) => normalizeResult(host.sync_peer(peer.id)));
+    return this.withHost((host) =>
+      normalizeResult(
+        host.sync_peer(
+          peer.id,
+          allowsNotebookWrite(peer.identity.scope),
+          allowsRuntimeStateWrite(peer.identity.scope),
+        ),
+      ),
+    );
   }
 
   async removePeer(peerId: string): Promise<void> {

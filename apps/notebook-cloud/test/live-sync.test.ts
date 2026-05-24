@@ -60,24 +60,21 @@ describe("cloud live sync", () => {
     assert.deepEqual(calls, ["start", "resetForBootstrap", "flush"]);
   });
 
-  it("starts viewer sockets without initiating a writable document sync exchange", () => {
+  it("uses the same bootstrap exchange for passive viewer sync", () => {
     const calls: string[] = [];
 
-    startCloudBootstrapSync(
-      {
-        start: () => {
-          calls.push("start");
-        },
-        resetForBootstrap: () => {
-          calls.push("resetForBootstrap");
-        },
-        flush: () => {
-          calls.push("flush");
-        },
+    startCloudBootstrapSync({
+      start: () => {
+        calls.push("start");
       },
-      { initiateDocumentSync: false },
-    );
+      resetForBootstrap: () => {
+        calls.push("resetForBootstrap");
+      },
+      flush: () => {
+        calls.push("flush");
+      },
+    });
 
-    assert.deepEqual(calls, ["start"]);
+    assert.deepEqual(calls, ["start", "resetForBootstrap", "flush"]);
   });
 });

@@ -473,9 +473,19 @@ impl RoomHostHandle {
     /// The Worker calls this immediately after accepting a socket and after the
     /// peer receives `cloud_room_ready`. It lets read-only viewers receive the
     /// current document without authoring any local Automerge changes.
-    pub fn sync_peer(&mut self, peer_id: &str) -> Result<JsValue, JsError> {
+    pub fn sync_peer(
+        &mut self,
+        peer_id: &str,
+        can_write_notebook: bool,
+        can_write_runtime_state: bool,
+    ) -> Result<JsValue, JsError> {
         let mut result = RoomHostFrameResult::empty();
-        self.queue_current_sync_for_peer(peer_id, &mut result.outbound)?;
+        self.queue_current_sync_for_peer(
+            peer_id,
+            can_write_notebook,
+            can_write_runtime_state,
+            &mut result.outbound,
+        )?;
         serialize_to_js(&result).map_err(|e| JsError::new(&format!("serialize room result: {e}")))
     }
 
@@ -563,7 +573,7 @@ impl RoomHostHandle {
             let peer_state = self
                 .notebook_peer_states
                 .entry(peer_id.to_string())
-                .or_insert_with(sync::State::new);
+                .or_insert_with(|| room_peer_sync_state(can_write));
             let mut preview = NotebookDoc::wrap(self.doc.doc().clone());
             let mut preview_peer_state = peer_state.clone();
             preview
@@ -585,7 +595,7 @@ impl RoomHostHandle {
             let peer_state = self
                 .notebook_peer_states
                 .entry(peer_id.to_string())
-                .or_insert_with(sync::State::new);
+                .or_insert_with(|| room_peer_sync_state(can_write));
             self.doc
                 .receive_sync_message_recovering(peer_state, message, "cloud-room-doc-receive-sync")
                 .map_err(|e| JsError::new(&format!("receive notebook sync: {e}")))?;
@@ -599,7 +609,7 @@ impl RoomHostHandle {
             runtime_state_changed: false,
             outbound: Vec::new(),
         };
-        self.queue_notebook_sync_for_peer(peer_id, &mut result.outbound)?;
+        self.queue_notebook_sync_for_peer(peer_id, can_write, &mut result.outbound)?;
         if changed {
             self.queue_notebook_sync_for_other_peers(peer_id, &mut result.outbound)?;
         }
@@ -626,7 +636,7 @@ impl RoomHostHandle {
             let peer_state = self
                 .runtime_peer_states
                 .entry(peer_id.to_string())
-                .or_insert_with(sync::State::new);
+                .or_insert_with(|| room_peer_sync_state(can_write));
             let mut preview = RuntimeStateDoc::from_doc(self.state_doc.doc().clone());
             let mut preview_peer_state = peer_state.clone();
             preview
@@ -645,7 +655,7 @@ impl RoomHostHandle {
             let peer_state = self
                 .runtime_peer_states
                 .entry(peer_id.to_string())
-                .or_insert_with(sync::State::new);
+                .or_insert_with(|| room_peer_sync_state(can_write));
             self.state_doc
                 .receive_sync_message_with_changes_recovering(
                     peer_state,
@@ -663,7 +673,7 @@ impl RoomHostHandle {
             runtime_state_changed: changed,
             outbound: Vec::new(),
         };
-        self.queue_runtime_state_sync_for_peer(peer_id, &mut result.outbound)?;
+        self.queue_runtime_state_sync_for_peer(peer_id, can_write, &mut result.outbound)?;
         if changed {
             self.queue_runtime_state_sync_for_other_peers(peer_id, &mut result.outbound)?;
         }
@@ -673,22 +683,25 @@ impl RoomHostHandle {
     fn queue_current_sync_for_peer(
         &mut self,
         peer_id: &str,
+        can_write_notebook: bool,
+        can_write_runtime_state: bool,
         outbound: &mut Vec<RoomHostOutboundFrame>,
     ) -> Result<(), JsError> {
-        self.queue_notebook_sync_for_peer(peer_id, outbound)?;
-        self.queue_runtime_state_sync_for_peer(peer_id, outbound)?;
+        self.queue_notebook_sync_for_peer(peer_id, can_write_notebook, outbound)?;
+        self.queue_runtime_state_sync_for_peer(peer_id, can_write_runtime_state, outbound)?;
         Ok(())
     }
 
     fn queue_notebook_sync_for_peer(
         &mut self,
         peer_id: &str,
+        can_write: bool,
         outbound: &mut Vec<RoomHostOutboundFrame>,
     ) -> Result<(), JsError> {
         let peer_state = self
             .notebook_peer_states
             .entry(peer_id.to_string())
-            .or_insert_with(sync::State::new);
+            .or_insert_with(|| room_peer_sync_state(can_write));
         if let Some(message) = self
             .doc
             .generate_sync_message_recovering(peer_state, "cloud-room-doc-sync-outbound")
@@ -713,7 +726,7 @@ impl RoomHostHandle {
             if peer_id == changed_peer_id {
                 continue;
             }
-            self.queue_notebook_sync_for_peer(&peer_id, outbound)?;
+            self.queue_notebook_sync_for_peer(&peer_id, true, outbound)?;
         }
         Ok(())
     }
@@ -721,12 +734,13 @@ impl RoomHostHandle {
     fn queue_runtime_state_sync_for_peer(
         &mut self,
         peer_id: &str,
+        can_write: bool,
         outbound: &mut Vec<RoomHostOutboundFrame>,
     ) -> Result<(), JsError> {
         let peer_state = self
             .runtime_peer_states
             .entry(peer_id.to_string())
-            .or_insert_with(sync::State::new);
+            .or_insert_with(|| room_peer_sync_state(can_write));
         if let Some(message) = self
             .state_doc
             .generate_sync_message_recovering(peer_state, "cloud-room-state-sync-outbound")
@@ -751,9 +765,21 @@ impl RoomHostHandle {
             if peer_id == changed_peer_id {
                 continue;
             }
-            self.queue_runtime_state_sync_for_peer(&peer_id, outbound)?;
+            self.queue_runtime_state_sync_for_peer(&peer_id, true, outbound)?;
         }
         Ok(())
+    }
+}
+
+fn room_peer_sync_state(can_write: bool) -> sync::State {
+    if can_write {
+        sync::State::new()
+    } else {
+        // This is the room host's state for a non-writable peer. Automerge
+        // read-only mode means "do not apply incoming peer changes" while
+        // still allowing this host to send room changes to the peer. The
+        // explicit scope checks above remain the authorization boundary.
+        sync::State::new_read_only()
     }
 }
 

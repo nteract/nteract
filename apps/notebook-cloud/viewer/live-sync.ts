@@ -117,9 +117,7 @@ export async function connectCloudSyncRuntime({
       logger: consoleSyncLogger,
     });
 
-    startCloudBootstrapSync(engine, {
-      initiateDocumentSync: canInitiateBootstrapSync(connectionScope),
-    });
+    startCloudBootstrapSync(engine);
 
     return {
       actorLabel: ready.actor_label,
@@ -180,20 +178,14 @@ export function normalizeConnectionScope(value: string): ConnectionScope {
 
 export function startCloudBootstrapSync(
   engine: Pick<SyncEngine, "start" | "resetForBootstrap" | "flush">,
-  options: { initiateDocumentSync?: boolean } = {},
 ): void {
   engine.start();
-  if (options.initiateDocumentSync === false) {
-    return;
-  }
   // Match the desktop `useAutomergeNotebook` bootstrap path: a newly-created
-  // bootstrap handle must initiate the sync exchange before it can edit cells.
+  // bootstrap handle must initiate the sync exchange before it can materialize
+  // the room. Viewer-scope peers still use normal sync state so incoming
+  // changes apply locally; the room host rejects any viewer-authored changes.
   engine.resetForBootstrap();
   engine.flush();
-}
-
-function canInitiateBootstrapSync(connectionScope: ConnectionScope): boolean {
-  return connectionScope === "editor" || connectionScope === "owner";
 }
 
 export async function withReadyTimeout<T>(
