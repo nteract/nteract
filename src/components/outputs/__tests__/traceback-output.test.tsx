@@ -94,7 +94,7 @@ describe("TracebackOutput", () => {
       />,
     );
 
-    expect(container.textContent).toContain("Line2630inpython/polars/lazyframe/frame.pyincollect");
+    expect(container.textContent).toContain("Line2630in.../polars/lazyframe/frame.pyincollect");
     expect(container.textContent).not.toContain("/Users/kylekelley/Library/Caches");
   });
 
@@ -122,7 +122,7 @@ describe("TracebackOutput", () => {
     expect(container.textContent).toContain(
       "Line7in/Users/kyle/project/site-packages/example/runtime/frame.jlinload",
     );
-    expect(container.textContent).not.toContain("python/example/runtime/frame.jl");
+    expect(container.textContent).not.toContain(".../example/runtime/frame.jl");
   });
 
   it("does not throw when a frame has a malformed filename", () => {
