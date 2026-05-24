@@ -22,6 +22,7 @@ With Wrangler running:
 pnpm --dir apps/notebook-cloud smoke
 pnpm --dir apps/notebook-cloud smoke:hosted
 pnpm --dir apps/notebook-cloud smoke:hosted:live
+pnpm --dir apps/notebook-cloud smoke:hosted:collab
 pnpm --dir apps/notebook-cloud publish:demo
 pnpm --dir apps/notebook-cloud publish:fixture
 pnpm --dir apps/notebook-cloud publish:live
@@ -140,6 +141,19 @@ executes the same live MathNet notebook first, then calls `smoke:hosted:live`
 with `NOTEBOOK_CLOUD_SOURCE_NOTEBOOK_ID=<created-room-id>` so `publish:live`
 must reopen and export that existing room instead of creating its own preset
 session.
+
+`smoke:hosted:collab` covers the deployed browser collaboration path. By
+default it seeds a throwaway markdown room through `wasm:roundtrip`, then opens
+four isolated Chromium contexts: Alice (`owner`), Bob (`editor`), anonymous
+viewer, and ungranted Charlie (`editor`). Alice and Bob get the dev token only
+through the same browser localStorage keys as the viewer's prototype
+collaborator menu, matching the production viewer path where the WebSocket
+sends the token as a subprotocol instead of a URL parameter. The smoke verifies
+that Alice edits reach Bob and anonymous without reload, Bob edits reach Alice
+and anonymous without reload, Charlie is denied editor access, and no request
+URL contains the dev token. Pass
+`NOTEBOOK_CLOUD_COLLAB_VIEWER_URL=https://.../n/<id>` to reuse an existing room
+instead of seeding a new one.
 
 ## Dev auth
 
@@ -380,6 +394,10 @@ NOTEBOOK_CLOUD_URL=https://nteract-notebook-cloud.rgbkrk.workers.dev \
 NOTEBOOK_CLOUD_DEV_TOKEN=... \
 pnpm --dir apps/notebook-cloud smoke:hosted:live
 
+NOTEBOOK_CLOUD_URL=https://nteract-notebook-cloud.rgbkrk.workers.dev \
+NOTEBOOK_CLOUD_DEV_TOKEN=... \
+pnpm --dir apps/notebook-cloud smoke:hosted:collab
+
 NOTEBOOK_CLOUD_HOSTED_URL=https://nteract-notebook-cloud.rgbkrk.workers.dev/n/<id> \
 NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM=0 \
 pnpm --dir apps/notebook-cloud smoke:hosted
@@ -392,6 +410,11 @@ seeding, ACL grants, peer connection, and both Alice/Bob/anonymous convergence
 directions; use those values with `room.peer_sync.completed` and
 `room.materialized_frame.applied` logs to separate WebSocket latency from room
 materialization cost.
+
+`smoke:hosted:collab` builds on that protocol roundtrip with a browser-level
+check. Its JSON result includes the throwaway `viewerUrl`, the room id, and
+per-step timings for browser open, connection, Alice/Bob edit propagation,
+anonymous live updates, and Charlie's denied editor session.
 
 Use `GET /api/n/{id}/acl` with an owner credential to confirm editor/viewer
 grants. A healthy throwaway collaboration run should show editor

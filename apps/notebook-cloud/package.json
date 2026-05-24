@@ -13,6 +13,7 @@
     "smoke": "node --import tsx scripts/smoke.mjs",
     "smoke:hosted": "node scripts/hosted-render-smoke.mjs",
     "smoke:hosted:live": "node scripts/hosted-live-smoke.mjs",
+    "smoke:hosted:collab": "node --import tsx scripts/hosted-collab-smoke.mjs",
     "smoke:hosted:install": "playwright install chromium",
     "smoke:hosted:source-room": "node scripts/hosted-source-room-smoke.mjs",
     "publish:demo": "node scripts/publish-demo.mjs",
