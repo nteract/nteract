@@ -253,9 +253,12 @@ Do not include the renderer asset origin in this list. It serves public
 build-time sidecars, not authenticated notebook room traffic.
 
 Cookie-backed Access WebSocket upgrades must always send an allowed `Origin`.
-When this allowlist is set, every `/n/:id/sync` WebSocket client must send a
-matching `Origin`; the hosted Access smoke does this with
-`NOTEBOOK_CLOUD_ACCESS_ORIGIN`.
+Browser-visible credential subprotocols also require `Origin`, because those
+credentials are available to page JavaScript. Header-authenticated native and
+CLI clients may omit `Origin`; if they do send one, it must match the Worker
+origin or an entry in `NOTEBOOK_CLOUD_ALLOWED_ORIGINS`. The hosted Access smoke
+sends `NOTEBOOK_CLOUD_ACCESS_ORIGIN` by default so the browser-compatible path
+is exercised even though the raw smoke connection uses `CF-Access-Token`.
 
 The hosted Access smoke uses a real Access JWT from `cloudflared`, grants
 principal ACL rows, sends real Automerge frames, and verifies that a granted
@@ -344,7 +347,7 @@ Bindings in `wrangler.toml`:
 - `ASSETS`: Worker static assets for `/assets/notebook-cloud-viewer.js`, renderer chunks, and `/plugins/sift_wasm.wasm`.
 - `RENDERER_ASSETS_BASE_URL` (optional): base URL for renderer plugin assets such as `sift_wasm.wasm`. The prototype deployment points this at the dedicated `nteract-notebook-cloud-assets` Worker. If unset, the viewer uses the main Worker-owned `/renderer-assets/` route so sandboxed `srcdoc` iframes can fetch plugin WASM through explicit CORS headers.
 - `RUNTIMED_WASM_BASE_URL` (optional): base URL for `runtimed_wasm.js` and `runtimed_wasm_bg.wasm`. The prototype deployment also points this at the dedicated asset Worker so the large WASM module is loaded as a CDN cacheable file instead of being inlined into the viewer bundle.
-- `NOTEBOOK_CLOUD_ALLOWED_ORIGINS` (optional): comma- or whitespace-separated notebook application origins added to the same-origin WebSocket allowlist. Cookie-backed Access WebSocket upgrades always require an allowed `Origin`; setting this variable also requires `Origin` on non-cookie WebSocket clients.
+- `NOTEBOOK_CLOUD_ALLOWED_ORIGINS` (optional): comma- or whitespace-separated notebook application origins added to the same-origin WebSocket allowlist. Cookie-backed Access WebSocket upgrades and browser-visible credential subprotocols always require an allowed `Origin`; header-authenticated native/CLI clients may omit `Origin`, but any supplied `Origin` must be allowed.
 
 The dedicated renderer asset Worker serves only public, build-time sidecar files from the plugin asset bundle. It intentionally sends `Access-Control-Allow-Origin: *` so sandboxed `srcdoc` iframes with opaque origins can fetch renderer WASM and so the parent viewer can import runtime WASM from a CDN origin. Do not serve authenticated, notebook-specific, or user-generated blobs from this origin; those belong behind the notebook host's blob resolver or a future signed output origin. Deploy the renderer asset Worker before the main Worker when `RENDERER_ASSETS_BASE_URL` or `RUNTIMED_WASM_BASE_URL` points at the separate origin.
 

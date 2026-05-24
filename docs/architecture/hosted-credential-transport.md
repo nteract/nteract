@@ -294,6 +294,8 @@ Minimum policy:
   This applies to viewer and writer connections. A private viewer socket can
   still leak notebook contents to a malicious page if ambient cookies are
   enough to authenticate it.
+- Reject browser-visible credential subprotocol upgrades with missing or
+  untrusted `Origin`, because page JavaScript can initiate those connections.
 - Maintain an allowlist of notebook application origins that are allowed to
   initiate room WebSockets. The hosted Worker treats same-origin notebook pages
   as allowed by default and extends that set with
@@ -302,7 +304,9 @@ Minimum policy:
   authenticated notebook-room WebSockets.
 - Keep renderer asset origins separate from notebook-room origins.
 
-Bearer-in-subprotocol and one-time ticket flows still benefit from origin
+Header-authenticated CLI, native, and runtime clients may omit `Origin` even
+when an allowlist is configured. If any client sends `Origin`, malformed or
+untrusted values are rejected. One-time ticket flows still benefit from origin
 checks, but they do not rely on ambient cookies and therefore reduce CSRF risk.
 
 ## Operational path for the Anaconda demo
