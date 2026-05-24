@@ -590,6 +590,43 @@ describe("Worker artifact routes", () => {
     assert.equal((await getNotebookAclRows(env, "last-owner-demo")).length, 1);
   });
 
+  it("does not report success when a guarded owner delete leaves the row present", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "owner-delete-race-demo");
+    seedAcl(env, {
+      notebookId: "owner-delete-race-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    env.DB.afterBlockedOwnerDelete = () => {
+      seedAcl(env, {
+        notebookId: "owner-delete-race-demo",
+        subject: "user:dev:bob",
+        scope: "owner",
+      });
+    };
+
+    const response = await aclRequest(
+      env,
+      "DELETE",
+      {
+        subject_kind: "principal",
+        subject: "user:dev:alice",
+        scope: "owner",
+      },
+      "owner-delete-race-demo",
+    );
+
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      error: "owner ACL row was not removed; retry the request",
+    });
+    assert.deepEqual(
+      (await getNotebookAclRows(env, "owner-delete-race-demo")).map((row) => row.subject).sort(),
+      ["user:dev:alice", "user:dev:bob"],
+    );
+  });
+
   it("allows owner revocation only while another owner row remains", async () => {
     const env = fakeEnv();
     seedNotebook(env, "two-owner-demo");
@@ -1087,6 +1124,7 @@ class FakeD1 implements D1Database {
   readonly revisions: RevisionRow[] = [];
   readonly blobs = new Map<string, BlobRow>();
   readonly acl: NotebookAclRow[] = [];
+  afterBlockedOwnerDelete?: () => void;
 
   prepare(query: string): D1PreparedStatement {
     return new FakeD1Statement(this, query);
@@ -1184,6 +1222,8 @@ class FakeD1Statement implements D1PreparedStatement {
             row.subject !== subject,
         )
       ) {
+        this.db.afterBlockedOwnerDelete?.();
+        this.db.afterBlockedOwnerDelete = undefined;
         return okResult(undefined, { changes: 0 });
       }
 

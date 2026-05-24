@@ -459,13 +459,17 @@ async function routeNotebookAcl(request: Request, env: Env, notebookId: string):
       subject: aclInput.subject,
       scope: aclInput.scope,
     });
-    if (!revoked && (await isOnlyRemainingOwner(env, notebookId, aclInput))) {
-      return json({ error: "cannot remove the last owner ACL row" }, 409);
+    const acl = await getNotebookAclRows(env, notebookId);
+    if (!revoked && isOwnerAclInput(aclInput) && aclContainsInput(acl, aclInput)) {
+      if (isOnlyOwnerAclRow(acl, aclInput)) {
+        return json({ error: "cannot remove the last owner ACL row" }, 409);
+      }
+      return json({ error: "owner ACL row was not removed; retry the request" }, 409);
     }
     return json({
       ok: true,
       notebook_id: notebookId,
-      acl: await getNotebookAclRows(env, notebookId),
+      acl,
     });
   }
 
@@ -942,16 +946,24 @@ function stringField(value: unknown, fieldName: string): string | Response {
   return value.trim();
 }
 
-async function isOnlyRemainingOwner(
-  env: Env,
-  notebookId: string,
-  row: ParsedNotebookAclInput,
-): Promise<boolean> {
+function isOwnerAclInput(row: ParsedNotebookAclInput): boolean {
+  return row.subject_kind === "principal" && row.scope === "owner";
+}
+
+function aclContainsInput(rows: NotebookAclRow[], row: ParsedNotebookAclInput): boolean {
+  return rows.some(
+    (candidate) =>
+      candidate.subject_kind === row.subject_kind &&
+      candidate.subject === row.subject &&
+      candidate.scope === row.scope,
+  );
+}
+
+function isOnlyOwnerAclRow(rows: NotebookAclRow[], row: ParsedNotebookAclInput): boolean {
   if (row.subject_kind !== "principal" || row.scope !== "owner") {
     return false;
   }
 
-  const rows = await getNotebookAclRows(env, notebookId);
   const ownerRows = rows.filter(
     (candidate) => candidate.subject_kind === "principal" && candidate.scope === "owner",
   );
