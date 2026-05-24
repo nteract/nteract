@@ -62,9 +62,18 @@ export class RoomMaterializer {
       frame.type === FrameType.AUTOMERGE_SYNC
         ? allowsNotebookWrite(peer.identity.scope)
         : allowsRuntimeStateWrite(peer.identity.scope);
+    const canWriteAllNotebookChanges = peer.identity.scope === "owner";
     const encoded = encodeTypedFrame(frame.type, frame.payload);
     return this.withHost((host) =>
-      normalizeResult(host.receive_peer_frame(peer.id, peer.identity.principal, canWrite, encoded)),
+      normalizeResult(
+        host.receive_peer_frame(
+          peer.id,
+          peer.identity.principal,
+          canWrite,
+          canWriteAllNotebookChanges,
+          encoded,
+        ),
+      ),
     );
   }
 

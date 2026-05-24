@@ -22,18 +22,19 @@ before(async () => {
 describe("RoomHostHandle", () => {
   it("hosts NotebookDoc sync with per-peer state", async () => {
     const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
-    const editor = NotebookHandle.create_bootstrap("user:dev:alice/desktop:a");
+    const owner = NotebookHandle.create_bootstrap("user:dev:alice/desktop:a");
     const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
 
-    syncHostWithClient(host, "peer-editor", "user:dev:alice", true, editor);
-    editor.add_cell(0, "cell-1", "markdown");
-    editor.update_source("cell-1", "# Hosted markdown\n");
-    const message = editor.flush_local_changes();
+    syncHostWithClient(host, "peer-owner", "user:dev:alice", true, true, owner);
+    owner.add_cell(0, "cell-1", "markdown");
+    owner.update_source("cell-1", "# Hosted markdown\n");
+    const message = owner.flush_local_changes();
     assert.ok(message);
 
-    const editorResult = host.receive_peer_frame(
-      "peer-editor",
+    const ownerResult = host.receive_peer_frame(
+      "peer-owner",
       "user:dev:alice",
+      true,
       true,
       encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
     ) as {
@@ -41,9 +42,9 @@ describe("RoomHostHandle", () => {
       outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: number[] }>;
     };
 
-    assert.equal(editorResult.changed, true);
+    assert.equal(ownerResult.changed, true);
 
-    syncHostWithClient(host, "peer-viewer", "user:dev:bob", false, viewer);
+    syncHostWithClient(host, "peer-viewer", "user:dev:bob", false, false, viewer);
 
     const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
     assert.deepEqual(
@@ -52,10 +53,81 @@ describe("RoomHostHandle", () => {
     );
   });
 
+  it("allows editor-scoped source edits to existing markdown cells", async () => {
+    const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
+    const owner = NotebookHandle.create_bootstrap("user:dev:alice/desktop:owner");
+    const editor = NotebookHandle.create_bootstrap("user:dev:bob/desktop:editor");
+    const viewer = NotebookHandle.create_bootstrap("user:dev:carol/desktop:viewer");
+
+    syncHostWithClient(host, "peer-owner", "user:dev:alice", true, true, owner);
+    owner.add_cell(0, "markdown-cell", "markdown");
+    owner.update_source("markdown-cell", "Draft\n");
+    applyClientChangesToHost(host, "peer-owner", "user:dev:alice", true, true, owner);
+
+    syncHostWithClient(host, "peer-editor", "user:dev:bob", true, false, editor);
+    editor.update_source("markdown-cell", "Edited collaboratively\n");
+    applyClientChangesToHost(host, "peer-editor", "user:dev:bob", true, false, editor);
+
+    syncHostWithClient(host, "peer-viewer", "user:dev:carol", false, false, viewer);
+    const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
+    assert.equal(cells[0].id, "markdown-cell");
+    assert.equal(cells[0].source, "Edited collaboratively\n");
+  });
+
+  it("rejects editor-scoped source edits to code cells", async () => {
+    const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
+    const owner = NotebookHandle.create_bootstrap("user:dev:alice/desktop:owner");
+    const editor = NotebookHandle.create_bootstrap("user:dev:bob/desktop:editor");
+
+    syncHostWithClient(host, "peer-owner", "user:dev:alice", true, true, owner);
+    owner.add_cell(0, "code-cell", "code");
+    owner.update_source("code-cell", "x = 1\n");
+    applyClientChangesToHost(host, "peer-owner", "user:dev:alice", true, true, owner);
+
+    syncHostWithClient(host, "peer-editor", "user:dev:bob", true, false, editor);
+    editor.update_source("code-cell", "x = 2\n");
+    const message = editor.flush_local_changes();
+    assert.ok(message);
+
+    assert.throws(
+      () =>
+        host.receive_peer_frame(
+          "peer-editor",
+          "user:dev:bob",
+          true,
+          false,
+          encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
+        ),
+      /cannot edit code or raw cells/,
+    );
+  });
+
+  it("rejects editor-scoped structural NotebookDoc changes", async () => {
+    const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
+    const editor = NotebookHandle.create_bootstrap("user:dev:bob/desktop:editor");
+
+    syncHostWithClient(host, "peer-editor", "user:dev:bob", true, false, editor);
+    editor.add_cell(0, "new-markdown", "markdown");
+    const message = editor.flush_local_changes();
+    assert.ok(message);
+
+    assert.throws(
+      () =>
+        host.receive_peer_frame(
+          "peer-editor",
+          "user:dev:bob",
+          true,
+          false,
+          encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
+        ),
+      /cannot add, remove, or reorder cells/,
+    );
+  });
+
   it("rejects document changes authored by a foreign principal", async () => {
     const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
     const forged = NotebookHandle.create_bootstrap("user:dev:mallory/desktop:forge");
-    syncHostWithClient(host, "peer-alice", "user:dev:alice", true, forged);
+    syncHostWithClient(host, "peer-alice", "user:dev:alice", true, true, forged);
     forged.add_cell(0, "cell-forged", "markdown");
     const message = forged.flush_local_changes();
     assert.ok(message);
@@ -66,6 +138,7 @@ describe("RoomHostHandle", () => {
           "peer-alice",
           "user:dev:alice",
           true,
+          true,
           encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
         ),
       /not authorized/,
@@ -75,7 +148,7 @@ describe("RoomHostHandle", () => {
   it("rejects viewer-authored document changes", async () => {
     const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
     const viewer = NotebookHandle.create_bootstrap("user:dev:alice/desktop:a");
-    syncHostWithClient(host, "peer-viewer", "user:dev:alice", false, viewer);
+    syncHostWithClient(host, "peer-viewer", "user:dev:alice", false, false, viewer);
     viewer.add_cell(0, "cell-viewer", "markdown");
     const message = viewer.flush_local_changes();
     assert.ok(message);
@@ -85,6 +158,7 @@ describe("RoomHostHandle", () => {
         host.receive_peer_frame(
           "peer-viewer",
           "user:dev:alice",
+          false,
           false,
           encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
         ),
@@ -97,7 +171,7 @@ describe("RoomMaterializer", () => {
   it("persists and reloads a durable room checkpoint", async () => {
     const state = fakeState();
     const editorIdentity = authenticateDevRequest(
-      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=owner"),
     );
     const editorPeer = {
       id: "peer-editor",
@@ -152,6 +226,7 @@ function syncHostWithClient(
   peerId: string,
   principal: string,
   canWrite: boolean,
+  canWriteAllNotebookChanges: boolean,
   client: NotebookHandle,
 ): void {
   let result = host.sync_peer(peerId) as {
@@ -164,13 +239,38 @@ function syncHostWithClient(
     }
     const outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: number[] }> = [];
     for (const reply of replies) {
-      const next = host.receive_peer_frame(peerId, principal, canWrite, reply) as {
+      const next = host.receive_peer_frame(
+        peerId,
+        principal,
+        canWrite,
+        canWriteAllNotebookChanges,
+        reply,
+      ) as {
         outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: number[] }>;
       };
       outbound.push(...next.outbound);
     }
     result = { outbound };
   }
+}
+
+function applyClientChangesToHost(
+  host: Awaited<ReturnType<typeof createEmptyRoomHost>>,
+  peerId: string,
+  principal: string,
+  canWrite: boolean,
+  canWriteAllNotebookChanges: boolean,
+  client: NotebookHandle,
+): void {
+  const message = client.flush_local_changes();
+  assert.ok(message);
+  host.receive_peer_frame(
+    peerId,
+    principal,
+    canWrite,
+    canWriteAllNotebookChanges,
+    encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
+  );
 }
 
 async function syncMaterializerWithClient(
