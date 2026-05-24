@@ -4,7 +4,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Literal
 
-DEFAULT_MODEL = "global.anthropic.claude-opus-4-6-v1"
+DEFAULT_MODEL = "amazon-bedrock/global.anthropic.claude-opus-4-6-v1"
+DEFAULT_OPENCODE_PATH = "opencode"
 DEFAULT_AWS_REGION = "us-east-1"
 DEFAULT_DOCTOR_MAX_TURNS = 1
 DEFAULT_REVIEW_MIN_TURNS = 64
@@ -22,6 +23,7 @@ class ReviewerConfig:
     max_turns: int = DEFAULT_REVIEW_MIN_TURNS
     effort: Effort = DEFAULT_EFFORT
     setting_sources: list[SettingSource] = field(default_factory=lambda: ["project"])
+    opencode_path: str = DEFAULT_OPENCODE_PATH
 
     @classmethod
     def from_env(
@@ -41,13 +43,8 @@ class ReviewerConfig:
                 else os.environ.get("AWS_REGION", DEFAULT_AWS_REGION)
             ),
             max_turns=max_turns if max_turns is not None else DEFAULT_REVIEW_MIN_TURNS,
+            opencode_path=os.environ.get("PR_REVIEWER_OPENCODE", DEFAULT_OPENCODE_PATH),
         )
-
-    def sdk_env(self) -> dict[str, str]:
-        return {
-            "CLAUDE_CODE_USE_BEDROCK": "1",
-            "AWS_REGION": self.aws_region,
-        }
 
 
 def estimate_review_turns(

@@ -118,7 +118,7 @@ invalid-assignment = "ignore"
 
 # Gremlin depends on claude-agent-sdk which is macOS-only (not in CI)
 [[tool.ty.overrides]]
-include = ["python/gremlin/**", "python/pr-reviewer/**"]
+include = ["python/gremlin/**"]
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"
 

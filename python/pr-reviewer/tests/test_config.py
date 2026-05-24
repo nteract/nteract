@@ -1,13 +1,11 @@
 from pr_reviewer.config import DEFAULT_MODEL, ReviewerConfig, estimate_review_turns
 
 
-def test_config_sets_bedrock_env() -> None:
+def test_config_sets_default_opencode_model() -> None:
     config = ReviewerConfig(model=DEFAULT_MODEL, aws_region="us-west-2")
 
-    assert config.sdk_env() == {
-        "CLAUDE_CODE_USE_BEDROCK": "1",
-        "AWS_REGION": "us-west-2",
-    }
+    assert config.model == "amazon-bedrock/global.anthropic.claude-opus-4-6-v1"
+    assert config.aws_region == "us-west-2"
 
 
 def test_config_from_env_prefers_explicit_values(monkeypatch) -> None:
@@ -39,6 +37,14 @@ def test_config_from_env_preserves_empty_aws_region() -> None:
     config = ReviewerConfig.from_env(aws_region="")
 
     assert config.aws_region == ""
+
+
+def test_config_from_env_reads_opencode_binary(monkeypatch) -> None:
+    monkeypatch.setenv("PR_REVIEWER_OPENCODE", "/opt/opencode")
+
+    config = ReviewerConfig.from_env()
+
+    assert config.opencode_path == "/opt/opencode"
 
 
 def test_estimate_review_turns_scales_with_diff_size() -> None:

@@ -1,63 +1,12 @@
 import asyncio
-import sys
-import types
 from pathlib import Path
 
-from pr_reviewer.agent import run_doctor, run_review
+from pr_reviewer import agent
+from pr_reviewer.agent import OpencodeRunResult, run_doctor, run_review
 from pr_reviewer.config import ReviewerConfig
 from pr_reviewer.git import PullRequestInfo
 from pr_reviewer.schema import ReviewedDiff
 from pr_reviewer.workspace import ReviewWorkspace
-
-
-class FakeSystemMessage:
-    def __init__(self) -> None:
-        self.subtype = "init"
-        self.data = {"session_id": "session-1", "model": "model-from-sdk"}
-
-
-class FakeResultMessage:
-    def __init__(self) -> None:
-        self.structured_output = {
-            "verdict": "clear",
-            "terminal_reason": "review_complete",
-            "summary": "Looks good.",
-            "findings": [],
-        }
-        self.session_id = "result-session"
-        self.total_cost_usd = 1.25
-        self.result = '{"verdict":"clear"}'
-        self.is_error = False
-
-
-class FakeClaudeAgentOptions:
-    captured: dict | None = None
-
-    def __init__(self, **kwargs) -> None:
-        FakeClaudeAgentOptions.captured = kwargs
-
-
-async def fake_query(prompt, options):
-    chunks = []
-    async for chunk in prompt:
-        chunks.append(chunk)
-    fake_query.chunks = chunks
-    fake_query.options = options
-    yield FakeSystemMessage()
-    yield FakeResultMessage()
-
-
-fake_query.chunks = []
-fake_query.options = None
-
-
-def install_fake_sdk(monkeypatch) -> None:
-    fake_sdk = types.ModuleType("claude_agent_sdk")
-    fake_sdk.ClaudeAgentOptions = FakeClaudeAgentOptions
-    fake_sdk.ResultMessage = FakeResultMessage
-    fake_sdk.SystemMessage = FakeSystemMessage
-    fake_sdk.query = fake_query
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
 
 
 def make_workspace(tmp_path: Path) -> ReviewWorkspace:
@@ -85,52 +34,93 @@ def make_workspace(tmp_path: Path) -> ReviewWorkspace:
     )
 
 
-def test_run_review_constructs_sdk_options_and_report(monkeypatch, tmp_path: Path) -> None:
-    install_fake_sdk(monkeypatch)
-    config = ReviewerConfig(model="model", aws_region="us-west-2", max_turns=77)
+def test_parse_opencode_events_collects_text_session_and_cost() -> None:
+    stdout = "\n".join(
+        [
+            '{"type":"step_start","sessionID":"ses-1","part":{"type":"step-start"}}',
+            '{"type":"text","sessionID":"ses-1","part":{"type":"text","text":"{\\"verdict\\": "}}',
+            '{"type":"text","sessionID":"ses-1","part":{"type":"text","text":"\\"clear\\"}"}}',
+            '{"type":"step_finish","sessionID":"ses-1","part":{"type":"step-finish","cost":0.12}}',
+        ]
+    )
+
+    result = agent.parse_opencode_events(stdout)
+
+    assert result == OpencodeRunResult(
+        text='{"verdict": "clear"}', session_id="ses-1", cost_usd=0.12
+    )
+
+
+def test_parse_structured_review_json_accepts_fenced_json() -> None:
+    data = agent.parse_structured_review_json(
+        """```json
+{"verdict":"clear","terminal_reason":"review_complete","summary":"ok","findings":[]}
+```"""
+    )
+
+    assert data["verdict"] == "clear"
+    assert data["terminal_reason"] == "review_complete"
+
+
+def test_run_review_uses_opencode_output(monkeypatch, tmp_path: Path) -> None:
+    calls = []
+
+    async def fake_run_opencode(
+        prompt: str, *, cwd: Path, config: ReviewerConfig
+    ) -> OpencodeRunResult:
+        calls.append((prompt, cwd, config))
+        return OpencodeRunResult(
+            text=(
+                '{"verdict":"clear","terminal_reason":"review_complete",'
+                '"summary":"Looks good.","findings":[]}'
+            ),
+            session_id="ses-review",
+            cost_usd=0.34,
+        )
+
+    monkeypatch.setattr(agent, "run_opencode", fake_run_opencode)
+    config = ReviewerConfig(model="amazon-bedrock/model", aws_region="us-west-2", max_turns=77)
 
     report = asyncio.run(run_review(make_workspace(tmp_path), config=config))
 
     assert report.verdict == "clear"
     assert report.terminal_reason == "review_complete"
     assert report.summary == "Looks good."
-    assert report.session_id == "session-1"
-    assert report.model == "model-from-sdk"
-    assert report.cost_usd == 1.25
-
-    options = FakeClaudeAgentOptions.captured
-    assert options is not None
-    assert options["cwd"] == tmp_path
-    assert options["model"] == "model"
-    assert options["max_turns"] == 77
-    assert options["permission_mode"] == "bypassPermissions"
-    assert "Bash" in options["allowed_tools"]
-    assert "Write" in options["disallowed_tools"]
-    assert options["env"]["CLAUDE_CODE_USE_BEDROCK"] == "1"
-    assert options["env"]["AWS_REGION"] == "us-west-2"
-
-    assert fake_query.chunks == [
-        {
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": fake_query.chunks[0]["message"]["content"],
-            },
-        }
-    ]
-    assert "diff --git a/src/a.py b/src/a.py" in fake_query.chunks[0]["message"]["content"]
+    assert report.session_id == "ses-review"
+    assert report.model == "amazon-bedrock/model"
+    assert report.cost_usd == 0.34
+    assert report.raw_result is not None
+    assert "diff --git a/src/a.py b/src/a.py" in calls[0][0]
+    assert calls[0][1] == tmp_path
+    assert calls[0][2] == config
 
 
-def test_run_doctor_uses_streaming_prompt(monkeypatch) -> None:
-    install_fake_sdk(monkeypatch)
-    config = ReviewerConfig(model="model", aws_region="us-west-2", max_turns=1)
+def test_run_doctor_uses_opencode(monkeypatch) -> None:
+    calls = []
+
+    async def fake_run_opencode(
+        prompt: str, *, cwd: Path | None, config: ReviewerConfig
+    ) -> OpencodeRunResult:
+        calls.append((prompt, cwd, config))
+        return OpencodeRunResult(text="OK.", session_id="ses-doctor", cost_usd=0.01)
+
+    monkeypatch.setattr(agent, "run_opencode", fake_run_opencode)
+    config = ReviewerConfig(model="amazon-bedrock/model", aws_region="us-west-2", max_turns=1)
 
     result = asyncio.run(run_doctor(config))
 
-    assert result == '{"verdict":"clear"}'
-    assert fake_query.chunks == [
-        {
-            "type": "user",
-            "message": {"role": "user", "content": "Reply exactly OK."},
-        }
-    ]
+    assert result == "OK."
+    assert calls == [("Reply exactly OK.", None, config)]
+
+
+def test_build_opencode_env_writes_read_only_config(tmp_path: Path) -> None:
+    config = ReviewerConfig(model="amazon-bedrock/model", aws_region="us-west-2")
+
+    env = agent.build_opencode_env(config, tmp_path)
+
+    config_path = Path(env["OPENCODE_CONFIG"])
+    assert config_path.exists()
+    contents = config_path.read_text()
+    assert '"edit": "deny"' in contents
+    assert '"bash": "allow"' in contents
+    assert env["AWS_REGION"] == "us-west-2"

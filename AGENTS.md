@@ -12,7 +12,7 @@ Use `.agents/skills/` when the task matches:
 - `execution-pipeline` — end-to-end cell execution: required_heads → ExecuteCell → CellQueued → RuntimeStateDoc polling → output-sync grace → output resolution
 - `frontend-dev` — frontend development, TypeScript bindings (ts-rs), UI iteration workflows
 - `mcp-session-lifecycle` — MCP proxy supervision, daemon watch loop, session state, rejoin/reconnect races, room eviction
-- `pr-reviewer` — Bedrock-authenticated Claude Agent SDK PR reviews with isolated worktrees and structured findings
+- `pr-reviewer` — opencode-backed Bedrock PR reviews with isolated worktrees and structured findings
 - `releasing` — version bumps, tag conventions, release procedures
 - `testing` — choosing test strategies, running verification, E2E, diagnostics collection
 

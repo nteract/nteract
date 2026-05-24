@@ -22,7 +22,7 @@ INFRA_ERROR = 2
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pr-review",
-        description="Run an isolated Bedrock-backed Claude Agent SDK PR review.",
+        description="Run an isolated opencode-backed PR review.",
     )
     add_review_args(parser)
     return parser
@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
 def build_doctor_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pr-review doctor",
-        description="Smoke-test Bedrock authentication and model access.",
+        description="Smoke-test opencode model access.",
     )
     add_common_args(parser, default_max_turns=DEFAULT_DOCTOR_MAX_TURNS)
     return parser
@@ -40,7 +40,12 @@ def build_doctor_parser() -> argparse.ArgumentParser:
 def add_common_args(parser: argparse.ArgumentParser, *, default_max_turns: int | None) -> None:
     parser.add_argument("--model", default=None)
     parser.add_argument("--aws-region", default=None)
-    parser.add_argument("--max-turns", type=int, default=default_max_turns)
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=default_max_turns,
+        help="Advisory review budget recorded in report metadata.",
+    )
 
 
 def add_review_args(parser: argparse.ArgumentParser) -> None:
@@ -145,7 +150,7 @@ def run_doctor_command(args: argparse.Namespace) -> int:
     if result.strip().rstrip(".") != "OK":
         print(f"doctor returned unexpected response: {result!r}", file=sys.stderr)
         return INFRA_ERROR
-    print(f"Bedrock SDK smoke test OK: model={config.model} region={config.aws_region}")
+    print(f"opencode smoke test OK: model={config.model} region={config.aws_region}")
     return CLEAR
 
 
