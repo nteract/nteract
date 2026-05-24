@@ -173,6 +173,32 @@ def test_buffer_hook_routes_display_data_via_display_pub(monkeypatch):
     assert sent[0]["buffers"] == [data]
 
 
+def test_buffer_hook_routes_update_display_data_via_display_pub(monkeypatch):
+    from nteract_kernel_launcher import _buffer_hook
+    from nteract_kernel_launcher._refs import BLOB_REF_MIME
+
+    ip, sent, pub, dh = _fake_ip_with_pubs()
+    monkeypatch.setattr(_buffer_hook, "_get_ipython", lambda: ip)
+
+    data = b"updated-arrow"
+    h = hashlib.sha256(data).hexdigest()
+    _buffer_hook.pending_buffers()[h] = data
+
+    msg = {
+        "header": {"msg_type": "update_display_data"},
+        "content": {
+            "data": {BLOB_REF_MIME: {"hash": h, "size": len(data)}},
+            "transient": {"display_id": "table-1"},
+        },
+    }
+    result = _buffer_hook.buffer_hook(msg)
+    assert result is None
+    assert sent[0]["socket"] == "PUB"
+    assert sent[0]["buffers"] == [data]
+    assert sent[0]["msg"]["content"]["transient"] == {"display_id": "table-1"}
+    assert h not in _buffer_hook.pending_buffers()
+
+
 def test_buffer_hook_attaches_multiple_ref_buffers(monkeypatch):
     from nteract_kernel_launcher import _buffer_hook
     from nteract_kernel_launcher._refs import BLOB_REF_MIME
@@ -350,9 +376,10 @@ def test_load_extension_invokes_the_install_steps(monkeypatch):
     monkeypatch.setattr(
         _bootstrap, "_enable_third_party_renderers", lambda: calls.append("renderers")
     )
+    monkeypatch.setattr(_bootstrap._traceback, "install", lambda ip: calls.append("traceback"))
 
     _bootstrap.load_ipython_extension(SimpleNamespace())
-    assert calls == ["llm", "formatters", "hooks", "renderers"]
+    assert calls == ["llm", "formatters", "hooks", "renderers", "traceback"]
 
 
 def test_load_extension_swallows_per_step_failures(monkeypatch):
@@ -368,10 +395,11 @@ def test_load_extension_swallows_per_step_failures(monkeypatch):
     monkeypatch.setattr(_bootstrap, "_install_dataframe_formatters", boom)
     monkeypatch.setattr(_bootstrap, "_install_buffer_hooks", lambda ip: called.append("hooks"))
     monkeypatch.setattr(_bootstrap, "_enable_third_party_renderers", lambda: called.append("r"))
+    monkeypatch.setattr(_bootstrap._traceback, "install", lambda ip: called.append("traceback"))
 
     # Must not raise.
     _bootstrap.load_ipython_extension(SimpleNamespace())
-    assert called == ["hooks", "r"]
+    assert called == ["hooks", "r", "traceback"]
 
 
 def test_enable_third_party_renderers_configures_loaded_modules(monkeypatch):
@@ -548,6 +576,58 @@ def test_install_registers_iterable_dataset_formatter():
     )
     deferred = display_formatter.mimebundle_formatter.deferred_printers
     assert ("datasets.iterable_dataset", "IterableDataset") in deferred
+
+
+def test_generic_arrow_formatters_emit_pycapsule_bundle_once():
+    """Bare Arrow-capable objects should use the generic per-MIME formatters.
+
+    This is the launcher replacement for the old dx per-type formatter path:
+    the object only exposes ``__arrow_c_stream__`` and should still produce the
+    blob ref, Arrow manifest, and LLM summary through one shared serialization.
+    """
+    import io
+
+    pa = pytest.importorskip("pyarrow")
+    from IPython.core.formatters import DisplayFormatter
+    from nteract_kernel_launcher import _bootstrap, _buffer_hook
+    from nteract_kernel_launcher._format import ARROW_STREAM_MANIFEST_MIME
+    from nteract_kernel_launcher._refs import BLOB_REF_MIME
+
+    class StreamOnlyTable:
+        def __init__(self):
+            self._table = pa.table({"a": [1, 2, 3]})
+            self.exports = 0
+
+        def __arrow_c_stream__(self, requested_schema=None):
+            if self.exports:
+                raise RuntimeError("stream already consumed")
+            self.exports += 1
+            return self._table.__arrow_c_stream__(requested_schema)
+
+        def __len__(self):
+            return self._table.num_rows
+
+    display_formatter = DisplayFormatter()
+    ip = SimpleNamespace(display_formatter=display_formatter)
+    _bootstrap._install_llm_formatter(ip)
+    _bootstrap._install_dataframe_formatters(ip)
+    _buffer_hook.pending_buffers().clear()
+
+    source = StreamOnlyTable()
+    data, _metadata = display_formatter.format(source)
+
+    assert source.exports == 1
+    assert BLOB_REF_MIME in data
+    assert ARROW_STREAM_MANIFEST_MIME in data
+    assert "text/llm+plain" in data
+
+    h = data[BLOB_REF_MIME]["hash"]
+    assert data[ARROW_STREAM_MANIFEST_MIME]["chunks"][0]["hash"] == h
+    assert h in _buffer_hook.pending_buffers()
+
+    table = pa.ipc.open_stream(io.BytesIO(_buffer_hook.pending_buffers()[h])).read_all()
+    assert table.column_names == ["a"]
+    assert table.num_rows == 3
 
 
 # ─── emit path — only runs if pandas + pyarrow are importable ────────────
