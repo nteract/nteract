@@ -194,6 +194,22 @@ describe("dev identity", () => {
     assert.equal(identity.actorLabel, "user:dev:alice/desktop:a");
   });
 
+  it("echoes a loopback dev-token WebSocket subprotocol for browser localStorage auth", () => {
+    const protocol = `${DEV_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url("local-dev-token")}`;
+    const identity = authenticateRequest(
+      new Request("http://127.0.0.1:8787/n/demo/sync?user=alice&scope=owner", {
+        headers: {
+          "Sec-WebSocket-Protocol": protocol,
+        },
+      }),
+      { DEPLOYMENT_ENV: "prototype" },
+    );
+
+    assert.equal(identity.principal, "user:dev:alice");
+    assert.equal(identity.scope, "owner");
+    assert.equal(identity.webSocketProtocol, protocol);
+  });
+
   it("defaults missing dev scope to viewer", () => {
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=anonymous&operator=desktop:a"),

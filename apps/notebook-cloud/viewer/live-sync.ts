@@ -46,6 +46,7 @@ export interface CloudSyncConnectOptions {
   sessionId: string;
   auth: CloudSyncAuth;
   onControl?: (message: SessionControlMessage) => void;
+  onDisconnect?: (reason: Error) => void;
 }
 
 type FrameListener = Parameters<NotebookTransport["onFrame"]>[0];
@@ -63,9 +64,10 @@ export async function connectCloudSyncRuntime({
   sessionId,
   auth,
   onControl,
+  onDisconnect,
 }: CloudSyncConnectOptions): Promise<CloudSyncRuntime> {
   const url = syncUrl(syncEndpoint, sessionId, auth);
-  const transport = new CloudWebSocketTransport(url, auth.protocols, onControl);
+  const transport = new CloudWebSocketTransport(url, auth.protocols, onControl, onDisconnect);
   try {
     const ready = await withReadyTimeout(
       transport.ready,
@@ -184,6 +186,10 @@ export class CloudWebSocketTransport implements NotebookTransport {
   private socket: WebSocket;
   private listeners = new Set<FrameListener>();
   private queuedFrames: number[][] = [];
+  private readySettled = false;
+  private readyResolved = false;
+  private closed = false;
+  private manualDisconnect = false;
   private readyResolve!: (
     message: Extract<SessionControlMessage, { type: "cloud_room_ready" }>,
   ) => void;
@@ -194,10 +200,18 @@ export class CloudWebSocketTransport implements NotebookTransport {
     url: URL,
     protocols: string[],
     private readonly onControl?: (message: SessionControlMessage) => void,
+    private readonly onDisconnect?: (reason: Error) => void,
   ) {
     this.ready = new Promise((resolve, reject) => {
-      this.readyResolve = resolve;
-      this.readyReject = reject;
+      this.readyResolve = (message) => {
+        this.readySettled = true;
+        this.readyResolved = true;
+        resolve(message);
+      };
+      this.readyReject = (error) => {
+        this.readySettled = true;
+        reject(error);
+      };
     });
     this.socket = protocols.length > 0 ? new WebSocket(url, protocols) : new WebSocket(url);
     this.socket.binaryType = "arraybuffer";
@@ -207,8 +221,18 @@ export class CloudWebSocketTransport implements NotebookTransport {
     this.socket.addEventListener("error", () => {
       this.readyReject(new Error(`failed to connect ${url.href}`));
     });
-    this.socket.addEventListener("close", () => {
-      this.readyReject(new Error(`cloud sync socket closed before ready`));
+    this.socket.addEventListener("close", (event) => {
+      this.closed = true;
+      this.listeners.clear();
+      this.queuedFrames = [];
+      const detail = event.reason ? `: ${event.reason}` : "";
+      const reason = new Error(`cloud sync socket closed (${event.code})${detail}`);
+      if (!this.readySettled) {
+        this.readyReject(new Error(`cloud sync socket closed before ready`));
+      }
+      if (this.readyResolved && !this.manualDisconnect) {
+        this.onDisconnect?.(reason);
+      }
     });
   }
 
@@ -217,6 +241,9 @@ export class CloudWebSocketTransport implements NotebookTransport {
   }
 
   async sendFrame(frameType: number, payload: Uint8Array): Promise<void> {
+    if (this.closed) {
+      return Promise.reject(new Error("cloud sync socket is closed"));
+    }
     await this.waitUntilOpen();
     const frame = new Uint8Array(payload.byteLength + 1);
     frame[0] = frameType;
@@ -249,6 +276,8 @@ export class CloudWebSocketTransport implements NotebookTransport {
   }
 
   disconnect(): void {
+    this.manualDisconnect = true;
+    this.closed = true;
     this.listeners.clear();
     this.queuedFrames = [];
     this.socket.close();

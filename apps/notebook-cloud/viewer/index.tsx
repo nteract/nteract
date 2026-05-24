@@ -169,6 +169,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
   const [livePresence, setLivePresence] = useState(emptyCloudLivePresenceSnapshot);
   const [connectionScope, setConnectionScope] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [connectAttempt, setConnectAttempt] = useState(0);
   const [authState, setAuthState] = useState<CloudPrototypeAuthState>(() =>
     cloudPrototypeAuthFromWindow(),
   );
@@ -243,7 +244,29 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
     let subscriptions: Array<{ unsubscribe: () => void }> = [];
     let materializeSequence = 0;
     let livePresenceStore: CloudLivePresenceStore | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     const sessionId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
+    const disposeCurrentRuntime = () => {
+      const liveRuntime = liveRuntimeRef.current;
+      if (!liveRuntime) return;
+      liveRuntimeRef.current = null;
+      disposeCloudSyncRuntime(liveRuntime);
+    };
+    const scheduleReconnect = (reason: Error) => {
+      if (disposed) return;
+      console.warn("[notebook-cloud] live room connection closed", reason);
+      setPresence((state) => reduceCloudViewerConnection(state, "disconnected"));
+      setConnectionScope(null);
+      setConnectionError(reason.message);
+      disposeCurrentRuntime();
+      if (reconnectTimer) return;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        if (!disposed) {
+          setConnectAttempt((attempt) => attempt + 1);
+        }
+      }, 1_000);
+    };
 
     const materializeLiveCells = async (liveRuntime: CloudSyncRuntime) => {
       const sequence = ++materializeSequence;
@@ -283,6 +306,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
       runtimedWasmPath: config.runtimedWasmPath,
       sessionId,
       auth: cloudSyncAuthFromPrototypeAuthState(authState),
+      onDisconnect: scheduleReconnect,
       onControl: (message) => {
         if (disposed) return;
         if (
@@ -339,15 +363,15 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
       for (const subscription of subscriptions) {
         subscription.unsubscribe();
       }
-      if (liveRuntimeRef.current) {
-        disposeCloudSyncRuntime(liveRuntimeRef.current);
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
       }
-      liveRuntimeRef.current = null;
+      disposeCurrentRuntime();
       livePresenceStore = null;
       setPresence((state) => reduceCloudViewerConnection(state, "disconnected"));
       setLivePresence(emptyCloudLivePresenceSnapshot());
     };
-  }, [authState, blobResolver, config.syncEndpoint]);
+  }, [authState, blobResolver, config.syncEndpoint, connectAttempt]);
 
   const readOnlyCells = useMemo(
     () =>

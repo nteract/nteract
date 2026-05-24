@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { externalChangeAnnotation, CodeMirrorEditor } from "@/components/editor/codemirror-editor";
 import type { CodeMirrorEditorRef } from "@/components/editor";
 import {
@@ -52,7 +52,7 @@ export function EditableMarkdownCell({
     return editorExtensions;
   }, [cell.id, onPresenceCursor, onPresenceSelection]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const view = editorRef.current?.getEditor();
     if (!view) return;
 
