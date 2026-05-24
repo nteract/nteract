@@ -59,6 +59,24 @@ describe("hosted Access smoke environment helpers", () => {
     assert.ok(!headers.some((header) => header.includes("nteract-access-token.")));
   });
 
+  it("can build CLI-style Access WebSocket headers without an Origin", () => {
+    const token = jwt({ sub: "access-user-123" });
+    const headers = webSocketUpgradeRequestHeaders(
+      new URL("wss://cloud.test/n/access-demo/sync?operator=cli%3Asmoke&scope=owner"),
+      {
+        key: "test-key",
+        accessToken: token,
+      },
+    );
+
+    assert.ok(headers.includes(`CF-Access-Token: ${token}`));
+    assert.ok(!headers.some((header) => header.toLowerCase().startsWith("origin:")));
+    assert.equal(
+      headers.filter((header) => /^CF-Access-Token:|^Authorization:|^Cookie:/i.test(header)).length,
+      1,
+    );
+  });
+
   it("requires an owner Access token", () => {
     assert.throws(
       () => assertHostedAccessSmokeEnv({ ownerToken: "" }),

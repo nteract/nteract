@@ -193,13 +193,18 @@ Rules:
 - Leaving the variable unset keeps the same-origin default only. Cookie-backed
   Access WebSockets still reject missing or untrusted `Origin`.
 
-The Worker checks `Origin` before WebSocket auth when a browser sends one, when
-the allowlist is set, or when an ambient `CF_Authorization` cookie is present.
-When the allowlist is set, every WebSocket client, including CLI smoke and
-future native clients, must send an `Origin` that normalizes to the notebook
-application origin or one of the configured values. Browser Access-cookie
-sessions must come from an allowed origin so a malicious site cannot use an
-ambient Access cookie to open a private room socket.
+The Worker checks `Origin` before WebSocket auth whenever a client sends one.
+Malformed or untrusted origins are rejected. Browser Access-cookie sessions
+must always send an allowed `Origin` so a malicious site cannot use an ambient
+Access cookie to open a private room socket. Browser-visible credential
+subprotocols also require `Origin`.
+
+Header-authenticated CLI, native, and future runtime clients may omit `Origin`,
+even when `NOTEBOOK_CLOUD_ALLOWED_ORIGINS` is configured. If those clients send
+an `Origin`, it must normalize to the notebook application origin or one of the
+configured values. The hosted Access smoke sends `NOTEBOOK_CLOUD_ACCESS_ORIGIN`
+by default to exercise the browser-compatible origin path while still carrying
+only one Worker-visible credential, `CF-Access-Token`.
 
 ## Deploy
 
@@ -306,7 +311,8 @@ The script sends:
 
 - `CF-Access-Token: <jwt>` so Cloudflare Access can admit the HTTP and
   WebSocket requests;
-- `Origin: https://<notebook-host>` for the WebSocket origin allowlist;
+- `Origin: https://<notebook-host>` to exercise the browser-compatible
+  WebSocket origin gate;
 
 It intentionally sends only one Worker-visible Access credential transport per
 request. The Worker also supports `Authorization: Bearer <jwt>` and
@@ -360,6 +366,34 @@ For the browser path, Cloudflare Access should forward
 against `NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN` and `NOTEBOOK_CLOUD_ACCESS_AUD`,
 then D1 decides the requested notebook scope.
 
+## Current Trial Blockers
+
+The Worker-side pieces needed for an Access-authenticated collaboration smoke
+are in place, but an Anaconda-backed trial still depends on these deployment
+and product decisions:
+
+1. **Access application and IdP setup.** The demo host must be protected by a
+   Cloudflare Access self-hosted application whose IdP is Anaconda OIDC. The
+   Worker must receive the matching Access audience and team domain.
+2. **Principal namespace.** Until the Worker validates an Anaconda-issued token
+   or Access forwards a deployment-approved stable Anaconda subject claim, ACL
+   rows should use `user:cloudflare-access:<encoded-access-sub>`. Do not switch
+   to `user:anaconda:*` based on email.
+3. **Collaborator bootstrap.** The current owner/editor/viewer smoke can derive
+   principals from local Access JWT subjects and seed D1 ACL rows. The browser
+   product still needs share-by-email routes before non-operators can grant
+   collaborators by email.
+4. **Public viewers.** A fully Access-protected hostname blocks anonymous
+   viewers at the edge. Public published notebooks need an Access bypass rule,
+   a separate public viewer hostname, or another route that still reaches the
+   Worker ACL check.
+5. **Revocation and provider capability bounds.** ACL changes affect new
+   connections. Immediate live-connection eviction and provider-side maximum
+   capability mapping remain follow-up work before broad production use.
+6. **Runtime peer credentials.** The collaboration demo has no remote runtime
+   sidecar. Runtime peers still need a credential and blob-upload story before
+   hosted execution can join the same room.
+
 ## Troubleshooting
 
 `401 missing/invalid Cloudflare Access token`
@@ -384,7 +418,11 @@ then D1 decides the requested notebook scope.
 
 - Authentication succeeded, but D1 has no ACL row for the requested principal
   and scope.
-- Decode the smoke output `principals` field and grant that exact principal.
+- The smoke output intentionally reports only `principal_fingerprints`, not raw
+  principal strings or emails. For manual ACL bootstrap, derive the principal
+  locally from the Access JWT subject (`user:cloudflare-access:<encoded-sub>`)
+  or use the owner-authenticated ACL API to inspect rows for a seeded smoke
+  notebook.
 - Do not grant email strings as `notebook_acl.subject`.
 
 `404 or failed render for public viewers`
