@@ -264,6 +264,11 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
     return json({ error: "expected WebSocket upgrade" }, 426);
   }
 
+  const originResponse = validateWebSocketOriginOrResponse(request, env);
+  if (originResponse) {
+    return originResponse;
+  }
+
   const identity = await authenticateRequestOrResponse(request, env);
   if (identity instanceof Response) {
     return identity;
@@ -281,6 +286,61 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
   const id = env.NOTEBOOK_ROOMS.idFromName(notebookId);
   const room = env.NOTEBOOK_ROOMS.get(id);
   return room.fetch(stampTrustedIdentity(request, authorizedIdentity));
+}
+
+function validateWebSocketOriginOrResponse(request: Request, env: Env): Response | undefined {
+  const origin = request.headers.get("Origin")?.trim();
+  if (!origin) {
+    if (hasCloudflareAccessCookie(request)) {
+      return json({ error: "WebSocket Origin is required" }, 403);
+    }
+    return undefined;
+  }
+
+  if (isAllowedWebSocketOrigin(origin, request.url, env)) {
+    return undefined;
+  }
+
+  return json({ error: "WebSocket Origin is not allowed" }, 403);
+}
+
+function isAllowedWebSocketOrigin(origin: string, requestUrl: string, env: Env): boolean {
+  let normalizedOrigin: string;
+  try {
+    normalizedOrigin = new URL(origin).origin;
+  } catch {
+    return false;
+  }
+
+  if (normalizedOrigin === new URL(requestUrl).origin) {
+    return true;
+  }
+
+  return configuredWebSocketOrigins(env).includes(normalizedOrigin);
+}
+
+function configuredWebSocketOrigins(env: Env): string[] {
+  return (env.NOTEBOOK_CLOUD_ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+    .map((origin) => {
+      try {
+        return new URL(origin).origin;
+      } catch {
+        return "";
+      }
+    })
+    .filter(Boolean);
+}
+
+function hasCloudflareAccessCookie(request: Request): boolean {
+  const cookie = request.headers.get("Cookie");
+  if (!cookie) {
+    return false;
+  }
+
+  return cookie.split(";").some((part) => part.trim().split("=")[0] === "CF_Authorization");
 }
 
 async function routeSnapshot(

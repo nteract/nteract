@@ -189,7 +189,9 @@ subprotocol, never as a query parameter. The same menu shows sanitized
 diagnostics for the requested principal/scope, connected room actor/scope,
 placeholder-token fallback, and the latest connection error. Use **Copy
 diagnostics** when sharing an `Offline` report; it intentionally omits the dev
-token.
+token. The browser also offers the non-sensitive `nteract.v4` WebSocket
+subprotocol; the Worker strips the credential-bearing protocol element before
+the room responds.
 
 For scripted browser setup, use the same storage keys the toolbar manages:
 
@@ -228,6 +230,10 @@ the team domain and `aud` matching `NOTEBOOK_CLOUD_ACCESS_AUD`. The resulting
 principal is `user:cloudflare-access:<sub>`, and the requested `scope` is still
 only a request: the room ACL decides whether that principal may enter as
 `viewer`, `editor`, `runtime_peer`, or `owner`.
+
+Browser WebSocket upgrades must come from the Worker origin or an origin listed
+in `NOTEBOOK_CLOUD_ALLOWED_ORIGINS` as a comma-separated list. Cookie-backed
+WebSocket upgrades without an `Origin` header are rejected.
 
 Requests with no dev credential become anonymous public viewers. The Worker derives:
 

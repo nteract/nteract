@@ -1,5 +1,6 @@
 import {
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
+  NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
   isConnectionScope,
   type ConnectionScope,
 } from "../src/auth-shared";
@@ -102,7 +103,10 @@ export function cloudSyncAuthFromPrototypeAuthState(state: CloudPrototypeAuthSta
   }
 
   return {
-    protocols: [`${DEV_AUTH_TOKEN_PROTOCOL_PREFIX}${base64UrlEncode(state.token)}`],
+    protocols: [
+      `${DEV_AUTH_TOKEN_PROTOCOL_PREFIX}${base64UrlEncode(state.token)}`,
+      NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+    ],
     user: state.user ?? "browser-editor",
     operator: null,
     requestedScope: state.requestedScope ?? "editor",

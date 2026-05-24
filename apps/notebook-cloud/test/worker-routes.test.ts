@@ -2,7 +2,12 @@ import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import worker from "../src/index.ts";
-import { DEV_AUTH_TOKEN_PROTOCOL_PREFIX, authenticateDevRequest } from "../src/identity.ts";
+import {
+  DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
+  NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+  TRUSTED_WEBSOCKET_PROTOCOL_HEADER,
+  authenticateDevRequest,
+} from "../src/identity.ts";
 import type {
   D1Database,
   D1PreparedStatement,
@@ -733,6 +738,7 @@ describe("Worker artifact routes", () => {
     await createNotebookWithOwnerAcl(env, "race-demo", alice);
     await createNotebookWithOwnerAcl(env, "race-demo", bob);
 
+    assert.deepEqual(env.DB.batchSizes.slice(-2), [2, 2]);
     assert.equal(env.DB.notebooks.get("race-demo")?.owner_principal, "user:dev:alice");
     assert.equal(
       (await getNotebookAclRowsForPrincipal(env, "race-demo", "user:dev:alice")).length,
@@ -742,6 +748,148 @@ describe("Worker artifact routes", () => {
       (await getNotebookAclRowsForPrincipal(env, "race-demo", "user:dev:bob")).length,
       0,
     );
+  });
+
+  it("allows same-origin browser WebSocket upgrades and forwards only the app protocol", async () => {
+    let forwardedRequest: Request | undefined;
+    const env = fakeEnv({
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            forwardedRequest = request;
+            return new Response("room ok");
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedNotebook(env, "origin-demo");
+    seedAcl(env, {
+      notebookId: "origin-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+
+    const credentialProtocol = `${DEV_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url("local-dev-token")}`;
+    const response = await worker.fetch(
+      new Request("http://localhost/n/origin-demo/sync?user=alice&scope=owner", {
+        headers: {
+          Upgrade: "websocket",
+          Origin: "http://localhost",
+          "Sec-WebSocket-Protocol": `${credentialProtocol}, ${NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL}`,
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "room ok");
+    assert.ok(forwardedRequest);
+    assert.equal(
+      forwardedRequest.headers.get("Sec-WebSocket-Protocol"),
+      NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+    );
+    assert.equal(
+      forwardedRequest.headers.get(TRUSTED_WEBSOCKET_PROTOCOL_HEADER),
+      NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+    );
+  });
+
+  it("allows configured browser WebSocket origins", async () => {
+    let roomFetches = 0;
+    const env = fakeEnv({
+      NOTEBOOK_CLOUD_ALLOWED_ORIGINS: "https://app.example.test",
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async () => {
+            roomFetches += 1;
+            return new Response("room ok");
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedNotebook(env, "allowed-origin-demo");
+    seedAcl(env, {
+      notebookId: "allowed-origin-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/n/allowed-origin-demo/sync?user=alice&scope=owner", {
+        headers: {
+          Upgrade: "websocket",
+          Origin: "https://app.example.test",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(roomFetches, 1);
+  });
+
+  it("rejects untrusted browser WebSocket origins before room dispatch", async () => {
+    let roomFetches = 0;
+    const env = fakeEnv({
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async () => {
+            roomFetches += 1;
+            return new Response("unexpected room fetch", { status: 500 });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/n/origin-demo/sync?user=alice&scope=owner", {
+        headers: {
+          Upgrade: "websocket",
+          Origin: "https://evil.example.test",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { error: "WebSocket Origin is not allowed" });
+    assert.equal(roomFetches, 0);
+  });
+
+  it("rejects cookie-backed WebSocket upgrades that omit Origin", async () => {
+    let roomFetches = 0;
+    const env = fakeEnv({
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async () => {
+            roomFetches += 1;
+            return new Response("unexpected room fetch", { status: 500 });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/origin-demo/sync", {
+        headers: {
+          Cookie: "CF_Authorization=access-token",
+          Upgrade: "websocket",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { error: "WebSocket Origin is required" });
+    assert.equal(roomFetches, 0);
   });
 
   it("does not create notebook rows from unauthorized WebSocket opens", async () => {
@@ -1221,6 +1369,7 @@ class FakeD1 implements D1Database {
   readonly revisions: RevisionRow[] = [];
   readonly blobs = new Map<string, BlobRow>();
   readonly acl: NotebookAclRow[] = [];
+  readonly batchSizes: number[] = [];
   afterBlockedOwnerDelete?: () => void;
 
   prepare(query: string): D1PreparedStatement {
@@ -1232,6 +1381,7 @@ class FakeD1 implements D1Database {
   }
 
   async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
+    this.batchSizes.push(statements.length);
     const results: D1Result<T>[] = [];
     for (const statement of statements) {
       results.push(await statement.run<T>());
@@ -1280,6 +1430,23 @@ class FakeD1Statement implements D1PreparedStatement {
             created_by_actor_label: "system/schema:notebook-cloud-public-acl-backfill",
           });
         }
+      }
+    } else if (
+      this.query.includes("INSERT INTO notebook_acl") &&
+      this.query.includes("WHERE EXISTS")
+    ) {
+      const [notebookId, subject, createdAt, updatedAt, actorLabel, expectedNotebookId, owner] =
+        this.values as [string, string, string, string, string, string, string];
+      if (this.db.notebooks.get(expectedNotebookId)?.owner_principal === owner) {
+        this.insertAclIfMissing({
+          notebook_id: notebookId,
+          subject_kind: "principal",
+          subject,
+          scope: "owner",
+          created_at: createdAt,
+          updated_at: updatedAt,
+          created_by_actor_label: actorLabel,
+        });
       }
     } else if (this.query.includes("INSERT INTO notebook_acl")) {
       const [notebookId, subjectKind, subject, scope, createdAt, updatedAt, actorLabel] = this
