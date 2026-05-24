@@ -1,11 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  CloudWebSocketTransport,
   normalizeConnectionScope,
   startCloudBootstrapSync,
   syncableCloudHandle,
   withReadyTimeout,
 } from "../viewer/live-sync.ts";
+import { FrameType } from "../src/protocol.ts";
 
 describe("cloud live sync", () => {
   it("accepts known connection scopes", () => {
@@ -117,4 +119,143 @@ describe("cloud live sync", () => {
     handle.cancel_last_pool_state_flush();
     assert.deepEqual(calls, []);
   });
+
+  it("notifies disconnect when a send sees a closing socket before the close event", async () => {
+    const fake = installFakeWebSocket();
+    const disconnects: string[] = [];
+    try {
+      const transport = new CloudWebSocketTransport(
+        new URL("wss://example.test/n/room/sync"),
+        [],
+        undefined,
+        (reason) => disconnects.push(reason.message),
+      );
+      const socket = fake.socket;
+      socket.open();
+      socket.ready("peer-1");
+      await transport.ready;
+
+      socket.readyState = FakeWebSocket.CLOSING;
+      await assert.rejects(
+        transport.sendFrame(FrameType.PRESENCE, new Uint8Array([1, 2, 3])),
+        /cloud sync socket is closed/,
+      );
+      socket.close({ code: 1006 });
+
+      assert.deepEqual(disconnects, ["cloud sync socket is closed"]);
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("notifies disconnect when WebSocket.send throws", async () => {
+    const fake = installFakeWebSocket();
+    const disconnects: string[] = [];
+    try {
+      const transport = new CloudWebSocketTransport(
+        new URL("wss://example.test/n/room/sync"),
+        [],
+        undefined,
+        (reason) => disconnects.push(reason.message),
+      );
+      const socket = fake.socket;
+      socket.open();
+      socket.ready("peer-1");
+      await transport.ready;
+
+      socket.throwOnSend = true;
+      await assert.rejects(
+        transport.sendFrame(FrameType.PRESENCE, new Uint8Array([1, 2, 3])),
+        /cloud sync socket send failed: synthetic send failure/,
+      );
+      assert.deepEqual(disconnects, ["cloud sync socket send failed: synthetic send failure"]);
+    } finally {
+      fake.restore();
+    }
+  });
 });
+
+function installFakeWebSocket(): {
+  restore: () => void;
+  socket: FakeWebSocket;
+} {
+  const original = globalThis.WebSocket;
+  FakeWebSocket.instances = [];
+  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+  return {
+    restore: () => {
+      globalThis.WebSocket = original;
+    },
+    get socket() {
+      const socket = FakeWebSocket.instances[0];
+      assert.ok(socket, "expected a WebSocket instance");
+      return socket;
+    },
+  };
+}
+
+class FakeWebSocket extends EventTarget {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+  static instances: FakeWebSocket[] = [];
+
+  binaryType: BinaryType = "arraybuffer";
+  readyState = FakeWebSocket.CONNECTING;
+  throwOnSend = false;
+
+  constructor() {
+    super();
+    FakeWebSocket.instances.push(this);
+  }
+
+  send(): void {
+    if (this.throwOnSend) {
+      throw new Error("synthetic send failure");
+    }
+  }
+
+  close({ code = 1000, reason = "" }: { code?: number; reason?: string } = {}): void {
+    this.readyState = FakeWebSocket.CLOSED;
+    this.dispatchEvent(closeEvent(code, reason));
+  }
+
+  open(): void {
+    this.readyState = FakeWebSocket.OPEN;
+    this.dispatchEvent(new Event("open"));
+  }
+
+  ready(peerId: string): void {
+    const payload = new TextEncoder().encode(
+      JSON.stringify({
+        type: "cloud_room_ready",
+        protocol: "v4",
+        notebook_id: "room",
+        peer_id: peerId,
+        actor_label: `user:dev:alice/desktop:${peerId}`,
+        connection_scope: "editor",
+        timestamp: "2026-05-24T00:00:00.000Z",
+      }),
+    );
+    const frame = new Uint8Array(payload.byteLength + 1);
+    frame[0] = FrameType.SESSION_CONTROL;
+    frame.set(payload, 1);
+    this.dispatchEvent(messageEvent(frame.buffer));
+  }
+}
+
+function messageEvent(data: ArrayBuffer): Event {
+  const event = new Event("message");
+  Object.defineProperty(event, "data", { value: data });
+  return event;
+}
+
+function closeEvent(code: number, reason: string): Event {
+  const event = new Event("close");
+  Object.defineProperties(event, {
+    code: { value: code },
+    reason: { value: reason },
+  });
+  return event;
+}
