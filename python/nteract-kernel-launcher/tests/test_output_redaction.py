@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from nteract_kernel_launcher import _output_redaction
+import pytest
+from nteract_kernel_launcher import _output_redaction, _redact
+
+
+@pytest.fixture(autouse=True)
+def clear_redaction_cache():
+    _redact.clear_redaction_cache()
 
 
 class _FakeSession:
@@ -98,3 +104,22 @@ def test_output_redaction_install_is_idempotent(monkeypatch):
     assert session.send is first_send
     session.send("socket", "stream", content={"name": "stdout", "text": secret})
     assert session.sent[0]["content"]["text"] == "[redacted env]"
+
+
+def test_redaction_candidates_refresh_after_cache_window(monkeypatch):
+    now = 1000.0
+    monkeypatch.setattr(_redact.time, "monotonic", lambda: now)
+    _redact.clear_redaction_cache()
+
+    first_secret = "launcher-cache-secret-12345"
+    second_secret = "launcher-cache-secret-67890"
+    monkeypatch.setenv("CACHE_REDACTION_SECRET", first_secret)
+    monkeypatch.delenv("NTERACT_REDACT_ENV_VALUES_IN_OUTPUTS", raising=False)
+
+    assert first_secret in _redact.eligible_env_values()
+
+    monkeypatch.setenv("CACHE_REDACTION_SECRET", second_secret)
+    assert second_secret not in _redact.eligible_env_values()
+
+    now += _redact.REDACTION_CACHE_TTL_SECONDS + 0.001
+    assert second_secret in _redact.eligible_env_values()

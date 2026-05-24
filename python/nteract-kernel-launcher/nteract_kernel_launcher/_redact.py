@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 
 REDACT_ENV_VALUES_FLAG = "NTERACT_REDACT_ENV_VALUES_IN_OUTPUTS"
 REDACTION_MARKER = "[redacted env]"
 MIN_REDACTION_VALUE_LEN = 8
+REDACTION_CACHE_TTL_SECONDS = 0.25
 COMMON_ENV_VALUES = {
     "localhost",
     "127.0.0.1",
@@ -54,6 +56,11 @@ KNOWN_NON_SECRET_ENV_KEYS = {
     "XPC_SERVICE_NAME",
 }
 
+_cached_values: list[str] | None = None
+_cached_at = 0.0
+_cached_env_size = -1
+_cached_flag: str | None = None
+
 
 def redaction_enabled() -> bool:
     raw = os.environ.get(REDACT_ENV_VALUES_FLAG)
@@ -72,7 +79,15 @@ def is_known_non_secret_env_key(key: str) -> bool:
     )
 
 
-def eligible_env_values() -> list[str]:
+def clear_redaction_cache() -> None:
+    global _cached_at, _cached_env_size, _cached_flag, _cached_values
+    _cached_values = None
+    _cached_at = 0.0
+    _cached_env_size = -1
+    _cached_flag = None
+
+
+def _compute_eligible_env_values() -> list[str]:
     if not redaction_enabled():
         return []
 
@@ -90,6 +105,26 @@ def eligible_env_values() -> list[str]:
         values.add(value)
 
     return sorted(values, key=lambda value: (-len(value), value))
+
+
+def eligible_env_values() -> list[str]:
+    global _cached_at, _cached_env_size, _cached_flag, _cached_values
+    now = time.monotonic()
+    env_size = len(os.environ)
+    flag = os.environ.get(REDACT_ENV_VALUES_FLAG)
+    if (
+        _cached_values is not None
+        and env_size == _cached_env_size
+        and flag == _cached_flag
+        and now - _cached_at < REDACTION_CACHE_TTL_SECONDS
+    ):
+        return _cached_values
+
+    _cached_values = _compute_eligible_env_values()
+    _cached_at = now
+    _cached_env_size = env_size
+    _cached_flag = flag
+    return _cached_values
 
 
 def redact_text(text: str, values: list[str] | None = None) -> str:
