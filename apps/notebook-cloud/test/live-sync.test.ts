@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   normalizeConnectionScope,
   startCloudBootstrapSync,
+  syncableCloudHandle,
   withReadyTimeout,
 } from "../viewer/live-sync.ts";
 
@@ -76,5 +77,44 @@ describe("cloud live sync", () => {
     });
 
     assert.deepEqual(calls, ["start", "resetForBootstrap", "flush"]);
+  });
+
+  it("does not expose PoolDoc sync from the cloud viewer adapter", () => {
+    const calls: string[] = [];
+    const wasmHandle = {
+      receive_frame: () => [],
+      flush_local_changes: () => undefined,
+      cancel_last_flush: () => {
+        calls.push("cancel_last_flush");
+      },
+      flush_runtime_state_sync: () => undefined,
+      cancel_last_runtime_state_flush: () => {
+        calls.push("cancel_last_runtime_state_flush");
+      },
+      generate_runtime_state_sync_reply: () => undefined,
+      flush_pool_state_sync: () => {
+        calls.push("flush_pool_state_sync");
+        return new Uint8Array([1, 2, 3]);
+      },
+      cancel_last_pool_state_flush: () => {
+        calls.push("cancel_last_pool_state_flush");
+      },
+      generate_pool_state_sync_reply: () => {
+        calls.push("generate_pool_state_sync_reply");
+        return new Uint8Array([4, 5, 6]);
+      },
+      reset_sync_state: () => {
+        calls.push("reset_sync_state");
+      },
+      cell_count: () => 0,
+      get_heads_hex: () => [],
+      get_dependency_fingerprint: () => undefined,
+    } as unknown as Parameters<typeof syncableCloudHandle>[0];
+    const handle = syncableCloudHandle(wasmHandle);
+
+    assert.equal(handle.flush_pool_state_sync(), null);
+    assert.equal(handle.generate_pool_state_sync_reply(), null);
+    handle.cancel_last_pool_state_flush();
+    assert.deepEqual(calls, []);
   });
 });
