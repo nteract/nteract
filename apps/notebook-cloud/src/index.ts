@@ -1081,8 +1081,24 @@ async function authenticateRequestOrResponse(
     return await authenticateRequestWithProviders(request, env);
   } catch (error) {
     if (error instanceof AuthError) {
+      cloudLog(error.status >= 500 ? "warn" : "info", "auth.failed", {
+        status: error.status,
+        reason: error.message,
+        has_dev_token_header: request.headers.has(DEV_AUTH_TOKEN_HEADER),
+        has_websocket_protocol: request.headers.has("sec-websocket-protocol"),
+        counter: "auth_failures",
+        counter_delta: 1,
+      });
       return json({ error: error.message }, error.status);
     }
+    cloudLog("info", "auth.failed", {
+      status: 400,
+      reason: String(error),
+      has_dev_token_header: request.headers.has(DEV_AUTH_TOKEN_HEADER),
+      has_websocket_protocol: request.headers.has("sec-websocket-protocol"),
+      counter: "auth_failures",
+      counter_delta: 1,
+    });
     return json({ error: String(error) }, 400);
   }
 }

@@ -2,7 +2,7 @@ import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import worker from "../src/index.ts";
-import { authenticateDevRequest } from "../src/identity.ts";
+import { DEV_AUTH_TOKEN_PROTOCOL_PREFIX, authenticateDevRequest } from "../src/identity.ts";
 import type {
   D1Database,
   D1PreparedStatement,
@@ -780,6 +780,44 @@ describe("Worker artifact routes", () => {
     assert.equal(env.DB.notebooks.has("unclaimed-demo"), false);
   });
 
+  it("logs deployed dev auth failures without token material", async () => {
+    const env = fakeEnv({
+      DEPLOYMENT_ENV: "prototype",
+      NOTEBOOK_CLOUD_DEV_TOKEN: "secret-token",
+    });
+    const originalInfo = console.info;
+    const logs: unknown[][] = [];
+    console.info = (...args: unknown[]) => {
+      logs.push(args);
+    };
+    try {
+      const response = await worker.fetch(
+        new Request("https://cloud.test/n/unclaimed-demo/sync?user=alice&scope=editor", {
+          headers: {
+            Upgrade: "websocket",
+            "Sec-WebSocket-Protocol": `${DEV_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url(
+              "<NOTEBOOK_CLOUD_DEV_TOKEN>",
+            )}`,
+          },
+        }),
+        env,
+        fakeContext(),
+      );
+
+      assert.equal(response.status, 401);
+      const record = logs
+        .filter((entry) => entry[0] === "[notebook-cloud]")
+        .map((entry) => entry[1] as { event?: string; reason?: string; [key: string]: unknown })
+        .find((entry) => entry.event === "auth.failed");
+      assert.ok(record, "expected auth.failed log record");
+      assert.equal(record.counter, "auth_failures");
+      assert.equal(record.has_websocket_protocol, true);
+      assert.doesNotMatch(JSON.stringify(record), /<NOTEBOOK_CLOUD_DEV_TOKEN>|secret-token/);
+    } finally {
+      console.info = originalInfo;
+    }
+  });
+
   it("publishes a snapshot pair and materializes render JSON through the route layer", async () => {
     const env = fakeEnv();
     const [notebookBytes, runtimeStateBytes] = await Promise.all([
@@ -1142,6 +1180,10 @@ function fakeContext(): ExecutionContext {
     waitUntil: () => undefined,
     passThroughOnException: () => undefined,
   };
+}
+
+function base64Url(value: string): string {
+  return Buffer.from(value, "utf8").toString("base64url");
 }
 
 interface NotebookRow {

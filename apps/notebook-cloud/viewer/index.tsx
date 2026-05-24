@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { Code2, Eye, EyeOff, UsersRound } from "lucide-react";
+import { Code2, Eye, EyeOff, KeyRound, RotateCcw, UsersRound } from "lucide-react";
 import {
   ReadOnlyNotebook,
   type ReadOnlyNotebookCellData,
@@ -15,10 +15,16 @@ import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
 import { EditableMarkdownCell } from "./editable-markdown-cell";
 import type { RemoteCellPresence } from "@/components/editor/presence-state";
 import {
-  cloudSyncAuthFromLocalStorage,
-  connectCloudSyncRuntime,
-  type CloudSyncRuntime,
-} from "./live-sync";
+  clearCloudPrototypeDevAuth,
+  cloudPrototypeAuthFromWindow,
+  cloudSyncAuthFromPrototypeAuthState,
+  prototypeAuthSummary,
+  storeCloudPrototypeDevAuth,
+  validatePrototypeToken,
+  type CloudPrototypeAuthState,
+} from "./collaborator-auth";
+import { connectCloudSyncRuntime, type CloudSyncRuntime } from "./live-sync";
+import type { ConnectionScope } from "../src/auth-shared";
 import {
   CloudLivePresenceStore,
   emptyCloudLivePresenceSnapshot,
@@ -162,6 +168,10 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
   const [presence, setPresence] = useState(initialCloudViewerPresence);
   const [livePresence, setLivePresence] = useState(emptyCloudLivePresenceSnapshot);
   const [connectionScope, setConnectionScope] = useState<string | null>(null);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [authState, setAuthState] = useState<CloudPrototypeAuthState>(() =>
+    cloudPrototypeAuthFromWindow(),
+  );
 
   useEffect(() => {
     cellsRef.current = cells;
@@ -266,12 +276,13 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
 
     setPresence(initialCloudViewerPresence());
     setLivePresence(emptyCloudLivePresenceSnapshot());
+    setConnectionError(null);
     void connectCloudSyncRuntime({
       syncEndpoint: config.syncEndpoint,
       runtimedWasmModulePath: config.runtimedWasmModulePath,
       runtimedWasmPath: config.runtimedWasmPath,
       sessionId,
-      auth: cloudSyncAuthFromLocalStorage(),
+      auth: cloudSyncAuthFromPrototypeAuthState(authState),
       onControl: (message) => {
         if (disposed) return;
         if (
@@ -282,6 +293,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
           setPresence((state) => reduceCloudViewerPresenceMessage(state, message));
         }
         if (message.type === "cloud_room_ready") {
+          setConnectionError(null);
           setConnectionScope(message.connection_scope);
         }
         if (message.type === "cloud_frame_rejected") {
@@ -318,6 +330,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         if (disposed) return;
         setPresence((state) => reduceCloudViewerConnection(state, "disconnected"));
         setConnectionScope(null);
+        setConnectionError(error instanceof Error ? error.message : String(error));
         console.warn("[notebook-cloud] live room connection failed", error);
       });
 
@@ -334,7 +347,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
       setPresence((state) => reduceCloudViewerConnection(state, "disconnected"));
       setLivePresence(emptyCloudLivePresenceSnapshot());
     };
-  }, [blobResolver, config.syncEndpoint]);
+  }, [authState, blobResolver, config.syncEndpoint]);
 
   const readOnlyCells = useMemo(
     () =>
@@ -407,6 +420,10 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
     },
     [],
   );
+  const resetPrototypeAuth = useCallback(() => {
+    clearCloudPrototypeDevAuth(window.localStorage);
+    setAuthState(cloudPrototypeAuthFromWindow());
+  }, []);
 
   return (
     <main className="flex min-h-screen w-full flex-col py-6">
@@ -415,22 +432,48 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
       <div className="cloud-report-toolbar" aria-label="Notebook view status and controls">
         <CloudPresenceStatus presence={presence} connectionScope={connectionScope} />
 
-        {status.kind === "ready" && codeCellCount > 0 ? (
-          <button
-            type="button"
-            className="cloud-code-toggle"
-            aria-pressed={showCode}
-            aria-label={showCode ? "Hide code cells" : "Show code cells"}
-            title={showCode ? "Hide code cells" : "Show code cells"}
-            onClick={() => setShowCode((current) => !current)}
-          >
-            {showCode ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
-            <Code2 aria-hidden="true" />
-          </button>
-        ) : (
-          <span aria-hidden="true" />
-        )}
+        <div className="cloud-toolbar-actions">
+          <CloudAuthControls
+            authState={authState}
+            connectionScope={connectionScope}
+            onAuthStateChange={() => setAuthState(cloudPrototypeAuthFromWindow())}
+          />
+
+          {status.kind === "ready" && codeCellCount > 0 ? (
+            <button
+              type="button"
+              className="cloud-code-toggle"
+              aria-pressed={showCode}
+              aria-label={showCode ? "Hide code cells" : "Show code cells"}
+              title={showCode ? "Hide code cells" : "Show code cells"}
+              onClick={() => setShowCode((current) => !current)}
+            >
+              {showCode ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
+              <Code2 aria-hidden="true" />
+            </button>
+          ) : null}
+        </div>
       </div>
+
+      {authState.mode === "invalid" ? (
+        <div className="cloud-state cloud-auth-state mx-8 mr-4" data-kind="error">
+          <span>{prototypeAuthSummary(authState)}</span>
+          <button type="button" onClick={resetPrototypeAuth}>
+            <RotateCcw aria-hidden="true" />
+            Reset to anonymous
+          </button>
+        </div>
+      ) : null}
+
+      {connectionError ? (
+        <div className="cloud-state cloud-auth-state mx-8 mr-4" data-kind="error">
+          <span>Live room connection failed: {connectionError}</span>
+          <button type="button" onClick={resetPrototypeAuth}>
+            <RotateCcw aria-hidden="true" />
+            Reset to anonymous
+          </button>
+        </div>
+      ) : null}
 
       {status.kind === "ready" ? null : (
         <div className="cloud-state mx-8 mr-4" data-kind={status.kind}>
@@ -473,6 +516,106 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         />
       )}
     </main>
+  );
+}
+
+function CloudAuthControls({
+  authState,
+  connectionScope,
+  onAuthStateChange,
+}: {
+  authState: CloudPrototypeAuthState;
+  connectionScope: string | null;
+  onAuthStateChange: () => void;
+}) {
+  const [token, setToken] = useState("");
+  const [user, setUser] = useState(authState.user ?? "alice");
+  const [scope, setScope] = useState<ConnectionScope>(authState.requestedScope ?? "editor");
+  const [formError, setFormError] = useState<string | null>(null);
+  const summary =
+    authState.mode === "dev"
+      ? `Dev ${authState.user ?? "browser-editor"}`
+      : authState.mode === "invalid"
+        ? "Auth needs attention"
+        : "Anonymous";
+
+  const applyDevAuth = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const problem = validatePrototypeToken(token);
+    if (problem) {
+      setFormError(problem);
+      return;
+    }
+    storeCloudPrototypeDevAuth(window.localStorage, { token, user, scope });
+    setToken("");
+    setFormError(null);
+    onAuthStateChange();
+  };
+
+  const resetAuth = () => {
+    clearCloudPrototypeDevAuth(window.localStorage);
+    setToken("");
+    setFormError(null);
+    onAuthStateChange();
+  };
+
+  return (
+    <details className="cloud-auth-menu">
+      <summary title="Prototype collaborator identity">
+        <KeyRound aria-hidden="true" />
+        <span>{summary}</span>
+      </summary>
+      <form onSubmit={applyDevAuth}>
+        <p>{prototypeAuthSummary(authState)}</p>
+        {connectionScope ? <p>Connected as {connectionScope}.</p> : <p>Live room not connected.</p>}
+        <label>
+          <span>Dev token</span>
+          <input
+            type="password"
+            value={token}
+            placeholder="Worker dev token"
+            autoComplete="off"
+            onChange={(event) => setToken(event.target.value)}
+          />
+        </label>
+        <label>
+          <span>User</span>
+          <input
+            type="text"
+            value={user}
+            autoComplete="off"
+            onChange={(event) => setUser(event.target.value)}
+          />
+        </label>
+        <label>
+          <span>Scope</span>
+          <select
+            value={scope}
+            onChange={(event) => setScope(event.target.value as ConnectionScope)}
+          >
+            <option value="editor">editor</option>
+            <option value="owner">owner</option>
+            <option value="runtime_peer">runtime_peer</option>
+            <option value="viewer">viewer</option>
+          </select>
+        </label>
+        {formError ? (
+          <div className="cloud-auth-form-error" role="alert">
+            {formError}
+          </div>
+        ) : null}
+        <div className="cloud-auth-actions">
+          <button type="submit">
+            <KeyRound aria-hidden="true" />
+            Use dev identity
+          </button>
+          <button type="button" onClick={resetAuth}>
+            <RotateCcw aria-hidden="true" />
+            Anonymous
+          </button>
+        </div>
+      </form>
+    </details>
   );
 }
 

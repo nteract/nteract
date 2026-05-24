@@ -6,12 +6,13 @@ import {
   type NotebookTransport,
   type SyncableHandle,
 } from "runtimed";
-import {
-  DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
-  isConnectionScope,
-  type ConnectionScope,
-} from "../src/auth-shared";
+import { isConnectionScope, type ConnectionScope } from "../src/auth-shared";
 import { FrameType, type SessionControlMessage } from "../src/protocol";
+import {
+  cloudPrototypeAuthFromWindow,
+  cloudSyncAuthFromPrototypeAuthState,
+  type CloudSyncAuth,
+} from "./collaborator-auth";
 import {
   createBootstrapNotebookHandle,
   encodeCursorPresenceAfterInit,
@@ -38,13 +39,6 @@ export interface CloudSyncRuntime {
   ) => void;
 }
 
-export interface CloudSyncAuth {
-  protocols: string[];
-  user: string | null;
-  operator: string | null;
-  requestedScope: ConnectionScope | null;
-}
-
 export interface CloudSyncConnectOptions {
   syncEndpoint: string;
   runtimedWasmModulePath: string;
@@ -57,29 +51,9 @@ export interface CloudSyncConnectOptions {
 type FrameListener = Parameters<NotebookTransport["onFrame"]>[0];
 
 const LIVE_SYNC_READY_TIMEOUT_MS = 30_000;
-export const NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY = "nteract:notebook-cloud:dev-token";
-export const NOTEBOOK_CLOUD_USER_STORAGE_KEY = "nteract:notebook-cloud:user";
-export const NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY = "nteract:notebook-cloud:scope";
 
 export function cloudSyncAuthFromLocalStorage(): CloudSyncAuth {
-  if (typeof window === "undefined") {
-    return { protocols: [], user: null, operator: null, requestedScope: null };
-  }
-
-  const token = window.localStorage.getItem(NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY)?.trim();
-  if (!token) {
-    return { protocols: [], user: null, operator: null, requestedScope: null };
-  }
-
-  const requestedScope = parseStoredScope(
-    window.localStorage.getItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY),
-  );
-  return {
-    protocols: [`${DEV_AUTH_TOKEN_PROTOCOL_PREFIX}${base64UrlEncode(token)}`],
-    user: window.localStorage.getItem(NOTEBOOK_CLOUD_USER_STORAGE_KEY)?.trim() || "browser-editor",
-    operator: null,
-    requestedScope: requestedScope ?? "editor",
-  };
+  return cloudSyncAuthFromPrototypeAuthState(cloudPrototypeAuthFromWindow());
 }
 
 export async function connectCloudSyncRuntime({
@@ -345,19 +319,6 @@ function syncUrl(syncEndpoint: string, sessionId: string, auth: CloudSyncAuth): 
     url.searchParams.set("scope", auth.requestedScope);
   }
   return url;
-}
-
-function parseStoredScope(value: string | null): ConnectionScope | null {
-  return isConnectionScope(value) ? value : null;
-}
-
-function base64UrlEncode(value: string): string {
-  const bytes = new TextEncoder().encode(value);
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 }
 
 async function bytesFromWebSocketMessage(data: unknown): Promise<Uint8Array> {

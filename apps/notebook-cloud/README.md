@@ -168,10 +168,15 @@ For local browser-only testing, the same values can be supplied as query params:
 Dev credentials are accepted without an extra token only from loopback Wrangler local development (`localhost`, `127.0.0.1`, or `::1`). Deployed prototype environments require the `NOTEBOOK_CLOUD_DEV_TOKEN` Worker secret to match either the `X-Notebook-Cloud-Dev-Token` header or a WebSocket subprotocol named `nteract-dev-token.<base64url-token>`. `DEPLOYMENT_ENV=development` does not bypass this host check, and URL-carried `dev_token` credentials are rejected on deployed hosts so prototype owner credentials do not appear in URLs. If no scope is supplied, dev auth defaults to `viewer`. Write and publish paths must ask for `editor`, `runtime_peer`, or `owner` explicitly. Blob upload is allowed for runtime-state writers (`editor`, `runtime_peer`, `owner`) and verifies that the uploaded bytes match the SHA-256 digest in the blob route before writing to R2. Runtime peers may write typed-frame `0x05` (`RuntimeStateDoc`) changes through the materialized room host; typed-frame `0x00` (`NotebookDoc`) changes are rejected for runtime_peer scope.
 
 For the browser-hosted editor prototype, the viewer keeps the dev token out of
-URLs by reading local-only storage before it opens `/n/:id/sync`:
+URLs. Open the key menu in the sticky toolbar, paste the Worker dev token, pick
+`alice`/`bob` and `editor`, and apply the identity. The token is stored only in
+origin-local browser storage and is sent to `/n/:id/sync` as a WebSocket
+subprotocol, never as a query parameter.
+
+For scripted browser setup, use the same storage keys the toolbar manages:
 
 ```js
-localStorage.setItem("nteract:notebook-cloud:dev-token", "<NOTEBOOK_CLOUD_DEV_TOKEN>");
+localStorage.setItem("nteract:notebook-cloud:dev-token", "...real token...");
 localStorage.setItem("nteract:notebook-cloud:user", "live-publish");
 localStorage.setItem("nteract:notebook-cloud:scope", "editor");
 location.reload();
@@ -182,7 +187,10 @@ editor-scope markdown editing for existing markdown cells. The CodeMirror
 editor uses the shared presence sender, shared remote cursor renderer, and
 shared presence reducer, so cursor/selection presence carries the room-stamped
 actor label (`<principal>/<operator>`) that also backs CRDT attribution. Clear
-these local storage keys to return the browser to anonymous viewer mode.
+these local storage keys, or use the toolbar's Anonymous action, to return the
+browser to anonymous viewer mode. If the stored token is still a placeholder
+such as `<NOTEBOOK_CLOUD_DEV_TOKEN>`, the viewer refuses to use it, connects as
+an anonymous viewer instead, and shows a visible diagnostic with a reset button.
 
 ## Cloudflare Access auth
 
@@ -389,7 +397,10 @@ Use `GET /api/n/{id}/acl` with an owner credential to confirm editor/viewer
 grants. A healthy throwaway collaboration run should show editor
 `room.materialized_frame.applied` records, viewer `room.peer_sync.completed`
 records, no unexpected `room.frame.rejected` records for Alice/Bob, and
-anonymous viewer presence logged only as `room.presence.local_only`.
+anonymous viewer presence logged only as `room.presence.local_only`. If the
+browser shows `Offline`, open the key menu first: placeholder or stale dev
+tokens are surfaced there, and the Worker logs token/auth failures as
+`auth.failed` without recording raw token material.
 
 Snapshot and blob stubs:
 
