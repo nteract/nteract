@@ -17,6 +17,7 @@ const requestedBaseUrl = process.env.NOTEBOOK_CLOUD_URL ?? DEFAULT_BASE_URL;
 const devAuthToken = process.env.NOTEBOOK_CLOUD_DEV_TOKEN;
 const providedViewerUrl = process.argv[2] ?? process.env.NOTEBOOK_CLOUD_COLLAB_VIEWER_URL;
 const timeoutMs = Number(process.env.NOTEBOOK_CLOUD_SMOKE_TIMEOUT_MS ?? 60_000);
+const convergenceRounds = Number(process.env.NOTEBOOK_CLOUD_COLLAB_ROUNDS ?? 4);
 const screenshotPath = process.env.NOTEBOOK_CLOUD_SMOKE_SCREENSHOT;
 const timingsMs = {};
 
@@ -129,11 +130,35 @@ ${bobMarker}
     await timed("bob_to_anonymous", () =>
       waitForPageText(anonymous.page, bobMarker, "anonymous viewer"),
     );
+    await timed("bob_to_alice_exact", () => waitForEditableMarkdownExactText(alice.page, bobText));
+    await timed("bob_to_bob_exact", () => waitForEditableMarkdownExactText(bob.page, bobText));
     checks.push(
       "bob_edit_reached_alice",
       "bob_edit_reached_alice_editor",
       "bob_edit_reached_anonymous",
+      "initial_editors_exactly_converged",
     );
+
+    let expectedText = bobText;
+    for (let round = 1; round <= convergenceRounds; round += 1) {
+      const writerName = round % 2 === 1 ? "alice" : "bob";
+      const writer = writerName === "alice" ? alice : bob;
+      const marker = `${capitalize(writerName)} ping ${round} ${Date.now()}`;
+      expectedText = `${expectedText.trimEnd()}\n\n${marker}\n`;
+      await timed(`${writerName}_ping_${round}_edit`, () =>
+        replaceMarkdown(writer.page, expectedText, marker),
+      );
+      await timed(`${writerName}_ping_${round}_alice_exact`, () =>
+        waitForEditableMarkdownExactText(alice.page, expectedText),
+      );
+      await timed(`${writerName}_ping_${round}_bob_exact`, () =>
+        waitForEditableMarkdownExactText(bob.page, expectedText),
+      );
+      await timed(`${writerName}_ping_${round}_anonymous`, () =>
+        waitForPageText(anonymous.page, marker, "anonymous viewer"),
+      );
+    }
+    checks.push(`ping_pong_editors_exactly_converged_${convergenceRounds}_rounds`);
 
     const charlie = await timed("charlie_open", () =>
       openNotebookContext({
@@ -306,6 +331,24 @@ async function waitForEditableMarkdownText(page, expectedText) {
   );
 }
 
+async function waitForEditableMarkdownExactText(page, expectedText) {
+  const selector = "[data-slot='cloud-editable-markdown-cell'] .cm-content[contenteditable='true']";
+  const editor = page.locator(selector).first();
+  await editor.waitFor({ state: "visible", timeout: timeoutMs });
+  await page.waitForFunction(
+    ([contentSelector, expected]) => {
+      const content = document.querySelector(contentSelector);
+      if (!content) return false;
+      const text = Array.from(content.querySelectorAll(".cm-line"))
+        .map((line) => line.textContent ?? "")
+        .join("\n");
+      return text.trimEnd() === expected.trimEnd();
+    },
+    [selector, expectedText],
+    { timeout: timeoutMs },
+  );
+}
+
 async function assertNoEditableMarkdown(page) {
   const count = await page
     .locator("[data-slot='cloud-editable-markdown-cell'] .cm-content[contenteditable='true']")
@@ -401,6 +444,10 @@ async function timed(name, fn) {
 
 function elapsedMs(started) {
   return Math.max(0, Math.round((performance.now() - started) * 100) / 100);
+}
+
+function capitalize(value) {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function parseJson(stdout, label) {

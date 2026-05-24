@@ -414,7 +414,9 @@ materialization cost.
 `smoke:hosted:collab` builds on that protocol roundtrip with a browser-level
 check. Its JSON result includes the throwaway `viewerUrl`, the room id, and
 per-step timings for browser open, connection, Alice/Bob edit propagation,
-anonymous live updates, and Charlie's denied editor session.
+anonymous live updates, and Charlie's denied editor session. Set
+`NOTEBOOK_CLOUD_COLLAB_ROUNDS=<n>` to increase the default Alice/Bob ping-pong
+markdown edit convergence loop when chasing intermittent editor divergence.
 
 Use `GET /api/n/{id}/acl` with an owner credential to confirm editor/viewer
 grants. A healthy throwaway collaboration run should show editor
