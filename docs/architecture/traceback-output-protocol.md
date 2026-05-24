@@ -51,8 +51,9 @@ The rich payload has these top-level fields:
 structured fields, fall back to `text`, and use `raw_text` for diagnostics or
 copy/export of the original interpreter output.
 
-The payload is additive. It must not remove the ability to show a traceback if
-the rich renderer is absent or broken.
+The payload is additive-only in v1: new fields must be optional, and existing
+field meanings must remain stable. It must not remove the ability to show a
+traceback if the rich renderer is absent or broken.
 
 ## Decision 2: Frames are source-aware records
 
@@ -85,7 +86,8 @@ Each frame is a JSON object:
 `library` is a hint for UI grouping and dimming, not an authorization boundary.
 `lines` is a bounded source window around the failing line. `source_ref`
 connects compiled filenames back to notebook cell execution provenance when
-the kernel can supply it.
+the kernel can supply it. `source_ref.kind` is an open-ended string; the current
+well-known value is `"notebook_execution"`, not a closed enum.
 
 ## Decision 3: Syntax errors use a dedicated `syntax` record
 
@@ -139,11 +141,27 @@ sensitive output:
 - deep stacks are clipped to head frames, a sentinel, and tail frames;
 - leading library frames above the first user frame may be stripped;
 - source windows are small;
-- environment values that look secret are redacted by default;
+- environment variable values are redacted by default, except for values from
+  keys known to be non-secret and values that are too short or common to be
+  useful secrets;
 - redaction can be disabled explicitly for debugging.
 
-Redaction is best-effort output hygiene, not a security boundary. Kernel code
-already has access to the user's process environment.
+Redaction is best-effort traceback output hygiene, not a security boundary.
+Kernel code already has access to the user's process environment. Other output
+channels need their own producer-side policy if they should get the same
+scrubbing before entering runtime state or blob storage.
+
+## Decision 6: Vendor MIME is the incubation boundary
+
+The current MIME name is a nteract vendor name on purpose. The upstreamable
+part is the payload contract and failure behavior:
+
+1. A structured traceback payload carries frames, syntax information, source
+   provenance, and plain-text fallbacks.
+2. Payload evolution is additive-only in v1.
+3. Rich traceback construction must fail open to classic traceback output.
+4. The final transport may be a MIME bundle, `error` message metadata, or a
+   future Jupyter message field.
 
 ## Consequences
 
@@ -157,6 +175,8 @@ already has access to the user's process environment.
 
 1. Whether upstream Jupyter should attach this to `error` messages, emit it as
    a rich MIME bundle, or standardize a new structured traceback field.
-2. Whether `source_ref.kind = "notebook_execution"` is general enough for
+2. Which `source_ref.kind` values should be treated as well-known across
    scripts, magics, generated code, and non-Python kernels.
-3. Which redaction controls belong in IPython, ipykernel, or frontend policy.
+3. Which redaction controls belong in IPython, ipykernel, or frontend policy,
+   and whether the same environment-value scrubbing should apply to stream
+   outputs before they enter runtime state.

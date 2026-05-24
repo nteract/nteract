@@ -39,7 +39,6 @@ A blob ref is a JSON value whose identity is the content hash of the bytes:
   "hash": "<sha256-hex>",
   "content_type": "application/vnd.apache.arrow.stream",
   "size": 12345,
-  "buffer_index": 0,
   "summary": {
     "total_rows": 1000,
     "included_rows": 1000,
@@ -50,9 +49,9 @@ A blob ref is a JSON value whose identity is the content hash of the bytes:
 }
 ```
 
-The current desktop implementation uses lowercase SHA-256 hex. The ref does
-not include a localhost URL, cloud URL, file path, or room id. The host owns
-resolution:
+The current desktop implementation uses lowercase SHA-256 hex without an
+algorithm prefix. The ref does not include a localhost URL, cloud URL, file
+path, or room id. The host owns resolution:
 
 - Desktop maps the hash to the local daemon blob server.
 - Hosted viewers map the hash to notebook artifact storage.
@@ -60,8 +59,12 @@ resolution:
   a ref.
 
 `buffer_index` is a transport hint for the current IOPub message only. It says
-which attached binary buffer carries the bytes. It is not part of durable
-identity and can be recomputed when a message is republished.
+which attached binary buffer carries the bytes. Producers do not need to put it
+in single-ref bundles; the buffer hook stamps it before the message is sent.
+It is explicit in the transmitted JSON because Jupyter buffers are positional
+and consumers may inspect a ref after envelope normalization without replaying
+the hook's JSON traversal. It is not part of durable identity and can be
+recomputed when a message is republished.
 
 ## Decision 2: Multiple chunks use one multi-ref envelope
 
