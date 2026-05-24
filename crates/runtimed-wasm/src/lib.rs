@@ -336,6 +336,7 @@ impl RoomHostHandle {
         peer_id: &str,
         principal: &str,
         can_write: bool,
+        can_write_all_notebook_changes: bool,
         frame_bytes: &[u8],
     ) -> Result<JsValue, JsError> {
         if frame_bytes.is_empty() {
@@ -345,9 +346,13 @@ impl RoomHostHandle {
         let frame_type = frame_bytes[0];
         let payload = &frame_bytes[1..];
         let result = match frame_type {
-            frame_types::AUTOMERGE_SYNC => {
-                self.receive_notebook_sync(peer_id, principal, can_write, payload)?
-            }
+            frame_types::AUTOMERGE_SYNC => self.receive_notebook_sync(
+                peer_id,
+                principal,
+                can_write,
+                can_write_all_notebook_changes,
+                payload,
+            )?,
             frame_types::RUNTIME_STATE_SYNC => {
                 self.receive_runtime_state_sync(peer_id, principal, can_write, payload)?
             }
@@ -388,6 +393,7 @@ impl RoomHostHandle {
         peer_id: &str,
         principal: &str,
         can_write: bool,
+        can_write_all_notebook_changes: bool,
         payload: &[u8],
     ) -> Result<RoomHostFrameResult, JsError> {
         let message = sync::Message::decode(payload)
@@ -415,6 +421,9 @@ impl RoomHostHandle {
                 .map_err(|e| JsError::new(&format!("notebook auth preview failed: {e}")))?;
             let actors = extract_change_actors(preview.doc_mut(), &heads_before);
             validate_room_actor_labels(principal, actors.iter().map(String::as_str))?;
+            if !can_write_all_notebook_changes {
+                validate_markdown_source_only_changes(&mut preview, &heads_before)?;
+            }
         }
 
         let heads_before = self.doc.get_heads();
@@ -616,6 +625,37 @@ fn validate_room_actor_labels<'a>(
                     "actor label {label:?} is invalid: {error}"
                 )));
             }
+        }
+    }
+    Ok(())
+}
+
+fn validate_markdown_source_only_changes(
+    preview: &mut NotebookDoc,
+    heads_before: &[automerge::ChangeHash],
+) -> Result<(), JsError> {
+    let heads_after = preview.get_heads();
+    let changeset = diff_doc(preview.doc_mut(), heads_before, &heads_after);
+    if changeset.metadata_changed {
+        return Err(JsError::new(
+            "editor scope cannot change notebook metadata in hosted markdown-only mode",
+        ));
+    }
+    if changeset.cells.is_structural() {
+        return Err(JsError::new(
+            "editor scope cannot add, remove, or reorder cells in hosted markdown-only mode",
+        ));
+    }
+    for changed in &changeset.cells.changed {
+        if !changed.fields.is_source_only() {
+            return Err(JsError::new(
+                "editor scope can only edit markdown source in hosted markdown-only mode",
+            ));
+        }
+        if preview.get_cell_type(&changed.cell_id).as_deref() != Some("markdown") {
+            return Err(JsError::new(
+                "editor scope cannot edit code or raw cells in hosted markdown-only mode",
+            ));
         }
     }
     Ok(())
