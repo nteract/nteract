@@ -182,9 +182,14 @@ It should expire within seconds, be single use, and be scoped to the target
 room and requested role.
 
 Ticket validation and consumption must happen before the WebSocket upgrade is
-accepted. The URL can still appear in CDN, WAF, browser, or Worker analytics
-before the Worker consumes it, so tickets are a narrow fallback rather than the
-preferred path for sensitive deployments. Deployments that cannot tolerate even
+accepted. Consumption must be atomic, such as one D1 `DELETE ... RETURNING`
+operation, a compare-and-swap equivalent, or a Durable Object gate that
+serializes ticket use. A read-then-delete implementation is not sufficient
+because two concurrent upgrade requests could both validate the same ticket.
+
+The URL can still appear in CDN, WAF, browser, or Worker analytics before the
+Worker consumes it, so tickets are a narrow fallback rather than the preferred
+path for sensitive deployments. Deployments that cannot tolerate even
 short-lived opaque ticket exposure should use Cloudflare Access cookie/assertion
 auth or bearer-in-subprotocol auth with non-echoed credential subprotocols.
 
@@ -290,16 +295,20 @@ checks, but they do not rely on ambient cookies and therefore reduce CSRF risk.
    - `NOTEBOOK_CLOUD_ACCESS_AUD`
    - `NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN`
    - optional pinned `NOTEBOOK_CLOUD_ACCESS_JWKS_JSON`
-4. Add a deployment-level principal namespace decision:
+4. Strip credential subprotocols from any upgrade response that uses them. The
+   listener must return only a non-sensitive application protocol such as
+   `nteract.v4`, never `nteract-access-token.*`, `nteract-dev-token.*`, or
+   `nteract-bearer.*`.
+5. Add a deployment-level principal namespace decision:
    - Access-scoped by default;
    - Anaconda-scoped only with a stable Anaconda subject claim or direct
      Anaconda token validation.
-5. Add an origin allowlist for browser WebSocket upgrades.
-6. Keep notebook sharing in D1 ACL rows:
+6. Add an origin allowlist for browser WebSocket upgrades.
+7. Keep notebook sharing in D1 ACL rows:
    - owner row created at publish/import;
    - explicit collaborator rows for editors;
    - optional public-read row for anonymous viewers.
-7. Display provider metadata such as email/name without using it as the
+8. Display provider metadata such as email/name without using it as the
    principal key.
 
 This path is provider-neutral in the public architecture. Anaconda is the first

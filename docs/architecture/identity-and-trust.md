@@ -217,7 +217,7 @@ Browsers cannot set custom request headers on `new WebSocket(url, subprotocols)`
 for choosing among these transports. This section only records the base
 credential vocabulary.
 
-1. **Subprotocol smuggling** (the Kubernetes pattern). Client opens `new WebSocket(url, ["bearer.<base64url-token>", "nteract.v4"])`. Server reads `Sec-WebSocket-Protocol`, peels off the `bearer.*` element, validates the decoded token, and echoes back `nteract.v4` as the selected subprotocol. The token is not in the URL, not in the referer, not in server access logs. The token is still visible to any JS in the browser that can construct a WebSocket, which is the same trust boundary every other credential mechanism shares.
+1. **Subprotocol smuggling** (the Kubernetes pattern). Client opens `new WebSocket(url, ["nteract-bearer.<base64url-token>", "nteract.v4"])`. Server reads `Sec-WebSocket-Protocol`, peels off the credential element, validates the decoded token, and echoes back only `nteract.v4` as the selected subprotocol. The token is not in the URL, not in the referer, not in server access logs. The token is still visible to any JS in the browser that can construct a WebSocket, which is the same trust boundary every other credential mechanism shares.
 
 2. **One-time ticket**. Client POSTs `/api/session-tickets` with the real bearer (header-set, normal CORS). Server returns a short-lived (~10s, single-use) ticket. Client opens `wss://host/n/<id>?ticket=<one-time>`. Server validates the ticket, consumes it, and the connection is authenticated as the original user. The real bearer never appears in the WebSocket URL. Costs one extra round trip; the server tracks outstanding tickets in memory or D1.
 
