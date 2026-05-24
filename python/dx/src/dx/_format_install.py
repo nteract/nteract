@@ -46,7 +46,6 @@ All three extension points are documented public API
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import threading
@@ -56,12 +55,12 @@ from dx._env import Environment, detect_environment
 from dx._format import (
     ARROW_STREAM_MANIFEST_MIME,
     ARROW_STREAM_MIME,
-    ArrowStreamChunk,
+    DEFAULT_ARROW_CHUNK_BYTES,
     build_arrow_stream_manifest_from_chunks,
     has_arrow_stream_protocol,
-    serialize_arrow_stream,
+    iter_arrow_stream_chunks,
 )
-from dx._refs import BLOB_REF_MIME, BlobRef, build_ref_bundle
+from dx._refs import BLOB_REF_MIME, BlobRef, build_multi_ref_bundle, build_ref_bundle
 from dx._summary import summarize_dataframe, summarize_dataset
 
 log = logging.getLogger("dx")
@@ -224,17 +223,24 @@ def _dx_display_pub_hook(msg: dict) -> dict | None:
             ref = json.loads(ref_raw) if isinstance(ref_raw, str) else None
         if not isinstance(ref, dict):
             return msg
-        h = ref.get("hash")
-        if not isinstance(h, str):
+        entries = _ref_entries(ref)
+        if not entries:
             return msg
 
-        buffers = _pending_buffers().pop(h, None)
-        if buffers is None:
+        hashes = [entry.get("hash") for entry in entries]
+        if not all(isinstance(h, str) for h in hashes):
+            return msg
+
+        pending = _pending_buffers()
+        if not all(h in pending for h in hashes):
             # No stashed payload for this hash — maybe re-publish of a
             # historical message, or a ref emitted by something other
             # than our formatter. Pass through unchanged; the agent can
             # still resolve via BlobStore::exists on the hash.
             return msg
+        buffers = [pending.pop(h) for h in hashes if isinstance(h, str)]
+        for index, entry in enumerate(entries):
+            entry["buffer_index"] = index
 
         pub = _display_pub()
         if pub is None:
@@ -243,7 +249,7 @@ def _dx_display_pub_hook(msg: dict) -> dict | None:
             pub.pub_socket,
             msg,
             ident=pub.topic,
-            buffers=[buffers],
+            buffers=buffers,
         )
         return None
     except Exception as exc:
@@ -252,6 +258,15 @@ def _dx_display_pub_hook(msg: dict) -> dict | None:
 
 
 _dx_display_pub_hook._dx_installed = True  # ty: ignore[unresolved-attribute]
+
+
+def _ref_entries(ref: dict) -> list[dict]:
+    refs = ref.get("refs")
+    if isinstance(refs, list):
+        return [entry for entry in refs if isinstance(entry, dict)]
+    if isinstance(ref.get("hash"), str):
+        return [ref]
+    return []
 
 
 def _arrow_stream_mimebundle(df: Any, include=None, exclude=None) -> dict | None:
@@ -346,9 +361,11 @@ def _emit_dataframe(df: Any, *, total_rows: int | None) -> dict | None:
         return None
 
     try:
-        data, content_type, included, record_batch_count = serialize_arrow_stream(
-            df,
-            max_bytes=_MAX_PAYLOAD_BYTES,
+        chunks = list(
+            iter_arrow_stream_chunks(
+                df,
+                max_chunk_bytes=min(DEFAULT_ARROW_CHUNK_BYTES, _MAX_PAYLOAD_BYTES),
+            )
         )
     except Exception as exc:
         log.debug("dx: serialize failed: %s — emitting summary-only bundle", exc)
@@ -365,20 +382,16 @@ def _emit_dataframe(df: Any, *, total_rows: int | None) -> dict | None:
         except Exception:
             return None
 
+    included = sum(chunk.row_count for chunk in chunks)
     if total_rows is None:
         total_rows = included
     sampled = included != total_rows
-
-    h = hashlib.sha256(data).hexdigest()
-    ref = BlobRef(hash=h, size=len(data))
     summary_hints = {
         "total_rows": total_rows,
         "included_rows": included,
         "sampled": sampled,
         "sample_strategy": "head" if sampled else "none",
     }
-    ref_bundle = build_ref_bundle(ref, content_type=content_type, summary=summary_hints)
-    ref_bundle["buffer_index"] = 0
 
     summary_source = _summary_source(df)
     try:
@@ -392,28 +405,34 @@ def _emit_dataframe(df: Any, *, total_rows: int | None) -> dict | None:
         log.debug("dx: summary build failed: %s", exc)
         llm = f"Arrow stream table: {included} rows"
 
-    # Stash the Arrow bytes for the display_pub hook to pick up on
-    # the upcoming publish. Keyed by hash so the hook can match exactly.
-    _pending_buffers()[h] = data
+    pending = _pending_buffers()
+    for chunk in chunks:
+        pending[chunk.content_hash] = chunk.data
+
+    if len(chunks) == 1:
+        chunk = chunks[0]
+        ref_bundle = build_ref_bundle(
+            BlobRef(hash=chunk.content_hash, size=chunk.size),
+            content_type=ARROW_STREAM_MIME,
+            summary=summary_hints,
+        )
+        ref_bundle["buffer_index"] = 0
+    else:
+        ref_bundle = build_multi_ref_bundle(
+            [BlobRef(hash=chunk.content_hash, size=chunk.size) for chunk in chunks],
+            content_type=ARROW_STREAM_MIME,
+            summary=summary_hints,
+        )
 
     bundle = {BLOB_REF_MIME: ref_bundle, "text/llm+plain": llm}
-    if content_type == ARROW_STREAM_MIME:
-        chunk = ArrowStreamChunk(
-            index=0,
-            data=data,
-            content_hash=h,
-            size=len(data),
-            row_count=included,
-            record_batch_count=record_batch_count,
+    try:
+        bundle[ARROW_STREAM_MANIFEST_MIME] = build_arrow_stream_manifest_from_chunks(
+            chunks,
+            complete=True,
+            summary=summary_hints,
         )
-        try:
-            bundle[ARROW_STREAM_MANIFEST_MIME] = build_arrow_stream_manifest_from_chunks(
-                [chunk],
-                complete=True,
-                summary=summary_hints,
-            )
-        except Exception as exc:
-            log.debug("dx: arrow manifest build failed: %s", exc)
+    except Exception as exc:
+        log.debug("dx: arrow manifest build failed: %s", exc)
 
     return bundle
 

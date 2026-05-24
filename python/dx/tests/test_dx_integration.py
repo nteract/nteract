@@ -44,11 +44,13 @@ class TestEmitDataFrameFallbackWithoutPyarrow:
     def test_emit_returns_summary_only_on_serialize_failure(self, monkeypatch):
         import dx._format_install as fi
 
-        # Make serialize_arrow_stream raise to simulate missing pyarrow
+        # Make iter_arrow_stream_chunks raise to simulate missing pyarrow
         monkeypatch.setattr(
             fi,
-            "serialize_arrow_stream",
-            lambda df, max_bytes: (_ for _ in ()).throw(ImportError("No module named 'pyarrow'")),
+            "iter_arrow_stream_chunks",
+            lambda df, max_chunk_bytes: (_ for _ in ()).throw(
+                ImportError("No module named 'pyarrow'")
+            ),
         )
 
         data: dict = {"score": [0.1, 0.5, 0.9], "name": ["a", "b", "c"]}

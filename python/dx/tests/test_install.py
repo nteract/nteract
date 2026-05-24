@@ -189,7 +189,7 @@ def test_mimebundle_returns_summary_only_on_serialize_failure(monkeypatch):
     ip = FakeIPython()
     monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
     monkeypatch.setattr(
-        "dx._format_install.serialize_arrow_stream",
+        "dx._format_install.iter_arrow_stream_chunks",
         lambda df, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
     )
 
@@ -248,6 +248,54 @@ def test_display_pub_hook_attaches_buffers_on_display_data(monkeypatch):
     # The pending slot is consumed so a later publish for the same hash
     # doesn't accidentally re-attach the bytes.
     assert h not in fi._pending_buffers()
+
+
+def test_display_pub_hook_attaches_multiple_buffers(monkeypatch):
+    """Chunked Arrow manifests carry multiple blob refs and buffers."""
+    _reset_installed(monkeypatch)
+    ip = FakeIPython()
+    monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
+
+    import dx
+    import dx._format_install as fi
+
+    dx.install()
+    hook = ip.display_pub._hooks[0]
+
+    payloads = [b"arrow-chunk-0", b"arrow-chunk-1"]
+    hashes = [hashlib.sha256(payload).hexdigest() for payload in payloads]
+    for h, payload in zip(hashes, payloads, strict=True):
+        fi._pending_buffers()[h] = payload
+
+    msg = {
+        "header": {"msg_type": "display_data"},
+        "content": {
+            "data": {
+                BLOB_REF_MIME: {
+                    "content_type": "application/vnd.apache.arrow.stream",
+                    "refs": [
+                        {
+                            "hash": h,
+                            "content_type": "application/vnd.apache.arrow.stream",
+                            "size": len(payload),
+                        }
+                        for h, payload in zip(hashes, payloads, strict=True)
+                    ],
+                },
+            },
+            "metadata": {},
+            "transient": {},
+        },
+    }
+
+    result = hook(msg)
+    assert result is None
+    assert len(ip.display_pub.session.sent) == 1
+    sent = ip.display_pub.session.sent[0]
+    assert sent["buffers"] == payloads
+    refs = sent["msg"]["content"]["data"][BLOB_REF_MIME]["refs"]
+    assert [ref["buffer_index"] for ref in refs] == [0, 1]
+    assert all(h not in fi._pending_buffers() for h in hashes)
 
 
 def test_display_pub_hook_fires_for_update_display_data(monkeypatch):
