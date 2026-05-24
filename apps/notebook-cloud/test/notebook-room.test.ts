@@ -13,6 +13,7 @@ import {
   NotebookRoom,
   rewritePresenceFrame,
   shouldBroadcastFrame,
+  shouldPersistMaterializedSyncFrame,
   webSocketUpgradeHeaders,
 } from "../src/notebook-room.ts";
 import {
@@ -26,6 +27,7 @@ import {
   encodePresenceFrame,
   initializeRuntimedWasm,
 } from "../src/runtimed-wasm.ts";
+import type { RoomHostFrameResult } from "../src/room-materializer.ts";
 
 const wasmBytes = await readFile(
   new URL("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm", import.meta.url),
@@ -212,6 +214,105 @@ describe("NotebookRoom peer lifecycle", () => {
   });
 });
 
+describe("NotebookRoom materialized sync persistence", () => {
+  it("persists only sync frames that changed a materialized document", () => {
+    assert.equal(
+      shouldPersistMaterializedSyncFrame({
+        notebook_changed: false,
+        runtime_state_changed: false,
+      }),
+      false,
+    );
+    assert.equal(
+      shouldPersistMaterializedSyncFrame({
+        notebook_changed: true,
+        runtime_state_changed: false,
+      }),
+      true,
+    );
+    assert.equal(
+      shouldPersistMaterializedSyncFrame({
+        notebook_changed: false,
+        runtime_state_changed: true,
+      }),
+      true,
+    );
+  });
+
+  it("acknowledges no-op sync control frames without persisted room history", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=viewer&operator=desktop:a&scope=viewer"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "viewer",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+    };
+    const harness = roomHarness(room);
+    let persisted = 0;
+    harness.materializers.set("demo", fakeMaterializer(noopMaterializedResult()));
+    harness.persistFrame = async () => {
+      persisted += 1;
+    };
+
+    await harness.handleMessage(
+      "demo",
+      peer,
+      encodeTypedFrame(FrameType.AUTOMERGE_SYNC, new Uint8Array()),
+    );
+
+    assert.equal(persisted, 0);
+    assert.equal(socket.sent.length, 1);
+    assert.equal(
+      decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1)).type,
+      "cloud_frame_accepted",
+    );
+  });
+
+  it("persists materialized sync frames that change document state", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "editor",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+    };
+    const harness = roomHarness(room);
+    let persisted = 0;
+    harness.materializers.set(
+      "demo",
+      fakeMaterializer({
+        ...noopMaterializedResult(),
+        changed: true,
+        notebook_changed: true,
+      }),
+    );
+    harness.persistFrame = async () => {
+      persisted += 1;
+    };
+
+    await harness.handleMessage(
+      "demo",
+      peer,
+      encodeTypedFrame(FrameType.AUTOMERGE_SYNC, new Uint8Array([1])),
+    );
+
+    assert.equal(persisted, 1);
+    assert.equal(socket.sent.length, 1);
+    assert.equal(
+      decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1)).type,
+      "cloud_frame_accepted",
+    );
+  });
+});
+
 type PeerForTest = {
   id: string;
   socket: CloudflareWebSocket;
@@ -221,6 +322,19 @@ type PeerForTest = {
 
 interface RoomHarness {
   peers: Map<string, PeerForTest>;
+  materializers: Map<
+    string,
+    {
+      receiveFrame(): Promise<RoomHostFrameResult>;
+      checkpoint(): Promise<void>;
+    }
+  >;
+  handleMessage(
+    notebookId: string,
+    peer: PeerForTest,
+    message: string | ArrayBuffer | ArrayBufferView,
+  ): Promise<void>;
+  persistFrame(): Promise<void>;
   removePeer(notebookId: string, peer: PeerForTest): void;
   peerForSocket(socket: CloudflareWebSocket): PeerForTest | undefined;
   broadcastFrame(notebookId: string, frame: Uint8Array, excludePeerId?: string): void;
@@ -243,6 +357,25 @@ function fakeState(): DurableObjectState {
       list: async <T>() => new Map(values as Map<string, T>),
     },
     waitUntil: () => undefined,
+  };
+}
+
+function noopMaterializedResult(): RoomHostFrameResult {
+  return {
+    changed: false,
+    notebook_changed: false,
+    runtime_state_changed: false,
+    outbound: [],
+  };
+}
+
+function fakeMaterializer(result: RoomHostFrameResult): {
+  receiveFrame(): Promise<RoomHostFrameResult>;
+  checkpoint(): Promise<void>;
+} {
+  return {
+    receiveFrame: async () => result,
+    checkpoint: async () => undefined,
   };
 }
 

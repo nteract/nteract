@@ -344,6 +344,7 @@ export class NotebookRoom {
         );
         return;
       }
+      const persistMaterializedFrame = shouldPersistMaterializedSyncFrame(result);
       cloudLog("debug", "room.materialized_frame.applied", {
         notebook_id: notebookId,
         peer_id: peer.id,
@@ -355,14 +356,17 @@ export class NotebookRoom {
         changed: result.changed,
         notebook_changed: result.notebook_changed,
         runtime_state_changed: result.runtime_state_changed,
+        persisted: persistMaterializedFrame,
         outbound_frame_count: result.outbound.length,
         counter: "materialized_frames_applied",
         counter_delta: 1,
       });
 
-      this.state.waitUntil(
-        this.persistFrame(peer, normalizedFrame, receivedAt).catch(() => undefined),
-      );
+      if (persistMaterializedFrame) {
+        this.state.waitUntil(
+          this.persistFrame(peer, normalizedFrame, receivedAt).catch(() => undefined),
+        );
+      }
       this.deliverRoomHostFrames(notebookId, result);
       if (result.changed) {
         this.state.waitUntil(materializer.checkpoint().catch(() => undefined));
@@ -670,6 +674,12 @@ export function shouldBroadcastFrame(
   identity: AuthenticatedConnection,
 ): boolean {
   return !(frame.type === FrameType.PRESENCE && isAnonymousViewer(identity));
+}
+
+export function shouldPersistMaterializedSyncFrame(
+  result: Pick<RoomHostFrameResult, "notebook_changed" | "runtime_state_changed">,
+): boolean {
+  return result.notebook_changed || result.runtime_state_changed;
 }
 
 export function webSocketUpgradeHeaders(identity: AuthenticatedConnection): Headers {
