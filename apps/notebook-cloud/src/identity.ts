@@ -377,7 +377,10 @@ function authenticateDevCredential(
   env: IdentityEnvironment,
 ): { webSocketProtocol?: string } | undefined {
   if (isLocalDevRequest(request)) {
-    return {};
+    const webSocketProtocol = tokenFromWebSocketProtocol(
+      request.headers.get("sec-websocket-protocol"),
+    );
+    return webSocketProtocol ? { webSocketProtocol: webSocketProtocol.protocol } : {};
   }
 
   return validDevTokenCredential(request, env);

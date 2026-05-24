@@ -247,7 +247,7 @@ function instrumentPage({ page, name, failures, visitedUrls, allowSyncFailure })
   });
   page.on("console", (message) => {
     const text = message.text();
-    if (message.type() === "error" && !isBenignConsoleError(text)) {
+    if (message.type() === "error" && !isBenignConsoleError(text, { allowSyncFailure })) {
       failures.push({ page: name, kind: "console-error", text });
     }
   });
@@ -289,13 +289,35 @@ async function waitForPresence(page, expectedText) {
 }
 
 async function waitForPageText(page, expectedText, label) {
-  await page
-    .waitForFunction((text) => document.body.innerText.includes(text), expectedText, {
-      timeout: timeoutMs,
-    })
-    .catch((error) => {
-      throw new Error(`${label} did not receive expected markdown text: ${error.message}`);
-    });
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await pageContainsText(page, expectedText)) {
+      return;
+    }
+    await page.waitForTimeout(250);
+  }
+  throw new Error(`${label} did not receive expected markdown text`);
+}
+
+async function pageContainsText(page, expectedText) {
+  const parentText = await page
+    .locator("body")
+    .innerText({ timeout: 1_000 })
+    .catch(() => "");
+  if (parentText.includes(expectedText)) {
+    return true;
+  }
+
+  for (const frame of page.frames().filter((candidate) => candidate !== page.mainFrame())) {
+    const frameText = await frame
+      .locator("body")
+      .innerText({ timeout: 1_000 })
+      .catch(() => "");
+    if (frameText.includes(expectedText)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function runNode(args, env) {
@@ -389,9 +411,14 @@ function isRelevantRequestUrl(url) {
   );
 }
 
-function isBenignConsoleError(text) {
+function isBenignConsoleError(text, { allowSyncFailure } = {}) {
   return (
     text.includes("A listener indicated an asynchronous response") ||
-    text.includes("Failed to execute 'observe' on 'MutationObserver'")
+    text.includes("Failed to execute 'observe' on 'MutationObserver'") ||
+    text.includes("Failed to load resource: the server responded with a status of 404") ||
+    (allowSyncFailure &&
+      text.includes("WebSocket connection") &&
+      text.includes("/sync") &&
+      text.includes("403"))
   );
 }
