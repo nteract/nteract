@@ -46,6 +46,14 @@ export interface NotebookAclRow {
   created_by_actor_label: string;
 }
 
+export interface NotebookAclInput {
+  notebookId: string;
+  subjectKind: NotebookAclRow["subject_kind"];
+  subject: string;
+  scope: NotebookAclRow["scope"];
+  actorLabel: string;
+}
+
 const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS notebooks (
     id TEXT PRIMARY KEY,
@@ -273,6 +281,78 @@ export async function getPublicNotebookAclRows(
   return rows.results ?? [];
 }
 
+export async function getNotebookAclRows(env: Env, notebookId: string): Promise<NotebookAclRow[]> {
+  if (!env.DB) {
+    return [];
+  }
+
+  await ensureCatalogSchema(env);
+  const rows = await env.DB.prepare(
+    `SELECT notebook_id,
+            subject_kind,
+            subject,
+            scope,
+            created_at,
+            updated_at,
+            created_by_actor_label
+       FROM notebook_acl
+       WHERE notebook_id = ?
+       ORDER BY subject_kind, subject, scope`,
+  )
+    .bind(notebookId)
+    .all<NotebookAclRow>();
+  return rows.results ?? [];
+}
+
+export async function grantNotebookAclRow(env: Env, row: NotebookAclInput): Promise<void> {
+  if (!env.DB) {
+    return;
+  }
+
+  await ensureCatalogSchema(env);
+  await notebookAclInsert(env, {
+    notebookId: row.notebookId,
+    subjectKind: row.subjectKind,
+    subject: row.subject,
+    scope: row.scope,
+    actorLabel: row.actorLabel,
+    timestamp: new Date().toISOString(),
+  }).run();
+}
+
+export async function revokeNotebookAclRow(
+  env: Env,
+  row: Omit<NotebookAclInput, "actorLabel">,
+): Promise<boolean> {
+  if (!env.DB) {
+    return false;
+  }
+
+  await ensureCatalogSchema(env);
+  const result = await env.DB.prepare(
+    `DELETE FROM notebook_acl
+       WHERE notebook_id = ?
+         AND subject_kind = ?
+         AND subject = ?
+         AND scope = ?
+         AND (
+           subject_kind != 'principal'
+           OR scope != 'owner'
+           OR (
+             SELECT COUNT(*)
+               FROM notebook_acl
+              WHERE notebook_id = ?
+                AND subject_kind = 'principal'
+                AND scope = 'owner'
+                AND subject != ?
+           ) > 0
+         )`,
+  )
+    .bind(row.notebookId, row.subjectKind, row.subject, row.scope, row.notebookId, row.subject)
+    .run();
+  return d1Changes(result) > 0;
+}
+
 export async function createNotebookWithOwnerAcl(
   env: Env,
   notebookId: string,
@@ -493,4 +573,9 @@ export async function getNotebookCatalog(
 
 function encodePathComponent(value: string): string {
   return encodeURIComponent(value).replaceAll("%2F", "%252F");
+}
+
+function d1Changes(result: { meta: Record<string, unknown> }): number {
+  const changes = result.meta.changes;
+  return typeof changes === "number" ? changes : 0;
 }

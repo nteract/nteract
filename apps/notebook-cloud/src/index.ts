@@ -6,22 +6,28 @@ import {
   allowsPublish,
   authenticateRequestWithProviders,
   DEV_AUTH_TOKEN_HEADER,
+  parseScope,
   stampTrustedIdentity,
   type AuthenticatedConnection,
   type ConnectionScope,
+  validatePrincipal,
 } from "./identity.ts";
 import { AuthorizationError, authorizeNotebookAccess } from "./authorization.ts";
 import {
   blobKey,
   createNotebookWithOwnerAcl,
   ensureCatalogSchema,
+  getNotebookAclRows,
   getNotebookRow,
   getNotebookCatalog,
+  grantNotebookAclRow,
   recordBlob,
   recordRevision,
   renderKey,
+  revokeNotebookAclRow,
   runtimeSnapshotKey,
   snapshotKey,
+  type NotebookAclRow,
   type RevisionRow,
 } from "./storage.ts";
 import { materializeSnapshotPairRender } from "./snapshot-render.ts";
@@ -126,6 +132,11 @@ const worker: ExportedHandler<Env> = {
     const latestRenderMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/render$/);
     if (latestRenderMatch && request.method === "GET") {
       return routeLatestRender(request, env, decodeURIComponent(latestRenderMatch[1]));
+    }
+
+    const aclMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/acl\/?$/);
+    if (aclMatch) {
+      return routeNotebookAcl(request, env, decodeURIComponent(aclMatch[1]));
     }
 
     const renderMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/renders\/([^/]+)$/);
@@ -416,6 +427,70 @@ async function routeRuntimeSnapshot(
   });
 
   return json({ ok: true, key, size: body.byteLength }, 201);
+}
+
+async function routeNotebookAcl(request: Request, env: Env, notebookId: string): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "owner");
+  if (identity instanceof Response) {
+    return identity;
+  }
+
+  if (request.method === "GET") {
+    return json({
+      notebook_id: notebookId,
+      acl: await getNotebookAclRows(env, notebookId),
+    });
+  }
+
+  if (request.method !== "POST" && request.method !== "DELETE") {
+    return json({ error: "method not allowed" }, 405);
+  }
+
+  const aclInput = await parseNotebookAclInput(request);
+  if (aclInput instanceof Response) {
+    return aclInput;
+  }
+
+  if (request.method === "DELETE") {
+    const revoked = await revokeNotebookAclRow(env, {
+      notebookId,
+      subjectKind: aclInput.subject_kind,
+      subject: aclInput.subject,
+      scope: aclInput.scope,
+    });
+    const acl = await getNotebookAclRows(env, notebookId);
+    if (!revoked && isOwnerAclInput(aclInput) && aclContainsInput(acl, aclInput)) {
+      if (isOnlyOwnerAclRow(acl, aclInput)) {
+        return json({ error: "cannot remove the last owner ACL row" }, 409);
+      }
+      return json({ error: "owner ACL row was not removed; retry the request" }, 409);
+    }
+    return json({
+      ok: true,
+      notebook_id: notebookId,
+      acl,
+    });
+  }
+
+  await grantNotebookAclRow(env, {
+    notebookId,
+    subjectKind: aclInput.subject_kind,
+    subject: aclInput.subject,
+    scope: aclInput.scope,
+    actorLabel: identity.actorLabel,
+  });
+  return json(
+    {
+      ok: true,
+      notebook_id: notebookId,
+      acl: await getNotebookAclRows(env, notebookId),
+    },
+    201,
+  );
 }
 
 async function routeCatalog(request: Request, env: Env, notebookId: string): Promise<Response> {
@@ -793,6 +868,111 @@ async function routeBlob(
   return json({ ok: true, key, size: body.byteLength }, 201);
 }
 
+interface NotebookAclPayload {
+  subject_kind?: unknown;
+  subjectKind?: unknown;
+  subject?: unknown;
+  scope?: unknown;
+}
+
+interface ParsedNotebookAclInput {
+  subject_kind: NotebookAclRow["subject_kind"];
+  subject: string;
+  scope: NotebookAclRow["scope"];
+}
+
+async function parseNotebookAclInput(request: Request): Promise<ParsedNotebookAclInput | Response> {
+  let payload: NotebookAclPayload;
+  try {
+    payload = (await request.json()) as NotebookAclPayload;
+  } catch {
+    return json({ error: "ACL mutation body must be JSON" }, 400);
+  }
+
+  const subjectKind = stringField(payload.subject_kind ?? payload.subjectKind, "subject_kind");
+  if (subjectKind instanceof Response) {
+    return subjectKind;
+  }
+  if (subjectKind !== "principal" && subjectKind !== "public") {
+    return json({ error: "subject_kind must be 'principal' or 'public'" }, 400);
+  }
+
+  const subject = stringField(payload.subject, "subject");
+  if (subject instanceof Response) {
+    return subject;
+  }
+
+  const scopeValue = stringField(payload.scope, "scope");
+  if (scopeValue instanceof Response) {
+    return scopeValue;
+  }
+
+  let scope: ConnectionScope;
+  try {
+    scope = parseScope(scopeValue);
+  } catch (error) {
+    return json({ error: errorMessage(error) }, 400);
+  }
+
+  if (subjectKind === "public") {
+    if (subject !== "anonymous") {
+      return json({ error: "public ACL rows must use subject 'anonymous'" }, 400);
+    }
+    if (scope !== "viewer") {
+      return json({ error: "public ACL rows may only grant viewer scope" }, 400);
+    }
+  } else {
+    try {
+      validatePrincipal(subject);
+    } catch (error) {
+      return json({ error: errorMessage(error) }, 400);
+    }
+    if (subject === "system" || subject.startsWith("anonymous:")) {
+      return json(
+        { error: "principal ACL rows cannot target system or anonymous principals" },
+        400,
+      );
+    }
+  }
+
+  return {
+    subject_kind: subjectKind,
+    subject,
+    scope,
+  };
+}
+
+function stringField(value: unknown, fieldName: string): string | Response {
+  if (typeof value !== "string" || value.trim() === "") {
+    return json({ error: `${fieldName} must be a non-empty string` }, 400);
+  }
+  return value.trim();
+}
+
+function isOwnerAclInput(row: ParsedNotebookAclInput): boolean {
+  return row.subject_kind === "principal" && row.scope === "owner";
+}
+
+function aclContainsInput(rows: NotebookAclRow[], row: ParsedNotebookAclInput): boolean {
+  return rows.some(
+    (candidate) =>
+      candidate.subject_kind === row.subject_kind &&
+      candidate.subject === row.subject &&
+      candidate.scope === row.scope,
+  );
+}
+
+function isOnlyOwnerAclRow(rows: NotebookAclRow[], row: ParsedNotebookAclInput): boolean {
+  if (row.subject_kind !== "principal" || row.scope !== "owner") {
+    return false;
+  }
+
+  const ownerRows = rows.filter(
+    (candidate) => candidate.subject_kind === "principal" && candidate.scope === "owner",
+  );
+  return ownerRows.length === 1 && ownerRows[0]?.subject === row.subject;
+}
+
 async function safeEnsureCatalogSchema(env: Env, ctx: ExecutionContext): Promise<void> {
   ctx.waitUntil(
     ensureCatalogSchema(env).catch((error: unknown) => {
@@ -898,10 +1078,10 @@ async function sha256Hex(body: ArrayBuffer): Promise<string> {
 
 function withCors(response: Response): Response {
   response.headers.set("Access-Control-Allow-Origin", "*");
-  response.headers.set("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, OPTIONS");
+  response.headers.set("Access-Control-Allow-Methods", "DELETE, GET, HEAD, POST, PUT, OPTIONS");
   response.headers.set(
     "Access-Control-Allow-Headers",
-    `Content-Type, X-User, X-Principal, X-Operator, X-Scope, X-Viewer-Session, X-Runtime-Heads-Hash, ${DEV_AUTH_TOKEN_HEADER}`,
+    `Authorization, Cf-Access-Jwt-Assertion, Content-Type, X-User, X-Principal, X-Operator, X-Scope, X-Viewer-Session, X-Runtime-Heads-Hash, ${DEV_AUTH_TOKEN_HEADER}`,
   );
   return response;
 }

@@ -20,6 +20,7 @@ import { initializeRuntimedWasm } from "../src/runtimed-wasm.ts";
 import {
   blobKey,
   createNotebookWithOwnerAcl,
+  getNotebookAclRows,
   getNotebookAclRowsForPrincipal,
   renderKey,
   snapshotKey,
@@ -474,6 +475,252 @@ describe("Worker artifact routes", () => {
     assert.equal(catalog.notebook.id, "access-demo");
   });
 
+  it("lets owners inspect and grant principal ACL rows", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "acl-demo");
+    seedAcl(env, {
+      notebookId: "acl-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+
+    const before = await aclRequest(env, "GET", undefined);
+    assert.equal(before.status, 200);
+    const beforeBody = (await before.json()) as { notebook_id: string; acl: NotebookAclRow[] };
+    assert.equal(beforeBody.notebook_id, "acl-demo");
+    assert.deepEqual(
+      beforeBody.acl.map((row) => [row.subject_kind, row.subject, row.scope]),
+      [["principal", "user:dev:alice", "owner"]],
+    );
+
+    const grant = await aclRequest(env, "POST", {
+      subject_kind: "principal",
+      subject: "user:dev:bob",
+      scope: "editor",
+    });
+    assert.equal(grant.status, 201);
+    assert.deepEqual(
+      (await getNotebookAclRowsForPrincipal(env, "acl-demo", "user:dev:bob")).map(
+        (row) => row.scope,
+      ),
+      ["editor"],
+    );
+
+    const bobCatalog = await worker.fetch(
+      new Request("http://localhost/api/n/acl-demo?user=bob&operator=desktop:b&scope=editor"),
+      env,
+      fakeContext(),
+    );
+    assert.equal(bobCatalog.status, 200);
+  });
+
+  it("lets owners grant and revoke explicit public viewer ACL rows", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "public-acl-demo");
+    seedAcl(env, {
+      notebookId: "public-acl-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+
+    const hidden = await worker.fetch(
+      new Request("http://localhost/api/n/public-acl-demo?viewer_session=anon-a"),
+      env,
+      fakeContext(),
+    );
+    assert.equal(hidden.status, 404);
+
+    const grant = await aclRequest(
+      env,
+      "POST",
+      {
+        subject_kind: "public",
+        subject: "anonymous",
+        scope: "viewer",
+      },
+      "public-acl-demo",
+    );
+    assert.equal(grant.status, 201);
+
+    const visible = await worker.fetch(
+      new Request("http://localhost/api/n/public-acl-demo?viewer_session=anon-a"),
+      env,
+      fakeContext(),
+    );
+    assert.equal(visible.status, 200);
+
+    const revoke = await aclRequest(
+      env,
+      "DELETE",
+      {
+        subject_kind: "public",
+        subject: "anonymous",
+        scope: "viewer",
+      },
+      "public-acl-demo",
+    );
+    assert.equal(revoke.status, 200);
+
+    const hiddenAgain = await worker.fetch(
+      new Request("http://localhost/api/n/public-acl-demo?viewer_session=anon-a"),
+      env,
+      fakeContext(),
+    );
+    assert.equal(hiddenAgain.status, 404);
+  });
+
+  it("keeps ACL management owner-only and public grants viewer-only", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "acl-private-demo");
+    seedAcl(env, {
+      notebookId: "acl-private-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    seedAcl(env, {
+      notebookId: "acl-private-demo",
+      subject: "user:dev:bob",
+      scope: "editor",
+    });
+
+    const bobGrant = await aclRequest(
+      env,
+      "POST",
+      {
+        subject_kind: "principal",
+        subject: "user:dev:mallory",
+        scope: "viewer",
+      },
+      "acl-private-demo",
+      {
+        "X-User": "bob",
+        "X-Scope": "editor",
+      },
+    );
+    assert.equal(bobGrant.status, 403);
+
+    const publicEditor = await aclRequest(
+      env,
+      "POST",
+      {
+        subject_kind: "public",
+        subject: "anonymous",
+        scope: "editor",
+      },
+      "acl-private-demo",
+    );
+    assert.equal(publicEditor.status, 400);
+    assert.deepEqual(await publicEditor.json(), {
+      error: "public ACL rows may only grant viewer scope",
+    });
+  });
+
+  it("rejects deleting the last owner ACL row", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "last-owner-demo");
+    seedAcl(env, {
+      notebookId: "last-owner-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+
+    const response = await aclRequest(
+      env,
+      "DELETE",
+      {
+        subject_kind: "principal",
+        subject: "user:dev:alice",
+        scope: "owner",
+      },
+      "last-owner-demo",
+    );
+
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), { error: "cannot remove the last owner ACL row" });
+    assert.equal((await getNotebookAclRows(env, "last-owner-demo")).length, 1);
+  });
+
+  it("does not report success when a guarded owner delete leaves the row present", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "owner-delete-race-demo");
+    seedAcl(env, {
+      notebookId: "owner-delete-race-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    env.DB.afterBlockedOwnerDelete = () => {
+      seedAcl(env, {
+        notebookId: "owner-delete-race-demo",
+        subject: "user:dev:bob",
+        scope: "owner",
+      });
+    };
+
+    const response = await aclRequest(
+      env,
+      "DELETE",
+      {
+        subject_kind: "principal",
+        subject: "user:dev:alice",
+        scope: "owner",
+      },
+      "owner-delete-race-demo",
+    );
+
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      error: "owner ACL row was not removed; retry the request",
+    });
+    assert.deepEqual(
+      (await getNotebookAclRows(env, "owner-delete-race-demo")).map((row) => row.subject).sort(),
+      ["user:dev:alice", "user:dev:bob"],
+    );
+  });
+
+  it("allows owner revocation only while another owner row remains", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "two-owner-demo");
+    seedAcl(env, {
+      notebookId: "two-owner-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    seedAcl(env, {
+      notebookId: "two-owner-demo",
+      subject: "user:dev:bob",
+      scope: "owner",
+    });
+
+    const removeBob = await aclRequest(
+      env,
+      "DELETE",
+      {
+        subject_kind: "principal",
+        subject: "user:dev:bob",
+        scope: "owner",
+      },
+      "two-owner-demo",
+    );
+    assert.equal(removeBob.status, 200);
+    assert.deepEqual(
+      (await getNotebookAclRows(env, "two-owner-demo")).map((row) => row.subject),
+      ["user:dev:alice"],
+    );
+
+    const removeAlice = await aclRequest(
+      env,
+      "DELETE",
+      {
+        subject_kind: "principal",
+        subject: "user:dev:alice",
+        scope: "owner",
+      },
+      "two-owner-demo",
+    );
+    assert.equal(removeAlice.status, 409);
+    assert.deepEqual(await removeAlice.json(), { error: "cannot remove the last owner ACL row" });
+  });
+
   it("does not grant owner ACL to a principal that loses notebook creation", async () => {
     const env = fakeEnv();
     const alice = authenticateDevRequest(
@@ -778,6 +1025,34 @@ async function ownerPut(
   });
 }
 
+async function aclRequest(
+  env: FakeEnv,
+  method: "GET" | "POST" | "DELETE",
+  body: Record<string, unknown> | undefined,
+  notebookId = "acl-demo",
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  const init: RequestInit = {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      "X-User": "alice",
+      "X-Operator": "desktop:test",
+      "X-Scope": "owner",
+      ...headers,
+    },
+  };
+  if (body !== undefined) {
+    init.body = JSON.stringify(body);
+  }
+
+  return worker.fetch(
+    new Request(new URL(`/api/n/${notebookId}/acl`, "http://localhost"), init),
+    env,
+    fakeContext(),
+  );
+}
+
 async function scopedPut(
   env: FakeEnv,
   pathname: string,
@@ -899,6 +1174,7 @@ class FakeD1 implements D1Database {
   readonly revisions: RevisionRow[] = [];
   readonly blobs = new Map<string, BlobRow>();
   readonly acl: NotebookAclRow[] = [];
+  afterBlockedOwnerDelete?: () => void;
 
   prepare(query: string): D1PreparedStatement {
     return new FakeD1Statement(this, query);
@@ -978,6 +1254,41 @@ class FakeD1Statement implements D1PreparedStatement {
         updated_at: updatedAt,
         created_by_actor_label: actorLabel,
       });
+    } else if (this.query.includes("DELETE FROM notebook_acl")) {
+      const [notebookId, subjectKind, subject, scope] = this.values as [
+        string,
+        NotebookAclRow["subject_kind"],
+        string,
+        NotebookAclRow["scope"],
+      ];
+      if (
+        subjectKind === "principal" &&
+        scope === "owner" &&
+        !this.db.acl.some(
+          (row) =>
+            row.notebook_id === notebookId &&
+            row.subject_kind === "principal" &&
+            row.scope === "owner" &&
+            row.subject !== subject,
+        )
+      ) {
+        this.db.afterBlockedOwnerDelete?.();
+        this.db.afterBlockedOwnerDelete = undefined;
+        return okResult(undefined, { changes: 0 });
+      }
+
+      const countBefore = this.db.acl.length;
+      const retained = this.db.acl.filter(
+        (row) =>
+          !(
+            row.notebook_id === notebookId &&
+            row.subject_kind === subjectKind &&
+            row.subject === subject &&
+            row.scope === scope
+          ),
+      );
+      this.db.acl.splice(0, this.db.acl.length, ...retained);
+      return okResult(undefined, { changes: countBefore - retained.length });
     } else if (this.query.includes("INSERT INTO notebooks")) {
       const [id, ownerPrincipal, createdAtOrUpdatedAt, maybeUpdatedAt] = this.values as [
         string,
@@ -1080,6 +1391,12 @@ class FakeD1Statement implements D1PreparedStatement {
   async all<T = unknown>(): Promise<D1Result<T>> {
     if (this.query.includes("FROM notebook_acl")) {
       const notebookId = this.values[0] as string;
+      if (
+        !this.query.includes("subject_kind = 'principal'") &&
+        !this.query.includes("subject_kind = 'public'")
+      ) {
+        return okResult(this.db.acl.filter((row) => row.notebook_id === notebookId) as T[]);
+      }
       if (this.query.includes("subject_kind = 'principal'")) {
         const principal = this.values[1] as string;
         return okResult(
@@ -1127,11 +1444,11 @@ interface BlobRow {
   uploaded_at: string;
 }
 
-function okResult<T = unknown>(results?: T[]): D1Result<T> {
+function okResult<T = unknown>(results?: T[], meta: Record<string, unknown> = {}): D1Result<T> {
   return {
     results,
     success: true,
-    meta: {},
+    meta,
   };
 }
 
