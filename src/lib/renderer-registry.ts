@@ -19,6 +19,12 @@ export interface RendererProps {
 }
 
 export interface RendererHostContext {
+  containerDimensions?: {
+    width?: number;
+    maxWidth?: number;
+    height?: number;
+    maxHeight?: number;
+  };
   nteract?: {
     rendererAssetsBaseUrl?: string;
   };

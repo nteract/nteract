@@ -18,9 +18,20 @@ import {
   type TableEngineState,
 } from "@nteract/sift";
 import "@nteract/sift/style.css";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { NteractEmbedHostContext } from "@/components/isolated/host-context";
-import type { RendererInstallContext, RendererProps } from "@/lib/renderer-registry";
+import {
+  type RefObject,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import type {
+  RendererHostContext,
+  RendererInstallContext,
+  RendererProps,
+} from "@/lib/renderer-registry";
 import { resolveSiftWasmUrl } from "./sift-assets";
 
 const ARROW_STREAM_MANIFEST_MIME = "application/vnd.nteract.arrow-stream-manifest+json";
@@ -41,7 +52,8 @@ interface RendererArrowStreamManifest {
 let wasmConfigured = false;
 let configuredWasmUrl: string | undefined;
 let lastTableUrl: string | undefined;
-let getHostContext: (() => NteractEmbedHostContext | undefined) | undefined;
+let getHostContext: (() => RendererHostContext | undefined) | undefined;
+let subscribeHostContext: RendererInstallContext["subscribeHostContext"] | undefined;
 let unsubscribeHostContext: (() => void) | undefined;
 
 /**
@@ -94,11 +106,76 @@ const SIFT_MAX_PX = 720;
 // the header band and footer.
 const SIFT_MIN_PX = 220;
 
-function fitHeightForRowCount(rowCount: number): number {
-  if (rowCount <= 0) return SIFT_MIN_PX;
-  if (rowCount > SIFT_FIT_ROW_THRESHOLD) return SIFT_MAX_PX;
+// Keep in sync with src/isolated-renderer/layout-measure.ts. The host adds
+// this fudge to the measured iframe document height, so Sift needs to leave
+// the same room when fitting inside a host-provided iframe cap.
+const IFRAME_HEIGHT_FUDGE_PX = 2;
+
+function finitePositiveNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function outputOffsetWithinRenderer(element: HTMLElement | null): number {
+  if (typeof document === "undefined" || !element) return 0;
+  const root = document.getElementById("root") ?? document.body;
+  if (!root) return 0;
+  const rootTop = root.getBoundingClientRect().top;
+  const elementTop = element.getBoundingClientRect().top;
+  return Math.max(0, Math.ceil(elementTop - rootTop));
+}
+
+function hostSiftMaxHeight(element: HTMLElement | null): number {
+  const hostMaxHeight = finitePositiveNumber(getHostContext?.()?.containerDimensions?.maxHeight);
+  if (hostMaxHeight === null) return SIFT_MAX_PX;
+  const availableHeight =
+    Math.floor(hostMaxHeight) - IFRAME_HEIGHT_FUDGE_PX - outputOffsetWithinRenderer(element);
+  return Math.max(1, Math.min(SIFT_MAX_PX, availableHeight));
+}
+
+function useHostSiftMaxHeight(elementRef: RefObject<HTMLElement | null>): number {
+  const [maxHeight, setMaxHeight] = useState(() => hostSiftMaxHeight(null));
+
+  useLayoutEffect(() => {
+    let raf = 0;
+    const update = () => setMaxHeight(hostSiftMaxHeight(elementRef.current));
+    const scheduleUpdate = () => {
+      if (typeof window === "undefined") {
+        update();
+        return;
+      }
+      window.cancelAnimationFrame(raf);
+      raf = window.requestAnimationFrame(update);
+    };
+    update();
+
+    const unsubscribe = subscribeHostContext?.(() => scheduleUpdate());
+    const observer =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(scheduleUpdate);
+    if (elementRef.current) {
+      observer?.observe(elementRef.current);
+    }
+    const root = typeof document === "undefined" ? null : document.getElementById("root");
+    if (root) {
+      observer?.observe(root);
+    }
+    window.addEventListener("resize", scheduleUpdate);
+
+    return () => {
+      unsubscribe?.();
+      observer?.disconnect();
+      window.cancelAnimationFrame(raf);
+      window.removeEventListener("resize", scheduleUpdate);
+    };
+  }, [elementRef]);
+
+  return maxHeight;
+}
+
+function fitHeightForRowCount(rowCount: number, maxHeight: number): number {
+  if (rowCount <= 0) return Math.min(maxHeight, SIFT_MIN_PX);
+  if (rowCount > SIFT_FIT_ROW_THRESHOLD) return maxHeight;
   const fit = SIFT_HEADER_PX + rowCount * SIFT_ROW_PX + SIFT_FOOTER_PX;
-  return Math.max(SIFT_MIN_PX, Math.min(SIFT_MAX_PX, fit));
+  return Math.min(maxHeight, Math.max(SIFT_MIN_PX, fit));
 }
 
 // --- SiftRenderer component ---
@@ -153,30 +230,44 @@ function tableUrlForData(data: unknown, mimeType: string): string | undefined {
 function SiftRenderer({ data, mimeType, interactionActive = false }: RendererProps) {
   const url = tableUrlForData(data, mimeType);
   const source = useMemo(() => tableSourceForData(data, mimeType), [data, mimeType]);
+  const tableHostRef = useRef<HTMLDivElement>(null);
+  const maxTableHeight = useHostSiftMaxHeight(tableHostRef);
 
   // Default to the cap so the table is visible while sift's WASM loads
   // and reports its first state. Once we see a totalCount we settle on
   // the data-driven height. Filter changes (filteredCount moving while
   // totalCount stays put) are intentionally ignored so the cell layout
   // doesn't jump around as the user explores.
-  const [tableHeight, setTableHeight] = useState<number>(SIFT_MAX_PX);
+  const [tableHeight, setTableHeight] = useState<number>(maxTableHeight);
   const lastTotalRef = useRef<number | null>(null);
+  const maxTableHeightRef = useRef(maxTableHeight);
+  maxTableHeightRef.current = maxTableHeight;
 
   useEffect(() => {
     // New url (cell re-executed) — re-evaluate sizing on the next state.
     lastTotalRef.current = null;
-    setTableHeight(SIFT_MAX_PX);
+    setTableHeight(maxTableHeightRef.current);
   }, [url]);
 
-  const handleChange = useCallback((state: TableEngineState) => {
-    // Only react to totalCount changes. The engine fires onChange on init,
-    // setStreamingDone (multi-row-group parquet finishing), sort, and
-    // filter — totalCount only moves on the first two, so this filter is
-    // what keeps filter / sort interactions from bouncing the layout.
-    if (state.totalCount === lastTotalRef.current) return;
-    lastTotalRef.current = state.totalCount;
-    setTableHeight(fitHeightForRowCount(state.totalCount));
-  }, []);
+  useEffect(() => {
+    const totalCount = lastTotalRef.current;
+    setTableHeight(
+      totalCount === null ? maxTableHeight : fitHeightForRowCount(totalCount, maxTableHeight),
+    );
+  }, [maxTableHeight]);
+
+  const handleChange = useCallback(
+    (state: TableEngineState) => {
+      // Only react to totalCount changes. The engine fires onChange on init,
+      // setStreamingDone (multi-row-group parquet finishing), sort, and
+      // filter — totalCount only moves on the first two, so this filter is
+      // what keeps filter / sort interactions from bouncing the layout.
+      if (state.totalCount === lastTotalRef.current) return;
+      lastTotalRef.current = state.totalCount;
+      setTableHeight(fitHeightForRowCount(state.totalCount, maxTableHeight));
+    },
+    [maxTableHeight],
+  );
 
   if (!url || !source) {
     console.warn("[sift-renderer] missing table URL", { mimeType, data });
@@ -186,7 +277,7 @@ function SiftRenderer({ data, mimeType, interactionActive = false }: RendererPro
   configureWasm(url);
 
   return (
-    <div style={{ height: tableHeight, width: "100%" }}>
+    <div ref={tableHostRef} data-slot="sift-output" style={{ height: tableHeight, width: "100%" }}>
       <SiftTable
         source={source}
         onChange={handleChange}
@@ -202,6 +293,7 @@ function SiftRenderer({ data, mimeType, interactionActive = false }: RendererPro
 
 export function install(ctx: RendererInstallContext) {
   getHostContext = ctx.getHostContext;
+  subscribeHostContext = ctx.subscribeHostContext;
   unsubscribeHostContext?.();
   unsubscribeHostContext = ctx.subscribeHostContext((context) => {
     if (!lastTableUrl || !context.nteract?.rendererAssetsBaseUrl) return;
