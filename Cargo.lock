@@ -7406,6 +7406,7 @@ dependencies = [
 name = "runtimed"
 version = "2.4.9"
 dependencies = [
+ "aho-corasick",
  "alacritty_terminal",
  "anyhow",
  "async-rust-lsp",
