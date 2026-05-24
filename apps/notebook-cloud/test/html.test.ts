@@ -55,6 +55,8 @@ describe("HTML script serialization", () => {
     assert.match(html, /"renderEndpoint":"\/api\/n\/demo\/renders\/heads-123"/);
     assert.match(html, /"blobBasePath":"\/api\/n\/demo\/blobs\/"/);
     assert.match(html, /"rendererAssetsBasePath":"\/renderer-assets\/"/);
+    assert.match(html, /"runtimedWasmModulePath":"\/assets\/runtimed_wasm\.js"/);
+    assert.match(html, /"runtimedWasmPath":"\/assets\/runtimed_wasm_bg\.wasm"/);
     assert.doesNotMatch(html, /function renderNotebook/);
     assert.doesNotMatch(html, /id="notebook"/);
   });
@@ -74,6 +76,31 @@ describe("HTML script serialization", () => {
     assert.match(
       response.headers.get("Content-Security-Policy") ?? "",
       /connect-src 'self' ws: wss: https:\/\/outputs\.example/,
+    );
+  });
+
+  it("allows the host to place runtimed WASM assets on a separate origin", async () => {
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/demo"),
+      fakeEnv({
+        RUNTIMED_WASM_BASE_URL: "https://wasm.example/runtime",
+      }),
+      fakeContext(),
+    );
+    const html = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(
+      html,
+      /"runtimedWasmModulePath":"https:\/\/wasm\.example\/runtime\/runtimed_wasm\.js"/,
+    );
+    assert.match(
+      html,
+      /"runtimedWasmPath":"https:\/\/wasm\.example\/runtime\/runtimed_wasm_bg\.wasm"/,
+    );
+    assert.match(
+      response.headers.get("Content-Security-Policy") ?? "",
+      /connect-src 'self' ws: wss: https:\/\/wasm\.example/,
     );
   });
 

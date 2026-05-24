@@ -336,6 +336,49 @@ describe("RoomMaterializer", () => {
     );
     assert.equal(cells[0].source, "Durable room checkpoint\n");
   });
+
+  it("ignores unversioned prototype checkpoints so published snapshots can hydrate rooms", async () => {
+    const state = fakeState();
+    const editorIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=owner"),
+    );
+    const editorPeer = {
+      id: "peer-editor",
+      identity: editorIdentity,
+    };
+    const editor = NotebookHandle.create_bootstrap(editorIdentity.actorLabel);
+    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    await syncMaterializerWithClient(materializer, editorPeer, editor);
+    editor.add_cell(0, "old-cell", "markdown");
+    editor.update_source("old-cell", "Old unversioned checkpoint\n");
+    const message = editor.flush_local_changes();
+    assert.ok(message);
+    await materializer.receiveFrame(editorPeer, {
+      type: FrameType.AUTOMERGE_SYNC,
+      payload: message,
+    });
+    await materializer.checkpoint();
+    await state.storage.put("room-host:checkpoint", {
+      notebook_heads: ["old"],
+      runtime_state_heads: ["old-runtime"],
+      saved_at: "2026-05-23T00:00:00.000Z",
+    });
+
+    const reloaded = new RoomMaterializer("demo", state, {} as Env);
+    const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
+    await syncMaterializerWithClient(
+      reloaded,
+      {
+        id: "peer-viewer",
+        identity: authenticateDevRequest(
+          new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
+        ),
+      },
+      viewer,
+    );
+
+    assert.deepEqual(JSON.parse(viewer.get_cells_json()), []);
+  });
 });
 
 function syncHostWithClient(

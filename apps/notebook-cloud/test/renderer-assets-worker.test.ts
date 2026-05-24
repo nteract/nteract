@@ -30,6 +30,29 @@ describe("renderer assets Worker", () => {
     assert.equal(await response.text(), "wasm");
   });
 
+  it("serves runtimed WASM assets from the same CORS-enabled asset origin", async () => {
+    const seenPaths: string[] = [];
+    const response = await rendererAssetsWorker.fetch(
+      new Request("https://assets.test/renderer-assets/runtimed_wasm_bg.wasm"),
+      fakeEnv({
+        ASSETS: {
+          fetch: async (request: Request) => {
+            seenPaths.push(new URL(request.url).pathname);
+            return new Response("runtime-wasm", {
+              headers: { "Content-Type": "application/wasm" },
+            });
+          },
+        },
+      }),
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(seenPaths, ["/runtimed_wasm_bg.wasm"]);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+    assert.equal(response.headers.get("Cache-Control"), "public, max-age=31536000, immutable");
+  });
+
   it("does not expose the notebook app bundle from the renderer asset origin", async () => {
     const response = await rendererAssetsWorker.fetch(
       new Request("https://assets.test/assets/notebook-cloud-viewer.js"),

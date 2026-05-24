@@ -2,112 +2,29 @@
  * Cursor registry — connects presence events from the frame bus to
  * CodeMirror EditorViews via direct StateEffect dispatch.
  *
- * This is the hot path for remote cursor rendering. No React involvement —
+ * This is the hot path for remote cursor rendering. No React involvement:
  * presence events arrive synchronously from the frame bus and are dispatched
  * as CodeMirror StateEffects to registered EditorViews.
- *
- * Flow:
- *   frame bus emitPresence() → subscribePresence callback
- *     → group cursors/selections by cell_id
- *       → setRemoteCursors(view, ...) / setRemoteSelections(view, ...)
  */
 
 import {
-  peerColor,
-  type RemoteCursorState,
-  type RemoteSelectionState,
   setRemoteCursors,
   setRemoteSelections,
 } from "@/components/editor/remote-cursors";
+import {
+  RemotePresenceState,
+  type PeerCursorInfo,
+} from "@/components/editor/presence-state";
 import { getAllCellEditors, getCellEditor } from "./editor-registry";
 import { logger } from "./logger";
 import { subscribePresence } from "./notebook-frame-bus";
 
-// ── Types (presence message shapes from WASM decode) ─────────────────
+export type { PeerCursorInfo } from "@/components/editor/presence-state";
 
-interface CursorData {
-  cell_id: string;
-  line: number;
-  column: number;
-}
+const presenceState = new RemotePresenceState();
 
-interface SelectionData {
-  cell_id: string;
-  anchor_line: number;
-  anchor_col: number;
-  head_line: number;
-  head_col: number;
-}
-
-interface ChannelEntry {
-  channel: "cursor" | "selection" | "focus" | "kernel_state" | "custom";
-  data: unknown;
-}
-
-interface PresenceUpdate {
-  type: "update";
-  peer_id: string;
-  peer_label?: string;
-  actor_label?: string;
-  channel: string;
-  data: unknown;
-}
-
-interface PresenceSnapshot {
-  type: "snapshot";
-  peer_id: string;
-  peers: Array<{
-    peer_id: string;
-    peer_label: string;
-    actor_label?: string;
-    channels: ChannelEntry[];
-  }>;
-}
-
-interface PresenceLeft {
-  type: "left";
-  peer_id: string;
-}
-
-interface PresenceHeartbeat {
-  type: "heartbeat";
-  peer_id: string;
-}
-
-interface PresenceClearChannel {
-  type: "clear_channel";
-  peer_id: string;
-  channel: string;
-}
-
-type PresenceMessage =
-  | PresenceUpdate
-  | PresenceSnapshot
-  | PresenceLeft
-  | PresenceHeartbeat
-  | PresenceClearChannel;
-
-// ── Peer state ───────────────────────────────────────────────────────
-
-export interface PeerCursorInfo {
-  peerId: string;
-  peerLabel: string;
-  actorLabel?: string;
-  color: string;
-  cursor?: CursorData;
-  selection?: SelectionData;
-  focus?: { cell_id: string };
-}
-
-// ── Registry state ───────────────────────────────────────────────────
-
-/** Map of peerId → current cursor/selection state */
-const peers = new Map<string, PeerCursorInfo>();
-
-/** The local peer ID (excluded from remote cursor rendering) */
-let localPeerId: string | null = null;
-
-// ── Dispatch helpers ─────────────────────────────────────────────────
+/** Map of cellId -> Set of subscriber callbacks. */
+const cellSubscribers = new Map<string, Set<() => void>>();
 
 /**
  * Called when a cell editor is registered via editor-registry.
@@ -122,20 +39,12 @@ export function onEditorRegistered(cellId: string): void {
  * Clears peer state referencing that cell.
  */
 export function onEditorUnregistered(cellId: string): void {
-  for (const peer of peers.values()) {
-    if (peer.cursor?.cell_id === cellId) {
-      peer.cursor = undefined;
-    }
-    if (peer.selection?.cell_id === cellId) {
-      peer.selection = undefined;
-    }
-    if (peer.focus?.cell_id === cellId) {
-      peer.focus = undefined;
-    }
+  const affectedCells = presenceState.clearCell(cellId);
+  if (affectedCells.size > 0) {
+    notifyCellSubscribers(affectedCells);
   }
 }
 
-/** Collect all remote cursors for a cell and dispatch to its EditorView. */
 function dispatchToCell(cellId: string): void {
   const view = getCellEditor(cellId);
   if (!view) {
@@ -143,34 +52,7 @@ function dispatchToCell(cellId: string): void {
     return;
   }
 
-  const cursors: RemoteCursorState[] = [];
-  const selections: RemoteSelectionState[] = [];
-
-  for (const [peerId, peer] of peers) {
-    if (peerId === localPeerId) continue;
-
-    if (peer.cursor?.cell_id === cellId) {
-      cursors.push({
-        peerId,
-        peerLabel: peer.peerLabel,
-        line: peer.cursor.line,
-        column: peer.cursor.column,
-        color: peer.color,
-      });
-    }
-
-    if (peer.selection?.cell_id === cellId) {
-      selections.push({
-        peerId,
-        peerLabel: peer.peerLabel,
-        anchorLine: peer.selection.anchor_line,
-        anchorCol: peer.selection.anchor_col,
-        headLine: peer.selection.head_line,
-        headCol: peer.selection.head_col,
-        color: peer.color,
-      });
-    }
-  }
+  const { cursors, selections } = presenceState.presenceForCell(cellId);
 
   logger.debug(
     `[cursor-registry] dispatchToCell ${cellId}: ${cursors.length} cursors, ${selections.length} selections`,
@@ -179,193 +61,32 @@ function dispatchToCell(cellId: string): void {
   setRemoteSelections(view, selections);
 }
 
-/** Dispatch updates to all cells that might be affected by a peer change. */
 function dispatchToAffectedCells(affectedCellIds: Set<string>): void {
   for (const cellId of affectedCellIds) {
     dispatchToCell(cellId);
   }
-  // Also notify any cell-level subscribers
   notifyCellSubscribers(affectedCellIds);
 }
 
-// ── Presence event handler ───────────────────────────────────────────
-
 function handlePresence(payload: unknown): void {
-  const msg = payload as PresenceMessage;
-
-  switch (msg.type) {
-    case "update": {
-      if (msg.peer_id === localPeerId) return;
-
-      const existing = peers.get(msg.peer_id);
-      const peer: PeerCursorInfo = existing ?? {
-        peerId: msg.peer_id,
-        peerLabel: msg.peer_label || "Peer",
-        color: peerColor(msg.peer_id),
-      };
-
-      // Update label if the message carries one (e.g. "Agent" from MCP)
-      if (msg.peer_label) {
-        peer.peerLabel = msg.peer_label;
-      }
-      // Store actor label for CRDT attribution color matching
-      if (msg.actor_label) {
-        peer.actorLabel = msg.actor_label;
-      }
-
-      const affectedCells = new Set<string>();
-
-      if (msg.channel === "cursor") {
-        const data = msg.data as CursorData;
-        // Clear old cell, add new cell
-        if (peer.cursor && peer.cursor.cell_id !== data.cell_id) {
-          affectedCells.add(peer.cursor.cell_id);
-        }
-        // Cursor replaces focus
-        if (peer.focus) {
-          affectedCells.add(peer.focus.cell_id);
-          peer.focus = undefined;
-        }
-        // Cursor-only means no selection (anchor === head in sender)
-        if (peer.selection) {
-          affectedCells.add(peer.selection.cell_id);
-          peer.selection = undefined;
-        }
-        peer.cursor = data;
-        affectedCells.add(data.cell_id);
-      } else if (msg.channel === "selection") {
-        const data = msg.data as SelectionData;
-        if (peer.selection && peer.selection.cell_id !== data.cell_id) {
-          affectedCells.add(peer.selection.cell_id);
-        }
-        peer.selection = data;
-        affectedCells.add(data.cell_id);
-      } else if (msg.channel === "focus") {
-        const data = msg.data as { cell_id: string };
-        // Focus replaces cursor and selection — the peer is no longer
-        // in an editor, so stale highlights must be cleared.
-        if (peer.cursor) {
-          affectedCells.add(peer.cursor.cell_id);
-          peer.cursor = undefined;
-        }
-        if (peer.selection) {
-          affectedCells.add(peer.selection.cell_id);
-          peer.selection = undefined;
-        }
-        if (peer.focus && peer.focus.cell_id !== data.cell_id) {
-          affectedCells.add(peer.focus.cell_id);
-        }
-        peer.focus = data;
-        affectedCells.add(data.cell_id);
-      }
-
-      peers.set(msg.peer_id, peer);
-      dispatchToAffectedCells(affectedCells);
-      break;
-    }
-
-    case "snapshot": {
-      // Replace all peer state with snapshot data
-      const affectedCells = new Set<string>();
-
-      // Track cells that had cursors before (to clear them)
-      for (const peer of peers.values()) {
-        if (peer.cursor) affectedCells.add(peer.cursor.cell_id);
-        if (peer.selection) affectedCells.add(peer.selection.cell_id);
-        if (peer.focus) affectedCells.add(peer.focus.cell_id);
-      }
-
-      peers.clear();
-
-      for (const snap of msg.peers) {
-        if (snap.peer_id === localPeerId) continue;
-
-        const peer: PeerCursorInfo = {
-          peerId: snap.peer_id,
-          peerLabel: snap.peer_label,
-          actorLabel: snap.actor_label,
-          color: peerColor(snap.peer_id),
-        };
-
-        for (const ch of snap.channels) {
-          if (ch.channel === "cursor") {
-            peer.cursor = ch.data as CursorData;
-            affectedCells.add(peer.cursor.cell_id);
-          } else if (ch.channel === "selection") {
-            peer.selection = ch.data as SelectionData;
-            affectedCells.add(peer.selection.cell_id);
-          } else if (ch.channel === "focus") {
-            peer.focus = ch.data as { cell_id: string };
-            affectedCells.add(peer.focus.cell_id);
-          }
-        }
-
-        peers.set(snap.peer_id, peer);
-      }
-
-      dispatchToAffectedCells(affectedCells);
-      break;
-    }
-
-    case "left": {
-      const peer = peers.get(msg.peer_id);
-      if (!peer) return;
-
-      const affectedCells = new Set<string>();
-      if (peer.cursor) affectedCells.add(peer.cursor.cell_id);
-      if (peer.selection) affectedCells.add(peer.selection.cell_id);
-      if (peer.focus) affectedCells.add(peer.focus.cell_id);
-
-      peers.delete(msg.peer_id);
-      dispatchToAffectedCells(affectedCells);
-      break;
-    }
-
-    case "clear_channel": {
-      const peer = peers.get(msg.peer_id);
-      if (!peer) return;
-      const affectedCells = new Set<string>();
-      if (msg.channel === "cursor" && peer.cursor) {
-        affectedCells.add(peer.cursor.cell_id);
-        peer.cursor = undefined;
-      } else if (msg.channel === "selection" && peer.selection) {
-        affectedCells.add(peer.selection.cell_id);
-        peer.selection = undefined;
-      } else if (msg.channel === "focus" && peer.focus) {
-        affectedCells.add(peer.focus.cell_id);
-        peer.focus = undefined;
-      }
-      dispatchToAffectedCells(affectedCells);
-      break;
-    }
-
-    case "heartbeat":
-      // No visual change needed
-      break;
-  }
+  const affectedCells = presenceState.handlePresence(payload);
+  dispatchToAffectedCells(affectedCells);
 }
 
-// ── Lifecycle ────────────────────────────────────────────────────────
-
-/** Reconciliation interval — re-dispatches all cells from canonical peer
- * state to correct any rendering that diverged from the registry. */
 const RECONCILE_INTERVAL_MS = 5_000;
 
 /**
  * Start dispatching presence events to registered CodeMirror EditorViews.
  *
- * Call once at app startup. Returns a cleanup function.
- *
- * @param peerId The local peer's ID — excluded from remote cursor rendering.
+ * @param peerId The local peer's ID, excluded from remote cursor rendering.
  */
 export function startCursorDispatch(peerId: string): () => void {
-  localPeerId = peerId;
+  presenceState.setLocalPeerId(peerId);
 
   const unsubscribe = subscribePresence(handlePresence);
 
-  // Periodic reconciliation: re-dispatch every registered cell from the
-  // canonical peers map. This self-heals if individual update messages
-  // were lost, misordered, or if the rendering diverged from state.
+  // Periodic reconciliation self-heals if individual update messages were
+  // lost, misordered, or if rendering diverged from canonical peer state.
   const reconcileTimer = setInterval(() => {
     for (const cellId of getAllCellEditors().keys()) {
       dispatchToCell(cellId);
@@ -375,70 +96,38 @@ export function startCursorDispatch(peerId: string): () => void {
   return () => {
     unsubscribe();
     clearInterval(reconcileTimer);
-    localPeerId = null;
-    peers.clear();
-    // Clear all editors' cursors on shutdown
+    presenceState.setLocalPeerId(null);
+    presenceState.clear();
+
     for (const [, view] of getAllCellEditors()) {
       setRemoteCursors(view, []);
       setRemoteSelections(view, []);
     }
-    // Clear cell subscriptions
     cellSubscribers.clear();
   };
 }
 
-// ── Cell-level presence queries ───────────────────────────────────────
-
-/** Map of cellId → Set of subscriber callbacks */
-const cellSubscribers = new Map<string, Set<() => void>>();
-
 /**
- * Find a connected peer's color by matching against an actor label.
+ * Find a connected peer's color by exact actor-label match.
  *
- * Exact match against the `actorLabel` field stored from presence
- * messages. This bridges CRDT attribution identity (actor labels like
- * `"agent:claude:ab12cd34"`) to presence colors.
- *
- * Returns the peer's cursor color if found, or `undefined` if no
- * connected peer matches. This lets text attribution highlights use
- * the same color as the peer's live cursor.
+ * Presence carries the same actor label used by CRDT attribution, so cursor
+ * colors can line up with text attribution without fuzzy label matching.
  */
-export function findPeerColorByActorLabel(
-  actorLabel: string,
-): string | undefined {
-  for (const peer of peers.values()) {
-    if (peer.peerId === localPeerId) continue;
-    if (peer.actorLabel && peer.actorLabel === actorLabel) {
-      return peer.color;
-    }
-  }
-  return undefined;
+export function findPeerColorByActorLabel(actorLabel: string): string | undefined {
+  return presenceState.findPeerColorByActorLabel(actorLabel);
 }
 
 /**
- * Get all remote peers that have a cursor in the given cell.
- * Returns peer info for UI rendering (colored dots, labels, etc.)
+ * Get all remote peers that have a cursor or focus in the given cell.
  */
 export function getPeersForCell(cellId: string): PeerCursorInfo[] {
-  const result: PeerCursorInfo[] = [];
-  for (const peer of peers.values()) {
-    if (peer.peerId === localPeerId) continue;
-    if (peer.cursor?.cell_id === cellId || peer.focus?.cell_id === cellId) {
-      result.push(peer);
-    }
-  }
-  return result;
+  return presenceState.getPeersForCell(cellId);
 }
 
 /**
  * Subscribe to presence changes for a specific cell.
- * The callback is invoked whenever peers enter or leave the cell.
- * Returns an unsubscribe function.
  */
-export function subscribeToCell(
-  cellId: string,
-  callback: () => void,
-): () => void {
+export function subscribeToCell(cellId: string, callback: () => void): () => void {
   let subs = cellSubscribers.get(cellId);
   if (!subs) {
     subs = new Set();
@@ -454,7 +143,6 @@ export function subscribeToCell(
   };
 }
 
-/** Notify cell subscribers when presence changes. */
 function notifyCellSubscribers(cellIds: Set<string>): void {
   for (const cellId of cellIds) {
     const subs = cellSubscribers.get(cellId);

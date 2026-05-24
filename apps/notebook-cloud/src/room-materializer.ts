@@ -12,6 +12,7 @@ const ROOM_HOST_ACTOR_LABEL = "system/schema:notebook-cloud-room";
 const CHECKPOINT_NOTEBOOK_KEY = "room-host:notebook-doc";
 const CHECKPOINT_RUNTIME_STATE_KEY = "room-host:runtime-state-doc";
 const CHECKPOINT_META_KEY = "room-host:checkpoint";
+const CHECKPOINT_VERSION = 2;
 
 interface RoomHostOutboundFrame {
   peer_id: string;
@@ -27,6 +28,7 @@ export interface RoomHostFrameResult {
 }
 
 interface RoomCheckpointMetadata {
+  version: number;
   notebook_heads: string[];
   runtime_state_heads: string[];
   saved_at: string;
@@ -84,6 +86,7 @@ export class RoomMaterializer {
         toStoredArrayBuffer(host.save_runtime_state_doc()),
       ];
       const metadata: RoomCheckpointMetadata = {
+        version: CHECKPOINT_VERSION,
         notebook_heads: Array.from(host.get_heads_hex()),
         runtime_state_heads: Array.from(host.get_runtime_state_heads_hex()),
         saved_at: new Date().toISOString(),
@@ -135,7 +138,9 @@ export class RoomMaterializer {
       this.state.storage.get<ArrayBuffer>(CHECKPOINT_NOTEBOOK_KEY),
       this.state.storage.get<ArrayBuffer>(CHECKPOINT_RUNTIME_STATE_KEY),
     ]);
-    if (!notebookBytes || !runtimeStateBytes) {
+    const metadata =
+      await this.state.storage.get<Partial<RoomCheckpointMetadata>>(CHECKPOINT_META_KEY);
+    if (!notebookBytes || !runtimeStateBytes || metadata?.version !== CHECKPOINT_VERSION) {
       return null;
     }
     return {

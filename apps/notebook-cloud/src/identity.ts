@@ -1,4 +1,15 @@
-export type ConnectionScope = "viewer" | "editor" | "runtime_peer" | "owner";
+import {
+  ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
+  DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
+  isConnectionScope,
+  type ConnectionScope,
+} from "./auth-shared.ts";
+
+export {
+  ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
+  DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
+  type ConnectionScope,
+} from "./auth-shared.ts";
 
 export interface ActorLabel {
   value: string;
@@ -28,10 +39,8 @@ export const TRUSTED_PRINCIPAL_HEADER = "x-nteract-principal";
 export const TRUSTED_OPERATOR_HEADER = "x-nteract-operator";
 export const TRUSTED_SCOPE_HEADER = "x-nteract-scope";
 export const TRUSTED_WEBSOCKET_PROTOCOL_HEADER = "x-nteract-websocket-protocol";
-export const ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX = "nteract-access-token.";
 export const CLOUDFLARE_ACCESS_JWT_HEADER = "cf-access-jwt-assertion";
 export const DEV_AUTH_TOKEN_HEADER = "x-notebook-cloud-dev-token";
-export const DEV_AUTH_TOKEN_PROTOCOL_PREFIX = "nteract-dev-token.";
 
 interface AccessCredential {
   token: string;
@@ -250,15 +259,10 @@ export function encodePrincipalComponent(value: string): string {
 }
 
 export function parseScope(value: string): ConnectionScope {
-  switch (value) {
-    case "viewer":
-    case "editor":
-    case "runtime_peer":
-    case "owner":
-      return value;
-    default:
-      throw new Error(`unknown connection scope: ${value}`);
+  if (isConnectionScope(value)) {
+    return value;
   }
+  throw new Error(`unknown connection scope: ${value}`);
 }
 
 export function allowsNotebookWrite(scope: ConnectionScope): boolean {

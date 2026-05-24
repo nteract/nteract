@@ -1,6 +1,9 @@
 import initWasm, {
   decode_presence_frame,
+  encode_cursor_presence,
+  encode_heartbeat_presence,
   encode_presence_frame,
+  encode_selection_presence,
   rewrite_presence_ingress,
   NotebookHandle,
   RoomHostHandle,
@@ -41,6 +44,83 @@ export async function encodePresenceFrame(message: unknown): Promise<Uint8Array>
   return encode_presence_frame(message);
 }
 
+export async function encodeHeartbeatPresence(peerId: string): Promise<Uint8Array> {
+  await initializeRuntimedWasm();
+  return encode_heartbeat_presence(peerId);
+}
+
+export function encodeHeartbeatPresenceAfterInit(peerId: string): Uint8Array {
+  return encode_heartbeat_presence(peerId);
+}
+
+export function encodeCursorPresenceAfterInit(
+  peerId: string,
+  peerLabel: string,
+  actorLabel: string,
+  cellId: string,
+  line: number,
+  column: number,
+): Uint8Array {
+  return encode_cursor_presence(peerId, peerLabel, actorLabel, cellId, line, column);
+}
+
+export async function encodeCursorPresence(
+  peerId: string,
+  peerLabel: string,
+  actorLabel: string,
+  cellId: string,
+  line: number,
+  column: number,
+): Promise<Uint8Array> {
+  await initializeRuntimedWasm();
+  return encode_cursor_presence(peerId, peerLabel, actorLabel, cellId, line, column);
+}
+
+export async function encodeSelectionPresence(
+  peerId: string,
+  peerLabel: string,
+  actorLabel: string,
+  cellId: string,
+  anchorLine: number,
+  anchorCol: number,
+  headLine: number,
+  headCol: number,
+): Promise<Uint8Array> {
+  await initializeRuntimedWasm();
+  return encode_selection_presence(
+    peerId,
+    peerLabel,
+    actorLabel,
+    cellId,
+    anchorLine,
+    anchorCol,
+    headLine,
+    headCol,
+  );
+}
+
+export function encodeSelectionPresenceAfterInit(
+  peerId: string,
+  peerLabel: string,
+  actorLabel: string,
+  cellId: string,
+  anchorLine: number,
+  anchorCol: number,
+  headLine: number,
+  headCol: number,
+): Uint8Array {
+  return encode_selection_presence(
+    peerId,
+    peerLabel,
+    actorLabel,
+    cellId,
+    anchorLine,
+    anchorCol,
+    headLine,
+    headCol,
+  );
+}
+
 export async function rewritePresenceIngress(
   payload: Uint8Array,
   peerId: string,
@@ -58,6 +138,11 @@ export async function loadSnapshotPair(
 ): Promise<NotebookHandle> {
   await initializeRuntimedWasm();
   return NotebookHandle.load_snapshot(notebookBytes, runtimeStateBytes);
+}
+
+export async function createBootstrapNotebookHandle(actorLabel: string): Promise<NotebookHandle> {
+  await initializeRuntimedWasm();
+  return NotebookHandle.create_bootstrap(actorLabel);
 }
 
 export async function createEmptyRoomHost(

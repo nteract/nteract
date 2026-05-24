@@ -39,6 +39,7 @@ const expectedLatestRevisionNotebookHeadsHash =
 const expectedLatestRevisionRuntimeHeadsHash =
   process.env.NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_RUNTIME_HEADS_HASH ?? "";
 const requireSiftWasm = process.env.NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM !== "0";
+const requireRuntimedWasm = process.env.NOTEBOOK_CLOUD_REQUIRE_RUNTIMED_WASM !== "0";
 const screenshotPath = process.env.NOTEBOOK_CLOUD_SMOKE_SCREENSHOT;
 const timeoutMs = Number(process.env.NOTEBOOK_CLOUD_SMOKE_TIMEOUT_MS ?? 60_000);
 const targetOrigin = new URL(targetUrl).origin;
@@ -49,6 +50,7 @@ const rendererAssetOrigin = expectedRendererAssetOrigin
 const failures = [];
 const warnings = [];
 const siftWasmRequests = [];
+const runtimedWasmRequests = [];
 const rendererCompletions = [];
 const fatalIsolatedDiagnostics = [];
 const diagnosticTasks = [];
@@ -111,6 +113,14 @@ async function main() {
     const url = response.url();
     if (url.includes("sift_wasm.wasm")) {
       siftWasmRequests.push({
+        url,
+        status: response.status(),
+        cors: response.headers()["access-control-allow-origin"] ?? null,
+        contentType: response.headers()["content-type"] ?? null,
+      });
+    }
+    if (url.includes("runtimed_wasm")) {
+      runtimedWasmRequests.push({
         url,
         status: response.status(),
         cors: response.headers()["access-control-allow-origin"] ?? null,
@@ -209,6 +219,9 @@ async function main() {
     if (requireSiftWasm && siftWasmRequests.length === 0) {
       failures.push({ kind: "sift-wasm", text: "Sift WASM was not requested" });
     }
+    if (requireRuntimedWasm && runtimedWasmRequests.length === 0) {
+      failures.push({ kind: "runtimed-wasm", text: "runtimed WASM was not requested" });
+    }
     failures.push(...fatalIsolatedDiagnostics.map(isolatedDiagnosticFailure));
     for (const request of siftWasmRequests) {
       if (request.status >= 400) {
@@ -224,6 +237,29 @@ async function main() {
         });
       }
     }
+    for (const request of runtimedWasmRequests) {
+      if (request.status >= 400) {
+        failures.push({
+          kind: "runtimed-wasm",
+          text: `runtimed WASM asset returned ${request.status}`,
+        });
+      }
+      if (request.cors !== "*") {
+        failures.push({
+          kind: "runtimed-wasm",
+          text: "runtimed WASM asset response did not include CORS *",
+        });
+      }
+      if (
+        request.url.includes("runtimed_wasm_bg.wasm") &&
+        !request.contentType?.includes("application/wasm")
+      ) {
+        failures.push({
+          kind: "runtimed-wasm",
+          text: `runtimed WASM content type was ${request.contentType ?? "missing"}`,
+        });
+      }
+    }
     if (
       expectedRendererAssetOrigin &&
       (requireSiftWasm || siftWasmRequests.length > 0) &&
@@ -233,6 +269,17 @@ async function main() {
         kind: "sift-wasm-origin",
         text: `Sift WASM did not load from ${expectedRendererAssetOrigin}`,
         requests: siftWasmRequests.map((request) => request.url),
+      });
+    }
+    if (
+      expectedRendererAssetOrigin &&
+      (requireRuntimedWasm || runtimedWasmRequests.length > 0) &&
+      !runtimedWasmRequests.some((request) => request.url.startsWith(expectedRendererAssetOrigin))
+    ) {
+      failures.push({
+        kind: "runtimed-wasm-origin",
+        text: `runtimed WASM did not load from ${expectedRendererAssetOrigin}`,
+        requests: runtimedWasmRequests.map((request) => request.url),
       });
     }
     if (screenshotPath) {
@@ -265,6 +312,7 @@ async function main() {
           frameTextMatches,
           iframeMetrics,
           siftWasmRequests,
+          runtimedWasmRequests,
           rendererCompletions: rendererCompletions.length,
           warnings,
         },

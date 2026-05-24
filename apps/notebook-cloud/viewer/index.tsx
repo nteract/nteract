@@ -1,17 +1,29 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Code2, Eye, EyeOff, UsersRound } from "lucide-react";
 import {
   ReadOnlyNotebook,
   type ReadOnlyNotebookCellData,
 } from "@/components/cell/ReadOnlyNotebook";
+import { ReadOnlyNotebookCell } from "@/components/cell/ReadOnlyNotebookCell";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import type { TracebackCellTarget } from "@/components/outputs/traceback-output";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
-import type { SessionControlMessage } from "../src/protocol";
+import { EditableMarkdownCell } from "./editable-markdown-cell";
+import type { RemoteCellPresence } from "@/components/editor/presence-state";
+import {
+  cloudSyncAuthFromLocalStorage,
+  connectCloudSyncRuntime,
+  type CloudSyncRuntime,
+} from "./live-sync";
+import {
+  CloudLivePresenceStore,
+  emptyCloudLivePresenceSnapshot,
+  type CloudLivePresenceSnapshot,
+} from "./live-presence";
 import { CLOUD_VIEWER_PRIORITY } from "./mime-policy";
 import {
   cloudViewerPresenceDisplay,
@@ -33,6 +45,8 @@ interface CloudViewerConfig {
   syncEndpoint: string;
   blobBasePath: string;
   rendererAssetsBasePath: string;
+  runtimedWasmModulePath: string;
+  runtimedWasmPath: string;
 }
 
 interface SnapshotRender {
@@ -78,7 +92,9 @@ function loadConfig(): CloudViewerConfig {
     !parsed.renderEndpoint ||
     !parsed.syncEndpoint ||
     !parsed.blobBasePath ||
-    !parsed.rendererAssetsBasePath
+    !parsed.rendererAssetsBasePath ||
+    !parsed.runtimedWasmModulePath ||
+    !parsed.runtimedWasmPath
   ) {
     throw new Error("Cloud viewer config is incomplete");
   }
@@ -89,6 +105,8 @@ function loadConfig(): CloudViewerConfig {
     syncEndpoint: parsed.syncEndpoint,
     blobBasePath: parsed.blobBasePath,
     rendererAssetsBasePath: parsed.rendererAssetsBasePath,
+    runtimedWasmModulePath: parsed.runtimedWasmModulePath,
+    runtimedWasmPath: parsed.runtimedWasmPath,
   };
 }
 
@@ -136,6 +154,18 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
   });
   const [cells, setCells] = useState<ResolvedCell[]>([]);
   const [showCode, setShowCode] = useState(true);
+  const cellsRef = useRef<ResolvedCell[]>([]);
+  const notebookLanguageRef = useRef("python");
+  const liveRuntimeRef = useRef<CloudSyncRuntime | null>(null);
+  const liveMaterializedRef = useRef(false);
+  const snapshotResolvedRef = useRef(false);
+  const [presence, setPresence] = useState(initialCloudViewerPresence);
+  const [livePresence, setLivePresence] = useState(emptyCloudLivePresenceSnapshot);
+  const [connectionScope, setConnectionScope] = useState<string | null>(null);
+
+  useEffect(() => {
+    cellsRef.current = cells;
+  }, [cells]);
 
   useEffect(() => {
     let cancelled = false;
@@ -147,6 +177,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         });
         if (!response.ok) {
           if (!cancelled) {
+            snapshotResolvedRef.current = true;
             setStatus({
               kind: response.status === 404 ? "empty" : "error",
               message:
@@ -161,11 +192,13 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         const render = (await response.json()) as SnapshotRender;
         const rawCells = Array.isArray(render.cells) ? (render.cells as RenderCell[]) : [];
         const notebookLanguage = languageFromNotebookMetadata(render.metadata) ?? "python";
+        notebookLanguageRef.current = notebookLanguage;
         const resolvedCells = await Promise.all(
           rawCells.map((cell, index) => resolveCell(cell, blobResolver, index, notebookLanguage)),
         );
-        if (cancelled) return;
+        if (cancelled || liveMaterializedRef.current) return;
 
+        snapshotResolvedRef.current = true;
         preloadSiftWasmForCells(resolvedCells, {
           blobBasePath: config.blobBasePath,
           rendererAssetsBasePath: config.rendererAssetsBasePath,
@@ -184,6 +217,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         });
       } catch (error) {
         if (!cancelled) {
+          snapshotResolvedRef.current = true;
           setStatus({ kind: "error", message: `Unable to load notebook: ${String(error)}` });
         }
       }
@@ -193,6 +227,114 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
       cancelled = true;
     };
   }, [blobResolver, config.renderEndpoint]);
+
+  useEffect(() => {
+    let disposed = false;
+    let subscriptions: Array<{ unsubscribe: () => void }> = [];
+    let materializeSequence = 0;
+    let livePresenceStore: CloudLivePresenceStore | null = null;
+    const sessionId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
+
+    const materializeLiveCells = async (liveRuntime: CloudSyncRuntime) => {
+      const sequence = ++materializeSequence;
+      const rawCells = JSON.parse(liveRuntime.handle.get_cells_json()) as RenderCell[];
+      if (rawCells.length === 0) {
+        if (!snapshotResolvedRef.current || cellsRef.current.length > 0) {
+          return;
+        }
+      }
+      const metadata = parseJsonOrNull(liveRuntime.handle.get_metadata_snapshot_json?.());
+      const notebookLanguage =
+        languageFromNotebookMetadata(metadata) ?? notebookLanguageRef.current ?? "python";
+      notebookLanguageRef.current = notebookLanguage;
+      const resolvedCells = await Promise.all(
+        rawCells.map((cell, index) => resolveCell(cell, blobResolver, index, notebookLanguage)),
+      );
+      if (disposed || sequence !== materializeSequence) return;
+
+      liveMaterializedRef.current = true;
+      setCells(resolvedCells);
+      setStatus(
+        resolvedCells.length === 0
+          ? { kind: "empty", message: "This notebook room has no cells yet." }
+          : {
+              kind: "ready",
+              message: `Rendering ${resolvedCells.length} cells from the live notebook room.`,
+            },
+      );
+    };
+
+    setPresence(initialCloudViewerPresence());
+    setLivePresence(emptyCloudLivePresenceSnapshot());
+    void connectCloudSyncRuntime({
+      syncEndpoint: config.syncEndpoint,
+      runtimedWasmModulePath: config.runtimedWasmModulePath,
+      runtimedWasmPath: config.runtimedWasmPath,
+      sessionId,
+      auth: cloudSyncAuthFromLocalStorage(),
+      onControl: (message) => {
+        if (disposed) return;
+        if (
+          message.type === "cloud_room_ready" ||
+          message.type === "cloud_peer_joined" ||
+          message.type === "cloud_peer_left"
+        ) {
+          setPresence((state) => reduceCloudViewerPresenceMessage(state, message));
+        }
+        if (message.type === "cloud_room_ready") {
+          setConnectionScope(message.connection_scope);
+        }
+        if (message.type === "cloud_frame_rejected") {
+          setStatus({ kind: "error", message: `Room rejected a frame: ${message.reason}` });
+        }
+      },
+    })
+      .then((liveRuntime) => {
+        if (disposed) {
+          disposeCloudSyncRuntime(liveRuntime);
+          return;
+        }
+        liveRuntimeRef.current = liveRuntime;
+        setConnectionScope(liveRuntime.connectionScope);
+        livePresenceStore = new CloudLivePresenceStore(liveRuntime.peerId);
+        setLivePresence(livePresenceStore.snapshot());
+        subscriptions = [
+          liveRuntime.engine.cellChanges$.subscribe(() => {
+            void materializeLiveCells(liveRuntime);
+          }),
+          liveRuntime.engine.runtimeState$.subscribe(() => {
+            void materializeLiveCells(liveRuntime);
+          }),
+          liveRuntime.engine.presence$.subscribe((payload) => {
+            const snapshot = livePresenceStore?.handlePresence(payload);
+            if (snapshot) {
+              setLivePresence(snapshot);
+            }
+          }),
+        ];
+        void materializeLiveCells(liveRuntime);
+      })
+      .catch((error: unknown) => {
+        if (disposed) return;
+        setPresence((state) => reduceCloudViewerConnection(state, "disconnected"));
+        setConnectionScope(null);
+        console.warn("[notebook-cloud] live room connection failed", error);
+      });
+
+    return () => {
+      disposed = true;
+      for (const subscription of subscriptions) {
+        subscription.unsubscribe();
+      }
+      if (liveRuntimeRef.current) {
+        disposeCloudSyncRuntime(liveRuntimeRef.current);
+      }
+      liveRuntimeRef.current = null;
+      livePresenceStore = null;
+      setPresence((state) => reduceCloudViewerConnection(state, "disconnected"));
+      setLivePresence(emptyCloudLivePresenceSnapshot());
+    };
+  }, [blobResolver, config.syncEndpoint]);
 
   const readOnlyCells = useMemo(
     () =>
@@ -233,13 +375,45 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
       block: "center",
     });
   }, []);
+  const canEditMarkdown = connectionScope === "editor" || connectionScope === "owner";
+  const handleMarkdownSourceChange = useCallback(
+    (cellId: string, source: string) => {
+      if (!canEditMarkdown) return;
+      const liveRuntime = liveRuntimeRef.current;
+      if (!liveRuntime) return;
+      const currentCell = cellsRef.current.find((cell) => cell.id === cellId);
+      if (currentCell?.cellType !== "markdown") return;
+      if (!liveRuntime.handle.update_source(cellId, source)) return;
+
+      setCells((current) =>
+        current.map((cell) => (cell.id === cellId ? { ...cell, source } : cell)),
+      );
+      liveRuntime.engine.scheduleFlush();
+    },
+    [canEditMarkdown],
+  );
+  const handlePresenceCursor = useCallback((cellId: string, line: number, column: number) => {
+    liveRuntimeRef.current?.sendCursorPresence(cellId, line, column);
+  }, []);
+  const handlePresenceSelection = useCallback(
+    (cellId: string, anchorLine: number, anchorCol: number, headLine: number, headCol: number) => {
+      liveRuntimeRef.current?.sendSelectionPresence(
+        cellId,
+        anchorLine,
+        anchorCol,
+        headLine,
+        headCol,
+      );
+    },
+    [],
+  );
 
   return (
     <main className="flex min-h-screen w-full flex-col py-6">
       <h1 className="sr-only">nteract cloud notebook {config.notebookId}</h1>
 
       <div className="cloud-report-toolbar" aria-label="Notebook view status and controls">
-        <CloudPresenceStatus syncEndpoint={config.syncEndpoint} />
+        <CloudPresenceStatus presence={presence} connectionScope={connectionScope} />
 
         {status.kind === "ready" && codeCellCount > 0 ? (
           <button
@@ -264,27 +438,48 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         </div>
       )}
 
-      <ReadOnlyNotebook
-        cells={readOnlyCells}
-        priority={CLOUD_VIEWER_PRIORITY}
-        hostContext={outputHostContext}
-        displayMode="report"
-        showCode={showCode}
-        focusOutputs
-        className="cloud-report-notebook"
-        cellClassName="cloud-cell"
-        sourceClassName="cloud-source-block"
-        outputClassName="cloud-output-block"
-        resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
-        onNavigateToTracebackCell={handleTracebackCellNavigate}
-        renderCellError={(error, _cell, index) => (
-          <div className="cloud-state" data-kind="error">
-            Unable to render cell {index + 1}: {error.message}
-          </div>
-        )}
-      />
+      {canEditMarkdown ? (
+        <CloudLiveNotebook
+          cells={cells}
+          priority={CLOUD_VIEWER_PRIORITY}
+          hostContext={outputHostContext}
+          showCode={showCode}
+          livePresence={livePresence}
+          onMarkdownSourceChange={handleMarkdownSourceChange}
+          onPresenceCursor={handlePresenceCursor}
+          onPresenceSelection={handlePresenceSelection}
+          resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
+          onNavigateToTracebackCell={handleTracebackCellNavigate}
+        />
+      ) : (
+        <ReadOnlyNotebook
+          cells={readOnlyCells}
+          priority={CLOUD_VIEWER_PRIORITY}
+          hostContext={outputHostContext}
+          displayMode="report"
+          showCode={showCode}
+          focusOutputs
+          className="cloud-report-notebook"
+          cellClassName="cloud-cell"
+          sourceClassName="cloud-source-block"
+          outputClassName="cloud-output-block"
+          resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
+          onNavigateToTracebackCell={handleTracebackCellNavigate}
+          renderCellError={(error, _cell, index) => (
+            <div className="cloud-state" data-kind="error">
+              Unable to render cell {index + 1}: {error.message}
+            </div>
+          )}
+        />
+      )}
     </main>
   );
+}
+
+function disposeCloudSyncRuntime(liveRuntime: CloudSyncRuntime): void {
+  liveRuntime.engine.stop();
+  liveRuntime.transport.disconnect();
+  liveRuntime.handle.free();
 }
 
 function findCellElement(cellId: string): HTMLElement | null {
@@ -294,32 +489,135 @@ function findCellElement(cellId: string): HTMLElement | null {
   return null;
 }
 
-function CloudPresenceStatus({ syncEndpoint }: { syncEndpoint: string }) {
-  const [presence, setPresence] = useState(initialCloudViewerPresence);
-
-  useEffect(
-    () =>
-      connectAnonymousViewer(syncEndpoint, (update) => {
-        setPresence(update);
-      }),
-    [syncEndpoint],
+function CloudLiveNotebook({
+  cells,
+  priority,
+  hostContext,
+  showCode,
+  onMarkdownSourceChange,
+  livePresence,
+  onPresenceCursor,
+  onPresenceSelection,
+  resolveTracebackExecutionTarget,
+  onNavigateToTracebackCell,
+}: {
+  cells: ResolvedCell[];
+  priority: readonly string[];
+  hostContext: NteractEmbedHostContextPatch;
+  showCode: boolean;
+  livePresence: CloudLivePresenceSnapshot;
+  onMarkdownSourceChange: (cellId: string, source: string) => void;
+  onPresenceCursor: (cellId: string, line: number, column: number) => void;
+  onPresenceSelection: (
+    cellId: string,
+    anchorLine: number,
+    anchorCol: number,
+    headLine: number,
+    headCol: number,
+  ) => void;
+  resolveTracebackExecutionTarget: (executionId: string) => TracebackCellTarget | null;
+  onNavigateToTracebackCell: (target: TracebackCellTarget) => void;
+}) {
+  return (
+    <section
+      aria-label="Notebook cells"
+      className="cloud-report-notebook flex min-h-0 flex-1 flex-col overflow-x-clip overscroll-x-contain"
+      data-cell-count={cells.length}
+      data-slot="cloud-live-notebook"
+    >
+      {cells.map((cell, index) => (
+        <ErrorBoundary
+          key={cell.id}
+          resetKeys={[
+            cell.id,
+            cell.cellType,
+            cell.source,
+            cell.language,
+            cell.executionCount,
+            cell.outputs.length,
+          ]}
+          fallback={(error) => (
+            <div className="cloud-state" data-kind="error">
+              Unable to render cell {index + 1}: {error.message}
+            </div>
+          )}
+        >
+          {cell.cellType === "markdown" ? (
+            <EditableMarkdownCell
+              cell={cell}
+              className="cloud-cell cloud-editable-markdown-cell"
+              sourceClassName="cloud-source-block"
+              onSourceChange={onMarkdownSourceChange}
+              remotePresence={presenceForCell(livePresence, cell.id)}
+              onPresenceCursor={onPresenceCursor}
+              onPresenceSelection={onPresenceSelection}
+            />
+          ) : (
+            <ReadOnlyNotebookCell
+              id={cell.id}
+              cellType={cell.cellType}
+              source={cell.source}
+              language={cloudSourceLanguage(cell.language)}
+              outputs={cell.outputs}
+              executionCount={cell.executionCount}
+              priority={priority}
+              hostContext={hostContext}
+              displayMode="report"
+              showSource={cell.cellType !== "code" || showCode}
+              focusOutputs
+              className="cloud-cell"
+              sourceClassName="cloud-source-block"
+              outputClassName="cloud-output-block"
+              resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
+              onNavigateToTracebackCell={onNavigateToTracebackCell}
+            />
+          )}
+        </ErrorBoundary>
+      ))}
+    </section>
   );
+}
 
+function CloudPresenceStatus({
+  presence,
+  connectionScope,
+}: {
+  presence: CloudViewerPresenceState;
+  connectionScope: string | null;
+}) {
   const presenceDisplay = cloudViewerPresenceDisplay(presence);
+  const scopeLabel =
+    connectionScope === "editor" || connectionScope === "owner"
+      ? "editing"
+      : connectionScope === "viewer"
+        ? "viewing"
+        : null;
 
   return (
     <div
       className="cloud-presence"
       data-connected={String(presenceDisplay.connected)}
-      title={presenceDisplay.title}
+      title={scopeLabel ? `${presenceDisplay.title}; ${scopeLabel}` : presenceDisplay.title}
       aria-label={presenceDisplay.title}
       aria-live="polite"
     >
       <UsersRound aria-hidden="true" />
-      <span>{presenceDisplay.label}</span>
+      <span>{scopeLabel ? `${presenceDisplay.label} · ${scopeLabel}` : presenceDisplay.label}</span>
     </div>
   );
 }
+
+function presenceForCell(
+  livePresence: CloudLivePresenceSnapshot,
+  cellId: string,
+): RemoteCellPresence {
+  return livePresence.cells.get(cellId) ?? EMPTY_REMOTE_CELL_PRESENCE;
+}
+
+const EMPTY_REMOTE_CELL_PRESENCE: RemoteCellPresence = {
+  cursors: [],
+  selections: [],
+};
 
 function ViewerStartupError({ message }: { message: string }) {
   return (
@@ -334,62 +632,21 @@ function ViewerStartupError({ message }: { message: string }) {
   );
 }
 
-function connectAnonymousViewer(
-  syncEndpoint: string,
-  updatePresence: (update: (state: CloudViewerPresenceState) => CloudViewerPresenceState) => void,
-): () => void {
-  const sessionId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
-  const url = new URL(syncEndpoint, location.href);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.searchParams.set("viewer_session", sessionId);
-
-  const socket = new WebSocket(url);
-  socket.binaryType = "arraybuffer";
-  let closed = false;
-  const updatePresenceIfActive = (
-    update: (state: CloudViewerPresenceState) => CloudViewerPresenceState,
-  ) => {
-    if (!closed) {
-      updatePresence(update);
-    }
-  };
-  socket.addEventListener("open", () => {
-    updatePresenceIfActive((state) => reduceCloudViewerConnection(state, "connected"));
-  });
-  socket.addEventListener("error", () => {
-    updatePresenceIfActive((state) => reduceCloudViewerConnection(state, "disconnected"));
-  });
-  socket.addEventListener("close", () => {
-    updatePresenceIfActive((state) => reduceCloudViewerConnection(state, "disconnected"));
-  });
-  socket.addEventListener("message", async (event) => {
-    if (closed) return;
-    const bytes = new Uint8Array(event.data);
-    if (bytes[0] !== 0x07) {
-      return;
-    }
-    const message = JSON.parse(new TextDecoder().decode(bytes.slice(1))) as SessionControlMessage;
-    if (
-      message.type === "cloud_room_ready" ||
-      message.type === "cloud_peer_joined" ||
-      message.type === "cloud_peer_left"
-    ) {
-      updatePresenceIfActive((state) => reduceCloudViewerPresenceMessage(state, message));
-    }
-  });
-
-  return () => {
-    closed = true;
-    socket.close();
-  };
-}
-
 function languageFromNotebookMetadata(metadata: unknown): string | null {
   if (typeof metadata !== "object" || metadata === null) return null;
   const languageInfo = (metadata as Record<string, unknown>).language_info;
   if (typeof languageInfo !== "object" || languageInfo === null) return null;
   const name = (languageInfo as Record<string, unknown>).name;
   return typeof name === "string" ? name : null;
+}
+
+function parseJsonOrNull(value: string | undefined): unknown {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
 }
 
 createRoot(requireElement("#root")).render(

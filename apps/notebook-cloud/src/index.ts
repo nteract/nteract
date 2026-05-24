@@ -39,6 +39,9 @@ const DEMO_NOTEBOOK_ID = "nteract-cloud-demo";
 // Worker-owned route by default so sandboxed srcdoc iframes can fetch sidecar
 // assets with explicit CORS, and let hosts replace it with a dedicated origin.
 const DEFAULT_RENDERER_ASSETS_BASE_PATH = "/renderer-assets/";
+const DEFAULT_RUNTIMED_WASM_BASE_PATH = "/assets/";
+const VIEWER_RUNTIMED_WASM_MODULE_NAME = "runtimed_wasm.js";
+const VIEWER_RUNTIMED_WASM_NAME = "runtimed_wasm_bg.wasm";
 const RENDER_BLOB_HEAD_CONCURRENCY = 16;
 
 interface MissingRenderBlob {
@@ -942,6 +945,10 @@ function viewerContentSecurityPolicy(env: Env): string {
   if (rendererAssetOrigin) {
     connectSources.add(rendererAssetOrigin);
   }
+  const runtimedWasmOrigin = absoluteOrigin(runtimedWasmBasePath(env));
+  if (runtimedWasmOrigin) {
+    connectSources.add(runtimedWasmOrigin);
+  }
 
   // The shared isolated output renderer currently boots from about:srcdoc,
   // which inherits the parent page CSP. Do not set default-src/script-src here:
@@ -988,6 +995,8 @@ function viewer(notebookId: string, env: Env, headsHash?: string): Response {
     syncEndpoint: `/n/${encodeURIComponent(notebookId)}/sync`,
     blobBasePath: notebookCloudBlobBasePath(notebookId),
     rendererAssetsBasePath: rendererAssetsBasePath(env),
+    runtimedWasmModulePath: runtimedWasmAssetPath(env, VIEWER_RUNTIMED_WASM_MODULE_NAME),
+    runtimedWasmPath: runtimedWasmAssetPath(env, VIEWER_RUNTIMED_WASM_NAME),
   };
   const html = `<!doctype html>
 <html lang="en">
@@ -1017,6 +1026,15 @@ function viewer(notebookId: string, env: Env, headsHash?: string): Response {
 function rendererAssetsBasePath(env: Env): string {
   const configured = env.RENDERER_ASSETS_BASE_URL?.trim();
   return withTrailingSlash(configured || DEFAULT_RENDERER_ASSETS_BASE_PATH);
+}
+
+function runtimedWasmBasePath(env: Env): string {
+  const configured = env.RUNTIMED_WASM_BASE_URL?.trim();
+  return withTrailingSlash(configured || DEFAULT_RUNTIMED_WASM_BASE_PATH);
+}
+
+function runtimedWasmAssetPath(env: Env, name: string): string {
+  return `${runtimedWasmBasePath(env)}${name}`;
 }
 
 function debugViewer(notebookId: string): Response {

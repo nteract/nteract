@@ -20,6 +20,7 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    assetsInlineLimit: 0,
     sourcemap: false,
     lib: {
       entry: path.join(appDir, "viewer/index.tsx"),

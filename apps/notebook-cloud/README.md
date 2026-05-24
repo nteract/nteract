@@ -167,6 +167,23 @@ For local browser-only testing, the same values can be supplied as query params:
 
 Dev credentials are accepted without an extra token only from loopback Wrangler local development (`localhost`, `127.0.0.1`, or `::1`). Deployed prototype environments require the `NOTEBOOK_CLOUD_DEV_TOKEN` Worker secret to match either the `X-Notebook-Cloud-Dev-Token` header or a WebSocket subprotocol named `nteract-dev-token.<base64url-token>`. `DEPLOYMENT_ENV=development` does not bypass this host check, and URL-carried `dev_token` credentials are rejected on deployed hosts so prototype owner credentials do not appear in URLs. If no scope is supplied, dev auth defaults to `viewer`. Write and publish paths must ask for `editor`, `runtime_peer`, or `owner` explicitly. Blob upload is allowed for runtime-state writers (`editor`, `runtime_peer`, `owner`) and verifies that the uploaded bytes match the SHA-256 digest in the blob route before writing to R2. Runtime peers may write typed-frame `0x05` (`RuntimeStateDoc`) changes through the materialized room host; typed-frame `0x00` (`NotebookDoc`) changes are rejected for runtime_peer scope.
 
+For the browser-hosted editor prototype, the viewer keeps the dev token out of
+URLs by reading local-only storage before it opens `/n/:id/sync`:
+
+```js
+localStorage.setItem("nteract:notebook-cloud:dev-token", "<NOTEBOOK_CLOUD_DEV_TOKEN>");
+localStorage.setItem("nteract:notebook-cloud:user", "live-publish");
+localStorage.setItem("nteract:notebook-cloud:scope", "editor");
+location.reload();
+```
+
+That upgrades the same viewer bundle from anonymous read-only mode to
+editor-scope markdown editing for existing markdown cells. The CodeMirror
+editor uses the shared presence sender, shared remote cursor renderer, and
+shared presence reducer, so cursor/selection presence carries the room-stamped
+actor label (`<principal>/<operator>`) that also backs CRDT attribution. Clear
+these local storage keys to return the browser to anonymous viewer mode.
+
 ## Cloudflare Access auth
 
 When `NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN` and `NOTEBOOK_CLOUD_ACCESS_AUD`
@@ -208,8 +225,9 @@ Bindings in `wrangler.toml`:
 - `NOTEBOOK_SNAPSHOTS`: R2 bucket for `NotebookDoc` snapshots, `RuntimeStateDoc` snapshots, generated render caches, and blobs.
 - `ASSETS`: Worker static assets for `/assets/notebook-cloud-viewer.js`, renderer chunks, and `/plugins/sift_wasm.wasm`.
 - `RENDERER_ASSETS_BASE_URL` (optional): base URL for renderer plugin assets such as `sift_wasm.wasm`. The prototype deployment points this at the dedicated `nteract-notebook-cloud-assets` Worker. If unset, the viewer uses the main Worker-owned `/renderer-assets/` route so sandboxed `srcdoc` iframes can fetch plugin WASM through explicit CORS headers.
+- `RUNTIMED_WASM_BASE_URL` (optional): base URL for `runtimed_wasm.js` and `runtimed_wasm_bg.wasm`. The prototype deployment also points this at the dedicated asset Worker so the large WASM module is loaded as a CDN cacheable file instead of being inlined into the viewer bundle.
 
-The dedicated renderer asset Worker serves only public, build-time sidecar files from the plugin asset bundle. It intentionally sends `Access-Control-Allow-Origin: *` so sandboxed `srcdoc` iframes with opaque origins can fetch renderer WASM. Do not serve authenticated, notebook-specific, or user-generated blobs from this origin; those belong behind the notebook host's blob resolver or a future signed output origin. Deploy the renderer asset Worker before the main Worker when `RENDERER_ASSETS_BASE_URL` points at the separate origin.
+The dedicated renderer asset Worker serves only public, build-time sidecar files from the plugin asset bundle. It intentionally sends `Access-Control-Allow-Origin: *` so sandboxed `srcdoc` iframes with opaque origins can fetch renderer WASM and so the parent viewer can import runtime WASM from a CDN origin. Do not serve authenticated, notebook-specific, or user-generated blobs from this origin; those belong behind the notebook host's blob resolver or a future signed output origin. Deploy the renderer asset Worker before the main Worker when `RENDERER_ASSETS_BASE_URL` or `RUNTIMED_WASM_BASE_URL` points at the separate origin.
 
 Schema lives in `migrations/`. The Worker also creates the current catalog tables lazily in local dev so the WebSocket path can run before applying migrations.
 
