@@ -2,6 +2,8 @@ import asyncio
 import os
 from pathlib import Path
 
+import pytest
+
 from pr_reviewer import agent
 from pr_reviewer.agent import OpencodeRunResult, run_doctor, run_review
 from pr_reviewer.config import ReviewerConfig
@@ -137,6 +139,28 @@ def test_run_review_preserves_malformed_output_as_infra_uncertain(
     assert report.raw_result == '{"verdict" "clear"}'
 
 
+def test_run_review_preserves_opencode_runtime_error_as_infra_uncertain(
+    monkeypatch, tmp_path: Path
+) -> None:
+    async def fake_run_opencode(
+        prompt: str, *, cwd: Path, config: ReviewerConfig
+    ) -> OpencodeRunResult:
+        raise RuntimeError("opencode failed")
+
+    monkeypatch.setattr(agent, "run_opencode", fake_run_opencode)
+    config = ReviewerConfig(model="amazon-bedrock/model", aws_region="us-west-2")
+
+    report = asyncio.run(run_review(make_workspace(tmp_path), config=config))
+
+    assert report.verdict == "infra_uncertain"
+    assert report.terminal_reason == "infra_uncertain"
+    assert report.summary == "Reviewer returned malformed structured output: opencode failed"
+    assert report.findings == []
+    assert report.session_id is None
+    assert report.cost_usd is None
+    assert report.raw_result == ""
+
+
 def test_run_doctor_uses_opencode(monkeypatch) -> None:
     calls = []
 
@@ -217,3 +241,36 @@ def test_run_opencode_passes_prompt_on_stdin(monkeypatch, tmp_path: Path) -> Non
     assert "large prompt" not in command
     assert kwargs["stdin"] == asyncio.subprocess.PIPE
     assert calls[1] == ("stdin", b"large prompt")
+
+
+def test_run_opencode_times_out_and_kills_process(monkeypatch, tmp_path: Path) -> None:
+    calls = []
+
+    class FakeProcess:
+        returncode = None
+
+        async def communicate(self, stdin: bytes) -> tuple[bytes, bytes]:
+            await asyncio.sleep(10)
+            return b"", b""
+
+        def kill(self) -> None:
+            calls.append("kill")
+
+        async def wait(self) -> None:
+            calls.append("wait")
+
+    async def fake_create_subprocess_exec(*command: str, **kwargs: object) -> FakeProcess:
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(os, "environ", {"PATH": "/usr/bin", "HOME": "/tmp/home"})
+    config = ReviewerConfig(
+        model="amazon-bedrock/model",
+        aws_region="us-west-2",
+        timeout_seconds=0.01,
+    )
+
+    with pytest.raises(RuntimeError, match="opencode timed out after 0.0 seconds"):
+        asyncio.run(agent.run_opencode("large prompt", cwd=tmp_path, config=config))
+
+    assert calls == ["kill", "wait"]

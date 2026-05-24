@@ -49,6 +49,21 @@ def test_config_from_env_reads_opencode_binary(monkeypatch) -> None:
     assert config.opencode_path == "/opt/opencode"
 
 
+def test_config_from_env_reads_timeout_seconds(monkeypatch) -> None:
+    monkeypatch.setenv("PR_REVIEWER_TIMEOUT_SECONDS", "12.5")
+
+    config = ReviewerConfig.from_env()
+
+    assert config.timeout_seconds == 12.5
+    assert config.effective_timeout_seconds() == 12.5
+
+
+def test_config_derives_timeout_from_turn_budget() -> None:
+    config = ReviewerConfig(max_turns=2)
+
+    assert config.effective_timeout_seconds() == 60.0
+
+
 def test_estimate_review_turns_scales_with_diff_size() -> None:
     small = estimate_review_turns(diff_patch="one\nline\n", changed_files=["a.py"])
     larger = estimate_review_turns(

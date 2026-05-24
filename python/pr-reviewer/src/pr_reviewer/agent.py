@@ -196,7 +196,17 @@ async def run_opencode(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout_bytes, stderr_bytes = await proc.communicate(prompt.encode("utf-8"))
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(prompt.encode("utf-8")),
+                timeout=config.effective_timeout_seconds(),
+            )
+        except TimeoutError as exc:
+            proc.kill()
+            await proc.wait()
+            raise RuntimeError(
+                f"opencode timed out after {config.effective_timeout_seconds():.1f} seconds"
+            ) from exc
         stdout = stdout_bytes.decode("utf-8", errors="replace")
         stderr = stderr_bytes.decode("utf-8", errors="replace")
         if proc.returncode != 0:
@@ -213,10 +223,17 @@ async def run_review(
     extra_prompt: str | None = None,
 ) -> ReviewReport:
     prompt = f"{SYSTEM_PROMPT}\n\n{build_review_prompt(workspace, extra_prompt=extra_prompt)}"
-    run = await run_opencode(prompt, cwd=workspace.path, config=config)
     try:
+        run = await run_opencode(prompt, cwd=workspace.path, config=config)
         verdict, terminal_reason, summary, findings = normalize_structured_output(
             parse_structured_review_json(run.text)
+        )
+    except RuntimeError as exc:
+        return build_infra_uncertain_report(
+            workspace=workspace,
+            config=config,
+            run=OpencodeRunResult(text="", session_id=None, cost_usd=None),
+            error=exc,
         )
     except (JSONDecodeError, ValueError) as exc:
         return build_infra_uncertain_report(

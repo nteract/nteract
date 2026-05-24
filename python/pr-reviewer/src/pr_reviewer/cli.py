@@ -46,6 +46,12 @@ def add_common_args(parser: argparse.ArgumentParser, *, default_max_turns: int |
         default=default_max_turns,
         help="Advisory review budget recorded in report metadata.",
     )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=None,
+        help="Hard wall-clock timeout for the opencode subprocess.",
+    )
 
 
 def add_review_args(parser: argparse.ArgumentParser) -> None:
@@ -75,6 +81,7 @@ def config_from_args(args: argparse.Namespace, *, max_turns: int | None = None) 
         model=args.model,
         aws_region=args.aws_region,
         max_turns=max_turns if max_turns is not None else args.max_turns,
+        timeout_seconds=args.timeout_seconds,
     )
 
 
