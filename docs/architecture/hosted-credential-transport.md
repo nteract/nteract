@@ -50,6 +50,20 @@ The listener normalizes transport-specific inputs into a credential:
 - Provider cookie for deployments that deliberately choose cookie auth.
 - Unix peer credentials for local rooms.
 
+Exactly one identity-bearing credential transport is accepted for a connection.
+If a request presents multiple credentials, the listener rejects it unless the
+deployment has explicitly defined that combination as one credential. The common
+exception is Cloudflare Access: an Access application cookie and the
+`Cf-Access-Jwt-Assertion` derived from it are one Access credential, and the
+Worker validates the assertion rather than treating the cookie as an independent
+provider credential.
+
+Do not rely on "first credential wins" behavior. If an Access assertion, bearer
+header, subprotocol token, or ticket appear together and could authenticate
+different principals, reject the upgrade instead of choosing one silently. This
+prevents confused-deputy bugs where JavaScript supplies one identity while an
+ambient cookie supplies another.
+
 The provider validates the normalized credential and yields:
 
 - principal
