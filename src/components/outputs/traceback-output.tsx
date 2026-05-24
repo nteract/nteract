@@ -643,7 +643,7 @@ function shortenPythonPath(filename: string): string {
   const sitePackages = normalized.match(/(?:^|\/)(?:site-packages|dist-packages)\/(.+)$/);
   const packagePath = sitePackages?.[1];
   if (packagePath && /^[\w.-]+(?:\/[\w.-]+)*\.py[wi]?$/.test(packagePath)) {
-    return `python/${packagePath}`;
+    return `.../${packagePath}`;
   }
 
   return filename;
