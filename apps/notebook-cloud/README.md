@@ -185,7 +185,11 @@ For the browser-hosted editor prototype, the viewer keeps the dev token out of
 URLs. Open the key menu in the sticky toolbar, paste the Worker dev token, pick
 `alice`/`bob` and `editor`, and apply the identity. The token is stored only in
 origin-local browser storage and is sent to `/n/:id/sync` as a WebSocket
-subprotocol, never as a query parameter.
+subprotocol, never as a query parameter. The same menu shows sanitized
+diagnostics for the requested principal/scope, connected room actor/scope,
+placeholder-token fallback, and the latest connection error. Use **Copy
+diagnostics** when sharing an `Offline` report; it intentionally omits the dev
+token.
 
 For scripted browser setup, use the same storage keys the toolbar manages:
 
@@ -425,7 +429,10 @@ records, no unexpected `room.frame.rejected` records for Alice/Bob, and
 anonymous viewer presence logged only as `room.presence.local_only`. If the
 browser shows `Offline`, open the key menu first: placeholder or stale dev
 tokens are surfaced there, and the Worker logs token/auth failures as
-`auth.failed` without recording raw token material.
+`auth.failed` without recording raw token material. The copied browser
+diagnostic should include the requested principal/scope, connected actor/scope
+when available, and the last WebSocket connection error, but never the stored
+token value.
 
 Snapshot and blob stubs:
 

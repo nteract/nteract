@@ -6,6 +6,7 @@ import {
   NOTEBOOK_CLOUD_USER_STORAGE_KEY,
   clearCloudPrototypeDevAuth,
   cloudSyncAuthFromPrototypeAuthState,
+  prototypeAuthDiagnostics,
   prototypeAuthSummary,
   readCloudPrototypeAuth,
   storeCloudPrototypeDevAuth,
@@ -94,6 +95,46 @@ describe("cloud collaborator auth", () => {
     assert.match(validatePrototypeToken("NOTEBOOK_CLOUD_DEV_TOKEN") ?? "", /placeholder/);
     assert.match(validatePrototypeToken("<paste token here>") ?? "", /placeholder/);
     assert.equal(validatePrototypeToken("real-token"), null);
+  });
+
+  it("builds safe diagnostics without exposing token material", () => {
+    const storage = new MemoryStorage();
+    storeCloudPrototypeDevAuth(storage, {
+      token: "secret-token",
+      user: "alice@example.com",
+      scope: "editor",
+    });
+
+    const diagnostics = prototypeAuthDiagnostics(readCloudPrototypeAuth(storage), {
+      actorLabel: "user:dev:alice%40example.com/desktop:browser",
+      connectionError: null,
+      connectionScope: "editor",
+    });
+
+    assert.match(diagnostics.copyText, /Requested principal: user:dev:alice%40example\.com/);
+    assert.match(diagnostics.copyText, /Connected scope: editor/);
+    assert.match(diagnostics.copyText, /Room actor: user:dev:alice%40example\.com/);
+    assert.doesNotMatch(diagnostics.copyText, /secret-token/);
+  });
+
+  it("diagnoses invalid stored credentials as anonymous fallback", () => {
+    const storage = new MemoryStorage();
+    storeCloudPrototypeDevAuth(storage, {
+      token: "<NOTEBOOK_CLOUD_DEV_TOKEN>",
+      user: "alice",
+      scope: "owner",
+    });
+
+    const diagnostics = prototypeAuthDiagnostics(readCloudPrototypeAuth(storage), {
+      actorLabel: null,
+      connectionError: "failed to connect",
+      connectionScope: null,
+    });
+
+    assert.match(diagnostics.copyText, /Effective auth: Anonymous viewer/);
+    assert.match(diagnostics.copyText, /Connected scope: Offline/);
+    assert.match(diagnostics.copyText, /Last connection error: failed to connect/);
+    assert.doesNotMatch(diagnostics.copyText, /<NOTEBOOK_CLOUD_DEV_TOKEN>/);
   });
 });
 
