@@ -81,10 +81,9 @@ def test_install_is_idempotent(monkeypatch):
     import dx
 
     dx.install()
+    registrations = dict(ip.display_formatter.mimebundle_formatter.registrations)
     dx.install()
-    assert (
-        len(ip.display_formatter.mimebundle_formatter.registrations) <= 4
-    )  # pandas + optional polars + optional narwhals + optional datasets
+    assert ip.display_formatter.mimebundle_formatter.registrations == registrations
 
 
 def test_install_treats_display_formatter_as_attribute_not_method(monkeypatch):
@@ -156,7 +155,7 @@ def test_install_skips_hook_when_display_pub_lacks_kernel_surface(monkeypatch):
 
 def test_mimebundle_returns_ref_mime_and_stashes_bytes(monkeypatch):
     """Formatter returns {BLOB_REF_MIME: ..., text/llm+plain: ...} and
-    stashes the parquet bytes in the pending buffer map keyed by hash."""
+    stashes the Arrow bytes in the pending buffer map keyed by hash."""
     _reset_installed(monkeypatch)
     ip = FakeIPython()
     monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
@@ -173,25 +172,24 @@ def test_mimebundle_returns_ref_mime_and_stashes_bytes(monkeypatch):
     assert BLOB_REF_MIME in bundle
     assert "text/llm+plain" in bundle
     ref = bundle[BLOB_REF_MIME]
-    assert ref["content_type"] == "application/vnd.apache.parquet"
+    assert ref["content_type"] == "application/vnd.apache.arrow.stream"
     assert ref["buffer_index"] == 0
 
     # Bytes were stashed at the ref's hash.
     pending = fi._pending_buffers()
     assert ref["hash"] in pending
     buf = pending[ref["hash"]]
-    assert buf[:4] == b"PAR1"
     assert hashlib.sha256(buf).hexdigest() == ref["hash"]
 
 
 def test_mimebundle_returns_summary_only_on_serialize_failure(monkeypatch):
-    """When parquet serialization raises, formatter returns a summary-only
+    """When Arrow serialization raises, formatter returns a summary-only
     bundle (text/llm+plain without blob ref) instead of None."""
     _reset_installed(monkeypatch)
     ip = FakeIPython()
     monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
     monkeypatch.setattr(
-        "dx._format_install.serialize_dataframe",
+        "dx._format_install.iter_arrow_stream_chunks",
         lambda df, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
     )
 
@@ -221,7 +219,7 @@ def test_display_pub_hook_attaches_buffers_on_display_data(monkeypatch):
     dx.install()
     hook = ip.display_pub._hooks[0]
 
-    payload = b"PAR1parquet-bytes"
+    payload = b"arrow-bytes"
     h = hashlib.sha256(payload).hexdigest()
     fi._pending_buffers()[h] = payload
 
@@ -231,7 +229,7 @@ def test_display_pub_hook_attaches_buffers_on_display_data(monkeypatch):
             "data": {
                 BLOB_REF_MIME: {
                     "hash": h,
-                    "content_type": "application/vnd.apache.parquet",
+                    "content_type": "application/vnd.apache.arrow.stream",
                     "size": len(payload),
                     "buffer_index": 0,
                 },
@@ -252,6 +250,54 @@ def test_display_pub_hook_attaches_buffers_on_display_data(monkeypatch):
     assert h not in fi._pending_buffers()
 
 
+def test_display_pub_hook_attaches_multiple_buffers(monkeypatch):
+    """Chunked Arrow manifests carry multiple blob refs and buffers."""
+    _reset_installed(monkeypatch)
+    ip = FakeIPython()
+    monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
+
+    import dx
+    import dx._format_install as fi
+
+    dx.install()
+    hook = ip.display_pub._hooks[0]
+
+    payloads = [b"arrow-chunk-0", b"arrow-chunk-1"]
+    hashes = [hashlib.sha256(payload).hexdigest() for payload in payloads]
+    for h, payload in zip(hashes, payloads, strict=True):
+        fi._pending_buffers()[h] = payload
+
+    msg = {
+        "header": {"msg_type": "display_data"},
+        "content": {
+            "data": {
+                BLOB_REF_MIME: {
+                    "content_type": "application/vnd.apache.arrow.stream",
+                    "refs": [
+                        {
+                            "hash": h,
+                            "content_type": "application/vnd.apache.arrow.stream",
+                            "size": len(payload),
+                        }
+                        for h, payload in zip(hashes, payloads, strict=True)
+                    ],
+                },
+            },
+            "metadata": {},
+            "transient": {},
+        },
+    }
+
+    result = hook(msg)
+    assert result is None
+    assert len(ip.display_pub.session.sent) == 1
+    sent = ip.display_pub.session.sent[0]
+    assert sent["buffers"] == payloads
+    refs = sent["msg"]["content"]["data"][BLOB_REF_MIME]["refs"]
+    assert [ref["buffer_index"] for ref in refs] == [0, 1]
+    assert all(h not in fi._pending_buffers() for h in hashes)
+
+
 def test_display_pub_hook_fires_for_update_display_data(monkeypatch):
     """``h.update(df)`` produces an ``update_display_data`` message with
     ``transient.display_id`` set. Our hook must fire for that msg_type
@@ -267,7 +313,7 @@ def test_display_pub_hook_fires_for_update_display_data(monkeypatch):
     dx.install()
     hook = ip.display_pub._hooks[0]
 
-    payload = b"PAR1updated"
+    payload = b"arrow-updated"
     h = hashlib.sha256(payload).hexdigest()
     fi._pending_buffers()[h] = payload
 
@@ -277,7 +323,7 @@ def test_display_pub_hook_fires_for_update_display_data(monkeypatch):
             "data": {
                 BLOB_REF_MIME: {
                     "hash": h,
-                    "content_type": "application/vnd.apache.parquet",
+                    "content_type": "application/vnd.apache.arrow.stream",
                     "size": len(payload),
                     "buffer_index": 0,
                 },
@@ -430,7 +476,7 @@ def test_install_registers_ipython_display_handler_for_pandas(monkeypatch):
 
 def test_ipython_display_handler_publishes_and_stashes_buffers(monkeypatch):
     """The handler builds a mimebundle via _emit_dataframe (which stashes
-    parquet bytes in _pending_buffers keyed by hash) and publishes a
+    Arrow bytes in _pending_buffers keyed by hash) and publishes a
     display_data message carrying BLOB_REF_MIME. The publisher hook is
     the piece that later attaches the buffers — this test covers just
     the formatter side."""
@@ -463,10 +509,10 @@ def test_ipython_display_handler_publishes_and_stashes_buffers(monkeypatch):
     bundle = published[0]["data"]
     assert BLOB_REF_MIME in bundle, f"expected BLOB_REF_MIME in bundle keys: {list(bundle)}"
     ref = bundle[BLOB_REF_MIME]
-    assert ref["content_type"] == "application/vnd.apache.parquet"
+    assert ref["content_type"] == "application/vnd.apache.arrow.stream"
     assert isinstance(ref["hash"], str) and len(ref["hash"]) == 64  # sha256 hex
 
-    # The parquet bytes must be in the pending stash so the publisher hook
+    # The Arrow bytes must be in the pending stash so the publisher hook
     # can pop them on the subsequent IOPub send.
     assert ref["hash"] in fi._pending_buffers(), "buffer not stashed for hash"
 
@@ -489,9 +535,8 @@ def test_install_registers_ipython_display_handler_for_narwhals(monkeypatch):
     assert nw.DataFrame in ip.display_formatter.ipython_display_formatter.registrations
 
 
-def test_narwhals_handler_unwraps_pandas_and_publishes(monkeypatch):
-    """Fast path: nw.DataFrame backed by pandas — unwrap via to_native()
-    and emit via the pandas encoder directly (no to_pandas() round-trip)."""
+def test_narwhals_handler_publishes_pandas_backed_stream(monkeypatch):
+    """nw.DataFrame backed by pandas emits through the Arrow stream protocol."""
     _reset_installed(monkeypatch)
     ip = FakeIPython()
     monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
@@ -520,12 +565,12 @@ def test_narwhals_handler_unwraps_pandas_and_publishes(monkeypatch):
     bundle = published[0]["data"]
     assert BLOB_REF_MIME in bundle
     ref = bundle[BLOB_REF_MIME]
-    assert ref["content_type"] == "application/vnd.apache.parquet"
+    assert ref["content_type"] == "application/vnd.apache.arrow.stream"
     assert ref["hash"] in fi._pending_buffers()
 
 
-def test_narwhals_handler_unwraps_polars_and_publishes(monkeypatch):
-    """Fast path: nw.DataFrame backed by polars — unwrap + polars encoder."""
+def test_narwhals_handler_publishes_polars_backed_stream(monkeypatch):
+    """nw.DataFrame backed by polars emits through the Arrow stream protocol."""
     _reset_installed(monkeypatch)
     ip = FakeIPython()
     monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
@@ -557,10 +602,8 @@ def test_narwhals_handler_unwraps_polars_and_publishes(monkeypatch):
     assert bundle[BLOB_REF_MIME]["hash"] in fi._pending_buffers()
 
 
-def test_narwhals_handler_falls_back_to_pandas_for_pyarrow_table(monkeypatch):
-    """pyarrow Table isn't supported by serialize_dataframe directly.
-    The narwhals handler should round-trip via .to_pandas() so the fast
-    path in _emit_dataframe still hits the pandas encoder."""
+def test_narwhals_handler_publishes_pyarrow_backed_stream(monkeypatch):
+    """nw.DataFrame backed by pyarrow emits through the Arrow stream protocol."""
     _reset_installed(monkeypatch)
     ip = FakeIPython()
     monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)

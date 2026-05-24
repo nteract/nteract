@@ -132,7 +132,7 @@ def test_buffer_hook_routes_execute_result_via_displayhook(monkeypatch):
     ip, sent, pub, dh = _fake_ip_with_pubs()
     monkeypatch.setattr(_buffer_hook, "_get_ipython", lambda: ip)
 
-    data = b"fake-parquet"
+    data = b"fake-arrow"
     h = hashlib.sha256(data).hexdigest()
     _buffer_hook.pending_buffers()[h] = data
 
@@ -154,7 +154,7 @@ def test_buffer_hook_routes_display_data_via_display_pub(monkeypatch):
     ip, sent, pub, dh = _fake_ip_with_pubs()
     monkeypatch.setattr(_buffer_hook, "_get_ipython", lambda: ip)
 
-    data = b"display-parquet"
+    data = b"display-arrow"
     h = hashlib.sha256(data).hexdigest()
     _buffer_hook.pending_buffers()[h] = data
 
@@ -352,12 +352,22 @@ def test_install_registers_iterable_dataset_formatter():
     """Streaming HF datasets must reach the summary-only formatter path."""
     from IPython.core.formatters import DisplayFormatter
     from nteract_kernel_launcher import _bootstrap
+    from nteract_kernel_launcher._format import ARROW_STREAM_MANIFEST_MIME
+    from nteract_kernel_launcher._refs import BLOB_REF_MIME
 
     display_formatter = DisplayFormatter()
     ip = SimpleNamespace(display_formatter=display_formatter)
 
     _bootstrap._install_dataframe_formatters(ip)
 
+    assert isinstance(
+        display_formatter.formatters[BLOB_REF_MIME],
+        _bootstrap.ArrowBlobRefFormatter,
+    )
+    assert isinstance(
+        display_formatter.formatters[ARROW_STREAM_MANIFEST_MIME],
+        _bootstrap.ArrowStreamManifestFormatter,
+    )
     deferred = display_formatter.mimebundle_formatter.deferred_printers
     assert ("datasets.iterable_dataset", "IterableDataset") in deferred
 
@@ -365,7 +375,7 @@ def test_install_registers_iterable_dataset_formatter():
 # ─── emit path — only runs if pandas + pyarrow are importable ────────────
 
 
-def test_emit_dataframe_stashes_bytes_and_returns_bundle():
+def test_arrow_stream_formatter_stashes_bytes_and_returns_bundle():
     pd = pytest.importorskip("pandas")
     pytest.importorskip("pyarrow")
 
@@ -375,7 +385,7 @@ def test_emit_dataframe_stashes_bytes_and_returns_bundle():
 
     _buffer_hook.pending_buffers().clear()
     df = pd.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
-    bundle = _bootstrap._pandas_mimebundle(df)
+    bundle = _bootstrap._arrow_stream_mimebundle(df)
     assert bundle is not None
     assert BLOB_REF_MIME in bundle
     assert "text/llm+plain" in bundle
@@ -392,7 +402,7 @@ def test_emit_dataframe_stashes_bytes_and_returns_bundle():
     ]
 
 
-# ─── pyarrow.Table path — preserves schema KV metadata ───────────────────
+# ─── Arrow stream path — preserves schema KV metadata ────────────────────
 
 
 def _pa_table_with_hf_metadata():
@@ -438,7 +448,7 @@ def test_emit_pyarrow_table_preserves_huggingface_kv_metadata():
     _buffer_hook.pending_buffers().clear()
     table = _pa_table_with_hf_metadata()
 
-    bundle = _bootstrap._pyarrow_table_mimebundle(table)
+    bundle = _bootstrap._arrow_stream_mimebundle(table)
 
     assert bundle is not None
     assert BLOB_REF_MIME in bundle
@@ -464,7 +474,7 @@ def test_emit_pyarrow_table_chunks_when_full_stream_exceeds_limit(monkeypatch):
     monkeypatch.setattr(_bootstrap, "_MAX_PAYLOAD_BYTES", 1)
     table = _pa_table_with_hf_metadata()
 
-    bundle = _bootstrap._pyarrow_table_mimebundle(table)
+    bundle = _bootstrap._arrow_stream_mimebundle(table)
 
     assert bundle is not None
     manifest = bundle[ARROW_STREAM_MANIFEST_MIME]
@@ -495,7 +505,7 @@ def test_emit_pyarrow_record_batch_promotes_to_table():
     table = _pa_table_with_hf_metadata()
     batch = table.to_batches()[0]
 
-    bundle = _bootstrap._pyarrow_record_batch_mimebundle(batch)
+    bundle = _bootstrap._arrow_stream_mimebundle(batch)
 
     assert bundle is not None
     assert BLOB_REF_MIME in bundle

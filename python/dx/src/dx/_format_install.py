@@ -3,8 +3,8 @@
 Three IPython extension points, each via documented public ``for_type``
 registration or hook API — no internals are patched:
 
-1. A ``mimebundle_formatter`` for pandas / polars DataFrames serializes
-   the frame to parquet, hashes locally, stashes the bytes in a
+1. A ``mimebundle_formatter`` for Arrow-stream-capable table objects serializes
+   the stream to Arrow IPC, hashes locally, stashes the bytes in a
    thread-local keyed by hash, and returns
    ``{BLOB_REF_MIME: {...}, "text/llm+plain": ...}``. IPython's default
    chain then merges pandas' ``text/html`` and ``text/plain`` so hosts
@@ -13,14 +13,14 @@ registration or hook API — no internals are patched:
 2. A ``ZMQDisplayPublisher.register_hook`` callback attaches the
    stashed bytes to every outgoing ``display_data`` / ``update_display_data``
    message whose bundle carries the ref MIME. The hook pops the bytes
-   by hash and calls ``session.send(..., buffers=[parquet])`` directly,
+   by hash and calls ``session.send(..., buffers=[arrow])`` directly,
    returning ``None`` so the default (buffer-less) send is skipped.
    This is why ``h.update(df2)`` on a ``DisplayHandle`` works — the
    hook fires on updates just like initial displays, with
    ``transient.display_id`` already populated on the message.
 
-3. An ``ipython_display_formatter`` handler for pandas / polars
-   DataFrames handles the **last-expression** case (``df`` at the end
+3. ``ipython_display_formatter`` handlers for Arrow-stream-capable
+   DataFrames handle the **last-expression** case (``df`` at the end
    of a cell, not wrapped in ``display()``). That path goes through
    ``ZMQShellDisplayHook``, which has no ``register_hook`` equivalent —
    the publisher hook alone can't attach buffers to the resulting
@@ -46,15 +46,21 @@ All three extension points are documented public API
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import threading
 from typing import Any
 
 from dx._env import Environment, detect_environment
-from dx._format import serialize_dataframe
-from dx._refs import BLOB_REF_MIME, BlobRef, build_ref_bundle
+from dx._format import (
+    ARROW_STREAM_MANIFEST_MIME,
+    ARROW_STREAM_MIME,
+    DEFAULT_ARROW_CHUNK_BYTES,
+    build_arrow_stream_manifest_from_chunks,
+    has_arrow_stream_protocol,
+    iter_arrow_stream_chunks,
+)
+from dx._refs import BLOB_REF_MIME, BlobRef, build_multi_ref_bundle, build_ref_bundle
 from dx._summary import summarize_dataframe, summarize_dataset
 
 log = logging.getLogger("dx")
@@ -65,7 +71,7 @@ _INSTALLED = False
 # 100 MiB; leave ~10 MiB for overhead and safety.
 _MAX_PAYLOAD_BYTES = int(os.environ.get("DX_MAX_PAYLOAD_BYTES", str(90 * 1024 * 1024)))
 
-# Pending parquet bytes waiting to be attached to the next IOPub message
+# Pending Arrow bytes waiting to be attached to the next IOPub message
 # that references them. Keyed by content hash (hex SHA-256) so lookups
 # match the ref MIME's ``hash`` field. Thread-local: each execution
 # context owns its own pending slot.
@@ -126,31 +132,33 @@ def install_formatters() -> None:
     try:
         import pandas as pd
 
-        mimebundle.for_type(pd.DataFrame, _pandas_mimebundle)
-        ipython_display.for_type(pd.DataFrame, _pandas_ipython_display)
+        mimebundle.for_type(pd.DataFrame, _arrow_stream_mimebundle)
+        ipython_display.for_type(pd.DataFrame, _arrow_stream_ipython_display)
     except ImportError:
         pass
 
     try:
         import polars as pl
 
-        mimebundle.for_type(pl.DataFrame, _polars_mimebundle)
-        ipython_display.for_type(pl.DataFrame, _polars_ipython_display)
+        mimebundle.for_type(pl.DataFrame, _arrow_stream_mimebundle)
+        ipython_display.for_type(pl.DataFrame, _arrow_stream_ipython_display)
     except ImportError:
         pass
 
-    # Narwhals wraps pandas/polars/pyarrow/modin/dask/cudf behind a common
-    # DataFrame API. Users may type an nw.DataFrame as a last expression
-    # without thinking about the underlying flavor. We unwrap via
-    # `.to_native()` and dispatch through the pandas/polars paths, with
-    # a `.to_pandas()` fallback for other narwhals-supported backends.
-    # LazyFrame is deliberately not handled here — displaying a lazy
-    # query would force `.collect()`, which has side effects.
     try:
         import narwhals as nw
 
-        mimebundle.for_type(nw.DataFrame, _narwhals_mimebundle)
-        ipython_display.for_type(nw.DataFrame, _narwhals_ipython_display)
+        mimebundle.for_type(nw.DataFrame, _arrow_stream_mimebundle)
+        ipython_display.for_type(nw.DataFrame, _arrow_stream_ipython_display)
+    except ImportError:
+        pass
+
+    try:
+        import pyarrow as pa
+
+        for cls in (pa.Table, pa.RecordBatch, pa.RecordBatchReader):
+            mimebundle.for_type(cls, _arrow_stream_mimebundle)
+            ipython_display.for_type(cls, _arrow_stream_ipython_display)
     except ImportError:
         pass
 
@@ -215,17 +223,24 @@ def _dx_display_pub_hook(msg: dict) -> dict | None:
             ref = json.loads(ref_raw) if isinstance(ref_raw, str) else None
         if not isinstance(ref, dict):
             return msg
-        h = ref.get("hash")
-        if not isinstance(h, str):
+        entries = _ref_entries(ref)
+        if not entries:
             return msg
 
-        buffers = _pending_buffers().pop(h, None)
-        if buffers is None:
+        hashes = [entry.get("hash") for entry in entries]
+        if not all(isinstance(h, str) for h in hashes):
+            return msg
+
+        pending = _pending_buffers()
+        if not all(h in pending for h in hashes):
             # No stashed payload for this hash — maybe re-publish of a
             # historical message, or a ref emitted by something other
             # than our formatter. Pass through unchanged; the agent can
             # still resolve via BlobStore::exists on the hash.
             return msg
+        buffers = [pending.pop(h) for h in hashes if isinstance(h, str)]
+        for index, entry in enumerate(entries):
+            entry["buffer_index"] = index
 
         pub = _display_pub()
         if pub is None:
@@ -234,7 +249,7 @@ def _dx_display_pub_hook(msg: dict) -> dict | None:
             pub.pub_socket,
             msg,
             ident=pub.topic,
-            buffers=[buffers],
+            buffers=buffers,
         )
         return None
     except Exception as exc:
@@ -245,38 +260,29 @@ def _dx_display_pub_hook(msg: dict) -> dict | None:
 _dx_display_pub_hook._dx_installed = True  # ty: ignore[unresolved-attribute]
 
 
-def _pandas_mimebundle(df: Any, include=None, exclude=None) -> dict | None:
-    return _emit_dataframe(df, total_rows=len(df))
+def _ref_entries(ref: dict) -> list[dict]:
+    refs = ref.get("refs")
+    if isinstance(refs, list):
+        return [entry for entry in refs if isinstance(entry, dict)]
+    if isinstance(ref.get("hash"), str):
+        return [ref]
+    return []
 
 
-def _polars_mimebundle(df: Any, include=None, exclude=None) -> dict | None:
-    return _emit_dataframe(df, total_rows=df.height)
+def _arrow_stream_mimebundle(df: Any, include=None, exclude=None) -> dict | None:
+    total_rows = _total_rows(df)
+    return _emit_dataframe(df, total_rows=total_rows)
 
 
-def _narwhals_mimebundle(df: Any, include=None, exclude=None) -> dict | None:
-    """`mimebundle_formatter` handler for `narwhals.DataFrame`.
-
-    Mirrors the display-formatter path below: unwrap via `.to_native()`
-    and delegate to the flavor-specific emitter. Kept alongside its
-    pandas/polars siblings so any tooling that bypasses the
-    `ipython_display_formatter` short-circuit still gets a parquet
-    bundle from a narwhals wrapper.
-    """
-    native, total_rows = _unwrap_narwhals(df)
-    if native is None:
-        return None
-    return _emit_dataframe(native, total_rows=total_rows)
-
-
-def _pandas_ipython_display(df: Any) -> None:
-    """`ipython_display_formatter` handler for `pd.DataFrame`.
+def _arrow_stream_ipython_display(df: Any) -> None:
+    """`ipython_display_formatter` handler for Arrow stream objects.
 
     IPython's `DisplayFormatter.format()` checks `ipython_display_formatter`
     before walking mimebundle/per-MIME formatters. If our handler matches,
     `format()` returns `({}, {})` and the displayhook's send is suppressed.
     We publish our own `display_data` message via `publish_display_data`,
     which flows through `ZMQDisplayPublisher.publish` → the existing
-    `_dx_display_pub_hook`, which attaches parquet buffers.
+    `_dx_display_pub_hook`, which attaches Arrow buffers.
 
     Net effect for a last-expression `df`: one `display_data` message goes
     on the wire (with buffers). No `execute_result` is emitted — the saved
@@ -285,75 +291,39 @@ def _pandas_ipython_display(df: Any) -> None:
     they run at steps 4–5 of `DisplayHook.__call__`, independently of the
     message send.
     """
-    _publish_via_ipython_display(df, total_rows=len(df))
+    _publish_via_ipython_display(df)
 
 
-def _polars_ipython_display(df: Any) -> None:
-    """`ipython_display_formatter` handler for `pl.DataFrame`."""
-    _publish_via_ipython_display(df, total_rows=df.height)
+def _total_rows(obj: Any) -> int | None:
+    for attr in ("num_rows", "height"):
+        value = getattr(obj, attr, None)
+        if isinstance(value, int):
+            return value
 
+    shape = getattr(obj, "shape", None)
+    if isinstance(shape, tuple) and shape and isinstance(shape[0], int):
+        return shape[0]
 
-def _narwhals_ipython_display(nw_df: Any) -> None:
-    """`ipython_display_formatter` handler for `narwhals.DataFrame`.
-
-    Unwrap via `.to_native()` and dispatch through the native-type path.
-    Falls back to `.to_pandas()` for backends `serialize_dataframe` doesn't
-    natively encode (modin, pyarrow Table, dask, cudf).
-    """
-    native, total_rows = _unwrap_narwhals(nw_df)
-    if native is None:
-        # Couldn't unwrap — surface a best-effort repr instead of silently
-        # dropping the output.
-        print(repr(nw_df))
-        return
-    _publish_via_ipython_display(native, total_rows=total_rows)
-
-
-def _unwrap_narwhals(nw_df: Any) -> tuple[Any, int] | tuple[None, int]:
-    """Return ``(native_df, row_count)`` for a ``narwhals.DataFrame``.
-
-    - If the underlying native is pandas or polars, return it directly so
-      ``serialize_dataframe`` hits its fast path.
-    - Otherwise, convert to pandas via narwhals's own adapter. This may
-      materialize a potentially-expensive frame (modin/dask/cudf), which
-      is the expected cost of "show me this DataFrame."
-    - On any unexpected error, return ``(None, 0)`` and let the caller
-      decide on a fallback.
-    """
     try:
-        native = nw_df.to_native()
-    except Exception as exc:
-        log.debug("dx: narwhals to_native failed: %s", exc)
-        return None, 0
-
-    # Fast path: the native is pandas or polars — use their row counts directly.
-    try:
-        import pandas as pd
-
-        if isinstance(native, pd.DataFrame):
-            return native, len(native)
-    except ImportError:
-        pass
-    try:
-        import polars as pl
-
-        if isinstance(native, pl.DataFrame):
-            return native, native.height
-    except ImportError:
-        pass
-
-    # Fallback: round-trip through narwhals's to_pandas. Works for pyarrow,
-    # modin, dask, cudf, etc. — anything narwhals understands.
-    try:
-        as_pandas = nw_df.to_pandas()
-        return as_pandas, len(as_pandas)
-    except Exception as exc:
-        log.debug("dx: narwhals to_pandas failed: %s", exc)
-        return None, 0
+        return len(obj)
+    except TypeError:
+        return None
 
 
-def _publish_via_ipython_display(df: Any, *, total_rows: int) -> None:
-    """Shared body for the pandas / polars `ipython_display` handlers."""
+def _summary_source(source: Any) -> Any:
+    to_native = getattr(source, "to_native", None)
+    if callable(to_native):
+        try:
+            native = to_native()
+            if native is not source:
+                return native
+        except Exception as exc:
+            log.debug("dx: to_native summary unwrap failed: %s", exc)
+    return source
+
+
+def _publish_via_ipython_display(df: Any) -> None:
+    """Shared body for Arrow stream `ipython_display` handlers."""
     # Lazy import so dx.install() doesn't hard-depend on IPython being
     # importable from the install site (it already is under ipykernel,
     # but stay symmetrical with _emit_dataframe).
@@ -363,7 +333,7 @@ def _publish_via_ipython_display(df: Any, *, total_rows: int) -> None:
         return
 
     try:
-        bundle = _emit_dataframe(df, total_rows=total_rows)
+        bundle = _arrow_stream_mimebundle(df)
     except Exception as exc:
         log.debug("dx: _emit_dataframe failed: %s — falling back to repr", exc)
         bundle = None
@@ -375,23 +345,33 @@ def _publish_via_ipython_display(df: Any, *, total_rows: int) -> None:
         print(repr(df))
 
 
-def _emit_dataframe(df: Any, *, total_rows: int) -> dict | None:
-    """Serialize df → parquet, stash bytes in the pending buffer map, and
+def _emit_dataframe(df: Any, *, total_rows: int | None) -> dict | None:
+    """Serialize df → Arrow IPC, stash bytes in the pending buffer map, and
     return a mimebundle containing the ref MIME + text/llm+plain.
 
     IPython's default formatter chain fills in text/html / text/plain
     as a fallback bundle for hosts that don't understand the ref MIME;
-    nteract frontends pick the parquet renderer via the ref MIME.
+    nteract frontends pick the Arrow renderer via the ref MIME.
 
-    Returns ``None`` only when both parquet serialization and summary
-    generation fail. When parquet fails but the summary succeeds
+    Returns ``None`` only when both Arrow serialization and summary
+    generation fail. When Arrow serialization fails but the summary succeeds
     (e.g. pyarrow missing), returns a summary-only bundle.
     """
+    if not has_arrow_stream_protocol(df):
+        return None
+
     try:
-        data, content_type = serialize_dataframe(df, max_bytes=_MAX_PAYLOAD_BYTES)
+        chunks = list(
+            iter_arrow_stream_chunks(
+                df,
+                max_chunk_bytes=min(DEFAULT_ARROW_CHUNK_BYTES, _MAX_PAYLOAD_BYTES),
+            )
+        )
     except Exception as exc:
         log.debug("dx: serialize failed: %s — emitting summary-only bundle", exc)
-        # Parquet serialization failed (e.g. pyarrow missing), but the
+        if total_rows is None:
+            return None
+        # Arrow serialization failed (e.g. pyarrow missing), but the
         # summary is pure Python — still emit text/llm+plain so the agent
         # gets column stats instead of a raw repr.
         try:
@@ -402,39 +382,59 @@ def _emit_dataframe(df: Any, *, total_rows: int) -> dict | None:
         except Exception:
             return None
 
-    # Detect downsampling by reading parquet metadata (cheap — footer only).
-    sampled = False
-    included = total_rows
-    try:
-        import io
-
-        import pyarrow.parquet as pq
-
-        meta = pq.read_metadata(io.BytesIO(data))
-        if meta.num_rows != total_rows:
-            sampled = True
-            included = meta.num_rows
-    except Exception:
-        pass
-
-    h = hashlib.sha256(data).hexdigest()
-    ref = BlobRef(hash=h, size=len(data))
+    included = sum(chunk.row_count for chunk in chunks)
+    if total_rows is None:
+        total_rows = included
+    sampled = included != total_rows
     summary_hints = {
         "total_rows": total_rows,
         "included_rows": included,
         "sampled": sampled,
         "sample_strategy": "head" if sampled else "none",
     }
-    ref_bundle = build_ref_bundle(ref, content_type=content_type, summary=summary_hints)
-    ref_bundle["buffer_index"] = 0
 
-    llm = summarize_dataframe(df, total_rows=total_rows, included_rows=included, sampled=sampled)
+    summary_source = _summary_source(df)
+    try:
+        llm = summarize_dataframe(
+            summary_source,
+            total_rows=total_rows,
+            included_rows=included,
+            sampled=sampled,
+        )
+    except Exception as exc:
+        log.debug("dx: summary build failed: %s", exc)
+        llm = f"Arrow stream table: {included} rows"
 
-    # Stash the parquet bytes for the display_pub hook to pick up on
-    # the upcoming publish. Keyed by hash so the hook can match exactly.
-    _pending_buffers()[h] = data
+    pending = _pending_buffers()
+    for chunk in chunks:
+        pending[chunk.content_hash] = chunk.data
 
-    return {BLOB_REF_MIME: ref_bundle, "text/llm+plain": llm}
+    if len(chunks) == 1:
+        chunk = chunks[0]
+        ref_bundle = build_ref_bundle(
+            BlobRef(hash=chunk.content_hash, size=chunk.size),
+            content_type=ARROW_STREAM_MIME,
+            summary=summary_hints,
+        )
+        ref_bundle["buffer_index"] = 0
+    else:
+        ref_bundle = build_multi_ref_bundle(
+            [BlobRef(hash=chunk.content_hash, size=chunk.size) for chunk in chunks],
+            content_type=ARROW_STREAM_MIME,
+            summary=summary_hints,
+        )
+
+    bundle = {BLOB_REF_MIME: ref_bundle, "text/llm+plain": llm}
+    try:
+        bundle[ARROW_STREAM_MANIFEST_MIME] = build_arrow_stream_manifest_from_chunks(
+            chunks,
+            complete=True,
+            summary=summary_hints,
+        )
+    except Exception as exc:
+        log.debug("dx: arrow manifest build failed: %s", exc)
+
+    return bundle
 
 
 def _enable_third_party_nteract_renderers() -> None:
@@ -468,7 +468,7 @@ def _enable_third_party_nteract_renderers() -> None:
 def _dataset_mimebundle(ds: Any, include=None, exclude=None) -> dict | None:
     """`mimebundle_formatter` handler for `datasets.Dataset`.
 
-    Returns a bundle with only `text/llm+plain` — no parquet ref. Keeps the
+    Returns a bundle with only `text/llm+plain` — no Arrow ref. Keeps the
     dataset lazy and lets IPython fill in `text/plain` from the dataset's
     own repr.
     """

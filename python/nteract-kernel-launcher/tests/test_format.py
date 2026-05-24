@@ -1,7 +1,7 @@
 """Tests for the table serialization helpers in ``_format``.
 
 Coverage focus: table-like producers emit Arrow IPC, preserve schema metadata,
-and downsample through the same bounded head/slice loop.
+and expose chunked manifests when one blob would be too large.
 """
 
 from __future__ import annotations
@@ -36,19 +36,16 @@ def test_serialize_arrow_table_preserves_schema_metadata():
     assert md[b"custom"] == b"value"
 
 
-def test_serialize_arrow_table_downsamples_when_oversized():
-    pa = pytest.importorskip("pyarrow")
+def test_serialize_arrow_table_requires_manifest_when_oversized():
+    pytest.importorskip("pyarrow")
     from nteract_kernel_launcher._format import serialize_arrow_table
 
     table = _pa_table_with_hf_metadata()
-    # Force the loop to fire by setting the cap below the full size.
     full_data, _, _ = serialize_arrow_table(table, max_bytes=10_000_000)
     cap = max(1, len(full_data) // 4)
 
-    data, _, included_rows = serialize_arrow_table(table, max_bytes=cap)
-    decoded = pa.ipc.open_stream(io.BytesIO(data)).read_all()
-    assert decoded.num_rows == included_rows
-    assert len(data) <= cap or included_rows < table.num_rows
+    with pytest.raises(ValueError, match="chunked manifest is required"):
+        serialize_arrow_table(table, max_bytes=cap)
 
 
 def test_serialize_dataframe_pandas_round_trips_data():
@@ -79,14 +76,19 @@ def test_serialize_dataframe_pandas_preserves_index_metadata():
     assert "label" in table.column_names
 
 
-def test_serialize_dataframe_pandas_uses_direct_table_writer(monkeypatch):
+def test_serialize_dataframe_pandas_uses_arrow_stream_protocol(monkeypatch):
     pd = pytest.importorskip("pandas")
     import nteract_kernel_launcher._format as fmt
 
-    def fail_pycapsule_path(*_args, **_kwargs):
-        raise AssertionError("pandas should write its pa.Table directly")
+    calls = 0
+    original = fmt._record_batch_reader_from_stream
 
-    monkeypatch.setattr(fmt, "_record_batch_reader_from_stream", fail_pycapsule_path)
+    def spy(source):
+        nonlocal calls
+        calls += 1
+        return original(source)
+
+    monkeypatch.setattr(fmt, "_record_batch_reader_from_stream", spy)
 
     data, ct, included_rows = fmt.serialize_dataframe(
         pd.DataFrame({"a": [1, 2, 3]}),
@@ -96,6 +98,7 @@ def test_serialize_dataframe_pandas_uses_direct_table_writer(monkeypatch):
     assert ct == fmt.ARROW_STREAM_MIME
     assert included_rows == 3
     assert data
+    assert calls == 1
 
 
 def test_serialize_dataframe_polars_emits_arrow_stream():
@@ -113,14 +116,19 @@ def test_serialize_dataframe_polars_emits_arrow_stream():
     assert table.num_rows == 3
 
 
-def test_serialize_dataframe_polars_uses_native_writer(monkeypatch):
+def test_serialize_dataframe_polars_uses_arrow_stream_protocol(monkeypatch):
     pl = pytest.importorskip("polars")
     import nteract_kernel_launcher._format as fmt
 
-    def fail_pycapsule_path(*_args, **_kwargs):
-        raise AssertionError("polars should use its native IPC writer")
+    calls = 0
+    original = fmt._record_batch_reader_from_stream
 
-    monkeypatch.setattr(fmt, "_serialize_arrow_stream_exportable", fail_pycapsule_path)
+    def spy(source):
+        nonlocal calls
+        calls += 1
+        return original(source)
+
+    monkeypatch.setattr(fmt, "_record_batch_reader_from_stream", spy)
 
     data, ct, included_rows = fmt.serialize_dataframe(
         pl.DataFrame({"a": [1, 2, 3]}),
@@ -130,6 +138,7 @@ def test_serialize_dataframe_polars_uses_native_writer(monkeypatch):
     assert ct == fmt.ARROW_STREAM_MIME
     assert included_rows == 3
     assert data
+    assert calls == 1
 
 
 def test_serialize_dataframe_accepts_arrow_pycapsule_stream_protocol():
@@ -177,18 +186,23 @@ def test_serialize_dataframe_rejects_oversized_generic_pycapsule_stream():
         def __len__(self):
             return self._table.num_rows
 
-    with pytest.raises(ValueError, match="progressive chunking is required"):
+    with pytest.raises(ValueError, match="chunked manifest is required"):
         serialize_dataframe(SinglePassStream(), max_bytes=1)
 
 
-def test_serialize_arrow_table_uses_direct_writer(monkeypatch):
+def test_serialize_arrow_table_uses_arrow_stream_protocol(monkeypatch):
     pa = pytest.importorskip("pyarrow")
     import nteract_kernel_launcher._format as fmt
 
-    def fail_pycapsule_path(*_args, **_kwargs):
-        raise AssertionError("pyarrow.Table should use direct IPC writer")
+    calls = 0
+    original = fmt._record_batch_reader_from_stream
 
-    monkeypatch.setattr(fmt, "_record_batch_reader_from_stream", fail_pycapsule_path)
+    def spy(source):
+        nonlocal calls
+        calls += 1
+        return original(source)
+
+    monkeypatch.setattr(fmt, "_record_batch_reader_from_stream", spy)
 
     data, ct, included_rows = fmt.serialize_arrow_table(
         pa.table({"a": [1, 2, 3]}),
@@ -199,6 +213,7 @@ def test_serialize_arrow_table_uses_direct_writer(monkeypatch):
     assert ct == fmt.ARROW_STREAM_MIME
     assert included_rows == 3
     assert table.num_rows == 3
+    assert calls == 1
 
 
 def test_build_arrow_stream_manifest_describes_one_chunk():
@@ -251,12 +266,12 @@ def test_iter_arrow_stream_chunks_yields_decodable_mini_streams():
 
     chunks = list(iter_arrow_stream_chunks(reader, max_chunk_bytes=1))
 
-    assert [chunk.index for chunk in chunks] == [0, 1, 2]
-    assert [chunk.row_count for chunk in chunks] == [2, 2, 2]
-    assert [chunk.record_batch_count for chunk in chunks] == [1, 1, 1]
+    assert [chunk.index for chunk in chunks] == list(range(len(chunks)))
+    assert sum(chunk.row_count for chunk in chunks) == 6
+    assert [chunk.record_batch_count for chunk in chunks] == [1] * len(chunks)
     decoded = [pa.ipc.open_stream(io.BytesIO(chunk.data)).read_all() for chunk in chunks]
-    assert [part.num_rows for part in decoded] == [2, 2, 2]
-    assert [part.column_names for part in decoded] == [["a", "b"], ["a", "b"], ["a", "b"]]
+    assert sum(part.num_rows for part in decoded) == 6
+    assert [part.column_names for part in decoded] == [["a", "b"]] * len(chunks)
     assert [chunk.manifest_entry()["hash"] for chunk in chunks] == [
         chunk.content_hash for chunk in chunks
     ]
@@ -271,7 +286,8 @@ def test_iter_arrow_stream_chunks_preserves_schema_metadata():
 
     chunks = list(iter_arrow_stream_chunks(reader, max_chunk_bytes=1))
 
-    assert len(chunks) == 2
+    assert len(chunks) > 2
+    assert sum(chunk.row_count for chunk in chunks) == table.num_rows
     for chunk in chunks:
         decoded = pa.ipc.open_stream(io.BytesIO(chunk.data)).read_all()
         md = decoded.schema.metadata or {}
@@ -297,8 +313,8 @@ def test_iter_arrow_stream_chunks_consumes_pycapsule_stream_once():
     source = SinglePassStream()
     chunks = list(iter_arrow_stream_chunks(source, max_chunk_bytes=1))
 
-    assert len(chunks) == 1
-    assert chunks[0].row_count == 4
+    assert len(chunks) == 4
+    assert sum(chunk.row_count for chunk in chunks) == 4
     assert source._used is True
 
 

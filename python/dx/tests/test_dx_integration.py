@@ -44,11 +44,13 @@ class TestEmitDataFrameFallbackWithoutPyarrow:
     def test_emit_returns_summary_only_on_serialize_failure(self, monkeypatch):
         import dx._format_install as fi
 
-        # Make serialize_dataframe raise to simulate missing pyarrow
+        # Make iter_arrow_stream_chunks raise to simulate missing pyarrow
         monkeypatch.setattr(
             fi,
-            "serialize_dataframe",
-            lambda df, max_bytes: (_ for _ in ()).throw(ImportError("No module named 'pyarrow'")),
+            "iter_arrow_stream_chunks",
+            lambda df, max_chunk_bytes: (_ for _ in ()).throw(
+                ImportError("No module named 'pyarrow'")
+            ),
         )
 
         data: dict = {"score": [0.1, 0.5, 0.9], "name": ["a", "b", "c"]}
@@ -59,7 +61,7 @@ class TestEmitDataFrameFallbackWithoutPyarrow:
 
         assert bundle is not None
         assert "text/llm+plain" in bundle
-        # No blob ref — parquet serialization failed
+        # No blob ref — Arrow serialization failed
         from dx._refs import BLOB_REF_MIME
 
         assert BLOB_REF_MIME not in bundle
@@ -96,8 +98,8 @@ class TestDatasetEmitsDisplayDataWithSummary:
         assert "text" in summary
         assert "label" in summary
 
-    def test_dataset_mimebundle_no_parquet_ref(self, monkeypatch):
-        """Dataset handler must NOT emit parquet ref MIME — keeps data lazy."""
+    def test_dataset_mimebundle_no_arrow_ref(self, monkeypatch):
+        """Dataset handler must NOT emit Arrow ref MIME — keeps data lazy."""
         import dx._format_install as fi
         from datasets import Dataset
         from dx._refs import BLOB_REF_MIME

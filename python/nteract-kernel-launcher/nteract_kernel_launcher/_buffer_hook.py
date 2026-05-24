@@ -1,6 +1,6 @@
 """Buffer-attachment hook — shared between ``display_pub`` and ``displayhook``.
 
-When the DataFrame formatter emits an output bundle, it stashes the parquet
+When the DataFrame formatter emits an output bundle, it stashes the Arrow
 bytes in a thread-local dict keyed by the blob-ref hash. Later, when the
 Jupyter message is about to go on the wire, this hook:
 

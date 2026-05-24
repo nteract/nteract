@@ -61,21 +61,21 @@ The phases below are intended as targeted commits in this PR, not separate PRs.
 
 ## Current Merged State
 
-The launcher registers lazy IPython `mimebundle_formatter` handlers in
-`nteract_kernel_launcher/_bootstrap.py` for pandas, polars, narwhals,
-`pyarrow.Table`, `pyarrow.RecordBatch`, and Hugging Face datasets.
+The launcher installs generic per-MIME Arrow stream formatters in
+`nteract_kernel_launcher/_bootstrap.py`. Those formatters look for
+`__arrow_c_stream__()` on every object, so pandas, polars, pyarrow, narwhals,
+and other PyCapsule producers share one output path. Hugging Face datasets keep
+type-specific `mimebundle_formatter` registrations because they add
+dataset-specific feature summaries.
 
 Serialization helpers live in `nteract_kernel_launcher/_format.py`:
 
-- `_serialize_pandas` writes parquet via
-  `pa.Table.from_pandas(df, preserve_index=False)` plus
-  `pq.write_table(..., compression="snappy")`.
-- `_serialize_polars` writes parquet via
-  `df.write_parquet(buf, compression="snappy")`.
-- `_serialize_arrow_stream_table` already writes Arrow IPC stream bytes for
-  `pyarrow.Table` and `pyarrow.RecordBatch`.
-- `serialize_dataframe` returns `(bytes, PARQUET_MIME, included_rows)`. Phase 1
-  flips that to `ARROW_STREAM_MIME` and removes `preserve_index=False`.
+- `iter_arrow_stream_chunks` imports producers through
+  `pa.RecordBatchReader.from_stream(obj)` / the PyCapsule fallback and writes
+  self-contained Arrow IPC mini-stream chunks.
+- `serialize_dataframe` is now a compatibility wrapper over the generic Arrow
+  stream serializer and returns `(bytes, ARROW_STREAM_MIME, included_rows)` for
+  one-blob outputs.
 
 Today rich table outputs are stored as content-addressed blobs via
 `application/vnd.nteract.blob-ref+json`:
@@ -110,11 +110,11 @@ priority, notebook rendering, MCP rendering, Sift plugin loading, and Sift/WASM
 schema hints. `nteract-predicate` now owns the canonical pandas/Hugging Face
 schema interpretation for both parquet metadata and Arrow IPC schema metadata.
 
-The remaining asymmetry is Python-side production:
+The remaining work is no longer Python-side format selection:
 
-- `pyarrow.Table`, `pyarrow.RecordBatch`, and materialized Hugging Face datasets
-  emit Arrow IPC stream bytes.
-- pandas and polars still emit parquet.
+- pandas, polars, pyarrow tables, pyarrow record batches, narwhals wrappers, and
+  other PyCapsule producers emit Arrow IPC stream bytes through the same
+  `__arrow_c_stream__()` path.
 - Sift can render Arrow IPC, but buffers complete Arrow IPC bytes before loading
   them into WASM.
 - The blob-ref MIME points at one complete blob, not a chunk manifest.
@@ -593,8 +593,8 @@ for the staged implementation.
   - pandas, polars, pyarrow tables, record batches, and PyCapsule-compatible
     dataframe objects now emit `application/vnd.apache.arrow.stream` through the
     launcher.
-  - `serialize_dataframe` prefers `__arrow_c_stream__()` and falls back to
-    pandas/polars-specific Arrow IPC writers for older library versions.
+  - `serialize_dataframe` imports objects through `__arrow_c_stream__()` /
+    `RecordBatchReader.from_stream()`.
   - Tests cover pandas IPC output, pandas index metadata, polars IPC output, and
     a protocol-only PyCapsule stream object.
 - Done: `f039cd2b docs(outputs): clarify arrow stream chunking`
@@ -720,25 +720,12 @@ Goal: all new dataframe display outputs use Arrow IPC stream by default.
 Changes (all in `python/nteract-kernel-launcher/nteract_kernel_launcher/_format.py`
 unless noted):
 
-- `_serialize_pandas` switches to `pa.Table.from_pandas(df)` (drop
-  `preserve_index=False`) plus `pa.ipc.new_stream` writing into a
-  `pa.BufferOutputStream`.
-- `_serialize_polars` switches to `df.write_ipc_stream(buf)`.
-- `serialize_dataframe` first checks for `__arrow_c_stream__()` and imports via
-  `pa.RecordBatchReader.from_stream(obj)` / PyCapsule fallback. The pandas and
-  polars helpers remain compatibility fallbacks for older library versions.
-- `serialize_dataframe` returns `ARROW_STREAM_MIME` instead of `PARQUET_MIME`.
-  Drop `PARQUET_MIME` from the dataframe return path; keep the constant for
-  parsing old fixtures only.
-- Audit `_bootstrap.py` formatter registrations and tests in
-  `python/nteract-kernel-launcher/tests/` for any callers that branch on
-  `PARQUET_MIME` for pandas/polars output and update them.
-- Rename helpers from parquet-specific names to Arrow/table names where the
-  behavior is now generic. A single `serialize_table` codepath shared by
-  pandas/polars/pyarrow is fine.
-- For narwhals, dispatch on backend: prefer the native object's
-  `__arrow_c_stream__()` protocol, fall back to pandas conversion only if no
-  Arrow export is available.
+- `serialize_dataframe` imports via `pa.RecordBatchReader.from_stream(obj)` /
+  PyCapsule fallback. pandas, polars, pyarrow, and narwhals wrappers share that
+  protocol path.
+- `_bootstrap.py` installs generic Arrow stream MIME formatters instead of
+  pandas/polars/narwhals/pyarrow type-specific table formatters.
+- For narwhals, use the wrapper's own `__arrow_c_stream__()` protocol.
 - Hugging Face: keep the Arrow-table-backed path. `IterableDataset` and other
   streaming HF objects materialize a head sample then fall through to
   `text/llm+plain`; do not silently consume the stream.

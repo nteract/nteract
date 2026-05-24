@@ -41,10 +41,10 @@ def install() -> None:
 
     What it does:
 
-    1. Registers pandas / polars DataFrame formatters. Bare ``df`` on the
-       last cell line publishes a ``display_data`` whose bundle carries
+    1. Registers formatters for Arrow-stream-capable DataFrames. Bare ``df``
+       on the last cell line publishes a ``display_data`` whose bundle carries
        ``application/vnd.nteract.blob-ref+json`` + ``text/llm+plain``.
-       Parquet bytes are attached to the Jupyter messaging envelope's
+       Arrow IPC bytes are attached to the Jupyter messaging envelope's
        trailing ZMQ ``buffers`` field, not base64'd inside the JSON.
        IPython's default chain fills in ``text/html`` / ``text/plain`` as
        a fallback for hosts that don't understand the ref MIME.

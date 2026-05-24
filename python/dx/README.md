@@ -2,7 +2,7 @@
 
 **Smart DataFrame display for Jupyter, built for [nteract](https://nteract.io).**
 
-`dx` upgrades how pandas and polars DataFrames render in a notebook. Instead of serializing megabytes of HTML into your output cells, dx hands the data to nteract's content-addressed blob store and renders it through a fast Arrow/parquet grid. Your `.ipynb` stays tiny, the cell stays snappy, and AI agents reading the notebook get a compact per-column summary — dtypes, ranges, distinct/top values, null counts — instead of raw bytes.
+`dx` upgrades Arrow-stream-capable DataFrames in a notebook. Instead of serializing megabytes of HTML into your output cells, dx hands Arrow IPC data to nteract's content-addressed blob store and renders it through a fast grid. Your `.ipynb` stays tiny, the cell stays snappy, and AI agents reading the notebook get a compact per-column summary — dtypes, ranges, distinct/top values, null counts — instead of raw bytes.
 
 ## Install
 
@@ -37,7 +37,7 @@ That's it. `dx.install()` is idempotent and automatically called by nteract's ke
 - **Fast rendering.** Large DataFrames stream through the blob store; the `.ipynb` payload stays small.
 - **AI-friendly summaries.** Every DataFrame ships a `text/llm+plain` column summary — dtypes, numeric ranges, string distinct/top values, null counts — so agents reason about the shape without materializing the whole table.
 - **Visualization integration.** [Altair](https://altair-viz.github.io) and [Plotly](https://plotly.com/python/) are automatically switched to their nteract renderers for interactive output that works inside nteract's isolated iframe sandbox.
-- **Narwhals-aware.** [narwhals](https://narwhals-dev.github.io/narwhals/)-wrapped DataFrames are unwrapped via `.to_native()` and dispatched through the pandas/polars path.
+- **Arrow protocol first.** pandas, polars, pyarrow, [narwhals](https://narwhals-dev.github.io/narwhals/), and other producers that expose `__arrow_c_stream__()` use the same Arrow IPC path.
 - **Safe outside nteract.** When no nteract runtime is reachable, `dx.install()` is a no-op. `import dx` is safe from plain Python, vanilla Jupyter, scripts, CI.
 
 ## Links
