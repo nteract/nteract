@@ -27,6 +27,8 @@ PASSTHROUGH_ENV_KEYS = {
     "USER",
 }
 
+REVIEW_OUTPUT_KEYS = {"verdict", "terminal_reason", "summary", "findings"}
+
 
 @dataclass(frozen=True)
 class OpencodeRunResult:
@@ -116,15 +118,34 @@ def parse_structured_review_json(text: str) -> dict[str, Any]:
     try:
         parsed = json.loads(stripped)
     except json.JSONDecodeError:
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start == -1 or end == -1 or end < start:
-            raise
-        parsed = json.loads(stripped[start : end + 1])
+        parsed = parse_last_review_json_object(stripped)
 
     if not isinstance(parsed, dict):
         raise ValueError("review output JSON was not an object")
     return parsed
+
+
+def parse_last_review_json_object(text: str) -> dict[str, Any]:
+    decoder = json.JSONDecoder()
+    candidates: list[dict[str, Any]] = []
+    last_error: JSONDecodeError | None = None
+
+    for start, character in enumerate(text):
+        if character != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text[start:])
+        except JSONDecodeError as exc:
+            last_error = exc
+            continue
+        if isinstance(value, dict) and REVIEW_OUTPUT_KEYS.issubset(value):
+            candidates.append(value)
+
+    if candidates:
+        return candidates[-1]
+    if last_error is not None:
+        raise last_error
+    raise JSONDecodeError("no JSON object found", text, 0)
 
 
 def build_infra_uncertain_report(

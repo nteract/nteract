@@ -64,6 +64,19 @@ def test_parse_structured_review_json_accepts_fenced_json() -> None:
     assert data["terminal_reason"] == "review_complete"
 
 
+def test_parse_structured_review_json_uses_last_review_shaped_object() -> None:
+    data = agent.parse_structured_review_json(
+        """I inspected {"unrelated": true}.
+{"verdict":"findings","terminal_reason":"actionable_findings","summary":"old","findings":[]}
+More notes with {"not":"the report"}.
+{"verdict":"clear","terminal_reason":"review_complete","summary":"final","findings":[]}
+"""
+    )
+
+    assert data["verdict"] == "clear"
+    assert data["summary"] == "final"
+
+
 def test_run_review_uses_opencode_output(monkeypatch, tmp_path: Path) -> None:
     calls = []
 
