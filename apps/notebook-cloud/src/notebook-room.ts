@@ -115,6 +115,10 @@ export class NotebookRoom {
       peer_id: peer.id,
       actor_label: identity.actorLabel,
       connection_scope: identity.scope,
+      identity_provider: identity.metadata.provider,
+      principal_namespace: identity.metadata.principalNamespace,
+      display_name: identity.metadata.displayName,
+      email: identity.metadata.email,
       room_peer_count: this.peers.size,
       timestamp: peer.connectedAt,
     });

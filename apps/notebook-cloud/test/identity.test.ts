@@ -32,6 +32,12 @@ describe("dev identity", () => {
       operator: "browser:session%2Fa",
       actorLabel: "anonymous:session%2Fa/browser:session%2Fa",
       scope: "viewer",
+      metadata: {
+        provider: "anonymous",
+        transport: "anonymous",
+        principalNamespace: "anonymous",
+        displayName: "Anonymous",
+      },
     });
     assert.equal(isAnonymousViewer(identity), true);
   });
@@ -76,6 +82,12 @@ describe("dev identity", () => {
       operator: "desktop:test-session",
       actorLabel: "user:dev:kyle%40example.com/desktop:test-session",
       scope: "editor",
+      metadata: {
+        provider: "dev",
+        transport: "loopback-dev",
+        principalNamespace: "user:dev",
+        displayName: "kyle@example.com",
+      },
     });
   });
 
@@ -255,6 +267,17 @@ describe("dev identity", () => {
     assert.deepEqual(readTrustedIdentity(stamped), identity);
   });
 
+  it("sanitizes optional trusted metadata headers", () => {
+    const request = new Request(
+      "https://cloud.test/n/demo/sync?user=Alice%0D%0ASet-Cookie&operator=desktop:a",
+    );
+    const identity = authenticateDevRequest(request);
+    const stamped = stampTrustedIdentity(request, identity);
+
+    assert.equal(stamped.headers.get("x-nteract-display-name"), "Alice Set-Cookie");
+    assert.equal(readTrustedIdentity(stamped).metadata.displayName, "Alice Set-Cookie");
+  });
+
   it("rewrites presence actor principal while preserving the operator suffix", () => {
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a"),
@@ -302,7 +325,11 @@ describe("dev identity", () => {
 
 describe("Cloudflare Access identity", () => {
   it("validates Access JWT assertions and maps sub to a room principal", async () => {
-    const { env, token } = await accessTokenFixture({ subject: "user/123" });
+    const { env, token } = await accessTokenFixture({
+      subject: "user/123",
+      email: "alice@example.com",
+      name: "Alice Demo",
+    });
 
     const identity = await authenticateRequestWithProviders(
       new Request("https://cloud.test/n/demo/sync?operator=desktop:a&scope=editor", {
@@ -318,6 +345,13 @@ describe("Cloudflare Access identity", () => {
       operator: "desktop:a",
       actorLabel: "user:cloudflare-access:user%2F123/desktop:a",
       scope: "editor",
+      metadata: {
+        provider: "cloudflare-access",
+        transport: "access-assertion",
+        principalNamespace: "user:cloudflare-access",
+        displayName: "Alice Demo",
+        email: "alice@example.com",
+      },
     });
   });
 
@@ -335,6 +369,7 @@ describe("Cloudflare Access identity", () => {
     );
 
     assert.equal(identity.actorLabel, "user:cloudflare-access:alice/browser:tab");
+    assert.equal(identity.metadata.transport, "access-subprotocol");
     assert.equal(identity.webSocketProtocol, NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL);
   });
 
