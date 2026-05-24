@@ -366,6 +366,34 @@ For the browser path, Cloudflare Access should forward
 against `NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN` and `NOTEBOOK_CLOUD_ACCESS_AUD`,
 then D1 decides the requested notebook scope.
 
+## Current Trial Blockers
+
+The Worker-side pieces needed for an Access-authenticated collaboration smoke
+are in place, but an Anaconda-backed trial still depends on these deployment
+and product decisions:
+
+1. **Access application and IdP setup.** The demo host must be protected by a
+   Cloudflare Access self-hosted application whose IdP is Anaconda OIDC. The
+   Worker must receive the matching Access audience and team domain.
+2. **Principal namespace.** Until the Worker validates an Anaconda-issued token
+   or Access forwards a deployment-approved stable Anaconda subject claim, ACL
+   rows should use `user:cloudflare-access:<encoded-access-sub>`. Do not switch
+   to `user:anaconda:*` based on email.
+3. **Collaborator bootstrap.** The current owner/editor/viewer smoke can derive
+   principals from local Access JWT subjects and seed D1 ACL rows. The browser
+   product still needs share-by-email routes before non-operators can grant
+   collaborators by email.
+4. **Public viewers.** A fully Access-protected hostname blocks anonymous
+   viewers at the edge. Public published notebooks need an Access bypass rule,
+   a separate public viewer hostname, or another route that still reaches the
+   Worker ACL check.
+5. **Revocation and provider capability bounds.** ACL changes affect new
+   connections. Immediate live-connection eviction and provider-side maximum
+   capability mapping remain follow-up work before broad production use.
+6. **Runtime peer credentials.** The collaboration demo has no remote runtime
+   sidecar. Runtime peers still need a credential and blob-upload story before
+   hosted execution can join the same room.
+
 ## Troubleshooting
 
 `401 missing/invalid Cloudflare Access token`
