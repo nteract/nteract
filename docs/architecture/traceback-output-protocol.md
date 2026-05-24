@@ -23,7 +23,10 @@ Neighbors:
 - `python/nteract-kernel-launcher/nteract_kernel_launcher/_traceback.py` -
   current producer.
 - `python/nteract-kernel-launcher/nteract_kernel_launcher/_redact.py` -
-  producer-side environment value scrubber for traceback payloads.
+  shared producer-side environment value scrubber for Python output paths.
+- `python/nteract-kernel-launcher/nteract_kernel_launcher/_output_redaction.py` -
+  producer-side session patch that applies `_redact.py` to Jupyter output
+  messages before send.
 - `crates/runtimed/src/output_redaction.rs` - daemon-side durable output
   redaction before RuntimeStateDoc and blob-store writes.
 - `docs/superpowers/specs/2026-05-24-runtime-redaction-refresh-design.md` -
@@ -152,20 +155,25 @@ sensitive output:
   useful secrets;
 - redaction can be disabled explicitly for debugging.
 
-Traceback redaction is an early producer-side hygiene layer, not the durable
-storage boundary. Kernel code already has access to the user's process
-environment, and the launcher can only observe the Python process. The daemon is
-the final durable-output redaction authority: before RuntimeStateDoc or blob
-storage writes, it redacts eligible launch-time environment values from stream,
-error, display, and execute-result text payloads while preserving binary MIME
-skips and the explicit debug setting that disables environment-value redaction.
+Producer-side redaction is an early hygiene layer, not the durable storage
+boundary. Kernel code already has access to the user's process environment, and
+the launcher can only observe the Python process. In Python kernels, the same
+redaction helper used for rich traceback payloads is also installed on Jupyter
+output sessions, so stream, display, execute-result, update-display, and error
+message text can be scrubbed before send.
 
-That split is intentional. Producer-side traceback redaction reduces exposure
-before rich traceback payloads leave Python; daemon-side redaction gives all
-kernels the same persistence boundary. Runtime-created secrets, such as values
-loaded later by dotenv or SDK credential refreshers, remain best-effort unless a
-producer reports them to the daemon through the follow-up runtime candidate
-refresh design.
+The daemon is the final durable-output redaction authority: before
+RuntimeStateDoc or blob storage writes, it redacts eligible launch-time
+environment values from stream, error, display, and execute-result text payloads
+while preserving binary MIME skips and the explicit debug setting that disables
+environment-value redaction.
+
+That split is intentional. Python producer-side redaction reduces exposure
+before outputs leave Python; daemon-side redaction gives all kernels the same
+persistence boundary. Runtime-created secrets, such as values loaded later by
+dotenv or SDK credential refreshers, remain best-effort unless a producer
+reports them to the daemon through the follow-up runtime candidate refresh
+design.
 
 ## Decision 6: Vendor MIME is the incubation boundary
 
@@ -194,5 +202,5 @@ part is the payload contract and failure behavior:
 2. Which `source_ref.kind` values should be treated as well-known across
    scripts, magics, generated code, and non-Python kernels.
 3. Which redaction controls belong in IPython, ipykernel, or frontend policy,
-   given that nteract now has both Python producer-side traceback hygiene and a
+   given that nteract now has both Python producer-side output hygiene and a
    daemon-side durable-output redaction boundary.
