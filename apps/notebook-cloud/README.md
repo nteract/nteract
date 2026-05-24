@@ -377,6 +377,14 @@ NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM=0 \
 pnpm --dir apps/notebook-cloud smoke:hosted
 ```
 
+`wasm:roundtrip` refuses to target a deployed Worker without
+`NOTEBOOK_CLOUD_DEV_TOKEN` in the environment, because deployed dev credentials
+must never travel in URLs. Its JSON result includes `timings_ms` for owner
+seeding, ACL grants, peer connection, and both Alice/Bob/anonymous convergence
+directions; use those values with `room.peer_sync.completed` and
+`room.materialized_frame.applied` logs to separate WebSocket latency from room
+materialization cost.
+
 Use `GET /api/n/{id}/acl` with an owner credential to confirm editor/viewer
 grants. A healthy throwaway collaboration run should show editor
 `room.materialized_frame.applied` records, viewer `room.peer_sync.completed`

@@ -1,10 +1,12 @@
 import { access, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { FrameType } from "runtimed";
+import { assertWasmRoundtripAuthEnv } from "./wasm-roundtrip-env.mjs";
 
 const baseUrl = process.env.NOTEBOOK_CLOUD_URL ?? "http://127.0.0.1:8787";
 const devAuthToken = process.env.NOTEBOOK_CLOUD_DEV_TOKEN;
 const roomId = `wasm-${Date.now()}`;
+const timingsMs = {};
 const wasmJsUrl = new URL(
   "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js",
   import.meta.url,
@@ -18,28 +20,34 @@ if (typeof WebSocket === "undefined") {
   throw new Error("This smoke script requires Node.js with a global WebSocket implementation");
 }
 
+const startedAt = performance.now();
+assertWasmRoundtripAuthEnv({ baseUrl, devAuthToken });
 await assertWasmBuildExists();
 
 const { initSync, NotebookHandle } = await import(wasmJsUrl.href);
 const wasmBytes = await readFile(wasmBytesUrl);
-initSync({ module: wasmBytes });
+await timed("runtimed_wasm_init", () => initSync({ module: wasmBytes }));
 
-await seedNotebookOwner(roomId);
-await grantAcl(roomId, {
-  subject_kind: "principal",
-  subject: "user:dev:bob",
-  scope: "editor",
+await timed("owner_seed", () => seedNotebookOwner(roomId));
+await timed("acl_grants", async () => {
+  await grantAcl(roomId, {
+    subject_kind: "principal",
+    subject: "user:dev:bob",
+    scope: "editor",
+  });
+  await grantAcl(roomId, {
+    subject_kind: "public",
+    subject: "anonymous",
+    scope: "viewer",
+  });
 });
-await grantAcl(roomId, {
-  subject_kind: "public",
-  subject: "anonymous",
-  scope: "viewer",
-});
-await assertEditorDenied(roomId, "charlie");
+await timed("ungranted_editor_denial", () => assertEditorDenied(roomId, "charlie"));
 
-const alice = await connect(roomId, "alice", "desktop:wasm", "owner");
-const bob = await connect(roomId, "bob", "desktop:wasm", "editor");
-const anonymous = await connectAnonymous(roomId, "anon-wasm");
+const { alice, bob, anonymous } = await timed("connect_peers", async () => ({
+  alice: await connect(roomId, "alice", "desktop:wasm", "owner"),
+  bob: await connect(roomId, "bob", "desktop:wasm", "editor"),
+  anonymous: await connectAnonymous(roomId, "anon-wasm"),
+}));
 
 const aliceHandle = NotebookHandle.create_bootstrap(alice.ready.actor_label);
 const bobHandle = NotebookHandle.create_bootstrap(bob.ready.actor_label);
@@ -54,22 +62,26 @@ aliceHandle.add_cell_after("cell-wasm-1", "markdown", null);
 aliceHandle.update_source("cell-wasm-1", "Alice live markdown\n");
 sendHandleChanges(alice, aliceHandle);
 
-let processedFrames = await driveSyncUntil(
-  participants,
-  () =>
-    cellSource(bobHandle, "cell-wasm-1") === "Alice live markdown\n" &&
-    cellSource(anonymousHandle, "cell-wasm-1") === "Alice live markdown\n",
-  "Alice markdown did not converge to Bob and anonymous viewer",
+let processedFrames = await timed("alice_to_bob_anonymous_convergence", () =>
+  driveSyncUntil(
+    participants,
+    () =>
+      cellSource(bobHandle, "cell-wasm-1") === "Alice live markdown\n" &&
+      cellSource(anonymousHandle, "cell-wasm-1") === "Alice live markdown\n",
+    "Alice markdown did not converge to Bob and anonymous viewer",
+  ),
 );
 
 bobHandle.update_source("cell-wasm-1", "Bob edited live markdown\n");
 sendHandleChanges(bob, bobHandle);
-processedFrames += await driveSyncUntil(
-  participants,
-  () =>
-    cellSource(aliceHandle, "cell-wasm-1") === "Bob edited live markdown\n" &&
-    cellSource(anonymousHandle, "cell-wasm-1") === "Bob edited live markdown\n",
-  "Bob markdown edit did not converge to Alice and anonymous viewer",
+processedFrames += await timed("bob_to_alice_anonymous_convergence", () =>
+  driveSyncUntil(
+    participants,
+    () =>
+      cellSource(aliceHandle, "cell-wasm-1") === "Bob edited live markdown\n" &&
+      cellSource(anonymousHandle, "cell-wasm-1") === "Bob edited live markdown\n",
+    "Bob markdown edit did not converge to Alice and anonymous viewer",
+  ),
 );
 
 assert(
@@ -99,6 +111,10 @@ console.log(
         "anonymous_viewer_live_convergence",
         "actor_attribution_preserved",
       ],
+      timings_ms: {
+        ...timingsMs,
+        total: elapsedMs(startedAt),
+      },
       processedFrames,
       bob: {
         cell_count: bobHandle.cell_count(),
@@ -117,6 +133,19 @@ console.log(
 
 await Promise.all([alice, bob, anonymous].map(closeClient));
 process.exit(0);
+
+async function timed(name, fn) {
+  const started = performance.now();
+  try {
+    return await fn();
+  } finally {
+    timingsMs[name] = elapsedMs(started);
+  }
+}
+
+function elapsedMs(started) {
+  return Math.max(0, Math.round((performance.now() - started) * 100) / 100);
+}
 
 async function assertWasmBuildExists() {
   try {
