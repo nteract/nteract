@@ -620,6 +620,11 @@ function accessCredentialFromRequest(request: Request): AccessCredential | undef
     candidates.push({ token: bearerToken, transport: "access-bearer" });
   }
 
+  const accessToken = request.headers.get("cf-access-token")?.trim() || undefined;
+  if (accessToken) {
+    candidates.push({ token: accessToken, transport: "access-token-header" });
+  }
+
   const cookieToken = cookieValue(request.headers.get("cookie"), "CF_Authorization");
   if (cookieToken && !assertionToken) {
     candidates.push({ token: cookieToken, transport: "access-cookie" });
