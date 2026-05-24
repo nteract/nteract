@@ -128,6 +128,37 @@ describe("createTable", () => {
       expect(container.querySelector(".sift-stats")).not.toBeNull();
     });
 
+    it("disposes backing table data when destroyed", () => {
+      const localContainer = document.createElement("div");
+      document.body.appendChild(localContainer);
+      const dispose = vi.fn();
+      const localEngine = createTable(localContainer, {
+        ...makeTableData(rows),
+        dispose,
+      });
+
+      localEngine.destroy();
+
+      expect(dispose).toHaveBeenCalledTimes(1);
+      localContainer.remove();
+    });
+
+    it("disposes backing table data only once across repeated destroy calls", () => {
+      const localContainer = document.createElement("div");
+      document.body.appendChild(localContainer);
+      const dispose = vi.fn();
+      const localEngine = createTable(localContainer, {
+        ...makeTableData(rows),
+        dispose,
+      });
+
+      localEngine.destroy();
+      localEngine.destroy();
+
+      expect(dispose).toHaveBeenCalledTimes(1);
+      localContainer.remove();
+    });
+
     it("renders correct header labels", async () => {
       await flushRAF();
       const labels = container.querySelectorAll(".sift-th-label");

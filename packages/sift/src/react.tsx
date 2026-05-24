@@ -353,10 +353,11 @@ export function SiftTable({
   useEffect(() => {
     if (!manifestSource || !containerRef.current) return;
 
+    const manifest = manifestSource;
     let cancelled = false;
     const container = containerRef.current;
-    let wasmHandle: number | null = null;
     let engineDiv: HTMLDivElement | null = null;
+    let disposePendingStore: (() => void) | null = null;
 
     function mountEngine(tableData: TableData) {
       if (engineRef.current) {
@@ -367,6 +368,7 @@ export function SiftTable({
       engineDiv = document.createElement("div");
       engineDiv.style.height = "100%";
       container.appendChild(engineDiv);
+      disposePendingStore = null;
       engineRef.current = createTable(engineDiv, tableData, {
         onChange: stableOnChange,
         footerControl: getFooterControlElement(),
@@ -390,7 +392,7 @@ export function SiftTable({
       setStatus("loading");
       setError(null);
 
-      const chunks = manifestSource.chunks;
+      const chunks = manifest.chunks;
       if (chunks.length === 0) {
         throw new Error("Arrow stream manifest has no chunks");
       }
@@ -400,7 +402,7 @@ export function SiftTable({
 
       const mod = getModuleSync();
       const handle = mod.create_arrow_stream_store();
-      wasmHandle = handle;
+      disposePendingStore = () => mod.free(handle);
 
       const firstBytes = await fetchChunkBytes(chunks[0], 0);
       if (cancelled) return;
@@ -412,6 +414,7 @@ export function SiftTable({
       );
       const pandasIndexCols = pandasIndexColumnsFromHints(columnHints);
       const { tableData, columns, prefetchViewport } = createWasmTableData(handle);
+      disposePendingStore = () => tableData.dispose?.();
       tableData.prefetchViewport = prefetchViewport;
       tableData.recomputeSummaries = () =>
         updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
@@ -437,7 +440,7 @@ export function SiftTable({
         engineRef.current?.onBatchAppended();
       }
 
-      if (manifestSource.complete !== false) {
+      if (manifest.complete !== false) {
         mod.finish_arrow_stream_store(handle);
         engineRef.current?.setStreamingDone();
       }
@@ -453,13 +456,8 @@ export function SiftTable({
 
     return () => {
       cancelled = true;
-      if (wasmHandle !== null) {
-        try {
-          getModuleSync().free(wasmHandle);
-        } catch {
-          /* module may not be loaded */
-        }
-      }
+      disposePendingStore?.();
+      disposePendingStore = null;
       engineRef.current?.destroy();
       engineRef.current = null;
       engineDiv?.remove();
@@ -473,10 +471,11 @@ export function SiftTable({
   useEffect(() => {
     if (!urlSource || !containerRef.current) return;
 
+    const sourceUrl = urlSource;
     let cancelled = false;
     const container = containerRef.current;
-    let wasmHandle: number | null = null;
     let engineDiv: HTMLDivElement | null = null;
+    let disposePendingStore: (() => void) | null = null;
 
     function mountEngine(tableData: TableData) {
       if (engineRef.current) {
@@ -487,6 +486,7 @@ export function SiftTable({
       engineDiv = document.createElement("div");
       engineDiv.style.height = "100%";
       container.appendChild(engineDiv);
+      disposePendingStore = null;
       engineRef.current = createTable(engineDiv, tableData, {
         onChange: stableOnChange,
         footerControl: getFooterControlElement(),
@@ -512,9 +512,10 @@ export function SiftTable({
 
       // Load first row group → mount table immediately
       const handle = mod.load_parquet_row_group(parquetBytes, 0, 0);
-      wasmHandle = handle;
+      disposePendingStore = () => mod.free(handle);
 
       const { tableData, columns, prefetchViewport } = createWasmTableData(handle);
+      disposePendingStore = () => tableData.dispose?.();
       tableData.prefetchViewport = prefetchViewport;
       tableData.recomputeSummaries = () =>
         updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
@@ -553,12 +554,16 @@ export function SiftTable({
       if (cancelled) return;
 
       const handle = await loadIpc(bytes);
-      wasmHandle = handle;
+      if (cancelled) {
+        getModuleSync().free(handle);
+        return;
+      }
 
       const mod = getModuleSync();
       const columnHints = mod.arrow_ipc_column_hints_with_row_count(bytes, mod.num_rows(handle));
       const pandasIndexCols = pandasIndexColumnsFromHints(columnHints);
       const { tableData, columns, prefetchViewport } = createWasmTableData(handle);
+      disposePendingStore = () => tableData.dispose?.();
       tableData.prefetchViewport = prefetchViewport;
       tableData.recomputeSummaries = () =>
         updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
@@ -596,7 +601,7 @@ export function SiftTable({
       setStatus("loading");
       setError(null);
 
-      const response = await fetch(urlSource);
+      const response = await fetch(sourceUrl);
       if (!response.ok) {
         throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`);
       }
@@ -621,13 +626,8 @@ export function SiftTable({
 
     return () => {
       cancelled = true;
-      if (wasmHandle !== null) {
-        try {
-          getModuleSync().free(wasmHandle);
-        } catch {
-          /* module may not be loaded */
-        }
-      }
+      disposePendingStore?.();
+      disposePendingStore = null;
       engineRef.current?.destroy();
       engineRef.current = null;
       engineDiv?.remove();

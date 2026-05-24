@@ -200,7 +200,7 @@ describe("SiftTable", () => {
       }),
     );
 
-    const { container } = render(
+    const { container, unmount } = render(
       <SiftTable
         source={{
           kind: "arrow-stream-manifest",
@@ -223,6 +223,10 @@ describe("SiftTable", () => {
     expect(Array.from(predicateModule.append_arrow_stream_chunk.mock.calls[0][1])).toEqual([
       1, 2, 3, 4,
     ]);
+
+    unmount();
+    expect(predicateModule.free).toHaveBeenCalledTimes(1);
+    expect(predicateModule.free).toHaveBeenCalledWith(9);
 
     vi.unstubAllGlobals();
     vi.useFakeTimers();

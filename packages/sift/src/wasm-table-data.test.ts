@@ -28,6 +28,7 @@ const predicateModule = vi.hoisted(() => ({
   get_cell_f64: vi.fn(() => {
     throw new Error("get_cell_f64 should not be called during batched prefetch");
   }),
+  free: vi.fn(),
 }));
 
 vi.mock("./predicate", () => ({
@@ -61,5 +62,15 @@ describe("createWasmTableData", () => {
     expect(predicateModule.is_null).not.toHaveBeenCalled();
     expect(predicateModule.get_cell_string).not.toHaveBeenCalled();
     expect(predicateModule.get_cell_f64).not.toHaveBeenCalled();
+  });
+
+  it("disposes the backing WASM store once", () => {
+    const { tableData } = createWasmTableData(7);
+
+    tableData.dispose?.();
+    tableData.dispose?.();
+
+    expect(predicateModule.free).toHaveBeenCalledTimes(1);
+    expect(predicateModule.free).toHaveBeenCalledWith(7);
   });
 });
