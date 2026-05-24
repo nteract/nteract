@@ -15,6 +15,12 @@ import pytest
 from nteract_kernel_launcher import _traceback
 from nteract_kernel_launcher._traceback import TRACEBACK_MIME, build_rich_payload, install
 
+
+@pytest.fixture(autouse=True)
+def clear_redaction_cache():
+    _traceback._redact.clear_redaction_cache()
+
+
 # ─── build_rich_payload ────────────────────────────────────────────────────
 
 
