@@ -9,6 +9,8 @@ export interface AccessTokenFixture {
 
 export async function accessTokenFixture(options: {
   audience?: string;
+  includeKid?: boolean;
+  includeUnmatchedKey?: boolean;
   subject: string;
 }): Promise<AccessTokenFixture> {
   const issuer = "https://team.cloudflareaccess.com";
@@ -25,10 +27,27 @@ export async function accessTokenFixture(options: {
     ["sign", "verify"],
   );
   const publicJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+  const unmatchedPublicJwk = options.includeUnmatchedKey
+    ? await crypto.subtle.exportKey(
+        "jwk",
+        (
+          await crypto.subtle.generateKey(
+            {
+              name: "RSASSA-PKCS1-v1_5",
+              modulusLength: 2048,
+              publicExponent: new Uint8Array([1, 0, 1]),
+              hash: "SHA-256",
+            },
+            true,
+            ["sign", "verify"],
+          )
+        ).publicKey,
+      )
+    : null;
   const now = Math.floor(Date.now() / 1000);
   const header = {
     alg: "RS256",
-    kid,
+    ...(options.includeKid === false ? {} : { kid }),
     typ: "JWT",
   };
   const payload = {
@@ -48,7 +67,12 @@ export async function accessTokenFixture(options: {
     env: {
       NOTEBOOK_CLOUD_ACCESS_AUD: audience,
       NOTEBOOK_CLOUD_ACCESS_JWKS_JSON: JSON.stringify({
-        keys: [{ ...publicJwk, alg: "RS256", kid, use: "sig" }],
+        keys: [
+          ...(unmatchedPublicJwk
+            ? [{ ...unmatchedPublicJwk, alg: "RS256", kid: "unmatched", use: "sig" }]
+            : []),
+          { ...publicJwk, alg: "RS256", kid, use: "sig" },
+        ],
       }),
       NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN: issuer,
     },

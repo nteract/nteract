@@ -64,7 +64,14 @@ interface AccessJwtPayload {
 }
 
 const ACCESS_CLOCK_TOLERANCE_SECONDS = 60;
-const accessJwksCache = new Map<string, Promise<JsonWebKeySet>>();
+const ACCESS_JWKS_CACHE_TTL_MS = 5 * 60 * 1000;
+const accessJwksCache = new Map<
+  string,
+  {
+    expiresAt: number;
+    ready: Promise<JsonWebKeySet>;
+  }
+>();
 
 export class AuthError extends Error {
   constructor(
@@ -103,7 +110,7 @@ export async function authenticateRequestWithProviders(
   env: IdentityEnvironment = {},
 ): Promise<AuthenticatedConnection> {
   const accessCredential = accessCredentialFromRequest(request);
-  if (accessCredential) {
+  if (accessCredential && accessConfigFromEnv(env)) {
     return authenticateCloudflareAccessRequest(request, env, accessCredential);
   }
 
@@ -452,21 +459,8 @@ async function verifyCloudflareAccessJwt(
     throw new AuthError("Cloudflare Access token must use RS256", 401);
   }
 
-  const jwks = await loadAccessJwks(config);
-  const key = selectAccessJwk(jwks, header);
-  const cryptoKey = await crypto.subtle.importKey(
-    "jwk",
-    key,
-    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-    false,
-    ["verify"],
-  );
-  const verified = await crypto.subtle.verify(
-    "RSASSA-PKCS1-v1_5",
-    cryptoKey,
-    signature,
-    new TextEncoder().encode(signingInput),
-  );
+  const keys = selectAccessJwks(await loadAccessJwks(config), header);
+  const verified = await verifyWithAnyAccessKey(keys, signingInput, signature);
   if (!verified) {
     throw new AuthError("Cloudflare Access token signature is invalid", 401);
   }
@@ -500,21 +494,26 @@ async function loadAccessJwks(config: AccessConfig): Promise<JsonWebKeySet> {
   }
 
   const url = `${config.issuer}/cdn-cgi/access/certs`;
-  let ready = accessJwksCache.get(url);
-  if (!ready) {
-    ready = fetch(url)
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new AuthError(`Cloudflare Access JWKS fetch failed: ${response.status}`, 503);
-        }
-        return parseJwks(await response.text());
-      })
-      .catch((error: unknown) => {
-        accessJwksCache.delete(url);
-        throw error;
-      });
-    accessJwksCache.set(url, ready);
+  const cached = accessJwksCache.get(url);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.ready;
   }
+
+  const ready = fetch(url)
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new AuthError(`Cloudflare Access JWKS fetch failed: ${response.status}`, 503);
+      }
+      return parseJwks(await response.text());
+    })
+    .catch((error: unknown) => {
+      accessJwksCache.delete(url);
+      throw error;
+    });
+  accessJwksCache.set(url, {
+    expiresAt: Date.now() + ACCESS_JWKS_CACHE_TTL_MS,
+    ready,
+  });
   return ready;
 }
 
@@ -530,7 +529,7 @@ function parseJwks(value: string): JsonWebKeySet {
   }
 }
 
-function selectAccessJwk(jwks: JsonWebKeySet, header: JwtHeader): JsonWebKey {
+function selectAccessJwks(jwks: JsonWebKeySet, header: JwtHeader): JsonWebKey[] {
   const keys = jwks.keys ?? [];
   const candidates = keys.filter((key) => {
     if (key.kty !== "RSA") return false;
@@ -539,10 +538,37 @@ function selectAccessJwk(jwks: JsonWebKeySet, header: JwtHeader): JsonWebKey {
     return true;
   });
 
-  if (candidates.length !== 1) {
+  if (candidates.length === 0) {
     throw new AuthError("Cloudflare Access signing key was not found", 401);
   }
-  return candidates[0];
+  return candidates;
+}
+
+async function verifyWithAnyAccessKey(
+  keys: JsonWebKey[],
+  signingInput: string,
+  signature: Uint8Array,
+): Promise<boolean> {
+  for (const key of keys) {
+    const cryptoKey = await crypto.subtle.importKey(
+      "jwk",
+      key,
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["verify"],
+    );
+    if (
+      await crypto.subtle.verify(
+        "RSASSA-PKCS1-v1_5",
+        cryptoKey,
+        signature,
+        new TextEncoder().encode(signingInput),
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function validateAccessJwtClaims(payload: AccessJwtPayload, config: AccessConfig): void {

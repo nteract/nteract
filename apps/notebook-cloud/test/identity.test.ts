@@ -314,6 +314,41 @@ describe("Cloudflare Access identity", () => {
     );
   });
 
+  it("ignores bearer tokens when Access auth is not configured", async () => {
+    const { token } = await accessTokenFixture({ subject: "alice" });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?viewer_session=anon-bearer", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      {},
+    );
+
+    assert.equal(identity.actorLabel, "anonymous:anon-bearer/browser:anon-bearer");
+    assert.equal(identity.scope, "viewer");
+  });
+
+  it("tries matching RSA keys when a rotating Access JWT omits kid", async () => {
+    const { env, token } = await accessTokenFixture({
+      includeKid: false,
+      includeUnmatchedKey: true,
+      subject: "alice",
+    });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?operator=desktop:a", {
+        headers: {
+          "Cf-Access-Jwt-Assertion": token,
+        },
+      }),
+      env,
+    );
+
+    assert.equal(identity.actorLabel, "user:cloudflare-access:alice/desktop:a");
+  });
+
   it("does not treat URL-carried Access tokens as credentials", async () => {
     const { env, token } = await accessTokenFixture({ subject: "alice" });
 
