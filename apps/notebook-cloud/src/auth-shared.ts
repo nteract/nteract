@@ -1,5 +1,6 @@
 export type ConnectionScope = "viewer" | "editor" | "runtime_peer" | "owner";
 
+export const NOTEBOOK_WEBSOCKET_PROTOCOL = "nteract.v4";
 export const ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX = "nteract-access-token.";
 export const DEV_AUTH_TOKEN_PROTOCOL_PREFIX = "nteract-dev-token.";
 

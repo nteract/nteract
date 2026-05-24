@@ -1,5 +1,6 @@
 import type { CloudflareWebSocket, DurableObjectState, Env } from "./cloudflare-types.ts";
 import {
+  NOTEBOOK_WEBSOCKET_PROTOCOL,
   allowsRuntimeStateWrite,
   isAnonymousViewer,
   readTrustedIdentity,
@@ -115,6 +116,10 @@ export class NotebookRoom {
       peer_id: peer.id,
       actor_label: identity.actorLabel,
       connection_scope: identity.scope,
+      identity_provider: identity.metadata.provider,
+      principal_namespace: identity.metadata.principalNamespace,
+      display_name: identity.metadata.displayName,
+      email: identity.metadata.email,
       room_peer_count: this.peers.size,
       timestamp: peer.connectedAt,
     });
@@ -684,7 +689,7 @@ export function shouldPersistMaterializedSyncFrame(
 
 export function webSocketUpgradeHeaders(identity: AuthenticatedConnection): Headers {
   const headers = new Headers();
-  if (identity.webSocketProtocol) {
+  if (identity.webSocketProtocol === NOTEBOOK_WEBSOCKET_PROTOCOL) {
     headers.set("Sec-WebSocket-Protocol", identity.webSocketProtocol);
   }
   return headers;

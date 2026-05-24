@@ -21,6 +21,7 @@ import {
   cloudSyncAuthFromPrototypeAuthState,
   prototypeAuthDiagnostics,
   prototypeAuthSummary,
+  storeCloudAccessAuth,
   storeCloudPrototypeDevAuth,
   validatePrototypeToken,
   type CloudPrototypeAuthState,
@@ -594,9 +595,11 @@ function CloudAuthControls({
   const summary =
     authState.mode === "dev"
       ? `Dev ${authState.user ?? "browser-editor"}`
-      : authState.mode === "invalid"
-        ? "Auth needs attention"
-        : "Anonymous";
+      : authState.mode === "access"
+        ? "Browser session"
+        : authState.mode === "invalid"
+          ? "Auth needs attention"
+          : "Anonymous";
   const diagnostics = prototypeAuthDiagnostics(authState, {
     actorLabel: connectionActorLabel,
     connectionError,
@@ -621,6 +624,13 @@ function CloudAuthControls({
 
   const resetAuth = () => {
     clearCloudPrototypeDevAuth(window.localStorage);
+    setToken("");
+    setFormError(null);
+    onAuthStateChange();
+  };
+
+  const applyAccessAuth = () => {
+    storeCloudAccessAuth(window.localStorage, { scope });
     setToken("");
     setFormError(null);
     onAuthStateChange();
@@ -691,6 +701,10 @@ function CloudAuthControls({
           <button type="submit">
             <KeyRound aria-hidden="true" />
             Use dev identity
+          </button>
+          <button type="button" onClick={applyAccessAuth}>
+            <KeyRound aria-hidden="true" />
+            Use browser session
           </button>
           <button type="button" onClick={() => void copyDiagnostics()}>
             <Copy aria-hidden="true" />

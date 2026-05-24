@@ -10,6 +10,7 @@ import {
   prototypeAuthSummary,
   readCloudPrototypeAuth,
   storeCloudPrototypeDevAuth,
+  storeCloudAccessAuth,
   validatePrototypeToken,
   type CloudPrototypeAuthStorage,
 } from "../viewer/collaborator-auth.ts";
@@ -41,7 +42,24 @@ describe("cloud collaborator auth", () => {
     assert.equal(state.mode, "dev");
     assert.equal(auth.user, "alice");
     assert.equal(auth.requestedScope, "editor");
-    assert.deepEqual(auth.protocols, ["nteract-dev-token.c2VjcmV0"]);
+    assert.deepEqual(auth.protocols, ["nteract-dev-token.c2VjcmV0", "nteract.v4"]);
+  });
+
+  it("can request an editor role from a browser Access session without JS token material", () => {
+    const storage = new MemoryStorage();
+    storeCloudAccessAuth(storage, { scope: "editor" });
+
+    const state = readCloudPrototypeAuth(storage);
+    const auth = cloudSyncAuthFromPrototypeAuthState(state);
+
+    assert.equal(state.mode, "access");
+    assert.equal(prototypeAuthSummary(state), "Browser session requesting editor");
+    assert.deepEqual(auth, {
+      protocols: [],
+      user: null,
+      operator: null,
+      requestedScope: "editor",
+    });
   });
 
   it("preserves every explicit connection scope supported by the protocol", () => {

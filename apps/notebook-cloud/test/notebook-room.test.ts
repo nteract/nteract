@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import type { CloudflareWebSocket, DurableObjectState, Env } from "../src/cloudflare-types.ts";
 import {
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
+  NOTEBOOK_WEBSOCKET_PROTOCOL,
   TRUSTED_WEBSOCKET_PROTOCOL_HEADER,
   authenticateAnonymousViewer,
   authenticateDevRequest,
@@ -123,19 +124,26 @@ describe("NotebookRoom presence rewrite", () => {
 });
 
 describe("NotebookRoom peer lifecycle", () => {
-  it("echoes the trusted dev auth WebSocket subprotocol in upgrade headers", () => {
-    const webSocketProtocol = `${DEV_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url("secret")}`;
+  it("only echoes the non-sensitive notebook WebSocket subprotocol in upgrade headers", () => {
+    const credentialProtocol = `${DEV_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url("secret")}`;
     const identity = {
       ...authenticateAnonymousViewer(
         new Request("https://cloud.test/n/demo/sync?viewer_session=anon-a"),
       ),
-      webSocketProtocol,
+      webSocketProtocol: NOTEBOOK_WEBSOCKET_PROTOCOL,
     };
     const stamped = stampTrustedIdentity(new Request("https://cloud.test/n/demo/sync"), identity);
 
     assert.equal(
       webSocketUpgradeHeaders(identity).get("Sec-WebSocket-Protocol"),
-      webSocketProtocol,
+      NOTEBOOK_WEBSOCKET_PROTOCOL,
+    );
+    assert.equal(
+      webSocketUpgradeHeaders({
+        ...identity,
+        webSocketProtocol: credentialProtocol,
+      }).has("Sec-WebSocket-Protocol"),
+      false,
     );
     assert.equal(
       webSocketUpgradeHeaders(
@@ -145,7 +153,10 @@ describe("NotebookRoom peer lifecycle", () => {
       ).has("Sec-WebSocket-Protocol"),
       false,
     );
-    assert.equal(stamped.headers.get(TRUSTED_WEBSOCKET_PROTOCOL_HEADER), webSocketProtocol);
+    assert.equal(
+      stamped.headers.get(TRUSTED_WEBSOCKET_PROTOCOL_HEADER),
+      NOTEBOOK_WEBSOCKET_PROTOCOL,
+    );
   });
 
   it("does not silently resurrect a removed hibernated peer", () => {

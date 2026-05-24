@@ -4,6 +4,7 @@ import {
   ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
   AuthError,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
+  NOTEBOOK_WEBSOCKET_PROTOCOL,
   authenticateAnonymousViewer,
   authenticateDevRequest,
   authenticateRequest,
@@ -31,6 +32,12 @@ describe("dev identity", () => {
       operator: "browser:session%2Fa",
       actorLabel: "anonymous:session%2Fa/browser:session%2Fa",
       scope: "viewer",
+      metadata: {
+        provider: "anonymous",
+        transport: "anonymous",
+        principalNamespace: "anonymous",
+        displayName: "Anonymous",
+      },
     });
     assert.equal(isAnonymousViewer(identity), true);
   });
@@ -75,6 +82,12 @@ describe("dev identity", () => {
       operator: "desktop:test-session",
       actorLabel: "user:dev:kyle%40example.com/desktop:test-session",
       scope: "editor",
+      metadata: {
+        provider: "dev",
+        transport: "loopback-dev",
+        principalNamespace: "user:dev",
+        displayName: "kyle@example.com",
+      },
     });
   });
 
@@ -120,19 +133,20 @@ describe("dev identity", () => {
     const websocketProtocolToken = authenticateRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=owner", {
         headers: {
-          "Sec-WebSocket-Protocol": devProtocol,
+          "Sec-WebSocket-Protocol": `${devProtocol}, ${NOTEBOOK_WEBSOCKET_PROTOCOL}`,
         },
       }),
       { DEPLOYMENT_ENV: "prototype", NOTEBOOK_CLOUD_DEV_TOKEN: "secret" },
     );
     assert.equal(websocketProtocolToken.actorLabel, "user:dev:alice/desktop:a");
     assert.equal(websocketProtocolToken.scope, "owner");
-    assert.equal(websocketProtocolToken.webSocketProtocol, devProtocol);
+    assert.equal(websocketProtocolToken.metadata.transport, "dev-token-subprotocol");
+    assert.equal(websocketProtocolToken.webSocketProtocol, NOTEBOOK_WEBSOCKET_PROTOCOL);
     assert.equal(
       readTrustedIdentity(
         stampTrustedIdentity(new Request("https://cloud.test/n/demo/sync"), websocketProtocolToken),
       ).webSocketProtocol,
-      devProtocol,
+      NOTEBOOK_WEBSOCKET_PROTOCOL,
     );
   });
 
@@ -194,7 +208,23 @@ describe("dev identity", () => {
     assert.equal(identity.actorLabel, "user:dev:alice/desktop:a");
   });
 
-  it("echoes a loopback dev-token WebSocket subprotocol for browser localStorage auth", () => {
+  it("strips credential WebSocket subprotocols and selects the app protocol when offered", () => {
+    const protocol = `${DEV_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url("local-dev-token")}`;
+    const identity = authenticateRequest(
+      new Request("http://127.0.0.1:8787/n/demo/sync?user=alice&scope=owner", {
+        headers: {
+          "Sec-WebSocket-Protocol": `${protocol}, ${NOTEBOOK_WEBSOCKET_PROTOCOL}`,
+        },
+      }),
+      { DEPLOYMENT_ENV: "prototype" },
+    );
+
+    assert.equal(identity.principal, "user:dev:alice");
+    assert.equal(identity.scope, "owner");
+    assert.equal(identity.webSocketProtocol, NOTEBOOK_WEBSOCKET_PROTOCOL);
+  });
+
+  it("does not select a response subprotocol when only a credential protocol is offered", () => {
     const protocol = `${DEV_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url("local-dev-token")}`;
     const identity = authenticateRequest(
       new Request("http://127.0.0.1:8787/n/demo/sync?user=alice&scope=owner", {
@@ -205,9 +235,7 @@ describe("dev identity", () => {
       { DEPLOYMENT_ENV: "prototype" },
     );
 
-    assert.equal(identity.principal, "user:dev:alice");
-    assert.equal(identity.scope, "owner");
-    assert.equal(identity.webSocketProtocol, protocol);
+    assert.equal(identity.webSocketProtocol, undefined);
   });
 
   it("defaults missing dev scope to viewer", () => {
@@ -273,7 +301,11 @@ describe("dev identity", () => {
 
 describe("Cloudflare Access identity", () => {
   it("validates Access JWT assertions and maps sub to a room principal", async () => {
-    const { env, token } = await accessTokenFixture({ subject: "user/123" });
+    const { env, token } = await accessTokenFixture({
+      subject: "user/123",
+      email: "alice@example.com",
+      name: "Alice Demo",
+    });
 
     const identity = await authenticateRequestWithProviders(
       new Request("https://cloud.test/n/demo/sync?operator=desktop:a&scope=editor", {
@@ -289,24 +321,32 @@ describe("Cloudflare Access identity", () => {
       operator: "desktop:a",
       actorLabel: "user:cloudflare-access:user%2F123/desktop:a",
       scope: "editor",
+      metadata: {
+        provider: "cloudflare-access",
+        transport: "access-assertion",
+        principalNamespace: "user:cloudflare-access",
+        displayName: "Alice Demo",
+        email: "alice@example.com",
+      },
     });
   });
 
-  it("accepts browser WebSocket Access tokens through subprotocols", async () => {
+  it("accepts browser WebSocket Access tokens through subprotocols without echoing them", async () => {
     const { env, token } = await accessTokenFixture({ subject: "alice" });
     const protocol = `${ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url(token)}`;
 
     const identity = await authenticateRequestWithProviders(
       new Request("https://cloud.test/n/demo/sync?operator=browser:tab&scope=viewer", {
         headers: {
-          "Sec-WebSocket-Protocol": `other-proto, ${protocol}`,
+          "Sec-WebSocket-Protocol": `other-proto, ${protocol}, ${NOTEBOOK_WEBSOCKET_PROTOCOL}`,
         },
       }),
       env,
     );
 
     assert.equal(identity.actorLabel, "user:cloudflare-access:alice/browser:tab");
-    assert.equal(identity.webSocketProtocol, protocol);
+    assert.equal(identity.metadata.transport, "access-subprotocol");
+    assert.equal(identity.webSocketProtocol, NOTEBOOK_WEBSOCKET_PROTOCOL);
   });
 
   it("rejects Access tokens with the wrong audience", async () => {
@@ -330,20 +370,21 @@ describe("Cloudflare Access identity", () => {
     );
   });
 
-  it("ignores bearer tokens when Access auth is not configured", async () => {
+  it("rejects bearer tokens when Access auth is not configured", async () => {
     const { token } = await accessTokenFixture({ subject: "alice" });
 
-    const identity = await authenticateRequestWithProviders(
-      new Request("https://cloud.test/n/demo/sync?viewer_session=anon-bearer", {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      }),
-      {},
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync?viewer_session=anon-bearer", {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          {},
+        ),
+      (error) => error instanceof AuthError && error.status === 503,
     );
-
-    assert.equal(identity.actorLabel, "anonymous:anon-bearer/browser:anon-bearer");
-    assert.equal(identity.scope, "viewer");
   });
 
   it("tries matching RSA keys when a rotating Access JWT omits kid", async () => {
@@ -375,5 +416,95 @@ describe("Cloudflare Access identity", () => {
 
     assert.equal(identity.principal.startsWith("anonymous:"), true);
     assert.equal(identity.scope, "viewer");
+  });
+
+  it("rejects mixed identity-bearing credential transports", async () => {
+    const { env, token } = await accessTokenFixture({ subject: "alice" });
+    const devProtocol = `${DEV_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url("secret")}`;
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync?user=bob", {
+            headers: {
+              "Cf-Access-Jwt-Assertion": token,
+              "Sec-WebSocket-Protocol": `${devProtocol}, ${NOTEBOOK_WEBSOCKET_PROTOCOL}`,
+            },
+          }),
+          { ...env, NOTEBOOK_CLOUD_DEV_TOKEN: "secret" },
+        ),
+      (error) =>
+        error instanceof AuthError &&
+        error.status === 400 &&
+        /multiple credential sources/.test(error.message),
+    );
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              "Cf-Access-Jwt-Assertion": token,
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          env,
+        ),
+      (error) =>
+        error instanceof AuthError &&
+        error.status === 400 &&
+        /multiple credential sources/.test(error.message),
+    );
+  });
+
+  it("allows Access assertion and Access cookie as one cookie-backed credential", async () => {
+    const { env, token } = await accessTokenFixture({ subject: "alice" });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?operator=browser:tab", {
+        headers: {
+          Upgrade: "websocket",
+          Origin: "https://cloud.test",
+          "Cf-Access-Jwt-Assertion": token,
+          Cookie: `CF_Authorization=${token}`,
+        },
+      }),
+      env,
+    );
+
+    assert.equal(identity.actorLabel, "user:cloudflare-access:alice/browser:tab");
+    assert.equal(identity.metadata.transport, "access-cookie-assertion");
+  });
+
+  it("requires trusted Origin for cookie-backed WebSocket Access credentials", async () => {
+    const { env, token } = await accessTokenFixture({ subject: "alice" });
+    const request = (origin?: string) =>
+      new Request("https://cloud.test/n/demo/sync", {
+        headers: {
+          Upgrade: "websocket",
+          ...(origin ? { Origin: origin } : {}),
+          Cookie: `CF_Authorization=${token}`,
+        },
+      });
+
+    await assert.rejects(
+      () => authenticateRequestWithProviders(request(), env),
+      (error) =>
+        error instanceof AuthError && error.status === 403 && /Origin header/.test(error.message),
+    );
+    await assert.rejects(
+      () => authenticateRequestWithProviders(request("https://renderer.example"), env),
+      (error) =>
+        error instanceof AuthError &&
+        error.status === 403 &&
+        /Origin is not allowed/.test(error.message),
+    );
+
+    const identity = await authenticateRequestWithProviders(request("https://app.example"), {
+      ...env,
+      NOTEBOOK_CLOUD_ALLOWED_ORIGINS: "https://app.example",
+    });
+    assert.equal(identity.principal, "user:cloudflare-access:alice");
+    assert.equal(identity.metadata.transport, "access-cookie");
   });
 });

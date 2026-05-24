@@ -225,9 +225,39 @@ before running the D1 ACL lookup. Tokens are accepted from:
 URL-carried Access tokens are intentionally ignored. The JWT must validate with
 RS256 against `https://<team-domain>/cdn-cgi/access/certs`, with `iss` matching
 the team domain and `aud` matching `NOTEBOOK_CLOUD_ACCESS_AUD`. The resulting
-principal is `user:cloudflare-access:<sub>`, and the requested `scope` is still
-only a request: the room ACL decides whether that principal may enter as
-`viewer`, `editor`, `runtime_peer`, or `owner`.
+principal is `user:cloudflare-access:<encoded-sub>` because the Worker validates
+the Cloudflare Access assertion, not a direct Anaconda-issued credential. Email
+and name claims remain display/audit metadata and are stamped separately from
+the ACL principal. The requested `scope` is still only a request: the room ACL
+decides whether that principal may enter as `viewer`, `editor`, `runtime_peer`,
+or `owner`.
+
+Credential transports are mutually exclusive. The only accepted combination is
+the Cloudflare Access assertion plus its `CF_Authorization` cookie, which is
+treated as one cookie-backed Access credential and validated from the assertion.
+The Worker rejects requests that combine bearer headers, credential-bearing
+WebSocket subprotocols, dev tokens, or client-stamped dev principal claims.
+
+Browser WebSocket token auth should offer the credential subprotocol and the
+non-sensitive notebook app protocol:
+
+```text
+Sec-WebSocket-Protocol:
+  nteract-access-token.<base64url-jwt>, nteract.v4
+```
+
+The Worker strips `nteract-access-token.*` and `nteract-dev-token.*` before the
+Durable Object upgrade response. It may select only `nteract.v4`; credential
+subprotocols must never be echoed.
+
+Cookie-backed Access WebSocket upgrades require an allowed `Origin`. The
+request origin is allowed by default, and additional notebook app origins can
+be configured with comma-separated `NOTEBOOK_CLOUD_ALLOWED_ORIGINS`. Do not add
+renderer asset origins or sandboxed output origins to that allowlist.
+
+The viewer's prototype auth menu has a "Use browser session" path for Access
+trials. It stores only the requested room scope locally; the credential remains
+the Access session handled by Cloudflare and validated by the Worker.
 
 Requests with no dev credential become anonymous public viewers. The Worker derives:
 

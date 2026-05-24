@@ -1,5 +1,6 @@
 import {
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
+  NOTEBOOK_WEBSOCKET_PROTOCOL,
   isConnectionScope,
   type ConnectionScope,
 } from "../src/auth-shared";
@@ -16,7 +17,7 @@ export interface CloudSyncAuth {
 }
 
 export interface CloudPrototypeAuthState {
-  mode: "anonymous" | "dev" | "invalid";
+  mode: "anonymous" | "access" | "dev" | "invalid";
   token: string | null;
   user: string | null;
   requestedScope: ConnectionScope | null;
@@ -70,11 +71,20 @@ export function readCloudPrototypeAuth(
   storage: Pick<CloudPrototypeAuthStorage, "getItem">,
 ): CloudPrototypeAuthState {
   const token = storage.getItem(NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY)?.trim() ?? "";
+  const requestedScope = parseStoredScope(storage.getItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY));
   if (!token) {
+    if (requestedScope) {
+      return {
+        mode: "access",
+        token: null,
+        user: null,
+        requestedScope,
+        problem: null,
+      };
+    }
     return anonymousAuthState();
   }
 
-  const requestedScope = parseStoredScope(storage.getItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY));
   const user = storage.getItem(NOTEBOOK_CLOUD_USER_STORAGE_KEY)?.trim() || "browser-editor";
   const problem = validatePrototypeToken(token);
   if (problem) {
@@ -97,12 +107,23 @@ export function readCloudPrototypeAuth(
 }
 
 export function cloudSyncAuthFromPrototypeAuthState(state: CloudPrototypeAuthState): CloudSyncAuth {
+  if (state.mode === "access") {
+    return {
+      protocols: [],
+      user: null,
+      operator: null,
+      requestedScope: state.requestedScope ?? "editor",
+    };
+  }
   if (state.mode !== "dev" || !state.token) {
     return { protocols: [], user: null, operator: null, requestedScope: null };
   }
 
   return {
-    protocols: [`${DEV_AUTH_TOKEN_PROTOCOL_PREFIX}${base64UrlEncode(state.token)}`],
+    protocols: [
+      `${DEV_AUTH_TOKEN_PROTOCOL_PREFIX}${base64UrlEncode(state.token)}`,
+      NOTEBOOK_WEBSOCKET_PROTOCOL,
+    ],
     user: state.user ?? "browser-editor",
     operator: null,
     requestedScope: state.requestedScope ?? "editor",
@@ -115,6 +136,15 @@ export function storeCloudPrototypeDevAuth(
 ): void {
   storage.setItem(NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY, input.token.trim());
   storage.setItem(NOTEBOOK_CLOUD_USER_STORAGE_KEY, input.user.trim() || "browser-editor");
+  storage.setItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY, input.scope);
+}
+
+export function storeCloudAccessAuth(
+  storage: Pick<CloudPrototypeAuthStorage, "removeItem" | "setItem">,
+  input: { scope: ConnectionScope },
+): void {
+  storage.removeItem(NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY);
+  storage.removeItem(NOTEBOOK_CLOUD_USER_STORAGE_KEY);
   storage.setItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY, input.scope);
 }
 
@@ -144,6 +174,9 @@ export function prototypeAuthSummary(state: CloudPrototypeAuthState): string {
   if (state.mode === "dev") {
     return `${state.user ?? "browser-editor"} requesting ${state.requestedScope ?? "editor"}`;
   }
+  if (state.mode === "access") {
+    return `Browser session requesting ${state.requestedScope ?? "editor"}`;
+  }
   if (state.mode === "invalid") {
     return `${state.problem ?? "Stored collaborator token is invalid"} Connected anonymously.`;
   }
@@ -168,6 +201,21 @@ export function prototypeAuthDiagnostics(
       {
         label: "Dev token",
         value: "Stored locally; sent as a WebSocket subprotocol, never in the URL.",
+      },
+    );
+  } else if (state.mode === "access") {
+    rows.push(
+      {
+        label: "Requested identity",
+        value: "Browser session credential, validated by the Worker.",
+      },
+      {
+        label: "Requested scope",
+        value: state.requestedScope ?? "editor",
+      },
+      {
+        label: "Credential",
+        value: "No token in JavaScript; Cloudflare Access supplies the assertion.",
       },
     );
   } else if (state.mode === "invalid") {

@@ -24,6 +24,10 @@ export type SessionControlMessage =
       peer_id: string;
       actor_label: string;
       connection_scope: string;
+      identity_provider?: string;
+      principal_namespace?: string;
+      display_name?: string;
+      email?: string;
       room_peer_count: number;
       timestamp: string;
     }

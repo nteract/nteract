@@ -9,8 +9,10 @@ export interface AccessTokenFixture {
 
 export async function accessTokenFixture(options: {
   audience?: string;
+  email?: string;
   includeKid?: boolean;
   includeUnmatchedKey?: boolean;
+  name?: string;
   subject: string;
 }): Promise<AccessTokenFixture> {
   const issuer = "https://team.cloudflareaccess.com";
@@ -54,6 +56,8 @@ export async function accessTokenFixture(options: {
     aud: options.audience ?? audience,
     exp: now + 300,
     iss: issuer,
+    ...(options.email ? { email: options.email } : {}),
+    ...(options.name ? { name: options.name } : {}),
     sub: options.subject,
   };
   const signingInput = `${base64Url(JSON.stringify(header))}.${base64Url(JSON.stringify(payload))}`;

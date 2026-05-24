@@ -1,6 +1,7 @@
 import {
   ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
+  NOTEBOOK_WEBSOCKET_PROTOCOL,
   isConnectionScope,
   type ConnectionScope,
 } from "./auth-shared.ts";
@@ -8,6 +9,7 @@ import {
 export {
   ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
+  NOTEBOOK_WEBSOCKET_PROTOCOL,
   type ConnectionScope,
 } from "./auth-shared.ts";
 
@@ -22,6 +24,7 @@ export interface AuthenticatedConnection {
   operator: string;
   actorLabel: string;
   scope: ConnectionScope;
+  metadata: AuthenticatedConnectionMetadata;
   webSocketProtocol?: string;
 }
 
@@ -31,6 +34,24 @@ export interface IdentityEnvironment {
   NOTEBOOK_CLOUD_ACCESS_AUD?: string;
   NOTEBOOK_CLOUD_ACCESS_JWKS_JSON?: string;
   NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN?: string;
+  NOTEBOOK_CLOUD_ALLOWED_ORIGINS?: string;
+}
+
+export interface AuthenticatedConnectionMetadata {
+  provider: "anonymous" | "dev" | "cloudflare-access";
+  transport:
+    | "anonymous"
+    | "loopback-dev"
+    | "dev-token-header"
+    | "dev-token-subprotocol"
+    | "access-assertion"
+    | "access-bearer"
+    | "access-cookie"
+    | "access-cookie-assertion"
+    | "access-subprotocol";
+  principalNamespace: string;
+  displayName?: string;
+  email?: string;
 }
 
 const ANONYMOUS_PRINCIPAL_PREFIX = "anonymous:";
@@ -39,11 +60,18 @@ export const TRUSTED_PRINCIPAL_HEADER = "x-nteract-principal";
 export const TRUSTED_OPERATOR_HEADER = "x-nteract-operator";
 export const TRUSTED_SCOPE_HEADER = "x-nteract-scope";
 export const TRUSTED_WEBSOCKET_PROTOCOL_HEADER = "x-nteract-websocket-protocol";
+export const TRUSTED_IDENTITY_PROVIDER_HEADER = "x-nteract-identity-provider";
+export const TRUSTED_CREDENTIAL_TRANSPORT_HEADER = "x-nteract-credential-transport";
+export const TRUSTED_PRINCIPAL_NAMESPACE_HEADER = "x-nteract-principal-namespace";
+export const TRUSTED_DISPLAY_NAME_HEADER = "x-nteract-display-name";
+export const TRUSTED_EMAIL_HEADER = "x-nteract-email";
 export const CLOUDFLARE_ACCESS_JWT_HEADER = "cf-access-jwt-assertion";
 export const DEV_AUTH_TOKEN_HEADER = "x-notebook-cloud-dev-token";
 
 interface AccessCredential {
   token: string;
+  transport: AuthenticatedConnectionMetadata["transport"];
+  cookieBacked: boolean;
   webSocketProtocol?: string;
 }
 
@@ -68,6 +96,7 @@ interface AccessJwtPayload {
   email?: string;
   exp?: number;
   iss?: string;
+  name?: string;
   nbf?: number;
   sub?: string;
 }
@@ -109,17 +138,26 @@ export function authenticateRequest(
   }
 
   const identity = authenticateDevRequest(request);
-  return devCredential.webSocketProtocol
-    ? { ...identity, webSocketProtocol: devCredential.webSocketProtocol }
-    : identity;
+  return {
+    ...identity,
+    metadata: {
+      ...identity.metadata,
+      transport: devCredential.transport,
+    },
+    ...(devCredential.webSocketProtocol
+      ? { webSocketProtocol: devCredential.webSocketProtocol }
+      : {}),
+  };
 }
 
 export async function authenticateRequestWithProviders(
   request: Request,
   env: IdentityEnvironment = {},
 ): Promise<AuthenticatedConnection> {
+  rejectMixedCredentialSources(request);
   const accessCredential = accessCredentialFromRequest(request);
-  if (accessCredential && accessConfigFromEnv(env)) {
+  if (accessCredential) {
+    enforceCookieBackedWebSocketOrigin(request, env, accessCredential);
     return authenticateCloudflareAccessRequest(request, env, accessCredential);
   }
 
@@ -159,6 +197,13 @@ export async function authenticateCloudflareAccessRequest(
     operator,
     actorLabel: `${principal}/${operator}`,
     scope,
+    metadata: {
+      provider: "cloudflare-access" as const,
+      transport: credential.transport,
+      principalNamespace: "user:cloudflare-access",
+      displayName: payload.name?.trim() || payload.email?.trim() || undefined,
+      email: payload.email?.trim() || undefined,
+    },
   };
   return credential.webSocketProtocol
     ? { ...identity, webSocketProtocol: credential.webSocketProtocol }
@@ -181,6 +226,12 @@ export function authenticateDevRequest(request: Request): AuthenticatedConnectio
     operator,
     actorLabel: `${principal}/${operator}`,
     scope,
+    metadata: {
+      provider: "dev",
+      transport: "loopback-dev",
+      principalNamespace: "user:dev",
+      displayName: user,
+    },
   };
 }
 
@@ -202,6 +253,12 @@ export function authenticateAnonymousViewer(request: Request): AuthenticatedConn
     operator,
     actorLabel: `${principal}/${operator}`,
     scope: "viewer",
+    metadata: {
+      provider: "anonymous",
+      transport: "anonymous",
+      principalNamespace: "anonymous",
+      displayName: "Anonymous",
+    },
   };
 }
 
@@ -214,6 +271,11 @@ export function stampTrustedIdentity(request: Request, identity: AuthenticatedCo
   headers.set(TRUSTED_PRINCIPAL_HEADER, identity.principal);
   headers.set(TRUSTED_OPERATOR_HEADER, identity.operator);
   headers.set(TRUSTED_SCOPE_HEADER, identity.scope);
+  headers.set(TRUSTED_IDENTITY_PROVIDER_HEADER, identity.metadata.provider);
+  headers.set(TRUSTED_CREDENTIAL_TRANSPORT_HEADER, identity.metadata.transport);
+  headers.set(TRUSTED_PRINCIPAL_NAMESPACE_HEADER, identity.metadata.principalNamespace);
+  setOptionalTrustedHeader(headers, TRUSTED_DISPLAY_NAME_HEADER, identity.metadata.displayName);
+  setOptionalTrustedHeader(headers, TRUSTED_EMAIL_HEADER, identity.metadata.email);
   if (identity.webSocketProtocol) {
     headers.set(TRUSTED_WEBSOCKET_PROTOCOL_HEADER, identity.webSocketProtocol);
   } else {
@@ -227,8 +289,13 @@ export function readTrustedIdentity(request: Request): AuthenticatedConnection {
   const operator = request.headers.get(TRUSTED_OPERATOR_HEADER);
   const scope = request.headers.get(TRUSTED_SCOPE_HEADER);
   const webSocketProtocol = request.headers.get(TRUSTED_WEBSOCKET_PROTOCOL_HEADER) ?? undefined;
+  const provider = request.headers.get(TRUSTED_IDENTITY_PROVIDER_HEADER);
+  const transport = request.headers.get(TRUSTED_CREDENTIAL_TRANSPORT_HEADER);
+  const principalNamespace = request.headers.get(TRUSTED_PRINCIPAL_NAMESPACE_HEADER);
+  const displayName = request.headers.get(TRUSTED_DISPLAY_NAME_HEADER) ?? undefined;
+  const email = request.headers.get(TRUSTED_EMAIL_HEADER) ?? undefined;
 
-  if (!principal || !operator || !scope) {
+  if (!principal || !operator || !scope || !provider || !transport || !principalNamespace) {
     throw new Error("missing trusted identity headers");
   }
 
@@ -241,6 +308,7 @@ export function readTrustedIdentity(request: Request): AuthenticatedConnection {
     operator,
     actorLabel: `${principal}/${operator}`,
     scope: parsedScope,
+    metadata: parseTrustedMetadata(provider, transport, principalNamespace, displayName, email),
   };
   return webSocketProtocol ? { ...identity, webSocketProtocol } : identity;
 }
@@ -361,6 +429,139 @@ function headerOrQuery(
   return request.headers.get(headerName) ?? url.searchParams.get(queryName) ?? undefined;
 }
 
+function setOptionalTrustedHeader(headers: Headers, name: string, value: string | undefined): void {
+  if (value) {
+    headers.set(name, value);
+  } else {
+    headers.delete(name);
+  }
+}
+
+function parseTrustedMetadata(
+  provider: string,
+  transport: string,
+  principalNamespace: string,
+  displayName: string | undefined,
+  email: string | undefined,
+): AuthenticatedConnectionMetadata {
+  if (!isMetadataProvider(provider)) {
+    throw new Error(`unknown trusted identity provider: ${provider}`);
+  }
+  if (!isMetadataTransport(transport)) {
+    throw new Error(`unknown trusted credential transport: ${transport}`);
+  }
+
+  return {
+    provider,
+    transport,
+    principalNamespace,
+    ...(displayName ? { displayName } : {}),
+    ...(email ? { email } : {}),
+  };
+}
+
+function isMetadataProvider(value: string): value is AuthenticatedConnectionMetadata["provider"] {
+  return value === "anonymous" || value === "dev" || value === "cloudflare-access";
+}
+
+function isMetadataTransport(value: string): value is AuthenticatedConnectionMetadata["transport"] {
+  return (
+    value === "anonymous" ||
+    value === "loopback-dev" ||
+    value === "dev-token-header" ||
+    value === "dev-token-subprotocol" ||
+    value === "access-assertion" ||
+    value === "access-bearer" ||
+    value === "access-cookie" ||
+    value === "access-cookie-assertion" ||
+    value === "access-subprotocol"
+  );
+}
+
+function rejectMixedCredentialSources(request: Request): void {
+  const accessAssertion = request.headers.has(CLOUDFLARE_ACCESS_JWT_HEADER);
+  const accessBearer = Boolean(bearerTokenFromAuthorization(request.headers.get("authorization")));
+  const accessCookie = Boolean(cookieValue(request.headers.get("cookie"), "CF_Authorization"));
+  const accessProtocol = Boolean(
+    tokenFromWebSocketProtocol(
+      request.headers.get("sec-websocket-protocol"),
+      ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
+    ),
+  );
+  const devHeader = request.headers.has(DEV_AUTH_TOKEN_HEADER);
+  const devProtocol = Boolean(
+    tokenFromWebSocketProtocol(request.headers.get("sec-websocket-protocol")),
+  );
+
+  const sources: string[] = [];
+  if (accessAssertion) {
+    sources.push(accessCookie ? "access-cookie-assertion" : "access-assertion");
+  } else if (accessCookie) {
+    sources.push("access-cookie");
+  }
+  if (accessBearer) sources.push("access-bearer");
+  if (accessProtocol) sources.push("access-subprotocol");
+  if (devHeader) sources.push("dev-token-header");
+  if (devProtocol) sources.push("dev-token-subprotocol");
+  if (hasDevPrincipalClaim(request) && sources.some((source) => source.startsWith("access-"))) {
+    sources.push("dev-principal-claim");
+  }
+
+  if (sources.length > 1) {
+    throw new AuthError(`multiple credential sources are not allowed: ${sources.join(", ")}`, 400);
+  }
+}
+
+function hasDevPrincipalClaim(request: Request): boolean {
+  const url = new URL(request.url);
+  return (
+    request.headers.has("x-principal") ||
+    request.headers.has("x-user") ||
+    url.searchParams.has("principal") ||
+    url.searchParams.has("user")
+  );
+}
+
+function enforceCookieBackedWebSocketOrigin(
+  request: Request,
+  env: IdentityEnvironment,
+  credential: AccessCredential,
+): void {
+  if (!credential.cookieBacked || request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+    return;
+  }
+
+  const origin = request.headers.get("origin");
+  if (!origin) {
+    throw new AuthError("cookie-backed WebSocket auth requires an Origin header", 403);
+  }
+
+  let normalizedOrigin: string;
+  try {
+    normalizedOrigin = new URL(origin).origin;
+  } catch {
+    throw new AuthError("cookie-backed WebSocket auth Origin is invalid", 403);
+  }
+
+  if (!allowedWebSocketOrigins(request, env).has(normalizedOrigin)) {
+    throw new AuthError("cookie-backed WebSocket auth Origin is not allowed", 403);
+  }
+}
+
+function allowedWebSocketOrigins(request: Request, env: IdentityEnvironment): Set<string> {
+  const origins = new Set<string>([new URL(request.url).origin]);
+  for (const origin of env.NOTEBOOK_CLOUD_ALLOWED_ORIGINS?.split(",") ?? []) {
+    const trimmed = origin.trim();
+    if (!trimmed) continue;
+    try {
+      origins.add(new URL(trimmed).origin);
+    } catch {
+      throw new AuthError("NOTEBOOK_CLOUD_ALLOWED_ORIGINS contains an invalid origin", 503);
+    }
+  }
+  return origins;
+}
+
 function hasDevCredential(request: Request): boolean {
   const url = new URL(request.url);
   return [
@@ -375,12 +576,20 @@ function hasDevCredential(request: Request): boolean {
 function authenticateDevCredential(
   request: Request,
   env: IdentityEnvironment,
-): { webSocketProtocol?: string } | undefined {
+):
+  | {
+      transport: Extract<
+        AuthenticatedConnectionMetadata["transport"],
+        "loopback-dev" | "dev-token-header" | "dev-token-subprotocol"
+      >;
+      webSocketProtocol?: string;
+    }
+  | undefined {
+  const webSocketProtocol = selectedApplicationWebSocketProtocol(request);
   if (isLocalDevRequest(request)) {
-    const webSocketProtocol = tokenFromWebSocketProtocol(
-      request.headers.get("sec-websocket-protocol"),
-    );
-    return webSocketProtocol ? { webSocketProtocol: webSocketProtocol.protocol } : {};
+    return webSocketProtocol
+      ? { transport: "loopback-dev", webSocketProtocol }
+      : { transport: "loopback-dev" };
   }
 
   return validDevTokenCredential(request, env);
@@ -394,7 +603,15 @@ function isLocalDevRequest(request: Request): boolean {
 function validDevTokenCredential(
   request: Request,
   env: IdentityEnvironment,
-): { webSocketProtocol?: string } | undefined {
+):
+  | {
+      transport: Extract<
+        AuthenticatedConnectionMetadata["transport"],
+        "dev-token-header" | "dev-token-subprotocol"
+      >;
+      webSocketProtocol?: string;
+    }
+  | undefined {
   const expected = env.NOTEBOOK_CLOUD_DEV_TOKEN?.trim();
   if (!expected) {
     return undefined;
@@ -402,26 +619,48 @@ function validDevTokenCredential(
 
   const headerToken = request.headers.get(DEV_AUTH_TOKEN_HEADER) ?? undefined;
   if (timingSafeStringEqual(headerToken, expected)) {
-    return {};
+    return { transport: "dev-token-header" };
   }
 
   const webSocketProtocol = tokenFromWebSocketProtocol(
     request.headers.get("sec-websocket-protocol"),
   );
   if (webSocketProtocol && timingSafeStringEqual(webSocketProtocol.token, expected)) {
-    return { webSocketProtocol: webSocketProtocol.protocol };
+    return {
+      transport: "dev-token-subprotocol",
+      webSocketProtocol: selectedApplicationWebSocketProtocol(request),
+    };
   }
 
   return undefined;
 }
 
 function accessCredentialFromRequest(request: Request): AccessCredential | undefined {
-  const headerToken =
-    request.headers.get(CLOUDFLARE_ACCESS_JWT_HEADER) ??
-    bearerTokenFromAuthorization(request.headers.get("authorization")) ??
-    cookieValue(request.headers.get("cookie"), "CF_Authorization");
-  if (headerToken) {
-    return { token: headerToken };
+  const assertionToken = request.headers.get(CLOUDFLARE_ACCESS_JWT_HEADER) ?? undefined;
+  const cookieToken = cookieValue(request.headers.get("cookie"), "CF_Authorization");
+  if (assertionToken) {
+    return {
+      token: assertionToken,
+      transport: cookieToken ? "access-cookie-assertion" : "access-assertion",
+      cookieBacked: Boolean(cookieToken),
+    };
+  }
+
+  const bearerToken = bearerTokenFromAuthorization(request.headers.get("authorization"));
+  if (bearerToken) {
+    return {
+      token: bearerToken,
+      transport: "access-bearer",
+      cookieBacked: false,
+    };
+  }
+
+  if (cookieToken) {
+    return {
+      token: cookieToken,
+      transport: "access-cookie",
+      cookieBacked: true,
+    };
   }
 
   const webSocketProtocol = tokenFromWebSocketProtocol(
@@ -429,7 +668,12 @@ function accessCredentialFromRequest(request: Request): AccessCredential | undef
     ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
   );
   if (webSocketProtocol) {
-    return { token: webSocketProtocol.token, webSocketProtocol: webSocketProtocol.protocol };
+    return {
+      token: webSocketProtocol.token,
+      transport: "access-subprotocol",
+      cookieBacked: false,
+      webSocketProtocol: selectedApplicationWebSocketProtocol(request),
+    };
   }
 
   return undefined;
@@ -618,10 +862,7 @@ function tokenFromWebSocketProtocol(
   value: string | null,
   prefix = DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
 ): { protocol: string; token: string } | undefined {
-  if (!value) return undefined;
-
-  for (const protocol of value.split(",")) {
-    const trimmed = protocol.trim();
+  for (const trimmed of webSocketProtocols(value)) {
     if (!trimmed.startsWith(prefix)) continue;
     const token = decodeBase64Url(trimmed.slice(prefix.length));
     if (!token) continue;
@@ -629,6 +870,22 @@ function tokenFromWebSocketProtocol(
   }
 
   return undefined;
+}
+
+function selectedApplicationWebSocketProtocol(request: Request): string | undefined {
+  return webSocketProtocols(request.headers.get("sec-websocket-protocol")).includes(
+    NOTEBOOK_WEBSOCKET_PROTOCOL,
+  )
+    ? NOTEBOOK_WEBSOCKET_PROTOCOL
+    : undefined;
+}
+
+function webSocketProtocols(value: string | null): string[] {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((protocol) => protocol.trim())
+    .filter(Boolean);
 }
 
 function decodeBase64Url(value: string): string | undefined {

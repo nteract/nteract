@@ -2,7 +2,13 @@ import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import worker from "../src/index.ts";
-import { DEV_AUTH_TOKEN_PROTOCOL_PREFIX, authenticateDevRequest } from "../src/identity.ts";
+import {
+  ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
+  DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
+  NOTEBOOK_WEBSOCKET_PROTOCOL,
+  TRUSTED_WEBSOCKET_PROTOCOL_HEADER,
+  authenticateDevRequest,
+} from "../src/identity.ts";
 import type {
   D1Database,
   D1PreparedStatement,
@@ -778,6 +784,96 @@ describe("Worker artifact routes", () => {
     assert.deepEqual(await response.json(), { error: "notebook not found" });
     assert.equal(roomFetches, 0);
     assert.equal(env.DB.notebooks.has("unclaimed-demo"), false);
+  });
+
+  it("strips credential subprotocols before routing Access WebSockets to the room", async () => {
+    const { env: accessEnv, token } = await accessTokenFixture({ subject: "alice" });
+    let stampedProtocol: string | null = null;
+    const env = fakeEnv({
+      ...accessEnv,
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            stampedProtocol = request.headers.get(TRUSTED_WEBSOCKET_PROTOCOL_HEADER);
+            return new Response(null, { status: 204 });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedNotebook(env, "access-sync-demo");
+    seedAcl(env, {
+      notebookId: "access-sync-demo",
+      subject: "user:cloudflare-access:alice",
+      scope: "viewer",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/access-sync-demo/sync?operator=browser:a", {
+        headers: {
+          Upgrade: "websocket",
+          "Sec-WebSocket-Protocol": `${ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url(
+            token,
+          )}, ${NOTEBOOK_WEBSOCKET_PROTOCOL}`,
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 204);
+    assert.equal(stampedProtocol, NOTEBOOK_WEBSOCKET_PROTOCOL);
+  });
+
+  it("enforces Origin before routing cookie-backed Access WebSockets", async () => {
+    const { env: accessEnv, token } = await accessTokenFixture({ subject: "alice" });
+    let roomFetches = 0;
+    const env = fakeEnv({
+      ...accessEnv,
+      NOTEBOOK_CLOUD_ALLOWED_ORIGINS: "https://app.example",
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async () => {
+            roomFetches += 1;
+            return new Response(null, { status: 204 });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedNotebook(env, "access-cookie-demo");
+    seedAcl(env, {
+      notebookId: "access-cookie-demo",
+      subject: "user:cloudflare-access:alice",
+      scope: "viewer",
+    });
+
+    const missingOrigin = await worker.fetch(
+      new Request("https://cloud.test/n/access-cookie-demo/sync", {
+        headers: {
+          Upgrade: "websocket",
+          Cookie: `CF_Authorization=${token}`,
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(missingOrigin.status, 403);
+    assert.equal(roomFetches, 0);
+
+    const allowedOrigin = await worker.fetch(
+      new Request("https://cloud.test/n/access-cookie-demo/sync", {
+        headers: {
+          Upgrade: "websocket",
+          Origin: "https://app.example",
+          Cookie: `CF_Authorization=${token}`,
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(allowedOrigin.status, 204);
+    assert.equal(roomFetches, 1);
   });
 
   it("logs deployed dev auth failures without token material", async () => {
