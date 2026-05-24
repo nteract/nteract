@@ -219,25 +219,24 @@ export class CloudWebSocketTransport implements NotebookTransport {
       void this.handleMessage(event.data);
     });
     this.socket.addEventListener("error", () => {
-      this.readyReject(new Error(`failed to connect ${url.href}`));
+      const reason = new Error(`cloud sync socket failed`);
+      if (!this.readySettled) {
+        this.readyReject(new Error(`failed to connect ${url.href}`));
+      }
+      this.markClosed(reason);
     });
     this.socket.addEventListener("close", (event) => {
-      this.closed = true;
-      this.listeners.clear();
-      this.queuedFrames = [];
       const detail = event.reason ? `: ${event.reason}` : "";
       const reason = new Error(`cloud sync socket closed (${event.code})${detail}`);
       if (!this.readySettled) {
         this.readyReject(new Error(`cloud sync socket closed before ready`));
       }
-      if (this.readyResolved && !this.manualDisconnect) {
-        this.onDisconnect?.(reason);
-      }
+      this.markClosed(reason);
     });
   }
 
   get connected(): boolean {
-    return this.socket.readyState === WebSocket.OPEN;
+    return !this.closed && this.socket.readyState === WebSocket.OPEN;
   }
 
   async sendFrame(frameType: number, payload: Uint8Array): Promise<void> {
@@ -248,7 +247,16 @@ export class CloudWebSocketTransport implements NotebookTransport {
     const frame = new Uint8Array(payload.byteLength + 1);
     frame[0] = frameType;
     frame.set(payload, 1);
-    this.socket.send(frame);
+    try {
+      this.socket.send(frame);
+    } catch (error) {
+      const reason =
+        error instanceof Error
+          ? new Error(`cloud sync socket send failed: ${error.message}`)
+          : new Error(`cloud sync socket send failed: ${String(error)}`);
+      this.markClosed(reason);
+      throw reason;
+    }
   }
 
   async sendTypedRequest(
@@ -318,7 +326,9 @@ export class CloudWebSocketTransport implements NotebookTransport {
       this.socket.readyState === WebSocket.CLOSED ||
       this.socket.readyState === WebSocket.CLOSING
     ) {
-      return Promise.reject(new Error("cloud sync socket is closed"));
+      const reason = new Error("cloud sync socket is closed");
+      this.markClosed(reason);
+      return Promise.reject(reason);
     }
 
     return new Promise((resolve, reject) => {
@@ -330,6 +340,16 @@ export class CloudWebSocketTransport implements NotebookTransport {
         once: true,
       });
     });
+  }
+
+  private markClosed(reason: Error): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.listeners.clear();
+    this.queuedFrames = [];
+    if (this.readyResolved && !this.manualDisconnect) {
+      this.onDisconnect?.(reason);
+    }
   }
 }
 
