@@ -1107,6 +1107,54 @@ mod tests {
             .unwrap();
         assert_eq!(text, "late-arriving");
     }
+
+    #[tokio::test]
+    async fn await_execution_terminal_grace_waits_for_stream_output_to_settle() {
+        // A noisy stream output is updated in place. A client can observe
+        // terminal status with the penultimate stream manifest before the final
+        // in-place update syncs through, so terminal waiters need a short quiet
+        // window for stream outputs, not just "outputs are non-empty".
+        use crate::execution_wait::await_execution_terminal;
+
+        let (handle, shared, _rx, _cmd_rx) = test_handle_with_shared();
+        set_execution(
+            &shared,
+            "exec-1",
+            "cell-1",
+            "done",
+            &[stream_output("await-stream-output", "partial")],
+            Some(8),
+        );
+
+        let shared_for_task = shared.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            let mut st = shared_for_task.lock().unwrap();
+            st.state_doc
+                .replace_output(
+                    "exec-1",
+                    "await-stream-output",
+                    &stream_output("await-stream-output", "final"),
+                )
+                .unwrap();
+        });
+
+        let state = await_execution_terminal(
+            &handle,
+            "exec-1",
+            std::time::Duration::from_secs(5),
+            Some(std::time::Duration::from_millis(500)),
+        )
+        .await
+        .expect("terminal state");
+
+        assert_eq!(state.status, "done");
+        assert_eq!(state.output_manifests.len(), 1);
+        let text = state.output_manifests[0]["text"]["inline"]
+            .as_str()
+            .unwrap();
+        assert_eq!(text, "final");
+    }
 }
 
 // =========================================================================

@@ -21,7 +21,8 @@
 //! 1. **Terminal wait.** Poll until `executions[eid].status` is `"done"` or
 //!    `"error"`.
 //! 2. **Output-sync grace.** If the terminal status is reached but the
-//!    output list is still empty on our replica, poll briefly (capped at
+//!    output list is still empty, or the terminal output includes a stream
+//!    manifest that may still be updating in place, poll briefly (capped at
 //!    `output_sync_grace`) for the last sync frames to land.
 
 use std::time::{Duration, Instant};
@@ -64,6 +65,8 @@ pub const DEFAULT_OUTPUT_SYNC_GRACE: Duration = Duration::from_millis(500);
 const TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Poll frequency during the output-sync grace window.
 const OUTPUT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// Quiet period after the last observed terminal stream-output mutation.
+const STREAM_OUTPUT_QUIET_PERIOD: Duration = Duration::from_millis(100);
 
 /// Wait for a specific execution to reach terminal status in the
 /// `RuntimeStateDoc` and return the final outputs, execution count, and
@@ -133,22 +136,44 @@ pub async fn await_execution_terminal(
     // ── Phase 2: output-sync grace ──────────────────────────────────────
     //
     // The daemon commits outputs before `set_execution_done`, but sync
-    // frames can arrive in separate batches; our local replica may be a
-    // tick behind. Poll briefly for outputs to appear.
-    if final_state.output_manifests.is_empty() {
+    // frames can arrive in separate batches; our local replica may be a tick
+    // behind. Stream outputs are also updated in place, so a non-empty output
+    // list can still contain the penultimate stream blob. Poll briefly until
+    // stream outputs are quiet.
+    if final_state.output_manifests.is_empty() || has_stream_output(&final_state.output_manifests) {
         let grace = output_sync_grace.unwrap_or(DEFAULT_OUTPUT_SYNC_GRACE);
         let remaining_until_deadline = deadline.saturating_duration_since(Instant::now());
         let output_deadline = Instant::now() + grace.min(remaining_until_deadline);
+        let mut stream_quiet_since = if has_stream_output(&final_state.output_manifests) {
+            Some(Instant::now())
+        } else {
+            None
+        };
 
         while Instant::now() < output_deadline {
+            if stream_quiet_since.is_some_and(|since| since.elapsed() >= STREAM_OUTPUT_QUIET_PERIOD)
+            {
+                break;
+            }
+
             if let Ok(state) = handle.get_runtime_state() {
                 if let Some(exec) = state.executions.get(execution_id) {
-                    if !exec.outputs.is_empty() {
+                    if exec.outputs != final_state.output_manifests {
                         final_state.output_manifests = exec.outputs.clone();
                         if final_state.execution_count.is_none() {
                             final_state.execution_count = exec.execution_count;
                         }
-                        break;
+                        stream_quiet_since = if has_stream_output(&final_state.output_manifests) {
+                            Some(Instant::now())
+                        } else {
+                            None
+                        };
+
+                        if !final_state.output_manifests.is_empty()
+                            && !has_stream_output(&final_state.output_manifests)
+                        {
+                            break;
+                        }
                     }
                 }
             }
@@ -157,4 +182,10 @@ pub async fn await_execution_terminal(
     }
 
     Ok(final_state)
+}
+
+fn has_stream_output(outputs: &[serde_json::Value]) -> bool {
+    outputs
+        .iter()
+        .any(|output| output.get("output_type").and_then(|t| t.as_str()) == Some("stream"))
 }

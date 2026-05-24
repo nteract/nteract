@@ -5,8 +5,12 @@
 
 use runtime_doc::{ExecutionState, RuntimeLifecycle, RuntimeState};
 use tokio::sync::watch;
+use tokio::time::{Duration, Instant};
 
 use crate::handle::DocHandle;
+
+const TERMINAL_STREAM_OUTPUT_QUIET_PERIOD: Duration = Duration::from_millis(100);
+const TERMINAL_STREAM_OUTPUT_MAX_GRACE: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecutionTerminalReason {
@@ -75,7 +79,9 @@ impl ExecutionWatcher {
             let state = self.rx.borrow_and_update().clone();
             if let Some(progress) = self.progress_from_state(&state) {
                 if progress.terminal {
+                    let progress = self.settle_terminal_stream_output(progress).await;
                     self.finished = true;
+                    return Some(progress);
                 }
                 return Some(progress);
             }
@@ -173,6 +179,42 @@ impl ExecutionWatcher {
             terminal_reason: Some(reason),
         }
     }
+
+    async fn settle_terminal_stream_output(
+        &mut self,
+        mut progress: ExecutionProgressState,
+    ) -> ExecutionProgressState {
+        if !has_stream_output(&progress.output_manifests) {
+            return progress;
+        }
+
+        let max_deadline = Instant::now() + TERMINAL_STREAM_OUTPUT_MAX_GRACE;
+        let mut quiet_deadline = Instant::now() + TERMINAL_STREAM_OUTPUT_QUIET_PERIOD;
+
+        loop {
+            let now = Instant::now();
+            let next_deadline = quiet_deadline.min(max_deadline);
+            if now >= next_deadline {
+                return progress;
+            }
+
+            match tokio::time::timeout_at(next_deadline, self.rx.changed()).await {
+                Ok(Ok(())) => {
+                    let state = self.rx.borrow_and_update().clone();
+                    if let Some(next) = self.progress_from_state(&state) {
+                        if next.terminal {
+                            progress = next;
+                            if !has_stream_output(&progress.output_manifests) {
+                                return progress;
+                            }
+                            quiet_deadline = Instant::now() + TERMINAL_STREAM_OUTPUT_QUIET_PERIOD;
+                        }
+                    }
+                }
+                Ok(Err(_)) | Err(_) => return progress,
+            }
+        }
+    }
 }
 
 fn terminal_reason_for(entry: &ExecutionState) -> Option<ExecutionTerminalReason> {
@@ -182,6 +224,12 @@ fn terminal_reason_for(entry: &ExecutionState) -> Option<ExecutionTerminalReason
         "error" => Some(ExecutionTerminalReason::Error),
         _ => None,
     }
+}
+
+fn has_stream_output(outputs: &[serde_json::Value]) -> bool {
+    outputs
+        .iter()
+        .any(|output| output.get("output_type").and_then(|t| t.as_str()) == Some("stream"))
 }
 
 #[cfg(test)]
@@ -283,6 +331,50 @@ mod tests {
         let progress = watcher.next().await.expect("output progress");
         assert_eq!(progress.output_manifests.len(), 1);
         assert!(!progress.terminal);
+    }
+
+    #[tokio::test]
+    async fn watcher_waits_for_terminal_stream_output_to_settle() {
+        let (handle, tx) = make_handle();
+        let mut watcher = ExecutionWatcher::new(&handle, "cell-1", "exec-1");
+
+        set_execution(&tx, "exec-1", "cell-1", "running", Vec::new());
+        let _ = watcher.next().await.expect("first progress");
+
+        set_execution(
+            &tx,
+            "exec-1",
+            "cell-1",
+            "done",
+            vec![serde_json::json!({
+                "output_type": "stream",
+                "name": "stdout",
+                "text": {"inline": "partial"},
+            })],
+        );
+
+        let tx_for_task = tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            set_execution(
+                &tx_for_task,
+                "exec-1",
+                "cell-1",
+                "done",
+                vec![serde_json::json!({
+                    "output_type": "stream",
+                    "name": "stdout",
+                    "text": {"inline": "final"},
+                })],
+            );
+        });
+
+        let terminal = watcher.next().await.expect("terminal progress");
+        assert_eq!(
+            terminal.terminal_reason,
+            Some(ExecutionTerminalReason::Done)
+        );
+        assert_eq!(terminal.output_manifests[0]["text"]["inline"], "final");
     }
 
     #[tokio::test]
