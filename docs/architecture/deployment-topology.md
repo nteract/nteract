@@ -60,8 +60,13 @@ Cloudflare Durable Objects fit the hosted document-engine role because they are
 stateful Workers that can act as WebSocket servers, coordinate many clients per
 object, and hibernate idle WebSocket rooms without disconnecting clients. The
 hibernation model resets in-memory state when the object wakes, so a room host
-must restore its WASM handle and per-socket attachments from durable state on
-constructor entry rather than assume memory is durable.
+must restore its WASM handle and per-socket attachments from durable state
+rather than assume memory is durable. Cloudflare re-runs the constructor before
+delivering a hibernation wake event, but the constructor should only install
+cheap process state and register lazy rehydration. Every `webSocketMessage`,
+`webSocketClose`, `webSocketError`, and `fetch` path that touches room state
+must first ensure the WASM handle, ACL snapshot, and socket attachments are
+loaded from Durable Object storage, D1, and R2 before processing the event.
 
 Current Durable Object limits are compatible with one object per notebook room
 as the coordination point, with guardrails:
@@ -144,9 +149,8 @@ The preferred flow:
 2. The user selects or launches a JupyterHub runtime target.
 3. A Hub-authenticated service or single-user server verifies that the user may
    access that compute target using JupyterHub OAuth/token and access scopes.
-4. The room owner grants or confirms a `runtime_peer` ACL row for the runtime
-   principal, or mints a short-lived runtime attachment credential bound to the
-   room and requested role.
+4. The room owner grants or confirms a persistent `runtime_peer` ACL row for
+   the runtime principal.
 5. The runtime sidecar opens an outbound WebSocket to the Cloudflare room host
    and requests `runtime_peer`.
 6. The Durable Object authorizes the connection against the room ACL and
@@ -165,8 +169,13 @@ JupyterHub may authenticate the runtime sidecar in more than one way:
 - future brokered token where the hosted room issues a short-lived runtime
   attachment credential after the Hub proves the user/server identity.
 
-All variants end the same way at the nteract room: a validated principal asks
-for `runtime_peer`, and the room ACL decides whether that connection is allowed.
+The v1 default is the persistent ACL-row path. A Hub-authenticated sidecar maps
+to a stable runtime principal, that principal receives `runtime_peer` in the
+room ACL, and each connection still presents a normal credential that the Worker
+validates. A short-lived brokered runtime attachment credential is a later path
+for deployments that cannot expose a stable Hub-backed runtime principal to the
+room ACL. In both paths, the nteract room sees a validated principal requesting
+`runtime_peer`, and the room ACL decides whether that connection is allowed.
 
 ## Decision 3: Clients can connect directly or through a local bridge
 
@@ -193,7 +202,28 @@ must not recreate #2284's implicit "the local daemon owns the room" model. When
 bridging to a hosted room, the local daemon is just another authenticated
 operator on a remote room.
 
-## Decision 4: Room locators are addresses, not authority
+## Decision 4: Browser WebSocket origin policy is mandatory
+
+Browser WebSocket upgrades to hosted rooms must pass an explicit origin gate.
+This topology inherits the credential transport ADR's rule: any browser-visible
+credential transport, and especially Cloudflare Access cookie/assertion auth,
+requires the Worker to reject missing, malformed, or untrusted `Origin` values
+before the Durable Object sees the connection.
+
+Minimum policy:
+
+- same-origin notebook application pages are allowed by default;
+- additional notebook application origins must be configured explicitly;
+- renderer asset origins, sandboxed output iframe origins, and arbitrary
+  third-party origins are never allowed to open authenticated room WebSockets;
+- header-authenticated native, CLI, agent, and runtime-peer clients may omit
+  `Origin`, but any supplied `Origin` must still be valid and trusted.
+
+This ADR decides where the origin gate lives: the Worker enforces it before
+credential normalization and before stamping trusted room headers. The detailed
+credential-specific rules remain in `hosted-credential-transport.md`.
+
+## Decision 5: Room locators are addresses, not authority
 
 A room locator tells a client where to connect. It does not grant access and it
 does not define runtime placement.
@@ -214,7 +244,7 @@ The same-path autosave collision remains tracked by #2285 and should be fixed
 with a local lock/heartbeat or dirty-disk refusal independent of this hosted
 topology.
 
-## Decision 5: Durable state is split by responsibility
+## Decision 6: Durable state is split by responsibility
 
 The hosted room uses each Cloudflare storage product for the part it is good at:
 
@@ -230,7 +260,7 @@ Large document and output bytes do not live in Durable Object SQLite rows. This
 keeps hibernation recovery cheap, avoids row/value limits, and makes published
 artifacts inspectable without waking the room host for every blob read.
 
-## Decision 6: Runtime attachment is explicit product state
+## Decision 7: Runtime attachment is explicit product state
 
 Runtime attachment is not inferred from room URL or user identity. A room can be
 in one of these states:
@@ -283,15 +313,16 @@ infer compute from the document host.
    ACL lookup before WebSocket admission, and snapshot persistence.
 2. Add explicit runtime attachment metadata and UI/API vocabulary without
    launching JupyterHub yet.
-3. Implement `runtime_peer` WebSocket attach from a trusted local/runtime test
+3. Define typed failure states for no runtime, runtime disconnected, credential
+   expired, and ACL revoked before the first Hub prototype consumes those
+   errors.
+4. Implement `runtime_peer` WebSocket attach from a trusted local/runtime test
    sidecar to prove the frame path.
-4. Prototype a JupyterHub service or single-user sidecar that authenticates
+5. Prototype a JupyterHub service or single-user sidecar that authenticates
    with Hub OAuth/token, starts a kernel, and opens outbound `runtime_peer`
    sync to the Cloudflare room.
-5. Define the runtime attachment grant/token exchange after the prototype
+6. Define the runtime attachment grant/token exchange after the prototype
    proves which side needs to mint which credential.
-6. Add typed failure states for no runtime, runtime disconnected, credential
-   expired, and ACL revoked.
 7. Only after the hosted runtime path is proven, revisit whether any of #2284's
    local URI-discovery work is still needed beyond #2285's file-binding safety
    stopgap.
