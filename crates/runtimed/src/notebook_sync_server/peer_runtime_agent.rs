@@ -7,6 +7,7 @@ use tracing::{debug, info, warn};
 
 use crate::async_outcome::{flatten_joined_result, JoinedResult};
 
+use super::blob_upload::{enqueue_put_blob, spawn_put_blob_worker, MultipartUploadState};
 use super::peer_runtime_sync::{persist_terminal_execution_records, runtime_file_save_fingerprint};
 use super::peer_writer::spawn_peer_writer;
 use super::{NotebookRoom, RuntimeAgentMessage, STATE_SYNC_COMPACT_THRESHOLD};
@@ -157,10 +158,16 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
         String,
         tokio::sync::oneshot::Sender<RuntimeAgentResponse>,
     > = std::collections::HashMap::new();
-    let (agent_writer, mut writer_task) = spawn_peer_writer(
-        writer,
+    let runtime_peer_id = format!("runtime-agent:{runtime_agent_id}");
+    let (agent_writer, mut writer_task) =
+        spawn_peer_writer(writer, notebook_id.clone(), runtime_peer_id.clone());
+    let multipart_uploads = MultipartUploadState::new(&room.blob_store);
+    let mut put_blob_worker = spawn_put_blob_worker(
+        room.blob_store.clone(),
+        agent_writer.clone(),
+        multipart_uploads,
         notebook_id.clone(),
-        format!("runtime-agent:{runtime_agent_id}"),
+        runtime_peer_id.clone(),
     );
 
     loop {
@@ -177,6 +184,21 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                     }
                     JoinedResult::JoinFailed(e) => {
                         warn!("[notebook-sync] Runtime agent writer task stopped for {}: {}", runtime_agent_id, e);
+                    }
+                }
+                break;
+            }
+
+            put_blob_worker_result = &mut put_blob_worker.handle => {
+                match flatten_joined_result(put_blob_worker_result) {
+                    JoinedResult::Completed(()) => {
+                        info!("[notebook-sync] Runtime agent PutBlob worker closed cleanly: {}", runtime_agent_id);
+                    }
+                    JoinedResult::Failed(e) => {
+                        warn!("[notebook-sync] Runtime agent PutBlob worker failed for {}: {}", runtime_agent_id, e);
+                    }
+                    JoinedResult::JoinFailed(e) => {
+                        warn!("[notebook-sync] Runtime agent PutBlob worker task stopped for {}: {}", runtime_agent_id, e);
                     }
                 }
                 break;
@@ -293,6 +315,18 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                                     &mut persisted_execution_records,
                                 ).await;
                             }
+                        }
+                    }
+                    NotebookFrameType::PutBlob => {
+                        if let Err(e) = enqueue_put_blob(
+                            &put_blob_worker,
+                            &agent_writer,
+                            typed_frame.payload,
+                            &notebook_id,
+                            &runtime_peer_id,
+                        ) {
+                            warn!("[notebook-sync] Failed to enqueue runtime-agent PutBlob: {}", e);
+                            break;
                         }
                     }
                     NotebookFrameType::Response => {
@@ -436,4 +470,103 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
         "[notebook-sync] Runtime agent sync connection closed: {}",
         runtime_agent_id
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use notebook_protocol::connection::{self, NotebookFrameType};
+    use notebook_protocol::protocol::{
+        BlobDurability, NotebookResponse, NotebookResponseEnvelope, PutBlobHeader,
+    };
+    use sha2::{Digest, Sha256};
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::blob_store::BlobStore;
+
+    #[tokio::test]
+    async fn runtime_agent_put_blob_frame_stores_blob_and_replies() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let blob_store = Arc::new(BlobStore::new(tmp.path().join("blobs")));
+        let notebook_uuid = Uuid::new_v4();
+        let notebook_id = notebook_uuid.to_string();
+        let runtime_agent_id = "runtime-agent:test".to_string();
+        let room = Arc::new(NotebookRoom::new_fresh(
+            notebook_uuid,
+            None,
+            tmp.path(),
+            blob_store.clone(),
+            false,
+        ));
+        *room.current_runtime_agent_id.write().await = Some(runtime_agent_id.clone());
+
+        let (mut client, server) = tokio::io::duplex(1024 * 1024);
+        let (server_reader, server_writer) = tokio::io::split(server);
+        let handler = tokio::spawn(handle_runtime_agent_sync_connection(
+            server_reader,
+            server_writer,
+            room,
+            notebook_id,
+            runtime_agent_id,
+            tmp.path().join("execution-store"),
+        ));
+
+        let body = b"runtime-agent-bytes";
+        let sha256 = hex::encode(Sha256::digest(body));
+        let payload = PutBlobHeader::Put {
+            id: "runtime-agent-putblob".to_string(),
+            media_type: "application/octet-stream".to_string(),
+            size: body.len() as u64,
+            sha256: sha256.clone(),
+            durability: Some(BlobDurability::Ephemeral),
+            purpose: Some("runtime-agent-test".to_string()),
+        }
+        .encode_frame(body)
+        .expect("PutBlob payload encodes");
+
+        connection::send_typed_frame(&mut client, NotebookFrameType::PutBlob, &payload)
+            .await
+            .expect("send PutBlob frame");
+
+        let envelope = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let frame = connection::recv_typed_frame(&mut client)
+                    .await
+                    .expect("frame read succeeds")
+                    .expect("response frame");
+                if frame.frame_type != NotebookFrameType::Response {
+                    continue;
+                }
+                let envelope: NotebookResponseEnvelope =
+                    serde_json::from_slice(&frame.payload).expect("response envelope");
+                if envelope.id.as_deref() == Some("runtime-agent-putblob") {
+                    break envelope;
+                }
+            }
+        })
+        .await
+        .expect("runtime-agent PutBlob response");
+
+        match envelope.response {
+            NotebookResponse::BlobStored {
+                hash,
+                size,
+                media_type,
+            } => {
+                assert_eq!(hash, sha256);
+                assert_eq!(size, body.len() as u64);
+                assert_eq!(media_type, "application/octet-stream");
+                assert_eq!(
+                    blob_store.get(&hash).await.unwrap().as_deref(),
+                    Some(&body[..])
+                );
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+
+        handler.abort();
+    }
 }
