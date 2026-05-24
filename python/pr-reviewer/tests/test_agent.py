@@ -1,4 +1,5 @@
 import asyncio
+import os
 from pathlib import Path
 
 from pr_reviewer import agent
@@ -41,13 +42,14 @@ def test_parse_opencode_events_collects_text_session_and_cost() -> None:
             '{"type":"text","sessionID":"ses-1","part":{"type":"text","text":"{\\"verdict\\": "}}',
             '{"type":"text","sessionID":"ses-1","part":{"type":"text","text":"\\"clear\\"}"}}',
             '{"type":"step_finish","sessionID":"ses-1","part":{"type":"step-finish","cost":0.12}}',
+            '{"type":"step_finish","sessionID":"ses-1","part":{"type":"step-finish","cost":0.08}}',
         ]
     )
 
     result = agent.parse_opencode_events(stdout)
 
     assert result == OpencodeRunResult(
-        text='{"verdict": "clear"}', session_id="ses-1", cost_usd=0.12
+        text='{"verdict": "clear"}', session_id="ses-1", cost_usd=0.2
     )
 
 
@@ -91,6 +93,7 @@ def test_run_review_uses_opencode_output(monkeypatch, tmp_path: Path) -> None:
     assert report.cost_usd == 0.34
     assert report.raw_result is not None
     assert "diff --git a/src/a.py b/src/a.py" in calls[0][0]
+    assert "Do not report style-only comments." in calls[0][0]
     assert calls[0][1] == tmp_path
     assert calls[0][2] == config
 
@@ -113,7 +116,12 @@ def test_run_doctor_uses_opencode(monkeypatch) -> None:
     assert calls == [("Reply exactly OK.", None, config)]
 
 
-def test_build_opencode_env_writes_read_only_config(tmp_path: Path) -> None:
+def test_build_opencode_env_writes_read_only_config(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setenv("UNRELATED_SECRET", "do-not-copy")
+    monkeypatch.setenv("AWS_PROFILE", "reviewer")
+    monkeypatch.setenv("OPENCODE_TOKEN", "token")
+    monkeypatch.setenv("OPENCODE_CONFIG", "/tmp/caller-config.json")
     config = ReviewerConfig(model="amazon-bedrock/model", aws_region="us-west-2")
 
     env = agent.build_opencode_env(config, tmp_path)
@@ -124,3 +132,49 @@ def test_build_opencode_env_writes_read_only_config(tmp_path: Path) -> None:
     assert '"edit": "deny"' in contents
     assert '"bash": "allow"' in contents
     assert env["AWS_REGION"] == "us-west-2"
+    assert env["AWS_PROFILE"] == "reviewer"
+    assert env["OPENCODE_TOKEN"] == "token"
+    assert env["OPENCODE_CONFIG"] == str(config_path)
+    assert env["PATH"] == "/usr/bin"
+    assert "UNRELATED_SECRET" not in env
+
+
+def test_run_opencode_passes_prompt_on_stdin(monkeypatch, tmp_path: Path) -> None:
+    calls = []
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self, stdin: bytes) -> tuple[bytes, bytes]:
+            calls.append(("stdin", stdin))
+            return (
+                b'{"type":"text","sessionID":"ses-1","part":{"type":"text","text":"OK"}}\n',
+                b"",
+            )
+
+    async def fake_create_subprocess_exec(*command: str, **kwargs: object) -> FakeProcess:
+        calls.append(("command", command, kwargs))
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(os, "environ", {"PATH": "/usr/bin", "HOME": "/tmp/home"})
+    config = ReviewerConfig(model="amazon-bedrock/model", aws_region="us-west-2")
+
+    result = asyncio.run(agent.run_opencode("large prompt", cwd=tmp_path, config=config))
+
+    assert result.text == "OK"
+    command = calls[0][1]
+    kwargs = calls[0][2]
+    assert command == (
+        "opencode",
+        "run",
+        "--model",
+        "amazon-bedrock/model",
+        "--format",
+        "json",
+        "--dir",
+        str(tmp_path),
+    )
+    assert "large prompt" not in command
+    assert kwargs["stdin"] == asyncio.subprocess.PIPE
+    assert calls[1] == ("stdin", b"large prompt")

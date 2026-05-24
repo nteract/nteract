@@ -6,6 +6,8 @@ def test_config_sets_default_opencode_model() -> None:
 
     assert config.model == "amazon-bedrock/global.anthropic.claude-opus-4-6-v1"
     assert config.aws_region == "us-west-2"
+    assert not hasattr(config, "effort")
+    assert not hasattr(config, "setting_sources")
 
 
 def test_config_from_env_prefers_explicit_values(monkeypatch) -> None:

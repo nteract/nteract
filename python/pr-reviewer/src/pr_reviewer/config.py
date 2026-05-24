@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
-from typing import Literal
+from dataclasses import dataclass
 
 DEFAULT_MODEL = "amazon-bedrock/global.anthropic.claude-opus-4-6-v1"
 DEFAULT_OPENCODE_PATH = "opencode"
@@ -10,10 +9,6 @@ DEFAULT_AWS_REGION = "us-east-1"
 DEFAULT_DOCTOR_MAX_TURNS = 1
 DEFAULT_REVIEW_MIN_TURNS = 64
 DEFAULT_REVIEW_MAX_TURNS = 200
-DEFAULT_EFFORT = "xhigh"
-
-Effort = Literal["low", "medium", "high", "xhigh", "max"]
-SettingSource = Literal["user", "project", "local"]
 
 
 @dataclass(frozen=True)
@@ -21,8 +16,6 @@ class ReviewerConfig:
     model: str = DEFAULT_MODEL
     aws_region: str = DEFAULT_AWS_REGION
     max_turns: int = DEFAULT_REVIEW_MIN_TURNS
-    effort: Effort = DEFAULT_EFFORT
-    setting_sources: list[SettingSource] = field(default_factory=lambda: ["project"])
     opencode_path: str = DEFAULT_OPENCODE_PATH
 
     @classmethod

@@ -9,9 +9,22 @@ from pathlib import Path
 from typing import Any
 
 from pr_reviewer.config import ReviewerConfig
-from pr_reviewer.prompt import build_review_prompt
+from pr_reviewer.prompt import SYSTEM_PROMPT, build_review_prompt
 from pr_reviewer.schema import ReviewReport, normalize_structured_output
 from pr_reviewer.workspace import ReviewWorkspace
+
+PASSTHROUGH_ENV_KEYS = {
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LOGNAME",
+    "PATH",
+    "SHELL",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "USER",
+}
 
 
 @dataclass(frozen=True)
@@ -41,7 +54,13 @@ def build_opencode_env(config: ReviewerConfig, config_dir: Path) -> dict[str, st
         + "\n"
     )
 
-    env = os.environ.copy()
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key in PASSTHROUGH_ENV_KEYS
+        or key.startswith("AWS_")
+        or (key.startswith("OPENCODE_") and key != "OPENCODE_CONFIG")
+    }
     env["OPENCODE_CONFIG"] = str(config_path)
     if config.aws_region:
         env["AWS_REGION"] = config.aws_region
@@ -51,7 +70,8 @@ def build_opencode_env(config: ReviewerConfig, config_dir: Path) -> dict[str, st
 def parse_opencode_events(stdout: str) -> OpencodeRunResult:
     text_parts: list[str] = []
     session_id: str | None = None
-    cost_usd: float | None = None
+    cost_usd = 0.0
+    saw_cost = False
 
     for line_number, line in enumerate(stdout.splitlines(), start=1):
         if not line.strip():
@@ -72,10 +92,13 @@ def parse_opencode_events(stdout: str) -> OpencodeRunResult:
         if isinstance(part, dict) and part.get("type") == "step-finish":
             cost = part.get("cost")
             if isinstance(cost, int | float):
-                cost_usd = float(cost)
+                cost_usd += float(cost)
+                saw_cost = True
 
     return OpencodeRunResult(
-        text="".join(text_parts).strip(), session_id=session_id, cost_usd=cost_usd
+        text="".join(text_parts).strip(),
+        session_id=session_id,
+        cost_usd=cost_usd if saw_cost else None,
     )
 
 
@@ -121,16 +144,16 @@ async def run_opencode(
         ]
         if cwd is not None:
             command.extend(["--dir", str(cwd)])
-        command.append(prompt)
 
         proc = await asyncio.create_subprocess_exec(
             *command,
             cwd=str(cwd) if cwd is not None else None,
             env=env,
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout_bytes, stderr_bytes = await proc.communicate()
+        stdout_bytes, stderr_bytes = await proc.communicate(prompt.encode("utf-8"))
         stdout = stdout_bytes.decode("utf-8", errors="replace")
         stderr = stderr_bytes.decode("utf-8", errors="replace")
         if proc.returncode != 0:
@@ -146,7 +169,7 @@ async def run_review(
     config: ReviewerConfig,
     extra_prompt: str | None = None,
 ) -> ReviewReport:
-    prompt = build_review_prompt(workspace, extra_prompt=extra_prompt)
+    prompt = f"{SYSTEM_PROMPT}\n\n{build_review_prompt(workspace, extra_prompt=extra_prompt)}"
     run = await run_opencode(prompt, cwd=workspace.path, config=config)
     verdict, terminal_reason, summary, findings = normalize_structured_output(
         parse_structured_review_json(run.text)
