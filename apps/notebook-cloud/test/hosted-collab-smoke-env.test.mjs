@@ -45,14 +45,15 @@ describe("hosted browser collaboration smoke environment", () => {
   });
 
   it("builds the viewer URL without credential material", () => {
-    const token = "super-secret-token";
     const url = viewerUrlForRoom(
       "https://nteract-notebook-cloud.rgbkrk.workers.dev",
       "room/with/slashes",
     );
+    const parsed = new URL(url);
 
     assert.equal(url, "https://nteract-notebook-cloud.rgbkrk.workers.dev/n/room%2Fwith%2Fslashes");
-    assert.equal(url.includes(token), false);
+    assert.equal(parsed.search, "");
+    assert.equal(parsed.hash, "");
   });
 
   it("stores browser dev identity in localStorage state", () => {
