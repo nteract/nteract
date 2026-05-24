@@ -26,12 +26,14 @@ def test_display_arrow_stream_publishes_manifest_revisions():
 
     _buffer_hook.pending_buffers().clear()
     table = pa.table({"a": list(range(6))})
-    reader = pa.RecordBatchReader.from_batches(table.schema, table.to_batches(max_chunksize=2))
+    batches = table.to_batches(max_chunksize=2)
+    reader = pa.RecordBatchReader.from_batches(table.schema, batches)
+    max_chunk_bytes = max(batch.nbytes for batch in batches)
 
     handle = display_arrow_stream(
         reader,
         display_fn=fake_display,
-        max_chunk_bytes=1,
+        max_chunk_bytes=max_chunk_bytes,
         total_rows=table.num_rows,
     )
 
@@ -81,9 +83,16 @@ def test_display_arrow_stream_single_chunk_publishes_complete_once():
         return Handle()
 
     table = pa.table({"a": list(range(3))})
-    reader = pa.RecordBatchReader.from_batches(table.schema, table.to_batches())
+    batches = table.to_batches()
+    reader = pa.RecordBatchReader.from_batches(table.schema, batches)
+    max_chunk_bytes = max(batch.nbytes for batch in batches)
 
-    display_arrow_stream(reader, display_fn=fake_display, max_chunk_bytes=1, total_rows=3)
+    display_arrow_stream(
+        reader,
+        display_fn=fake_display,
+        max_chunk_bytes=max_chunk_bytes,
+        total_rows=3,
+    )
 
     assert [kind for kind, _, _ in messages] == ["display"]
     assert BLOB_REF_MIME in messages[0][1]
