@@ -230,6 +230,7 @@ function loadLocalArrow$(dataset: DatasetEntry, tableRoot: HTMLElement): Observa
     () =>
       new Observable<void>((subscriber) => {
         let cancelled = false;
+        let disposePendingStore: (() => void) | null = null;
 
         (async () => {
           const response = await fetch(`${import.meta.env.BASE_URL}${dataset.path}`);
@@ -248,8 +249,13 @@ function loadLocalArrow$(dataset: DatasetEntry, tableRoot: HTMLElement): Observa
 
           renderLoadingSkeleton(tableRoot, "Loading into WASM…");
           const handle = await loadIpc(arrowBytes);
+          if (cancelled) {
+            getModuleSync().free(handle);
+            return;
+          }
 
           const { tableData, columns, prefetchViewport } = createWasmTableData(handle);
+          disposePendingStore = () => tableData.dispose?.();
           tableData.prefetchViewport = prefetchViewport;
           const mod = getModuleSync();
           const columnHints = mod.arrow_ipc_column_hints_with_row_count(
@@ -267,6 +273,7 @@ function loadLocalArrow$(dataset: DatasetEntry, tableRoot: HTMLElement): Observa
           if (cancelled) return;
           tableRoot.innerHTML = "";
           currentEngine = createTable(tableRoot, tableData);
+          disposePendingStore = null;
           currentEngine.setStreamingDone();
           subscriber.next();
           subscriber.complete();
@@ -276,6 +283,8 @@ function loadLocalArrow$(dataset: DatasetEntry, tableRoot: HTMLElement): Observa
 
         return () => {
           cancelled = true;
+          disposePendingStore?.();
+          disposePendingStore = null;
         };
       }),
   );
@@ -291,6 +300,7 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
     () =>
       new Observable<void>((subscriber) => {
         let cancelled = false;
+        let disposePendingStore: (() => void) | null = null;
 
         (async () => {
           renderLoadingSkeleton(tableRoot, "Loading dataset…");
@@ -351,8 +361,10 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
 
           // Load first row group → mount table immediately
           const handle = mod.load_parquet_row_group(parquetBytes, 0, 0);
+          disposePendingStore = () => mod.free(handle);
 
           const { tableData, columns, prefetchViewport } = createWasmTableData(handle);
+          disposePendingStore = () => tableData.dispose?.();
           tableData.prefetchViewport = prefetchViewport;
           tableData.recomputeSummaries = () =>
             updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
@@ -365,6 +377,7 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
           if (cancelled) return;
           tableRoot.innerHTML = "";
           currentEngine = createTable(tableRoot, tableData);
+          disposePendingStore = null;
           subscriber.next();
 
           // Stream remaining row groups progressively
@@ -388,6 +401,8 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
 
         return () => {
           cancelled = true;
+          disposePendingStore?.();
+          disposePendingStore = null;
         };
       }),
   );

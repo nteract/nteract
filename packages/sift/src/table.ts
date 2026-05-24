@@ -98,6 +98,8 @@ export type TableData = {
   recomputeFilteredSummaries?: (mask: Uint8Array, filteredCount: number) => void;
   /** Optional: apply filters in WASM and return matching row indices. */
   filterRows?: (filters: (ColumnFilter | null)[]) => Uint32Array;
+  /** Optional: release backing resources when the table engine is destroyed. */
+  dispose?: () => void;
 };
 
 // --- Filter types ---
@@ -2178,7 +2180,12 @@ export function createTable(
 
   // --- Destroy ---
 
+  let destroyed = false;
+
   function destroy() {
+    if (destroyed) return;
+    destroyed = true;
+
     // Cancel pending render + FPS observable
     if (scheduledRaf !== null) {
       cancelAnimationFrame(scheduledRaf);
@@ -2215,6 +2222,7 @@ export function createTable(
     // Clear DOM
     container.innerHTML = "";
     container.classList.remove("sift-table-container");
+    data.dispose?.();
   }
 
   // --- Filter API ---

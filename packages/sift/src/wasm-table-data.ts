@@ -41,6 +41,7 @@ export function createWasmTableData(
   columnOverrides?: Record<string, Partial<Column>>,
 ): WasmTableHandle {
   const mod = getModuleSync();
+  let disposed = false;
 
   const numRows = mod.num_rows(handle);
   const numCols = mod.num_cols(handle);
@@ -256,6 +257,12 @@ export function createWasmTableData(
         }
       }
       return mod.store_filter_rows(handle, specs);
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      mod.free(handle);
+      cache.clear();
     },
   };
 
