@@ -11,7 +11,7 @@
 
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { cn } from "@/lib/utils";
 
 // --- Types ---
@@ -22,90 +22,143 @@ interface RendererProps {
   mimeType: string;
 }
 
+interface LeafletMapState {
+  element: HTMLDivElement;
+  map: L.Map;
+  tileLayer: L.TileLayer;
+  geoJsonLayer: L.GeoJSON;
+  resizeObserver: ResizeObserver;
+  themeObserver: MutationObserver;
+}
+
+function parseGeoJson(data: unknown): GeoJSON.GeoJsonObject | null {
+  if (typeof data === "string") {
+    try {
+      return JSON.parse(data) as GeoJSON.GeoJsonObject;
+    } catch {
+      return null;
+    }
+  }
+  return data ? (data as GeoJSON.GeoJsonObject) : null;
+}
+
+function tileUrlForTheme(isDark: boolean): string {
+  return isDark
+    ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+    : "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png";
+}
+
+function featureColorForTheme(isDark: boolean): string {
+  return isDark ? "#818cf8" : "#4f46e5";
+}
+
+function addTileLayer(map: L.Map, isDark: boolean): L.TileLayer {
+  return L.tileLayer(tileUrlForTheme(isDark), {
+    attribution:
+      '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>',
+    maxZoom: 19,
+  }).addTo(map);
+}
+
+function addGeoJsonLayer(map: L.Map, data: GeoJSON.GeoJsonObject, isDark: boolean): L.GeoJSON {
+  const featureColor = featureColorForTheme(isDark);
+  return L.geoJSON(data, {
+    style: {
+      color: featureColor,
+      weight: 2,
+      fillOpacity: 0.25,
+      fillColor: featureColor,
+    },
+    pointToLayer: (_feature, latlng) => {
+      return L.circleMarker(latlng, {
+        radius: 6,
+        color: featureColor,
+        weight: 2,
+        fillOpacity: 0.5,
+        fillColor: featureColor,
+      });
+    },
+  }).addTo(map);
+}
+
+function fitInitialBounds(map: L.Map, geoJsonLayer: L.GeoJSON): void {
+  const bounds = geoJsonLayer.getBounds();
+  if (bounds.isValid()) {
+    map.fitBounds(bounds, { padding: [20, 20] });
+  } else {
+    map.setView([0, 0], 2);
+  }
+}
+
 // --- GeoJSON Renderer ---
 
 function GeoJsonRenderer({ data: rawData }: RendererProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const mapStateRef = useRef<LeafletMapState | null>(null);
 
-  const data =
-    typeof rawData === "string"
-      ? (JSON.parse(rawData) as Record<string, unknown>)
-      : (rawData as Record<string, unknown>);
+  const data = useMemo(() => parseGeoJson(rawData), [rawData]);
+
+  const cleanupMap = useCallback(() => {
+    const state = mapStateRef.current;
+    if (!state) return;
+
+    state.themeObserver.disconnect();
+    state.resizeObserver.disconnect();
+    state.map.remove();
+    mapStateRef.current = null;
+  }, []);
+
+  const setContainerRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      const previous = containerRef.current;
+      if (!node && previous && mapStateRef.current?.element === previous) {
+        cleanupMap();
+      }
+      containerRef.current = node;
+    },
+    [cleanupMap],
+  );
+
+  useEffect(() => () => cleanupMap(), [cleanupMap]);
 
   useEffect(() => {
-    if (!containerRef.current || !data) return;
+    if (!containerRef.current || !data) {
+      cleanupMap();
+      return;
+    }
 
     const el = containerRef.current;
     const isDark = document.documentElement.classList.contains("dark");
+    const existingState = mapStateRef.current;
 
-    // Create the map
-    const map = L.map(el, { zoomAnimation: true });
-
-    // Tile layer — CartoDB tiles work without an API key
-    const tileUrl = isDark
-      ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-      : "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png";
-
-    L.tileLayer(tileUrl, {
-      attribution:
-        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>',
-      maxZoom: 19,
-    }).addTo(map);
-
-    // Style features
-    const featureColor = isDark ? "#818cf8" : "#4f46e5";
-    const geojsonLayer = L.geoJSON(data as GeoJSON.GeoJsonObject, {
-      style: {
-        color: featureColor,
-        weight: 2,
-        fillOpacity: 0.25,
-        fillColor: featureColor,
-      },
-      pointToLayer: (_feature, latlng) => {
-        return L.circleMarker(latlng, {
-          radius: 6,
-          color: featureColor,
-          weight: 2,
-          fillOpacity: 0.5,
-          fillColor: featureColor,
-        });
-      },
-    }).addTo(map);
-
-    // Fit to bounds of the GeoJSON features
-    const bounds = geojsonLayer.getBounds();
-    if (bounds.isValid()) {
-      map.fitBounds(bounds, { padding: [20, 20] });
-    } else {
-      map.setView([0, 0], 2);
+    if (existingState?.element === el) {
+      existingState.geoJsonLayer.remove();
+      existingState.geoJsonLayer = addGeoJsonLayer(existingState.map, data, isDark);
+      return;
     }
 
-    // Handle resize so map tiles render correctly
+    cleanupMap();
+
+    const map = L.map(el, { zoomAnimation: true });
+    const tileLayer = addTileLayer(map, isDark);
+    const geoJsonLayer = addGeoJsonLayer(map, data, isDark);
+    fitInitialBounds(map, geoJsonLayer);
+
     const resizeObserver = new ResizeObserver(() => {
       map.invalidateSize();
     });
     resizeObserver.observe(el);
 
-    // React to theme changes
     const themeObserver = new MutationObserver(() => {
+      const state = mapStateRef.current;
+      if (!state) return;
+
       const nowDark = document.documentElement.classList.contains("dark");
-      const newTileUrl = nowDark
-        ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-        : "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png";
-      const newColor = nowDark ? "#818cf8" : "#4f46e5";
+      const newColor = featureColorForTheme(nowDark);
 
-      // Replace tile layer
-      map.eachLayer((layer) => {
-        if ((layer as L.TileLayer).getTileUrl) layer.remove();
-      });
-      L.tileLayer(newTileUrl, {
-        attribution:
-          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>',
-        maxZoom: 19,
-      }).addTo(map);
-
-      // Update GeoJSON layer style
-      geojsonLayer.setStyle({
+      state.tileLayer.remove();
+      state.tileLayer = addTileLayer(state.map, nowDark);
+      state.geoJsonLayer.setStyle({
         color: newColor,
         fillColor: newColor,
       });
@@ -115,18 +168,21 @@ function GeoJsonRenderer({ data: rawData }: RendererProps) {
       attributeFilter: ["class"],
     });
 
-    return () => {
-      themeObserver.disconnect();
-      resizeObserver.disconnect();
-      map.remove();
+    mapStateRef.current = {
+      element: el,
+      map,
+      tileLayer,
+      geoJsonLayer,
+      resizeObserver,
+      themeObserver,
     };
-  }, [data]);
+  }, [cleanupMap, data]);
 
   if (!data) return null;
 
   return (
     <div
-      ref={containerRef}
+      ref={setContainerRef}
       data-slot="geojson-output"
       className={cn("not-prose py-2 max-w-full")}
       style={{ height: "400px", width: "100%" }}
