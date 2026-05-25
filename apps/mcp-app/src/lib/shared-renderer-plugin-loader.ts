@@ -43,7 +43,7 @@ export function createDaemonRendererPluginLoader(
       ? rendererPluginAssetUrl(blobBaseUrl, `${info.name}.css`)
       : undefined;
     const promise = Promise.all([fetchText(codeUrl), cssUrl ? fetchText(cssUrl) : undefined])
-      .then(([code, css]) => ({ code, css }))
+      .then(([code, css]) => ({ id: info.name, code, css }))
       .catch((error) => {
         cache.delete(info.name);
         throw error;

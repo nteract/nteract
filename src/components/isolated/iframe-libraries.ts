@@ -23,6 +23,7 @@ import {
 } from "./renderer-plugin-info";
 
 interface PluginModule {
+  id?: string;
   code: string;
   css?: string;
 }
@@ -67,12 +68,14 @@ export function loadPluginForMime(mime: string): Promise<PluginModule | undefine
   if (cached) return cached;
 
   const loader = PLUGIN_LOADERS[pluginName];
-  const promise = loader().catch((error) => {
-    if (pluginCache.get(pluginName) === promise) {
-      pluginCache.delete(pluginName);
-    }
-    throw error;
-  });
+  const promise = loader()
+    .then((plugin) => ({ ...plugin, id: pluginName }))
+    .catch((error) => {
+      if (pluginCache.get(pluginName) === promise) {
+        pluginCache.delete(pluginName);
+      }
+      throw error;
+    });
   pluginCache.set(pluginName, promise);
   return promise;
 }
@@ -99,7 +102,8 @@ export async function injectPluginsForMimes(
   injectedSet: Set<string>,
 ): Promise<void> {
   for (const mime of mimes) {
-    if (injectedSet.has(mime)) continue;
+    const installKey = rendererPluginNameForMime(mime) ?? mime;
+    if (injectedSet.has(installKey)) continue;
     const plugin = await loadPluginForMime(mime);
     if (!plugin) continue;
     logIsolatedDiagnostic({
@@ -113,6 +117,6 @@ export async function injectPluginsForMimes(
       },
     });
     frame.installRenderer(plugin.code, plugin.css);
-    injectedSet.add(mime);
+    injectedSet.add(installKey);
   }
 }

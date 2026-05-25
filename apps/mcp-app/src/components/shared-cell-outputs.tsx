@@ -58,6 +58,9 @@ export function SharedCellOutputs({ cell, blobBaseUrl, hostContext }: SharedCell
   useEffect(() => {
     if (failed || !targetRef.current || outputs.length === 0) return;
 
+    // The embed lifetime is tied to the output container, not output identity.
+    // Content changes with the same output count are delivered by the render
+    // effect below so the iframe is not torn down between equivalent cells.
     const handle = createNteractOutputEmbed({
       target: targetRef.current,
       rendererBundle: SHARED_RENDERER_BUNDLE,

@@ -188,6 +188,49 @@ describe("createNteractOutputEmbed", () => {
     );
   });
 
+  it("installs one shared renderer plugin for multiple MIME aliases", async () => {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const rendererPluginLoader = vi.fn(async (mime: string) =>
+      mime === "text/markdown" || mime === "text/latex"
+        ? { id: "markdown", code: "markdown plugin", css: ".markdown{}" }
+        : undefined,
+    );
+
+    const handle = createNteractOutputEmbed({
+      target,
+      rendererBundle: { rendererCode: "", rendererCss: "" },
+      rendererPluginLoader,
+    });
+    const frameWindow = handle.iframe.contentWindow!;
+    bootstrapFrame(frameWindow);
+    const transport = MockJsonRpcTransport.instances[0];
+    transport.notificationHandlers.get(NTERACT_RENDERER_READY)?.({});
+
+    await handle.renderBatch([
+      {
+        mimeType: "text/markdown",
+        data: "**hello**",
+        outputId: "markdown-output",
+      },
+      {
+        mimeType: "text/latex",
+        data: "$x$",
+        outputId: "latex-output",
+      },
+    ]);
+
+    expect(rendererPluginLoader).toHaveBeenCalledWith("text/markdown");
+    expect(rendererPluginLoader).not.toHaveBeenCalledWith("text/latex");
+    expect(transport.notify).toHaveBeenCalledWith(NTERACT_INSTALL_RENDERER, {
+      code: "markdown plugin",
+      css: ".markdown{}",
+    });
+    expect(
+      transport.notify.mock.calls.filter(([method]) => method === NTERACT_INSTALL_RENDERER),
+    ).toHaveLength(1);
+  });
+
   it("reports renderer bundle provider failures", async () => {
     const target = document.createElement("div");
     document.body.appendChild(target);
