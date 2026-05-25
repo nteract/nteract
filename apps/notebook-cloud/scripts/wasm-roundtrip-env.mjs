@@ -17,3 +17,11 @@ export function isLoopbackBaseUrl(baseUrl) {
     hostname === "[::1]"
   );
 }
+
+export function credentialedSmokeOrigin({ baseUrl, protocols }) {
+  if (!protocols || protocols.length === 0) {
+    return undefined;
+  }
+
+  return new URL(baseUrl).origin;
+}
