@@ -33,15 +33,7 @@ describe("HtmlOutput", () => {
     );
 
     expect(frame.style.height).toBe("422px");
-    expect(logs).toContainEqual(
-      expect.objectContaining({
-        level: "debug",
-        data: expect.objectContaining({
-          event: "html-output-iframe-resized",
-          height: 422,
-        }),
-      }),
-    );
+    expect(logs).toHaveLength(0);
   });
 
   it("ignores height messages from unrelated frames", () => {
