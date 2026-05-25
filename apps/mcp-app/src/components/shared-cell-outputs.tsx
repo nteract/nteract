@@ -1,17 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo } from "react";
 import type { McpUiHostContext } from "@modelcontextprotocol/ext-apps";
 import { rendererCode, rendererCss } from "virtual:isolated-renderer";
-import {
-  createInlineOnlyBlobResolver,
-  createMcpAppBlobResolver,
-  mcpAppCellsToSharedOutputs,
-} from "@/components/isolated/mcp-app-structured-content";
-import {
-  createNteractOutputEmbed,
-  type NteractOutputEmbedHandle,
-  type NteractOutputRendererBundleProvider,
-} from "@/components/isolated/output-embed";
-import { mcpAppHostContextToNteractEmbedPatch } from "@/components/isolated/host-context";
+import { McpAppOutputFrame } from "@/components/isolated/mcp-app-output-frame";
+import type { NteractOutputRendererBundleProvider } from "@/components/isolated/output-embed";
 import type { CellData } from "../types";
 import { errorDetails, hostLog } from "../lib/host-log";
 import {
@@ -34,91 +25,50 @@ interface SharedCellOutputsProps {
 }
 
 export function SharedCellOutputs({ cell, blobBaseUrl, hostContext }: SharedCellOutputsProps) {
-  const targetRef = useRef<HTMLDivElement | null>(null);
-  const handleRef = useRef<NteractOutputEmbedHandle | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  const outputs = useMemo(
-    () => mcpAppCellsToSharedOutputs([cell], blobBaseUrl),
-    [cell, blobBaseUrl],
+  const rendererPluginLoader = useMemo(
+    () => createDaemonRendererPluginLoader(blobBaseUrl),
+    [blobBaseUrl],
   );
-  const pluginLoader = useMemo(() => createDaemonRendererPluginLoader(blobBaseUrl), [blobBaseUrl]);
-  const hostContextPatch = useMemo(
-    () =>
-      mcpAppHostContextToNteractEmbedPatch(hostContext, {
-        rendererAssetsBaseUrl: daemonRendererAssetsBaseUrl(blobBaseUrl),
-      }),
-    [hostContext, blobBaseUrl],
-  );
-  const hostContextPatchRef = useRef(hostContextPatch);
-  const blobResolver = useMemo(
-    () => (blobBaseUrl ? createMcpAppBlobResolver(blobBaseUrl) : createInlineOnlyBlobResolver()),
+  const rendererAssetsBaseUrl = useMemo(
+    () => daemonRendererAssetsBaseUrl(blobBaseUrl),
     [blobBaseUrl],
   );
   const outputDocumentUrl = useMemo(() => daemonOutputFrameUrl(blobBaseUrl), [blobBaseUrl]);
-
-  useEffect(() => {
-    setFailed(false);
-  }, [cell.cell_id, blobBaseUrl]);
-
-  useEffect(() => {
-    if (failed || !targetRef.current || outputs.length === 0) return;
-
-    // The embed lifetime is tied to the output container, not output identity.
-    // Content changes with the same output count are delivered by the render
-    // effect below so the iframe is not torn down between equivalent cells.
-    const handle = createNteractOutputEmbed({
-      target: targetRef.current,
-      rendererBundle: SHARED_RENDERER_BUNDLE,
-      rendererPluginLoader: pluginLoader,
-      blobResolver,
-      hostContext: hostContextPatchRef.current,
-      outputDocumentUrl,
-      autoHeight: false,
-      maxHeight: SHARED_OUTPUT_MAX_HEIGHT,
-      onDiagnostic(phase, details, level = "debug", source = "isolated-frame") {
-        if (level !== "error" && level !== "warn") return;
-        hostLog(level === "warn" ? "warning" : "error", "shared-output-renderer-diagnostic", {
-          phase,
-          source,
-          details,
-        });
-      },
-      onError(error) {
-        hostLog("error", "shared-output-renderer-failed", {
-          error: errorDetails(error),
-        });
-        handleRef.current?.dispose();
-        handleRef.current = null;
-        setFailed(true);
-      },
-    });
-
-    handleRef.current = handle;
-    return () => {
-      handle.dispose();
-      if (handleRef.current === handle) handleRef.current = null;
-    };
-  }, [blobBaseUrl, blobResolver, failed, outputDocumentUrl, outputs.length, pluginLoader]);
-
-  useEffect(() => {
-    if (failed || outputs.length === 0) return;
-    handleRef.current?.renderBatch(outputs).catch((error) => {
-      hostLog("error", "shared-output-render-failed", {
-        error: errorDetails(error),
+  const handleDiagnostic = useCallback(
+    (
+      phase: string,
+      details?: Record<string, unknown>,
+      level: "debug" | "info" | "warn" | "error" = "debug",
+      source: "isolated-frame" | "isolated-renderer" | "iframe-libraries" = "isolated-frame",
+    ) => {
+      if (level !== "error" && level !== "warn") return;
+      hostLog(level === "warn" ? "warning" : "error", "shared-output-renderer-diagnostic", {
+        phase,
+        source,
+        details,
       });
-      handleRef.current?.dispose();
-      handleRef.current = null;
-      setFailed(true);
+    },
+    [],
+  );
+  const handleError = useCallback((error: { message: string; stack?: string }) => {
+    hostLog("error", "shared-output-renderer-failed", {
+      error: errorDetails(error),
     });
-  }, [failed, outputs]);
+  }, []);
 
-  useEffect(() => {
-    hostContextPatchRef.current = hostContextPatch;
-    handleRef.current?.setHostContext(hostContextPatch);
-  }, [hostContextPatch]);
-
-  if (failed) return null;
-
-  return <div ref={targetRef} className="shared-output-frame" />;
+  return (
+    <McpAppOutputFrame
+      cell={cell}
+      blobBaseUrl={blobBaseUrl}
+      hostContext={hostContext}
+      rendererBundle={SHARED_RENDERER_BUNDLE}
+      rendererPluginLoader={rendererPluginLoader}
+      rendererAssetsBaseUrl={rendererAssetsBaseUrl}
+      outputDocumentUrl={outputDocumentUrl}
+      maxHeight={SHARED_OUTPUT_MAX_HEIGHT}
+      className="shared-output-frame"
+      onDiagnostic={handleDiagnostic}
+      onError={handleError}
+    />
+  );
 }
