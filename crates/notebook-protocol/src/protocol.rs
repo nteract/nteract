@@ -433,6 +433,15 @@ pub struct NotebookResponseEnvelope {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CommBufferRef {
+    pub index: usize,
+    pub blob: String,
+    pub size: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CommRequestMessage {
     pub header: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -442,6 +451,8 @@ pub struct CommRequestMessage {
     pub content: serde_json::Value,
     #[serde(default)]
     pub buffers: Vec<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub buffer_refs: Vec<CommBufferRef>,
     #[serde(default = "default_comm_channel")]
     pub channel: String,
 }
@@ -1881,6 +1892,7 @@ mod tests {
                 metadata: serde_json::json!({}),
                 content: serde_json::json!({}),
                 buffers: vec![vec![1, 2, 3]],
+                buffer_refs: vec![],
                 channel: "shell".to_string(),
             }),
         }
@@ -1943,7 +1955,41 @@ mod tests {
         assert_eq!(message.parent_header, None);
         assert_eq!(message.metadata, serde_json::json!({}));
         assert!(message.buffers.is_empty());
+        assert!(message.buffer_refs.is_empty());
         assert_eq!(message.channel, "shell");
+    }
+
+    #[test]
+    fn comm_request_message_accepts_ordered_buffer_refs() {
+        let request: NotebookRequest = serde_json::from_value(serde_json::json!({
+            "action": "send_comm",
+            "message": {
+                "header": { "msg_type": "comm_msg" },
+                "content": { "comm_id": "comm-a", "data": {} },
+                "buffer_refs": [
+                    {
+                        "index": 0,
+                        "blob": "abc123",
+                        "size": 3,
+                        "media_type": "application/octet-stream"
+                    }
+                ]
+            }
+        }))
+        .expect("SendComm buffer refs should deserialize");
+
+        let NotebookRequest::SendComm { message } = request else {
+            panic!("expected SendComm request");
+        };
+        assert_eq!(
+            message.buffer_refs,
+            vec![CommBufferRef {
+                index: 0,
+                blob: "abc123".to_string(),
+                size: 3,
+                media_type: Some("application/octet-stream".to_string()),
+            }]
+        );
     }
 
     #[test]
