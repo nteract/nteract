@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   createNteractEmbedHostContext,
   createNteractThemeVariables,
+  mcpAppHostContextToNteractEmbedPatch,
   mergeNteractEmbedHostContext,
 } from "../host-context";
 
@@ -99,6 +100,87 @@ describe("nteract embed host context", () => {
       right: 0,
       bottom: 4,
       left: 8,
+    });
+  });
+
+  it("adapts MCP App host context without reusing outer app dimensions", () => {
+    const patch = mcpAppHostContextToNteractEmbedPatch(
+      {
+        theme: "dark",
+        displayMode: "inline",
+        availableDisplayModes: ["inline", "fullscreen", "unsupported"],
+        containerDimensions: {
+          width: 614,
+          height: 330,
+        },
+        styles: {
+          variables: {
+            "--color-text-primary": "#fff",
+            "--ignored-non-string": 123,
+          },
+          css: {
+            fonts: "@font-face { font-family: Test; src: url(test.woff2); }",
+          },
+        },
+        locale: "en-US",
+        timeZone: "America/Los_Angeles",
+        userAgent: "Claude",
+        platform: "desktop",
+        safeAreaInsets: {
+          top: 1,
+          bottom: 2,
+        },
+      },
+      {
+        rendererAssetsBaseUrl: "http://localhost:47830/plugins/",
+      },
+    );
+
+    expect(patch).toMatchObject({
+      theme: "dark",
+      displayMode: "inline",
+      availableDisplayModes: ["inline", "fullscreen"],
+      styles: {
+        variables: {
+          "--color-text-primary": "#fff",
+        },
+        css: {
+          fonts: "@font-face { font-family: Test; src: url(test.woff2); }",
+        },
+      },
+      locale: "en-US",
+      timeZone: "America/Los_Angeles",
+      userAgent: "Claude",
+      platform: "desktop",
+      safeAreaInsets: {
+        top: 1,
+        bottom: 2,
+      },
+      nteract: {
+        rendererAssetsBaseUrl: "http://localhost:47830/plugins/",
+      },
+    });
+    expect(patch.styles?.variables).not.toHaveProperty("--ignored-non-string");
+    expect(patch.containerDimensions).toBeUndefined();
+  });
+
+  it("can opt into MCP App host dimensions for direct embedders", () => {
+    const patch = mcpAppHostContextToNteractEmbedPatch(
+      {
+        containerDimensions: {
+          width: 800,
+          height: 300,
+          maxHeight: "bad",
+        },
+      },
+      {
+        includeContainerDimensions: true,
+      },
+    );
+
+    expect(patch.containerDimensions).toEqual({
+      width: 800,
+      height: 300,
     });
   });
 });

@@ -46,12 +46,15 @@ The MCP App now uses the shared output embed for all cell outputs:
 2. The app adapts those outputs into shared `OutputManifest` values.
 3. `createNteractOutputEmbed` creates a sandboxed nested iframe whose `src` is
    `{blob_base_url}/output-frame`.
-4. The app injects the shared isolated renderer bundle from
+4. The app adapts MCP Apps `HostContext` through the shared
+   `mcpAppHostContextToNteractEmbedPatch` contract, omitting the outer app
+   iframe dimensions so the nested output frame can report its own size.
+5. The app injects the shared isolated renderer bundle from
    `virtual:isolated-renderer`.
-5. Heavy renderer plugins are fetched as raw CJS from
+6. Heavy renderer plugins are fetched as raw CJS from
    `{blob_base_url}/renderer-plugins/{name}.js` and installed with
    `nteract/installRenderer`.
-6. The duplicate MCP App MIME renderer and `window.__nteract` plugin registry
+7. The duplicate MCP App MIME renderer and `window.__nteract` plugin registry
    are not part of the app bundle anymore.
 
 ## Migration Slices

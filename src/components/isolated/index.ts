@@ -40,9 +40,12 @@ export { FRAME_HTML, generateFrameHtml } from "./frame-html";
 export {
   createNteractEmbedHostContext,
   createNteractThemeVariables,
+  mcpAppHostContextToNteractEmbedPatch,
   mergeNteractEmbedHostContext,
 } from "./host-context";
 export type {
+  McpAppHostContextLike,
+  McpAppHostContextToNteractEmbedOptions,
   NteractEmbedContainerDimensions,
   NteractEmbedDeviceCapabilities,
   NteractEmbedDisplayMode,
