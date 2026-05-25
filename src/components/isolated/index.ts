@@ -75,6 +75,8 @@ export type {
   NteractOutputRendererPlugin,
   NteractOutputRendererPluginLoader,
 } from "./output-embed";
+export { McpAppOutputFrame } from "./mcp-app-output-frame";
+export type { McpAppOutputFrameProps } from "./mcp-app-output-frame";
 export {
   createBlobResolver,
   createHttpBlobResolver,
