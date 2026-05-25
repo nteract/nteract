@@ -1,6 +1,6 @@
 use runtimed::output_commit_measure::{
-    measure_current_output_commit_loop, measure_ordered_worker_output_commit_model,
-    OutputCommitKind, OutputCommitMeasurementConfig,
+    measure_blob_segment_output_model, measure_current_output_commit_loop,
+    measure_ordered_worker_output_commit_model, OutputCommitKind, OutputCommitMeasurementConfig,
 };
 
 #[tokio::main]
@@ -19,6 +19,10 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(256);
+    let segment_size = std::env::var("NTERACT_OUTPUT_COMMIT_SEGMENT_SIZE")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(128);
 
     for kind in [
         OutputCommitKind::DisplayData,
@@ -30,12 +34,16 @@ async fn main() -> anyhow::Result<()> {
                 output_count,
                 payload_bytes,
                 kind,
+                segment_size,
             };
             let current = measure_current_output_commit_loop(config).await?;
             println!("{}", serde_json::to_string(&current)?);
 
             let worker = measure_ordered_worker_output_commit_model(config).await?;
             println!("{}", serde_json::to_string(&worker)?);
+
+            let segment = measure_blob_segment_output_model(config).await?;
+            println!("{}", serde_json::to_string(&segment)?);
         }
     }
 
