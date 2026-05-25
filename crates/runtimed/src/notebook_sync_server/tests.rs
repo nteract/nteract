@@ -2585,6 +2585,7 @@ async fn test_load_notebook_reuses_matching_durable_execution_id() {
             execution_count: Some(7),
             source: Some("print('hi')".to_string()),
             seq: Some(0),
+            submitted_by_actor_label: None,
             outputs,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -2663,6 +2664,7 @@ async fn test_load_notebook_mints_execution_id_when_durable_record_no_longer_mat
             execution_count: Some(7),
             source: Some("print('hi')".to_string()),
             seq: Some(0),
+            submitted_by_actor_label: None,
             outputs: vec![serde_json::json!({
                 "output_type": "stream",
                 "name": "stdout",

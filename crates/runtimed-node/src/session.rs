@@ -2069,6 +2069,7 @@ async fn cell_result_from_record(
         outputs: record.outputs,
         source: record.source,
         seq: record.seq,
+        submitted_by_actor_label: record.submitted_by_actor_label,
     };
     cell_result_from_execution_state(
         &execution_id,
@@ -2386,6 +2387,7 @@ mod tests {
             outputs: vec![],
             source: Some("1 + 1".to_string()),
             seq: Some(9),
+            submitted_by_actor_label: None,
         };
 
         let result =
@@ -2422,6 +2424,7 @@ mod tests {
             outputs: vec![],
             source: Some("print('ok')".to_string()),
             seq: Some(11),
+            submitted_by_actor_label: None,
         };
         let record = runtimed_client::execution_store::ExecutionRecord::from_execution_state(
             "exec-from-store",

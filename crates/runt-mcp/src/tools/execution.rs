@@ -370,6 +370,7 @@ pub async fn get_results(
             outputs: record.outputs,
             source: record.source,
             seq: record.seq,
+            submitted_by_actor_label: record.submitted_by_actor_label,
         };
         let execution_cell_map = record
             .cell_id
@@ -553,6 +554,7 @@ mod tests {
                 execution_count: Some(3),
                 source: Some("print('hi')".to_string()),
                 seq: Some(0),
+                submitted_by_actor_label: None,
                 outputs: vec![serde_json::json!({
                     "output_type": "stream",
                     "name": "stdout",

@@ -31,6 +31,8 @@ pub struct ExecutionRecord {
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submitted_by_actor_label: Option<String>,
     #[serde(default)]
     pub outputs: Vec<serde_json::Value>,
     pub created_at: DateTime<Utc>,
@@ -58,6 +60,7 @@ impl ExecutionRecord {
             execution_count: exec.execution_count,
             source: exec.source.clone(),
             seq: exec.seq,
+            submitted_by_actor_label: exec.submitted_by_actor_label.clone(),
             outputs: exec.outputs.clone(),
             created_at: now,
             updated_at: now,
@@ -84,6 +87,7 @@ impl ExecutionRecord {
             && self.execution_count == other.execution_count
             && self.source == other.source
             && self.seq == other.seq
+            && self.submitted_by_actor_label == other.submitted_by_actor_label
             && self.outputs == other.outputs
     }
 
@@ -400,6 +404,7 @@ mod tests {
             execution_count: Some(1),
             source: Some("1 + 1".to_string()),
             seq: Some(0),
+            submitted_by_actor_label: None,
             outputs: vec![serde_json::json!({
                 "output_type": "stream",
                 "output_id": "old",

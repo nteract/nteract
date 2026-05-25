@@ -1362,6 +1362,7 @@ impl NotebookHandle {
             status,
             execution_count,
             success,
+            submitted_by_actor_label,
             ..
         } = exec;
         let summary = serde_json::json!({
@@ -1369,6 +1370,7 @@ impl NotebookHandle {
             "status": status,
             "success": success,
             "output_ids": output_ids,
+            "submitted_by_actor_label": submitted_by_actor_label,
         });
         serialize_to_js(&summary).unwrap_or(JsValue::UNDEFINED)
     }
