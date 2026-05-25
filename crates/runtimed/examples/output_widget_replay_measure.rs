@@ -1,5 +1,5 @@
 use runtimed::output_widget_replay_measure::{
-    measure_current_replay_loop, ReplayMeasurementConfig,
+    measure_cached_replay_loop, measure_current_replay_loop, ReplayMeasurementConfig,
 };
 
 #[tokio::main]
@@ -15,12 +15,27 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(256);
 
     for output_count in counts {
-        let metrics = measure_current_replay_loop(ReplayMeasurementConfig {
+        let config = ReplayMeasurementConfig {
             output_count,
             payload_bytes,
-        })
-        .await?;
-        println!("{}", serde_json::to_string(&metrics)?);
+        };
+        let current = measure_current_replay_loop(config).await?;
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "strategy": "current",
+                "metrics": current,
+            }))?
+        );
+
+        let cached = measure_cached_replay_loop(config).await?;
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "strategy": "cached",
+                "metrics": cached,
+            }))?
+        );
     }
 
     Ok(())

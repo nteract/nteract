@@ -220,6 +220,49 @@ fn try_send_comm_update(
     }
 }
 
+async fn resolve_output_widget_replay_state(
+    replay_cache: &mut HashMap<String, Vec<serde_json::Value>>,
+    comm_id: &str,
+    output_manifests: &[serde_json::Value],
+    appended_manifest: &OutputManifest,
+    cleared_before_append: bool,
+    blob_store: &crate::blob_store::BlobStore,
+) -> Vec<serde_json::Value> {
+    if cleared_before_append {
+        replay_cache.remove(comm_id);
+    }
+
+    let cached_outputs = replay_cache.entry(comm_id.to_string()).or_default();
+    if cached_outputs.len() + 1 == output_manifests.len() {
+        match output_store::resolve_manifest(appended_manifest, blob_store).await {
+            Ok(resolved) => cached_outputs.push(resolved),
+            Err(e) => warn!(
+                "[jupyter-kernel] Failed to resolve appended Output widget manifest for comm_id={}: {}",
+                comm_id, e
+            ),
+        }
+    } else {
+        cached_outputs.clear();
+        for output_manifest in output_manifests {
+            match serde_json::from_value::<OutputManifest>(output_manifest.clone()) {
+                Ok(manifest) => match output_store::resolve_manifest(&manifest, blob_store).await {
+                    Ok(resolved) => cached_outputs.push(resolved),
+                    Err(e) => warn!(
+                        "[jupyter-kernel] Failed to resolve Output widget manifest for comm_id={}: {}",
+                        comm_id, e
+                    ),
+                },
+                Err(e) => warn!(
+                    "[jupyter-kernel] Failed to parse Output widget manifest for comm_id={}: {}",
+                    comm_id, e
+                ),
+            }
+        }
+    }
+
+    cached_outputs.clone()
+}
+
 /// Created at kernel launch time, captures connection_info and session_id.
 /// Can be used concurrently with other kernel operations since interrupt
 /// creates its own ZMQ control connection.
@@ -1297,6 +1340,8 @@ impl KernelConnection for JupyterKernel {
                 // Track Output widgets with pending clear_output(wait=true).
                 let mut pending_clear_widgets: std::collections::HashSet<String> =
                     std::collections::HashSet::new();
+                let mut output_widget_replay_cache: HashMap<String, Vec<serde_json::Value>> =
+                    HashMap::new();
 
                 // Capture routing cache: msg_id -> comm_id.
                 let mut capture_cache: std::collections::HashMap<String, String> =
@@ -1528,24 +1573,16 @@ impl KernelConnection for JupyterKernel {
                                                 .ok()
                                                 .flatten();
                                             if let Some(output_manifests) = output_manifests {
-                                                let mut resolved_outputs = Vec::new();
-                                                for m in &output_manifests {
-                                                    if let Ok(manifest) =
-                                                        serde_json::from_value::<OutputManifest>(
-                                                            m.clone(),
-                                                        )
-                                                    {
-                                                        if let Ok(resolved) =
-                                                            output_store::resolve_manifest(
-                                                                &manifest,
-                                                                &blob_store,
-                                                            )
-                                                            .await
-                                                        {
-                                                            resolved_outputs.push(resolved);
-                                                        }
-                                                    }
-                                                }
+                                                let resolved_outputs =
+                                                    resolve_output_widget_replay_state(
+                                                        &mut output_widget_replay_cache,
+                                                        &widget_comm_id,
+                                                        &output_manifests,
+                                                        &manifest,
+                                                        need_clear,
+                                                        &blob_store,
+                                                    )
+                                                    .await;
                                                 try_send_comm_update(
                                                     &iopub_work_tx,
                                                     widget_comm_id.clone(),
@@ -1664,24 +1701,16 @@ impl KernelConnection for JupyterKernel {
                                                     .ok()
                                                     .flatten();
                                                 if let Some(output_manifests) = output_manifests {
-                                                    let mut resolved_outputs = Vec::new();
-                                                    for m in &output_manifests {
-                                                        if let Ok(manifest) = serde_json::from_value::<
-                                                            OutputManifest,
-                                                        >(
-                                                            m.clone()
-                                                        ) {
-                                                            if let Ok(r) =
-                                                                output_store::resolve_manifest(
-                                                                    &manifest,
-                                                                    &blob_store,
-                                                                )
-                                                                .await
-                                                            {
-                                                                resolved_outputs.push(r);
-                                                            }
-                                                        }
-                                                    }
+                                                    let resolved_outputs =
+                                                        resolve_output_widget_replay_state(
+                                                            &mut output_widget_replay_cache,
+                                                            &widget_comm_id,
+                                                            &output_manifests,
+                                                            &manifest,
+                                                            need_clear,
+                                                            &blob_store,
+                                                        )
+                                                        .await;
                                                     try_send_comm_update(
                                                         &iopub_work_tx,
                                                         widget_comm_id.clone(),
@@ -1883,24 +1912,16 @@ impl KernelConnection for JupyterKernel {
                                                     .ok()
                                                     .flatten();
                                                 if let Some(output_manifests) = output_manifests {
-                                                    let mut resolved_outputs = Vec::new();
-                                                    for m in &output_manifests {
-                                                        if let Ok(manifest) = serde_json::from_value::<
-                                                            OutputManifest,
-                                                        >(
-                                                            m.clone()
-                                                        ) {
-                                                            if let Ok(r) =
-                                                                output_store::resolve_manifest(
-                                                                    &manifest,
-                                                                    &blob_store,
-                                                                )
-                                                                .await
-                                                            {
-                                                                resolved_outputs.push(r);
-                                                            }
-                                                        }
-                                                    }
+                                                    let resolved_outputs =
+                                                        resolve_output_widget_replay_state(
+                                                            &mut output_widget_replay_cache,
+                                                            &widget_comm_id,
+                                                            &output_manifests,
+                                                            &manifest,
+                                                            need_clear,
+                                                            &blob_store,
+                                                        )
+                                                        .await;
                                                     try_send_comm_update(
                                                         &iopub_work_tx,
                                                         widget_comm_id.clone(),
@@ -2004,6 +2025,7 @@ impl KernelConnection for JupyterKernel {
                                             pending_clear_widgets.insert(widget_comm_id.clone());
                                         } else {
                                             pending_clear_widgets.remove(&widget_comm_id);
+                                            output_widget_replay_cache.remove(&widget_comm_id);
                                             if let Err(e) = state_for_iopub.with_doc(|sd| {
                                                 sd.clear_comm_outputs(&widget_comm_id)?;
                                                 sd.set_comm_state_property(
@@ -2278,6 +2300,7 @@ impl KernelConnection for JupyterKernel {
                                     }
 
                                     capture_cache.retain(|_, cid| cid != &close.comm_id.0);
+                                    output_widget_replay_cache.remove(&close.comm_id.0);
 
                                     if let Err(e) = state_for_iopub
                                         .with_doc(|sd| sd.remove_comm(&close.comm_id.0))
@@ -3359,6 +3382,64 @@ mod tests {
             rx.try_recv().is_err(),
             "full work queue should drop comm output replay"
         );
+    }
+
+    #[tokio::test]
+    async fn output_widget_replay_cache_rebuilds_on_drift_and_clear() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let blob_store = crate::blob_store::BlobStore::new(tmp.path().to_path_buf());
+        let first = serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": "first\n",
+        });
+        let second = serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": "second\n",
+        });
+        let first_manifest =
+            output_store::create_manifest(&first, &blob_store, DEFAULT_INLINE_THRESHOLD)
+                .await
+                .expect("first manifest");
+        let second_manifest =
+            output_store::create_manifest(&second, &blob_store, DEFAULT_INLINE_THRESHOLD)
+                .await
+                .expect("second manifest");
+
+        let mut replay_cache = HashMap::new();
+        let rebuilt = resolve_output_widget_replay_state(
+            &mut replay_cache,
+            "comm-a",
+            &[first_manifest.to_json(), second_manifest.to_json()],
+            &second_manifest,
+            false,
+            &blob_store,
+        )
+        .await;
+        assert_eq!(
+            rebuilt.len(),
+            2,
+            "cache drift should rebuild from manifests"
+        );
+        assert_eq!(rebuilt[0]["text"], "first\n");
+        assert_eq!(rebuilt[1]["text"], "second\n");
+
+        let cleared = resolve_output_widget_replay_state(
+            &mut replay_cache,
+            "comm-a",
+            &[second_manifest.to_json()],
+            &second_manifest,
+            true,
+            &blob_store,
+        )
+        .await;
+        assert_eq!(
+            cleared.len(),
+            1,
+            "clear_output(wait=true) should discard stale replay cache"
+        );
+        assert_eq!(cleared[0]["text"], "second\n");
     }
 
     #[tokio::test]
