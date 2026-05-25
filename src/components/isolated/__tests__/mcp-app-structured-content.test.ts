@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { resolveEmbeddableOutputs } from "../embeddable-output";
 import {
   createMcpAppBlobResolver,
+  mcpAppCellHasRichOutput,
   mcpAppCellsToSharedOutputs,
   mcpAppStructuredContentToSharedOutputInputs,
   type McpAppCellData,
@@ -141,5 +142,52 @@ describe("MCP App structured content adapter", () => {
       },
       outputId: "error-output",
     });
+  });
+
+  it("uses shared MIME priority when deciding whether MCP App cells should expand", () => {
+    expect(
+      mcpAppCellHasRichOutput(
+        cellWithOutputs([
+          {
+            output_type: "display_data",
+            data: {
+              "text/plain": "Widget view",
+              "application/vnd.jupyter.widget-view+json": JSON.stringify({ model_id: "abc" }),
+            },
+          },
+        ]),
+      ),
+    ).toBe(true);
+
+    expect(
+      mcpAppCellHasRichOutput(
+        cellWithOutputs([
+          {
+            output_type: "display_data",
+            data: {
+              "text/html": "<table></table>",
+              "application/vnd.apache.parquet": "http://localhost:47830/blob/table",
+              "text/plain": "table fallback",
+            },
+          },
+        ]),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps plain and JSON-only MCP App cells collapsed by default", () => {
+    expect(
+      mcpAppCellHasRichOutput(
+        cellWithOutputs([
+          {
+            output_type: "execute_result",
+            data: {
+              "text/plain": "42",
+              "application/json": JSON.stringify({ value: 42 }),
+            },
+          },
+        ]),
+      ),
+    ).toBe(false);
   });
 });
