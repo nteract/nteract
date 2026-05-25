@@ -74,8 +74,8 @@ The desktop app builds a `.mcpb` bundle at runtime (manifest, icons, `nteract-mc
 # Open a notebook
 runt notebook path/to/notebook.ipynb
 
-# Interactive console
-runt jupyter console
+# MCP server for notebook automation
+runt mcp
 
 # Daemon management
 runt daemon status

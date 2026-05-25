@@ -20,3 +20,38 @@ TEST "invalid command fails"
 RUN runt invalid_command
 ASSERT exit_code != 0
 ASSERT stderr contains "error: unrecognized subcommand 'invalid_command'"
+
+TEST "removed jupyter namespace fails"
+RUN runt jupyter
+ASSERT exit_code != 0
+ASSERT stderr contains "error: unrecognized subcommand 'jupyter'"
+
+TEST "removed standalone start command fails"
+RUN runt start python3
+ASSERT exit_code != 0
+ASSERT stderr contains "error: unrecognized subcommand 'start'"
+
+TEST "removed standalone stop-kernel command fails"
+RUN runt stop-kernel 00000000-0000-0000-0000-000000000000
+ASSERT exit_code != 0
+ASSERT stderr contains "error: unrecognized subcommand 'stop-kernel'"
+
+TEST "removed standalone interrupt command fails"
+RUN runt interrupt 00000000-0000-0000-0000-000000000000
+ASSERT exit_code != 0
+ASSERT stderr contains "error: unrecognized subcommand 'interrupt'"
+
+TEST "removed standalone exec command fails"
+RUN runt exec 00000000-0000-0000-0000-000000000000 "print('hello')"
+ASSERT exit_code != 0
+ASSERT stderr contains "error: unrecognized subcommand 'exec'"
+
+TEST "removed standalone console command fails"
+RUN runt console
+ASSERT exit_code != 0
+ASSERT stderr contains "error: unrecognized subcommand 'console'"
+
+TEST "removed standalone clean command fails"
+RUN runt clean
+ASSERT exit_code != 0
+ASSERT stderr contains "error: unrecognized subcommand 'clean'"
