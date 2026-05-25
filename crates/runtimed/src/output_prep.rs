@@ -325,20 +325,17 @@ pub(crate) fn collect_display_update_targets(
     if !index_entries.is_empty() {
         let mut targets = Vec::new();
         for (exec_id, target_output_id) in &index_entries {
-            let outputs = state_doc.get_outputs(exec_id);
-            for output_value in outputs {
-                let manifest: OutputManifest = match serde_json::from_value(output_value) {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
-                if manifest.output_id() == target_output_id {
-                    targets.push(DisplayUpdateTarget {
-                        execution_id: exec_id.clone(),
-                        output_id: target_output_id.clone(),
-                        manifest,
-                    });
-                }
-            }
+            let Some(output_value) = state_doc.get_output(exec_id, target_output_id) else {
+                continue;
+            };
+            let Ok(manifest) = serde_json::from_value(output_value) else {
+                continue;
+            };
+            targets.push(DisplayUpdateTarget {
+                execution_id: exec_id.clone(),
+                output_id: target_output_id.clone(),
+                manifest,
+            });
         }
         targets
     } else {
