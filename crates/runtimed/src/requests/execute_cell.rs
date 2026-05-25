@@ -11,6 +11,8 @@ use crate::notebook_sync_server::{
 };
 use crate::protocol::NotebookResponse;
 use crate::requests::guarded;
+use crate::requests::publish_startup_queue_from_queued_executions;
+use crate::requests::runtime_launch_in_progress;
 use crate::requests::trim_runtime_executions_for_doc;
 use crate::task_supervisor::spawn_best_effort;
 use notebook_protocol::protocol::ExecutionIdRejectionReason;
@@ -66,29 +68,25 @@ async fn handle_inner(
     requested_execution_id: Option<String>,
     observed_heads: Option<Vec<String>>,
 ) -> NotebookResponse {
-    // Agent-backed kernel: write execution to RuntimeStateDoc queue.
-    // The runtime agent discovers it via CRDT sync and executes.
-    // Check runtime_agent_request_tx (not runtime_agent_handle) to ensure the runtime agent's
-    // sync connection is still live — a stale handle with no connection
-    // would leave queued executions orphaned.
+    // Agent-backed kernel: write execution to RuntimeStateDoc queue. During
+    // launch, queue in the doc before the agent connects so all clients observe
+    // the same pending work. Once running, require a live sync connection.
     {
         let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
-        if has_runtime_agent {
-            // Check if kernel is shut down — return NoKernel instead
-            // of silently queuing into a dead kernel.
-            {
-                let lifecycle = room
-                    .state
-                    .read(|sd| sd.read_state().kernel.lifecycle)
-                    .unwrap_or(RuntimeLifecycle::NotStarted);
-                if matches!(
-                    lifecycle,
-                    RuntimeLifecycle::Shutdown | RuntimeLifecycle::Error
-                ) {
-                    return NotebookResponse::NoKernel {};
-                }
-            }
+        let lifecycle = room
+            .state
+            .read(|sd| sd.read_state().kernel.lifecycle)
+            .unwrap_or(RuntimeLifecycle::NotStarted);
+        if matches!(
+            lifecycle,
+            RuntimeLifecycle::Shutdown | RuntimeLifecycle::Error
+        ) {
+            return NotebookResponse::NoKernel {};
+        }
+        let queue_for_starting_kernel =
+            !has_runtime_agent && runtime_launch_in_progress(&lifecycle);
 
+        if has_runtime_agent || queue_for_starting_kernel {
             let (source, execution_id, format_heads) = match queue_cell_if_current(
                 room,
                 &cell_id,
@@ -101,8 +99,16 @@ async fn handle_inner(
                     source,
                     execution_id,
                     format_heads,
-                } => (source, execution_id, format_heads),
+                } => {
+                    if queue_for_starting_kernel {
+                        publish_startup_queue_from_queued_executions(room);
+                    }
+                    (source, execution_id, format_heads)
+                }
                 QueueCellResult::AlreadyActive { execution_id } => {
+                    if queue_for_starting_kernel {
+                        publish_startup_queue_from_queued_executions(room);
+                    }
                     return NotebookResponse::CellQueued {
                         cell_id,
                         execution_id,

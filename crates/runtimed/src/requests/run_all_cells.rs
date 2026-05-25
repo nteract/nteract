@@ -8,6 +8,8 @@ use tracing::warn;
 use crate::notebook_sync_server::NotebookRoom;
 use crate::protocol::{NotebookResponse, QueueEntry};
 use crate::requests::guarded;
+use crate::requests::publish_startup_queue_from_queued_executions;
+use crate::requests::runtime_launch_in_progress;
 use crate::requests::trim_runtime_executions_for_doc;
 use notebook_protocol::protocol::ExecutionIdRejectionReason;
 
@@ -87,24 +89,25 @@ async fn handle_inner(
     requested_execution_ids: Option<HashMap<String, String>>,
     observed_heads: Option<Vec<String>>,
 ) -> NotebookResponse {
-    // Agent path — write all cells to RuntimeStateDoc queue
+    // RuntimeStateDoc is the source of truth for visible queued work. During
+    // kernel launch we can queue before the agent connects; once running, a
+    // live agent sync connection is required.
     {
         let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
-        if has_runtime_agent {
-            // Check if kernel is shut down.
-            {
-                let lifecycle = room
-                    .state
-                    .read(|sd| sd.read_state().kernel.lifecycle)
-                    .unwrap_or(RuntimeLifecycle::NotStarted);
-                if matches!(
-                    lifecycle,
-                    RuntimeLifecycle::Shutdown | RuntimeLifecycle::Error
-                ) {
-                    return NotebookResponse::NoKernel {};
-                }
-            }
+        let lifecycle = room
+            .state
+            .read(|sd| sd.read_state().kernel.lifecycle)
+            .unwrap_or(RuntimeLifecycle::NotStarted);
+        if matches!(
+            lifecycle,
+            RuntimeLifecycle::Shutdown | RuntimeLifecycle::Error
+        ) {
+            return NotebookResponse::NoKernel {};
+        }
+        let queue_for_starting_kernel =
+            !has_runtime_agent && runtime_launch_in_progress(&lifecycle);
 
+        if has_runtime_agent || queue_for_starting_kernel {
             let queued = {
                 let mut doc = room.doc.write().await;
                 if let Some(observed_heads) = observed_heads.as_deref() {
@@ -249,6 +252,9 @@ async fn handle_inner(
                 queued
             };
 
+            if queue_for_starting_kernel {
+                publish_startup_queue_from_queued_executions(room);
+            }
             return NotebookResponse::AllCellsQueued { queued };
         }
     }

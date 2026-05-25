@@ -16,6 +16,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use notebook_protocol::protocol::BlobUploadErrorKind;
+use runtime_doc::{QueueEntry, RuntimeLifecycle};
 use tracing::{debug, warn};
 
 use crate::daemon::Daemon;
@@ -29,6 +30,33 @@ use crate::protocol::{NotebookRequest, NotebookResponse};
 /// trimming cannot know which terminal executions are still referenced by
 /// document models.
 pub(crate) const MAX_EXECUTION_ENTRIES: usize = 64;
+
+pub(crate) fn runtime_launch_in_progress(lifecycle: &RuntimeLifecycle) -> bool {
+    matches!(
+        lifecycle,
+        RuntimeLifecycle::Resolving
+            | RuntimeLifecycle::PreparingEnv
+            | RuntimeLifecycle::Launching
+            | RuntimeLifecycle::Connecting
+    )
+}
+
+pub(crate) fn publish_startup_queue_from_queued_executions(room: &NotebookRoom) {
+    if let Err(e) = room.state.with_doc(|state_doc| {
+        let queued: Vec<QueueEntry> = state_doc
+            .get_queued_executions()
+            .into_iter()
+            .map(|(execution_id, _)| QueueEntry { execution_id })
+            .collect();
+        state_doc.set_queue(None, &queued)?;
+        Ok(())
+    }) {
+        warn!(
+            "[notebook-sync] Failed to publish startup queue projection: {}",
+            e
+        );
+    }
+}
 
 pub(crate) mod approve_project_environment;
 pub(crate) mod approve_trust;
