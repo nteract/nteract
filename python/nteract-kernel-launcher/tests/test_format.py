@@ -193,6 +193,18 @@ def test_serialize_dataframe_accepts_arrow_pycapsule_stream_protocol():
     assert table.num_rows == 10
 
 
+def test_serialize_dataframe_accepts_pyarrow_table_when_polars_is_importable():
+    pa = pytest.importorskip("pyarrow")
+    pytest.importorskip("polars")
+    from nteract_kernel_launcher._format import serialize_dataframe
+
+    data, _, included_rows = serialize_dataframe(pa.table({"a": [1, 2, 3]}), max_bytes=10_000_000)
+
+    table = pa.ipc.open_stream(io.BytesIO(data)).read_all()
+    assert included_rows == 3
+    assert table.to_pydict() == {"a": [1, 2, 3]}
+
+
 def test_serialize_dataframe_rejects_oversized_generic_pycapsule_stream():
     pa = pytest.importorskip("pyarrow")
     from nteract_kernel_launcher._format import serialize_dataframe

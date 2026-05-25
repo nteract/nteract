@@ -80,6 +80,9 @@ def _normalize_polars_object_dates(df: Any) -> Any:
     except Exception:
         return df
 
+    if not isinstance(df, pl.DataFrame):
+        return df
+
     schema = getattr(df, "schema", None)
     if not schema:
         return df
