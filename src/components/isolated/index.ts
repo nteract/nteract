@@ -88,5 +88,6 @@ export type {
 } from "./output-manifest";
 export { resolveEmbeddableOutputs } from "./embeddable-output";
 export type { NteractEmbeddableOutput, ResolveEmbeddableOutputsOptions } from "./embeddable-output";
+export type { IdentifiedJupyterOutput } from "./output-payloads";
 // Provider and hook for renderer bundle
 export { IsolatedRendererProvider, useIsolatedRenderer } from "./isolated-renderer-context";

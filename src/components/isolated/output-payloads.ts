@@ -2,6 +2,8 @@ import type { RenderPayload } from "./frame-bridge";
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import { DEFAULT_PRIORITY, selectMimeType } from "@/components/outputs/mime-priority";
 
+export type IdentifiedJupyterOutput = JupyterOutput & { output_id: string };
+
 export interface RenderPayloadOptions {
   cellId?: string;
   priority?: readonly string[];
@@ -10,20 +12,32 @@ export interface RenderPayloadOptions {
 export function isRenderPayload(value: unknown): value is RenderPayload {
   if (typeof value !== "object" || value === null) return false;
   const payload = value as Record<string, unknown>;
-  return typeof payload.mimeType === "string" && "data" in payload;
+  return (
+    typeof payload.mimeType === "string" &&
+    "data" in payload &&
+    typeof payload.outputId === "string" &&
+    payload.outputId.length > 0
+  );
 }
 
 function normalizeText(text: string | string[]): string {
   return Array.isArray(text) ? text.join("") : text;
 }
 
+function requireOutputId(output: IdentifiedJupyterOutput): string {
+  if (!output.output_id) {
+    throw new Error("Cannot render isolated output without output_id");
+  }
+  return output.output_id;
+}
+
 export function jupyterOutputToRenderPayload(
-  output: JupyterOutput,
+  output: IdentifiedJupyterOutput,
   outputIndex: number,
   options: RenderPayloadOptions = {},
 ): RenderPayload | null {
   const { cellId, priority = DEFAULT_PRIORITY } = options;
-  const outputId = output.output_id;
+  const outputId = requireOutputId(output);
 
   if (output.output_type === "execute_result" || output.output_type === "display_data") {
     const mimeType = selectMimeType(output.data, priority);
@@ -80,7 +94,7 @@ export function jupyterOutputToRenderPayload(
 }
 
 export function jupyterOutputsToRenderPayloads(
-  outputs: readonly JupyterOutput[],
+  outputs: readonly IdentifiedJupyterOutput[],
   options: RenderPayloadOptions = {},
 ): RenderPayload[] {
   return outputs.flatMap((output, index) => {

@@ -428,6 +428,7 @@ export function IsolationTest() {
     sendToIframe("render", {
       mimeType: "text/html",
       data: "<div style='color: #4ade80; padding: 8px;'>HTML rendered via postMessage!</div>",
+      outputId: "isolation-test-raw-render",
     });
   };
 
@@ -691,6 +692,7 @@ function ProductionFrameDemo() {
   const handleRenderHtml = () => {
     frameRef.current?.render({
       mimeType: "text/html",
+      outputId: "isolation-demo-html",
       data: `
         <h2 style="margin: 0 0 8px 0;">Production IsolatedFrame Test</h2>
         <p>This content was rendered via the <code>IsolatedFrame</code> component.</p>
@@ -709,6 +711,7 @@ function ProductionFrameDemo() {
     // A small test image (1x1 red pixel in base64)
     frameRef.current?.render({
       mimeType: "image/png",
+      outputId: "isolation-demo-image",
       data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==",
     });
   };

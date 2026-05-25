@@ -24,12 +24,11 @@ export interface RenderPayload {
   /** Optional metadata for the output */
   metadata?: Record<string, unknown>;
   /**
-   * Stable daemon-stamped UUID for this output. When present, the iframe
-   * uses it as the React key so display_update and reorder operations
-   * don't re-mount sibling outputs. Falls back to `cellId`+`outputIndex`
-   * for payloads that don't carry one (e.g. markdown cell render paths).
+   * Stable renderer identity. Runtime output payloads must use the
+   * daemon-stamped output_id; non-runtime render surfaces must provide an
+   * explicit synthetic id instead of relying on positional fallbacks.
    */
-  outputId?: string;
+  outputId: string;
   /** Cell ID this output belongs to (for routing) */
   cellId?: string;
   /** Output index within the cell */
@@ -42,8 +41,8 @@ export interface RenderPayload {
 
 /**
  * Atomically replace all outputs in the iframe with a batch.
- * Uses stable IDs from cellId + outputIndex for React reconciliation,
- * avoiding DOM teardown on updates (e.g., interactive widget slider changes).
+ * Uses each payload's required outputId for React reconciliation, avoiding
+ * DOM teardown on updates (e.g., interactive widget slider changes).
  */
 export interface RenderBatchMessage {
   type: "render_batch";

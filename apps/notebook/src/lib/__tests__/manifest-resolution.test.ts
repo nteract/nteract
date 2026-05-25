@@ -35,6 +35,7 @@ describe("isOutputManifest", () => {
   it("returns true for a stream manifest with inline ContentRef", () => {
     expect(
       isOutputManifest({
+        output_id: "manifest-stream-inline",
         output_type: "stream",
         name: "stdout",
         text: { inline: "hello\n" },
@@ -45,6 +46,7 @@ describe("isOutputManifest", () => {
   it("returns true for a stream manifest with blob ContentRef", () => {
     expect(
       isOutputManifest({
+        output_id: "manifest-stream-blob",
         output_type: "stream",
         name: "stdout",
         text: { blob: "abc123", size: 100 },
@@ -55,6 +57,7 @@ describe("isOutputManifest", () => {
   it("returns true for a display_data manifest", () => {
     expect(
       isOutputManifest({
+        output_id: "manifest-display-inline",
         output_type: "display_data",
         data: { "text/plain": { inline: "hi" } },
       }),
@@ -64,6 +67,7 @@ describe("isOutputManifest", () => {
   it("returns true for a display_data manifest with url ContentRef", () => {
     expect(
       isOutputManifest({
+        output_id: "manifest-display-url",
         output_type: "display_data",
         data: {
           "image/png": { url: "http://127.0.0.1:9876/blob/pnghash" },
@@ -75,6 +79,7 @@ describe("isOutputManifest", () => {
   it("returns true for an execute_result manifest", () => {
     expect(
       isOutputManifest({
+        output_id: "manifest-execute-inline",
         output_type: "execute_result",
         data: { "text/plain": { inline: "42" } },
         execution_count: 1,
@@ -85,6 +90,7 @@ describe("isOutputManifest", () => {
   it("returns true for an error manifest with inline traceback", () => {
     expect(
       isOutputManifest({
+        output_id: "manifest-error-inline",
         output_type: "error",
         ename: "ValueError",
         evalue: "bad",
@@ -117,6 +123,16 @@ describe("isOutputManifest", () => {
     expect(isOutputManifest(null)).toBe(false);
   });
 
+  it("returns false for manifests without output_id", () => {
+    expect(
+      isOutputManifest({
+        output_type: "stream",
+        name: "stdout",
+        text: { inline: "hello\n" },
+      }),
+    ).toBe(false);
+  });
+
   it("returns false for a string", () => {
     expect(isOutputManifest("hello")).toBe(false);
   });
@@ -128,15 +144,23 @@ describe("isOutputManifest", () => {
   });
 
   it("returns false for display_data with empty data", () => {
-    expect(isOutputManifest({ output_type: "display_data", data: {} })).toBe(
-      false,
-    );
+    expect(
+      isOutputManifest({
+        output_id: "manifest-empty-display",
+        output_type: "display_data",
+        data: {},
+      }),
+    ).toBe(false);
   });
 
   it("returns false for unknown output_type", () => {
-    expect(isOutputManifest({ output_type: "unknown_type", data: {} })).toBe(
-      false,
-    );
+    expect(
+      isOutputManifest({
+        output_id: "manifest-unknown-type",
+        output_type: "unknown_type",
+        data: {},
+      }),
+    ).toBe(false);
   });
 });
 
@@ -149,12 +173,14 @@ describe("resolveManifestSync", () => {
 
   it("resolves stream manifest with inline text", () => {
     const manifest: OutputManifest = {
+      output_id: "sync-stream-inline",
       output_type: "stream",
       name: "stdout",
       text: { inline: "hello\n" },
     };
     const output = resolveManifestSync(manifest, blobPort);
     expect(output).toEqual({
+      output_id: "sync-stream-inline",
       output_type: "stream",
       name: "stdout",
       text: "hello\n",
@@ -163,6 +189,7 @@ describe("resolveManifestSync", () => {
 
   it("returns null for stream manifest with blob text ref", () => {
     const manifest: OutputManifest = {
+      output_id: "sync-stream-blob",
       output_type: "stream",
       name: "stdout",
       text: { blob: "abc123", size: 100 },
@@ -172,6 +199,7 @@ describe("resolveManifestSync", () => {
 
   it("resolves display_data with all inline refs", () => {
     const manifest: OutputManifest = {
+      output_id: "sync-display-inline",
       output_type: "display_data",
       data: {
         "text/plain": { inline: "hi" },
@@ -182,6 +210,7 @@ describe("resolveManifestSync", () => {
     };
     const output = resolveManifestSync(manifest, blobPort);
     expect(output).toEqual({
+      output_id: "sync-display-inline",
       output_type: "display_data",
       data: { "text/plain": "hi", "text/html": "<b>hi</b>" },
       metadata: { isolated: true },
@@ -191,6 +220,7 @@ describe("resolveManifestSync", () => {
 
   it("resolves display_data with url ref", () => {
     const manifest: OutputManifest = {
+      output_id: "sync-display-url",
       output_type: "display_data",
       data: {
         "image/png": { url: `http://127.0.0.1:${blobPort}/blob/imgblob` },
@@ -198,6 +228,7 @@ describe("resolveManifestSync", () => {
     };
     const output = resolveManifestSync(manifest, blobPort);
     expect(output).toEqual({
+      output_id: "sync-display-url",
       output_type: "display_data",
       data: { "image/png": `http://127.0.0.1:${blobPort}/blob/imgblob` },
       metadata: {},
@@ -207,6 +238,7 @@ describe("resolveManifestSync", () => {
 
   it("returns null for display_data with text blob ref", () => {
     const manifest: OutputManifest = {
+      output_id: "sync-display-blob",
       output_type: "display_data",
       data: {
         "text/plain": { blob: "textblob", size: 5000 },
@@ -218,6 +250,7 @@ describe("resolveManifestSync", () => {
   it("resolves error manifest with inline traceback", () => {
     const traceback = ["line1", "line2"];
     const manifest: OutputManifest = {
+      output_id: "sync-error-inline",
       output_type: "error",
       ename: "ValueError",
       evalue: "bad",
@@ -225,6 +258,7 @@ describe("resolveManifestSync", () => {
     };
     const output = resolveManifestSync(manifest, blobPort);
     expect(output).toEqual({
+      output_id: "sync-error-inline",
       output_type: "error",
       ename: "ValueError",
       evalue: "bad",
@@ -234,6 +268,7 @@ describe("resolveManifestSync", () => {
 
   it("returns null for error manifest with blob traceback", () => {
     const manifest: OutputManifest = {
+      output_id: "sync-error-blob",
       output_type: "error",
       ename: "ValueError",
       evalue: "bad",
@@ -247,6 +282,7 @@ describe("resolveManifestSync", () => {
     // manifest. Sync resolve should attach the parsed payload to the output.
     const richPayload = { ename: "KeyError", evalue: "'x'", frames: [], text: "KeyError: 'x'" };
     const manifest: OutputManifest = {
+      output_id: "sync-error-rich-inline",
       output_type: "error",
       ename: "KeyError",
       evalue: "'x'",
@@ -267,6 +303,7 @@ describe("resolveManifestSync", () => {
     // and the rich payload would never be fetched — rich tracebacks of
     // any size would downgrade to ANSI rendering.
     const manifest: OutputManifest = {
+      output_id: "sync-error-rich-blob",
       output_type: "error",
       ename: "ZeroDivisionError",
       evalue: "division by zero",
@@ -281,6 +318,7 @@ describe("resolveManifestSync", () => {
     // whose ANSI traceback didn't parse into frames). rich stays
     // undefined so OutputArea falls through to AnsiErrorOutput.
     const manifest: OutputManifest = {
+      output_id: "sync-error-no-rich",
       output_type: "error",
       ename: "ValueError",
       evalue: "bad",
@@ -295,6 +333,7 @@ describe("resolveManifestSync", () => {
 
   it("auto-parses JSON MIME types in sync resolution", () => {
     const manifest: OutputManifest = {
+      output_id: "sync-json",
       output_type: "execute_result",
       data: {
         "application/json": { inline: '{"key":"value"}' },
@@ -312,6 +351,7 @@ describe("resolveManifestSync", () => {
 
   it("adds blob URLs to Arrow stream manifest chunks in sync resolution", () => {
     const manifest: OutputManifest = {
+      output_id: "sync-arrow-display",
       output_type: "display_data",
       data: {
         [ARROW_STREAM_MANIFEST_MIME]: {
@@ -600,6 +640,7 @@ describe("resolveManifest", () => {
   describe("display_data manifests", () => {
     it("resolves inline data refs", async () => {
       const manifest: OutputManifest = {
+        output_id: "async-display-inline",
         output_type: "display_data",
         data: {
           "text/plain": { inline: "hello" },
@@ -611,6 +652,7 @@ describe("resolveManifest", () => {
 
       const output = await resolveManifest(manifest, blobPort);
       expect(output).toEqual({
+        output_id: "async-display-inline",
         output_type: "display_data",
         data: {
           "text/plain": "hello",
@@ -623,12 +665,14 @@ describe("resolveManifest", () => {
 
     it("defaults metadata to empty object when omitted", async () => {
       const manifest: OutputManifest = {
+        output_id: "async-display-metadata-default",
         output_type: "display_data",
         data: { "text/plain": { inline: "hi" } },
       };
 
       const output = await resolveManifest(manifest, blobPort);
       expect(output).toEqual({
+        output_id: "async-display-metadata-default",
         output_type: "display_data",
         data: { "text/plain": "hi" },
         metadata: {},
@@ -638,6 +682,7 @@ describe("resolveManifest", () => {
 
     it("resolves url refs directly", async () => {
       const manifest: OutputManifest = {
+        output_id: "async-display-url",
         output_type: "display_data",
         data: {
           "image/png": { url: "http://127.0.0.1:9876/blob/pnghash" },
@@ -646,6 +691,7 @@ describe("resolveManifest", () => {
 
       const output = await resolveManifest(manifest, blobPort);
       expect(output).toEqual({
+        output_id: "async-display-url",
         output_type: "display_data",
         data: { "image/png": "http://127.0.0.1:9876/blob/pnghash" },
         metadata: {},
@@ -658,6 +704,7 @@ describe("resolveManifest", () => {
   describe("execute_result manifests", () => {
     it("resolves with execution_count", async () => {
       const manifest: OutputManifest = {
+        output_id: "async-execute-count",
         output_type: "execute_result",
         data: { "text/plain": { inline: "42" } },
         execution_count: 5,
@@ -665,6 +712,7 @@ describe("resolveManifest", () => {
 
       const output = await resolveManifest(manifest, blobPort);
       expect(output).toEqual({
+        output_id: "async-execute-count",
         output_type: "execute_result",
         data: { "text/plain": "42" },
         metadata: {},
@@ -675,6 +723,7 @@ describe("resolveManifest", () => {
 
     it("defaults execution_count to null when omitted", async () => {
       const manifest: OutputManifest = {
+        output_id: "async-execute-count-default",
         output_type: "execute_result",
         data: { "text/plain": { inline: "result" } },
       };
@@ -687,6 +736,7 @@ describe("resolveManifest", () => {
 
     it("preserves transient display_id", async () => {
       const manifest: OutputManifest = {
+        output_id: "async-execute-display-id",
         output_type: "execute_result",
         data: { "text/plain": { inline: "x" } },
         transient: { display_id: "exec-d1" },
@@ -703,6 +753,7 @@ describe("resolveManifest", () => {
 
     it("auto-parses JSON MIME types in data", async () => {
       const manifest: OutputManifest = {
+        output_id: "async-execute-json",
         output_type: "execute_result",
         data: {
           "application/json": { inline: '{"answer":42}' },
@@ -722,6 +773,7 @@ describe("resolveManifest", () => {
   describe("stream manifests", () => {
     it("resolves inline text", async () => {
       const manifest: OutputManifest = {
+        output_id: "async-stream-inline",
         output_type: "stream",
         name: "stdout",
         text: { inline: "hello world\n" },
@@ -729,6 +781,7 @@ describe("resolveManifest", () => {
 
       const output = await resolveManifest(manifest, blobPort);
       expect(output).toEqual({
+        output_id: "async-stream-inline",
         output_type: "stream",
         name: "stdout",
         text: "hello world\n",
@@ -737,6 +790,7 @@ describe("resolveManifest", () => {
 
     it("resolves blob text", async () => {
       const manifest: OutputManifest = {
+        output_id: "async-stream-blob",
         output_type: "stream",
         name: "stderr",
         text: { blob: "errhash", size: 100 },
@@ -748,6 +802,7 @@ describe("resolveManifest", () => {
 
       const output = await resolveManifest(manifest, blobPort);
       expect(output).toEqual({
+        output_id: "async-stream-blob",
         output_type: "stream",
         name: "stderr",
         text: "error output text",
@@ -759,6 +814,7 @@ describe("resolveManifest", () => {
     it("resolves traceback from inline ref", async () => {
       const traceback = ["frame1", "frame2", "frame3"];
       const manifest: OutputManifest = {
+        output_id: "async-error-inline",
         output_type: "error",
         ename: "ValueError",
         evalue: "invalid literal",
@@ -767,6 +823,7 @@ describe("resolveManifest", () => {
 
       const output = await resolveManifest(manifest, blobPort);
       expect(output).toEqual({
+        output_id: "async-error-inline",
         output_type: "error",
         ename: "ValueError",
         evalue: "invalid literal",
@@ -777,6 +834,7 @@ describe("resolveManifest", () => {
     it("resolves traceback from blob ref", async () => {
       const traceback = ["Traceback (most recent call last):", "  File ..."];
       const manifest: OutputManifest = {
+        output_id: "async-error-blob",
         output_type: "error",
         ename: "RuntimeError",
         evalue: "boom",
@@ -789,6 +847,7 @@ describe("resolveManifest", () => {
 
       const output = await resolveManifest(manifest, blobPort);
       expect(output).toEqual({
+        output_id: "async-error-blob",
         output_type: "error",
         ename: "RuntimeError",
         evalue: "boom",
@@ -798,6 +857,7 @@ describe("resolveManifest", () => {
 
     it("preserves ename and evalue verbatim", async () => {
       const manifest: OutputManifest = {
+        output_id: "async-error-verbatim",
         output_type: "error",
         ename: "Custom.Error.Name",
         evalue: "message with 'quotes' and \"doubles\"",

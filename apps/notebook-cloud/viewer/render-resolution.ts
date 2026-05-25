@@ -35,13 +35,14 @@ export async function resolveCell(
 ): Promise<ResolvedCell> {
   const cellType = normalizeCellType(cell.cell_type);
   const metadata = normalizeMetadata(cell.metadata);
+  const cellId = typeof cell.id === "string" ? cell.id : `cell-${index + 1}`;
   const outputs = Array.isArray(cell.outputs)
-    ? await resolveOutputs(cell.outputs, blobResolver)
+    ? await resolveOutputs(cell.outputs, blobResolver, cellId)
     : [];
   const executionCount =
     normalizeExecutionCount(cell.execution_count) ?? executionCountFromOutputs(outputs);
   return {
-    id: typeof cell.id === "string" ? cell.id : `cell-${index + 1}`,
+    id: cellId,
     cellType,
     source: typeof cell.source === "string" ? cell.source : "",
     language: cellType === "code" ? (normalizeCellLanguage(metadata) ?? defaultLanguage) : null,
@@ -55,13 +56,15 @@ export async function resolveCell(
 export async function resolveOutputs(
   outputs: unknown[],
   blobResolver: BlobResolver,
+  cellId: string = "output",
 ): Promise<JupyterOutput[]> {
   const resolved = await Promise.all(
-    outputs.map(async (output) => {
+    outputs.map(async (output, index) => {
+      const syntheticOutputId = `cloud-output:${cellId}:${index}`;
       try {
-        return await resolveOutput(output, blobResolver);
+        return await resolveOutput(output, blobResolver, syntheticOutputId);
       } catch (error) {
-        return outputResolutionError(error);
+        return outputResolutionError(error, output, syntheticOutputId);
       }
     }),
   );
@@ -71,10 +74,11 @@ export async function resolveOutputs(
 async function resolveOutput(
   output: unknown,
   blobResolver: BlobResolver,
+  syntheticOutputId: string,
 ): Promise<JupyterOutput | null> {
   if (typeof output === "string") {
     try {
-      return resolveOutput(JSON.parse(output) as unknown, blobResolver);
+      return resolveOutput(JSON.parse(output) as unknown, blobResolver, syntheticOutputId);
     } catch {
       return null;
     }
@@ -84,16 +88,30 @@ async function resolveOutput(
     return resolveManifest(output as OutputManifest, blobResolver) as Promise<JupyterOutput>;
   }
 
+  if (isManifestWithMissingOutputId(output)) {
+    throw new Error("Cannot resolve output manifest without output_id");
+  }
+
   if (isJupyterOutput(output)) {
-    return output;
+    return identifyJupyterOutput(output, syntheticOutputId);
   }
 
   return null;
 }
 
-function outputResolutionError(error: unknown): JupyterOutput {
+function identifyJupyterOutput(output: JupyterOutput, outputId: string): JupyterOutput {
+  if (output.output_id) return output;
+  return { ...output, output_id: outputId };
+}
+
+function outputResolutionError(
+  error: unknown,
+  output: unknown,
+  syntheticOutputId: string,
+): JupyterOutput {
   const message = error instanceof Error ? error.message : String(error);
   return {
+    output_id: resolutionErrorOutputId(output, syntheticOutputId),
     output_type: "error",
     ename: "OutputResolutionError",
     evalue: `Unable to resolve output: ${message}`,
@@ -101,8 +119,61 @@ function outputResolutionError(error: unknown): JupyterOutput {
   };
 }
 
+function resolutionErrorOutputId(output: unknown, syntheticOutputId: string): string {
+  if (typeof output === "object" && output !== null) {
+    const outputId = (output as { output_id?: unknown }).output_id;
+    if (typeof outputId === "string" && outputId.length > 0) {
+      return `resolution-error:${outputId}`;
+    }
+  }
+  return `resolution-error:${syntheticOutputId}`;
+}
+
 function isJupyterOutput(value: unknown): value is JupyterOutput {
   return typeof value === "object" && value !== null && "output_type" in value;
+}
+
+function isManifestWithMissingOutputId(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const output = value as Record<string, unknown>;
+  if (typeof output.output_id === "string" && output.output_id.length > 0) return false;
+
+  if (output.output_type === "stream") {
+    return isContentRefLike(output.text);
+  }
+
+  if (output.output_type === "display_data" || output.output_type === "execute_result") {
+    const dataEntries = Object.entries(asRecord(output.data));
+    return (
+      dataEntries.length > 0 &&
+      dataEntries.every(([mimeType, ref]) => isContentRefLike(ref, mimeType))
+    );
+  }
+
+  if (output.output_type === "error") {
+    return isContentRefLike(output.traceback) || isContentRefLike(output.rich);
+  }
+
+  return false;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+}
+
+function isContentRefLike(value: unknown, mimeType?: string): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const ref = value as Record<string, unknown>;
+  if ("inline" in ref) return typeof ref.inline === "string";
+  if ("blob" in ref) return typeof ref.blob === "string";
+  if ("url" in ref) {
+    return typeof ref.url === "string" && !isJsonMimeType(mimeType);
+  }
+  return false;
+}
+
+function isJsonMimeType(mimeType: string | undefined): boolean {
+  return mimeType === "application/json" || mimeType?.endsWith("+json") === true;
 }
 
 function normalizeCellType(value: unknown): ResolvedCell["cellType"] {

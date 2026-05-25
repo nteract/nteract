@@ -84,6 +84,7 @@ vi.mock("@/components/isolated", async () => {
 function makeMarkdownOutput(content = "```python\nprint('hello')\n```"): JupyterOutput[] {
   return [
     {
+      output_id: "markdown-output",
       output_type: "display_data",
       data: { "text/markdown": content },
       metadata: {},
@@ -94,6 +95,7 @@ function makeMarkdownOutput(content = "```python\nprint('hello')\n```"): Jupyter
 function makeStreamOutput(text = "hey\n"): JupyterOutput[] {
   return [
     {
+      output_id: "stream-output",
       output_type: "stream",
       name: "stdout",
       text,
@@ -104,16 +106,19 @@ function makeStreamOutput(text = "hey\n"): JupyterOutput[] {
 function makeMixedIsolatedOutputs(): JupyterOutput[] {
   return [
     {
+      output_id: "mixed-stream-output",
       output_type: "stream",
       name: "stdout",
       text: "stream before\n",
     },
     {
+      output_id: "mixed-html-output",
       output_type: "display_data",
       data: { "text/html": "<b>unsafe html</b>" },
       metadata: {},
     },
     {
+      output_id: "mixed-error-output",
       output_type: "error",
       ename: "RecursionError",
       evalue: "maximum recursion depth exceeded",
@@ -143,6 +148,7 @@ function makeMixedIsolatedOutputs(): JupyterOutput[] {
 function makeParquetOutput(): JupyterOutput[] {
   return [
     {
+      output_id: "parquet-output",
       output_type: "display_data",
       data: { "application/vnd.apache.parquet": { hash: "fake-parquet" } },
       metadata: {},
@@ -318,6 +324,7 @@ describe("OutputArea iframe theme sync", () => {
   it("keeps interactive plugin iframe outputs on the wheel-boundary path", () => {
     const plotlyOutput: JupyterOutput[] = [
       {
+        output_id: "plotly-output",
         output_type: "display_data",
         data: { "application/vnd.plotly.v1+json": { data: [] } },
         metadata: {},

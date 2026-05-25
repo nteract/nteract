@@ -170,6 +170,7 @@ describe("resolveOutput", () => {
     const cached: JupyterOutput = streamOutput("stdout", "cached");
     const cache = new Map<string, JupyterOutput>();
     const manifest = {
+      output_id: "manifest-cached",
       output_type: "stream",
       name: "stdout",
       text: { inline: "cached" },
@@ -183,6 +184,7 @@ describe("resolveOutput", () => {
 
   it("resolves structured manifest object with inline refs", async () => {
     const manifest = {
+      output_id: "manifest-inline-stream",
       output_type: "stream",
       name: "stdout",
       text: { inline: "hello\n" },
@@ -191,6 +193,7 @@ describe("resolveOutput", () => {
 
     const result = await resolveOutput(manifest, 8765, cache);
     expect(result).toEqual({
+      output_id: "manifest-inline-stream",
       output_type: "stream",
       name: "stdout",
       text: "hello\n",
@@ -199,6 +202,7 @@ describe("resolveOutput", () => {
 
   it("resolves display_data manifest with inline data", async () => {
     const manifest = {
+      output_id: "manifest-inline-display",
       output_type: "display_data",
       data: {
         "text/plain": { inline: "hi" },
@@ -210,6 +214,7 @@ describe("resolveOutput", () => {
 
     const result = await resolveOutput(manifest, 8765, cache);
     expect(result).toEqual({
+      output_id: "manifest-inline-display",
       output_type: "display_data",
       data: { "text/plain": "hi", "text/html": "<b>hi</b>" },
       metadata: { isolated: true },
@@ -219,6 +224,7 @@ describe("resolveOutput", () => {
 
   it("resolves manifest with blob ref by fetching from blob server", async () => {
     const manifest = {
+      output_id: "manifest-blob-stream",
       output_type: "stream",
       name: "stdout",
       text: { blob: "abc123hash", size: 5000 },
@@ -232,6 +238,7 @@ describe("resolveOutput", () => {
 
     const result = await resolveOutput(manifest, blobPort, cache);
     expect(result).toEqual({
+      output_id: "manifest-blob-stream",
       output_type: "stream",
       name: "stdout",
       text: "big text output",
@@ -243,6 +250,7 @@ describe("resolveOutput", () => {
 
   it("caches resolved manifest output", async () => {
     const manifest = {
+      output_id: "manifest-cache-stream",
       output_type: "stream",
       name: "stdout",
       text: { inline: "cached manifest" },
@@ -256,6 +264,7 @@ describe("resolveOutput", () => {
     // Second call should hit cache without resolving
     const result = await resolveOutput(manifest, 8765, cache);
     expect(result).toEqual({
+      output_id: "manifest-cache-stream",
       output_type: "stream",
       name: "stdout",
       text: "cached manifest",
@@ -264,6 +273,7 @@ describe("resolveOutput", () => {
 
   it("returns null for manifest object when blobPort is null", async () => {
     const manifest = {
+      output_id: "manifest-missing-blob-resolver",
       output_type: "stream",
       name: "stdout",
       text: { blob: "abc123", size: 100 },
@@ -381,6 +391,7 @@ describe("cellSnapshotsToNotebookCells", () => {
 
   it("converts a code cell with structured manifest outputs", async () => {
     const manifest = {
+      output_id: "manifest-code-stream",
       output_type: "stream",
       name: "stdout",
       text: { inline: "hello\n" },
@@ -394,7 +405,14 @@ describe("cellSnapshotsToNotebookCells", () => {
       cell_type: "code",
       source: "print('hello')",
       execution_count: 1,
-      outputs: [{ output_type: "stream", name: "stdout", text: "hello\n" }],
+      outputs: [
+        {
+          output_id: "manifest-code-stream",
+          output_type: "stream",
+          name: "stdout",
+          text: "hello\n",
+        },
+      ],
       metadata: {},
     });
   });
@@ -595,6 +613,7 @@ describe("cellSnapshotsToNotebookCells", () => {
 
   it("filters out null (unparseable) outputs", async () => {
     const validManifest = {
+      output_id: "manifest-valid-stream",
       output_type: "stream",
       name: "stdout",
       text: { inline: "ok\n" },
@@ -610,6 +629,7 @@ describe("cellSnapshotsToNotebookCells", () => {
     if (cells[0].cell_type === "code") {
       expect(cells[0].outputs).toHaveLength(1);
       expect(cells[0].outputs[0]).toEqual({
+        output_id: "manifest-valid-stream",
         output_type: "stream",
         name: "stdout",
         text: "ok\n",
@@ -619,11 +639,13 @@ describe("cellSnapshotsToNotebookCells", () => {
 
   it("passes through consecutive streams without merging (daemon consolidates)", async () => {
     const out1 = {
+      output_id: "manifest-stream-1",
       output_type: "stream",
       name: "stdout",
       text: { inline: "line1\n" },
     };
     const out2 = {
+      output_id: "manifest-stream-2",
       output_type: "stream",
       name: "stdout",
       text: { inline: "line2\n" },
@@ -637,11 +659,13 @@ describe("cellSnapshotsToNotebookCells", () => {
     if (cells[0].cell_type === "code") {
       expect(cells[0].outputs).toHaveLength(2);
       expect(cells[0].outputs[0]).toEqual({
+        output_id: "manifest-stream-1",
         output_type: "stream",
         name: "stdout",
         text: "line1\n",
       });
       expect(cells[0].outputs[1]).toEqual({
+        output_id: "manifest-stream-2",
         output_type: "stream",
         name: "stdout",
         text: "line2\n",
@@ -651,11 +675,13 @@ describe("cellSnapshotsToNotebookCells", () => {
 
   it("does not merge streams with different names", async () => {
     const stdout = {
+      output_id: "manifest-stdout",
       output_type: "stream",
       name: "stdout",
       text: { inline: "out\n" },
     };
     const stderr = {
+      output_id: "manifest-stderr",
       output_type: "stream",
       name: "stderr",
       text: { inline: "err\n" },
@@ -670,6 +696,7 @@ describe("cellSnapshotsToNotebookCells", () => {
 
   it("converts mixed cell types in order", async () => {
     const streamManifest = {
+      output_id: "manifest-ordered-stream",
       output_type: "stream",
       name: "stdout",
       text: { inline: "42\n" },
@@ -705,6 +732,7 @@ describe("cellSnapshotsToNotebookCells", () => {
 
   it("uses shared cache across all output resolutions", async () => {
     const manifest = {
+      output_id: "manifest-shared-cache",
       output_type: "execute_result",
       data: { "text/plain": { inline: "same" } },
       execution_count: 1,
@@ -726,11 +754,13 @@ describe("cellSnapshotsToNotebookCells", () => {
   it("handles code cell with multiple output types", async () => {
     const outputs = [
       {
+        output_id: "manifest-multi-stream",
         output_type: "stream",
         name: "stdout",
         text: { inline: "computing...\n" },
       },
       {
+        output_id: "manifest-multi-execute",
         output_type: "execute_result",
         data: {
           "text/plain": { inline: "42" },
@@ -739,6 +769,7 @@ describe("cellSnapshotsToNotebookCells", () => {
         execution_count: 3,
       },
       {
+        output_id: "manifest-multi-display",
         output_type: "display_data",
         data: { "image/png": { url: "http://127.0.0.1:8765/blob/imgblob" } },
       },
@@ -756,6 +787,7 @@ describe("cellSnapshotsToNotebookCells", () => {
 
   it("resolves manifest object outputs with blob refs when blobPort is provided", async () => {
     const manifest = {
+      output_id: "manifest-cell-blob-stream",
       output_type: "stream",
       name: "stdout",
       text: { blob: "blobhash123", size: 5000 },
@@ -770,6 +802,7 @@ describe("cellSnapshotsToNotebookCells", () => {
     if (cells[0].cell_type === "code") {
       expect(cells[0].outputs).toHaveLength(1);
       expect(cells[0].outputs[0]).toEqual({
+        output_id: "manifest-cell-blob-stream",
         output_type: "stream",
         name: "stdout",
         text: "from manifest\n",
@@ -782,6 +815,7 @@ describe("cellSnapshotsToNotebookCells", () => {
 
   it("handles manifest object with no blobPort gracefully", async () => {
     const manifest = {
+      output_id: "manifest-cell-missing-blob-resolver",
       output_type: "stream",
       name: "stdout",
       text: { blob: "blobhash", size: 100 },
@@ -828,6 +862,7 @@ describe("cellSnapshotsToNotebookCells", () => {
       "\u001b[0;31mZeroDivisionError\u001b[0m: division by zero",
     ];
     const errManifest = {
+      output_id: "manifest-error-output",
       output_type: "error",
       ename: "ZeroDivisionError",
       evalue: "division by zero",

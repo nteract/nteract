@@ -142,7 +142,7 @@ function renderReadOnlyCellSource({
     return (
       <OutputArea
         cellId={cellId}
-        outputs={[markdownSourceOutput(source)]}
+        outputs={[markdownSourceOutput(cellId, source)]}
         isolated="auto"
         priority={priority}
         hostContext={hostContext}
@@ -161,8 +161,9 @@ function renderReadOnlyCellSource({
   );
 }
 
-function markdownSourceOutput(source: string): JupyterOutput {
+function markdownSourceOutput(cellId: string, source: string): JupyterOutput {
   return {
+    output_id: `markdown-source:${cellId}`,
     output_type: "display_data",
     data: { "text/markdown": source },
     metadata: {},

@@ -497,46 +497,57 @@ function IsolatedRendererApp() {
   const handleMessage = useCallback((type: string, payload: unknown) => {
     switch (type) {
       case "render": {
-        const renderPayload = payload as RenderPayload;
+        try {
+          const renderPayload = payload as RenderPayload;
+          const id = outputEntryIdForPayload(renderPayload);
 
-        const id = outputEntryIdForPayload(renderPayload, { transientFallback: true });
+          setState((prev) => {
+            if (renderPayload.replace) {
+              // Replace all outputs with this single new output
+              return { ...prev, outputs: [{ id, payload: renderPayload }] };
+            }
+            // Default: append to existing outputs
+            return {
+              ...prev,
+              outputs: [...prev.outputs, { id, payload: renderPayload }],
+            };
+          });
 
-        setState((prev) => {
-          if (renderPayload.replace) {
-            // Replace all outputs with this single new output
-            return { ...prev, outputs: [{ id, payload: renderPayload }] };
-          }
-          // Default: append to existing outputs
-          return {
-            ...prev,
-            outputs: [...prev.outputs, { id, payload: renderPayload }],
-          };
-        });
-
-        // Notify parent of render completion after next paint
-        requestAnimationFrame(() => {
-          postMeasuredHeight("render_complete", 1);
-        });
-        scheduleRendererLayoutPulses();
+          // Notify parent of render completion after next paint
+          requestAnimationFrame(() => {
+            postMeasuredHeight("render_complete", 1);
+          });
+          scheduleRendererLayoutPulses();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error("[isolated-renderer] invalid render payload:", error);
+          emitRendererDiagnostic("invalid-render-payload", { message }, "error");
+        }
         break;
       }
 
       case "renderBatch": {
-        const batchPayload = payload as { outputs: RenderPayload[] };
-        const entries: OutputEntry[] = (batchPayload.outputs ?? []).map((p, i) => ({
-          id: outputEntryIdForPayload(p, { fallbackIndex: i }),
-          payload: p,
-        }));
-        setState((prev) => ({ ...prev, outputs: entries }));
-        emitRendererDiagnostic("render-batch-received", {
-          outputCount: entries.length,
-          mimes: entries.map((entry) => entry.payload.mimeType),
-        });
+        try {
+          const batchPayload = payload as { outputs: RenderPayload[] };
+          const entries: OutputEntry[] = (batchPayload.outputs ?? []).map((p) => ({
+            id: outputEntryIdForPayload(p),
+            payload: p,
+          }));
+          setState((prev) => ({ ...prev, outputs: entries }));
+          emitRendererDiagnostic("render-batch-received", {
+            outputCount: entries.length,
+            mimes: entries.map((entry) => entry.payload.mimeType),
+          });
 
-        requestAnimationFrame(() => {
-          postMeasuredHeight("render_complete", entries.length);
-        });
-        scheduleRendererLayoutPulses();
+          requestAnimationFrame(() => {
+            postMeasuredHeight("render_complete", entries.length);
+          });
+          scheduleRendererLayoutPulses();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error("[isolated-renderer] invalid render batch payload:", error);
+          emitRendererDiagnostic("invalid-render-batch-payload", { message }, "error");
+        }
         break;
       }
 

@@ -75,6 +75,7 @@ export const demoBlobResolver: OutputBlobResolver = {
 
 export const agentReplOutputs: NteractEmbeddableOutput[] = [
   {
+    output_id: "agent-repl-stream",
     output_type: "stream",
     name: "stdout",
     text: [
@@ -84,8 +85,9 @@ export const agentReplOutputs: NteractEmbeddableOutput[] = [
       ">>> ds.features",
       "",
     ].join("\n"),
-  } as NteractEmbeddableOutput,
+  },
   {
+    output_id: "agent-repl-observation",
     output_type: "display_data",
     data: {
       "text/markdown": [
@@ -99,10 +101,11 @@ export const agentReplOutputs: NteractEmbeddableOutput[] = [
       ].join("\n"),
     },
     metadata: {},
-  } as NteractEmbeddableOutput,
+  },
 ];
 
 export const mathnetDataFrameOutput: OutputManifest = {
+  output_id: "mathnet-dataframe",
   output_type: "execute_result",
   execution_count: 12,
   data: {
@@ -129,6 +132,7 @@ export const mathnetDataFrameOutput: OutputManifest = {
 };
 
 export const mathnetProblemManifest: OutputManifest = {
+  output_id: "mathnet-problem-card",
   output_type: "display_data",
   data: {
     "text/html": {

@@ -32,21 +32,8 @@ describe("isolated renderer output identity", () => {
     expect(fresh).not.toBe(first);
   });
 
-  it("falls back to cell id and output index for legacy payloads without outputId", () => {
-    expect(outputEntryIdForPayload({ cellId: "cell-a", outputIndex: 2 })).toBe("cell-a-2");
-    expect(outputEntryIdForPayload({ cellId: "cell-a" }, { fallbackIndex: 3 })).toBe("cell-a-3");
-  });
-
-  it("keeps no-id single renders transient while no-id batch renders are positional", () => {
-    expect(
-      outputEntryIdForPayload(
-        {},
-        {
-          transientFallback: true,
-          createTransientId: () => "output-transient",
-        },
-      ),
-    ).toBe("output-transient");
-    expect(outputEntryIdForPayload({}, { fallbackIndex: 4 })).toBe("output-4");
+  it("rejects payloads without outputId instead of deriving fallback identity", () => {
+    expect(() => outputEntryIdForPayload({} as { outputId: string })).toThrow("missing outputId");
+    expect(() => outputEntryIdForPayload({ outputId: "" })).toThrow("missing outputId");
   });
 });
