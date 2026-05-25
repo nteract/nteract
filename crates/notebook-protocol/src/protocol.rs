@@ -432,6 +432,28 @@ pub struct NotebookResponseEnvelope {
     pub response: NotebookResponse,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CommRequestMessage {
+    pub header: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_header: Option<serde_json::Value>,
+    #[serde(default = "empty_json_object")]
+    pub metadata: serde_json::Value,
+    pub content: serde_json::Value,
+    #[serde(default)]
+    pub buffers: Vec<Vec<u8>>,
+    #[serde(default = "default_comm_channel")]
+    pub channel: String,
+}
+
+fn empty_json_object() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
+fn default_comm_channel() -> String {
+    "shell".to_string()
+}
+
 /// Requests sent from notebook app to daemon for notebook operations.
 ///
 /// These are sent as JSON over the notebook sync connection alongside
@@ -493,7 +515,7 @@ pub enum NotebookRequest {
     SendComm {
         /// The full Jupyter message (header, content, buffers, etc.)
         /// Preserves frontend session/msg_id for proper widget protocol.
-        message: serde_json::Value,
+        message: Box<CommRequestMessage>,
     },
 
     /// Search the kernel's input history.
@@ -828,7 +850,7 @@ pub enum RuntimeAgentRequest {
     },
 
     /// Send a comm message to the kernel (widget interactions).
-    SendComm { message: serde_json::Value },
+    SendComm { message: Box<CommRequestMessage> },
 
     /// Request code completions from the kernel.
     Complete { code: String, cursor_pos: usize },
@@ -1853,7 +1875,14 @@ mod tests {
         // Fire-and-forget commands (no response needed)
         assert!(RuntimeAgentRequest::InterruptExecution.is_command());
         assert!(RuntimeAgentRequest::SendComm {
-            message: serde_json::json!({})
+            message: Box::new(CommRequestMessage {
+                header: serde_json::json!({"msg_type": "comm_msg"}),
+                parent_header: None,
+                metadata: serde_json::json!({}),
+                content: serde_json::json!({}),
+                buffers: vec![vec![1, 2, 3]],
+                channel: "shell".to_string(),
+            }),
         }
         .is_command());
 
@@ -1895,6 +1924,26 @@ mod tests {
             packages: vec!["numpy".into()]
         })
         .is_command());
+    }
+
+    #[test]
+    fn comm_request_message_defaults_optional_legacy_fields() {
+        let request: NotebookRequest = serde_json::from_value(serde_json::json!({
+            "action": "send_comm",
+            "message": {
+                "header": { "msg_type": "comm_msg" },
+                "content": { "comm_id": "comm-a", "data": {} }
+            }
+        }))
+        .expect("legacy SendComm without optional fields should deserialize");
+
+        let NotebookRequest::SendComm { message } = request else {
+            panic!("expected SendComm request");
+        };
+        assert_eq!(message.parent_header, None);
+        assert_eq!(message.metadata, serde_json::json!({}));
+        assert!(message.buffers.is_empty());
+        assert_eq!(message.channel, "shell");
     }
 
     #[test]

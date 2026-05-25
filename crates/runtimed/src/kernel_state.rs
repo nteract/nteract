@@ -440,7 +440,10 @@ mod tests {
         async fn shutdown(&mut self) -> Result<()> {
             Ok(())
         }
-        async fn send_comm_message(&mut self, _: serde_json::Value) -> Result<()> {
+        async fn send_comm_message(
+            &mut self,
+            _: notebook_protocol::protocol::CommRequestMessage,
+        ) -> Result<()> {
             Ok(())
         }
         async fn send_comm_update(

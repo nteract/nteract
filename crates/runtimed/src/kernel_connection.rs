@@ -22,7 +22,7 @@ use crate::blob_store::BlobStore;
 use crate::output_prep::QueueCommandReceivers;
 use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast};
 use crate::PooledEnv;
-use notebook_protocol::protocol::{KernelPorts, LaunchedEnvConfig};
+use notebook_protocol::protocol::{CommRequestMessage, KernelPorts, LaunchedEnvConfig};
 
 /// Configuration for launching a kernel.
 ///
@@ -106,7 +106,7 @@ pub trait KernelConnection: Send {
     /// Forward a raw comm_msg envelope to the kernel (widget interactions).
     fn send_comm_message(
         &mut self,
-        raw_message: serde_json::Value,
+        message: CommRequestMessage,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Send a comm_msg(update) to sync widget state from frontend to kernel.
