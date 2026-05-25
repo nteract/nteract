@@ -611,20 +611,20 @@ function accessCredentialFromRequest(request: Request): AccessCredential | undef
       token: assertionToken,
       transport: cookieToken ? "access-cookie-assertion" : "access-assertion",
     });
-  }
+  } else {
+    const accessToken = request.headers.get("cf-access-token")?.trim() || undefined;
+    if (accessToken) {
+      candidates.push({ token: accessToken, transport: "access-token-header" });
+    }
 
-  const accessToken = request.headers.get("cf-access-token")?.trim() || undefined;
-  if (accessToken) {
-    candidates.push({ token: accessToken, transport: "access-token-header" });
-  }
+    const bearerToken = bearerTokenFromAuthorization(request.headers.get("authorization"));
+    if (bearerToken) {
+      candidates.push({ token: bearerToken, transport: "access-bearer" });
+    }
 
-  const bearerToken = bearerTokenFromAuthorization(request.headers.get("authorization"));
-  if (bearerToken) {
-    candidates.push({ token: bearerToken, transport: "access-bearer" });
-  }
-
-  if (cookieToken && candidates.length === 0) {
-    candidates.push({ token: cookieToken, transport: "access-cookie" });
+    if (cookieToken && candidates.length === 0) {
+      candidates.push({ token: cookieToken, transport: "access-cookie" });
+    }
   }
 
   const webSocketProtocol = tokenFromWebSocketProtocol(

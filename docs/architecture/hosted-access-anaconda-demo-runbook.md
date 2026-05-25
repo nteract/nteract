@@ -205,6 +205,9 @@ an `Origin`, it must normalize to the notebook application origin or one of the
 configured values. The hosted Access smoke sends `NOTEBOOK_CLOUD_ACCESS_ORIGIN`
 by default to exercise the browser-compatible origin path while still carrying
 only one Worker-visible credential, `CF-Access-Token`.
+If the Access edge also forwards `Cf-Access-Jwt-Assertion` to the Worker, the
+Worker treats the forwarded assertion as authoritative for origin identity and
+ignores client-carried `CF-Access-Token` or bearer headers on that request.
 
 ## Deploy
 
@@ -314,10 +317,15 @@ The script sends:
 - `Origin: https://<notebook-host>` to exercise the browser-compatible
   WebSocket origin gate;
 
-It intentionally sends only one Worker-visible Access credential transport per
-request. The Worker also supports `Authorization: Bearer <jwt>` and
+It intentionally sends one client-carried Access credential transport per
+request. If Access forwards `Cf-Access-Jwt-Assertion` to the origin after
+admitting the request, the Worker validates that forwarded assertion as the
+authoritative origin credential. The Worker also supports
+`Authorization: Bearer <jwt>` and
 `nteract-access-token.<base64url-jwt>` as separate deployment/client modes, but
-they must not be combined with `CF-Access-Token` on the same request.
+they must not be combined with `CF-Access-Token` on the same request unless the
+Access edge has replaced client credential selection with a forwarded
+assertion.
 
 Expected JSON shape:
 

@@ -433,6 +433,47 @@ describe("Cloudflare Access identity", () => {
     assert.equal(identity.scope, "viewer");
   });
 
+  it("prefers forwarded Access assertions over client-carried header credentials", async () => {
+    const { env, token } = await accessTokenFixture({ subject: "alice" });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?operator=smoke:owner&scope=owner", {
+        headers: {
+          "Cf-Access-Jwt-Assertion": token,
+          "CF-Access-Token": "not-a-jwt",
+          Authorization: "Bearer not-a-jwt",
+        },
+      }),
+      env,
+    );
+
+    assert.equal(identity.actorLabel, "user:cloudflare-access:alice/smoke:owner");
+    assert.equal(identity.scope, "owner");
+    assert.equal(identity.metadata.transport, "access-assertion");
+  });
+
+  it("rejects browser Access subprotocols when an Access assertion is already forwarded", async () => {
+    const { env, token } = await accessTokenFixture({ subject: "alice" });
+    const protocol = `${ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url(token)}`;
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              "Cf-Access-Jwt-Assertion": token,
+              "Sec-WebSocket-Protocol": protocol,
+            },
+          }),
+          env,
+        ),
+      (error) =>
+        error instanceof AuthError &&
+        error.status === 400 &&
+        /multiple identity credentials/.test(error.message),
+    );
+  });
+
   it("accepts Cloudflare Access CLI tokens from the cf-access-token header", async () => {
     const { env, token } = await accessTokenFixture({ subject: "alice" });
 

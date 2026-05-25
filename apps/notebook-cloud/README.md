@@ -232,6 +232,13 @@ principal is `user:cloudflare-access:<sub>`, and the requested `scope` is still
 only a request: the room ACL decides whether that principal may enter as
 `viewer`, `editor`, `runtime_peer`, or `owner`.
 
+When Cloudflare Access forwards `Cf-Access-Jwt-Assertion` to the Worker, that
+edge assertion is authoritative at the origin. Client-carried header credentials
+such as `CF-Access-Token` or `Authorization: Bearer` are ignored for Worker
+identity selection on that request. Browser-visible Access token subprotocols
+remain mutually exclusive with forwarded assertions and are rejected if both are
+present.
+
 The Access principal namespace names the authority validated by the Worker:
 `user:cloudflare-access:<encoded-sub>`. Access `email` and `name` claims are
 stamped as display/audit metadata on the trusted room connection; they are not
