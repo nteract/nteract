@@ -427,6 +427,51 @@ describe("RoomMaterializer", () => {
 
     assert.deepEqual(JSON.parse(viewer.get_cells_json()), []);
   });
+
+  it("allows runtime peers, not editors, to author runtime state changes", async () => {
+    const state = fakeState();
+    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const runtimeIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:py&scope=runtime_peer",
+      ),
+    );
+    const runtimePeerConnection = { id: "peer-runtime", identity: runtimeIdentity };
+    const runtimePeer = new RuntimeStatePeerHandle(runtimeIdentity.actorLabel);
+    await syncMaterializerWithRuntimePeer(materializer, runtimePeerConnection, runtimePeer);
+    runtimePeer.create_execution_with_source("exec-runtime", "print('runtime')", 0);
+    const runtimeMessage = runtimePeer.flush_runtime_state_sync();
+    assert.ok(runtimeMessage);
+
+    const accepted = await materializer.receiveFrame(runtimePeerConnection, {
+      type: FrameType.RUNTIME_STATE_SYNC,
+      payload: runtimeMessage,
+    });
+    assert.equal(accepted.changed, true);
+    assert.equal(accepted.runtime_state_changed, true);
+
+    const editorIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=editor"),
+    );
+    const editorPeerConnection = { id: "peer-editor", identity: editorIdentity };
+    const editorPeer = NotebookHandle.create_bootstrap(editorIdentity.actorLabel);
+    await syncMaterializerRuntimeStateWithClient(materializer, editorPeerConnection, editorPeer);
+    assert.deepEqual(editorPeer.get_execution_by_id("exec-runtime"), {
+      status: "queued",
+      success: null,
+      execution_count: null,
+      output_ids: [],
+    });
+
+    await assert.rejects(
+      () =>
+        materializer.receiveFrame(editorPeerConnection, {
+          type: FrameType.RUNTIME_STATE_SYNC,
+          payload: runtimeMessage,
+        }),
+      /cannot write RuntimeStateDoc changes/,
+    );
+  });
 });
 
 function syncHostWithClient(
@@ -496,6 +541,74 @@ async function syncMaterializerWithClient(
     for (const reply of replies) {
       const next = await materializer.receiveFrame(peer, {
         type: FrameType.AUTOMERGE_SYNC,
+        payload: reply.slice(1),
+      });
+      outbound.push(...next.outbound);
+    }
+    result = {
+      changed: false,
+      notebook_changed: false,
+      runtime_state_changed: false,
+      outbound,
+    };
+  }
+}
+
+async function syncMaterializerWithRuntimePeer(
+  materializer: RoomMaterializer,
+  peer: { id: string; identity: ReturnType<typeof authenticateDevRequest> },
+  runtime: RuntimeStatePeerHandle,
+): Promise<void> {
+  let result = await materializer.syncPeer(peer);
+  for (let round = 0; round < 8; round += 1) {
+    const replies = applyRuntimeOutboundToRuntimePeer(result.outbound, peer.id, runtime);
+    if (replies.length === 0) {
+      return;
+    }
+    const outbound = [];
+    for (const reply of replies) {
+      const next = await materializer.receiveFrame(peer, {
+        type: FrameType.RUNTIME_STATE_SYNC,
+        payload: reply.slice(1),
+      });
+      outbound.push(...next.outbound);
+    }
+    result = {
+      changed: false,
+      notebook_changed: false,
+      runtime_state_changed: false,
+      outbound,
+    };
+  }
+}
+
+async function syncMaterializerRuntimeStateWithClient(
+  materializer: RoomMaterializer,
+  peer: { id: string; identity: ReturnType<typeof authenticateDevRequest> },
+  client: NotebookHandle,
+): Promise<void> {
+  const outbound = [];
+  const initial = client.flush_runtime_state_sync();
+  if (initial) {
+    const reply = await materializer.receiveFrame(peer, {
+      type: FrameType.RUNTIME_STATE_SYNC,
+      payload: initial,
+    });
+    outbound.push(...reply.outbound);
+  }
+
+  const hostSync = await materializer.syncPeer(peer);
+  outbound.push(...hostSync.outbound);
+  let result = { ...hostSync, outbound };
+  for (let round = 0; round < 8; round += 1) {
+    const replies = applyRuntimeOutboundToClient(result.outbound, peer.id, client);
+    if (replies.length === 0) {
+      return;
+    }
+    const outbound = [];
+    for (const reply of replies) {
+      const next = await materializer.receiveFrame(peer, {
+        type: FrameType.RUNTIME_STATE_SYNC,
         payload: reply.slice(1),
       });
       outbound.push(...next.outbound);
