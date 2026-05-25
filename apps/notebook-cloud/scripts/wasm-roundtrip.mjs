@@ -1,7 +1,14 @@
 import { access, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { FrameType } from "runtimed";
-import { assertWasmRoundtripAuthEnv } from "./wasm-roundtrip-env.mjs";
+import {
+  clientForSocket,
+  closeClient,
+  openWebSocket,
+  safeWebSocketUrl,
+  sendBinaryFrame,
+} from "./hosted-access-smoke-ws.mjs";
+import { assertWasmRoundtripAuthEnv, credentialedSmokeOrigin } from "./wasm-roundtrip-env.mjs";
 
 const baseUrl = process.env.NOTEBOOK_CLOUD_URL ?? "http://127.0.0.1:8787";
 const devAuthToken = process.env.NOTEBOOK_CLOUD_DEV_TOKEN;
@@ -255,12 +262,18 @@ async function connect(notebookId, user, operator, scope) {
   url.searchParams.set("user", user);
   url.searchParams.set("operator", operator);
   url.searchParams.set("scope", scope);
-  const safeUrl = url.href;
   const protocols = devAuthProtocols();
 
-  const socket = protocols ? new WebSocket(url, protocols) : new WebSocket(url);
-  socket.binaryType = "arraybuffer";
-  const client = await clientForSocket(socket, safeUrl);
+  const socket = protocols
+    ? await openWebSocket(url, {
+        origin: credentialedSmokeOrigin({ baseUrl, protocols }),
+        protocols,
+      })
+    : new WebSocket(url);
+  if ("binaryType" in socket) {
+    socket.binaryType = "arraybuffer";
+  }
+  const client = await clientForSocket(socket, safeWebSocketUrl(url));
   const ready = await client.nextFrame(
     (frame) => frame.type === FrameType.SESSION_CONTROL && frame.json.type === "cloud_room_ready",
   );
@@ -273,58 +286,11 @@ async function connectAnonymous(notebookId, viewerSession) {
   url.searchParams.set("viewer_session", viewerSession);
   const socket = new WebSocket(url);
   socket.binaryType = "arraybuffer";
-  const client = await clientForSocket(socket, url.href);
+  const client = await clientForSocket(socket, safeWebSocketUrl(url));
   const ready = await client.nextFrame(
     (frame) => frame.type === FrameType.SESSION_CONTROL && frame.json.type === "cloud_room_ready",
   );
   return { ...client, ready: ready.json };
-}
-
-async function clientForSocket(socket, safeUrl) {
-  const queue = [];
-  const waiters = [];
-  socket.addEventListener("message", async (event) => {
-    const frame = await decodeFrame(event.data);
-    const index = waiters.findIndex((waiter) => waiter.predicate(frame));
-    if (index === -1) {
-      queue.push(frame);
-      return;
-    }
-
-    const [waiter] = waiters.splice(index, 1);
-    clearTimeout(waiter.timer);
-    waiter.resolve(frame);
-  });
-
-  await new Promise((resolve, reject) => {
-    socket.addEventListener("open", resolve, { once: true });
-    socket.addEventListener("error", () => reject(new Error(`failed to connect ${safeUrl}`)), {
-      once: true,
-    });
-  });
-
-  const client = {
-    socket,
-    nextFrame(predicate, timeoutMs = 5_000) {
-      const queued = queue.findIndex(predicate);
-      if (queued !== -1) {
-        const [frame] = queue.splice(queued, 1);
-        return Promise.resolve(frame);
-      }
-
-      return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          const index = waiters.findIndex((waiter) => waiter.timer === timer);
-          if (index !== -1) {
-            waiters.splice(index, 1);
-          }
-          reject(new Error(`timed out waiting for frame from ${safeUrl}`));
-        }, timeoutMs);
-        waiters.push({ predicate, resolve, timer });
-      });
-    },
-  };
-  return client;
 }
 
 function requestHeaders(user, operator, scope, contentType) {
@@ -338,58 +304,6 @@ function requestHeaders(user, operator, scope, contentType) {
     headers["X-Notebook-Cloud-Dev-Token"] = devAuthToken;
   }
   return headers;
-}
-
-function sendBinaryFrame(socket, type, payload) {
-  const frame = new Uint8Array(payload.byteLength + 1);
-  frame[0] = type;
-  frame.set(payload, 1);
-  socket.send(frame);
-}
-
-async function decodeFrame(data) {
-  let buffer;
-  if (data instanceof ArrayBuffer) {
-    buffer = data;
-  } else if (ArrayBuffer.isView(data)) {
-    buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-  } else if (typeof Blob !== "undefined" && data instanceof Blob) {
-    buffer = await data.arrayBuffer();
-  } else {
-    throw new Error(`unsupported WebSocket message ${Object.prototype.toString.call(data)}`);
-  }
-
-  const bytes = new Uint8Array(buffer);
-  const type = bytes[0];
-  const payload = bytes.slice(1);
-  let json;
-  if (type === FrameType.SESSION_CONTROL) {
-    try {
-      json = JSON.parse(new TextDecoder().decode(payload));
-    } catch {
-      json = undefined;
-    }
-  }
-  return { type, payload, bytes, json };
-}
-
-async function closeClient(client) {
-  if (client.socket.readyState === WebSocket.CLOSED) {
-    return;
-  }
-
-  await new Promise((resolve) => {
-    const timeout = setTimeout(resolve, 250);
-    client.socket.addEventListener(
-      "close",
-      () => {
-        clearTimeout(timeout);
-        resolve();
-      },
-      { once: true },
-    );
-    client.socket.close();
-  });
 }
 
 function sleep(ms) {

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { assertWasmRoundtripAuthEnv, isLoopbackBaseUrl } from "../scripts/wasm-roundtrip-env.mjs";
+import {
+  assertWasmRoundtripAuthEnv,
+  credentialedSmokeOrigin,
+  isLoopbackBaseUrl,
+} from "../scripts/wasm-roundtrip-env.mjs";
 
 describe("wasm roundtrip smoke environment", () => {
   it("allows loopback Wrangler runs without a dev token", () => {
@@ -32,6 +36,37 @@ describe("wasm roundtrip smoke environment", () => {
         baseUrl: "https://nteract-notebook-cloud.rgbkrk.workers.dev",
         devAuthToken: "token-from-env",
       }),
+    );
+  });
+
+  it("sets a same-origin Origin for credentialed smoke WebSocket protocols", () => {
+    assert.equal(
+      credentialedSmokeOrigin({
+        baseUrl: "https://nteract-notebook-cloud.rgbkrk.workers.dev",
+        protocols: ["nteract-dev-token.redacted", "nteract.v4"],
+      }),
+      "https://nteract-notebook-cloud.rgbkrk.workers.dev",
+    );
+    assert.equal(
+      credentialedSmokeOrigin({
+        baseUrl: "http://127.0.0.1:8787",
+        protocols: ["nteract-dev-token.redacted", "nteract.v4"],
+      }),
+      "http://127.0.0.1:8787",
+    );
+    assert.equal(
+      credentialedSmokeOrigin({
+        baseUrl: "https://nteract-notebook-cloud.rgbkrk.workers.dev",
+        protocols: [],
+      }),
+      undefined,
+    );
+    assert.equal(
+      credentialedSmokeOrigin({
+        baseUrl: "https://nteract-notebook-cloud.rgbkrk.workers.dev",
+        protocols: undefined,
+      }),
+      undefined,
     );
   });
 });
