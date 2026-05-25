@@ -116,6 +116,96 @@ def test_serialize_dataframe_polars_emits_arrow_stream():
     assert table.num_rows == 3
 
 
+def test_serialize_dataframe_polars_object_dates_emit_arrow_date32():
+    import datetime as dt
+
+    np = pytest.importorskip("numpy")
+    pa = pytest.importorskip("pyarrow")
+    pl = pytest.importorskip("polars")
+    from nteract_kernel_launcher._format import serialize_dataframe
+
+    date_options = [
+        dt.date(1997, 1, 10),
+        dt.date(1985, 2, 15),
+        dt.date(1983, 3, 22),
+        dt.date(1981, 4, 30),
+    ]
+    birthdates = np.random.default_rng(0).choice(date_options, size=8)
+    df = pl.DataFrame({"birthdate": birthdates})
+    assert df.schema["birthdate"] == pl.Object
+
+    data, _, _ = serialize_dataframe(df, max_bytes=10_000_000)
+
+    table = pa.ipc.open_stream(io.BytesIO(data)).read_all()
+    assert table.schema.field("birthdate").type == pa.date32()
+    assert table.to_pydict()["birthdate"] == list(birthdates)
+
+
+def test_normalize_polars_object_dates_uses_loaded_polars_module(monkeypatch):
+    import builtins
+    import datetime as dt
+    import sys
+    from types import SimpleNamespace
+
+    import nteract_kernel_launcher._format as fmt
+
+    class FakeColumn:
+        def __init__(self, values):
+            self._values = values
+
+        def drop_nulls(self):
+            return self
+
+        def to_list(self):
+            return self._values
+
+    class FakePolarsDataFrame:
+        __module__ = "polars.dataframe.frame"
+
+        schema = {"birthdate": "Object"}
+
+        def __init__(self):
+            self.series = None
+
+        def get_column(self, name):
+            assert name == "birthdate"
+            return FakeColumn([dt.date(1997, 1, 10)])
+
+        def with_columns(self, series):
+            self.series = series
+            return self
+
+    def make_series(name, values, dtype):
+        return {"name": name, "values": values, "dtype": dtype}
+
+    fake_pl = SimpleNamespace(Date=object(), Series=make_series)
+    monkeypatch.setitem(sys.modules, "polars", fake_pl)
+
+    polars_imports = 0
+    original_import = builtins.__import__
+
+    def import_spy(name, *args, **kwargs):
+        nonlocal polars_imports
+        if name == "polars" or name.startswith("polars."):
+            polars_imports += 1
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_spy)
+
+    df = FakePolarsDataFrame()
+    normalized = fmt._normalize_polars_object_dates(df)
+
+    assert normalized is df
+    assert df.series == [
+        {
+            "name": "birthdate",
+            "values": [dt.date(1997, 1, 10)],
+            "dtype": fake_pl.Date,
+        }
+    ]
+    assert polars_imports == 0
+
+
 def test_serialize_dataframe_polars_uses_arrow_stream_protocol(monkeypatch):
     pl = pytest.importorskip("polars")
     import nteract_kernel_launcher._format as fmt
@@ -166,6 +256,41 @@ def test_serialize_dataframe_accepts_arrow_pycapsule_stream_protocol():
     assert included_rows == 10
     assert table.column_names == ["a"]
     assert table.num_rows == 10
+
+
+def test_serialize_dataframe_accepts_pyarrow_table_when_polars_is_importable():
+    pa = pytest.importorskip("pyarrow")
+    pytest.importorskip("polars")
+    from nteract_kernel_launcher._format import serialize_dataframe
+
+    data, _, included_rows = serialize_dataframe(pa.table({"a": [1, 2, 3]}), max_bytes=10_000_000)
+
+    table = pa.ipc.open_stream(io.BytesIO(data)).read_all()
+    assert included_rows == 3
+    assert table.to_pydict() == {"a": [1, 2, 3]}
+
+
+def test_serialize_dataframe_pyarrow_table_does_not_import_polars(monkeypatch):
+    import builtins
+
+    pa = pytest.importorskip("pyarrow")
+    pytest.importorskip("polars")
+    from nteract_kernel_launcher._format import serialize_dataframe
+
+    polars_imports = 0
+    original_import = builtins.__import__
+
+    def import_spy(name, *args, **kwargs):
+        nonlocal polars_imports
+        if name == "polars" or name.startswith("polars."):
+            polars_imports += 1
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_spy)
+
+    serialize_dataframe(pa.table({"a": [1, 2, 3]}), max_bytes=10_000_000)
+
+    assert polars_imports == 0
 
 
 def test_serialize_dataframe_rejects_oversized_generic_pycapsule_stream():

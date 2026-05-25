@@ -8,7 +8,9 @@ Arrow manifest with multiple independently decodable stream chunks.
 
 from __future__ import annotations
 
+import datetime as _dt
 import hashlib
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -71,6 +73,52 @@ def has_arrow_stream_protocol(obj: Any) -> bool:
         return isinstance(obj, pa.RecordBatchReader)
     except Exception:
         return False
+
+
+def _normalize_polars_object_dates(df: Any) -> Any:
+    if not type(df).__module__.startswith("polars"):
+        return df
+
+    schema = getattr(df, "schema", None)
+    if not schema or not hasattr(schema, "items"):
+        return df
+
+    get_column = getattr(df, "get_column", None)
+    with_columns = getattr(df, "with_columns", None)
+    if not callable(get_column) or not callable(with_columns):
+        return df
+
+    object_columns = [name for name, dtype in schema.items() if str(dtype) == "Object"]
+    if not object_columns:
+        return df
+
+    date_columns = []
+    for name in object_columns:
+        try:
+            values = get_column(name).drop_nulls().to_list()
+        except Exception:
+            continue
+
+        if values and all(
+            isinstance(value, _dt.date) and not isinstance(value, _dt.datetime) for value in values
+        ):
+            date_columns.append(name)
+
+    if not date_columns:
+        return df
+
+    pl = sys.modules.get("polars")
+    if pl is None:
+        return df
+
+    date_series = [
+        pl.Series(name, get_column(name).to_list(), dtype=pl.Date) for name in date_columns
+    ]
+
+    try:
+        return with_columns(date_series)
+    except Exception:
+        return df
 
 
 def _record_batch_reader_from_stream(source: Any) -> Any:
@@ -324,6 +372,7 @@ def serialize_dataframe(df: Any, *, max_bytes: int) -> tuple[bytes, str, int]:
     objects that do not expose the Arrow stream protocol or that need a chunked
     manifest.
     """
+    df = _normalize_polars_object_dates(df)
     if not has_arrow_stream_protocol(df):
         raise ValueError(f"unsupported DataFrame type: {type(df).__module__}.{type(df).__name__}")
     data, content_type, included_rows, _record_batch_count = serialize_arrow_stream(
