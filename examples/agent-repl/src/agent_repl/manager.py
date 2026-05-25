@@ -36,11 +36,15 @@ class _WorkerSession:
         self._ids = count(1)
         self._request_lock = threading.Lock()
         self._responses: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._stderr_lines: list[str] = []
+        self._stderr_lock = threading.Lock()
         self._executions = 0
         self._closed = False
         self._process = self._start()
         self._reader = threading.Thread(target=self._read_stdout, daemon=True)
+        self._stderr_reader = threading.Thread(target=self._read_stderr, daemon=True)
         self._reader.start()
+        self._stderr_reader.start()
 
     @property
     def pid(self) -> int:
@@ -98,7 +102,11 @@ class _WorkerSession:
 
     def _request(self, request: dict[str, Any], timeout_s: float) -> dict[str, Any]:
         if not self.alive:
-            raise RuntimeError(f"session {self.name!r} worker is not running")
+            message = f"session {self.name!r} worker is not running"
+            stderr_tail = self.stderr_tail()
+            if stderr_tail:
+                message = f"{message}\n\nworker stderr:\n{stderr_tail}"
+            raise RuntimeError(message)
 
         request_id = next(self._ids)
         request["id"] = request_id
@@ -140,7 +148,7 @@ class _WorkerSession:
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
             env=env,
@@ -163,6 +171,17 @@ class _WorkerSession:
                         "traceback": f"worker wrote non-JSON stdout: {line!r}",
                     }
                 )
+
+    def _read_stderr(self) -> None:
+        assert self._process.stderr is not None
+        for line in self._process.stderr:
+            with self._stderr_lock:
+                self._stderr_lines.append(line)
+                del self._stderr_lines[:-40]
+
+    def stderr_tail(self) -> str:
+        with self._stderr_lock:
+            return "".join(self._stderr_lines).strip()
 
 
 class ReplManager:
@@ -204,6 +223,18 @@ class ReplManager:
                 error_name="Timeout",
                 traceback=f"execution timed out after {timeout_s:g}s; session was killed",
                 timed_out=True,
+                restarted=True,
+            )
+        except RuntimeError as exc:
+            with self._lock:
+                if self._sessions.get(session) is worker:
+                    self._sessions.pop(session, None)
+            return RunResult(
+                session=session,
+                backend=worker.backend,
+                ok=False,
+                error_name="SessionUnavailable",
+                traceback=str(exc),
                 restarted=True,
             )
 

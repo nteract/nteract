@@ -69,6 +69,50 @@ def test_timeout_budget_is_not_reset_by_discarded_responses() -> None:
     assert elapsed < 0.35
 
 
+def test_manager_returns_structured_error_if_worker_dies_before_run() -> None:
+    class BrokenWorker:
+        backend = "python"
+        alive = True
+
+        def run(self, code: str, timeout_s: float):  # noqa: ARG002
+            raise RuntimeError("worker disappeared")
+
+        def close(self) -> None:
+            pass
+
+    manager = ReplManager(backend="python")
+    manager._sessions["default"] = BrokenWorker()
+
+    result = manager.run("1")
+
+    assert not result.ok
+    assert result.error_name == "SessionUnavailable"
+    assert result.restarted
+    assert "worker disappeared" in (result.traceback or "")
+    assert "default" not in manager._sessions
+
+
+def test_dead_worker_error_includes_stderr_tail() -> None:
+    worker = _WorkerSession("bad", "bogus", sys.executable)
+    try:
+        for _ in range(20):
+            if not worker.alive:
+                break
+            time.sleep(0.05)
+
+        try:
+            worker._request({"op": "run", "code": "1"}, timeout_s=0.2)
+        except RuntimeError as exc:
+            message = str(exc)
+        else:
+            raise AssertionError("expected worker startup failure")
+    finally:
+        worker.close()
+
+    assert "worker stderr:" in message
+    assert "invalid choice" in message
+
+
 def test_ipython_backend_captures_rich_display() -> None:
     manager = ReplManager(backend="ipython")
     try:
