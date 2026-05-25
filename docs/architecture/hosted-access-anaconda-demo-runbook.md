@@ -288,7 +288,27 @@ For a demo notebook:
    }
    ```
 
-3. Grant a known viewer by principal:
+3. Or create a pending invite for a user who has not logged in yet:
+
+   ```http
+   POST /api/n/<notebook-id>/invites
+   ```
+
+   ```json
+   {
+     "email": "recipient@example.com",
+     "provider_hint": "cloudflare-access",
+     "scope": "editor"
+   }
+   ```
+
+   The invite is email-addressed only until first login. Once the recipient
+   authenticates with a verified matching email, the Worker resolves the invite
+   to a principal-backed ACL row, upserts `principal_profiles`, and marks the
+   invite accepted. The email remains lookup and display metadata; it is never
+   the ACL subject.
+
+4. Grant a viewer by principal:
 
    ```json
    {
@@ -297,14 +317,6 @@ For a demo notebook:
      "scope": "viewer"
    }
    ```
-
-4. For share-by-email bootstrapping, create a pending invite row with the
-   normalized email and optional provider hint. On the invited user's first
-   Cloudflare Access login, the Worker resolves the invite before notebook ACL
-   authorization, upserts `principal_profiles`, marks the invite accepted, and
-   inserts a `notebook_acl` row whose subject is the resolved
-   `user:cloudflare-access:<encoded-access-sub>` principal. The email remains
-   lookup and display metadata; it is never the ACL subject.
 
 5. Public viewer is a separate explicit row, and only applies when the request
    can reach the Worker without being blocked by Access:
@@ -460,11 +472,11 @@ and product decisions:
    or Access forwards a deployment-approved stable Anaconda subject claim, ACL
    rows should use `user:cloudflare-access:<encoded-access-sub>`. Do not switch
    to `user:anaconda:*` based on email.
-3. **Collaborator bootstrap.** The current owner/editor/viewer smoke can derive
-   principals from local Access JWT subjects, seed D1 ACL rows, or resolve
-   pre-created pending invite rows on first Access login. The browser product
-   still needs share-by-email creation routes before non-operators can grant
-   collaborators by email.
+3. **Collaborator bootstrap UI.** The Worker has owner-scoped invite routes for
+   creating, listing, and revoking pending email invites, plus first-login
+   invite resolution into principal-backed ACL rows. The browser product still
+   needs share-dialog wiring and email delivery before non-operators can manage
+   invites without HTTP tooling.
 4. **Public viewers.** A fully Access-protected hostname blocks anonymous
    viewers at the edge. Public published notebooks need an Access bypass rule,
    a separate public viewer hostname, or another route that still reaches the

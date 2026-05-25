@@ -18,8 +18,10 @@ Prototype code:
 
 - `apps/notebook-cloud/src/sharing.ts`
 - `apps/notebook-cloud/src/sharing-storage.ts`
+- `apps/notebook-cloud/src/index.ts`
 - `apps/notebook-cloud/test/sharing.test.ts`
 - `apps/notebook-cloud/test/sharing-storage.test.ts`
+- `apps/notebook-cloud/test/worker-routes.test.ts`
 
 ## What The Older Prototype Already Proved
 
@@ -153,6 +155,18 @@ Pending invites are not ACL rows and cannot authorize a socket.
 
 The API may create an accepted invite audit row even for immediate grants, but
 the ACL subject is still the resolved principal.
+
+The initial Worker surface is deliberately small and owner-scoped:
+
+- `GET /api/n/:id/invites` lists the most recent pending, accepted, and revoked
+  invite rows for owners.
+- `POST /api/n/:id/invites` creates or returns an existing pending invite for a
+  normalized email, optional provider hint, and `viewer` or `editor` scope.
+- `DELETE /api/n/:id/invites/:inviteId` revokes a pending invite.
+
+These routes require owner authorization and use the same mutation-origin
+checks as ACL changes. They do not send email, expose `token_hash`, or insert
+email strings into `notebook_acl`.
 
 ## First Login Resolution
 

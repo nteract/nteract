@@ -1069,6 +1069,241 @@ describe("Worker artifact routes", () => {
     });
   });
 
+  it("lets owners create, list, and revoke pending notebook invites", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "invite-demo");
+    seedAcl(env, {
+      notebookId: "invite-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    const futureInviteExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    const create = await inviteRequest(
+      env,
+      "POST",
+      {
+        email: " Bob@Example.COM ",
+        provider_hint: " Cloudflare-Access ",
+        scope: "editor",
+        expires_at: futureInviteExpiry,
+      },
+      "invite-demo",
+    );
+    assert.equal(create.status, 201);
+    const createBody = (await create.json()) as {
+      invite: Record<string, unknown>;
+      notebook_id: string;
+    };
+    assert.equal(createBody.notebook_id, "invite-demo");
+    assert.equal(createBody.invite.email, "bob@example.com");
+    assert.equal(createBody.invite.provider_hint, "cloudflare-access");
+    assert.equal(createBody.invite.scope, "editor");
+    assert.equal(createBody.invite.status, "pending");
+    assert.equal(Object.hasOwn(createBody.invite, "token_hash"), false);
+
+    const inviteId = createBody.invite.id as string;
+    assert.equal(env.DB.invites.get(inviteId)?.token_hash, null);
+
+    const list = await inviteRequest(env, "GET", undefined, "invite-demo");
+    assert.equal(list.status, 200);
+    const listBody = (await list.json()) as { invites: Array<Record<string, unknown>> };
+    assert.deepEqual(
+      listBody.invites.map((invite) => [invite.id, invite.email, invite.status]),
+      [[inviteId, "bob@example.com", "pending"]],
+    );
+    assert.equal(Object.hasOwn(listBody.invites[0] ?? {}, "token_hash"), false);
+
+    const revoke = await inviteItemRequest(env, "DELETE", inviteId, "invite-demo");
+    assert.equal(revoke.status, 200);
+    const revokeBody = (await revoke.json()) as { invites: Array<Record<string, unknown>> };
+    assert.deepEqual(
+      revokeBody.invites.map((invite) => [invite.id, invite.email, invite.status]),
+      [[inviteId, "bob@example.com", "revoked"]],
+    );
+    assert.equal(
+      env.DB.invites.get(inviteId)?.revoked_by_actor_label,
+      "user:dev:alice/desktop:test",
+    );
+  });
+
+  it("does not revoke pending invites through another notebook route", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "invite-demo-a");
+    seedNotebook(env, "invite-demo-b");
+    seedAcl(env, {
+      notebookId: "invite-demo-a",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    seedAcl(env, {
+      notebookId: "invite-demo-b",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    seedPendingInvite(env, {
+      id: "invite-b",
+      notebookId: "invite-demo-b",
+      email: "bob@example.com",
+      providerHint: "cloudflare-access",
+      scope: "editor",
+    });
+
+    const revoke = await inviteItemRequest(env, "DELETE", "invite-b", "invite-demo-a");
+
+    assert.equal(revoke.status, 404);
+    assert.deepEqual(await revoke.json(), { error: "pending invite not found" });
+    assert.equal(env.DB.invites.get("invite-b")?.status, "pending");
+  });
+
+  it("keeps invite management owner-only and scope-limited", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "invite-private-demo");
+    seedAcl(env, {
+      notebookId: "invite-private-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    seedAcl(env, {
+      notebookId: "invite-private-demo",
+      subject: "user:dev:bob",
+      scope: "editor",
+    });
+
+    const bobCreate = await inviteRequest(
+      env,
+      "POST",
+      {
+        email: "mallory@example.com",
+        scope: "viewer",
+      },
+      "invite-private-demo",
+      {
+        "X-User": "bob",
+        "X-Scope": "editor",
+      },
+    );
+    assert.equal(bobCreate.status, 403);
+
+    const ownerInvite = await inviteRequest(
+      env,
+      "POST",
+      {
+        email: "new-owner@example.com",
+        scope: "owner",
+      },
+      "invite-private-demo",
+    );
+    assert.equal(ownerInvite.status, 400);
+    assert.deepEqual(await ownerInvite.json(), {
+      error: "invite scope must be viewer or editor",
+    });
+
+    const invalidEmail = await inviteRequest(
+      env,
+      "POST",
+      {
+        email: "not an email",
+        scope: "viewer",
+      },
+      "invite-private-demo",
+    );
+    assert.equal(invalidEmail.status, 400);
+    assert.deepEqual(await invalidEmail.json(), { error: "invite email is invalid" });
+
+    const invalidProvider = await inviteRequest(
+      env,
+      "POST",
+      {
+        email: "viewer@example.com",
+        provider_hint: "bad/provider",
+        scope: "viewer",
+      },
+      "invite-private-demo",
+    );
+    assert.equal(invalidProvider.status, 400);
+    assert.deepEqual(await invalidProvider.json(), { error: "invite provider hint is invalid" });
+
+    const expiredInvite = await inviteRequest(
+      env,
+      "POST",
+      {
+        email: "expired@example.com",
+        scope: "viewer",
+        expires_at: "2000-01-01T00:00:00.000Z",
+      },
+      "invite-private-demo",
+    );
+    assert.equal(expiredInvite.status, 400);
+    assert.deepEqual(await expiredInvite.json(), {
+      error: "invite expiry must be in the future",
+    });
+  });
+
+  it("requires trusted origins for cookie-backed invite mutations", async () => {
+    const { env: accessEnv, token } = await accessTokenFixture({ subject: "alice" });
+    const env = fakeEnv(accessEnv);
+    seedNotebook(env, "access-invite-demo");
+    seedAcl(env, {
+      notebookId: "access-invite-demo",
+      subject: "user:cloudflare-access:alice",
+      scope: "owner",
+    });
+
+    const body = JSON.stringify({
+      email: "bob@example.com",
+      provider_hint: "cloudflare-access",
+      scope: "editor",
+    });
+    const headers = {
+      "Content-Type": "application/json",
+      Cookie: `CF_Authorization=${token}`,
+      "X-Operator": "browser:tab",
+      "X-Scope": "owner",
+    };
+
+    const missingOrigin = await worker.fetch(
+      new Request("https://cloud.test/api/n/access-invite-demo/invites", {
+        method: "POST",
+        headers,
+        body,
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(missingOrigin.status, 403);
+    assert.deepEqual(await missingOrigin.json(), { error: "request origin is required" });
+
+    const untrustedOrigin = await worker.fetch(
+      new Request("https://cloud.test/api/n/access-invite-demo/invites", {
+        method: "POST",
+        headers: {
+          ...headers,
+          Origin: "https://evil.example",
+        },
+        body,
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(untrustedOrigin.status, 403);
+    assert.deepEqual(await untrustedOrigin.json(), { error: "request origin is not allowed" });
+
+    const trustedOrigin = await worker.fetch(
+      new Request("https://cloud.test/api/n/access-invite-demo/invites", {
+        method: "POST",
+        headers: {
+          ...headers,
+          Origin: "https://cloud.test",
+        },
+        body,
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(trustedOrigin.status, 201);
+  });
+
   it("rejects deleting the last owner ACL row", async () => {
     const env = fakeEnv();
     seedNotebook(env, "last-owner-demo");
@@ -1904,6 +2139,57 @@ async function aclRequest(
   );
 }
 
+async function inviteRequest(
+  env: FakeEnv,
+  method: "GET" | "POST",
+  body: Record<string, unknown> | undefined,
+  notebookId = "invite-demo",
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  const init: RequestInit = {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      "X-User": "alice",
+      "X-Operator": "desktop:test",
+      "X-Scope": "owner",
+      ...headers,
+    },
+  };
+  if (body !== undefined) {
+    init.body = JSON.stringify(body);
+  }
+
+  return worker.fetch(
+    new Request(new URL(`/api/n/${notebookId}/invites`, "http://localhost"), init),
+    env,
+    fakeContext(),
+  );
+}
+
+async function inviteItemRequest(
+  env: FakeEnv,
+  method: "DELETE",
+  inviteId: string,
+  notebookId = "invite-demo",
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  return worker.fetch(
+    new Request(new URL(`/api/n/${notebookId}/invites/${inviteId}`, "http://localhost"), {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        "X-User": "alice",
+        "X-Operator": "desktop:test",
+        "X-Scope": "owner",
+        ...headers,
+      },
+    }),
+    env,
+    fakeContext(),
+  );
+}
+
 async function scopedPut(
   env: FakeEnv,
   pathname: string,
@@ -2243,6 +2529,73 @@ class FakeD1Statement implements D1PreparedStatement {
       );
       this.db.acl.splice(0, this.db.acl.length, ...retained);
       return okResult(undefined, { changes: countBefore - retained.length });
+    } else if (this.query.includes("INSERT INTO notebook_invites")) {
+      const [
+        id,
+        notebookId,
+        emailNormalized,
+        providerHint,
+        scope,
+        actorLabel,
+        tokenHash,
+        createdAt,
+        expiresAt,
+      ] = this.values as [
+        string,
+        string,
+        string,
+        string | null,
+        PendingNotebookInviteRow["scope"],
+        string,
+        string | null,
+        string,
+        string | null,
+      ];
+      const duplicate = [...this.db.invites.values()].find(
+        (invite) =>
+          invite.notebook_id === notebookId &&
+          invite.email_normalized === emailNormalized &&
+          invite.provider_hint === providerHint &&
+          invite.scope === scope &&
+          invite.status === "pending",
+      );
+      if (duplicate) {
+        throw new Error("D1_ERROR: UNIQUE constraint failed: notebook_invites pending invite");
+      }
+      this.db.invites.set(id, {
+        id,
+        notebook_id: notebookId,
+        email_normalized: emailNormalized,
+        provider_hint: providerHint,
+        scope,
+        status: "pending",
+        invited_by_actor_label: actorLabel,
+        accepted_by_principal: null,
+        token_hash: tokenHash,
+        created_at: createdAt,
+        expires_at: expiresAt,
+        accepted_at: null,
+        revoked_at: null,
+        revoked_by_actor_label: null,
+      });
+    } else if (
+      this.query.includes("UPDATE notebook_invites") &&
+      this.query.includes("revoked_by_actor_label")
+    ) {
+      const [revokedAt, revokedByActorLabel, notebookId, inviteId] = this.values as [
+        string,
+        string,
+        string,
+        string,
+      ];
+      const invite = this.db.invites.get(inviteId);
+      if (invite && invite.notebook_id === notebookId && invite.status === "pending") {
+        invite.status = "revoked";
+        invite.revoked_at = revokedAt;
+        invite.revoked_by_actor_label = revokedByActorLabel;
+        return okResult(undefined, { changes: 1 });
+      }
+      return okResult(undefined, { changes: 0 });
     } else if (this.query.includes("INSERT INTO notebooks")) {
       const [id, ownerPrincipal, createdAtOrUpdatedAt, maybeUpdatedAt] = this.values as [
         string,
@@ -2397,19 +2750,54 @@ class FakeD1Statement implements D1PreparedStatement {
   }
 
   async first<T = unknown>(): Promise<T | null> {
+    if (this.query.includes("FROM notebook_invites")) {
+      if (this.query.includes("WHERE notebook_id = ?")) {
+        const [notebookId, email, scope, providerHint] = this.values as [
+          string,
+          string,
+          PendingNotebookInviteRow["scope"],
+          string | null,
+          string | null,
+        ];
+        return (
+          ([...this.db.invites.values()].find(
+            (invite) =>
+              invite.notebook_id === notebookId &&
+              invite.email_normalized === email &&
+              invite.scope === scope &&
+              invite.status === "pending" &&
+              invite.provider_hint === providerHint,
+          ) as T | undefined) ?? null
+        );
+      }
+      return (this.db.invites.get(this.values[0] as string) as T | undefined) ?? null;
+    }
     if (this.query.includes("FROM notebooks")) {
       return (this.db.notebooks.get(this.values[0] as string) as T | undefined) ?? null;
     }
     if (this.query.includes("FROM principal_profiles")) {
       return (this.db.profiles.get(this.values[0] as string) as T | undefined) ?? null;
     }
-    if (this.query.includes("FROM notebook_invites")) {
-      return (this.db.invites.get(this.values[0] as string) as T | undefined) ?? null;
-    }
     return null;
   }
 
   async all<T = unknown>(): Promise<D1Result<T>> {
+    if (
+      this.query.includes("FROM notebook_invites") &&
+      this.query.includes("WHERE notebook_id = ?")
+    ) {
+      const notebookId = this.values[0] as string;
+      const limit = typeof this.values[1] === "number" ? this.values[1] : Number.POSITIVE_INFINITY;
+      return okResult(
+        [...this.db.invites.values()]
+          .filter((invite) => invite.notebook_id === notebookId)
+          .sort(
+            (left, right) =>
+              right.created_at.localeCompare(left.created_at) || right.id.localeCompare(left.id),
+          )
+          .slice(0, limit) as T[],
+      );
+    }
     if (this.query.includes("FROM notebook_acl")) {
       const notebookId = this.values[0] as string;
       if (
