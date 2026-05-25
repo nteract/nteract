@@ -1845,6 +1845,105 @@ async fn test_apply_ipynb_changes_updates_execution_count() {
 }
 
 #[tokio::test]
+async fn execute_cell_queues_in_runtime_doc_while_kernel_launch_is_resolving() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "test.ipynb");
+    let room = Arc::new(room);
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source("cell-1", "print('queued while resolving')")
+            .unwrap();
+    }
+    room.state
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Resolving))
+        .unwrap();
+
+    let response = crate::requests::execute_cell::handle(&room, "cell-1".to_string(), None).await;
+
+    let execution_id = match response {
+        crate::protocol::NotebookResponse::CellQueued { execution_id, .. } => execution_id,
+        other => panic!("expected CellQueued, got {other:?}"),
+    };
+    assert_eq!(
+        room.doc.read().await.get_execution_id("cell-1").as_deref(),
+        Some(execution_id.as_str())
+    );
+
+    let state = room.state.read(|sd| sd.read_state()).unwrap();
+    let execution = state
+        .executions
+        .get(&execution_id)
+        .expect("queued execution should exist");
+    assert_eq!(execution.status, "queued");
+    assert_eq!(
+        execution.source.as_deref(),
+        Some("print('queued while resolving')")
+    );
+    assert_eq!(state.queue.executing, None);
+    assert_eq!(
+        state
+            .queue
+            .queued
+            .iter()
+            .map(|entry| entry.execution_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![execution_id.as_str()]
+    );
+}
+
+#[tokio::test]
+async fn run_all_cells_queues_in_runtime_doc_while_kernel_launch_is_resolving() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "test.ipynb");
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source("cell-1", "print('first')").unwrap();
+        doc.add_cell(1, "cell-2", "code").unwrap();
+        doc.update_source("cell-2", "print('second')").unwrap();
+    }
+    room.state
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Resolving))
+        .unwrap();
+
+    let response = crate::requests::run_all_cells::handle(&room, None).await;
+
+    let queued = match response {
+        crate::protocol::NotebookResponse::AllCellsQueued { queued } => queued,
+        other => panic!("expected AllCellsQueued, got {other:?}"),
+    };
+    assert_eq!(queued.len(), 2);
+
+    let first_execution_id = queued[0].execution_id.as_str();
+    let second_execution_id = queued[1].execution_id.as_str();
+    let doc = room.doc.read().await;
+    assert_eq!(
+        doc.get_execution_id("cell-1").as_deref(),
+        Some(first_execution_id)
+    );
+    assert_eq!(
+        doc.get_execution_id("cell-2").as_deref(),
+        Some(second_execution_id)
+    );
+    drop(doc);
+
+    let state = room.state.read(|sd| sd.read_state()).unwrap();
+    assert_eq!(state.queue.executing, None);
+    assert_eq!(
+        state
+            .queue
+            .queued
+            .iter()
+            .map(|entry| entry.execution_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![first_execution_id, second_execution_id]
+    );
+}
+
+#[tokio::test]
 async fn test_apply_ipynb_changes_updates_existing_cell_attachments() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, _) = test_room_with_path(&tmp, "test.ipynb");
