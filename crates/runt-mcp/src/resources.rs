@@ -150,12 +150,12 @@ pub async fn read_resource(
     })? {
         NotebookResourceUri::Notebooks => {
             let text = active_notebooks_json(server).await?;
-            return Ok(ReadResourceResult::new(vec![json_resource(uri, text)]));
+            Ok(ReadResourceResult::new(vec![json_resource(uri, text)]))
         }
         NotebookResourceUri::Cells { notebook_id } => {
             let handle = handle_for_notebook(server, &notebook_id).await?;
             let text = cells_json(&notebook_id, &handle);
-            return Ok(ReadResourceResult::new(vec![json_resource(uri, text)]));
+            Ok(ReadResourceResult::new(vec![json_resource(uri, text)]))
         }
         NotebookResourceUri::Cell {
             notebook_id,
@@ -163,7 +163,7 @@ pub async fn read_resource(
         } => {
             let handle = handle_for_notebook(server, &notebook_id).await?;
             let text = cell_json(&notebook_id, &handle, &cell_id)?;
-            return Ok(ReadResourceResult::new(vec![json_resource(uri, text)]));
+            Ok(ReadResourceResult::new(vec![json_resource(uri, text)]))
         }
     }
 }
