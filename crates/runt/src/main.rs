@@ -320,15 +320,6 @@ enum Commands {
     /// [DEPRECATED] Use 'runt jupyter exec' instead
     #[command(hide = true)]
     Exec { id: String, code: Option<String> },
-    /// [DEPRECATED] Use 'runt jupyter console' instead
-    #[command(hide = true)]
-    Console {
-        kernel: Option<String>,
-        #[arg(long)]
-        cmd: Option<String>,
-        #[arg(short, long)]
-        verbose: bool,
-    },
     /// [DEPRECATED] Use 'runt jupyter clean' instead
     #[command(hide = true)]
     Clean {
@@ -387,17 +378,6 @@ enum JupyterCommands {
         id: String,
         /// The code to execute (reads from stdin if not provided)
         code: Option<String>,
-    },
-    /// Launch a kernel and open an interactive console
-    Console {
-        /// The kernel to launch (e.g., python3, julia)
-        kernel: Option<String>,
-        /// Custom command to launch the kernel (use {connection_file} as placeholder)
-        #[arg(long)]
-        cmd: Option<String>,
-        /// Print all Jupyter messages for debugging
-        #[arg(short, long)]
-        verbose: bool,
     },
     /// Remove stale kernel connection files for kernels that are no longer running
     Clean {
@@ -771,15 +751,6 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
             eprintln!("         Use the daemon (notebook app or `runt mcp`) instead.");
             execute_code(&id, code.as_deref()).await?
         }
-        Some(Commands::Console {
-            kernel,
-            cmd,
-            verbose,
-        }) => {
-            eprintln!("Warning: 'runt console' is deprecated and will be removed in v2.5.");
-            eprintln!("         Use the daemon (notebook app or `runt mcp`) instead.");
-            console(kernel.as_deref(), cmd.as_deref(), verbose).await?
-        }
         Some(Commands::Clean { timeout, dry_run }) => {
             eprintln!("Warning: 'runt clean' is deprecated and will be removed in v2.5.");
             eprintln!("         Use the daemon (notebook app or `runt mcp`) instead.");
@@ -1111,11 +1082,6 @@ async fn jupyter_command(command: JupyterCommands) -> Result<()> {
         JupyterCommands::Stop { id, all } => stop_kernels(id.as_deref(), all).await,
         JupyterCommands::Interrupt { id } => interrupt_kernel(&id).await,
         JupyterCommands::Exec { id, code } => execute_code(&id, code.as_deref()).await,
-        JupyterCommands::Console {
-            kernel,
-            cmd,
-            verbose,
-        } => console(kernel.as_deref(), cmd.as_deref(), verbose).await,
         JupyterCommands::Clean { timeout, dry_run } => clean_kernels(timeout, dry_run).await,
     }
 }
@@ -1517,193 +1483,6 @@ async fn check_kernel_alive(connection_info: &ConnectionInfo, timeout: Duration)
     .await;
 
     matches!(heartbeat_result, Ok(Ok(())))
-}
-
-async fn console(kernel_name: Option<&str>, cmd: Option<&str>, verbose: bool) -> Result<()> {
-    use jupyter_protocol::{
-        ExecuteRequest, ExecutionState, InputReply, JupyterMessage, JupyterMessageContent,
-        MediaType, ReplyStatus, Status, Stdio,
-    };
-    use std::io::{self, Write};
-
-    let mut client = match (kernel_name, cmd) {
-        (_, Some(cmd)) => KernelClient::start_from_command(cmd).await?,
-        (Some(name), None) => {
-            let kernelspec = find_kernelspec(name).await?;
-            KernelClient::start_from_kernelspec(kernelspec).await?
-        }
-        (None, None) => anyhow::bail!("Provide a kernel name or --cmd"),
-    };
-
-    // Give the kernel a moment to bind its sockets
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let connection_info = client.connection_info();
-    let session_id = client.session_id();
-
-    let identity = jupyter_zmq_client::peer_identity_for_session(session_id)?;
-    let shell = jupyter_zmq_client::create_client_shell_connection_with_identity(
-        connection_info,
-        session_id,
-        identity.clone(),
-    )
-    .await?;
-    let mut stdin_conn = jupyter_zmq_client::create_client_stdin_connection_with_identity(
-        connection_info,
-        session_id,
-        identity,
-    )
-    .await?;
-    let (mut shell_writer, mut shell_reader) = shell.split();
-
-    let mut iopub =
-        jupyter_zmq_client::create_client_iopub_connection(connection_info, "", session_id).await?;
-
-    let kernel_name = connection_info
-        .kernel_name
-        .clone()
-        .unwrap_or_else(|| "kernel".to_string());
-    println!("{} console", kernel_name);
-    println!("Use Ctrl+D to exit.\n");
-
-    let mut execution_count: u32 = 0;
-
-    loop {
-        execution_count += 1;
-        print!("In [{}]: ", execution_count);
-        io::stdout().flush()?;
-
-        // Read one line without holding a persistent StdinLock, so that
-        // the kernel stdin handler can also read from terminal stdin.
-        let mut line = String::new();
-        if io::stdin().read_line(&mut line)? == 0 {
-            break; // EOF
-        }
-
-        let code = line.trim();
-        if code.is_empty() {
-            execution_count -= 1;
-            continue;
-        }
-
-        let mut execute_request = ExecuteRequest::new(code.to_string());
-        execute_request.allow_stdin = true;
-        let message: JupyterMessage = execute_request.into();
-        let message_id = message.header.msg_id.clone();
-        shell_writer.send(message).await?;
-
-        // Wait for idle status on iopub (signals all output is done).
-        // Some kernels send ExecuteReply before streaming output, so we
-        // can't use the reply alone as the completion signal.
-        let mut got_idle = false;
-        while !got_idle {
-            tokio::select! {
-                result = iopub.read() => {
-                    let msg = result?;
-                    let is_ours = msg
-                        .parent_header
-                        .as_ref()
-                        .map(|h| h.msg_id.as_str())
-                        == Some(message_id.as_str());
-                    if verbose {
-                        eprintln!("[iopub] {} (ours={})", msg.header.msg_type, is_ours);
-                    }
-                    if !is_ours {
-                        continue;
-                    }
-                    match &msg.content {
-                        JupyterMessageContent::StreamContent(stream) => {
-                            match stream.name {
-                                Stdio::Stdout => print!("{}", stream.text),
-                                Stdio::Stderr => eprint!("{}", stream.text),
-                            }
-                            let _ = io::stdout().flush();
-                        }
-                        JupyterMessageContent::ExecuteResult(result) => {
-                            for media in &result.data.content {
-                                if let MediaType::Plain(text) = media {
-                                    println!("Out[{}]: {}", execution_count, text);
-                                    break;
-                                }
-                            }
-                        }
-                        JupyterMessageContent::DisplayData(data) => {
-                            for media in &data.data.content {
-                                if let MediaType::Plain(text) = media {
-                                    println!("{}", text);
-                                    break;
-                                }
-                            }
-                        }
-                        JupyterMessageContent::ErrorOutput(error) => {
-                            eprintln!("{}: {}", error.ename, error.evalue);
-                            for line in &error.traceback {
-                                eprintln!("{}", line);
-                            }
-                        }
-                        JupyterMessageContent::Status(Status { execution_state }) => {
-                            if *execution_state == ExecutionState::Idle {
-                                got_idle = true;
-                            }
-                        }
-                        JupyterMessageContent::UpdateDisplayData(data) => {
-                            for media in &data.data.content {
-                                if let MediaType::Plain(text) = media {
-                                    println!("{}", text);
-                                    break;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                result = shell_reader.read() => {
-                    let msg = result?;
-                    if verbose {
-                        let is_ours = msg
-                            .parent_header
-                            .as_ref()
-                            .map(|h| h.msg_id.as_str())
-                            == Some(message_id.as_str());
-                        eprintln!("[shell] {} (ours={})", msg.header.msg_type, is_ours);
-                    }
-                }
-                result = stdin_conn.read() => {
-                    let msg = result?;
-                    if verbose {
-                        eprintln!("[stdin] {}", msg.header.msg_type);
-                    }
-                    if let JupyterMessageContent::InputRequest(ref request) = msg.content {
-                        let value = if request.password {
-                            eprint!("{}", request.prompt);
-                            let _ = io::stderr().flush();
-                            rpassword::read_password().unwrap_or_default()
-                        } else {
-                            eprint!("{}", request.prompt);
-                            let _ = io::stderr().flush();
-                            let mut input = String::new();
-                            io::stdin().read_line(&mut input)?;
-                            input.trim_end_matches('\n').to_string()
-                        };
-                        let reply = InputReply {
-                            value,
-                            status: ReplyStatus::Ok,
-                            error: None,
-                        };
-                        stdin_conn.send(reply.as_child_of(&msg)).await?;
-                    }
-                }
-            }
-        }
-        // Blank line between output and the next prompt
-        println!();
-    }
-
-    println!("\nShutting down kernel...");
-    client.shutdown(false).await?;
-    println!("Done.");
-
-    Ok(())
 }
 
 async fn execute_code(id: &str, code: Option<&str>) -> Result<()> {

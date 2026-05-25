@@ -29,7 +29,6 @@ clap = { version = "4.5.1", features = ["derive", "color"] }
 colored = "3"
 tokio = { version = "1", features = ["full"] }
 petname = "2"
-rpassword = "7"
 dirs = "6"
 tabled = "0.20"
 futures = "0.3"

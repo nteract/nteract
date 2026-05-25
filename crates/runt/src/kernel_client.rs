@@ -101,62 +101,6 @@ impl KernelClient {
         })
     }
 
-    /// Start a kernel from a raw command string.
-    ///
-    /// The command is split on whitespace and `{connection_file}` is replaced
-    /// with the path to the generated connection file.
-    #[allow(clippy::expect_used)] // petname only returns None when word count is 0
-    pub async fn start_from_command(cmd: &str) -> Result<Self> {
-        let kernel_id = petname(2, "-").expect("failed to generate petname");
-        let session_id = Uuid::new_v4().to_string();
-        let key = Uuid::new_v4().to_string();
-
-        let ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1));
-        let (ports, listeners) = peek_ports_with_listeners(ip, 5).await?;
-        let connection_info = ConnectionInfo {
-            transport: jupyter_protocol::connection_info::Transport::TCP,
-            ip: ip.to_string(),
-            stdin_port: ports[0],
-            control_port: ports[1],
-            hb_port: ports[2],
-            shell_port: ports[3],
-            iopub_port: ports[4],
-            signature_scheme: "hmac-sha256".to_string(),
-            key,
-            kernel_name: None,
-        };
-
-        let runtime_dir = runtime_dir();
-        tokio::fs::create_dir_all(&runtime_dir).await?;
-
-        let connection_file = runtime_dir.join(format!("runt-kernel-{}.json", kernel_id));
-        let content = serde_json::to_string(&connection_info)?;
-        tokio::fs::write(&connection_file, &content).await?;
-
-        let cf_str = connection_file.to_string_lossy();
-        let args: Vec<String> = cmd
-            .split_whitespace()
-            .map(|arg| arg.replace("{connection_file}", &cf_str))
-            .collect();
-
-        let mut command = tokio::process::Command::new(&args[0]);
-        command.args(&args[1..]);
-        command.current_dir(default_kernel_cwd());
-        let child = command.spawn().map_err(|e| RuntimeError::CommandFailed {
-            command: "kernel",
-            source: e,
-        })?;
-        drop(listeners);
-
-        Ok(Self {
-            kernel_id,
-            session_id,
-            connection_info,
-            connection_file,
-            child: Some(child),
-        })
-    }
-
     pub async fn from_connection_file(path: impl AsRef<Path>) -> Result<Self> {
         let connection_file = path.as_ref().to_path_buf();
         let content = tokio::fs::read_to_string(&connection_file).await?;
@@ -183,14 +127,6 @@ impl KernelClient {
 
     pub fn connection_file(&self) -> &Path {
         &self.connection_file
-    }
-
-    pub fn connection_info(&self) -> &ConnectionInfo {
-        &self.connection_info
-    }
-
-    pub fn session_id(&self) -> &str {
-        &self.session_id
     }
 
     pub async fn interrupt(&mut self) -> Result<()> {
