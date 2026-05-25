@@ -61,6 +61,41 @@ export type NteractEmbedHostContextPatch = Omit<
   safeAreaInsets?: Partial<NteractEmbedSafeAreaInsets>;
 };
 
+export interface McpAppHostContextLike {
+  theme?: string;
+  styles?: {
+    variables?: Record<string, unknown>;
+    css?: {
+      fonts?: string;
+    };
+  };
+  displayMode?: string;
+  availableDisplayModes?: readonly string[];
+  containerDimensions?: {
+    width?: unknown;
+    maxWidth?: unknown;
+    height?: unknown;
+    maxHeight?: unknown;
+  };
+  locale?: string;
+  timeZone?: string;
+  userAgent?: string;
+  platform?: string;
+  deviceCapabilities?: NteractEmbedDeviceCapabilities;
+  safeAreaInsets?: Partial<NteractEmbedSafeAreaInsets>;
+}
+
+export interface McpAppHostContextToNteractEmbedOptions {
+  /**
+   * MCP Apps HostContext dimensions describe the app iframe. Nested output
+   * frames should compute their own dimensions unless a direct embedder opts in.
+   */
+  includeContainerDimensions?: boolean;
+  rendererAssetsBaseUrl?: string;
+  outputDocumentUrl?: string;
+  nteract?: NteractEmbedHostContextPatch["nteract"];
+}
+
 export interface CreateNteractEmbedHostContextOptions {
   isDark: boolean;
   colorTheme?: string | null;
@@ -98,6 +133,64 @@ const DEFAULT_SAFE_AREA_INSETS: NteractEmbedSafeAreaInsets = {
   bottom: 0,
   left: 0,
 };
+const MCP_APP_DISPLAY_MODES = new Set<NteractEmbedDisplayMode>(["inline", "fullscreen", "pip"]);
+const MCP_APP_PLATFORMS = new Set<NteractEmbedPlatform>(["web", "desktop", "mobile"]);
+
+function validMcpAppTheme(value: string | undefined): NteractEmbedTheme | undefined {
+  return value === "light" || value === "dark" ? value : undefined;
+}
+
+function validMcpAppDisplayMode(value: string | undefined): NteractEmbedDisplayMode | undefined {
+  return MCP_APP_DISPLAY_MODES.has(value as NteractEmbedDisplayMode)
+    ? (value as NteractEmbedDisplayMode)
+    : undefined;
+}
+
+function validMcpAppPlatform(value: string | undefined): NteractEmbedPlatform | undefined {
+  return MCP_APP_PLATFORMS.has(value as NteractEmbedPlatform)
+    ? (value as NteractEmbedPlatform)
+    : undefined;
+}
+
+function mcpAppStyleVariables(
+  variables: Record<string, unknown> | undefined,
+): Record<string, string> | undefined {
+  if (!variables) return undefined;
+  const entries = Object.entries(variables).filter(
+    (entry): entry is [string, string] => typeof entry[1] === "string",
+  );
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function finiteDimension(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function mcpAppContainerDimensions(
+  dimensions: McpAppHostContextLike["containerDimensions"],
+): NteractEmbedContainerDimensions | undefined {
+  if (!dimensions) return undefined;
+  const next: NteractEmbedContainerDimensions = {};
+  const width = finiteDimension(dimensions.width);
+  const maxWidth = finiteDimension(dimensions.maxWidth);
+  const height = finiteDimension(dimensions.height);
+  const maxHeight = finiteDimension(dimensions.maxHeight);
+  if (width !== undefined) next.width = width;
+  if (maxWidth !== undefined) next.maxWidth = maxWidth;
+  if (height !== undefined) next.height = height;
+  if (maxHeight !== undefined) next.maxHeight = maxHeight;
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+function definedNteractPatch(
+  patch: NteractEmbedHostContextPatch["nteract"],
+): NteractEmbedHostContextPatch["nteract"] | undefined {
+  if (!patch) return undefined;
+  const entries = Object.entries(patch).filter(([, value]) => value !== undefined);
+  return entries.length > 0
+    ? (Object.fromEntries(entries) as NonNullable<NteractEmbedHostContextPatch["nteract"]>)
+    : undefined;
+}
 
 function themePalette(isDark: boolean, colorTheme?: string | null): ThemePalette {
   const isCream = colorTheme === "cream";
@@ -234,6 +327,45 @@ export function createNteractThemeVariables(
     "--output-ui-font": OUTPUT_UI_FONT,
     "--output-mono-font": OUTPUT_MONO_FONT,
     "--output-document-font": palette.documentFont,
+  };
+}
+
+export function mcpAppHostContextToNteractEmbedPatch(
+  hostContext: McpAppHostContextLike | null | undefined,
+  options: McpAppHostContextToNteractEmbedOptions = {},
+): NteractEmbedHostContextPatch {
+  const variables = mcpAppStyleVariables(hostContext?.styles?.variables);
+  const fonts = hostContext?.styles?.css?.fonts;
+  const modes = hostContext?.availableDisplayModes
+    ?.map(validMcpAppDisplayMode)
+    .filter((mode): mode is NteractEmbedDisplayMode => mode !== undefined);
+  const nteract = definedNteractPatch({
+    ...options.nteract,
+    rendererAssetsBaseUrl: options.rendererAssetsBaseUrl ?? options.nteract?.rendererAssetsBaseUrl,
+    outputDocumentUrl: options.outputDocumentUrl ?? options.nteract?.outputDocumentUrl,
+  });
+
+  return {
+    theme: validMcpAppTheme(hostContext?.theme),
+    styles:
+      variables || fonts
+        ? {
+            variables,
+            css: fonts ? { fonts } : undefined,
+          }
+        : undefined,
+    displayMode: validMcpAppDisplayMode(hostContext?.displayMode),
+    availableDisplayModes: modes && modes.length > 0 ? modes : undefined,
+    containerDimensions: options.includeContainerDimensions
+      ? mcpAppContainerDimensions(hostContext?.containerDimensions)
+      : undefined,
+    locale: hostContext?.locale,
+    timeZone: hostContext?.timeZone,
+    userAgent: hostContext?.userAgent,
+    platform: validMcpAppPlatform(hostContext?.platform),
+    deviceCapabilities: hostContext?.deviceCapabilities,
+    safeAreaInsets: hostContext?.safeAreaInsets,
+    nteract,
   };
 }
 

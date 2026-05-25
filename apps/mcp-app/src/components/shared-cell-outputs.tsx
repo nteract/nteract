@@ -11,12 +11,13 @@ import {
   type NteractOutputEmbedHandle,
   type NteractOutputRendererBundleProvider,
 } from "@/components/isolated/output-embed";
+import { mcpAppHostContextToNteractEmbedPatch } from "@/components/isolated/host-context";
 import type { CellData } from "../types";
 import { errorDetails, hostLog } from "../lib/host-log";
-import { mcpHostContextToNteractEmbedPatch } from "../lib/shared-host-context";
 import {
   createDaemonRendererPluginLoader,
   daemonOutputFrameUrl,
+  daemonRendererAssetsBaseUrl,
 } from "../lib/shared-renderer-plugin-loader";
 
 const SHARED_RENDERER_BUNDLE: NteractOutputRendererBundleProvider = {
@@ -43,7 +44,10 @@ export function SharedCellOutputs({ cell, blobBaseUrl, hostContext }: SharedCell
   );
   const pluginLoader = useMemo(() => createDaemonRendererPluginLoader(blobBaseUrl), [blobBaseUrl]);
   const hostContextPatch = useMemo(
-    () => mcpHostContextToNteractEmbedPatch(hostContext, blobBaseUrl),
+    () =>
+      mcpAppHostContextToNteractEmbedPatch(hostContext, {
+        rendererAssetsBaseUrl: daemonRendererAssetsBaseUrl(blobBaseUrl),
+      }),
     [hostContext, blobBaseUrl],
   );
   const hostContextPatchRef = useRef(hostContextPatch);
