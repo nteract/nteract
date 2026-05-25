@@ -288,6 +288,12 @@ NOTEBOOK_CLOUD_ACCESS_NOTEBOOK_ID=access-demo-$(date +%Y%m%d%H%M%S) \
 pnpm --dir apps/notebook-cloud smoke:hosted:access
 ```
 
+Before creating or mutating the smoke notebook, the script preflights
+`/api/health` with `CF-Access-Token` and requires
+`auth.cloudflare_access.status === "configured"`. That catches missing
+`NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN` / `NOTEBOOK_CLOUD_ACCESS_AUD` deployment
+vars before ACL writes or WebSocket sync attempts.
+
 Use `NOTEBOOK_CLOUD_ACCESS_EDITOR_JWT` and
 `NOTEBOOK_CLOUD_ACCESS_VIEWER_JWT` to run the same smoke with separate Access
 users. Add `NOTEBOOK_CLOUD_ACCESS_PUBLIC_SMOKE=1` only for a host that allows

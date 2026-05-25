@@ -10,6 +10,38 @@ export function assertHostedAccessSmokeEnv({ ownerToken }) {
   );
 }
 
+export function assertAccessHealthConfigured(payload, { baseUrl } = {}) {
+  const health = accessHealthFromPayload(payload);
+  if (health.status === "configured") {
+    return health;
+  }
+
+  const target = baseUrl ? ` for ${baseUrl}` : "";
+  const detail =
+    health.status === "partial"
+      ? "exactly one of NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN or NOTEBOOK_CLOUD_ACCESS_AUD is missing"
+      : "NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN and NOTEBOOK_CLOUD_ACCESS_AUD are not set";
+  throw new Error(
+    `Cloudflare Access auth is ${health.status}${target}; expected configured before running the hosted Access smoke (${detail}; jwks=${health.jwks}).`,
+  );
+}
+
+export function accessHealthFromPayload(payload) {
+  const access = payload?.auth?.cloudflare_access;
+  if (!access || typeof access !== "object") {
+    throw new Error("health response is missing auth.cloudflare_access");
+  }
+
+  const { status, jwks } = access;
+  if (!["configured", "partial", "disabled"].includes(status)) {
+    throw new Error(`health response has invalid Cloudflare Access status: ${String(status)}`);
+  }
+  if (!["remote", "pinned", "none"].includes(jwks)) {
+    throw new Error(`health response has invalid Cloudflare Access JWKS status: ${String(jwks)}`);
+  }
+  return { status, jwks };
+}
+
 export function accessPrincipalFromJwt(token) {
   const payload = decodeJwtPayload(token);
   const subject = typeof payload.sub === "string" ? payload.sub.trim() : "";

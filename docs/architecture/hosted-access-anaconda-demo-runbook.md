@@ -297,6 +297,8 @@ serving room state.
 
 The Access smoke proves that:
 
+- `/api/health` reports Cloudflare Access as fully configured before the script
+  creates or mutates a room;
 - the Worker accepts a Cloudflare Access application JWT;
 - the Access JWT maps to `user:cloudflare-access:<sub>`, not email;
 - owner, editor, and viewer ACL rows are honored;
@@ -338,6 +340,11 @@ The script sends:
 - `Origin: https://<notebook-host>` to exercise the browser-compatible
   WebSocket origin gate;
 
+The first request is a token-authenticated `/api/health` preflight. It requires
+`auth.cloudflare_access.status === "configured"` and fails before ACL writes if
+one of `NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN` or `NOTEBOOK_CLOUD_ACCESS_AUD` is
+missing.
+
 It intentionally sends one client-carried Access credential transport per
 request. If Access forwards `Cf-Access-Jwt-Assertion` to the origin after
 admitting the request, the Worker validates that forwarded assertion as the
@@ -354,8 +361,13 @@ Expected JSON shape:
 {
   "ok": true,
   "auth_mode": "cloudflare_access",
+  "access_health": {
+    "status": "configured",
+    "jwks": "remote"
+  },
   "viewerUrl": "https://<notebook-host>/n/<id>",
   "checks": [
+    "cloudflare_access_worker_configured",
     "cloudflare_access_jwt_validated_by_worker",
     "owner_acl_room_seeded",
     "editor_principal_acl_granted",

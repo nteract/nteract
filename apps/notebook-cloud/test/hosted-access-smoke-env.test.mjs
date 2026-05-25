@@ -2,10 +2,12 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  accessHealthFromPayload,
   accessAuthHeaders,
   accessAuthProtocols,
   accessEmailFromJwt,
   accessPrincipalFromJwt,
+  assertAccessHealthConfigured,
   assertHostedAccessSmokeEnv,
   webSocketUpgradeRequestHeaders,
 } from "../scripts/hosted-access-smoke-env.mjs";
@@ -81,6 +83,89 @@ describe("hosted Access smoke environment helpers", () => {
     assert.throws(
       () => assertHostedAccessSmokeEnv({ ownerToken: "" }),
       /NOTEBOOK_CLOUD_ACCESS_JWT is required/,
+    );
+  });
+
+  it("parses configured Access health readiness", () => {
+    assert.deepEqual(
+      accessHealthFromPayload({
+        auth: {
+          cloudflare_access: {
+            status: "configured",
+            jwks: "remote",
+          },
+        },
+      }),
+      { status: "configured", jwks: "remote" },
+    );
+    assert.deepEqual(
+      assertAccessHealthConfigured({
+        auth: {
+          cloudflare_access: {
+            status: "configured",
+            jwks: "pinned",
+          },
+        },
+      }),
+      { status: "configured", jwks: "pinned" },
+    );
+  });
+
+  it("fails hosted Access smoke preflight when Access config is partial or disabled", () => {
+    assert.throws(
+      () =>
+        assertAccessHealthConfigured(
+          {
+            auth: {
+              cloudflare_access: {
+                status: "partial",
+                jwks: "none",
+              },
+            },
+          },
+          { baseUrl: "https://notebooks.example.com" },
+        ),
+      /Cloudflare Access auth is partial for https:\/\/notebooks\.example\.com; expected configured.*exactly one of NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN or NOTEBOOK_CLOUD_ACCESS_AUD is missing.*jwks=none/,
+    );
+    assert.throws(
+      () =>
+        assertAccessHealthConfigured({
+          auth: {
+            cloudflare_access: {
+              status: "disabled",
+              jwks: "none",
+            },
+          },
+        }),
+      /Cloudflare Access auth is disabled; expected configured.*NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN and NOTEBOOK_CLOUD_ACCESS_AUD are not set.*jwks=none/,
+    );
+  });
+
+  it("rejects malformed Access health payloads", () => {
+    assert.throws(() => accessHealthFromPayload({ auth: {} }), /missing auth\.cloudflare_access/);
+    assert.throws(
+      () =>
+        accessHealthFromPayload({
+          auth: {
+            cloudflare_access: {
+              status: "ready",
+              jwks: "remote",
+            },
+          },
+        }),
+      /invalid Cloudflare Access status: ready/,
+    );
+    assert.throws(
+      () =>
+        accessHealthFromPayload({
+          auth: {
+            cloudflare_access: {
+              status: "configured",
+              jwks: "local",
+            },
+          },
+        }),
+      /invalid Cloudflare Access JWKS status: local/,
     );
   });
 });
