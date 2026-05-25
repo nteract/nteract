@@ -830,6 +830,58 @@ describe("Worker artifact routes", () => {
     assert.equal(trustedOrigin.status, 201);
   });
 
+  it("allows no-Origin CLI Access-token ACL mutations but rejects browser origins", async () => {
+    const { env: accessEnv, token } = await accessTokenFixture({ subject: "alice" });
+    const env = fakeEnv({
+      ...accessEnv,
+      NOTEBOOK_CLOUD_ALLOWED_ORIGINS: "https://notebooks.example.com",
+    });
+    seedNotebook(env, "access-token-acl-demo");
+    seedAcl(env, {
+      notebookId: "access-token-acl-demo",
+      subject: "user:cloudflare-access:alice",
+      scope: "owner",
+    });
+
+    const body = JSON.stringify({
+      subject_kind: "principal",
+      subject: "user:cloudflare-access:bob",
+      scope: "editor",
+    });
+    const headers = {
+      "CF-Access-Token": token,
+      "Content-Type": "application/json",
+      "X-Operator": "cli:smoke",
+      "X-Scope": "owner",
+    };
+
+    const untrustedOrigin = await worker.fetch(
+      new Request("https://cloud.test/api/n/access-token-acl-demo/acl", {
+        method: "POST",
+        headers: {
+          ...headers,
+          Origin: "https://evil.example",
+        },
+        body,
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(untrustedOrigin.status, 403);
+    assert.deepEqual(await untrustedOrigin.json(), { error: "request origin is not allowed" });
+
+    const cliNoOrigin = await worker.fetch(
+      new Request("https://cloud.test/api/n/access-token-acl-demo/acl", {
+        method: "POST",
+        headers,
+        body,
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(cliNoOrigin.status, 201);
+  });
+
   it("lets owners grant and revoke explicit public viewer ACL rows", async () => {
     const env = fakeEnv();
     seedNotebook(env, "public-acl-demo");
