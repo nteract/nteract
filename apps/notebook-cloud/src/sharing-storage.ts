@@ -221,6 +221,7 @@ export async function getPendingNotebookInvite(
 export async function getPendingNotebookInvitesForLogin(
   env: Env,
   login: Pick<AuthenticatedLoginProfile, "provider" | "email" | "emailVerified">,
+  now = new Date().toISOString(),
 ): Promise<PendingNotebookInvite[]> {
   if (!env.DB || !login.emailVerified) {
     return [];
@@ -252,9 +253,10 @@ export async function getPendingNotebookInvitesForLogin(
        WHERE email_normalized = ?
          AND status = 'pending'
          AND (provider_hint = ? OR provider_hint IS NULL)
+         AND (expires_at IS NULL OR unixepoch(expires_at) > unixepoch(?))
        ORDER BY created_at`,
   )
-    .bind(email, provider)
+    .bind(email, provider, now)
     .all<PendingNotebookInviteRow>();
   return (rows.results ?? []).map(pendingInviteFromRow);
 }
@@ -273,25 +275,53 @@ export async function resolveNotebookInvitesForLogin(
     timestamp: now,
   });
 
-  const invites = await getPendingNotebookInvitesForLogin(env, login);
+  const invites = await getPendingNotebookInvitesForLogin(env, login, now);
   const resolution = resolvePendingInvitesForLogin({ invites, login, now });
   if (!env.DB || resolution.aclGrants.length === 0) {
     return resolution;
   }
 
-  const statements: D1PreparedStatement[] = [];
+  const operations: {
+    invite: PendingNotebookInvite;
+    grant: InviteResolution["aclGrants"][number];
+    insertAcl: D1PreparedStatement;
+    acceptInvite: D1PreparedStatement;
+  }[] = [];
   for (const grant of resolution.aclGrants) {
     const invite = resolution.acceptedInvites.find((candidate) => candidate.id === grant.inviteId);
     if (!invite) {
       continue;
     }
-    statements.push(inviteAclInsert(env, grant, invite, now));
-    statements.push(inviteAcceptedUpdate(env, grant, invite, now));
+    operations.push({
+      invite,
+      grant,
+      insertAcl: inviteAclInsert(env, grant, invite, now),
+      acceptInvite: inviteAcceptedUpdate(env, grant, invite, now),
+    });
   }
-  if (statements.length > 0) {
-    await env.DB.batch(statements);
+  if (operations.length === 0) {
+    return resolution;
   }
-  return resolution;
+
+  const results = await env.DB.batch(
+    operations.flatMap((operation) => [operation.insertAcl, operation.acceptInvite]),
+  );
+  const acceptedInvites: PendingNotebookInvite[] = [];
+  const aclGrants: InviteResolution["aclGrants"] = [];
+  for (let index = 0; index < operations.length; index += 1) {
+    const acceptInviteResult = results[index * 2 + 1];
+    if (!acceptInviteResult || d1Changes(acceptInviteResult) === 0) {
+      continue;
+    }
+    acceptedInvites.push({
+      ...operations[index].invite,
+      status: "accepted",
+      acceptedByPrincipal: login.principal,
+      acceptedAt: now,
+    });
+    aclGrants.push(operations[index].grant);
+  }
+  return { ...resolution, acceptedInvites, aclGrants };
 }
 
 function inviteAclInsert(
@@ -420,4 +450,9 @@ function normalizeInviteExpiresAt(expiresAt: string | null): string | null {
     throw new Error("invite expiry is invalid");
   }
   return expiresAt;
+}
+
+function d1Changes(result: { meta: Record<string, unknown> }): number {
+  const changes = result.meta.changes;
+  return typeof changes === "number" ? changes : 0;
 }

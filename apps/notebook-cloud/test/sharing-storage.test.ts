@@ -163,6 +163,56 @@ describe("hosted sharing storage", () => {
     assert.equal(env.DB.invites.get("invite-github")?.status, "pending");
   });
 
+  it("does not return or accept expired pending invites from storage resolution", async () => {
+    const env = fakeEnv();
+    await createPendingNotebookInvite(env, {
+      id: "invite-expired",
+      notebookId: "notebook-1",
+      email: "alice@example.com",
+      providerHint: "cloudflare-access",
+      scope: "editor",
+      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      expiresAt: "2026-05-24T11:59:59.000Z",
+      timestamp: "2026-05-24T11:00:00.000Z",
+    });
+
+    const resolution = await resolveNotebookInvitesForLogin(
+      env,
+      accessLogin(),
+      "2026-05-24T12:00:00.000Z",
+    );
+
+    assert.equal(resolution.acceptedInvites.length, 0);
+    assert.equal(resolution.aclGrants.length, 0);
+    assert.equal(env.DB.acl.length, 0);
+    assert.equal(env.DB.invites.get("invite-expired")?.status, "pending");
+  });
+
+  it("reports only invites whose row actually transitioned to accepted", async () => {
+    const env = fakeEnv();
+    await createPendingNotebookInvite(env, {
+      id: "invite-raced",
+      notebookId: "notebook-1",
+      email: "alice@example.com",
+      providerHint: "cloudflare-access",
+      scope: "editor",
+      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+    });
+    env.DB.beforeInviteAccept = (inviteId) => {
+      env.DB.invites.get(inviteId)!.status = "accepted";
+      env.DB.beforeInviteAccept = undefined;
+    };
+
+    const resolution = await resolveNotebookInvitesForLogin(
+      env,
+      accessLogin(),
+      "2026-05-24T12:00:00.000Z",
+    );
+
+    assert.equal(resolution.acceptedInvites.length, 0);
+    assert.equal(resolution.aclGrants.length, 0);
+  });
+
   it("rejects invalid pending invite inputs before they become ACL material", async () => {
     const env = fakeEnv();
     await assert.rejects(
@@ -220,6 +270,7 @@ class FakeD1 implements D1Database {
   readonly profiles = new Map<string, PrincipalProfileRow>();
   readonly invites = new Map<string, PendingNotebookInviteRow>();
   readonly acl: NotebookAclRow[] = [];
+  beforeInviteAccept?: (inviteId: string) => void;
 
   prepare(query: string): D1PreparedStatement {
     return new FakeD1Statement(this, query);
@@ -354,6 +405,7 @@ class FakeD1Statement implements D1PreparedStatement {
           updated_at: updatedAt,
           created_by_actor_label: actorLabel,
         });
+        return okResult([], { changes: 1 });
       }
     } else if (this.query.includes("UPDATE notebook_invites")) {
       const [principal, acceptedAt, inviteId, email, providerHint, now] = this.values as [
@@ -364,11 +416,13 @@ class FakeD1Statement implements D1PreparedStatement {
         string | null,
         string,
       ];
+      this.db.beforeInviteAccept?.(inviteId);
       const invite = this.db.invites.get(inviteId);
       if (invite && inviteCanResolve(invite, email, providerHint, now)) {
         invite.status = "accepted";
         invite.accepted_by_principal = principal;
         invite.accepted_at = acceptedAt;
+        return okResult([], { changes: 1 });
       }
     }
     return okResult();
@@ -379,13 +433,14 @@ class FakeD1Statement implements D1PreparedStatement {
       return okResult([{ name: "runtime_snapshot_key" }] as T[]);
     }
     if (this.query.includes("FROM notebook_invites")) {
-      const [email, provider] = this.values as [string, string];
+      const [email, provider, now] = this.values as [string, string, string];
       return okResult(
         [...this.db.invites.values()].filter(
           (invite) =>
             invite.status === "pending" &&
             invite.email_normalized === email &&
-            (invite.provider_hint === provider || invite.provider_hint === null),
+            (invite.provider_hint === provider || invite.provider_hint === null) &&
+            inviteCanResolveAt(invite, now),
         ) as T[],
       );
     }
@@ -429,6 +484,18 @@ function inviteCanResolve(
   return Number.isFinite(expiresAtMs) && Number.isFinite(nowMs) && expiresAtMs > nowMs;
 }
 
-function okResult<T = unknown>(results: T[] = []): D1Result<T> {
-  return { success: true, results, meta: { changes: results.length } };
+function inviteCanResolveAt(invite: PendingNotebookInviteRow, now: string): boolean {
+  if (!invite.expires_at) {
+    return true;
+  }
+  const expiresAtMs = Date.parse(invite.expires_at);
+  const nowMs = Date.parse(now);
+  return Number.isFinite(expiresAtMs) && Number.isFinite(nowMs) && expiresAtMs > nowMs;
+}
+
+function okResult<T = unknown>(
+  results: T[] = [],
+  meta: Record<string, unknown> = { changes: results.length },
+): D1Result<T> {
+  return { success: true, results, meta };
 }
