@@ -45,7 +45,7 @@ use crate::stream_terminal::StreamTerminals;
 use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 use crate::terminal_size::{TERMINAL_COLUMNS_STR, TERMINAL_LINES_STR};
 use crate::EnvType;
-use notebook_protocol::protocol::{KernelPorts, LaunchedEnvConfig};
+use notebook_protocol::protocol::{CommRequestMessage, KernelPorts, LaunchedEnvConfig};
 
 const REDACT_ENV_VALUES_IN_OUTPUTS_ENV: &str = "NTERACT_REDACT_ENV_VALUES_IN_OUTPUTS";
 
@@ -3012,68 +3012,30 @@ impl KernelConnection for JupyterKernel {
 
     // ── Comm messages ────────────────────────────────────────────────────
 
-    async fn send_comm_message(&mut self, raw_message: serde_json::Value) -> Result<()> {
+    async fn send_comm_message(&mut self, raw_message: CommRequestMessage) -> Result<()> {
         let shell = self
             .shell_writer
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("No kernel running"))?;
 
-        let header: jupyter_protocol::Header = serde_json::from_value(
-            raw_message
-                .get("header")
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("Missing header in comm message"))?,
-        )?;
+        let header: jupyter_protocol::Header = serde_json::from_value(raw_message.header)?;
 
         let msg_type = header.msg_type.clone();
 
-        let parent_header: Option<jupyter_protocol::Header> =
-            raw_message.get("parent_header").and_then(|v| {
-                if v.is_null() {
-                    None
-                } else {
-                    serde_json::from_value(v.clone()).ok()
-                }
-            });
-
-        let metadata: serde_json::Value = raw_message
-            .get("metadata")
-            .cloned()
-            .unwrap_or(serde_json::json!({}));
-
-        let content_value = raw_message
-            .get("content")
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Missing content in comm message"))?;
+        let parent_header: Option<jupyter_protocol::Header> = raw_message
+            .parent_header
+            .and_then(|value| serde_json::from_value(value).ok());
 
         let message_content =
-            JupyterMessageContent::from_type_and_content(&msg_type, content_value)?;
-
-        let buffers: Vec<Bytes> = raw_message
-            .get("buffers")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|buf| {
-                        buf.as_array().map(|bytes| {
-                            let bytes: Vec<u8> = bytes
-                                .iter()
-                                .filter_map(|b| b.as_u64().map(|n| n as u8))
-                                .collect();
-                            Bytes::from(bytes)
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+            JupyterMessageContent::from_type_and_content(&msg_type, raw_message.content)?;
 
         let message = JupyterMessage {
             zmq_identities: Vec::new(),
             header,
             parent_header,
-            metadata,
+            metadata: raw_message.metadata,
             content: message_content,
-            buffers,
+            buffers: raw_message.buffers.into_iter().map(Bytes::from).collect(),
             channel: Some(jupyter_protocol::Channel::Shell),
         };
 

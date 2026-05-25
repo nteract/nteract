@@ -451,7 +451,14 @@ async fn sendcomm_fires_independently() {
     let result = route_request(
         &tx,
         RuntimeAgentRequest::SendComm {
-            message: serde_json::json!({"target_name": "jupyter.widget", "data": {}}),
+            message: Box::new(notebook_protocol::protocol::CommRequestMessage {
+                header: serde_json::json!({"msg_type": "comm_msg"}),
+                parent_header: None,
+                metadata: serde_json::json!({}),
+                content: serde_json::json!({"target_name": "jupyter.widget", "data": {}}),
+                buffers: vec![],
+                channel: "shell".to_string(),
+            }),
         },
     )
     .await;

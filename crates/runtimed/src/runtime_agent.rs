@@ -1072,7 +1072,7 @@ async fn handle_runtime_agent_request(
 
         RuntimeAgentRequest::SendComm { message } => {
             if let Some(ref mut k) = kernel {
-                match k.send_comm_message(message).await {
+                match k.send_comm_message(*message).await {
                     Ok(()) => (RuntimeAgentResponse::Ok, None),
                     Err(e) => (
                         RuntimeAgentResponse::Error {
@@ -1730,7 +1730,10 @@ mod tests {
         async fn shutdown(&mut self) -> Result<()> {
             Ok(())
         }
-        async fn send_comm_message(&mut self, _: serde_json::Value) -> Result<()> {
+        async fn send_comm_message(
+            &mut self,
+            _: notebook_protocol::protocol::CommRequestMessage,
+        ) -> Result<()> {
             Ok(())
         }
         async fn send_comm_update(
