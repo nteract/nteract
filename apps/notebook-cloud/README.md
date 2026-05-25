@@ -252,13 +252,14 @@ NOTEBOOK_CLOUD_ALLOWED_ORIGINS=https://notebooks.example.com
 Do not include the renderer asset origin in this list. It serves public
 build-time sidecars, not authenticated notebook room traffic.
 
-Cookie-backed Access WebSocket upgrades must always send an allowed `Origin`.
-Browser-visible credential subprotocols also require `Origin`, because those
-credentials are available to page JavaScript. Header-authenticated native and
-CLI clients may omit `Origin`; if they do send one, it must match the Worker
-origin or an entry in `NOTEBOOK_CLOUD_ALLOWED_ORIGINS`. The hosted Access smoke
-sends `NOTEBOOK_CLOUD_ACCESS_ORIGIN` by default so the browser-compatible path
-is exercised even though the raw smoke connection uses `CF-Access-Token`.
+Access assertion-backed and cookie-backed WebSocket upgrades must always send an
+allowed `Origin`. Browser-visible credential subprotocols also require
+`Origin`, because those credentials are available to page JavaScript.
+Header-authenticated native and CLI clients may omit `Origin`; if they do send
+one, it must match the Worker origin or an entry in
+`NOTEBOOK_CLOUD_ALLOWED_ORIGINS`. The hosted Access smoke sends
+`NOTEBOOK_CLOUD_ACCESS_ORIGIN` by default so the browser-compatible path is
+exercised even though the raw smoke connection uses `CF-Access-Token`.
 
 The hosted Access smoke uses a real Access JWT from `cloudflared`, grants
 principal ACL rows, sends real Automerge frames, and verifies that a granted
