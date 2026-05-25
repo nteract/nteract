@@ -112,7 +112,7 @@ function McpApp() {
           loggingAdvertised: capabilities?.logging !== undefined,
           sandboxCsp: capabilities?.sandbox?.csp,
           displayMode: ctx?.displayMode,
-          containerSize: ctx?.containerSize,
+          containerDimensions: ctx?.containerDimensions,
         });
         if (ctx?.theme) applyDocumentTheme(ctx.theme);
         if (ctx?.styles?.variables) applyHostStyleVariables(ctx.styles.variables);
