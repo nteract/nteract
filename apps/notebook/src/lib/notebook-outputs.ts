@@ -249,7 +249,7 @@ export function useOutputStructureVersion(): number {
   );
 }
 
-function subscribeOutputsVersion(cb: () => void): () => void {
+export function subscribeOutputsVersion(cb: () => void): () => void {
   _outputsVersionSubscribers.add(cb);
   return () => {
     _outputsVersionSubscribers.delete(cb);

@@ -29,8 +29,8 @@ import { logger } from "../lib/logger";
 import { getNotebookCellsSnapshot, useCell, useMaterializeVersion } from "../lib/notebook-cells";
 import {
   getCellOutputsSnapshot,
+  subscribeOutputsVersion,
   useOutputStructureVersion,
-  useOutputsVersion,
 } from "../lib/notebook-outputs";
 import type { CodeCell as CodeCellType, NotebookCell } from "../types";
 import { CellSkeleton } from "./CellSkeleton";
@@ -371,6 +371,7 @@ function NotebookViewContent({
   const presence = usePresenceContext();
   const containerRef = useRef<HTMLDivElement>(null);
   const tailPinnedRef = useRef(false);
+  const tailScrollFrameRef = useRef<number | null>(null);
 
   // Read transient UI state from the store instead of props
   const focusedCellId = useFocusedCellId();
@@ -469,7 +470,6 @@ function NotebookViewContent({
   // output membership changes. Stream text/display payload updates keep the
   // same membership and should not rescan all hidden groups.
   const outputStructureVersion = useOutputStructureVersion();
-  const outputsVersion = useOutputsVersion();
 
   // Drag-and-drop state
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -627,19 +627,39 @@ function NotebookViewContent({
     return () => container.removeEventListener("scroll", handleScroll);
   }, []);
 
+  const scheduleTailScrollIfPinned = useCallback(() => {
+    if (!tailPinnedRef.current) return;
+    const container = containerRef.current;
+    if (!container || tailScrollFrameRef.current !== null) return;
+
+    tailScrollFrameRef.current = window.requestAnimationFrame(() => {
+      tailScrollFrameRef.current = null;
+      if (!tailPinnedRef.current) return;
+      const currentContainer = containerRef.current;
+      if (!currentContainer) return;
+      currentContainer.scrollTop = currentContainer.scrollHeight;
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (tailScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(tailScrollFrameRef.current);
+        tailScrollFrameRef.current = null;
+      }
+    };
+  }, []);
+
   // If outputs or trailing cells arrive while the user is already at the
   // notebook tail, keep the tail anchored so last-cell outputs do not grow
   // below the viewport and vanish. Scrolling up opts out via tailPinnedRef.
   useEffect(() => {
-    if (!tailPinnedRef.current) return;
-    const container = containerRef.current;
-    if (!container) return;
+    return subscribeOutputsVersion(scheduleTailScrollIfPinned);
+  }, [scheduleTailScrollIfPinned]);
 
-    const frame = window.requestAnimationFrame(() => {
-      container.scrollTop = container.scrollHeight;
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [outputsVersion, cellIds.length]);
+  useEffect(() => {
+    scheduleTailScrollIfPinned();
+  }, [cellIds.length, scheduleTailScrollIfPinned]);
 
   // Scroll the current search match cell into view
   useEffect(() => {

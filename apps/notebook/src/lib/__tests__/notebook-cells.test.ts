@@ -1,3 +1,4 @@
+import { renderHook, act } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import type { NotebookCell } from "../../types";
 import {
@@ -7,6 +8,7 @@ import {
   resetNotebookCells,
   updateCellById,
   updateNotebookCells,
+  useMaterializeVersion,
 } from "../notebook-cells";
 
 const codeCell = (id: string, source = ""): NotebookCell => ({
@@ -169,6 +171,61 @@ describe("subscriber notifications", () => {
     expect(ref1).toHaveLength(1);
     expect(ref2).toHaveLength(2);
     expect(ref3).toHaveLength(3);
+  });
+});
+
+describe("materialization version", () => {
+  it("does not bump for output-only replacements", () => {
+    const firstOutput = {
+      output_type: "stream" as const,
+      name: "stdout" as const,
+      text: "first",
+    };
+    const secondOutput = {
+      output_type: "stream" as const,
+      name: "stdout" as const,
+      text: "second",
+    };
+    const cell = {
+      ...codeCell("a", "print('hello')"),
+      execution_count: 1,
+      outputs: [firstOutput],
+    };
+    replaceNotebookCells([cell]);
+    const firstCellRef = getCellById("a");
+
+    const renderCount = { current: 0 };
+    const { result } = renderHook(() => {
+      renderCount.current += 1;
+      return useMaterializeVersion();
+    });
+    const initialVersion = result.current;
+
+    act(() => {
+      replaceNotebookCells([{ ...cell, outputs: [secondOutput] }]);
+    });
+
+    expect(getCellById("a")).not.toBe(firstCellRef);
+    expect(result.current).toBe(initialVersion);
+    expect(renderCount.current).toBe(1);
+  });
+
+  it("bumps when cell chrome changes", () => {
+    replaceNotebookCells([codeCell("a", "old")]);
+
+    const renderCount = { current: 0 };
+    const { result } = renderHook(() => {
+      renderCount.current += 1;
+      return useMaterializeVersion();
+    });
+    const initialVersion = result.current;
+
+    act(() => {
+      replaceNotebookCells([codeCell("a", "new")]);
+    });
+
+    expect(result.current).toBe(initialVersion + 1);
+    expect(renderCount.current).toBe(2);
   });
 });
 
