@@ -331,6 +331,13 @@ const RUNTIME_STATE_GENESIS_V2_BYTES: &[u8] =
 /// updates via Automerge sync — never by direct mutation.
 pub struct RuntimeStateDoc {
     doc: AutoCommit,
+    output_order_cache: HashMap<String, OutputOrderCacheEntry>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct OutputOrderCacheEntry {
+    next_seq: u64,
+    latest_seq: Option<u64>,
 }
 
 impl RuntimeStateDoc {
@@ -342,7 +349,10 @@ impl RuntimeStateDoc {
     pub fn try_new() -> Result<Self, RuntimeStateError> {
         let mut doc = Self::schema_seed_doc()?;
         doc.set_actor(ActorId::from(b"runtimed:state" as &[u8]));
-        Ok(Self { doc })
+        Ok(Self {
+            doc,
+            output_order_cache: HashMap::new(),
+        })
     }
 
     /// Create a new `RuntimeStateDoc` with scaffolding and a custom actor.
@@ -353,7 +363,10 @@ impl RuntimeStateDoc {
     pub fn try_new_with_actor(actor_label: &str) -> Result<Self, RuntimeStateError> {
         let mut doc = Self::schema_seed_doc()?;
         doc.set_actor(ActorId::from(actor_label.as_bytes()));
-        Ok(Self { doc })
+        Ok(Self {
+            doc,
+            output_order_cache: HashMap::new(),
+        })
     }
 
     /// Create a bootstrap `RuntimeStateDoc` for read-only clients.
@@ -364,7 +377,10 @@ impl RuntimeStateDoc {
     pub fn try_new_empty() -> Result<Self, RuntimeStateError> {
         let mut doc = Self::schema_seed_doc()?;
         doc.set_actor(ActorId::random());
-        Ok(Self { doc })
+        Ok(Self {
+            doc,
+            output_order_cache: HashMap::new(),
+        })
     }
 
     #[allow(clippy::new_without_default)]
@@ -426,7 +442,10 @@ impl RuntimeStateDoc {
     ///
     /// Used by test fixtures and migration paths that have a saved state doc.
     pub fn from_doc(doc: AutoCommit) -> Self {
-        Self { doc }
+        Self {
+            doc,
+            output_order_cache: HashMap::new(),
+        }
     }
 
     /// Access the underlying Automerge document (read-only).
@@ -436,6 +455,7 @@ impl RuntimeStateDoc {
 
     /// Access the underlying Automerge document (mutable, for sync protocol).
     pub fn doc_mut(&mut self) -> &mut AutoCommit {
+        self.output_order_cache.clear();
         &mut self.doc
     }
 
@@ -459,6 +479,7 @@ impl RuntimeStateDoc {
     pub fn fork(&mut self) -> Self {
         Self {
             doc: self.doc.fork(),
+            output_order_cache: self.output_order_cache.clone(),
         }
     }
 
@@ -504,7 +525,9 @@ impl RuntimeStateDoc {
         &mut self,
         other: &mut RuntimeStateDoc,
     ) -> Result<Vec<automerge::ChangeHash>, AutomergeError> {
-        self.doc.merge(&mut other.doc)
+        let changes = self.doc.merge(&mut other.doc)?;
+        self.output_order_cache.clear();
+        Ok(changes)
     }
 
     /// Merge another runtime-state document, rebuilding both documents if Automerge panics.
@@ -514,7 +537,10 @@ impl RuntimeStateDoc {
         label: &str,
     ) -> Result<Vec<automerge::ChangeHash>, AutomergeOperationError> {
         match catch_automerge_result(label, || self.doc.merge(&mut other.doc)) {
-            AutomergeAttempt::Success(changes) => Ok(changes),
+            AutomergeAttempt::Success(changes) => {
+                self.output_order_cache.clear();
+                Ok(changes)
+            }
             AutomergeAttempt::OperationError(source) => {
                 Err(AutomergeOperationError::automerge(label, source))
             }
@@ -1373,10 +1399,15 @@ impl RuntimeStateDoc {
 
     // ── Output storage (keyed by execution_id/output_id) ────────────
 
-    /// Get the ObjId for the `executions/{execution_id}/outputs` map, if it exists.
-    fn get_output_map(&self, execution_id: &str) -> Option<automerge::ObjId> {
+    fn get_execution_entry(&self, execution_id: &str) -> Option<automerge::ObjId> {
         let executions = self.get_map("executions")?;
         let (_, entry) = self.doc.get(&executions, execution_id).ok().flatten()?;
+        Some(entry)
+    }
+
+    /// Get the ObjId for the `executions/{execution_id}/outputs` map, if it exists.
+    fn get_output_map(&self, execution_id: &str) -> Option<automerge::ObjId> {
+        let entry = self.get_execution_entry(execution_id)?;
         self.doc
             .get(&entry, "outputs")
             .ok()
@@ -1390,8 +1421,7 @@ impl RuntimeStateDoc {
     /// Ensure the `executions/{execution_id}/outputs` map exists, creating it if absent.
     /// Returns `None` if the execution entry doesn't exist (stale IOPub race).
     fn ensure_output_map(&mut self, execution_id: &str) -> Option<automerge::ObjId> {
-        let executions = self.get_map("executions")?;
-        let (_, entry) = self.doc.get(&executions, execution_id).ok().flatten()?;
+        let entry = self.get_execution_entry(execution_id)?;
         match self.doc.get(&entry, "outputs").ok().flatten() {
             Some((Value::Object(ObjType::Map), id)) => Some(id),
             _ => self.doc.put_object(&entry, "outputs", ObjType::Map).ok(),
@@ -1454,31 +1484,64 @@ impl RuntimeStateDoc {
         entries
     }
 
-    fn next_output_seq(&self, outputs: &automerge::ObjId) -> u64 {
+    fn scan_output_order(&self, outputs: &automerge::ObjId) -> OutputOrderCacheEntry {
         // The daemon writes live execution outputs serially, so `seq` is
         // monotonic in production. Concurrent appenders can tie; projection
         // remains deterministic because `output_entries_sorted` falls back to
         // `output_id` ordering.
-        self.output_entries_sorted(outputs)
-            .into_iter()
-            .map(|(_, seq, _)| seq)
-            .max()
-            .map_or(0, |seq| seq.saturating_add(1))
+        let entries = self.output_entries_sorted(outputs);
+        let latest = entries
+            .last()
+            .map(|(output_id, seq, _)| (output_id.clone(), *seq));
+        OutputOrderCacheEntry {
+            next_seq: latest.as_ref().map_or(0, |(_, seq)| seq.saturating_add(1)),
+            latest_seq: latest.map(|(_, seq)| seq),
+        }
+    }
+
+    fn output_order(
+        &mut self,
+        execution_id: &str,
+        outputs: &automerge::ObjId,
+    ) -> OutputOrderCacheEntry {
+        if let Some(entry) = self.output_order_cache.get(execution_id) {
+            return entry.clone();
+        }
+        let entry = self.scan_output_order(outputs);
+        self.output_order_cache
+            .insert(execution_id.to_string(), entry.clone());
+        entry
+    }
+
+    fn next_output_seq(&mut self, execution_id: &str, outputs: &automerge::ObjId) -> u64 {
+        self.output_order(execution_id, outputs).next_seq
+    }
+
+    fn write_output_order_cache(
+        &mut self,
+        execution_id: &str,
+        next_seq: u64,
+        latest_seq: Option<u64>,
+    ) {
+        self.output_order_cache.insert(
+            execution_id.to_string(),
+            OutputOrderCacheEntry {
+                next_seq,
+                latest_seq,
+            },
+        );
     }
 
     fn output_is_latest(
-        &self,
+        &mut self,
+        execution_id: &str,
         outputs: &automerge::ObjId,
         output_entry: &automerge::ObjId,
     ) -> bool {
         let Some(seq) = self.read_output_seq(output_entry) else {
             return false;
         };
-        self.output_entries_sorted(outputs)
-            .into_iter()
-            .map(|(_, entry_seq, _)| entry_seq)
-            .max()
-            == Some(seq)
+        self.output_order(execution_id, outputs).latest_seq == Some(seq)
     }
 
     fn display_id_for_manifest(manifest: &serde_json::Value) -> Option<&str> {
@@ -1516,8 +1579,9 @@ impl RuntimeStateDoc {
             Some((Value::Object(ObjType::Map), id)) => id,
             _ => {
                 let id = self.doc.put_object(&outputs, &output_id, ObjType::Map)?;
-                let seq = self.next_output_seq(&outputs);
+                let seq = self.next_output_seq(execution_id, &outputs);
                 self.doc.put(&id, "seq", ScalarValue::Uint(seq))?;
+                self.write_output_order_cache(execution_id, seq.saturating_add(1), Some(seq));
                 id
             }
         };
@@ -1557,8 +1621,9 @@ impl RuntimeStateDoc {
             return Ok(output_ids);
         };
 
-        let mut next_seq = self.next_output_seq(&outputs);
+        let mut next_seq = self.next_output_seq(execution_id, &outputs);
         let mut first_error = None;
+        let mut latest_created_seq = None;
         for (manifest, output_id) in manifests.iter().zip(output_ids.iter()) {
             let output_entry = match self.doc.get(&outputs, output_id).ok().flatten() {
                 Some((Value::Object(ObjType::Map), id)) => id,
@@ -1575,6 +1640,7 @@ impl RuntimeStateDoc {
                         let _ = self.doc.delete(&outputs, output_id);
                         continue;
                     }
+                    latest_created_seq = Some(next_seq);
                     next_seq = next_seq.saturating_add(1);
                     id
                 }
@@ -1594,6 +1660,10 @@ impl RuntimeStateDoc {
             if let Some(display_id) = Self::display_id_for_manifest(manifest) {
                 self.add_display_index_entry(display_id, execution_id, output_id);
             }
+        }
+
+        if latest_created_seq.is_some() {
+            self.write_output_order_cache(execution_id, next_seq, latest_created_seq);
         }
 
         if let Some(error) = first_error {
@@ -1622,6 +1692,7 @@ impl RuntimeStateDoc {
         self.remove_display_index_entries_for_execution(execution_id);
         let _ = self.doc.delete(&entry, "outputs");
         let outputs = self.doc.put_object(&entry, "outputs", ObjType::Map)?;
+        let mut latest_seq = None;
         for (i, manifest) in manifests.iter().enumerate() {
             let output_id =
                 extract_output_id(manifest).ok_or(RuntimeStateError::MissingOutputId)?;
@@ -1632,7 +1703,9 @@ impl RuntimeStateDoc {
             if let Some(display_id) = Self::display_id_for_manifest(manifest) {
                 self.add_display_index_entry(display_id, execution_id, &output_id);
             }
+            latest_seq = Some(i as u64);
         }
+        self.write_output_order_cache(execution_id, manifests.len() as u64, latest_seq);
         Ok(true)
     }
 
@@ -1663,6 +1736,7 @@ impl RuntimeStateDoc {
             {
                 self.doc.delete(&executions, execution_id.as_str())?;
                 self.remove_display_index_entries_for_execution(execution_id);
+                self.output_order_cache.remove(execution_id);
                 removed += 1;
             }
         }
@@ -1794,7 +1868,7 @@ impl RuntimeStateDoc {
             // Must be the last output - if something was appended after (e.g., stderr
             // between two stdout messages), we should append instead of updating
             if let Some(output_entry) = self.get_output_entry(execution_id, &state.output_id) {
-                let is_latest = self.output_is_latest(&outputs, &output_entry);
+                let is_latest = self.output_is_latest(execution_id, &outputs, &output_entry);
                 // Read the existing output and check text content ref against state.blob_hash.
                 // ContentRef is either {"blob": "hash", "size": N} or {"inline": "text"}.
                 // The cached blob_hash stores the blob hash or the inline content itself.
@@ -1984,6 +2058,7 @@ impl RuntimeStateDoc {
             }
             self.remove_display_index_entries_for_execution(&exec_id);
             self.doc.delete(&executions, exec_id.as_str())?;
+            self.output_order_cache.remove(&exec_id);
             removed += 1;
         }
         Ok(removed)
@@ -2877,7 +2952,11 @@ impl RuntimeStateDoc {
         let heads_before = self.doc.get_heads();
         self.doc.sync().receive_sync_message(peer_state, message)?;
         let heads_after = self.doc.get_heads();
-        Ok(heads_before != heads_after)
+        let changed = heads_before != heads_after;
+        if changed {
+            self.output_order_cache.clear();
+        }
+        Ok(changed)
     }
 
     /// Receive a writable sync message through the document-owned error boundary.
@@ -2960,6 +3039,7 @@ impl RuntimeStateDoc {
                 foreign_comms: None,
             });
         }
+        self.output_order_cache.clear();
 
         let applied_actors: Vec<ActorId> = applied.iter().map(|c| c.actor_id().clone()).collect();
 
@@ -4484,6 +4564,45 @@ mod tests {
     }
 
     #[test]
+    fn upsert_stream_output_treats_tied_max_seq_outputs_as_latest() {
+        // Concurrent forks can legitimately create distinct output entries
+        // with the same daemon-authored `seq`. Stream coalescing should match
+        // the previous behavior: any output tied at the max sequence is
+        // eligible for in-place update.
+        let mut main = RuntimeStateDoc::new();
+        main.create_execution("exec-1").unwrap();
+
+        let mut fa = main.fork();
+        fa.set_actor("rt:kernel:shared:fork-a");
+        fa.append_output("exec-1", &test_stream("hash-a")).unwrap();
+
+        let mut fb = main.fork();
+        fb.set_actor("rt:kernel:shared:fork-b");
+        fb.append_output("exec-1", &test_stream("hash-b")).unwrap();
+
+        main.merge(&mut fa).unwrap();
+        main.merge(&mut fb).unwrap();
+        assert_eq!(main.get_outputs("exec-1").len(), 2);
+
+        let state = StreamOutputState {
+            output_id: "stream-hash-a".to_string(),
+            blob_hash: "hash-a".to_string(),
+        };
+        let replacement = test_stream("hash-a-replacement");
+        let (updated, output_id) = main
+            .upsert_stream_output("exec-1", "stdout", &replacement, Some(&state))
+            .unwrap();
+
+        assert!(updated);
+        assert_eq!(output_id, "stream-hash-a");
+        let outputs = main.get_outputs("exec-1");
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0]["output_id"], "stream-hash-a");
+        assert_eq!(outputs[0]["text"]["blob"], "hash-a-replacement");
+        assert_eq!(outputs[1]["output_id"], "stream-hash-b");
+    }
+
+    #[test]
     fn isolated_transactions_with_same_actor_at_same_heads_do_not_duplicate_seq() {
         let mut doc = RuntimeStateDoc::new();
         let heads = doc.get_heads();
@@ -5470,6 +5589,80 @@ mod tests {
     }
 
     #[test]
+    fn receive_sync_message_with_changes_clears_output_order_cache() {
+        let mut receiver = RuntimeStateDoc::new();
+        receiver.create_execution("exec-1").unwrap();
+        receiver
+            .append_output("exec-1", &test_stream("hash-a"))
+            .unwrap();
+        assert!(receiver.output_order_cache.contains_key("exec-1"));
+
+        let mut donor = receiver.fork();
+        donor.set_actor("human:peer");
+        donor
+            .append_output("exec-1", &test_stream("hash-b"))
+            .unwrap();
+
+        let mut receiver_sync = sync::State::new();
+        let mut donor_sync = sync::State::new();
+        if let Some(handshake) = receiver.generate_sync_message(&mut receiver_sync) {
+            donor
+                .doc
+                .sync()
+                .receive_sync_message(&mut donor_sync, handshake)
+                .expect("donor receives receiver handshake");
+        }
+        let message = donor
+            .generate_sync_message(&mut donor_sync)
+            .expect("donor should advertise output change");
+
+        let changed = receiver
+            .receive_sync_message_with_changes(&mut receiver_sync, message)
+            .expect("receiver accepts donor change");
+
+        assert!(changed);
+        assert!(!receiver.output_order_cache.contains_key("exec-1"));
+        assert_eq!(receiver.get_outputs("exec-1").len(), 2);
+    }
+
+    #[test]
+    fn receive_sync_and_foreign_comms_clears_output_order_cache() {
+        let mut receiver = RuntimeStateDoc::new();
+        receiver.create_execution("exec-1").unwrap();
+        receiver
+            .append_output("exec-1", &test_stream("hash-a"))
+            .unwrap();
+        assert!(receiver.output_order_cache.contains_key("exec-1"));
+
+        let mut donor = receiver.fork();
+        donor.set_actor("human:peer");
+        donor
+            .append_output("exec-1", &test_stream("hash-b"))
+            .unwrap();
+
+        let mut receiver_sync = sync::State::new();
+        let mut donor_sync = sync::State::new();
+        if let Some(handshake) = receiver.generate_sync_message(&mut receiver_sync) {
+            donor
+                .doc
+                .sync()
+                .receive_sync_message(&mut donor_sync, handshake)
+                .expect("donor receives receiver handshake");
+        }
+        let message = donor
+            .generate_sync_message(&mut donor_sync)
+            .expect("donor should advertise output change");
+
+        let view = receiver
+            .receive_sync_and_foreign_comms(&mut receiver_sync, message, |_| true)
+            .expect("receiver accepts donor change");
+
+        assert!(!view.applied_actors.is_empty());
+        assert!(!receiver.output_order_cache.contains_key("exec-1"));
+        assert_eq!(receiver.get_outputs("exec-1").len(), 2);
+    }
+
+    #[test]
     fn foreign_sync_view_filters_self_authored_fields() {
         // Two comms in one sync frame: kernel-widget's "value" was
         // last-written by the kernel actor (a self-echo); human-widget's
@@ -5778,6 +5971,93 @@ mod tests {
         assert_eq!(sd.get_output("exec-1", "display-1"), Some(m2));
         assert!(sd.get_output("exec-1", "missing").is_none());
         assert!(sd.get_output("missing-exec", "display-1").is_none());
+    }
+
+    #[test]
+    fn append_outputs_updates_output_order_cache() {
+        let mut sd = RuntimeStateDoc::new();
+        sd.create_execution("exec-1").unwrap();
+
+        let manifests = vec![
+            serde_json::json!({
+                "output_type": "stream",
+                "output_id": "out-1",
+                "name": "stdout",
+                "text": {"inline": "one\n"}
+            }),
+            serde_json::json!({
+                "output_type": "stream",
+                "output_id": "out-2",
+                "name": "stdout",
+                "text": {"inline": "two\n"}
+            }),
+        ];
+        sd.append_outputs("exec-1", &manifests).unwrap();
+
+        let order = sd.output_order_cache.get("exec-1").unwrap();
+        assert_eq!(order.next_seq, 2);
+        assert_eq!(order.latest_seq, Some(1));
+
+        let next = serde_json::json!({
+            "output_type": "stream",
+            "output_id": "out-3",
+            "name": "stdout",
+            "text": {"inline": "three\n"}
+        });
+        sd.append_output("exec-1", &next).unwrap();
+
+        let outputs = sd.get_outputs("exec-1");
+        assert_eq!(
+            outputs
+                .iter()
+                .map(|output| output["output_id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["out-1", "out-2", "out-3"]
+        );
+        let order = sd.output_order_cache.get("exec-1").unwrap();
+        assert_eq!(order.next_seq, 3);
+        assert_eq!(order.latest_seq, Some(2));
+    }
+
+    #[test]
+    fn append_output_backfills_empty_output_order_cache() {
+        let mut sd = RuntimeStateDoc::new();
+        sd.create_execution("exec-1").unwrap();
+
+        let first = serde_json::json!({
+            "output_type": "stream",
+            "output_id": "out-1",
+            "name": "stdout",
+            "text": {"inline": "one\n"}
+        });
+        let second = serde_json::json!({
+            "output_type": "stream",
+            "output_id": "out-2",
+            "name": "stdout",
+            "text": {"inline": "two\n"}
+        });
+        sd.append_outputs("exec-1", &[first, second]).unwrap();
+        sd.output_order_cache.clear();
+
+        let third = serde_json::json!({
+            "output_type": "stream",
+            "output_id": "out-3",
+            "name": "stdout",
+            "text": {"inline": "three\n"}
+        });
+        sd.append_output("exec-1", &third).unwrap();
+
+        let outputs = sd.get_outputs("exec-1");
+        assert_eq!(
+            outputs
+                .iter()
+                .map(|output| output["output_id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["out-1", "out-2", "out-3"]
+        );
+        let order = sd.output_order_cache.get("exec-1").unwrap();
+        assert_eq!(order.next_seq, 3);
+        assert_eq!(order.latest_seq, Some(2));
     }
 
     #[test]
