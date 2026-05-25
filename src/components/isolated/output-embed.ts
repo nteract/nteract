@@ -53,7 +53,7 @@ export interface NteractOutputEmbedOptions {
   blobResolver?: OutputBlobResolver;
   autoHeight?: boolean;
   maxHeight?: number;
-  onSizeChanged?: (size: { width?: number; height?: number }) => void;
+  onSizeChanged?: (size: NteractEmbedContainerDimensions) => void;
   onDiagnostic?: NteractOutputEmbedDiagnosticHandler;
   onMessage?: (message: unknown) => void;
   onError?: (error: { message: string; stack?: string }) => void;
