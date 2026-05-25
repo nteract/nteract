@@ -350,7 +350,7 @@ export function allowsRuntimeStateWrite(scope: ConnectionScope): boolean {
 }
 
 export function allowsBlobUpload(scope: ConnectionScope): boolean {
-  return allowsRuntimeStateWrite(scope);
+  return scope === "runtime_peer" || scope === "owner";
 }
 
 export function allowsPublish(scope: ConnectionScope): boolean {
