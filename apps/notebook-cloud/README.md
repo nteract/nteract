@@ -239,6 +239,11 @@ identity selection on that request. Browser-visible Access token subprotocols
 remain mutually exclusive with forwarded assertions and are rejected if both are
 present.
 
+`GET /api/health` includes a non-secret
+`auth.cloudflare_access.status` readiness field. Expect `configured` for an
+Access-backed deployment; `partial` means exactly one of
+`NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN` or `NOTEBOOK_CLOUD_ACCESS_AUD` is missing.
+
 The Access principal namespace names the authority validated by the Worker:
 `user:cloudflare-access:<encoded-sub>`. Access `email` and `name` claims are
 stamped as display/audit metadata on the trusted room connection; they are not

@@ -166,6 +166,25 @@ printf "%s" "$NOTEBOOK_CLOUD_DEV_TOKEN" \
       --config apps/notebook-cloud/wrangler.toml
 ```
 
+After deploying the variables, `GET /api/health` reports a non-secret Access
+readiness summary:
+
+```json
+{
+  "auth": {
+    "cloudflare_access": {
+      "status": "configured",
+      "jwks": "remote"
+    }
+  }
+}
+```
+
+`status: "partial"` means exactly one of `NOTEBOOK_CLOUD_ACCESS_AUD` or
+`NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN` is present. Fix that before running browser
+or WebSocket smoke tests; otherwise Access-authenticated requests will fail
+with `Cloudflare Access auth is not fully configured`.
+
 ## Allowed Origins
 
 For an Access-backed browser deployment, set:
