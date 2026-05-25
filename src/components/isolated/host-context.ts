@@ -45,6 +45,12 @@ export interface NteractEmbedHostContext {
      * from inside isolated output iframes, e.g. Sift's WASM binary.
      */
     rendererAssetsBaseUrl?: string;
+    /**
+     * Absolute or host-relative URL for the isolated output document shell.
+     * Hosted deployments can use this to load the sandboxed frame from a
+     * separate output-document origin instead of browser `srcDoc`.
+     */
+    outputDocumentUrl?: string;
   };
 }
 

@@ -54,6 +54,7 @@ interface CloudViewerConfig {
   syncEndpoint: string;
   blobBasePath: string;
   rendererAssetsBasePath: string;
+  outputDocumentBaseUrl: string | null;
   runtimedWasmModulePath: string;
   runtimedWasmPath: string;
 }
@@ -114,6 +115,7 @@ function loadConfig(): CloudViewerConfig {
     syncEndpoint: parsed.syncEndpoint,
     blobBasePath: parsed.blobBasePath,
     rendererAssetsBasePath: parsed.rendererAssetsBasePath,
+    outputDocumentBaseUrl: parsed.outputDocumentBaseUrl ?? null,
     runtimedWasmModulePath: parsed.runtimedWasmModulePath,
     runtimedWasmPath: parsed.runtimedWasmPath,
   };
@@ -133,6 +135,9 @@ function loadViewerRuntime(): ViewerRuntimeState {
         outputHostContext: {
           nteract: {
             rendererAssetsBaseUrl: new URL(config.rendererAssetsBasePath, location.href).href,
+            outputDocumentUrl: config.outputDocumentBaseUrl
+              ? new URL(config.outputDocumentBaseUrl, location.href).href
+              : undefined,
           },
         },
       },

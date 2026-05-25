@@ -1415,6 +1415,11 @@ function viewerContentSecurityPolicy(env: Env): string {
   if (runtimedWasmOrigin) {
     connectSources.add(runtimedWasmOrigin);
   }
+  const frameSources = new Set(["'self'", "blob:", "data:"]);
+  const outputDocumentOrigin = absoluteOrigin(outputDocumentBaseUrl(env) ?? "");
+  if (outputDocumentOrigin) {
+    frameSources.add(outputDocumentOrigin);
+  }
 
   // The shared isolated output renderer currently boots from about:srcdoc,
   // which inherits the parent page CSP. Do not set default-src/script-src here:
@@ -1429,7 +1434,7 @@ function viewerContentSecurityPolicy(env: Env): string {
     "font-src 'self' data:",
     `connect-src ${Array.from(connectSources).join(" ")}`,
     "worker-src 'self' blob:",
-    "frame-src 'self' blob: data:",
+    `frame-src ${Array.from(frameSources).join(" ")}`,
     "form-action 'none'",
   ].join("; ");
 }
@@ -1461,6 +1466,7 @@ function viewer(notebookId: string, env: Env, headsHash?: string): Response {
     syncEndpoint: `/n/${encodeURIComponent(notebookId)}/sync`,
     blobBasePath: notebookCloudBlobBasePath(notebookId),
     rendererAssetsBasePath: rendererAssetsBasePath(env),
+    outputDocumentBaseUrl: outputDocumentBaseUrl(env),
     runtimedWasmModulePath: runtimedWasmAssetPath(env, VIEWER_RUNTIMED_WASM_MODULE_NAME),
     runtimedWasmPath: runtimedWasmAssetPath(env, VIEWER_RUNTIMED_WASM_NAME),
   };
@@ -1497,6 +1503,11 @@ function rendererAssetsBasePath(env: Env): string {
 function runtimedWasmBasePath(env: Env): string {
   const configured = env.RUNTIMED_WASM_BASE_URL?.trim();
   return withTrailingSlash(configured || DEFAULT_RUNTIMED_WASM_BASE_PATH);
+}
+
+function outputDocumentBaseUrl(env: Env): string | null {
+  const configured = env.OUTPUT_DOCUMENT_BASE_URL?.trim();
+  return configured ? withTrailingSlash(configured) : null;
 }
 
 function runtimedWasmAssetPath(env: Env, name: string): string {

@@ -58,6 +58,13 @@ export interface IsolatedFrameProps {
   hostContext?: NteractEmbedHostContextPatch;
 
   /**
+   * URL for the isolated output document shell. Hosted deployments can use a
+   * separate output-document origin; browser-only local development leaves this
+   * unset and uses srcDoc.
+   */
+  outputDocumentUrl?: string | null;
+
+  /**
    * Minimum height of the iframe in pixels.
    * @default 24
    */
@@ -288,6 +295,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       darkMode = true,
       colorTheme,
       hostContext,
+      outputDocumentUrl,
       minHeight = 24,
       maxHeight = 2000,
       autoHeight = false,
@@ -469,11 +477,15 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       applyMeasuredHeight(measuredHeightRef.current);
     }, [applyMeasuredHeight]);
 
+    const resolvedOutputDocumentUrl = outputDocumentUrl ?? hostContext?.nteract?.outputDocumentUrl;
+
     // Create frame document on mount. The shared config keeps React, future
     // non-React adapters, and tests on the same source/sandbox contract.
     useEffect(() => {
-      setFrameDocument(createIsolatedFrameDocument());
-    }, []);
+      setFrameDocument(
+        createIsolatedFrameDocument({ outputDocumentUrl: resolvedOutputDocumentUrl }),
+      );
+    }, [resolvedOutputDocumentUrl]);
 
     useEffect(() => {
       const iframe = iframeRef.current;
