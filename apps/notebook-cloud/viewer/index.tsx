@@ -50,7 +50,6 @@ import {
   applyDocumentTheme,
   CLOUD_VIEWER_THEME_STORAGE_KEY,
   installDocumentThemeSync,
-  outputDocumentUrlForTheme,
 } from "./theme";
 import "./index.css";
 
@@ -189,14 +188,12 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
     () => ({
       nteract: {
         rendererAssetsBaseUrl: new URL(config.rendererAssetsBasePath, location.href).href,
-        outputDocumentUrl: outputDocumentUrlForTheme(
-          config.outputDocumentBaseUrl,
-          resolvedTheme,
-          location.href,
-        ),
+        outputDocumentUrl: config.outputDocumentBaseUrl
+          ? new URL(config.outputDocumentBaseUrl, location.href).href
+          : undefined,
       },
     }),
-    [config.outputDocumentBaseUrl, config.rendererAssetsBasePath, resolvedTheme],
+    [config.outputDocumentBaseUrl, config.rendererAssetsBasePath],
   );
 
   useEffect(() => {

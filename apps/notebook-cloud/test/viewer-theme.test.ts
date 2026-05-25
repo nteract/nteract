@@ -2,7 +2,6 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   CLOUD_VIEWER_THEME_STORAGE_KEY,
-  outputDocumentUrlForTheme,
   resolveCloudViewerTheme,
   storedCloudViewerTheme,
 } from "../viewer/theme.ts";
@@ -24,22 +23,6 @@ describe("cloud viewer theme helpers", () => {
     storage.set(CLOUD_VIEWER_THEME_STORAGE_KEY, "sepia");
 
     assert.equal(storedCloudViewerTheme(storageLike(storage)), "system");
-  });
-
-  it("adds the resolved theme to hosted output document URLs", () => {
-    assert.equal(
-      outputDocumentUrlForTheme(
-        "https://outputs.example/frame/",
-        "light",
-        "https://cloud.test/n/demo",
-      ),
-      "https://outputs.example/frame/?nteract_theme=light",
-    );
-    assert.equal(
-      outputDocumentUrlForTheme("/frame/?existing=1", "dark", "https://cloud.test/n/demo"),
-      "https://cloud.test/frame/?existing=1&nteract_theme=dark",
-    );
-    assert.equal(outputDocumentUrlForTheme(null, "light", "https://cloud.test/n/demo"), undefined);
   });
 });
 

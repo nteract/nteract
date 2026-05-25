@@ -332,4 +332,17 @@ describe("IsolatedFrame theme updates", () => {
     expect(iframe.getAttribute("src")).toBe("nteract-frame://localhost/");
     expect(iframe.getAttribute("srcdoc")).toBeNull();
   });
+
+  it("adds the initial hosted theme hint without reloading on theme changes", () => {
+    const { container, rerender } = render(
+      <IsolatedFrame darkMode={false} outputDocumentUrl="https://outputs.example/frame/" />,
+    );
+    const iframe = container.querySelector("iframe") as HTMLIFrameElement;
+
+    expect(iframe.getAttribute("src")).toBe("https://outputs.example/frame/?nteract_theme=light");
+
+    rerender(<IsolatedFrame darkMode outputDocumentUrl="https://outputs.example/frame/" />);
+
+    expect(iframe.getAttribute("src")).toBe("https://outputs.example/frame/?nteract_theme=light");
+  });
 });

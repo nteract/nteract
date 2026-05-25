@@ -35,18 +35,6 @@ export function applyDocumentTheme(theme: ResolvedCloudViewerTheme): void {
   document.documentElement.style.colorScheme = theme;
 }
 
-export function outputDocumentUrlForTheme(
-  outputDocumentBaseUrl: string | null | undefined,
-  theme: ResolvedCloudViewerTheme,
-  pageUrl = typeof location === "undefined" ? "http://localhost/" : location.href,
-): string | undefined {
-  if (!outputDocumentBaseUrl) return undefined;
-
-  const url = new URL(outputDocumentBaseUrl, pageUrl);
-  url.searchParams.set("nteract_theme", theme);
-  return url.href;
-}
-
 export function installDocumentThemeSync(): void {
   applyDocumentTheme(resolveCloudViewerTheme(storedCloudViewerTheme()));
 }

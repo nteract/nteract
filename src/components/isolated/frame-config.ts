@@ -44,15 +44,32 @@ export function isTauriFrameRuntime(
 
 export function createIsolatedFrameDocument(options?: {
   isTauriRuntime?: boolean;
+  initialTheme?: "light" | "dark";
   outputDocumentUrl?: string | null;
 }): IsolatedFrameDocument {
   const outputDocumentUrl = options?.outputDocumentUrl?.trim();
   if (outputDocumentUrl) {
-    return { kind: "src", url: outputDocumentUrl };
+    return { kind: "src", url: withThemeHint(outputDocumentUrl, options?.initialTheme) };
   }
 
   if (options?.isTauriRuntime ?? isTauriFrameRuntime()) {
     return { kind: "src", url: NTERACT_FRAME_URL };
   }
   return { kind: "srcdoc", html: FRAME_HTML };
+}
+
+function withThemeHint(outputDocumentUrl: string, theme: "light" | "dark" | undefined): string {
+  if (!theme) return outputDocumentUrl;
+
+  try {
+    const url = new URL(outputDocumentUrl);
+    url.searchParams.set("nteract_theme", theme);
+    return url.href;
+  } catch {
+    const hashIndex = outputDocumentUrl.indexOf("#");
+    const beforeHash = hashIndex === -1 ? outputDocumentUrl : outputDocumentUrl.slice(0, hashIndex);
+    const hash = hashIndex === -1 ? "" : outputDocumentUrl.slice(hashIndex);
+    const separator = beforeHash.includes("?") ? "&" : "?";
+    return `${beforeHash}${separator}nteract_theme=${theme}${hash}`;
+  }
 }
