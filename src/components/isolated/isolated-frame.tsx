@@ -331,6 +331,10 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     const iframeRef = useRef<HTMLIFrameElement>(null);
     const runtimeRef = useRef<IsolatedFrameRuntime | null>(null);
     const initialContentRef = useRef(initialContent);
+    const initialThemeSeedRef = useRef({
+      theme: darkMode ? ("dark" as const) : ("light" as const),
+      colorTheme: colorTheme ?? null,
+    });
     const applyMeasuredHeightRef = useRef<(contentHeight: number) => void>(() => {});
     const [frameDocument, setFrameDocument] = useState<IsolatedFrameDocument | null>(null);
     // Track iframe ready (bootstrap HTML loaded)
@@ -504,8 +508,6 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     }, [applyMeasuredHeight]);
 
     const resolvedOutputDocumentUrl = outputDocumentUrl ?? hostContext?.nteract?.outputDocumentUrl;
-    const frameDocumentThemeRef = useRef<"light" | "dark">(darkMode ? "dark" : "light");
-    frameDocumentThemeRef.current = darkMode ? "dark" : "light";
 
     // Create frame document on mount. The shared config keeps React, future
     // non-React adapters, and tests on the same source/sandbox contract.
@@ -513,7 +515,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       setFrameDocument(
         createIsolatedFrameDocument({
           outputDocumentUrl: resolvedOutputDocumentUrl,
-          initialTheme: frameDocumentThemeRef.current,
+          themeSeed: initialThemeSeedRef.current,
         }),
       );
     }, [resolvedOutputDocumentUrl]);

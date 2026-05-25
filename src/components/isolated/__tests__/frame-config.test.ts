@@ -37,25 +37,35 @@ describe("isolated frame config", () => {
     });
   });
 
-  it("can add an initial theme hint to output document URLs", () => {
+  it("can seed hosted output documents with the initial theme without changing srcdoc hosts", () => {
     expect(
       createIsolatedFrameDocument({
-        outputDocumentUrl: "https://outputs.example/frame/?existing=1",
-        initialTheme: "dark",
+        outputDocumentUrl: "https://outputs.example/frame/?v=1#shell",
+        themeSeed: { theme: "dark", colorTheme: "cream" },
       }),
     ).toEqual({
       kind: "src",
-      url: "https://outputs.example/frame/?existing=1&nteract_theme=dark",
+      url: "https://outputs.example/frame/?v=1&nteract_theme=dark&nteract_color_theme=cream#shell",
     });
 
     expect(
       createIsolatedFrameDocument({
         outputDocumentUrl: "/output-document/frame.html?existing=1#anchor",
-        initialTheme: "light",
+        themeSeed: { theme: "light", colorTheme: null },
       }),
     ).toEqual({
       kind: "src",
       url: "/output-document/frame.html?existing=1&nteract_theme=light#anchor",
+    });
+
+    expect(
+      createIsolatedFrameDocument({
+        isTauriRuntime: false,
+        themeSeed: { theme: "light", colorTheme: "cream" },
+      }),
+    ).toEqual({
+      kind: "srcdoc",
+      html: FRAME_HTML,
     });
   });
 

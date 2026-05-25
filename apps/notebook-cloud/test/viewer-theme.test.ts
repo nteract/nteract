@@ -18,11 +18,15 @@ describe("cloud viewer theme helpers", () => {
     assert.equal(resolveCloudViewerTheme("system", false), "light");
   });
 
-  it("ignores invalid stored theme values", () => {
+  it("reads valid stored themes and ignores invalid stored values", () => {
     const storage = new Map<string, string>();
-    storage.set(CLOUD_VIEWER_THEME_STORAGE_KEY, "sepia");
+    storage.set(CLOUD_VIEWER_THEME_STORAGE_KEY, "dark");
 
+    assert.equal(storedCloudViewerTheme(storageLike(storage)), "dark");
+
+    storage.set(CLOUD_VIEWER_THEME_STORAGE_KEY, "sepia");
     assert.equal(storedCloudViewerTheme(storageLike(storage)), "system");
+    assert.equal(storedCloudViewerTheme(undefined), "system");
   });
 });
 
