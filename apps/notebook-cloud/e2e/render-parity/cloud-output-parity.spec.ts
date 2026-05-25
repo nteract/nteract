@@ -72,7 +72,10 @@ test.describe("cloud renderer parity harness", () => {
 
     for (let index = 0; index < count; index++) {
       const iframe = iframes.nth(index);
-      await expect(iframe).toHaveAttribute("src", /\/output-document\/frame\.html$/);
+      await expect(iframe).toHaveAttribute(
+        "src",
+        /\/output-document\/frame\.html\?nteract_theme=light$/,
+      );
       await expect(iframe).not.toHaveAttribute("srcdoc", /./);
       const sandbox = await iframe.getAttribute("sandbox");
       expect(sandbox?.split(/\s+/)).toContain("allow-scripts");
@@ -103,7 +106,7 @@ test.describe("cloud renderer parity harness", () => {
     await expect(siftCell.locator('[data-sift-output="true"]')).toBeVisible({ timeout: 60_000 });
     await expect(siftCell.locator("iframe")).toHaveAttribute(
       "src",
-      /\/output-document\/frame\.html$/,
+      /\/output-document\/frame\.html\?nteract_theme=light$/,
     );
     await expect(
       page.frameLocator('[data-cell-id="sift-arrow-output"] iframe').locator("body"),

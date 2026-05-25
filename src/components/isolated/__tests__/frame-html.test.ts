@@ -96,6 +96,12 @@ describe("generateFrameHtml", () => {
       expect(html).toContain("--border-color: #333333");
     });
 
+    it("can apply a hosted output theme hint before parent sync arrives", () => {
+      expect(html).toContain("nteract_theme");
+      expect(html).toContain("applyInitialThemeHint");
+      expect(html).toContain("setFrameTheme");
+    });
+
     it("ships document typography for markdown and html outputs", () => {
       expect(source).toContain(
         "--output-document-font: KaTeX_Main, Georgia, 'Times New Roman', serif",

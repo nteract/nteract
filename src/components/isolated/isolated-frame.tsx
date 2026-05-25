@@ -478,12 +478,17 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     }, [applyMeasuredHeight]);
 
     const resolvedOutputDocumentUrl = outputDocumentUrl ?? hostContext?.nteract?.outputDocumentUrl;
+    const frameDocumentThemeRef = useRef<"light" | "dark">(darkMode ? "dark" : "light");
+    frameDocumentThemeRef.current = darkMode ? "dark" : "light";
 
     // Create frame document on mount. The shared config keeps React, future
     // non-React adapters, and tests on the same source/sandbox contract.
     useEffect(() => {
       setFrameDocument(
-        createIsolatedFrameDocument({ outputDocumentUrl: resolvedOutputDocumentUrl }),
+        createIsolatedFrameDocument({
+          outputDocumentUrl: resolvedOutputDocumentUrl,
+          initialTheme: frameDocumentThemeRef.current,
+        }),
       );
     }, [resolvedOutputDocumentUrl]);
 

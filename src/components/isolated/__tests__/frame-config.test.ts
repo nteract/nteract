@@ -37,6 +37,28 @@ describe("isolated frame config", () => {
     });
   });
 
+  it("can add an initial theme hint to output document URLs", () => {
+    expect(
+      createIsolatedFrameDocument({
+        outputDocumentUrl: "https://outputs.example/frame/?existing=1",
+        initialTheme: "dark",
+      }),
+    ).toEqual({
+      kind: "src",
+      url: "https://outputs.example/frame/?existing=1&nteract_theme=dark",
+    });
+
+    expect(
+      createIsolatedFrameDocument({
+        outputDocumentUrl: "/output-document/frame.html?existing=1#anchor",
+        initialTheme: "light",
+      }),
+    ).toEqual({
+      kind: "src",
+      url: "/output-document/frame.html?existing=1&nteract_theme=light#anchor",
+    });
+  });
+
   it("detects Tauri globals without requiring a real browser window", () => {
     expect(isTauriFrameRuntime(undefined)).toBe(false);
     expect(isTauriFrameRuntime({ __TAURI__: {} })).toBe(true);
