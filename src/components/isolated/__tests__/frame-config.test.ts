@@ -25,6 +25,18 @@ describe("isolated frame config", () => {
     });
   });
 
+  it("uses an explicit output document URL before runtime defaults", () => {
+    expect(
+      createIsolatedFrameDocument({
+        isTauriRuntime: true,
+        outputDocumentUrl: "https://outputs.example/frame/",
+      }),
+    ).toEqual({
+      kind: "src",
+      url: "https://outputs.example/frame/",
+    });
+  });
+
   it("detects Tauri globals without requiring a real browser window", () => {
     expect(isTauriFrameRuntime(undefined)).toBe(false);
     expect(isTauriFrameRuntime({ __TAURI__: {} })).toBe(true);

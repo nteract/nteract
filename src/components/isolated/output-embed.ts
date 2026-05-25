@@ -40,6 +40,7 @@ export interface NteractOutputEmbedOptions {
   output?: NteractEmbeddableOutput | readonly NteractEmbeddableOutput[];
   rendererBundle: NteractOutputRendererBundleProvider;
   hostContext?: NteractEmbedHostContextPatch;
+  outputDocumentUrl?: string | null;
   blobResolver?: OutputBlobResolver;
   autoHeight?: boolean;
   maxHeight?: number;
@@ -91,7 +92,9 @@ export function createNteractOutputEmbed(
   const autoHeight = options.autoHeight ?? true;
   const maxHeight = options.maxHeight ?? DEFAULT_MAX_HEIGHT;
   const iframe = document.createElement("iframe");
-  const documentSource = createIsolatedFrameDocument();
+  const documentSource = createIsolatedFrameDocument({
+    outputDocumentUrl: options.outputDocumentUrl ?? options.hostContext?.nteract?.outputDocumentUrl,
+  });
   const injectedPlugins = new Set<string>();
   let disposed = false;
   let hostContextPatch: NteractEmbedHostContextPatch = options.hostContext ?? {};

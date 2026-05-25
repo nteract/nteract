@@ -44,7 +44,13 @@ export function isTauriFrameRuntime(
 
 export function createIsolatedFrameDocument(options?: {
   isTauriRuntime?: boolean;
+  outputDocumentUrl?: string | null;
 }): IsolatedFrameDocument {
+  const outputDocumentUrl = options?.outputDocumentUrl?.trim();
+  if (outputDocumentUrl) {
+    return { kind: "src", url: outputDocumentUrl };
+  }
+
   if (options?.isTauriRuntime ?? isTauriFrameRuntime()) {
     return { kind: "src", url: NTERACT_FRAME_URL };
   }

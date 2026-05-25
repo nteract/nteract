@@ -104,6 +104,24 @@ describe("HTML script serialization", () => {
     );
   });
 
+  it("allows the host to place output documents on a separate origin", async () => {
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/demo"),
+      fakeEnv({
+        OUTPUT_DOCUMENT_BASE_URL: "https://outputs.example/frame",
+      }),
+      fakeContext(),
+    );
+    const html = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(html, /"outputDocumentBaseUrl":"https:\/\/outputs\.example\/frame\/"/);
+    assert.match(
+      response.headers.get("Content-Security-Policy") ?? "",
+      /frame-src 'self' blob: data: https:\/\/outputs\.example/,
+    );
+  });
+
   it("serves the debug shell with browser hardening headers but no broad page CSP", async () => {
     const response = await worker.fetch(
       new Request("https://cloud.test/n/demo/debug"),

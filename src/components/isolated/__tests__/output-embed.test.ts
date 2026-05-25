@@ -71,6 +71,23 @@ describe("createNteractOutputEmbed", () => {
     expect(target.querySelector("iframe")).toBeNull();
   });
 
+  it("loads the isolated frame from the host configured output document URL", () => {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+
+    const handle = createNteractOutputEmbed({
+      target,
+      rendererBundle: { rendererCode: "", rendererCss: "" },
+      outputDocumentUrl: "https://outputs.example/frame/",
+    });
+
+    expect(handle.iframe.getAttribute("src")).toBe("https://outputs.example/frame/");
+    expect(handle.iframe.getAttribute("srcdoc")).toBeNull();
+    expect(handle.iframe.getAttribute("sandbox")).not.toContain("allow-same-origin");
+
+    handle.dispose();
+  });
+
   it("loads an async renderer bundle after bootstrap", async () => {
     const target = document.createElement("div");
     document.body.appendChild(target);

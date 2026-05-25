@@ -928,6 +928,7 @@ export function OutputArea({
                 onMessage={handleIframeMessage}
                 onError={handleIframeError}
                 hostContext={hostContext}
+                outputDocumentUrl={hostContext?.nteract?.outputDocumentUrl}
               />
               {showSiftInteractionCue && (
                 <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-end rounded-b-md pb-[9px] pr-[84px] opacity-0 transition-opacity duration-150 group-hover/sift:opacity-100 group-focus-within/sift:opacity-100">
