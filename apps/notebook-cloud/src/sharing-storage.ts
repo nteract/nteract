@@ -102,7 +102,7 @@ export async function upsertPrincipalProfile(
       provider,
       input.providerSubject ?? null,
       email,
-      email ? 1 : 0,
+      input.emailVerified && email ? 1 : 0,
       input.displayName?.trim() || null,
       input.avatarUrl ?? null,
       timestamp,
@@ -379,7 +379,13 @@ export async function resolveNotebookInvitesForLogin(
   const aclGrants: InviteResolution["aclGrants"] = [];
   for (let index = 0; index < operations.length; index += 1) {
     const acceptInviteResult = results[index * 2];
-    if (!acceptInviteResult || d1Changes(acceptInviteResult) === 0) {
+    const insertAclResult = results[index * 2 + 1];
+    if (
+      !acceptInviteResult ||
+      !insertAclResult ||
+      d1Changes(acceptInviteResult) === 0 ||
+      d1Changes(insertAclResult) === 0
+    ) {
       continue;
     }
     acceptedInvites.push({
@@ -419,6 +425,9 @@ function inviteAclInsert(
         AND email_normalized = ?
         AND (provider_hint = ? OR provider_hint IS NULL)
         AND (expires_at IS NULL OR unixepoch(expires_at) > unixepoch(?))
+        AND EXISTS (
+          SELECT 1 FROM notebooks WHERE notebooks.id = notebook_invites.notebook_id
+        )
      ON CONFLICT(notebook_id, subject_kind, subject, scope) DO UPDATE SET
        updated_at = excluded.updated_at`,
     )
@@ -452,7 +461,10 @@ function inviteAcceptedUpdate(
           AND status = 'pending'
           AND email_normalized = ?
           AND (provider_hint = ? OR provider_hint IS NULL)
-          AND (expires_at IS NULL OR unixepoch(expires_at) > unixepoch(?))`,
+          AND (expires_at IS NULL OR unixepoch(expires_at) > unixepoch(?))
+          AND EXISTS (
+            SELECT 1 FROM notebooks WHERE notebooks.id = notebook_invites.notebook_id
+          )`,
     )
     .bind(
       grant.subject,

@@ -251,6 +251,46 @@ describe("hosted sharing storage", () => {
     );
   });
 
+  it("skips stale invites whose notebook parent disappeared", async () => {
+    const env = fakeEnv();
+    await createPendingNotebookInvite(env, {
+      id: "invite-stale",
+      notebookId: "notebook-deleted",
+      email: "alice@example.com",
+      providerHint: "cloudflare-access",
+      scope: "editor",
+      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      timestamp: "2026-05-24T11:00:00.000Z",
+    });
+    await createPendingNotebookInvite(env, {
+      id: "invite-live",
+      notebookId: "notebook-live",
+      email: "alice@example.com",
+      providerHint: "cloudflare-access",
+      scope: "viewer",
+      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      timestamp: "2026-05-24T11:01:00.000Z",
+    });
+    env.DB.deletedNotebookIds.add("notebook-deleted");
+
+    const resolution = await resolveNotebookInvitesForLogin(
+      env,
+      accessLogin(),
+      "2026-05-24T12:00:00.000Z",
+    );
+
+    assert.deepEqual(
+      resolution.acceptedInvites.map((invite) => invite.id),
+      ["invite-live"],
+    );
+    assert.equal(env.DB.invites.get("invite-stale")?.status, "pending");
+    assert.equal(env.DB.invites.get("invite-live")?.status, "accepted");
+    assert.deepEqual(
+      env.DB.acl.map((row) => row.notebook_id),
+      ["notebook-live"],
+    );
+  });
+
   it("returns an existing pending invite instead of creating a duplicate", async () => {
     const env = fakeEnv();
     const first = await createPendingNotebookInvite(env, {
@@ -510,6 +550,7 @@ class FakeD1 implements D1Database {
   readonly profiles = new Map<string, PrincipalProfileRow>();
   readonly invites = new Map<string, PendingNotebookInviteRow>();
   readonly acl: NotebookAclRow[] = [];
+  readonly deletedNotebookIds = new Set<string>();
   beforeInviteInsert?: (input: {
     notebookId: string;
     emailNormalized: string;
@@ -702,6 +743,7 @@ class FakeD1Statement implements D1PreparedStatement {
       const invite = this.db.invites.get(inviteId);
       if (
         invite &&
+        !this.db.deletedNotebookIds.has(invite.notebook_id) &&
         inviteCanGrantAcl(invite, acceptedByPrincipal, acceptedAt, email, providerHint, now)
       ) {
         this.insertAclIfMissing({
@@ -726,7 +768,11 @@ class FakeD1Statement implements D1PreparedStatement {
       ];
       this.db.beforeInviteAccept?.(inviteId);
       const invite = this.db.invites.get(inviteId);
-      if (invite && inviteCanResolve(invite, email, providerHint, now)) {
+      if (
+        invite &&
+        !this.db.deletedNotebookIds.has(invite.notebook_id) &&
+        inviteCanResolve(invite, email, providerHint, now)
+      ) {
         invite.status = "accepted";
         invite.accepted_by_principal = principal;
         invite.accepted_at = acceptedAt;
