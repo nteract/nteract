@@ -12,6 +12,7 @@ Related design docs:
 - `docs/architecture/hosted-credential-transport.md`
 - `docs/architecture/hosted-room-authorization.md`
 - `docs/architecture/hosted-notebook-artifacts.md`
+- `docs/architecture/hosted-output-origin-isolation.md`
 - `docs/architecture/identity-and-trust.md`
 
 ## Target Topology
@@ -48,6 +49,11 @@ https://nteract-notebook-cloud-assets.rgbkrk.workers.dev/renderer-assets/
 Do not add the renderer asset origin to the notebook WebSocket origin allowlist.
 It serves public build artifacts only; notebook room traffic belongs to the
 notebook application origin.
+
+Untrusted output documents should use their own output-document origin before
+private hosted notebooks scale beyond the prototype. That origin is separate
+from both the Access-protected notebook host and the renderer asset host; see
+`hosted-output-origin-isolation.md`.
 
 ## Cloudflare Access Application
 
