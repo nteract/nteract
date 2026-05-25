@@ -125,12 +125,20 @@ export interface LaunchedEnvConfig extends FeatureFlags {{
   prewarmed_packages?: string[];
 }}
 
+export interface CommBufferRef {{
+  index: number;
+  blob: string;
+  size: number;
+  media_type?: string | null;
+}}
+
 export interface CommRequestMessage {{
   header: Record<string, unknown>;
   parent_header?: Record<string, unknown> | null;
   metadata?: Record<string, unknown>;
   content: Record<string, unknown>;
   buffers: number[][];
+  buffer_refs?: CommBufferRef[];
   channel: string;
 }}
 

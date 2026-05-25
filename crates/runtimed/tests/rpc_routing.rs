@@ -457,6 +457,7 @@ async fn sendcomm_fires_independently() {
                 metadata: serde_json::json!({}),
                 content: serde_json::json!({"target_name": "jupyter.widget", "data": {}}),
                 buffers: vec![],
+                buffer_refs: vec![],
                 channel: "shell".to_string(),
             }),
         },

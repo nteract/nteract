@@ -10,7 +10,9 @@
 
 import type { SyncEngineLogger } from "./sync-engine";
 import type { NotebookRequestOptions, NotebookTransport } from "./transport";
+import { putBlob } from "./blob-upload";
 import type {
+  CommBufferRef,
   CommRequestMessage,
   CompletionItem,
   DependencyGuard,
@@ -55,6 +57,8 @@ const nullLogger: SyncEngineLogger = {
   warn() {},
   error() {},
 };
+
+const SEND_COMM_INLINE_BUFFER_LIMIT_BYTES = 64 * 1024;
 
 export interface NotebookClientOptions {
   transport: NotebookTransport;
@@ -401,10 +405,31 @@ export class NotebookClient {
     const msgType = message.header.msg_type as string;
     this.log.debug("[notebook-client] Sending comm message:", msgType);
     try {
-      // Convert ArrayBuffer[] to number[][] for JSON serialization
-      const buffers: number[][] = (message.buffers ?? []).map((buf) =>
-        Array.from(new Uint8Array(buf)),
+      const rawBuffers = message.buffers ?? [];
+      const shouldUseBlobRefs = rawBuffers.some(
+        (buffer) => buffer.byteLength > SEND_COMM_INLINE_BUFFER_LIMIT_BYTES,
       );
+      const buffers: number[][] = shouldUseBlobRefs
+        ? []
+        : rawBuffers.map((buf) => Array.from(new Uint8Array(buf)));
+      const buffer_refs: CommBufferRef[] = shouldUseBlobRefs
+        ? await Promise.all(
+            rawBuffers.map(async (buffer, index) => {
+              const uploaded = await putBlob(
+                this.transport,
+                new Uint8Array(buffer),
+                "application/octet-stream",
+                "ephemeral",
+              );
+              return {
+                index,
+                blob: uploaded.blob,
+                size: uploaded.size,
+                media_type: uploaded.media_type,
+              };
+            }),
+          )
+        : [];
 
       const fullMessage: CommRequestMessage = {
         header: message.header,
@@ -412,6 +437,7 @@ export class NotebookClient {
         metadata: message.metadata ?? {},
         content: message.content,
         buffers,
+        buffer_refs,
         channel: message.channel ?? "shell",
       };
 
