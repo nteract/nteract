@@ -561,7 +561,6 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
           hostContext={outputHostContext}
           displayMode="report"
           showCode={showCode}
-          focusOutputs
           className="cloud-report-notebook"
           cellClassName="cloud-cell"
           sourceClassName="cloud-source-block"
@@ -829,7 +828,6 @@ function CloudLiveNotebook({
               hostContext={hostContext}
               displayMode="report"
               showSource={cell.cellType !== "code" || showCode}
-              focusOutputs
               className="cloud-cell"
               sourceClassName="cloud-source-block"
               outputClassName="cloud-output-block"

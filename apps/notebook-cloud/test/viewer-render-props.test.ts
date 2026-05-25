@@ -1,0 +1,51 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { test } from "node:test";
+import * as ts from "typescript";
+
+test("cloud report-mode rendering leaves output iframes unfocused for page scrolling", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+  const sourceFile = ts.createSourceFile(
+    sourcePath.pathname,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  const offenders: string[] = [];
+
+  const visit = (node: ts.Node) => {
+    if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+      const tagName = node.tagName.getText(sourceFile);
+      if (tagName === "ReadOnlyNotebook" || tagName === "ReadOnlyNotebookCell") {
+        const attributes = node.attributes.properties;
+        const hasReportMode = attributes.some(
+          (attribute) =>
+            ts.isJsxAttribute(attribute) &&
+            attribute.name.getText(sourceFile) === "displayMode" &&
+            attribute.initializer?.getText(sourceFile) === '"report"',
+        );
+        const focusesOutputs = attributes.some(
+          (attribute) =>
+            ts.isJsxAttribute(attribute) && attribute.name.getText(sourceFile) === "focusOutputs",
+        );
+
+        if (hasReportMode && focusesOutputs) {
+          const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+          offenders.push(`${tagName}:${position.line + 1}`);
+        }
+      }
+    }
+
+    ts.forEachChild(node, visit);
+  };
+
+  visit(sourceFile);
+
+  assert.deepEqual(
+    offenders,
+    [],
+    "cloud report rendering should not focus output iframes; focused iframes trap page scroll",
+  );
+});
