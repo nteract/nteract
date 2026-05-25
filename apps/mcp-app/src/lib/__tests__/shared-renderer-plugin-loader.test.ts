@@ -22,6 +22,7 @@ describe("createDaemonRendererPluginLoader", () => {
     const plugin = await loader?.("text/markdown");
 
     expect(plugin).toEqual({
+      id: "markdown",
       code: "module.exports = { install() {} }",
       css: ".markdown-output{}",
     });

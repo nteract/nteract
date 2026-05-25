@@ -22,12 +22,18 @@ import {
   type ResolveEmbeddableOutputsOptions,
 } from "./embeddable-output";
 import type { OutputBlobResolver } from "./output-manifest";
+import { rendererPluginNameForMime } from "./renderer-plugin-info";
 
 export type NteractOutputRendererBundleProvider =
   | IsolatedFrameRendererBundle
   | (() => Promise<IsolatedFrameRendererBundle>);
 
 export interface NteractOutputRendererPlugin {
+  /**
+   * Stable plugin identity used to avoid reinstalling one plugin for multiple
+   * MIME aliases, such as text/markdown and text/latex.
+   */
+  id?: string;
   code: string;
   css?: string;
 }
@@ -240,11 +246,19 @@ export function createNteractOutputEmbed(
     }
 
     for (const mime of payloads.map((payload) => payload.mimeType)) {
-      if (injectedPlugins.has(mime)) continue;
+      const expectedInstallKey = rendererPluginNameForMime(mime) ?? mime;
+      if (injectedPlugins.has(expectedInstallKey)) continue;
+
       const plugin = await options.rendererPluginLoader(mime);
       if (!plugin) continue;
+      const installKey = plugin.id ?? expectedInstallKey;
+      if (injectedPlugins.has(installKey)) {
+        injectedPlugins.add(expectedInstallKey);
+        continue;
+      }
       runtime.installRenderer(plugin.code, plugin.css);
-      injectedPlugins.add(mime);
+      injectedPlugins.add(installKey);
+      injectedPlugins.add(expectedInstallKey);
     }
   }
 
