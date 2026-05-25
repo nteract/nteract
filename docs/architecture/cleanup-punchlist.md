@@ -67,6 +67,12 @@ Severity legend:
 | MSL-3 | `tool_list_changed` divergence reports `Incompatible` with a single "reinstall the nteract extension" error string, hard-coded for the MCPB bundle install path. The `nteract-dev` supervisor-managed path gets the same message even though the recovery action is different (relaunch the dev daemon, not reinstall an extension). | Targeted PR | `crates/runt-mcp-proxy/src/proxy.rs` `should_exit` text |
 | MSL-4 | When a dev worktree daemon's socket path changes (worktree switch in isolated mode, manual relocation), `mcp-supervisor` compares daemon versions across child restart but not socket paths. The `McpProxy.last_notebook_id` from the old daemon is meaningless in the new daemon's room space; rejoin fails with `SessionDropReason::Evicted` and the agent sees a confusing trail. | Design | `crates/runt-mcp-proxy/src/proxy.rs` |
 
+## Environment lifecycle
+
+| ID | Smell | Severity | Where |
+|----|-------|----------|-------|
+| KE-1 | Captured env has no user-initiated rebuild/reset surface. Daemon lifecycle owns automatic repair, but lacks a `ResetNotebookEnvironment { RebuildSame | RefreshDefaults }` request for manual recovery and defaults refresh. | Design | `crates/runtimed/src/requests/`, `apps/notebook/src/components/DependencyHeader.tsx` |
+
 ## Blob storage
 
 | ID | Smell | Severity | Where |
@@ -92,7 +98,7 @@ Severity legend:
 - **Done:** WP-1, WP-5, WP-9, EP-7, EP-12, BS-8, BS-11. Seven landed via #2813 + cleanup/inline-pass.
 - **Refuted:** EP-4 (log levels are correct per `.claude/rules/logging.md`), EP-13 (warn/debug asymmetry matches the actual severity of `Full` vs `Closed`).
 - **Targeted PRs (one per smell):** WP-6, WP-7, WP-11, WP-12, 3D-1, 3D-2, EP-1, EP-8, EP-10, EP-11, BS-3, BS-7, TMD-1, TMD-2, MSL-1, MSL-3, FSB-1, FSB-2. Eighteen open. (WP-2 and WP-3 landed in stacks 2 and 3; EP-2 and BS-1 landed in stacks 5 and 6.)
-- **Design (resolve in ADR or memo first):** WP-4, WP-8, WP-10, 3D-3, 3D-4, 3D-5, 3D-6, 3D-7, EP-3, EP-5, EP-6, EP-9, BS-2, BS-4, BS-5, BS-6, BS-9, BS-10, BS-12, BS-13, MSL-2, MSL-4. Twenty-two open.
+- **Design (resolve in ADR or memo first):** WP-4, WP-8, WP-10, 3D-3, 3D-4, 3D-5, 3D-6, 3D-7, EP-3, EP-5, EP-6, EP-9, BS-2, BS-4, BS-5, BS-6, BS-9, BS-10, BS-12, BS-13, MSL-2, MSL-4, KE-1. Twenty-three open.
 
 ## Next steps
 

@@ -8,6 +8,7 @@
 - `docs/architecture/three-document-split.md` - NotebookDoc carries the dependency declaration; RuntimeStateDoc carries the resolved trust state.
 - `docs/architecture/execution-pipeline.md` - kernel launch is the gate this ADR guards.
 - `docs/architecture/blob-storage-and-content-addressing.md` - parallel content-addressed scheme for environments lives alongside the blob CAS.
+- `docs/architecture/captured-environment-lifecycle.md` - captured env identity, cache repair, launch retry, and manual reset. This ADR decides whether dependency installation is allowed; the lifecycle ADR decides how an allowed captured env is materialized and repaired.
 - `docs/architecture/identity-and-trust.md` - room-level identity and ACLs. This ADR sits underneath it: env trust decides whether a kernel can launch with a given dependency list, regardless of who is in the room.
 - `docs/architecture/cleanup-punchlist.md` - tracked follow-ups.
 
