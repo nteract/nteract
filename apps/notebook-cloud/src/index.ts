@@ -807,8 +807,14 @@ async function parsePendingInviteInput(
   if (expiresAt instanceof Response) {
     return expiresAt;
   }
-  if (expiresAt && !Number.isFinite(Date.parse(expiresAt))) {
-    return json({ error: "invite expiry is invalid" }, 400);
+  if (expiresAt) {
+    const expiresAtMs = Date.parse(expiresAt);
+    if (!Number.isFinite(expiresAtMs)) {
+      return json({ error: "invite expiry is invalid" }, 400);
+    }
+    if (expiresAtMs <= Date.now()) {
+      return json({ error: "invite expiry must be in the future" }, 400);
+    }
   }
 
   return {

@@ -1077,6 +1077,7 @@ describe("Worker artifact routes", () => {
       subject: "user:dev:alice",
       scope: "owner",
     });
+    const futureInviteExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
     const create = await inviteRequest(
       env,
@@ -1085,7 +1086,7 @@ describe("Worker artifact routes", () => {
         email: " Bob@Example.COM ",
         provider_hint: " Cloudflare-Access ",
         scope: "editor",
-        expires_at: "2026-06-24T00:00:00.000Z",
+        expires_at: futureInviteExpiry,
       },
       "invite-demo",
     );
@@ -1124,6 +1125,35 @@ describe("Worker artifact routes", () => {
       env.DB.invites.get(inviteId)?.revoked_by_actor_label,
       "user:dev:alice/desktop:test",
     );
+  });
+
+  it("does not revoke pending invites through another notebook route", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "invite-demo-a");
+    seedNotebook(env, "invite-demo-b");
+    seedAcl(env, {
+      notebookId: "invite-demo-a",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    seedAcl(env, {
+      notebookId: "invite-demo-b",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    seedPendingInvite(env, {
+      id: "invite-b",
+      notebookId: "invite-demo-b",
+      email: "bob@example.com",
+      providerHint: "cloudflare-access",
+      scope: "editor",
+    });
+
+    const revoke = await inviteItemRequest(env, "DELETE", "invite-b", "invite-demo-a");
+
+    assert.equal(revoke.status, 404);
+    assert.deepEqual(await revoke.json(), { error: "pending invite not found" });
+    assert.equal(env.DB.invites.get("invite-b")?.status, "pending");
   });
 
   it("keeps invite management owner-only and scope-limited", async () => {
@@ -1193,6 +1223,21 @@ describe("Worker artifact routes", () => {
     );
     assert.equal(invalidProvider.status, 400);
     assert.deepEqual(await invalidProvider.json(), { error: "invite provider hint is invalid" });
+
+    const expiredInvite = await inviteRequest(
+      env,
+      "POST",
+      {
+        email: "expired@example.com",
+        scope: "viewer",
+        expires_at: "2000-01-01T00:00:00.000Z",
+      },
+      "invite-private-demo",
+    );
+    assert.equal(expiredInvite.status, 400);
+    assert.deepEqual(await expiredInvite.json(), {
+      error: "invite expiry must be in the future",
+    });
   });
 
   it("requires trusted origins for cookie-backed invite mutations", async () => {
@@ -2732,9 +2777,6 @@ class FakeD1Statement implements D1PreparedStatement {
     }
     if (this.query.includes("FROM principal_profiles")) {
       return (this.db.profiles.get(this.values[0] as string) as T | undefined) ?? null;
-    }
-    if (this.query.includes("FROM notebook_invites")) {
-      return (this.db.invites.get(this.values[0] as string) as T | undefined) ?? null;
     }
     return null;
   }
