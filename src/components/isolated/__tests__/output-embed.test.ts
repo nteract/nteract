@@ -92,6 +92,35 @@ describe("createNteractOutputEmbed", () => {
     handle.dispose();
   });
 
+  it("advertises and enforces capped height when auto-height is disabled", () => {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const onSizeChanged = vi.fn();
+
+    const handle = createNteractOutputEmbed({
+      target,
+      rendererBundle: { rendererCode: "", rendererCss: "" },
+      autoHeight: false,
+      maxHeight: 400,
+      onSizeChanged,
+    });
+    const frameWindow = handle.iframe.contentWindow!;
+
+    expect(onSizeChanged).toHaveBeenCalledWith(expect.objectContaining({ maxHeight: 400 }));
+
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        source: frameWindow,
+        data: { type: "resize", payload: { height: 900 } },
+      }),
+    );
+
+    expect(handle.iframe.style.height).toBe("400px");
+    expect(onSizeChanged).toHaveBeenCalledWith({ height: 400 });
+
+    handle.dispose();
+  });
+
   it("loads an async renderer bundle after bootstrap", async () => {
     const target = document.createElement("div");
     document.body.appendChild(target);

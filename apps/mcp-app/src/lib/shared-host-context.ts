@@ -42,6 +42,8 @@ export function mcpHostContextToNteractEmbedPatch(
     .filter((mode): mode is NteractEmbedDisplayMode => mode !== undefined);
   const rendererAssetsBaseUrl = daemonRendererAssetsBaseUrl(blobBaseUrl);
 
+  // Upstream containerDimensions describe the outer MCP App iframe. The nested
+  // shared output renderer computes its own dimensions from its actual iframe.
   return {
     theme: hostContext?.theme,
     styles:
@@ -53,7 +55,6 @@ export function mcpHostContextToNteractEmbedPatch(
         : undefined,
     displayMode: displayMode(hostContext?.displayMode),
     availableDisplayModes: modes && modes.length > 0 ? modes : undefined,
-    containerDimensions: hostContext?.containerDimensions,
     locale: hostContext?.locale,
     timeZone: hostContext?.timeZone,
     userAgent: hostContext?.userAgent,
