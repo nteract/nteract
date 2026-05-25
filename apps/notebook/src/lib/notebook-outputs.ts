@@ -36,11 +36,17 @@ const _subscribers = new Map<string, Set<() => void>>();
 // is intentionally NOT used by `useCellOutputs` (per-cell hooks subscribe
 // only to their own output_ids so a noisy cell can't fan re-renders to
 // every other cell — see P1 review note). It exists for a narrow set of
-// cross-cell derived consumers (NotebookView's hidden-group membership
-// and error-count totals) that need to recompute whenever any output in
-// the notebook changes.
+// cross-cell derived consumers such as tail pinning that need to observe
+// every output payload change in the notebook.
 let _outputsVersion = 0;
 const _outputsVersionSubscribers = new Set<() => void>();
+
+// Narrower version for derived views that only care whether output
+// membership or output kinds changed. Stream appends and display payload
+// updates still notify the exact output subscriber and `_outputsVersion`,
+// but they do not need to recompute hidden-cell grouping / error counts.
+let _outputStructureVersion = 0;
+const _outputStructureVersionSubscribers = new Set<() => void>();
 
 function emitOutputChange(output_id: string): void {
   const subs = _subscribers.get(output_id);
@@ -55,6 +61,17 @@ function emitOutputChange(output_id: string): void {
   }
   _outputsVersion = (_outputsVersion + 1) | 0;
   for (const cb of _outputsVersionSubscribers) {
+    try {
+      cb();
+    } catch {
+      // subscriber errors must not break the dispatch loop
+    }
+  }
+}
+
+function emitOutputStructureChange(): void {
+  _outputStructureVersion = (_outputStructureVersion + 1) | 0;
+  for (const cb of _outputStructureVersionSubscribers) {
     try {
       cb();
     } catch {
@@ -166,8 +183,10 @@ function getOutputSnapshot(output_id: string): () => JupyterOutput | undefined {
 export function setOutput(output_id: string, output: JupyterOutput): void {
   const prev = _outputMap.get(output_id);
   if (prev === output) return;
+  const structureChanged = prev === undefined || prev.output_type !== output.output_type;
   _outputMap.set(output_id, output);
   emitOutputChange(output_id);
+  if (structureChanged) emitOutputStructureChange();
 }
 
 /** Remove a single output. Notifies its subscribers with `undefined`. */
@@ -175,6 +194,7 @@ export function deleteOutput(output_id: string): void {
   if (!_outputMap.has(output_id)) return;
   _outputMap.delete(output_id);
   emitOutputChange(output_id);
+  emitOutputStructureChange();
 }
 
 /** Bulk drop outputs. Useful on clear_outputs / execution restart. */
@@ -192,6 +212,7 @@ export function resetNotebookOutputs(): void {
   const ids = [..._outputMap.keys()];
   _outputMap.clear();
   for (const id of ids) emitOutputChange(id);
+  if (ids.length > 0) emitOutputStructureChange();
 }
 
 // ── Cross-cell derived state ──────────────────────────────────────────
@@ -213,6 +234,21 @@ export function useOutputsVersion(): number {
   );
 }
 
+/**
+ * Subscribe to output membership / kind changes only.
+ *
+ * A stream append or `update_display_data` payload replacement keeps the
+ * same output_id and output_type, so cross-cell structural views should not
+ * recompute. New outputs, removals, and output_type transitions do advance
+ * this counter.
+ */
+export function useOutputStructureVersion(): number {
+  return useSyncExternalStore(
+    subscribeOutputStructureVersion,
+    getOutputStructureVersionSnapshot,
+  );
+}
+
 function subscribeOutputsVersion(cb: () => void): () => void {
   _outputsVersionSubscribers.add(cb);
   return () => {
@@ -222,6 +258,17 @@ function subscribeOutputsVersion(cb: () => void): () => void {
 
 function getOutputsVersionSnapshot(): number {
   return _outputsVersion;
+}
+
+function subscribeOutputStructureVersion(cb: () => void): () => void {
+  _outputStructureVersionSubscribers.add(cb);
+  return () => {
+    _outputStructureVersionSubscribers.delete(cb);
+  };
+}
+
+function getOutputStructureVersionSnapshot(): number {
+  return _outputStructureVersion;
 }
 
 // ── Sync helpers for cross-cell derived state ─────────────────────────

@@ -18,6 +18,9 @@ import {
   useCell,
 } from "../notebook-cells";
 import {
+  deleteOutput,
+  useOutputStructureVersion,
+  useOutputsVersion,
   resetNotebookOutputs,
   setOutput,
   useCellOutputs,
@@ -42,6 +45,15 @@ function streamOutput(text: string): JupyterOutput {
   return { output_type: "stream", name: "stdout", text };
 }
 
+function errorOutput(ename: string): JupyterOutput {
+  return {
+    output_type: "error",
+    ename,
+    evalue: "boom",
+    traceback: [],
+  };
+}
+
 function codeCell(id: string): NotebookCell {
   return {
     id,
@@ -54,6 +66,60 @@ function codeCell(id: string): NotebookCell {
 }
 
 describe("Phase C-lite: cell subscription / outputs decoupling", () => {
+  it("keeps structural output version stable for a stream append burst", () => {
+    const structureRenderCount = { current: 0 };
+    const structureOnly = renderHook(() => {
+      structureRenderCount.current += 1;
+      return useOutputStructureVersion();
+    });
+    const { result } = renderHook(() => ({
+      anyOutputVersion: useOutputsVersion(),
+      structureVersion: useOutputStructureVersion(),
+    }));
+
+    const initialAny = result.current.anyOutputVersion;
+    const initialStructure = result.current.structureVersion;
+
+    act(() => {
+      setOutput("o1", streamOutput("a"));
+    });
+
+    expect(result.current.anyOutputVersion).toBe(initialAny + 1);
+    expect(result.current.structureVersion).toBe(initialStructure + 1);
+    expect(structureOnly.result.current).toBe(initialStructure + 1);
+    expect(structureRenderCount.current).toBe(2);
+
+    const burstSize = 1000;
+    act(() => {
+      for (let i = 0; i < burstSize; i++) {
+        setOutput("o1", streamOutput(`a-appended-${i}`));
+      }
+    });
+
+    expect(result.current.anyOutputVersion).toBe(initialAny + 1 + burstSize);
+    expect(result.current.structureVersion).toBe(initialStructure + 1);
+    expect(structureOnly.result.current).toBe(initialStructure + 1);
+    expect(structureRenderCount.current).toBe(2);
+
+    act(() => {
+      setOutput("o1", errorOutput("RuntimeError"));
+    });
+
+    expect(result.current.anyOutputVersion).toBe(initialAny + 2 + burstSize);
+    expect(result.current.structureVersion).toBe(initialStructure + 2);
+    expect(structureOnly.result.current).toBe(initialStructure + 2);
+    expect(structureRenderCount.current).toBe(3);
+
+    act(() => {
+      deleteOutput("o1");
+    });
+
+    expect(result.current.anyOutputVersion).toBe(initialAny + 3 + burstSize);
+    expect(result.current.structureVersion).toBe(initialStructure + 3);
+    expect(structureOnly.result.current).toBe(initialStructure + 3);
+    expect(structureRenderCount.current).toBe(4);
+  });
+
   it("output mutations don't change the cell snapshot reference", () => {
     replaceNotebookCells([codeCell("c1")]);
     // Sanity: the cell landed in the store
