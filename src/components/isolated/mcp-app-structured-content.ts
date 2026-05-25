@@ -144,6 +144,43 @@ export function mcpAppCellHasRichOutput(cell: McpAppCellData): boolean {
   });
 }
 
+function firstPreviewLine(text: string): string {
+  return text.split("\n")[0]?.trim() ?? "";
+}
+
+export function mcpAppCellPreviewText(cell: McpAppCellData): string {
+  for (const output of cell.outputs ?? []) {
+    if (output.data?.["text/llm+plain"]) {
+      return firstPreviewLine(String(output.data["text/llm+plain"]));
+    }
+  }
+
+  for (const output of cell.outputs ?? []) {
+    if (
+      (output.output_type === "display_data" || output.output_type === "execute_result") &&
+      output.data?.["text/plain"]
+    ) {
+      return firstPreviewLine(String(output.data["text/plain"]));
+    }
+  }
+
+  for (const output of cell.outputs ?? []) {
+    if (output.output_type === "stream" && output.text) {
+      return firstPreviewLine(String(output.text));
+    }
+  }
+
+  for (const output of cell.outputs ?? []) {
+    if (output.output_type === "error") {
+      const name = output.ename || "Error";
+      const value = output.evalue || "";
+      return value ? `${name}: ${value}` : name;
+    }
+  }
+
+  return cell.status || "";
+}
+
 export function createMcpAppBlobResolver(blobBaseUrl: string): OutputBlobResolver {
   const base = trimTrailingSlash(blobBaseUrl);
   const url = (ref: { blob: string }) => `${base}/blob/${encodeURIComponent(ref.blob)}`;

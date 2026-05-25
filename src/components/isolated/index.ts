@@ -96,6 +96,7 @@ export type { NteractEmbeddableOutput, ResolveEmbeddableOutputsOptions } from ".
 export {
   createInlineOnlyBlobResolver,
   createMcpAppBlobResolver,
+  mcpAppCellPreviewText,
   mcpAppCellsToSharedOutputs,
   mcpAppStructuredContentToSharedOutputInputs,
 } from "./mcp-app-structured-content";
