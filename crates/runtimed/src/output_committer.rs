@@ -18,7 +18,12 @@ use crate::output_redaction::OutputRedactor;
 use crate::output_store::{self, DEFAULT_INLINE_THRESHOLD};
 use crate::task_supervisor::spawn_supervised;
 
-const OUTPUT_COMMITTER_QUEUE_CAPACITY: usize = 64;
+// Keep the IOPub reader hot during rich-output bursts. A Python loop can emit
+// 1000 display_data messages in a few hundred milliseconds; if this queue is
+// too small, the reader backpressures while the kernel is still publishing and
+// tail messages can be lost before status=idle arrives.
+const OUTPUT_COMMITTER_QUEUE_CAPACITY: usize = 2048;
+const OUTPUT_COMMIT_BATCH_SIZE: usize = 128;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum OrdinaryOutputKind {
@@ -33,13 +38,6 @@ impl OrdinaryOutputKind {
             Self::DisplayData => "output",
             Self::ExecuteResult => "output",
             Self::Error => "error",
-        }
-    }
-
-    fn transaction_label(self) -> &'static str {
-        match self {
-            Self::DisplayData | Self::ExecuteResult => "runtime-state-iopub-output-transaction",
-            Self::Error => "runtime-state-iopub-error-transaction",
         }
     }
 
@@ -82,15 +80,18 @@ impl OutputCommitterHandle {
     /// Queue an ordinary output commit.
     ///
     /// The bounded queue protects memory under sustained rich-output bursts.
-    /// When it fills, the IOPub reader waits for the worker to drain earlier
-    /// queued outputs and commit this output in order. That preserves durable
-    /// output ordering without allowing unbounded queue growth.
+    /// When it fills, the IOPub reader waits only for a queue slot and then
+    /// enqueues the output behind earlier outputs. That preserves durable
+    /// output ordering without allowing unbounded queue growth or forcing the
+    /// IOPub reader to synchronously drain all pending output work mid-burst.
     pub(crate) async fn enqueue_output(&self, output: OrdinaryOutputCommit) {
         match self.output_tx.try_send(output) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(output)) => {
-                debug!("[output-committer] Queue full; committing output through priority path");
-                self.commit_for_ordering(output).await;
+                debug!("[output-committer] Queue full; waiting for output queue capacity");
+                if self.output_tx.send(output).await.is_err() {
+                    warn!("[output-committer] Dropping output: committer closed");
+                }
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 warn!("[output-committer] Dropping output: committer closed");
@@ -129,20 +130,6 @@ impl OutputCommitterHandle {
             }
         }
     }
-
-    async fn commit_for_ordering(&self, output: OrdinaryOutputCommit) {
-        let (ack_tx, ack_rx) = oneshot::channel();
-        let request = PriorityOutputRequest {
-            output: Some(output),
-            signal: None,
-            ack: Some(ack_tx),
-        };
-        if self.priority_tx.send(request).is_err() {
-            warn!("[output-committer] Failed to commit output: committer closed");
-            return;
-        }
-        let _ = ack_rx.await;
-    }
 }
 
 async fn commit_priority_request(
@@ -152,7 +139,7 @@ async fn commit_priority_request(
 ) {
     drain_queued_outputs(output_rx, context).await;
     if let Some(output) = request.output {
-        commit_output(output, context).await;
+        commit_output_batch(vec![output], context).await;
     }
     if let Some(signal) = request.signal {
         let _ = context.lifecycle_tx.send(signal);
@@ -166,8 +153,18 @@ async fn drain_queued_outputs(
     output_rx: &mut mpsc::Receiver<OrdinaryOutputCommit>,
     context: &OutputCommitterContext,
 ) {
-    while let Ok(output) = output_rx.try_recv() {
-        commit_output(output, context).await;
+    loop {
+        let mut batch = Vec::with_capacity(OUTPUT_COMMIT_BATCH_SIZE);
+        while batch.len() < OUTPUT_COMMIT_BATCH_SIZE {
+            match output_rx.try_recv() {
+                Ok(output) => batch.push(output),
+                Err(_) => break,
+            }
+        }
+        if batch.is_empty() {
+            break;
+        }
+        commit_output_batch(batch, context).await;
     }
 }
 
@@ -193,7 +190,15 @@ async fn run_output_committer(
             }
 
             Some(output) = output_rx.recv() => {
-                commit_output(output, &context).await;
+                let mut batch = Vec::with_capacity(OUTPUT_COMMIT_BATCH_SIZE);
+                batch.push(output);
+                while batch.len() < OUTPUT_COMMIT_BATCH_SIZE {
+                    match output_rx.try_recv() {
+                        Ok(output) => batch.push(output),
+                        Err(_) => break,
+                    }
+                }
+                commit_output_batch(batch, &context).await;
             }
 
             else => break,
@@ -250,7 +255,42 @@ fn start_output_committer_with_capacity(
     }
 }
 
-async fn commit_output(output: OrdinaryOutputCommit, context: &OutputCommitterContext) {
+async fn commit_output_batch(outputs: Vec<OrdinaryOutputCommit>, context: &OutputCommitterContext) {
+    if outputs.is_empty() {
+        return;
+    }
+
+    let mut manifests = Vec::with_capacity(outputs.len());
+    for output in &outputs {
+        manifests.push(create_manifest_json(output, context).await);
+    }
+
+    if let Err(e) = context.state.transact_at_current_heads(
+        Some(&context.kernel_actor_id),
+        "runtime-state-iopub-output-batch-transaction",
+        |sd| {
+            let mut index = 0;
+            while index < outputs.len() {
+                let execution_id = outputs[index].execution_id.as_str();
+                let start = index;
+                while index < outputs.len() && outputs[index].execution_id == execution_id {
+                    index += 1;
+                }
+                if let Err(e) = sd.append_outputs(execution_id, &manifests[start..index]) {
+                    warn!("[output-committer] Failed to append output batch to state doc: {e}");
+                }
+            }
+            Ok(())
+        },
+    ) {
+        warn!("[runtime-state] {}", e);
+    }
+}
+
+async fn create_manifest_json(
+    output: &OrdinaryOutputCommit,
+    context: &OutputCommitterContext,
+) -> serde_json::Value {
     if output.kind.uses_buffer_preflight() {
         output_store::preflight_ref_buffers(
             &output.nbformat_value,
@@ -260,7 +300,7 @@ async fn commit_output(output: OrdinaryOutputCommit, context: &OutputCommitterCo
         .await;
     }
 
-    let manifest_json = match output_store::create_manifest_with_redactor(
+    match output_store::create_manifest_with_redactor(
         &output.nbformat_value,
         &context.blob_store,
         DEFAULT_INLINE_THRESHOLD,
@@ -280,23 +320,6 @@ async fn commit_output(output: OrdinaryOutputCommit, context: &OutputCommitterCo
                 .redact_output_value(&output.nbformat_value);
             crate::notebook_sync_server::fallback_output_with_id(&redacted)
         }
-    };
-
-    if let Err(e) = context.state.transact_at_current_heads(
-        Some(&context.kernel_actor_id),
-        output.kind.transaction_label(),
-        |sd| {
-            if let Err(e) = sd.append_output(&output.execution_id, &manifest_json) {
-                warn!(
-                    "[output-committer] Failed to append {} output to state doc: {}",
-                    output.kind.label(),
-                    e
-                );
-            }
-            Ok(())
-        },
-    ) {
-        warn!("[runtime-state] {}", e);
     }
 }
 

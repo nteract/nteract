@@ -7447,6 +7447,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "windows-sys 0.52.0",
+ "zeromq",
 ]
 
 [[package]]
