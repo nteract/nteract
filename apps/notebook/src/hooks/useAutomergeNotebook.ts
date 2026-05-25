@@ -21,14 +21,12 @@ import {
   replaceNotebookCells,
   resetNotebookCells,
   updateCellById,
-  updateNotebookCells,
   useCellIds,
 } from "../lib/notebook-cells";
 import {
   applyExecutionViewChangeset,
   resetRuntimeStoresProjection,
 } from "../lib/project-runtime-stores";
-import { updateOutputsByDisplayId } from "../lib/notebook-outputs";
 import { cloneNotebookFile, openNotebookFile, saveNotebook } from "../lib/notebook-file-ops";
 import { setNotebookHandle } from "../lib/notebook-metadata";
 import { resetPoolState } from "../lib/pool-state";
@@ -518,38 +516,6 @@ export function useAutomergeNotebook() {
 
   const cloneNotebook = useCallback(() => cloneNotebookFile(host), [host]);
 
-  // ── Output overlays (optimistic, pre-sync) ─────────────────────────
-
-  const updateOutputByDisplayId = useCallback(
-    (
-      displayId: string,
-      newData: Record<string, unknown>,
-      newMetadata?: Record<string, unknown>,
-    ) => {
-      // Keep the cell snapshot in sync for cross-cell readers that still
-      // inspect `cell.outputs` directly.
-      updateNotebookCells((prev) =>
-        prev.map((c) => {
-          if (c.cell_type !== "code") return c;
-          let changed = false;
-          const updatedOutputs = c.outputs.map((output) => {
-            if (isDisplayCapableJupyterOutput(output) && output.display_id === displayId) {
-              changed = true;
-              return { ...output, data: newData, metadata: newMetadata };
-            }
-            return output;
-          });
-          return changed ? { ...c, outputs: updatedOutputs } : c;
-        }),
-      );
-      // Per-output store projection. Patches every matching output so
-      // <OutputArea> repaints instantly without waiting for the next
-      // runtime_state sync to flow through the projection.
-      updateOutputsByDisplayId(displayId, newData, newMetadata);
-    },
-    [],
-  );
-
   const applyExecutionCountFromDaemon = useCallback((cellId: string, count: number) => {
     updateCellById(cellId, (c) => (c.cell_type === "code" ? { ...c, execution_count: count } : c));
   }, []);
@@ -603,7 +569,6 @@ export function useAutomergeNotebook() {
     openNotebook,
     cloneNotebook,
     loadError,
-    updateOutputByDisplayId,
     applyExecutionCountFromDaemon,
     setCellSourceHidden,
     setCellOutputsHidden,

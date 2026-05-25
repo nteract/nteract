@@ -49,7 +49,10 @@ known repeated work:
    only needs queued execution metadata or widget comm state.
 4. WASM-side output-id indexing so runtime sync handling does not repeatedly
    read the full runtime state just to derive output deltas.
-5. Frontend output materialization cleanup so runtime outputs flow through the
+5. Remove the dormant frontend optimistic `update_display_data` overlay instead
+   of indexing it. RuntimeStateDoc changesets already carry display updates to
+   the output store, so the best optimization is not maintaining unused work.
+6. Frontend output materialization cleanup so runtime outputs flow through the
    output store rather than repeated whole-output JSON cache keys.
 
 Each item is independently mergeable and should include a small benchmark or
