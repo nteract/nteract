@@ -49,6 +49,26 @@ describe("hosted sharing storage", () => {
     assert.equal(profile?.last_seen_at, "2026-05-24T12:05:00.000Z");
   });
 
+  it("backfills provider subject when a profile was first seen without one", async () => {
+    const env = fakeEnv();
+    await resolveNotebookInvitesForLogin(env, accessLogin(), "2026-05-24T12:00:00.000Z");
+
+    const profile = await upsertPrincipalProfile(env, {
+      principal: "user:cloudflare-access:access-sub-1",
+      provider: "cloudflare-access",
+      providerSubject: "access-sub-1",
+      email: "alice@example.com",
+      emailVerified: true,
+      displayName: "Alice Example",
+      timestamp: "2026-05-24T12:05:00.000Z",
+    });
+
+    assert.equal(profile?.provider, "cloudflare-access");
+    assert.equal(profile?.provider_subject, "access-sub-1");
+    assert.equal(profile?.first_seen_at, "2026-05-24T12:00:00.000Z");
+    assert.equal(profile?.last_seen_at, "2026-05-24T12:05:00.000Z");
+  });
+
   it("resolves verified email invites into principal ACL rows", async () => {
     const env = fakeEnv();
     await createPendingNotebookInvite(env, {
@@ -127,6 +147,55 @@ describe("hosted sharing storage", () => {
     assert.equal(
       env.DB.profiles.get("user:cloudflare-access:access-sub-1")?.last_seen_at,
       "2026-05-24T12:05:00.000Z",
+    );
+  });
+
+  it("accepts multiple pending invites in one resolution batch", async () => {
+    const env = fakeEnv();
+    await createPendingNotebookInvite(env, {
+      id: "invite-1",
+      notebookId: "notebook-1",
+      email: "alice@example.com",
+      providerHint: "cloudflare-access",
+      scope: "editor",
+      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      timestamp: "2026-05-24T11:00:00.000Z",
+    });
+    await createPendingNotebookInvite(env, {
+      id: "invite-2",
+      notebookId: "notebook-2",
+      email: "alice@example.com",
+      providerHint: null,
+      scope: "viewer",
+      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      timestamp: "2026-05-24T11:01:00.000Z",
+    });
+
+    const resolution = await resolveNotebookInvitesForLogin(
+      env,
+      accessLogin(),
+      "2026-05-24T12:00:00.000Z",
+    );
+
+    assert.deepEqual(
+      resolution.acceptedInvites.map((invite) => invite.id),
+      ["invite-1", "invite-2"],
+    );
+    assert.deepEqual(
+      resolution.aclGrants.map((grant) => [grant.notebookId, grant.scope]),
+      [
+        ["notebook-1", "editor"],
+        ["notebook-2", "viewer"],
+      ],
+    );
+    assert.equal(env.DB.invites.get("invite-1")?.status, "accepted");
+    assert.equal(env.DB.invites.get("invite-2")?.status, "accepted");
+    assert.deepEqual(
+      env.DB.acl.map((row) => [row.notebook_id, row.scope]),
+      [
+        ["notebook-1", "editor"],
+        ["notebook-2", "viewer"],
+      ],
     );
   });
 

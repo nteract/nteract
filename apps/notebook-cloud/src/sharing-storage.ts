@@ -89,6 +89,7 @@ export async function upsertPrincipalProfile(
        raw_claims_json
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(principal) DO UPDATE SET
+       provider_subject = COALESCE(principal_profiles.provider_subject, excluded.provider_subject),
        email_normalized = excluded.email_normalized,
        email_verified = excluded.email_verified,
        display_name = excluded.display_name,
