@@ -28,20 +28,25 @@ NTERACT_OUTPUT_WIDGET_REPLAY_PAYLOAD_BYTES=256 \
 cargo run -p runtimed --example output_widget_replay_measure
 ```
 
-Each output line is JSON. The key field is `manifest_resolutions`: with the
-current replay loop, `N` captured outputs resolve `N * (N + 1) / 2` manifests
-because every replay update resolves the full output list.
+Each output line is JSON with a `strategy` and nested `metrics`. The key field
+is `metrics.manifest_resolutions`: with the current replay loop, `N` captured
+outputs resolve `N * (N + 1) / 2` manifests because every replay update
+resolves the full output list. The cached strategy resolves only the newly
+appended manifest when its local cache matches the durable output list.
 
 Example shape:
 
 ```json
-{"output_count":100,"manifest_resolutions":5050,"resolved_outputs_sent":5050}
+{"strategy":"current","metrics":{"output_count":100,"manifest_resolutions":5050,"resolved_outputs_sent":5050}}
+{"strategy":"cached","metrics":{"output_count":100,"manifest_resolutions":100,"resolved_outputs_sent":5050}}
 ```
 
 The unit test
 `output_widget_replay_measure::tests::measurement_records_triangular_resolve_work_for_current_replay_loop`
-pins that deterministic triangular work count. Wall-clock fields are included
-for local comparison between branches, but they should not be used as strict CI
+pins that deterministic triangular work count. The companion
+`cached_replay_resolves_each_manifest_once` test pins the linearized resolution
+target for the Output widget replay cache. Wall-clock fields are included for
+local comparison between branches, but they should not be used as strict CI
 assertions.
 
 ## Notebook Fixtures
