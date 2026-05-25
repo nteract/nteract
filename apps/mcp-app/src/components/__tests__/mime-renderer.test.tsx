@@ -29,6 +29,25 @@ describe("MimeRenderer", () => {
     vi.restoreAllMocks();
   });
 
+  it("renders raster images directly", () => {
+    render(
+      <MimeRenderer
+        blobBaseUrl="http://localhost:47830"
+        data={{
+          "image/png": "http://localhost:47830/blob/f00f3d991a8191036",
+          "text/plain": "<Figure size 1100x520 with 1 Axes>",
+        }}
+      />,
+    );
+
+    const image = screen.getByRole("img", {
+      name: "<Figure size 1100x520 with 1 Axes>",
+    });
+    expect(image.getAttribute("src")).toBe("http://localhost:47830/blob/f00f3d991a8191036");
+    expect(image.classList.contains("image-output")).toBe(true);
+    expect(loadPluginForMime).not.toHaveBeenCalled();
+  });
+
   it("sends host-facing logs when plugin rendering fails", async () => {
     vi.mocked(loadPluginForMime).mockReturnValue(Promise.reject(new Error("blocked by CSP")));
 
