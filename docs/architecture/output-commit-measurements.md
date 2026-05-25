@@ -132,6 +132,28 @@ projection. A production implementation should hide this behind RuntimeStateDoc
 projection/resolution so existing consumers can continue to ask for flat outputs
 when they need them.
 
+## Segment Resolution
+
+The measurement now includes a round-trip verification step after writing
+segments: it calls `resolve_segment_outputs()` to read segment manifests from
+`RuntimeStateDoc`, fetch each segment blob from the blob store, and expand the
+child manifests into a flat output list. This proves the write path is
+consumable — every child output that was written into a segment can be read
+back.
+
+- `resolve_count`: number of flat outputs returned by resolution, must equal
+  `output_count` for the round-trip to be valid.
+- `resolve_nanos`: time spent resolving all segment refs into flat outputs,
+  measured after all segment blobs are written (cold blob store reads, no
+  in-memory cache from the write path — the measurement does not pin the
+  memory layer).
+
+The resolver lives at `crates/runtimed/src/output_segment.rs` and is the
+building block for a production projection layer: existing consumers that
+call `get_outputs()` on an execution would instead call
+`resolve_segment_outputs()` to get flat manifests regardless of whether the
+daemon chose to store them as segments.
+
 ## Jupyter Rate Limits
 
 Jupyter Server also treats IOPub as a bounded resource. Its

@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use crate::blob_store::BlobStore;
 use crate::output_redaction::OutputRedactor;
+use crate::output_segment::resolve_segment_outputs;
 use crate::output_store::{self, DEFAULT_INLINE_THRESHOLD};
 
 const EXECUTION_ID: &str = "exec-output-commit-measure";
@@ -63,6 +64,8 @@ impl Default for OutputCommitMeasurementConfig {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct OutputCommitMeasurement {
+    pub resolve_count: usize,
+    pub resolve_nanos: u128,
     pub strategy: &'static str,
     pub output_count: usize,
     pub payload_bytes: usize,
@@ -99,6 +102,8 @@ impl OutputCommitMeasurement {
             output_count: config.output_count,
             payload_bytes: config.payload_bytes,
             kind: config.kind,
+            resolve_count: 0,
+            resolve_nanos: 0,
             iopub_messages_observed: 0,
             buffer_preflights: 0,
             manifest_creations: 0,
@@ -380,6 +385,19 @@ pub async fn measure_blob_segment_output_model(
         doc.get_outputs(EXECUTION_ID).len() == metrics.segment_blobs,
         "blob segment model committed an unexpected number of segment outputs"
     );
+
+    let resolve_started = Instant::now();
+    let resolved = resolve_segment_outputs(&doc, EXECUTION_ID, &blob_store).await?;
+    metrics.resolve_nanos = resolve_started.elapsed().as_nanos();
+    metrics.resolve_count = resolved.len();
+
+    ensure!(
+        resolved.len() == config.output_count,
+        "blob segment resolve returned {} outputs, expected {}",
+        resolved.len(),
+        config.output_count
+    );
+
     finalize_doc_metrics(&mut metrics, &mut doc, &mut sync_peer)?;
     metrics.total_nanos = started.elapsed().as_nanos();
     let _ = tokio::fs::remove_dir_all(&blob_root).await;
@@ -586,5 +604,7 @@ mod tests {
         assert!(metrics.segment_bytes > 0);
         assert!(metrics.doc_save_bytes > 0);
         assert!(metrics.sync_daemon_bytes > 0);
+        assert_eq!(metrics.resolve_count, 5);
+        assert!(metrics.resolve_nanos > 0);
     }
 }

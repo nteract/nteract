@@ -44,6 +44,16 @@ async fn main() -> anyhow::Result<()> {
 
             let segment = measure_blob_segment_output_model(config).await?;
             println!("{}", serde_json::to_string(&segment)?);
+            eprintln!(
+                "resolve: {} outputs in {}ns ({} resolved)",
+                segment.resolve_count,
+                segment.resolve_nanos,
+                if segment.resolve_count == output_count {
+                    "all matched"
+                } else {
+                    "mismatch!"
+                },
+            );
         }
     }
 
