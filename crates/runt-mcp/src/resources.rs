@@ -2,7 +2,7 @@
 
 use rmcp::model::{
     Annotated, ListResourceTemplatesResult, ListResourcesResult, Meta, RawResource,
-    RawResourceTemplate, ReadResourceRequestParams, ReadResourceResult, ResourceContents,
+    RawResourceTemplate, ReadResourceRequestParams, ReadResourceResult, ResourceContents, Role,
 };
 use rmcp::ErrorData as McpError;
 
@@ -13,6 +13,9 @@ const OUTPUT_MIME_TYPE: &str = "text/html;profile=mcp-app";
 const NOTEBOOKS_RESOURCE_URI: &str = "nteract://notebooks";
 const NOTEBOOKS_MIME_TYPE: &str = "application/json";
 const CELLS_MIME_TYPE: &str = "application/json";
+// Assistant-facing notebook JSON is high-value context, but the UI app resource
+// remains the host-facing renderer entrypoint.
+const NOTEBOOK_CONTEXT_PRIORITY: f32 = 0.8;
 
 /// The compiled output renderer HTML, built by `apps/mcp-app/build-html.js`.
 /// Build with: `cd apps/mcp-app && pnpm build`
@@ -69,21 +72,21 @@ pub async fn list_resources(server: &NteractMcp) -> Result<ListResourcesResult, 
         OUTPUT_MIME_TYPE,
         Some(resource_ui_meta(&server.blob_base_url)),
     ));
-    resources.push(resource(
+    resources.push(assistant_resource(
         NOTEBOOKS_RESOURCE_URI,
         "nteract notebooks",
         "Active notebook rooms visible to this MCP server",
         NOTEBOOKS_MIME_TYPE,
-        None,
+        NOTEBOOK_CONTEXT_PRIORITY,
     ));
 
     for notebook_id in known_session_notebook_ids(server).await {
-        resources.push(resource(
+        resources.push(assistant_resource(
             notebook_cells_uri(&notebook_id),
             format!("nteract cells {notebook_id}"),
             "Ordered cell list for a connected or parked notebook session",
             CELLS_MIME_TYPE,
-            None,
+            NOTEBOOK_CONTEXT_PRIORITY,
         ));
     }
 
@@ -97,17 +100,19 @@ pub async fn list_resources(server: &NteractMcp) -> Result<ListResourcesResult, 
 /// List available dynamic MCP resource templates.
 pub fn list_resource_templates() -> ListResourceTemplatesResult {
     let templates = vec![
-        resource_template(
+        assistant_resource_template(
             "nteract://notebooks/{notebook_id}/cells",
             "nteract notebook cells",
             "Ordered cell list for a connected or parked notebook session",
             CELLS_MIME_TYPE,
+            NOTEBOOK_CONTEXT_PRIORITY,
         ),
-        resource_template(
+        assistant_resource_template(
             "nteract://notebooks/{notebook_id}/cells/{cell_id}",
             "nteract notebook cell",
             "Notebook cell snapshot for a connected or parked notebook session",
             CELLS_MIME_TYPE,
+            NOTEBOOK_CONTEXT_PRIORITY,
         ),
     ];
 
@@ -176,6 +181,18 @@ fn resource(
     }
 }
 
+fn assistant_resource(
+    uri: impl Into<String>,
+    name: impl Into<String>,
+    description: impl Into<String>,
+    mime_type: impl Into<String>,
+    priority: f32,
+) -> Annotated<RawResource> {
+    resource(uri, name, description, mime_type, None)
+        .with_audience(vec![Role::Assistant])
+        .with_priority(priority)
+}
+
 fn resource_template(
     uri_template: impl Into<String>,
     name: impl Into<String>,
@@ -189,6 +206,18 @@ fn resource_template(
         raw,
         annotations: None,
     }
+}
+
+fn assistant_resource_template(
+    uri_template: impl Into<String>,
+    name: impl Into<String>,
+    description: impl Into<String>,
+    mime_type: impl Into<String>,
+    priority: f32,
+) -> Annotated<RawResourceTemplate> {
+    resource_template(uri_template, name, description, mime_type)
+        .with_audience(vec![Role::Assistant])
+        .with_priority(priority)
 }
 
 async fn active_notebooks_json(server: &NteractMcp) -> Result<String, McpError> {
@@ -443,13 +472,19 @@ fn decode_segment(value: &str) -> Result<String, String> {
 mod tests {
     use std::path::PathBuf;
 
-    use rmcp::model::{Meta, ReadResourceRequestParams};
+    use rmcp::model::{Annotations, Meta, ReadResourceRequestParams, Role};
 
     use super::*;
     use crate::NteractMcp;
 
     fn ui_meta(meta: &Meta) -> &serde_json::Value {
         meta.0.get("ui").expect("ui metadata")
+    }
+
+    fn assert_assistant_context_annotations(annotations: &Annotations) {
+        assert_eq!(annotations.audience.as_ref(), Some(&vec![Role::Assistant]));
+        assert_eq!(annotations.priority, Some(NOTEBOOK_CONTEXT_PRIORITY));
+        assert!(annotations.last_modified.is_none());
     }
 
     #[test]
@@ -502,6 +537,7 @@ mod tests {
         let ui = ui_meta(meta);
 
         assert_eq!(resource.raw.uri, OUTPUT_RESOURCE_URI);
+        assert!(resource.annotations.is_none());
         assert_eq!(ui.get("prefersBorder"), Some(&serde_json::json!(false)));
         assert!(ui.get("csp").is_some());
     }
@@ -512,10 +548,18 @@ mod tests {
 
         let result = list_resources(&server).await.expect("list resources");
 
-        assert!(result
+        let resource = result
             .resources
             .iter()
-            .any(|resource| resource.raw.uri == NOTEBOOKS_RESOURCE_URI));
+            .find(|resource| resource.raw.uri == NOTEBOOKS_RESOURCE_URI)
+            .expect("notebook collection resource");
+
+        assert_assistant_context_annotations(
+            resource
+                .annotations
+                .as_ref()
+                .expect("notebook resource annotations"),
+        );
     }
 
     #[test]
@@ -530,6 +574,15 @@ mod tests {
 
         assert!(templates.contains(&"nteract://notebooks/{notebook_id}/cells"));
         assert!(templates.contains(&"nteract://notebooks/{notebook_id}/cells/{cell_id}"));
+
+        for template in &result.resource_templates {
+            assert_assistant_context_annotations(
+                template
+                    .annotations
+                    .as_ref()
+                    .expect("notebook resource template annotations"),
+            );
+        }
     }
 
     #[test]
