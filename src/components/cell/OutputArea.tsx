@@ -20,7 +20,10 @@ import {
 } from "@/components/isolated";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe-libraries";
-import { jupyterOutputsToRenderPayloads } from "@/components/isolated/output-payloads";
+import {
+  jupyterOutputsToRenderPayloads,
+  type IdentifiedJupyterOutput,
+} from "@/components/isolated/output-payloads";
 import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-output";
 import { isSafeForMainDom } from "@/components/outputs/safe-mime-types";
 import { DEFAULT_PRIORITY, MediaRouter } from "@/components/outputs/media-router";
@@ -84,6 +87,9 @@ export type { JupyterOutput } from "./jupyter-output";
 interface OutputAreaProps {
   /**
    * Array of Jupyter outputs to render.
+   * Isolated rendering requires every output to carry a non-empty `output_id`.
+   * Non-runtime render surfaces must stamp a synthetic id before passing
+   * outputs here.
    */
   outputs: JupyterOutput[];
   /**
@@ -319,6 +325,15 @@ function hasWidgetOutputs(
     }
     return false;
   });
+}
+
+function requireIdentifiedOutputs(outputs: JupyterOutput[]): IdentifiedJupyterOutput[] {
+  for (const output of outputs) {
+    if (!output.output_id) {
+      throw new Error("Cannot render isolated output without output_id");
+    }
+  }
+  return outputs as IdentifiedJupyterOutput[];
 }
 
 /**
@@ -736,6 +751,7 @@ export function OutputArea({
               mimeType: "text/plain",
               data: `Failed to load renderer plugin: ${formatPluginLoadError(error)}`,
               metadata: { isError: true },
+              outputId: `${cellId}:plugin-load-error`,
               cellId,
               outputIndex: 0,
             },
@@ -750,9 +766,29 @@ export function OutputArea({
       // Build batch of render payloads and send atomically.
       // This avoids the clear+re-render cycle that causes DOM thrashing
       // (visible as flickering when interactive widgets update rapidly).
-      const batch = jupyterOutputsToRenderPayloads(outputs, { cellId, priority }).map((payload) =>
-        withTracebackExecutionTargets(payload, resolveTracebackExecutionTarget),
-      );
+      let batch: RenderPayload[];
+      try {
+        batch = jupyterOutputsToRenderPayloads(requireIdentifiedOutputs(outputs), {
+          cellId,
+          priority,
+        }).map((payload) =>
+          withTracebackExecutionTargets(payload, resolveTracebackExecutionTarget),
+        );
+      } catch (error) {
+        if (gen !== renderGenRef.current) return;
+        console.error("[OutputArea] Failed to build isolated render payloads:", error);
+        frameRef.current.renderBatch([
+          {
+            mimeType: "text/plain",
+            data: `Failed to render isolated output: ${formatPluginLoadError(error)}`,
+            metadata: { isError: true },
+            outputId: `${cellId ?? "unknown-cell"}:output-identity-error`,
+            cellId,
+            outputIndex: 0,
+          },
+        ]);
+        return;
+      }
 
       frameRef.current.renderBatch(batch);
 

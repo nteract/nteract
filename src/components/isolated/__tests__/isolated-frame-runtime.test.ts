@@ -87,6 +87,7 @@ describe("IsolatedFrameRuntime", () => {
     const payload: RenderPayload = {
       mimeType: "text/plain",
       data: "queued",
+      outputId: "queued-output",
     };
     const { frameWindow, runtime } = createRuntime();
 
@@ -181,6 +182,7 @@ describe("IsolatedFrameRuntime", () => {
     const stalePayload: RenderPayload = {
       mimeType: "text/plain",
       data: "old iframe",
+      outputId: "stale-output",
     };
     const { frameWindow, runtime } = createRuntime();
 
@@ -210,6 +212,7 @@ describe("IsolatedFrameRuntime", () => {
     const initialContent: RenderPayload = {
       mimeType: "text/markdown",
       data: "# Initial content",
+      outputId: "initial-content",
     };
     const { callbacks, frameWindow, runtime } = createRuntime(initialContent);
 
@@ -383,9 +386,12 @@ describe("IsolatedFrameRuntime", () => {
     expect(MockJsonRpcTransport.instances).toHaveLength(1);
     expect(callbacks.onBootstrapReady).toHaveBeenCalledTimes(1);
 
-    runtime.render({ mimeType: "text/plain", data: "after dispose" });
+    runtime.render({ mimeType: "text/plain", data: "after dispose", outputId: "after-dispose" });
     expect(frameWindow.postMessage).not.toHaveBeenCalledWith(
-      { type: "render", payload: { mimeType: "text/plain", data: "after dispose" } },
+      {
+        type: "render",
+        payload: { mimeType: "text/plain", data: "after dispose", outputId: "after-dispose" },
+      },
       "*",
     );
   });

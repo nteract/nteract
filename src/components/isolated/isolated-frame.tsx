@@ -271,7 +271,8 @@ function sameContainerDimensions(
  *   onReady={() => {
  *     frameRef.current?.render({
  *       mimeType: "text/html",
- *       data: "<h1>Hello from isolated frame!</h1>"
+ *       data: "<h1>Hello from isolated frame!</h1>",
+ *       outputId: "example-output",
  *     });
  *   }}
  *   onResize={(height) => console.log("New height:", height)}

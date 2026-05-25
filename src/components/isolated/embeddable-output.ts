@@ -1,4 +1,3 @@
-import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import type { RenderPayload } from "./frame-bridge";
 import {
   isOutputManifest,
@@ -9,17 +8,26 @@ import {
 import {
   isRenderPayload,
   jupyterOutputToRenderPayload,
+  type IdentifiedJupyterOutput,
   type RenderPayloadOptions,
 } from "./output-payloads";
 
-export type NteractEmbeddableOutput = RenderPayload | JupyterOutput | OutputManifest | string;
+export type NteractEmbeddableOutput =
+  | RenderPayload
+  | IdentifiedJupyterOutput
+  | OutputManifest
+  | string;
 
 export interface ResolveEmbeddableOutputsOptions extends RenderPayloadOptions {
   blobResolver?: OutputBlobResolver;
 }
 
-function isJupyterOutput(value: unknown): value is JupyterOutput {
-  return typeof value === "object" && value !== null && "output_type" in value;
+function isIdentifiedJupyterOutput(value: unknown): value is IdentifiedJupyterOutput {
+  if (typeof value !== "object" || value === null) return false;
+  const output = value as Record<string, unknown>;
+  return (
+    "output_type" in output && typeof output.output_id === "string" && output.output_id.length > 0
+  );
 }
 
 async function resolveOneEmbeddableOutput(
@@ -49,11 +57,15 @@ async function resolveOneEmbeddableOutput(
       throw new Error("A blobResolver is required to resolve output manifests");
     }
     const resolved = await resolveManifest(output, options.blobResolver);
-    const payload = jupyterOutputToRenderPayload(resolved as JupyterOutput, outputIndex, options);
+    const payload = jupyterOutputToRenderPayload(
+      resolved as IdentifiedJupyterOutput,
+      outputIndex,
+      options,
+    );
     return payload ? [payload] : [];
   }
 
-  if (isJupyterOutput(output)) {
+  if (isIdentifiedJupyterOutput(output)) {
     const payload = jupyterOutputToRenderPayload(output, outputIndex, options);
     return payload ? [payload] : [];
   }

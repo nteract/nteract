@@ -200,6 +200,7 @@ describe("MarkdownCell theme sync", () => {
       expect(mockFrameHandle.render).toHaveBeenCalledWith({
         mimeType: "text/markdown",
         data: "```python\nprint('hello')\n```",
+        outputId: "markdown:md-1",
         cellId: "md-1",
         replace: true,
       });
@@ -215,6 +216,7 @@ describe("MarkdownCell theme sync", () => {
       expect(mockFrameHandle.render).toHaveBeenCalledWith({
         mimeType: "text/plain",
         data: "Failed to load markdown renderer: chunk failed",
+        outputId: "markdown-error:md-1",
         cellId: "md-1",
         replace: true,
       });

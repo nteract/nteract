@@ -21,11 +21,13 @@ describe("resolveEmbeddableOutputs", () => {
     const [payload] = await resolveEmbeddableOutputs({
       mimeType: "text/plain",
       data: "hello",
+      outputId: "direct-output",
     });
 
     expect(payload).toMatchObject({
       mimeType: "text/plain",
       data: "hello",
+      outputId: "direct-output",
       outputIndex: 0,
     });
   });
@@ -54,6 +56,20 @@ describe("resolveEmbeddableOutputs", () => {
       cellId: "cell-1",
       outputIndex: 0,
     });
+  });
+
+  it("rejects Jupyter outputs without explicit output identity", async () => {
+    await expect(
+      resolveEmbeddableOutputs(
+        JSON.stringify({
+          output_type: "display_data",
+          data: {
+            "text/plain": "plain fallback",
+          },
+          metadata: {},
+        }),
+      ),
+    ).rejects.toThrow("Unsupported embeddable output value");
   });
 
   it("resolves blob-backed manifests through HostBlobResolver", async () => {
@@ -88,6 +104,7 @@ describe("resolveEmbeddableOutputs", () => {
 
   it("requires a blob resolver for manifests", async () => {
     const manifest: OutputManifest = {
+      output_id: "missing-blob-resolver",
       output_type: "stream",
       name: "stdout",
       text: { blob: "stdout", size: 5 },

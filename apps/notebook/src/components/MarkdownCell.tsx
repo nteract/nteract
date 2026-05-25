@@ -264,6 +264,7 @@ export const MarkdownCell = memo(function MarkdownCell({
       frameRef.current.render({
         mimeType: "text/plain",
         data: `Failed to load markdown renderer: ${formatPluginLoadError(error)}`,
+        outputId: `markdown-error:${cell.id}`,
         cellId: cell.id,
         replace: true,
       });
@@ -277,6 +278,7 @@ export const MarkdownCell = memo(function MarkdownCell({
     frameRef.current.render({
       mimeType: "text/markdown",
       data: processedSource,
+      outputId: `markdown:${cell.id}`,
       cellId: cell.id,
       replace: true,
     });
@@ -297,6 +299,7 @@ export const MarkdownCell = memo(function MarkdownCell({
           frame.render({
             mimeType: "text/markdown",
             data: processedSource,
+            outputId: `markdown:${cell.id}`,
             cellId: cell.id,
             replace: true,
           });
@@ -306,6 +309,7 @@ export const MarkdownCell = memo(function MarkdownCell({
           frame.render({
             mimeType: "text/plain",
             data: `Failed to load markdown renderer: ${formatPluginLoadError(error)}`,
+            outputId: `markdown-error:${cell.id}`,
             cellId: cell.id,
             replace: true,
           });

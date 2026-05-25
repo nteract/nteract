@@ -8,11 +8,13 @@ describe("cloud viewer render resolution", () => {
     const outputs = await resolveOutputs(
       [
         {
+          output_id: "healthy-stdout",
           output_type: "stream",
           name: "stdout",
           text: "healthy stdout\n",
         },
         {
+          output_id: "missing-display",
           output_type: "display_data",
           data: {
             "text/plain": {
@@ -27,6 +29,7 @@ describe("cloud viewer render resolution", () => {
 
     assert.equal(outputs.length, 2);
     assert.deepEqual(outputs[0], {
+      output_id: "healthy-stdout",
       output_type: "stream",
       name: "stdout",
       text: "healthy stdout\n",
@@ -47,7 +50,14 @@ describe("cloud viewer render resolution", () => {
           cell_type: "code",
           source: "print('ok')",
           execution_count: 1,
-          outputs: [{ output_type: "stream", name: "stdout", text: "ok\n" }],
+          outputs: [
+            {
+              output_id: "healthy-cell-stdout",
+              output_type: "stream",
+              name: "stdout",
+              text: "ok\n",
+            },
+          ],
         },
         rejectingBlobResolver(),
         0,
@@ -60,6 +70,7 @@ describe("cloud viewer render resolution", () => {
           execution_count: 2,
           outputs: [
             {
+              output_id: "broken-result",
               output_type: "execute_result",
               execution_count: 2,
               data: {
@@ -151,11 +162,13 @@ describe("cloud viewer render resolution", () => {
         execution_count: "null",
         outputs: [
           {
+            output_id: "runtime-count-stream",
             output_type: "stream",
             name: "stdout",
             text: "loaded\n",
           },
           {
+            output_id: "runtime-count-result",
             output_type: "execute_result",
             execution_count: 7,
             data: { "text/plain": "shape: (25, 8)" },
@@ -171,6 +184,76 @@ describe("cloud viewer render resolution", () => {
     assert.equal(cell.executionId, "exec-runtime-count");
   });
 
+  it("stamps direct outputs without output_id before isolated rendering", async () => {
+    const cell = await resolveCell(
+      {
+        id: "raw-output-cell",
+        cell_type: "code",
+        source: "print('legacy')",
+        outputs: [
+          {
+            output_type: "stream",
+            name: "stdout",
+            text: "legacy\n",
+          },
+        ],
+      },
+      rejectingBlobResolver(),
+      0,
+    );
+
+    assert.equal(cell.outputs.length, 1);
+    assert.equal(cell.outputs[0].output_id, "cloud-output:raw-output-cell:0");
+  });
+
+  it("reports manifest-shaped outputs without output_id instead of rendering ContentRefs", async () => {
+    const outputs = await resolveOutputs(
+      [
+        {
+          output_type: "display_data",
+          data: {
+            "text/plain": { inline: "legacy manifest text" },
+          },
+          metadata: {},
+        },
+      ],
+      rejectingBlobResolver(),
+      "legacy-manifest-cell",
+    );
+
+    assert.equal(outputs.length, 1);
+    assert.equal(outputs[0].output_type, "error");
+    assert.equal(outputs[0].output_id, "resolution-error:cloud-output:legacy-manifest-cell:0");
+    if (outputs[0].output_type === "error") {
+      assert.match(outputs[0].evalue, /without output_id/);
+    }
+  });
+
+  it("does not mistake JSON MIME objects with url fields for ContentRefs", async () => {
+    const outputs = await resolveOutputs(
+      [
+        {
+          output_type: "display_data",
+          data: {
+            "application/json": { url: "https://example.test/value" },
+          },
+          metadata: {},
+        },
+      ],
+      rejectingBlobResolver(),
+      "json-url-cell",
+    );
+
+    assert.equal(outputs.length, 1);
+    assert.equal(outputs[0].output_id, "cloud-output:json-url-cell:0");
+    assert.equal(outputs[0].output_type, "display_data");
+    if (outputs[0].output_type === "display_data") {
+      assert.deepEqual(outputs[0].data["application/json"], {
+        url: "https://example.test/value",
+      });
+    }
+  });
+
   it("uses the first finite execute_result count as the output fallback", async () => {
     const cell = await resolveCell(
       {
@@ -180,12 +263,14 @@ describe("cloud viewer render resolution", () => {
         execution_count: "null",
         outputs: [
           {
+            output_id: "multiple-results-a",
             output_type: "execute_result",
             execution_count: 7,
             data: { "text/plain": "a" },
             metadata: {},
           },
           {
+            output_id: "multiple-results-b",
             output_type: "execute_result",
             execution_count: 8,
             data: { "text/plain": "b" },
@@ -209,11 +294,13 @@ describe("cloud viewer render resolution", () => {
         execution_count: "null",
         outputs: [
           {
+            output_id: "no-result-count-stream",
             output_type: "stream",
             name: "stdout",
             text: "loaded\n",
           },
           {
+            output_id: "no-result-count-display",
             output_type: "display_data",
             execution_count: 99,
             data: { "text/plain": "display only" },
@@ -232,6 +319,7 @@ describe("cloud viewer render resolution", () => {
     const outputs = await resolveOutputs(
       [
         {
+          output_id: "direct-columnar-refs",
           output_type: "execute_result",
           execution_count: 1,
           data: {
@@ -277,6 +365,7 @@ describe("cloud viewer render resolution", () => {
         execution_count: 3,
         outputs: [
           {
+            output_id: "cell-count-result",
             output_type: "execute_result",
             execution_count: 7,
             data: { "text/plain": "shape: (25, 8)" },

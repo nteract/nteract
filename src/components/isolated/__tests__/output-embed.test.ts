@@ -113,7 +113,11 @@ describe("createNteractOutputEmbed", () => {
     });
     const frameWindow = handle.iframe.contentWindow!;
 
-    await handle.render({ mimeType: "text/plain", data: "queued output" });
+    await handle.render({
+      mimeType: "text/plain",
+      data: "queued output",
+      outputId: "queued-output",
+    });
     bootstrapFrame(frameWindow);
     const transport = MockJsonRpcTransport.instances[0];
     expect(transport.notify).not.toHaveBeenCalledWith(

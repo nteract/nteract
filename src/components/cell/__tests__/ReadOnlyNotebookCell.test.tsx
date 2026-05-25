@@ -91,6 +91,7 @@ describe("ReadOnlyNotebookCell", () => {
         executionCount={7}
         outputs={[
           {
+            output_id: "cell-code-stdout",
             output_type: "stream",
             name: "stdout",
             text: "hello\n",
@@ -136,7 +137,15 @@ describe("ReadOnlyNotebookCell", () => {
         id="traceback-code"
         cellType="code"
         source="raise Exception()"
-        outputs={[{ output_type: "error", ename: "E", evalue: "bad", traceback: [] }]}
+        outputs={[
+          {
+            output_id: "traceback-code-error",
+            output_type: "error",
+            ename: "E",
+            evalue: "bad",
+            traceback: [],
+          },
+        ]}
         resolveTracebackExecutionTarget={() => null}
         onNavigateToTracebackCell={() => undefined}
       />,
@@ -182,7 +191,14 @@ describe("ReadOnlyNotebookCell", () => {
   });
 
   it("keeps code output props stable across unrelated parent rerenders", () => {
-    const outputs: JupyterOutput[] = [{ output_type: "stream", name: "stdout", text: "visible\n" }];
+    const outputs: JupyterOutput[] = [
+      {
+        output_id: "stable-code-stdout",
+        output_type: "stream",
+        name: "stdout",
+        text: "visible\n",
+      },
+    ];
     const { rerender } = render(
       <ReadOnlyNotebookCell
         id="stable-code"
@@ -215,7 +231,14 @@ describe("ReadOnlyNotebookCell", () => {
         showSource={false}
         displayMode="report"
         focusOutputs
-        outputs={[{ output_type: "stream", name: "stdout", text: "visible\n" }]}
+        outputs={[
+          {
+            output_id: "report-code-stdout",
+            output_type: "stream",
+            name: "stdout",
+            text: "visible\n",
+          },
+        ]}
       />,
     );
 

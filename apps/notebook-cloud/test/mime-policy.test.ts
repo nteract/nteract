@@ -19,6 +19,7 @@ describe("cloud viewer MIME policy", () => {
 
     const payload = jupyterOutputToRenderPayload(
       {
+        output_id: "test-widget-output",
         output_type: "display_data",
         data,
         metadata: {},

@@ -16,7 +16,7 @@ export type ContentRef =
   | { blob: string; size?: number; media_type?: string };
 
 interface ManifestCommon {
-  output_id?: string;
+  output_id: string;
 }
 
 export type OutputManifest =
@@ -48,14 +48,14 @@ export type OutputManifest =
 
 export type ResolvedJupyterOutput =
   | {
-      output_id?: string;
+      output_id: string;
       output_type: "display_data";
       data: Record<string, unknown>;
       metadata: Record<string, unknown>;
       display_id?: string;
     }
   | {
-      output_id?: string;
+      output_id: string;
       output_type: "execute_result";
       data: Record<string, unknown>;
       metadata: Record<string, unknown>;
@@ -63,13 +63,13 @@ export type ResolvedJupyterOutput =
       display_id?: string;
     }
   | {
-      output_id?: string;
+      output_id: string;
       output_type: "stream";
       name: "stdout" | "stderr";
       text: string;
     }
   | {
-      output_id?: string;
+      output_id: string;
       output_type: "error";
       ename: string;
       evalue: string;
@@ -104,6 +104,7 @@ export function isOutputManifest(value: unknown): value is OutputManifest {
   if (typeof value !== "object" || value === null) return false;
   const obj = value as Record<string, unknown>;
   if (!("output_type" in obj)) return false;
+  if (typeof obj.output_id !== "string" || obj.output_id.length === 0) return false;
 
   switch (obj.output_type) {
     case "stream":

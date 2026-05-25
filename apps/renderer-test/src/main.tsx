@@ -60,6 +60,7 @@ function FixtureCard({
         mimeType: output.mimeType,
         data: output.data,
         metadata: output.metadata,
+        outputId: `fixture-${index}-0`,
         cellId: `fixture-${index}`,
         outputIndex: 0,
       });
@@ -69,6 +70,7 @@ function FixtureCard({
           mimeType: output.mimeType,
           data: output.data,
           metadata: output.metadata,
+          outputId: `fixture-${index}-${outputIndex}`,
           cellId: `fixture-${index}`,
           outputIndex,
         })),
@@ -219,6 +221,7 @@ function HostContextScenarioApp() {
     frameRef.current?.render({
       mimeType: "text/html",
       data: '<div id="host-context-probe" style="color: var(--nteract-host-context-probe); font-family: var(--font-sans);">Host context probe</div>',
+      outputId: "host-context-probe",
       cellId: "host-context",
       outputIndex: 0,
     });
@@ -304,11 +307,13 @@ function VanillaEmbedScenarioApp() {
       },
       output: [
         {
+          output_id: "vanilla-embed-stream",
           output_type: "stream",
           name: "stdout",
           text: "vanilla stream before\n",
         },
         {
+          output_id: "vanilla-embed-markdown",
           output_type: "display_data",
           data: {
             "text/markdown":
@@ -316,6 +321,7 @@ function VanillaEmbedScenarioApp() {
           },
         },
         {
+          output_id: "vanilla-embed-html-blob",
           output_type: "display_data",
           data: {
             "text/html": { blob: "pandasHtml", size: 160 },
@@ -376,6 +382,7 @@ function VanillaRemountScenarioApp() {
       target,
       rendererBundle: defaultRendererLoader,
       output: {
+        outputId: `vanilla-remount-${version}`,
         mimeType: "text/html",
         data: `<div id="vanilla-remount-probe">vanilla remount ${version}</div>`,
       },
