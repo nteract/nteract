@@ -25,29 +25,49 @@ control plane.
 
 ## Spec Alignment
 
-The MCP Apps spec makes three parts relevant to this migration:
+The MCP Apps spec makes four parts relevant to this migration:
 
 - The nteract UI resource remains `text/html;profile=mcp-app` and is linked from
   tools through `_meta.ui.resourceUri`.
 - The app view reports body size via `ui/notifications/size-changed` and receives
   host sizing through `HostContext.containerDimensions`.
 - Nested frames are a declared CSP surface through `ui.csp.frameDomains`, so the
-  final runtime flip needs host-specific validation for the nested isolated
-  frame source before we require it in Claude/Codex.
+  runtime flip declares the daemon blob origin before creating the nested
+  isolated output frame at `{blob_base_url}/output-frame`.
+- Static renderer sidecars remain declared as `ui.csp.resourceDomains`, while
+  blob fetches stay in `ui.csp.connectDomains`.
+
+## Current Runtime Shape
+
+The MCP App now uses the shared output embed when a daemon `blob_base_url` is
+available:
+
+1. `ui/notifications/tool-result` provides MCP App structured cell output.
+2. The app adapts those outputs into shared `OutputManifest` values.
+3. `createNteractOutputEmbed` creates a sandboxed nested iframe whose `src` is
+   `{blob_base_url}/output-frame`.
+4. The app injects the shared isolated renderer bundle from
+   `virtual:isolated-renderer`.
+5. Heavy renderer plugins are fetched as raw CJS from
+   `{blob_base_url}/renderer-plugins/{name}.js` and installed with
+   `nteract/installRenderer`.
+
+The legacy MCP App MIME renderer remains as a fallback for hosts that omit
+`blob_base_url` or reject the nested frame path.
 
 ## Migration Slices
 
 1. Add a structured-content adapter that turns current MCP App `cell.outputs`
    into shared isolated renderer manifests and proves those manifests resolve
    through `resolveEmbeddableOutputs`.
-2. Add an MCP App renderer bundle provider. Prefer daemon-served renderer assets
-   or a build-time virtual bundle, but avoid depending on Git LFS pointer files
-   in local source checkouts.
+2. Add an MCP App renderer bundle provider. The current slice uses the
+   build-time `virtual:isolated-renderer` bundle for the core renderer and
+   daemon-served raw sidecar plugins for heavy renderers.
 3. Render one rich-output path through `createNteractOutputEmbed` under the MCP
-   App shell, starting with HTML/SVG where the current app has the most layout
-   drift from the desktop renderer.
-4. Extend the MCP resource CSP metadata for the nested frame source once the
-   source is concrete for each host surface.
+   App shell, starting with all `display_data` / `execute_result` / stream /
+   error outputs that can be adapted from current MCP structured content.
+4. Extend the MCP resource CSP metadata for the nested frame source. The
+   current slice declares `frameDomains: [blob_base_url]`.
 5. Delete the duplicate MCP App MIME components and plugin registry after the
    shared renderer path covers text, images, HTML/SVG, errors, markdown,
    Plotly/Vega/Leaflet, and Sift.

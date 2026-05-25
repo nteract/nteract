@@ -21,10 +21,14 @@ const OUTPUT_HTML: &str = include_str!("../assets/_output.html");
 /// MCP Apps spec CSP fields (from ext-apps specification):
 /// - `resourceDomains` → `img-src`, `script-src`, `style-src`, `font-src`, `media-src`
 /// - `connectDomains`  → `connect-src` (fetch/XHR/WebSocket)
+/// - `frameDomains`    → `frame-src` (nested output iframe shell)
 ///
 /// The daemon's blob HTTP server URL is needed in both: `resourceDomains` for
 /// loading plugin JS/CSS via `<script>`/`<link>` tags, and `connectDomains` for
 /// `fetch()` calls to resolve blob-stored output data (plotly JSON, geojson, etc.).
+/// It is also needed in `frameDomains` so the MCP App can host shared isolated
+/// output iframes from `{blob_base_url}/output-frame` instead of depending on
+/// host-specific `srcdoc` CSP behavior.
 ///
 /// Claude Desktop requires `localhost` (not `127.0.0.1`) for domain allowlists.
 fn resource_ui_meta(blob_base_url: &Option<String>) -> Option<Meta> {
@@ -39,7 +43,8 @@ fn resource_ui_meta(blob_base_url: &Option<String>) -> Option<Meta> {
                     // CartoDB basemap tiles used by the Leaflet renderer plugin
                     "https://*.basemaps.cartocdn.com",
                 ],
-                "connectDomains": [url]
+                "connectDomains": [url],
+                "frameDomains": [url]
             }
         }),
     );
@@ -109,6 +114,12 @@ mod tests {
             csp.get("connectDomains")
                 .and_then(|value| value.as_array())
                 .expect("connect domains")[0],
+            "https://outputs.example.test"
+        );
+        assert_eq!(
+            csp.get("frameDomains")
+                .and_then(|value| value.as_array())
+                .expect("frame domains")[0],
             "https://outputs.example.test"
         );
     }

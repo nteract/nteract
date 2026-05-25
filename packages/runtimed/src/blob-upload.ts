@@ -63,7 +63,8 @@ export async function putBlob(
 }
 
 async function hexHash(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const digestInput = new Uint8Array(bytes);
+  const digest = await crypto.subtle.digest("SHA-256", digestInput.buffer);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 

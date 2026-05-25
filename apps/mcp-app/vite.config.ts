@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isolatedRendererPlugin } from "../notebook/vite-plugin-isolated-renderer";
 
 const appDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(appDir, "../..");
@@ -46,8 +47,13 @@ export default defineConfig(({ command }) => {
   if (command === "serve") {
     return {
       root: "src",
-      plugins: [tailwindcss()],
+      plugins: [tailwindcss(), isolatedRendererPlugin({ prebuiltPluginNames: [] })],
       define,
+      resolve: {
+        alias: {
+          "@": path.join(repoRoot, "src"),
+        },
+      },
       server: {
         open: "/dev/index.html",
       },
@@ -55,7 +61,12 @@ export default defineConfig(({ command }) => {
   }
 
   return {
-    plugins: [tailwindcss()],
+    plugins: [tailwindcss(), isolatedRendererPlugin({ prebuiltPluginNames: [] })],
+    resolve: {
+      alias: {
+        "@": path.join(repoRoot, "src"),
+      },
+    },
     esbuild: {
       jsx: "automatic",
       jsxImportSource: "react",

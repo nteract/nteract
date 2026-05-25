@@ -15,7 +15,7 @@ import { installPluginFromUrl } from "./plugin-executor";
 
 declare const __DAEMON_PLUGIN_ASSET_HASHES__: Record<string, string> | undefined;
 
-interface PluginInfo {
+export interface PluginInfo {
   name: string;
   /** Whether this plugin has a separate CSS file */
   hasCss: boolean;
@@ -35,7 +35,7 @@ const VEGA_PLUGIN: PluginInfo = { name: "vega", hasCss: false };
 const PLUGIN_ASSET_HASHES =
   typeof __DAEMON_PLUGIN_ASSET_HASHES__ === "object" ? __DAEMON_PLUGIN_ASSET_HASHES__ : {};
 
-function pluginInfoForMime(mime: string): PluginInfo | undefined {
+export function pluginInfoForMime(mime: string): PluginInfo | undefined {
   if (MIME_TO_PLUGIN[mime]) return MIME_TO_PLUGIN[mime];
   if (isVegaMimeType(mime)) return VEGA_PLUGIN;
   return undefined;

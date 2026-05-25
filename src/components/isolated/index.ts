@@ -69,6 +69,8 @@ export type {
   NteractOutputEmbedHandle,
   NteractOutputEmbedOptions,
   NteractOutputRendererBundleProvider,
+  NteractOutputRendererPlugin,
+  NteractOutputRendererPluginLoader,
 } from "./output-embed";
 export {
   createBlobResolver,

@@ -67,6 +67,7 @@ function layoutDetails(): Record<string, unknown> {
 function McpApp() {
   const [content, setContent] = useState<NteractContent | null>(null);
   const [allExpanded, setAllExpanded] = useState<boolean | null>(null);
+  const [hostContext, setHostContext] = useState<McpUiHostContext | null>(null);
 
   useEffect(() => {
     const app = new App({ name: "nteract", version: "0.1.0" });
@@ -87,6 +88,7 @@ function McpApp() {
     };
 
     app.onhostcontextchanged = (ctx: McpUiHostContext) => {
+      setHostContext(app.getHostContext() ?? ctx);
       if (ctx.theme) applyDocumentTheme(ctx.theme);
       if (ctx.styles?.variables) applyHostStyleVariables(ctx.styles.variables);
       if (ctx.styles?.css?.fonts) applyHostFonts(ctx.styles.css.fonts);
@@ -117,6 +119,7 @@ function McpApp() {
         if (ctx?.theme) applyDocumentTheme(ctx.theme);
         if (ctx?.styles?.variables) applyHostStyleVariables(ctx.styles.variables);
         if (ctx?.styles?.css?.fonts) applyHostFonts(ctx.styles.css.fonts);
+        setHostContext(ctx ?? null);
       })
       .catch((error) => {
         hostLog("error", "app-connect-failed", {
@@ -164,6 +167,7 @@ function McpApp() {
           key={cell.cell_id}
           cell={cell}
           blobBaseUrl={blobBaseUrl}
+          hostContext={hostContext}
           defaultExpanded={!isMultiCell || hasRichOutput(cell)}
           forceExpanded={isMultiCell ? allExpanded : null}
           hideSource={!isMultiCell}

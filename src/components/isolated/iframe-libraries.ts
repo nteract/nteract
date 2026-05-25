@@ -66,12 +66,12 @@ const pluginCache = new Map<string, Promise<PluginModule>>();
  * Returns undefined if the MIME type doesn't need a plugin.
  * Deduplicates concurrent loads for the same MIME type.
  */
-function loadPluginForMime(mime: string): Promise<PluginModule> | undefined {
+export function loadPluginForMime(mime: string): Promise<PluginModule | undefined> {
   const cached = pluginCache.get(mime);
   if (cached) return cached;
 
   const loader = PLUGIN_MIME_TYPES[mime] ?? (isVegaMimeType(mime) ? loadVega : undefined);
-  if (!loader) return undefined;
+  if (!loader) return Promise.resolve(undefined);
 
   const promise = loader().catch((error) => {
     if (pluginCache.get(mime) === promise) {
@@ -89,7 +89,7 @@ function loadPluginForMime(mime: string): Promise<PluginModule> | undefined {
  */
 export function preWarmForMimes(mimes: Iterable<string>): void {
   for (const mime of mimes) {
-    loadPluginForMime(mime)?.catch((error) => {
+    loadPluginForMime(mime).catch((error) => {
       console.warn(`[iframe-libraries] failed to prewarm renderer plugin for "${mime}":`, error);
     });
   }

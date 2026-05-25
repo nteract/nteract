@@ -8,6 +8,8 @@
 //! Endpoints:
 //! - `GET /blob/{hash}` — raw bytes with `Content-Type` from metadata
 //! - `GET /plugins/{name}` — embedded renderer plugin assets (JS/CSS)
+//! - `GET /renderer-plugins/{name}` — raw renderer plugin assets for isolated output frames
+//! - `GET /output-frame` — shared isolated output iframe shell
 //! - `GET /health` — 200 OK
 //!
 //! The server tries to bind a stable per-channel preferred port first
@@ -61,6 +63,19 @@ use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 /// falling back to an OS-assigned port. Sourced from `runt_workspace` so the
 /// bump budget stays in sync with the per-channel range carve-out.
 const PREFERRED_PORT_ATTEMPTS: u16 = runt_workspace::PREFERRED_BLOB_PORT_RANGE;
+const OUTPUT_FRAME_PATH: &str = "/output-frame";
+const OUTPUT_FRAME_HTML: &str = include_str!("../../../src/components/isolated/frame.html");
+const OUTPUT_FRAME_CSP: &str = "default-src 'self' blob: data:; \
+script-src 'unsafe-inline' 'unsafe-eval' blob: https: http://127.0.0.1:*; \
+style-src 'unsafe-inline' https: http://127.0.0.1:*; \
+img-src * data: blob:; \
+font-src * data:; \
+media-src * data: blob:; \
+object-src * data: blob:; \
+connect-src *; \
+worker-src 'self' blob:; \
+frame-src 'none'; \
+child-src 'none';";
 
 /// Start the blob HTTP server.
 ///
@@ -170,8 +185,12 @@ async fn handle_request(
         text_response(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed")
     } else if path == "/health" {
         text_response(StatusCode::OK, "OK")
+    } else if path == OUTPUT_FRAME_PATH {
+        output_frame_response()
     } else if let Some(hash) = path.strip_prefix("/blob/") {
         serve_blob(&store, hash).await
+    } else if let Some(name) = path.strip_prefix("/renderer-plugins/") {
+        serve_raw_renderer_plugin(name).await
     } else if let Some(name) = path.strip_prefix("/plugins/") {
         serve_plugin(name).await
     } else {
@@ -179,6 +198,26 @@ async fn handle_request(
     };
 
     Ok(response)
+}
+
+/// Serve the isolated output iframe shell over the blob server origin.
+///
+/// MCP App hosts can declare the daemon blob origin in `frameDomains`, then
+/// the app can create nested output iframes with `src` instead of relying on
+/// `srcdoc` under host-specific CSP behavior.
+fn output_frame_response() -> Response<ResponseBody> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/html; charset=utf-8")
+        .header("Content-Security-Policy", OUTPUT_FRAME_CSP)
+        .header("Cache-Control", "no-store, no-cache, must-revalidate")
+        .header("Pragma", "no-cache")
+        .header("Access-Control-Allow-Origin", "*")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(full_body(OUTPUT_FRAME_HTML))
+        .unwrap_or_else(|_| {
+            text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
+        })
 }
 
 /// Serve a blob by hash with correct Content-Type.
@@ -262,6 +301,42 @@ async fn serve_plugin_with_dev_assets(
     serve_embedded_plugin(name)
 }
 
+/// Serve a raw renderer plugin asset for isolated output frames.
+///
+/// This route is separate from `/plugins/{name}` because `/plugins/*.js`
+/// wraps CJS bundles in the legacy MCP App `window.__nteract` loader. The
+/// shared isolated renderer expects raw CJS plugin code so it can inject it
+/// into the nested output iframe via `nteract/installRenderer`.
+async fn serve_raw_renderer_plugin(name: &str) -> Response<ResponseBody> {
+    if !is_valid_plugin_name(name) {
+        return text_response(StatusCode::NOT_FOUND, "Not Found");
+    }
+
+    let dev_assets_dir = dev_plugin_assets_dir();
+    serve_raw_renderer_plugin_with_dev_assets(name, dev_assets_dir.as_deref()).await
+}
+
+async fn serve_raw_renderer_plugin_with_dev_assets(
+    name: &str,
+    dev_assets_dir: Option<&Path>,
+) -> Response<ResponseBody> {
+    if !is_valid_plugin_name(name) {
+        return text_response(StatusCode::NOT_FOUND, "Not Found");
+    }
+
+    if !embedded_plugins::is_embedded(name) {
+        return text_response(StatusCode::NOT_FOUND, "Not Found");
+    }
+
+    if let Some(dir) = dev_assets_dir {
+        if let Some(response) = serve_dev_renderer_plugin_file(name, dir).await {
+            return response;
+        }
+    }
+
+    serve_raw_embedded_renderer_plugin(name)
+}
+
 fn is_valid_plugin_name(name: &str) -> bool {
     !name.is_empty() && !name.contains('/') && !name.contains("..")
 }
@@ -314,6 +389,39 @@ async fn serve_dev_plugin_file(name: &str, dir: &Path) -> Option<Response<Respon
     }
 }
 
+async fn serve_dev_renderer_plugin_file(name: &str, dir: &Path) -> Option<Response<ResponseBody>> {
+    let content_type = embedded_plugins::content_type_for(name)?;
+    let path = dir.join(name);
+
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => Some(
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", content_type)
+                .header("Content-Length", bytes.len().to_string())
+                .header("Cache-Control", "no-store")
+                .header("Access-Control-Allow-Origin", "*")
+                .header("X-Content-Type-Options", "nosniff")
+                .body(full_body(bytes))
+                .unwrap_or_else(|_| {
+                    text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
+                }),
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            warn!(
+                "[blob-server] failed to read dev renderer plugin asset {}: {}",
+                path.display(),
+                e
+            );
+            Some(text_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal Server Error",
+            ))
+        }
+    }
+}
+
 /// Serve an embedded renderer plugin asset (JS, CSS, or WASM).
 ///
 /// Plugins are embedded in the binary at compile time via `include_bytes!`.
@@ -342,6 +450,24 @@ fn serve_embedded_plugin(name: &str) -> Response<ResponseBody> {
         .header("Access-Control-Allow-Origin", "*")
         .header("X-Content-Type-Options", "nosniff")
         .body(body)
+        .unwrap_or_else(|_| {
+            text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
+        })
+}
+
+fn serve_raw_embedded_renderer_plugin(name: &str) -> Response<ResponseBody> {
+    let Some((bytes, content_type)) = embedded_plugins::get(name) else {
+        return text_response(StatusCode::NOT_FOUND, "Not Found");
+    };
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", content_type)
+        .header("Content-Length", bytes.len().to_string())
+        .header("Cache-Control", "public, max-age=86400")
+        .header("Access-Control-Allow-Origin", "*")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(full_body(Bytes::from_static(bytes)))
         .unwrap_or_else(|_| {
             text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
         })
@@ -734,6 +860,47 @@ mod tests {
             header_value(&headers, "access-control-allow-origin"),
             Some("*".into())
         );
+    }
+
+    #[tokio::test]
+    async fn test_output_frame_route_serves_shared_iframe_shell() {
+        let (_dir, _store, port) = setup().await;
+        let (status, headers, body) = get(port, OUTPUT_FRAME_PATH).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            header_value(&headers, "content-type"),
+            Some("text/html; charset=utf-8".into())
+        );
+        assert_eq!(
+            header_value(&headers, "content-security-policy"),
+            Some(OUTPUT_FRAME_CSP.into())
+        );
+        assert_eq!(
+            header_value(&headers, "cache-control"),
+            Some("no-store, no-cache, must-revalidate".into())
+        );
+        let body = String::from_utf8(body).expect("frame html is utf8");
+        assert!(body.contains("event.source !== window.parent"));
+    }
+
+    #[tokio::test]
+    async fn test_raw_renderer_plugin_route_serves_unwrapped_js() {
+        let dir = TempDir::new().unwrap();
+        let plugin_dir = dir.path().join("plugins");
+        tokio::fs::create_dir_all(&plugin_dir).await.unwrap();
+        tokio::fs::write(plugin_dir.join("plotly.js"), b"module.exports = {}")
+            .await
+            .unwrap();
+
+        let response =
+            serve_raw_renderer_plugin_with_dev_assets("plotly.js", Some(&plugin_dir)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_header(&response, "content-type"),
+            Some("application/javascript; charset=utf-8".into())
+        );
+        assert_eq!(response_body(response).await, b"module.exports = {}");
     }
 
     #[tokio::test]

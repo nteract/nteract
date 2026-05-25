@@ -11,7 +11,6 @@ import {
   type NteractEmbedHostContext,
   type NteractEmbedHostContextPatch,
 } from "./host-context";
-import { injectPluginsForMimes, needsPlugin } from "./iframe-libraries";
 import {
   IsolatedFrameRuntime,
   type IsolatedFrameRendererBundle,
@@ -28,6 +27,15 @@ export type NteractOutputRendererBundleProvider =
   | IsolatedFrameRendererBundle
   | (() => Promise<IsolatedFrameRendererBundle>);
 
+export interface NteractOutputRendererPlugin {
+  code: string;
+  css?: string;
+}
+
+export type NteractOutputRendererPluginLoader = (
+  mime: string,
+) => Promise<NteractOutputRendererPlugin | undefined>;
+
 export type NteractOutputEmbedDiagnosticHandler = (
   phase: string,
   details?: Record<string, unknown>,
@@ -39,6 +47,7 @@ export interface NteractOutputEmbedOptions {
   target: HTMLElement;
   output?: NteractEmbeddableOutput | readonly NteractEmbeddableOutput[];
   rendererBundle: NteractOutputRendererBundleProvider;
+  rendererPluginLoader?: NteractOutputRendererPluginLoader;
   hostContext?: NteractEmbedHostContextPatch;
   outputDocumentUrl?: string | null;
   blobResolver?: OutputBlobResolver;
@@ -226,9 +235,17 @@ export function createNteractOutputEmbed(
   }
 
   async function installRequiredPlugins(payloads: readonly RenderPayload[]): Promise<void> {
-    const mimes = payloads.map((payload) => payload.mimeType).filter((mime) => needsPlugin(mime));
-    if (mimes.length === 0) return;
-    await injectPluginsForMimes(runtime, mimes, injectedPlugins);
+    if (!options.rendererPluginLoader) {
+      return;
+    }
+
+    for (const mime of payloads.map((payload) => payload.mimeType)) {
+      if (injectedPlugins.has(mime)) continue;
+      const plugin = await options.rendererPluginLoader(mime);
+      if (!plugin) continue;
+      runtime.installRenderer(plugin.code, plugin.css);
+      injectedPlugins.add(mime);
+    }
   }
 
   async function renderResolved(payloads: readonly RenderPayload[]): Promise<void> {

@@ -300,6 +300,10 @@ body {
   margin-bottom: 0;
 }
 
+.shared-output-frame {
+  width: 100%;
+}
+
 /* ── Stream output ───────────────────────────────────────── */
 
 .stream {
