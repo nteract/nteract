@@ -42,24 +42,33 @@ fn validate_requested_execution_id(
     Ok(())
 }
 
-pub(crate) async fn handle(
+pub(crate) async fn handle_with_submitter(
     room: &Arc<NotebookRoom>,
     cell_id: String,
     execution_id: Option<String>,
+    submitter_actor_label: Option<&str>,
 ) -> NotebookResponse {
-    handle_inner(room, cell_id, execution_id, None).await
+    handle_inner(room, cell_id, execution_id, None, submitter_actor_label).await
 }
 
-pub(crate) async fn handle_guarded(
+pub(crate) async fn handle_guarded_with_submitter(
     room: &Arc<NotebookRoom>,
     cell_id: String,
     execution_id: Option<String>,
     observed_heads: Vec<String>,
+    submitter_actor_label: Option<&str>,
 ) -> NotebookResponse {
     if let Err(rejection) = guarded::ensure_trusted(room).await {
         return rejection.into_response();
     }
-    handle_inner(room, cell_id, execution_id, Some(observed_heads)).await
+    handle_inner(
+        room,
+        cell_id,
+        execution_id,
+        Some(observed_heads),
+        submitter_actor_label,
+    )
+    .await
 }
 
 async fn handle_inner(
@@ -67,6 +76,7 @@ async fn handle_inner(
     cell_id: String,
     requested_execution_id: Option<String>,
     observed_heads: Option<Vec<String>>,
+    submitter_actor_label: Option<&str>,
 ) -> NotebookResponse {
     // Agent-backed kernel: write execution to RuntimeStateDoc queue. During
     // launch, queue in the doc before the agent connects so all clients observe
@@ -92,6 +102,7 @@ async fn handle_inner(
                 &cell_id,
                 requested_execution_id.as_deref(),
                 observed_heads.as_deref(),
+                submitter_actor_label,
             )
             .await
             {
@@ -173,6 +184,7 @@ async fn queue_cell_if_current(
     cell_id: &str,
     requested_execution_id: Option<&str>,
     observed_heads: Option<&[String]>,
+    submitter_actor_label: Option<&str>,
 ) -> QueueCellResult {
     if let Some(execution_id) = requested_execution_id {
         if let Err(reason) = validate_requested_execution_id(execution_id, false) {
@@ -251,7 +263,12 @@ async fn queue_cell_if_current(
             if sd.get_execution(&execution_id).is_some() {
                 return Ok(false);
             }
-            sd.create_execution_with_source(&execution_id, &cell.source, seq)
+            sd.create_execution_with_source_and_submitter(
+                &execution_id,
+                &cell.source,
+                seq,
+                submitter_actor_label,
+            )
         }) {
             Ok(true) => break,
             Ok(false) if requested_execution_id.is_none() => {

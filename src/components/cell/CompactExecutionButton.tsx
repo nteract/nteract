@@ -7,6 +7,8 @@ interface CompactExecutionButtonProps {
   isExecuting?: boolean;
   /** Whether the cell is queued for execution */
   isQueued?: boolean;
+  /** Authenticated actor label for the client that submitted the active execution */
+  submittedByActorLabel?: string | null;
   /** Called when user clicks to execute */
   onExecute?: () => void;
   /** Called when user clicks to interrupt */
@@ -27,6 +29,7 @@ export function CompactExecutionButton({
   count,
   isExecuting = false,
   isQueued = false,
+  submittedByActorLabel = null,
   onExecute,
   onInterrupt,
   className,
@@ -40,6 +43,16 @@ export function CompactExecutionButton({
     }
   };
 
+  const title = isExecuting
+    ? submittedByActorLabel
+      ? `Stop execution submitted by ${submittedByActorLabel}`
+      : "Stop execution"
+    : isQueued
+      ? submittedByActorLabel
+        ? `Queued for execution by ${submittedByActorLabel}`
+        : "Queued for execution"
+      : "Run cell";
+
   return (
     <button
       type="button"
@@ -51,7 +64,7 @@ export function CompactExecutionButton({
         isQueued ? "cursor-default" : "cursor-pointer",
         className,
       )}
-      title={isExecuting ? "Stop execution" : isQueued ? "Queued for execution" : "Run cell"}
+      title={title}
       aria-disabled={isQueued || undefined}
       data-testid="execute-button"
     >

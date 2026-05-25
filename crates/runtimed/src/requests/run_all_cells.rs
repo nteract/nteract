@@ -66,28 +66,37 @@ fn allocate_daemon_execution_id(allocated_execution_ids: &mut HashSet<String>) -
     None
 }
 
-pub(crate) async fn handle(
+pub(crate) async fn handle_with_submitter(
     room: &NotebookRoom,
     cell_execution_ids: Option<HashMap<String, String>>,
+    submitter_actor_label: Option<&str>,
 ) -> NotebookResponse {
-    handle_inner(room, cell_execution_ids, None).await
+    handle_inner(room, cell_execution_ids, None, submitter_actor_label).await
 }
 
-pub(crate) async fn handle_guarded(
+pub(crate) async fn handle_guarded_with_submitter(
     room: &NotebookRoom,
     cell_execution_ids: Option<HashMap<String, String>>,
     observed_heads: Vec<String>,
+    submitter_actor_label: Option<&str>,
 ) -> NotebookResponse {
     if let Err(rejection) = guarded::ensure_trusted(room).await {
         return rejection.into_response();
     }
-    handle_inner(room, cell_execution_ids, Some(observed_heads)).await
+    handle_inner(
+        room,
+        cell_execution_ids,
+        Some(observed_heads),
+        submitter_actor_label,
+    )
+    .await
 }
 
 async fn handle_inner(
     room: &NotebookRoom,
     requested_execution_ids: Option<HashMap<String, String>>,
     observed_heads: Option<Vec<String>>,
+    submitter_actor_label: Option<&str>,
 ) -> NotebookResponse {
     // RuntimeStateDoc is the source of truth for visible queued work. During
     // kernel launch we can queue before the agent connects; once running, a
@@ -186,7 +195,12 @@ async fn handle_inner(
                 let mut created_execution_ids = Vec::new();
                 match room.state.with_doc(|sd| {
                     for (execution_id, _, source, seq) in &entries {
-                        if sd.create_execution_with_source(execution_id, source, *seq)? {
+                        if sd.create_execution_with_source_and_submitter(
+                            execution_id,
+                            source,
+                            *seq,
+                            submitter_actor_label,
+                        )? {
                             created_execution_ids.push(execution_id.clone());
                         } else {
                             return Ok(Some(execution_id.clone()));

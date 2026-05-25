@@ -185,6 +185,7 @@ export const CodeCell = memo(function CodeCell({
   const executionId = useCellExecutionId(cell.id);
   const execution = useExecution(executionId);
   const executionCount = execution?.execution_count ?? null;
+  const submittedByActorLabel = execution?.submitted_by_actor_label ?? null;
   const showOutputChrome = useMemo(() => needsOutputChrome(outputs), [outputs]);
 
   // Check cell metadata for visibility (JupyterLab convention)
@@ -369,6 +370,7 @@ export const CodeCell = memo(function CodeCell({
       count={executionCount}
       isExecuting={isExecuting}
       isQueued={isQueued}
+      submittedByActorLabel={submittedByActorLabel}
       onExecute={onExecute}
       onInterrupt={onInterrupt}
     />

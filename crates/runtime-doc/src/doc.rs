@@ -199,6 +199,12 @@ pub struct ExecutionState {
     /// queued entries by this to determine execution order.
     #[serde(default)]
     pub seq: Option<u64>,
+    /// Authenticated actor label for the client that submitted this execution.
+    ///
+    /// Set by the daemon coordinator when it accepts an execute/run-all request.
+    /// Older RuntimeStateDocs omit it.
+    #[serde(default)]
+    pub submitted_by_actor_label: Option<String>,
 }
 
 /// Environment sync state snapshot.
@@ -1175,6 +1181,18 @@ impl RuntimeStateDoc {
         source: &str,
         seq: u64,
     ) -> Result<bool, RuntimeStateError> {
+        self.create_execution_with_source_and_submitter(execution_id, source, seq, None)
+    }
+
+    /// Create a new execution entry with source code, queue sequence number,
+    /// and the authenticated actor that submitted it.
+    pub fn create_execution_with_source_and_submitter(
+        &mut self,
+        execution_id: &str,
+        source: &str,
+        seq: u64,
+        submitted_by_actor_label: Option<&str>,
+    ) -> Result<bool, RuntimeStateError> {
         let executions = self.scaffold_map("executions")?;
 
         // Don't overwrite if it already exists (idempotent)
@@ -1197,6 +1215,10 @@ impl RuntimeStateDoc {
         self.doc.put_object(&entry, "outputs", ObjType::Map)?;
         self.doc.put(&entry, "source", source)?;
         self.doc.put(&entry, "seq", ScalarValue::Uint(seq))?;
+        if let Some(actor_label) = submitted_by_actor_label {
+            self.doc
+                .put(&entry, "submitted_by_actor_label", actor_label)?;
+        }
         Ok(true)
     }
 
@@ -1346,6 +1368,8 @@ impl RuntimeStateDoc {
                 _ => None,
             });
 
+        let submitted_by_actor_label = self.read_opt_str(&entry, "submitted_by_actor_label");
+
         Some(ExecutionState {
             status,
             execution_count,
@@ -1353,6 +1377,7 @@ impl RuntimeStateDoc {
             outputs,
             source,
             seq,
+            submitted_by_actor_label,
         })
     }
 
@@ -3955,6 +3980,29 @@ mod tests {
         assert_eq!(es.status, "queued");
         assert_eq!(es.source, Some("x = 42".to_string()));
         assert_eq!(es.seq, Some(0));
+        assert_eq!(es.submitted_by_actor_label, None);
+    }
+
+    #[test]
+    fn test_create_execution_with_source_and_submitter() {
+        let mut doc = RuntimeStateDoc::new();
+        assert!(doc
+            .create_execution_with_source_and_submitter(
+                "exec-1",
+                "x = 42",
+                0,
+                Some("local:kyle/agent:codex:s1"),
+            )
+            .unwrap());
+
+        let es = doc.get_execution("exec-1").unwrap();
+        assert_eq!(es.status, "queued");
+        assert_eq!(es.source, Some("x = 42".to_string()));
+        assert_eq!(es.seq, Some(0));
+        assert_eq!(
+            es.submitted_by_actor_label.as_deref(),
+            Some("local:kyle/agent:codex:s1")
+        );
     }
 
     #[test]
@@ -5205,6 +5253,7 @@ mod tests {
                 outputs: vec![test_stream("hash1")],
                 source: None,
                 seq: None,
+                submitted_by_actor_label: None,
             },
         );
         let (changed, _) = diff_execution_outputs(&prev, &execs);
@@ -5224,6 +5273,7 @@ mod tests {
                 outputs: vec![],
                 source: None,
                 seq: None,
+                submitted_by_actor_label: None,
             },
         );
         let (changed, _) = diff_execution_outputs(&prev, &execs);
@@ -5244,6 +5294,7 @@ mod tests {
                 outputs: vec![],
                 source: None,
                 seq: None,
+                submitted_by_actor_label: None,
             },
         );
         let (changed, _) = diff_execution_outputs(&prev, &execs);
@@ -5267,6 +5318,7 @@ mod tests {
                 outputs: vec![test_stream("hash1")],
                 source: None,
                 seq: None,
+                submitted_by_actor_label: None,
             },
         );
         let (changed, snapshot) = diff_execution_outputs(&prev, &execs);
@@ -5287,6 +5339,7 @@ mod tests {
                 outputs: vec![],
                 source: None,
                 seq: None,
+                submitted_by_actor_label: None,
             },
         );
         let (changed, snapshot) = diff_execution_outputs(&snapshot, &execs);
@@ -5319,6 +5372,7 @@ mod tests {
                 outputs: vec![],
                 source: None,
                 seq: None,
+                submitted_by_actor_label: None,
             },
         );
 

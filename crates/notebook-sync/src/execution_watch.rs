@@ -288,6 +288,7 @@ mod tests {
                 outputs,
                 source: Some("print('hi')".to_string()),
                 seq: Some(1),
+                submitted_by_actor_label: None,
             },
         );
         tx.send(runtime).expect("send runtime");

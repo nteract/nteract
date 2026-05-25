@@ -21,6 +21,8 @@ export interface ExecutionSnapshot {
   success: boolean | null;
   /** Output IDs in emission order. Resolve via `useOutput(output_id)`. */
   output_ids: string[];
+  /** Authenticated actor label for the client that submitted this execution. */
+  submitted_by_actor_label?: string | null;
 }
 
 export interface NotebookQueueProjectionSnapshot {
@@ -77,7 +79,8 @@ function snapshotsEqual(a: ExecutionSnapshot, b: ExecutionSnapshot): boolean {
   if (
     a.execution_count !== b.execution_count ||
     a.status !== b.status ||
-    a.success !== b.success
+    a.success !== b.success ||
+    (a.submitted_by_actor_label ?? null) !== (b.submitted_by_actor_label ?? null)
   ) {
     return false;
   }

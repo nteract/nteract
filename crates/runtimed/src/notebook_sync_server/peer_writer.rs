@@ -149,6 +149,7 @@ pub(super) fn spawn_peer_request_worker(
     multipart_uploads: MultipartUploadState,
     notebook_id: String,
     peer_id: String,
+    submitter_actor_label: String,
 ) -> PeerRequestWorker {
     let (tx, mut rx) = mpsc::channel::<notebook_protocol::protocol::NotebookRequestEnvelope>(
         PEER_REQUEST_QUEUE_CAPACITY,
@@ -175,7 +176,13 @@ pub(super) fn spawn_peer_request_worker(
                     {
                         response
                     } else {
-                        handle_notebook_request(&room, envelope.request, daemon.clone()).await
+                        handle_notebook_request(
+                            &room,
+                            envelope.request,
+                            daemon.clone(),
+                            Some(submitter_actor_label.as_str()),
+                        )
+                        .await
                     }
                 }
                 Err(error) => notebook_protocol::protocol::NotebookResponse::Error { error },

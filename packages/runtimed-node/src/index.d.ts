@@ -26,6 +26,7 @@ export interface ExecutionViewSnapshot {
   status: "queued" | "running" | "done" | "error" | (string & {});
   success: boolean | null;
   output_ids: string[];
+  submitted_by_actor_label?: string | null;
 }
 
 export interface ExecutionQueueProjection {
