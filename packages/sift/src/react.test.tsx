@@ -120,6 +120,23 @@ describe("SiftTable", () => {
     expect(labels[2].textContent).toBe("Score");
   });
 
+  it("surfaces the mounted engine and visible data rows", async () => {
+    const rows = [
+      [1, "Alice", 95],
+      [2, "Bob", 87],
+      [3, "Carol", 92],
+    ];
+    const data = makeTableData(rows);
+    const onReady = vi.fn();
+
+    render(<SiftTable data={data} onReady={onReady} />);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const [engine, readyData] = onReady.mock.calls[0];
+    expect(readyData).toBe(data);
+    expect(engine.getVisibleDataRows(2)).toEqual([0]);
+  });
+
   it("shows row count in stats bar", async () => {
     const rows = Array.from({ length: 25 }, (_, i) => [i, `Person ${i}`, i * 10]);
     const data = makeTableData(rows);
@@ -178,6 +195,7 @@ describe("SiftTable", () => {
 
     expect(container.querySelector(".sift-viewport")).toBe(viewport);
     expect(firstDispose).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalled();
     expect(onChange.mock.calls.at(-1)?.[0]).toMatchObject({ totalCount: 2 });
   });
 

@@ -1,0 +1,174 @@
+* {
+  box-sizing: border-box;
+}
+
+:root {
+  color: var(--figma-color-text, #111827);
+  background: var(--figma-color-bg, #ffffff);
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button,
+.file-button {
+  align-items: center;
+  background: var(--figma-color-bg-secondary, #f3f4f6);
+  border: 1px solid var(--figma-color-border, #d1d5db);
+  border-radius: 6px;
+  color: var(--figma-color-text, #111827);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 600;
+  height: 32px;
+  justify-content: center;
+  padding: 0 10px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.primary {
+  background: var(--figma-color-bg-brand, #0d63ce);
+  border-color: var(--figma-color-bg-brand, #0d63ce);
+  color: var(--figma-color-text-onbrand, #ffffff);
+}
+
+.plugin-shell {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  height: 100vh;
+  min-height: 0;
+}
+
+.control-bar {
+  align-items: end;
+  border-bottom: 1px solid var(--figma-color-border, #e5e7eb);
+  display: grid;
+  gap: 14px;
+  grid-template-columns: 1fr auto;
+  padding: 12px;
+}
+
+.source-controls,
+.insert-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.source-controls {
+  align-items: end;
+  min-width: 0;
+}
+
+.insert-controls {
+  align-items: end;
+}
+
+.button-row {
+  display: flex;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.field,
+.number-field {
+  display: grid;
+  gap: 5px;
+}
+
+.field {
+  flex: 1;
+  min-width: 220px;
+}
+
+.field span,
+.number-field span {
+  color: var(--figma-color-text-secondary, #6b7280);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.field input,
+.number-field input {
+  border: 1px solid var(--figma-color-border, #d1d5db);
+  border-radius: 6px;
+  color: var(--figma-color-text, #111827);
+  height: 32px;
+  min-width: 0;
+  padding: 0 9px;
+}
+
+.number-field input {
+  width: 66px;
+}
+
+.file-button {
+  position: relative;
+}
+
+.file-button input {
+  inset: 0;
+  opacity: 0;
+  position: absolute;
+  width: 100%;
+}
+
+.status-line {
+  border-bottom: 1px solid var(--figma-color-border, #e5e7eb);
+  color: var(--figma-color-text-secondary, #6b7280);
+  font-size: 12px;
+  min-height: 33px;
+  padding: 9px 12px;
+}
+
+.status-line.error {
+  color: var(--figma-color-text-danger, #b42318);
+}
+
+.status-line.ready {
+  color: var(--figma-color-text-success, #027a48);
+}
+
+.table-stage {
+  min-height: 0;
+  padding: 12px;
+}
+
+.table-stage > div {
+  height: 100%;
+}
+
+.empty-state {
+  align-items: center;
+  border: 1px dashed var(--figma-color-border, #d1d5db);
+  border-radius: 8px;
+  color: var(--figma-color-text-secondary, #6b7280);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  justify-content: center;
+}
+
+.empty-state strong {
+  color: var(--figma-color-text, #111827);
+}

@@ -67,6 +67,8 @@ export type SiftTableProps = {
   columnOverrides?: Record<string, Partial<Column>>;
   /** Called whenever sort or filter state changes from UI interaction. */
   onChange?: (state: TableEngineState) => void;
+  /** Called when a mounted engine is ready or receives replacement data. */
+  onReady?: (engine: TableEngine, tableData: TableData) => void;
   /** Optional control rendered in Sift's footer before built-in buttons. */
   footerControl?: ReactNode;
   /** CSS class name for the container div. */
@@ -273,6 +275,7 @@ export function SiftTable({
   typeOverrides,
   columnOverrides,
   onChange,
+  onReady,
   footerControl,
   className,
   style,
@@ -289,9 +292,15 @@ export function SiftTable({
   // Stable callback ref to avoid re-mounting engine when onChange identity changes
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
 
   const stableOnChange = useCallback((state: TableEngineState) => {
     onChangeRef.current?.(state);
+  }, []);
+
+  const notifyReady = useCallback((engine: TableEngine, tableData: TableData) => {
+    onReadyRef.current?.(engine, tableData);
   }, []);
 
   const getFooterControlElement = useCallback(() => {
@@ -345,6 +354,7 @@ export function SiftTable({
 
     if (engineRef.current) {
       engineRef.current.replaceData(dataSource);
+      notifyReady(engineRef.current, dataSource);
       setStatus("ready");
       return;
     }
@@ -356,8 +366,9 @@ export function SiftTable({
       onChange: stableOnChange,
       footerControl: getFooterControlElement(),
     });
+    notifyReady(engineRef.current, dataSource);
     setStatus("ready");
-  }, [dataSource, stableOnChange, getFooterControlElement, getEngineElement]);
+  }, [dataSource, stableOnChange, notifyReady, getFooterControlElement, getEngineElement]);
 
   // Load Arrow stream manifest chunks through the appendable WASM store.
   useEffect(() => {
@@ -370,6 +381,7 @@ export function SiftTable({
     function mountEngine(tableData: TableData) {
       if (engineRef.current) {
         engineRef.current.replaceData(tableData);
+        notifyReady(engineRef.current, tableData);
         disposePendingStore = null;
         return;
       }
@@ -379,6 +391,7 @@ export function SiftTable({
         onChange: stableOnChange,
         footerControl: getFooterControlElement(),
       });
+      notifyReady(engineRef.current, tableData);
       disposePendingStore = null;
     }
 
@@ -466,7 +479,14 @@ export function SiftTable({
       disposePendingStore?.();
       disposePendingStore = null;
     };
-  }, [manifestKey, columnOverrides, stableOnChange, getFooterControlElement, getEngineElement]);
+  }, [
+    manifestKey,
+    columnOverrides,
+    stableOnChange,
+    notifyReady,
+    getFooterControlElement,
+    getEngineElement,
+  ]);
 
   // Load from URL when `url` prop is provided.
   // Detects format via Content-Type header + magic byte fallback:
@@ -482,6 +502,7 @@ export function SiftTable({
     function mountEngine(tableData: TableData) {
       if (engineRef.current) {
         engineRef.current.replaceData(tableData);
+        notifyReady(engineRef.current, tableData);
         disposePendingStore = null;
         return;
       }
@@ -491,6 +512,7 @@ export function SiftTable({
         onChange: stableOnChange,
         footerControl: getFooterControlElement(),
       });
+      notifyReady(engineRef.current, tableData);
       disposePendingStore = null;
     }
 
@@ -635,6 +657,7 @@ export function SiftTable({
     typeOverrides,
     columnOverrides,
     stableOnChange,
+    notifyReady,
     getFooterControlElement,
     getEngineElement,
   ]);

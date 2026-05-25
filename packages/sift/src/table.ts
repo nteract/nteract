@@ -148,6 +148,8 @@ export type TableEngine = {
   getFilters(): { column: string; filter: ColumnFilter }[];
   /** Get the full explorer state (sort + filters + counts) in a serializable format. */
   getState(): TableEngineState;
+  /** Data-row indices currently visible in the viewport, in the active filtered/sorted order. */
+  getVisibleDataRows(limit?: number): number[];
   /**
    * Currently focused (expanded) data row, or `null` when every row uses the
    * collapsed text-line cap. Tracked by data row, so focus survives sort
@@ -2619,6 +2621,22 @@ export function createTable(
     };
   }
 
+  function getVisibleDataRows(limit = 100): number[] {
+    if (filteredCount === 0 || limit <= 0) return [];
+    if (heightsDirty) recomputeAllHeights();
+
+    const headerH = headerEl.offsetHeight;
+    const virtualTop = viewport.scrollTop + virtualOffset;
+    const virtualBottom = virtualTop + Math.max(0, viewport.clientHeight - headerH);
+    const start = Math.min(filteredCount - 1, rowAtOffset(virtualTop));
+    const end = Math.min(filteredCount, rowAtOffset(virtualBottom) + 1, start + limit);
+    const rows: number[] = [];
+    for (let i = start; i < end; i++) {
+      rows.push(viewIndices[i]);
+    }
+    return rows;
+  }
+
   function notifyChange() {
     options?.onChange?.(getState());
   }
@@ -2837,6 +2855,7 @@ export function createTable(
     setSort: setSortByName,
     getFilters,
     getState,
+    getVisibleDataRows,
     getFocusedDataRow: () => focusedDataRow,
     setFocusedDataRow,
   };

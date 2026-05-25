@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "types": ["vite/client"],
+    "baseUrl": ".",
+    "paths": {
+      "sift-wasm/*": ["../../crates/sift-wasm/pkg/*"]
+    }
+  },
+  "include": ["src/shared.ts", "src/ui"]
+}

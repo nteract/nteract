@@ -1,6 +1,7 @@
 packages:
   - apps/*
   - packages/*
+  - plugins/figma-sift-slides
   - packages/runtimed-node/npm/*
   - plugins/nteract/*
 
