@@ -44,9 +44,12 @@ known repeated work:
    `display_index` without sorting and scanning every output in the execution.
 2. Cached or indexed output ordering metadata so append/upsert paths do not
    recompute order by decoding all manifests.
-3. WASM-side output-id indexing so runtime sync handling does not repeatedly
+3. Targeted RuntimeStateDoc readers for runtime-agent queue and comm handling
+   so state-sync bookkeeping does not materialize every flat output when it
+   only needs queued execution metadata or widget comm state.
+4. WASM-side output-id indexing so runtime sync handling does not repeatedly
    read the full runtime state just to derive output deltas.
-4. Frontend output materialization cleanup so runtime outputs flow through the
+5. Frontend output materialization cleanup so runtime outputs flow through the
    output store rather than repeated whole-output JSON cache keys.
 
 Each item is independently mergeable and should include a small benchmark or

@@ -1,6 +1,6 @@
 use runtimed::output_commit_measure::{
     measure_current_output_commit_loop, measure_ordered_worker_output_commit_model,
-    OutputCommitKind, OutputCommitMeasurementConfig,
+    measure_runtime_state_reader_paths, OutputCommitKind, OutputCommitMeasurementConfig,
 };
 
 #[tokio::main]
@@ -36,6 +36,10 @@ async fn main() -> anyhow::Result<()> {
 
             let worker = measure_ordered_worker_output_commit_model(config).await?;
             println!("{}", serde_json::to_string(&worker)?);
+
+            for reader in measure_runtime_state_reader_paths(config).await? {
+                println!("{}", serde_json::to_string(&reader)?);
+            }
         }
     }
 

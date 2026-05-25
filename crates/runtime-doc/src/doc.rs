@@ -1349,50 +1349,11 @@ impl RuntimeStateDoc {
 
         let status = self.read_str(&entry, "status");
 
-        let execution_count = self
-            .doc
-            .get(&entry, "execution_count")
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| match value {
-                Value::Scalar(s) => match s.as_ref() {
-                    ScalarValue::Int(n) => Some(*n),
-                    ScalarValue::Uint(n) => Some(*n as i64),
-                    _ => None,
-                },
-                _ => None,
-            });
-
-        let success = self
-            .doc
-            .get(&entry, "success")
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| match value {
-                Value::Scalar(s) => match s.as_ref() {
-                    ScalarValue::Boolean(b) => Some(*b),
-                    _ => None,
-                },
-                _ => None,
-            });
-
+        let execution_count = self.read_execution_count(&entry);
+        let success = self.read_execution_success(&entry);
         let outputs = self.get_outputs(execution_id);
-
         let source = self.read_opt_str(&entry, "source");
-
-        let seq = self
-            .doc
-            .get(&entry, "seq")
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| match value {
-                Value::Scalar(s) => match s.as_ref() {
-                    ScalarValue::Uint(n) => Some(*n),
-                    ScalarValue::Int(n) => Some(*n as u64),
-                    _ => None,
-                },
-                _ => None,
-            });
+        let seq = self.read_execution_seq(&entry);
 
         let submitted_by_actor_label = self.read_opt_str(&entry, "submitted_by_actor_label");
 
@@ -1407,17 +1368,83 @@ impl RuntimeStateDoc {
         })
     }
 
+    fn read_execution_count(&self, entry: &ObjId) -> Option<i64> {
+        self.doc
+            .get(entry, "execution_count")
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| match value {
+                Value::Scalar(s) => match s.as_ref() {
+                    ScalarValue::Int(n) => Some(*n),
+                    ScalarValue::Uint(n) => Some(*n as i64),
+                    _ => None,
+                },
+                _ => None,
+            })
+    }
+
+    fn read_execution_success(&self, entry: &ObjId) -> Option<bool> {
+        self.doc
+            .get(entry, "success")
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| match value {
+                Value::Scalar(s) => match s.as_ref() {
+                    ScalarValue::Boolean(b) => Some(*b),
+                    _ => None,
+                },
+                _ => None,
+            })
+    }
+
+    fn read_execution_seq(&self, entry: &ObjId) -> Option<u64> {
+        self.doc
+            .get(entry, "seq")
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| match value {
+                Value::Scalar(s) => match s.as_ref() {
+                    ScalarValue::Uint(n) => Some(*n),
+                    ScalarValue::Int(n) => Some(*n as u64),
+                    _ => None,
+                },
+                _ => None,
+            })
+    }
+
     /// Get execution entries with `status == "queued"`, sorted by `seq`.
     ///
     /// Used by the runtime agent to discover new work via CRDT sync. Returns
     /// `(execution_id, ExecutionState)` pairs in execution order.
     pub fn get_queued_executions(&self) -> Vec<(String, ExecutionState)> {
-        let state = self.read_state();
-        let mut queued: Vec<(String, ExecutionState)> = state
-            .executions
-            .into_iter()
-            .filter(|(_, exec)| exec.status == "queued")
-            .collect();
+        let Some(executions) = self.get_map("executions") else {
+            return Vec::new();
+        };
+
+        let mut queued = Vec::new();
+        for execution_id in self.doc.keys(&executions) {
+            let Some((_, entry)) = self.doc.get(&executions, &execution_id).ok().flatten() else {
+                continue;
+            };
+            let status = self.read_str(&entry, "status");
+            if status != "queued" {
+                continue;
+            }
+
+            queued.push((
+                execution_id,
+                ExecutionState {
+                    status,
+                    execution_count: self.read_execution_count(&entry),
+                    success: self.read_execution_success(&entry),
+                    outputs: Vec::new(),
+                    source: self.read_opt_str(&entry, "source"),
+                    seq: self.read_execution_seq(&entry),
+                    submitted_by_actor_label: self.read_opt_str(&entry, "submitted_by_actor_label"),
+                },
+            ));
+        }
+
         queued.sort_by_key(|(_, exec)| exec.seq.unwrap_or(u64::MAX));
         queued
     }
@@ -2572,6 +2599,25 @@ impl RuntimeStateDoc {
         })
     }
 
+    /// Read all comm entries without projecting the full RuntimeState.
+    ///
+    /// Runtime-agent sync handling diffs comm state on every state-frame
+    /// receive. Keeping that path narrow avoids materializing execution
+    /// outputs when only widget comm metadata is needed.
+    pub fn get_comms(&self) -> HashMap<String, CommDocEntry> {
+        let Some(comms_obj) = self.get_map("comms") else {
+            return HashMap::new();
+        };
+
+        let mut comms = HashMap::new();
+        for key in self.doc.keys(&comms_obj) {
+            if let Some(entry) = self.get_comm(&key) {
+                comms.insert(key, entry);
+            }
+        }
+        comms
+    }
+
     /// Append an output manifest to a comm's outputs list (OutputModel widgets).
     ///
     /// Returns `false` if the comm doesn't exist.
@@ -2758,19 +2804,7 @@ impl RuntimeStateDoc {
             })
             .unwrap_or_default();
 
-        // Read comms map
-        let comms = self
-            .get_map("comms")
-            .map(|comms_obj| {
-                let mut map = HashMap::new();
-                for key in self.doc.keys(&comms_obj) {
-                    if let Some(entry) = self.get_comm(&key) {
-                        map.insert(key, entry);
-                    }
-                }
-                map
-            })
-            .unwrap_or_default();
+        let comms = self.get_comms();
 
         RuntimeState {
             kernel: kernel_state,
@@ -4109,6 +4143,27 @@ mod tests {
     }
 
     #[test]
+    fn get_queued_executions_projects_only_queue_metadata() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution_with_source("done-exec", "display('done')", 1)
+            .unwrap();
+        doc.set_execution_running("done-exec").unwrap();
+        doc.append_output("done-exec", &test_display("hash-done"))
+            .unwrap();
+        doc.set_execution_done("done-exec", true).unwrap();
+        doc.create_execution_with_source("queued-exec", "display('queued')", 2)
+            .unwrap();
+
+        let queued = doc.get_queued_executions();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].0, "queued-exec");
+        assert_eq!(queued[0].1.status, "queued");
+        assert_eq!(queued[0].1.source.as_deref(), Some("display('queued')"));
+        assert_eq!(queued[0].1.seq, Some(2));
+        assert!(queued[0].1.outputs.is_empty());
+    }
+
+    #[test]
     fn read_state_projects_queued_executions_before_kernel_queue_catches_up() {
         let mut doc = RuntimeStateDoc::new();
         doc.create_execution_with_source("exec-2", "y = 2", 2)
@@ -5256,6 +5311,29 @@ mod tests {
         assert_eq!(state.comms.len(), 2);
         assert_eq!(state.comms["comm-1"].model_name, "Slider");
         assert_eq!(state.comms["comm-2"].model_name, "Button");
+    }
+
+    #[test]
+    fn test_get_comms_matches_read_state_projection() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution_with_source("exec-1", "display('x')", 0)
+            .unwrap();
+        doc.set_execution_running("exec-1").unwrap();
+        doc.append_output("exec-1", &test_display("hash-output"))
+            .unwrap();
+        doc.put_comm(
+            "comm-1",
+            "jupyter.widget",
+            "mod",
+            "Slider",
+            &serde_json::json!({"v": 1}),
+            0,
+        )
+        .unwrap();
+
+        let comms = doc.get_comms();
+        let state = doc.read_state();
+        assert_eq!(comms, state.comms);
     }
 
     #[test]
