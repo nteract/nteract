@@ -416,6 +416,11 @@ async function routeSnapshot(
     return json({ error: "method not allowed" }, 405);
   }
 
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
+  }
+
   const identity = await authorizePublishOrCreateOrResponse(request, env, notebookId, "snapshots");
   if (identity instanceof Response) {
     return identity;
@@ -520,6 +525,11 @@ async function routeRuntimeSnapshot(
 
   if (request.method !== "PUT") {
     return json({ error: "method not allowed" }, 405);
+  }
+
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
   }
 
   const identity = await authorizePublishOrCreateOrResponse(
@@ -996,6 +1006,11 @@ async function routeBlob(
 
   if (request.method !== "PUT") {
     return json({ error: "method not allowed" }, 405);
+  }
+
+  const originRejection = rejectUntrustedMutationOrigin(request, env);
+  if (originRejection) {
+    return originRejection;
   }
 
   const identity = await authenticateRequestOrResponse(request, env);

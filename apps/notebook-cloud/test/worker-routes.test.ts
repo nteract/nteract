@@ -370,6 +370,115 @@ describe("Worker artifact routes", () => {
     assert.equal(env.NOTEBOOK_SNAPSHOTS.objects.size, 0);
   });
 
+  it("requires trusted origins for cookie-backed artifact mutations", async () => {
+    const { env: accessEnv, token } = await accessTokenFixture({ subject: "alice" });
+    const env = fakeEnv(accessEnv);
+    seedNotebook(env, "access-artifact-demo");
+    seedAcl(env, {
+      notebookId: "access-artifact-demo",
+      subject: "user:cloudflare-access:alice",
+      scope: "owner",
+    });
+    const body = new Uint8Array([1, 2, 3, 4]);
+    const blobHash = await sha256Hex(body);
+    const routes = [
+      "/api/n/access-artifact-demo/runtime-snapshots/runtime-heads",
+      "/api/n/access-artifact-demo/snapshots/notebook-heads",
+      `/api/n/access-artifact-demo/blobs/${blobHash}`,
+    ];
+    const headers = {
+      "Content-Type": "application/octet-stream",
+      Cookie: `CF_Authorization=${token}`,
+      "X-Operator": "browser:tab",
+      "X-Scope": "owner",
+    };
+
+    for (const route of routes) {
+      const missingOrigin = await worker.fetch(
+        new Request(new URL(route, "https://cloud.test"), {
+          method: "PUT",
+          headers,
+          body,
+        }),
+        env,
+        fakeContext(),
+      );
+      assert.equal(missingOrigin.status, 403, route);
+      assert.deepEqual(await missingOrigin.json(), { error: "request origin is required" }, route);
+
+      const untrustedOrigin = await worker.fetch(
+        new Request(new URL(route, "https://cloud.test"), {
+          method: "PUT",
+          headers: {
+            ...headers,
+            Origin: "https://evil.example",
+          },
+          body,
+        }),
+        env,
+        fakeContext(),
+      );
+      assert.equal(untrustedOrigin.status, 403, route);
+      assert.deepEqual(
+        await untrustedOrigin.json(),
+        { error: "request origin is not allowed" },
+        route,
+      );
+    }
+
+    assert.equal(env.NOTEBOOK_SNAPSHOTS.objects.size, 0);
+    assert.equal(env.DB.revisions.length, 0);
+    assert.equal(env.DB.blobs.size, 0);
+  });
+
+  it("allows trusted browser and no-Origin CLI Access artifact mutations", async () => {
+    const { env: accessEnv, token } = await accessTokenFixture({ subject: "alice" });
+    const env = fakeEnv({
+      ...accessEnv,
+      NOTEBOOK_CLOUD_ALLOWED_ORIGINS: "https://notebooks.example.com",
+    });
+    seedNotebook(env, "access-artifact-demo");
+    seedAcl(env, {
+      notebookId: "access-artifact-demo",
+      subject: "user:cloudflare-access:alice",
+      scope: "owner",
+    });
+    const body = new Uint8Array([1, 2, 3, 4]);
+
+    const browserPut = await worker.fetch(
+      new Request("https://cloud.test/api/n/access-artifact-demo/runtime-snapshots/browser", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          Cookie: `CF_Authorization=${token}`,
+          Origin: "https://cloud.test",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+        },
+        body,
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(browserPut.status, 201);
+
+    const cliPut = await worker.fetch(
+      new Request("https://cloud.test/api/n/access-artifact-demo/runtime-snapshots/cli", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "CF-Access-Token": token,
+          "X-Operator": "cli:smoke",
+          "X-Scope": "owner",
+        },
+        body,
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(cliPut.status, 201);
+  });
+
   it("allows runtime peers to upload content-addressed output blobs", async () => {
     const env = fakeEnv();
     seedNotebook(env, "runtime-demo");
