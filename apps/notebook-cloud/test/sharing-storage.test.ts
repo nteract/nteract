@@ -402,6 +402,32 @@ describe("hosted sharing storage", () => {
     assert.equal(env.DB.invites.get("invite-expired")?.status, "pending");
   });
 
+  it("does not re-accept revoked invites from storage resolution", async () => {
+    const env = fakeEnv();
+    await createPendingNotebookInvite(env, {
+      id: "invite-revoked",
+      notebookId: "notebook-1",
+      email: "alice@example.com",
+      providerHint: "cloudflare-access",
+      scope: "editor",
+      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      timestamp: "2026-05-24T11:00:00.000Z",
+    });
+    env.DB.invites.get("invite-revoked")!.status = "revoked";
+    env.DB.invites.get("invite-revoked")!.revoked_at = "2026-05-24T11:30:00.000Z";
+
+    const resolution = await resolveNotebookInvitesForLogin(
+      env,
+      accessLogin(),
+      "2026-05-24T12:00:00.000Z",
+    );
+
+    assert.equal(resolution.acceptedInvites.length, 0);
+    assert.equal(resolution.aclGrants.length, 0);
+    assert.equal(env.DB.acl.length, 0);
+    assert.equal(env.DB.invites.get("invite-revoked")?.status, "revoked");
+  });
+
   it("reports only invites whose row actually transitioned to accepted", async () => {
     const env = fakeEnv();
     await createPendingNotebookInvite(env, {

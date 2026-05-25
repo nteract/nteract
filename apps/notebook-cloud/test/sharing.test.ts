@@ -119,6 +119,13 @@ describe("hosted notebook sharing prototype", () => {
     assert.equal(inviteLookupKey(null, "alice@example.com"), "*:alice@example.com");
   });
 
+  it("rejects structurally invalid invite emails", () => {
+    assert.throws(() => normalizeInviteEmail("@@"), /invite email is invalid/);
+    assert.throws(() => normalizeInviteEmail("a@b@c"), /invite email is invalid/);
+    assert.throws(() => normalizeInviteEmail("@example.com"), /invite email is invalid/);
+    assert.throws(() => normalizeInviteEmail("alice@"), /invite email is invalid/);
+  });
+
   it("represents public viewers as explicit public ACL rows", () => {
     assert.deepEqual(publicViewerAclGrant("notebook-1", "user:dev:alice/desktop:test"), {
       notebookId: "notebook-1",
