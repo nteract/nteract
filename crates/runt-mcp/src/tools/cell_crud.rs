@@ -26,7 +26,6 @@ pub struct CreateCellParams {
     #[serde(default)]
     pub cell_type: Option<String>,
     /// Insert after this cell. Omit to append at the end; pass null to insert at the beginning.
-    #[serde(default)]
     pub after_cell_id: Option<String>,
     /// Execute the cell immediately after creation. Response includes the
     /// execution_id plus a compact output summary when the cell is code.

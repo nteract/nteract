@@ -299,7 +299,6 @@
       "additionalProperties": false,
       "properties": {
         "after_cell_id": {
-          "default": null,
           "description": "Insert after this cell. Omit to append at the end; pass null to insert at the beginning.",
           "type": [
             "string",

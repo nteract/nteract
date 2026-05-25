@@ -673,6 +673,10 @@ mod tests {
             .expect("create_cell schema should expose properties");
 
         assert!(properties.contains_key("after_cell_id"));
+        assert!(properties
+            .get("after_cell_id")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|schema| !schema.contains_key("default")));
         assert!(!properties.contains_key("index"));
         assert!(!properties.contains_key("position"));
         assert_eq!(
