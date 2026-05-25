@@ -9,7 +9,9 @@ import { ReadOnlyNotebookCell } from "@/components/cell/ReadOnlyNotebookCell";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { MediaProvider } from "@/components/outputs/media-provider";
+import { ThemeToggle } from "@/components/ui/theme-toggle";
 import type { TracebackCellTarget } from "@/components/outputs/traceback-output";
+import { useTheme } from "@/hooks/useTheme";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { isTextAttributionEvent } from "runtimed";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
@@ -44,7 +46,12 @@ import {
 import { resolveCell, type RenderCell, type ResolvedCell } from "./render-resolution";
 import { preloadSiftWasmForCells } from "./sift-preload";
 import { cloudSourceLanguage } from "./source-language";
-import { installDocumentThemeSync } from "./theme";
+import {
+  applyDocumentTheme,
+  CLOUD_VIEWER_THEME_STORAGE_KEY,
+  installDocumentThemeSync,
+  outputDocumentUrlForTheme,
+} from "./theme";
 import "./index.css";
 
 interface CloudViewerConfig {
@@ -75,7 +82,6 @@ type ViewerStatus =
 interface ViewerRuntime {
   config: CloudViewerConfig;
   blobResolver: ReturnType<typeof createNotebookCloudBlobResolver>;
-  outputHostContext: NteractEmbedHostContextPatch;
 }
 
 type ViewerRuntimeState =
@@ -132,14 +138,6 @@ function loadViewerRuntime(): ViewerRuntimeState {
           baseUrl: location.href,
           blobBasePath: config.blobBasePath,
         }),
-        outputHostContext: {
-          nteract: {
-            rendererAssetsBaseUrl: new URL(config.rendererAssetsBasePath, location.href).href,
-            outputDocumentUrl: config.outputDocumentBaseUrl
-              ? new URL(config.outputDocumentBaseUrl, location.href).href
-              : undefined,
-          },
-        },
       },
     };
   } catch (error) {
@@ -161,7 +159,8 @@ function App() {
 }
 
 function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
-  const { config, blobResolver, outputHostContext } = runtime;
+  const { config, blobResolver } = runtime;
+  const { theme, setTheme, resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const [status, setStatus] = useState<ViewerStatus>({
     kind: "loading",
     message: "Loading notebook snapshot...",
@@ -186,6 +185,23 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
     cloudPrototypeAuthFromWindow(),
   );
   const textAttributionSequenceRef = useRef(0);
+  const outputHostContext = useMemo<NteractEmbedHostContextPatch>(
+    () => ({
+      nteract: {
+        rendererAssetsBaseUrl: new URL(config.rendererAssetsBasePath, location.href).href,
+        outputDocumentUrl: outputDocumentUrlForTheme(
+          config.outputDocumentBaseUrl,
+          resolvedTheme,
+          location.href,
+        ),
+      },
+    }),
+    [config.outputDocumentBaseUrl, config.rendererAssetsBasePath, resolvedTheme],
+  );
+
+  useEffect(() => {
+    applyDocumentTheme(resolvedTheme);
+  }, [resolvedTheme]);
 
   useEffect(() => {
     cellsRef.current = cells;
@@ -487,6 +503,8 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         <CloudPresenceStatus presence={presence} connectionScope={connectionScope} />
 
         <div className="cloud-toolbar-actions">
+          <ThemeToggle theme={theme} onThemeChange={setTheme} className="cloud-theme-toggle" />
+
           <CloudAuthControls
             authState={authState}
             connectionActorLabel={connectionActorLabel}

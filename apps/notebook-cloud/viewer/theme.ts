@@ -1,15 +1,62 @@
+export type CloudViewerThemeMode = "light" | "dark" | "system";
+export type ResolvedCloudViewerTheme = "light" | "dark";
+
+export const CLOUD_VIEWER_THEME_STORAGE_KEY = "nteract.cloud.viewer.theme";
+
+export function storedCloudViewerTheme(
+  storage: Pick<Storage, "getItem"> | undefined = browserLocalStorage(),
+): CloudViewerThemeMode {
+  try {
+    const stored = storage?.getItem(CLOUD_VIEWER_THEME_STORAGE_KEY);
+    if (stored === "light" || stored === "dark" || stored === "system") {
+      return stored;
+    }
+  } catch {
+    // localStorage may be unavailable in private or embedded contexts.
+  }
+  return "system";
+}
+
+export function resolveCloudViewerTheme(
+  theme: CloudViewerThemeMode,
+  systemPrefersDark = prefersDarkTheme(),
+): ResolvedCloudViewerTheme {
+  if (theme === "system") return systemPrefersDark ? "dark" : "light";
+  return theme;
+}
+
+export function applyDocumentTheme(theme: ResolvedCloudViewerTheme): void {
+  if (typeof document === "undefined") return;
+
+  const isDark = theme === "dark";
+  document.documentElement.classList.toggle("dark", isDark);
+  document.documentElement.classList.toggle("light", !isDark);
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+}
+
+export function outputDocumentUrlForTheme(
+  outputDocumentBaseUrl: string | null | undefined,
+  theme: ResolvedCloudViewerTheme,
+  pageUrl = typeof location === "undefined" ? "http://localhost/" : location.href,
+): string | undefined {
+  if (!outputDocumentBaseUrl) return undefined;
+
+  const url = new URL(outputDocumentBaseUrl, pageUrl);
+  url.searchParams.set("nteract_theme", theme);
+  return url.href;
+}
+
 export function installDocumentThemeSync(): void {
-  if (typeof window === "undefined" || typeof document === "undefined") return;
+  applyDocumentTheme(resolveCloudViewerTheme(storedCloudViewerTheme()));
+}
 
-  const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-  const apply = () => {
-    const isDark = mediaQuery.matches;
-    document.documentElement.classList.toggle("dark", isDark);
-    document.documentElement.classList.toggle("light", !isDark);
-    document.documentElement.dataset.theme = isDark ? "dark" : "light";
-    document.documentElement.style.colorScheme = isDark ? "dark" : "light";
-  };
+function prefersDarkTheme(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
 
-  apply();
-  mediaQuery.addEventListener("change", apply);
+function browserLocalStorage(): Pick<Storage, "getItem"> | undefined {
+  if (typeof window === "undefined") return undefined;
+  return window.localStorage;
 }
