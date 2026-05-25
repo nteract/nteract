@@ -669,6 +669,69 @@ describe("createTable", () => {
       const stats = container.querySelector(".sift-stat-rows") as HTMLElement;
       expect(stats?.dataset.value).toContain("60");
     });
+
+    it("preserves visible image-cell <img> elements when appended rows do not change them", async () => {
+      engine.destroy();
+      container.innerHTML = "";
+
+      const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const columns: Column[] = [
+        {
+          key: "id",
+          label: "ID",
+          width: 80,
+          sortable: true,
+          numeric: true,
+          columnType: "numeric",
+        },
+        {
+          key: "image",
+          label: "Image",
+          width: 140,
+          sortable: false,
+          numeric: false,
+          columnType: "image",
+        },
+      ];
+      const imageRows: unknown[][] = [
+        [1, [pngBytes]],
+        [2, [pngBytes]],
+      ];
+      const imageData: TableData = {
+        columns,
+        rowCount: imageRows.length,
+        getCell: (r, c) => String(imageRows[r][c] ?? ""),
+        getCellRaw: (r, c) => imageRows[r][c],
+        columnSummaries: columns.map(() => null),
+      };
+
+      engine = createTable(container, imageData);
+      const viewport = container.querySelector<HTMLElement>(".sift-viewport")!;
+      Object.defineProperty(viewport, "clientHeight", { value: 800, configurable: true });
+      viewport.dispatchEvent(new Event("scroll"));
+      await vi.advanceTimersByTimeAsync(20);
+
+      const beforeImg = container.querySelector<HTMLImageElement>(
+        '[aria-rowindex="2"] .sift-cell-image-thumb',
+      );
+      expect(beforeImg).not.toBeNull();
+      const beforeBlobUrl = beforeImg!.dataset.siftBlobUrl;
+      expect(beforeBlobUrl).toBeDefined();
+
+      imageRows.push([3, [pngBytes]]);
+      imageData.rowCount = imageRows.length;
+      engine.onBatchAppended();
+      await vi.advanceTimersByTimeAsync(20);
+
+      const afterImg = container.querySelector<HTMLImageElement>(
+        '[aria-rowindex="2"] .sift-cell-image-thumb',
+      );
+      expect(afterImg).toBe(beforeImg);
+      expect(afterImg!.dataset.siftBlobUrl).toBe(beforeBlobUrl);
+
+      const stats = container.querySelector(".sift-stat-rows") as HTMLElement;
+      expect(stats?.dataset.value).toContain("3");
+    });
   });
 
   describe("edge cases", () => {

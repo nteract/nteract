@@ -1362,9 +1362,16 @@ export function createTable(
     el: HTMLDivElement;
     cells: HTMLDivElement[];
     assignedRow: number;
+    assignedDataRow: number;
   };
 
   const pool: PooledRow[] = [];
+
+  function releasePooledRow(pr: PooledRow) {
+    pr.assignedRow = -1;
+    pr.assignedDataRow = -1;
+    pr.el.style.display = "none";
+  }
 
   function getPooledRow(): PooledRow {
     for (const pr of pool) {
@@ -1388,7 +1395,7 @@ export function createTable(
       el.appendChild(cells[c]);
     }
     rowPool.appendChild(el);
-    const pr: PooledRow = { el, cells, assignedRow: -1 };
+    const pr: PooledRow = { el, cells, assignedRow: -1, assignedDataRow: -1 };
     pool.push(pr);
     return pr;
   }
@@ -1633,8 +1640,14 @@ export function createTable(
 
     for (const pr of pool) {
       if (pr.assignedRow !== -1 && (pr.assignedRow < first || pr.assignedRow > last)) {
-        pr.el.style.display = "none";
-        pr.assignedRow = -1;
+        releasePooledRow(pr);
+      }
+    }
+
+    for (const pr of pool) {
+      if (pr.assignedRow === -1) continue;
+      if (viewIndices[pr.assignedRow] !== pr.assignedDataRow) {
+        releasePooledRow(pr);
       }
     }
 
@@ -1662,7 +1675,7 @@ export function createTable(
       const dataRow = viewIndices[r];
       let existing = false;
       for (const pr of pool) {
-        if (pr.assignedRow === r) {
+        if (pr.assignedRow === r && pr.assignedDataRow === dataRow) {
           existing = true;
           break;
         }
@@ -1671,6 +1684,7 @@ export function createTable(
 
       const pr = getPooledRow();
       pr.assignedRow = r;
+      pr.assignedDataRow = dataRow;
       pr.el.style.display = "";
       pr.el.style.transform = `translateY(${rowPositions[r] - virtualOffset}px)`;
       pr.el.style.height = rowHeights[r] + "px";
@@ -2003,8 +2017,7 @@ export function createTable(
     // Reset vertical scroll but preserve horizontal position
     viewport.scrollTop = 0;
     for (const pr of pool) {
-      pr.assignedRow = -1;
-      pr.el.style.display = "none";
+      releasePooledRow(pr);
     }
     scheduleRender();
     notifyChange();
@@ -2063,11 +2076,6 @@ export function createTable(
     }
 
     heightsDirty = true;
-    // Force visible rows to refresh
-    for (const pr of pool) {
-      pr.assignedRow = -1;
-      pr.el.style.display = "none";
-    }
     lastVisFirst = -1;
     lastVisLast = -1;
     scheduleRender();
@@ -2157,8 +2165,7 @@ export function createTable(
 
   function hidePooledRows() {
     for (const pr of pool) {
-      pr.assignedRow = -1;
-      pr.el.style.display = "none";
+      releasePooledRow(pr);
     }
   }
 
@@ -2554,8 +2561,7 @@ export function createTable(
     }
     viewport.scrollTop = 0;
     for (const pr of pool) {
-      pr.assignedRow = -1;
-      pr.el.style.display = "none";
+      releasePooledRow(pr);
     }
     lastVisFirst = -1;
     lastVisLast = -1;
@@ -2594,8 +2600,7 @@ export function createTable(
     applyFilterAndSort();
     viewport.scrollTop = 0;
     for (const pr of pool) {
-      pr.assignedRow = -1;
-      pr.el.style.display = "none";
+      releasePooledRow(pr);
     }
     scheduleRender();
   }
@@ -2637,8 +2642,7 @@ export function createTable(
         applyFilterAndSort();
         viewport.scrollTop = 0;
         for (const pr of pool) {
-          pr.assignedRow = -1;
-          pr.el.style.display = "none";
+          releasePooledRow(pr);
         }
         scheduleRender();
         notifyChange();
@@ -2690,8 +2694,7 @@ export function createTable(
           renderAllSummaries();
           heightsDirty = true;
           for (const pr of pool) {
-            pr.assignedRow = -1;
-            pr.el.style.display = "none";
+            releasePooledRow(pr);
           }
           scheduleRender();
         }
@@ -2724,8 +2727,7 @@ export function createTable(
           renderAllSummaries();
           heightsDirty = true;
           for (const pr of pool) {
-            pr.assignedRow = -1;
-            pr.el.style.display = "none";
+            releasePooledRow(pr);
           }
           scheduleRender();
         }
@@ -2781,8 +2783,7 @@ export function createTable(
     // Force re-render to update positions
     heightsDirty = true;
     for (const pr of pool) {
-      pr.assignedRow = -1;
-      pr.el.style.display = "none";
+      releasePooledRow(pr);
     }
     scheduleRender();
   }

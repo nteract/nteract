@@ -27,9 +27,10 @@ const _idsSubscribers = new Set<() => void>();
 // Per-cell subscribers (keyed by cell ID)
 const _cellSubscribers = new Map<string, Set<() => void>>();
 
-// Materialization version — bumps on replaceNotebookCells and
-// updateNotebookCells (full-array ops), but NOT on updateCellById.
-// Used by components that derive cross-cell state (e.g., hiddenGroups).
+// Materialization version — bumps when full-array ops change the ordered
+// cell list or cell chrome (source / metadata / type / execution count),
+// but not when they only refresh legacy `cell.outputs`. Used by components
+// that derive cross-cell state (e.g., hiddenGroups).
 let _materializeVersion = 0;
 const _materializeSubscribers = new Set<() => void>();
 
@@ -196,6 +197,28 @@ function cellsEqual(a: NotebookCell, b: NotebookCell): boolean {
   return true;
 }
 
+function cellChromeEqual(a: NotebookCell, b: NotebookCell): boolean {
+  if (a === b) return true;
+  if (a.cell_type !== b.cell_type) return false;
+  if (a.source !== b.source) return false;
+  if (JSON.stringify(a.metadata) !== JSON.stringify(b.metadata)) return false;
+
+  if (a.cell_type === "code") {
+    const bc = b as typeof a;
+    return a.execution_count === bc.execution_count;
+  }
+
+  if (a.cell_type === "markdown") {
+    const bm = b as typeof a;
+    return shallowRecordEqual(
+      a.resolvedAssets as Record<string, unknown> | undefined,
+      bm.resolvedAssets as Record<string, unknown> | undefined,
+    );
+  }
+
+  return true;
+}
+
 // ── Write operations ────────────────────────────────────────────────────
 
 /**
@@ -233,9 +256,13 @@ export function replaceNotebookCells(cells: NotebookCell[]): void {
   const newMap = new Map<string, NotebookCell>();
   const changedIds: string[] = [];
   let anySourceChanged = false;
+  let materializedChromeChanged = idsChanged;
 
   for (const cell of cells) {
     const prev = _cellMap.get(cell.id);
+    if (!prev || !cellChromeEqual(prev, cell)) {
+      materializedChromeChanged = true;
+    }
     if (prev && cellsEqual(prev, cell)) {
       // Structurally identical — preserve old reference, skip notification
       newMap.set(cell.id, prev);
@@ -268,7 +295,9 @@ export function replaceNotebookCells(cells: NotebookCell[]): void {
     emitIdsChange();
   }
 
-  emitMaterializeChange();
+  if (materializedChromeChanged) {
+    emitMaterializeChange();
+  }
 
   if (anySourceChanged) {
     emitSourceChange();
@@ -305,13 +334,21 @@ export function updateNotebookCells(
     newIds.some((id, i) => id !== _cellIds[i]);
 
   _cellMap = new Map(newCells.map((c) => [c.id, c]));
+  const materializedChromeChanged =
+    idsChanged ||
+    newCells.some((cell, i) => {
+      const prev = prevCells[i];
+      return !prev || !cellChromeEqual(prev, cell);
+    });
 
   if (idsChanged) {
     _cellIds = newIds;
     emitIdsChange();
   }
 
-  emitMaterializeChange();
+  if (materializedChromeChanged) {
+    emitMaterializeChange();
+  }
   emitSourceChange();
 
   // Notify per-cell subscribers for cells that actually changed
