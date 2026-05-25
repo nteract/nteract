@@ -80,10 +80,12 @@ runtime document code rather than duplicating projection in a Worker-local JSON
 format.
 
 In the current prototype the Worker materializes a JSON render response on
-request. The browser viewer consumes that response with the framework-agnostic
-`createNteractOutputEmbed()` surface, so markdown cells, rich display data,
-stdout/stderr, Plotly/Vega/Leaflet, and Sift-style table outputs go through the
-same isolated renderer path as desktop instead of a Worker-local DOM renderer.
+request. The browser viewer normalizes that host response into shared
+`ReadOnlyNotebookCellData`, then renders through the same React notebook output
+stack as desktop: `ReadOnlyNotebook` → `ReadOnlyNotebookCell` → `OutputArea` →
+`MediaRouter` / isolated iframe. The framework-agnostic
+`createNteractOutputEmbed()` surface remains the non-React embedding contract,
+but the cloud notebook viewer itself should not fork a separate DOM renderer.
 
 ## Decision 4: Blob refs stay host-neutral
 
@@ -152,7 +154,41 @@ deployments, with Worker-owned `/renderer-assets/*`, `/plugins/*`, and
 dedicated renderer asset Worker binds only `dist/plugins`; it is not a notebook
 API or blob origin.
 
-## Decision 6: Presence stays typed-frame v4 CBOR
+## Decision 6: Cloud owns adaptation, shared components own rendering
+
+The cloud renderer boundary is intentionally narrow:
+
+- Worker: authenticate reads, load snapshot pairs, materialize render-cache JSON,
+  and map content-addressed blobs to host URLs.
+- Cloud viewer: own the browser shell, live-room bridge, theme selection,
+  presence chrome, and normalization from render JSON to shared cell/output
+  props.
+- Shared renderer components: own MIME priority, output manifest resolution,
+  plugin installation, iframe sandboxing, scroll handoff, and output DOM.
+
+Cloud code may adapt host-specific inputs into the shared renderer contract, but
+it must not teach renderer plugins or shared isolated-frame code about
+`/api/n/:id`, Worker catalog routes, ACLs, or Cloudflare-specific auth. Blob
+URLs, renderer asset URLs, and output document URLs are host configuration
+passed through `BlobResolver` and host context.
+
+The notebook-cloud app carries a cloud-owned renderer parity fixture and
+Playwright harness. That harness mounts semantic cloud render cells through the
+same `ReadOnlyNotebook` path as the deployed viewer, serves output documents and
+fixture blobs from local Vite middleware, and checks:
+
+- markdown, code source, streams, errors, HTML, SVG, image, JSON, MIME fallback,
+  and Arrow/Sift outputs;
+- isolated iframe sandbox attributes and hosted output-document URL mode;
+- light/dark theme propagation from cloud shell into output frames;
+- no renderer/plugin dependency on hard-coded cloud API paths.
+
+`apps/renderer-test` remains the lower-level isolated-renderer harness for raw
+iframe payloads. MCP Apps should align to the same host-context contract, but
+cloud renderer parity work should stay in `apps/notebook-cloud` unless a shared
+renderer API needs a small, documented extension.
+
+## Decision 7: Presence stays typed-frame v4 CBOR
 
 Cloud rooms relay frame type `0x04` as canonical nteract presence CBOR. The
 Worker decodes and rewrites ingress presence with shared `runtimed-wasm`

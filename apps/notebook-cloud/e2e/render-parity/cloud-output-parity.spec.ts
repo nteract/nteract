@@ -1,0 +1,119 @@
+import { expect, test, type Page } from "@playwright/test";
+import { cloudOutputParityExpectedMarkers } from "../../test/fixtures/cloud-output-parity";
+
+const ALLOWED_CONSOLE_MESSAGES = new Set([
+  "Allow attribute will take precedence over 'allowfullscreen'.",
+  "using deprecated parameters for the initialization function; pass a single object instead",
+]);
+
+test.describe("cloud renderer parity harness", () => {
+  let consoleProblems: string[];
+
+  test.beforeEach(async ({ page }) => {
+    consoleProblems = [];
+    page.on("console", (message) => {
+      const type = message.type();
+      if (type !== "error" && type !== "warning") return;
+      const text = message.text();
+      if (ALLOWED_CONSOLE_MESSAGES.has(text)) return;
+      consoleProblems.push(`[${type}] ${text}`);
+    });
+  });
+
+  test.afterEach(() => {
+    expect(consoleProblems).toEqual([]);
+  });
+
+  test("renders the canonical cloud output fixture through shared notebook components", async ({
+    page,
+  }) => {
+    await openParityHarness(page);
+
+    await expect(page.locator('[data-slot="read-only-notebook"]')).toHaveAttribute(
+      "data-cell-count",
+      "8",
+    );
+    await expect(page.locator('[data-cell-id="code-streams"]')).toContainText(
+      cloudOutputParityExpectedMarkers.stdout,
+    );
+    await expect(page.locator('[data-cell-id="code-streams"]')).toContainText(
+      cloudOutputParityExpectedMarkers.stderr,
+    );
+    await expect(page.locator('[data-cell-id="traceback-cell"]')).toContainText(
+      cloudOutputParityExpectedMarkers.traceback,
+    );
+    await expect(page.locator('[data-cell-id="image-json-output"]')).toContainText(
+      cloudOutputParityExpectedMarkers.json,
+    );
+    await expect(page.locator('[data-cell-id="rich-mime-fallback"]')).toContainText(
+      cloudOutputParityExpectedMarkers.fallback,
+    );
+
+    await expect(
+      page.frameLocator('[data-cell-id="markdown-intro"] iframe').locator("body"),
+    ).toContainText(cloudOutputParityExpectedMarkers.markdown, { timeout: 30_000 });
+    await expect(
+      page.frameLocator('[data-cell-id="html-output"] iframe').locator("body"),
+    ).toContainText(cloudOutputParityExpectedMarkers.html, { timeout: 30_000 });
+    await expect(
+      page.frameLocator('[data-cell-id="svg-output"] iframe').locator("body"),
+    ).toContainText(cloudOutputParityExpectedMarkers.svg, { timeout: 30_000 });
+  });
+
+  test("uses output document URLs for isolated frames without weakening the sandbox", async ({
+    page,
+  }) => {
+    await openParityHarness(page);
+
+    const iframes = page.locator('iframe[data-slot="isolated-frame"]');
+    await expect(iframes.first()).toBeAttached({ timeout: 30_000 });
+    const count = await iframes.count();
+    expect(count).toBeGreaterThanOrEqual(4);
+
+    for (let index = 0; index < count; index++) {
+      const iframe = iframes.nth(index);
+      await expect(iframe).toHaveAttribute("src", /\/output-document\/frame\.html$/);
+      await expect(iframe).not.toHaveAttribute("srcdoc", /./);
+      const sandbox = await iframe.getAttribute("sandbox");
+      expect(sandbox?.split(/\s+/)).toContain("allow-scripts");
+      expect(sandbox?.split(/\s+/)).not.toContain("allow-same-origin");
+    }
+  });
+
+  test("propagates theme changes into cloud output document iframes", async ({ page }) => {
+    await openParityHarness(page);
+
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+    await expect(
+      page.frameLocator('[data-cell-id="html-output"] iframe').locator("html"),
+    ).toHaveAttribute("data-theme", "light", { timeout: 30_000 });
+
+    await page.getByTestId("theme-dark").click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+    await expect(
+      page.frameLocator('[data-cell-id="html-output"] iframe').locator("html"),
+    ).toHaveAttribute("data-theme", "dark", { timeout: 30_000 });
+  });
+
+  test("renders the Sift Arrow fixture through cloud-hosted renderer assets", async ({ page }) => {
+    test.setTimeout(120_000);
+    await openParityHarness(page);
+
+    const siftCell = page.locator('[data-cell-id="sift-arrow-output"]');
+    await expect(siftCell.locator('[data-sift-output="true"]')).toBeVisible({ timeout: 60_000 });
+    await expect(siftCell.locator("iframe")).toHaveAttribute(
+      "src",
+      /\/output-document\/frame\.html$/,
+    );
+    await expect(
+      page.frameLocator('[data-cell-id="sift-arrow-output"] iframe').locator("body"),
+    ).toContainText(cloudOutputParityExpectedMarkers.siftColumn, { timeout: 90_000 });
+  });
+});
+
+async function openParityHarness(page: Page) {
+  await page.goto("/");
+  await expect(page.getByTestId("cloud-render-parity")).toHaveAttribute("data-ready", "true", {
+    timeout: 60_000,
+  });
+}

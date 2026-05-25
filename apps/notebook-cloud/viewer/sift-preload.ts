@@ -1,14 +1,9 @@
 import type { JupyterOutput } from "../../../src/components/cell/jupyter-output";
+import { rendererPluginNameForMime } from "../../../src/components/isolated/renderer-plugin-info";
 import { selectMimeType } from "../../../src/components/outputs/mime-priority";
 import { resolveSiftWasmUrl } from "../../../src/isolated-renderer/sift-assets";
 import { CLOUD_VIEWER_PRIORITY } from "./mime-policy";
 import type { ResolvedCell } from "./render-resolution";
-
-const SIFT_MIME_TYPES = new Set([
-  "application/vnd.apache.parquet",
-  "application/vnd.apache.arrow.stream",
-  "application/vnd.nteract.arrow-stream-manifest+json",
-]);
 
 interface SiftWasmPreloadOptions {
   blobBasePath: string;
@@ -62,5 +57,5 @@ function outputUsesSift(output: JupyterOutput): boolean {
   }
 
   const mimeType = selectMimeType(output.data, CLOUD_VIEWER_PRIORITY);
-  return mimeType != null && SIFT_MIME_TYPES.has(mimeType);
+  return mimeType != null && rendererPluginNameForMime(mimeType) === "sift";
 }
