@@ -9,6 +9,7 @@ from typing import Any, Literal
 from agent_repl.manager import ReplManager, as_jsonable
 
 Backend = Literal["auto", "ipython", "python"]
+MAX_TIMEOUT_S = 300.0
 manager = ReplManager()
 atexit.register(manager.close)
 
@@ -30,11 +31,12 @@ async def run_python(
     backend: Backend = "auto",
 ) -> dict[str, Any]:
     """Run Python code in a persistent named session."""
+    clamped_timeout_s = min(max(timeout_s, 0.1), MAX_TIMEOUT_S)
     result = await asyncio.to_thread(
         manager.run,
         code,
         session=session,
-        timeout_s=timeout_s,
+        timeout_s=clamped_timeout_s,
         backend=backend,
     )
     return as_jsonable(result)

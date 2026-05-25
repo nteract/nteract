@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 import time
 
@@ -151,6 +152,83 @@ def test_background_thread_print_does_not_corrupt_transport() -> None:
     assert started.result_repr == "'started'"
     assert after.ok
     assert after.result_repr == "42"
+
+
+def test_worker_does_not_inherit_unlisted_parent_env(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_REPL_TEST_SECRET", "secret")
+    manager = ReplManager(backend="python")
+    try:
+        result = manager.run("import os\nos.environ.get('AGENT_REPL_TEST_SECRET')")
+    finally:
+        manager.close()
+
+    assert result.ok
+    assert result.result_repr is None
+
+
+def test_worker_receives_explicit_extra_env(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_REPL_PARENT_ONLY", "secret")
+    manager = ReplManager(
+        backend="python",
+        extra_env={"AGENT_REPL_EXPLICIT": "present"},
+    )
+    try:
+        parent_only = manager.run("import os\nos.environ.get('AGENT_REPL_PARENT_ONLY')")
+        explicit = manager.run("import os\nos.environ.get('AGENT_REPL_EXPLICIT')")
+    finally:
+        manager.close()
+
+    assert parent_only.result_repr is None
+    assert explicit.result_repr == "'present'"
+
+
+def test_kill_ignores_timeout_expired() -> None:
+    class StubbornProcess:
+        def poll(self):
+            return None
+
+        def kill(self) -> None:
+            pass
+
+        def wait(self, timeout: float) -> None:
+            raise subprocess.TimeoutExpired("worker", timeout)
+
+    worker = object.__new__(_WorkerSession)
+    worker._closed = False
+    worker._process = StubbornProcess()
+
+    worker.kill()
+
+    assert worker._closed
+
+
+def test_close_ignores_timeout_expired_after_kill() -> None:
+    class StubbornProcess:
+        def poll(self):
+            return None
+
+        def terminate(self) -> None:
+            pass
+
+        def kill(self) -> None:
+            pass
+
+        def wait(self, timeout: float) -> None:
+            raise subprocess.TimeoutExpired("worker", timeout)
+
+    class DummyThread:
+        def join(self, timeout: float) -> None:
+            pass
+
+    worker = object.__new__(_WorkerSession)
+    worker._closed = False
+    worker._process = StubbornProcess()
+    worker._reader = DummyThread()
+    worker._stderr_reader = DummyThread()
+
+    worker.close()
+
+    assert worker._closed
 
 
 def test_manager_returns_structured_error_if_worker_dies_before_run() -> None:

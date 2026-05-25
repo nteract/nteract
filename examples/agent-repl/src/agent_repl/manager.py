@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import queue
@@ -15,6 +16,23 @@ from pathlib import Path
 from typing import Any
 
 from agent_repl.types import RunResult, SessionInfo
+
+SAFE_WORKER_ENV_KEYS = {
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LOGNAME",
+    "PATH",
+    "PYTHONPATH",
+    "SHELL",
+    "TEMP",
+    "TERM",
+    "TMP",
+    "TMPDIR",
+    "USER",
+    "VIRTUAL_ENV",
+}
+SAFE_WORKER_ENV_PREFIXES = ("LC_",)
 
 
 class ReplTimeout(TimeoutError):
@@ -92,7 +110,8 @@ class _WorkerSession:
                 self._process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 self._process.kill()
-                self._process.wait(timeout=2)
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    self._process.wait(timeout=2)
         self._reader.join(timeout=1)
         self._stderr_reader.join(timeout=1)
 
@@ -100,7 +119,8 @@ class _WorkerSession:
         self._closed = True
         if self._process.poll() is None:
             self._process.kill()
-            self._process.wait(timeout=2)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                self._process.wait(timeout=2)
 
     def _request(self, request: dict[str, Any], timeout_s: float) -> dict[str, Any]:
         if not self.alive:
@@ -148,7 +168,12 @@ class _WorkerSession:
             raise ReplTimeout(f"session {self.name!r} timed out after {timeout_s:g}s") from exc
 
     def _start(self) -> subprocess.Popen[str]:
-        env = os.environ.copy()
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key in SAFE_WORKER_ENV_KEYS
+            or any(key.startswith(prefix) for prefix in SAFE_WORKER_ENV_PREFIXES)
+        }
         env.update(self.extra_env)
         env["PYTHONUNBUFFERED"] = "1"
 
