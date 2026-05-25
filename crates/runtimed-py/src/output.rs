@@ -1052,6 +1052,8 @@ pub struct PyExecutionState {
     pub execution_count: Option<i64>,
     /// Whether the execution succeeded (set on completion).
     pub success: Option<bool>,
+    /// Authenticated actor label for the client that submitted this execution.
+    pub submitted_by_actor_label: Option<String>,
 }
 
 #[pymethods]
@@ -1078,6 +1080,7 @@ pub struct PyExecutionViewSnapshot {
     pub status: String,
     pub success: Option<bool>,
     pub output_ids: Vec<String>,
+    pub submitted_by_actor_label: Option<String>,
 }
 
 #[pymethods]
@@ -1153,6 +1156,7 @@ impl From<runtime_doc::ExecutionViewSnapshot> for PyExecutionViewSnapshot {
             status: snapshot.status,
             success: snapshot.success,
             output_ids: snapshot.output_ids,
+            submitted_by_actor_label: snapshot.submitted_by_actor_label,
         }
     }
 }
@@ -1353,6 +1357,7 @@ impl From<runtime_doc::RuntimeState> for PyRuntimeState {
                             status: es.status,
                             execution_count: es.execution_count,
                             success: es.success,
+                            submitted_by_actor_label: es.submitted_by_actor_label,
                         },
                     )
                 })
@@ -1472,6 +1477,7 @@ mod tests {
                 outputs: vec![json!({"output_type": "stream", "name": "stdout"})],
                 source: Some("print('ok')".to_string()),
                 seq: Some(7),
+                submitted_by_actor_label: Some("local:kyle/agent:codex:s1".to_string()),
             },
         );
 
@@ -1551,6 +1557,12 @@ mod tests {
         assert_eq!(
             py_state.executions["exec-1"].__repr__(),
             "ExecutionState(status=done, success=Some(true))"
+        );
+        assert_eq!(
+            py_state.executions["exec-1"]
+                .submitted_by_actor_label
+                .as_deref(),
+            Some("local:kyle/agent:codex:s1")
         );
         assert_eq!(py_state.comms["comm-1"].model_name, "IntSliderModel");
         assert_eq!(

@@ -91,6 +91,8 @@ pub struct ExecutionViewSnapshot {
     pub status: String,
     pub success: Option<bool>,
     pub output_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub submitted_by_actor_label: Option<String>,
 }
 
 /// Queue state projected in execution-id terms.
@@ -305,13 +307,14 @@ fn execution_snapshot(exec: &ExecutionState) -> ExecutionViewSnapshot {
         status: exec.status.clone(),
         success: exec.success,
         output_ids: output_ids_for_execution(exec),
+        submitted_by_actor_label: exec.submitted_by_actor_label.clone(),
     }
 }
 
 fn execution_fingerprint(exec: &ExecutionState) -> String {
     let output_ids = output_ids_for_execution(exec);
     format!(
-        "{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}",
         exec.execution_count
             .map(|count| count.to_string())
             .unwrap_or_default(),
@@ -319,7 +322,8 @@ fn execution_fingerprint(exec: &ExecutionState) -> String {
         exec.success
             .map(|success| success.to_string())
             .unwrap_or_default(),
-        output_ids.join(",")
+        output_ids.join(","),
+        exec.submitted_by_actor_label.as_deref().unwrap_or_default()
     )
 }
 
@@ -337,6 +341,7 @@ mod tests {
             outputs: vec![],
             source: None,
             seq: None,
+            submitted_by_actor_label: None,
         }
     }
 
@@ -356,6 +361,7 @@ mod tests {
                 .collect(),
             source: None,
             seq: None,
+            submitted_by_actor_label: None,
         }
     }
 
@@ -492,6 +498,27 @@ mod tests {
         assert_eq!(changeset.execution_upserts.len(), 1);
         assert_eq!(changeset.execution_upserts[0].0, "exec-1");
         assert_eq!(changeset.execution_upserts[0].1.output_ids, vec!["new"]);
+    }
+
+    #[test]
+    fn execution_view_projects_submitter_actor_label() {
+        let cell_pointers = pointers(&[("cell-1", Some("exec-1"))]);
+        let mut state = RuntimeState::default();
+        let mut exec = exec("queued", None);
+        exec.submitted_by_actor_label = Some("local:kyle/agent:codex:s1".to_string());
+        state.executions.insert("exec-1".to_string(), exec);
+
+        let mut projector = ExecutionViewProjector::default();
+        let changeset = projector.project_all(cell_pointers, &state);
+
+        assert_eq!(changeset.execution_upserts.len(), 1);
+        assert_eq!(
+            changeset.execution_upserts[0]
+                .1
+                .submitted_by_actor_label
+                .as_deref(),
+            Some("local:kyle/agent:codex:s1")
+        );
     }
 
     #[test]

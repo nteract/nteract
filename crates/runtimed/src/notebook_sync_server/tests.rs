@@ -1860,7 +1860,13 @@ async fn execute_cell_queues_in_runtime_doc_while_kernel_launch_is_resolving() {
         .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Resolving))
         .unwrap();
 
-    let response = crate::requests::execute_cell::handle(&room, "cell-1".to_string(), None).await;
+    let response = crate::requests::execute_cell::handle_with_submitter(
+        &room,
+        "cell-1".to_string(),
+        None,
+        Some("local:kyle/agent:codex:s1"),
+    )
+    .await;
 
     let execution_id = match response {
         crate::protocol::NotebookResponse::CellQueued { execution_id, .. } => execution_id,
@@ -1880,6 +1886,10 @@ async fn execute_cell_queues_in_runtime_doc_while_kernel_launch_is_resolving() {
     assert_eq!(
         execution.source.as_deref(),
         Some("print('queued while resolving')")
+    );
+    assert_eq!(
+        execution.submitted_by_actor_label.as_deref(),
+        Some("local:kyle/agent:codex:s1")
     );
     assert_eq!(state.queue.executing, None);
     assert_eq!(
@@ -1909,7 +1919,12 @@ async fn run_all_cells_queues_in_runtime_doc_while_kernel_launch_is_resolving() 
         .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Resolving))
         .unwrap();
 
-    let response = crate::requests::run_all_cells::handle(&room, None).await;
+    let response = crate::requests::run_all_cells::handle_with_submitter(
+        &room,
+        None,
+        Some("local:kyle/desktop:window-1"),
+    )
+    .await;
 
     let queued = match response {
         crate::protocol::NotebookResponse::AllCellsQueued { queued } => queued,
@@ -1931,6 +1946,20 @@ async fn run_all_cells_queues_in_runtime_doc_while_kernel_launch_is_resolving() 
     drop(doc);
 
     let state = room.state.read(|sd| sd.read_state()).unwrap();
+    assert_eq!(
+        state
+            .executions
+            .get(first_execution_id)
+            .and_then(|execution| execution.submitted_by_actor_label.as_deref()),
+        Some("local:kyle/desktop:window-1")
+    );
+    assert_eq!(
+        state
+            .executions
+            .get(second_execution_id)
+            .and_then(|execution| execution.submitted_by_actor_label.as_deref()),
+        Some("local:kyle/desktop:window-1")
+    );
     assert_eq!(state.queue.executing, None);
     assert_eq!(
         state
@@ -2556,6 +2585,7 @@ async fn test_load_notebook_reuses_matching_durable_execution_id() {
             execution_count: Some(7),
             source: Some("print('hi')".to_string()),
             seq: Some(0),
+            submitted_by_actor_label: None,
             outputs,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
@@ -2634,6 +2664,7 @@ async fn test_load_notebook_mints_execution_id_when_durable_record_no_longer_mat
             execution_count: Some(7),
             source: Some("print('hi')".to_string()),
             seq: Some(0),
+            submitted_by_actor_label: None,
             outputs: vec![serde_json::json!({
                 "output_type": "stream",
                 "name": "stdout",

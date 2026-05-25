@@ -7761,6 +7761,7 @@ mod tests {
                 execution_count: Some(1),
                 source: Some("display('live')".to_string()),
                 seq: Some(0),
+                submitted_by_actor_label: None,
                 outputs: vec![serde_json::json!({
                     "output_type": "display_data",
                     "data": {"image/png": {"blob": "live-blob", "size": 4}}
@@ -7783,6 +7784,7 @@ mod tests {
             execution_count: Some(1),
             source: Some("display('expired')".to_string()),
             seq: Some(0),
+            submitted_by_actor_label: None,
             outputs: vec![serde_json::json!({
                 "output_type": "display_data",
                 "data": {"image/png": {"blob": "expired-blob", "size": 4}}

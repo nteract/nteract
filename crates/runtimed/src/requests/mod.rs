@@ -157,6 +157,7 @@ pub(crate) async fn handle_notebook_request(
     room: &Arc<NotebookRoom>,
     request: NotebookRequest,
     daemon: Arc<Daemon>,
+    submitter_actor_label: Option<&str>,
 ) -> NotebookResponse {
     debug!(
         "[notebook-sync] Handling request: {}",
@@ -173,26 +174,47 @@ pub(crate) async fn handle_notebook_request(
         NotebookRequest::ExecuteCell {
             cell_id,
             execution_id,
-        } => execute_cell::handle(room, cell_id, execution_id).await,
+        } => {
+            execute_cell::handle_with_submitter(room, cell_id, execution_id, submitter_actor_label)
+                .await
+        }
 
         NotebookRequest::ExecuteCellGuarded {
             cell_id,
             execution_id,
             observed_heads,
-        } => execute_cell::handle_guarded(room, cell_id, execution_id, observed_heads).await,
+        } => {
+            execute_cell::handle_guarded_with_submitter(
+                room,
+                cell_id,
+                execution_id,
+                observed_heads,
+                submitter_actor_label,
+            )
+            .await
+        }
 
         NotebookRequest::InterruptExecution {} => interrupt_execution::handle(room).await,
 
         NotebookRequest::ShutdownKernel {} => shutdown_kernel::handle(room).await,
 
         NotebookRequest::RunAllCells { cell_execution_ids } => {
-            run_all_cells::handle(room, cell_execution_ids).await
+            run_all_cells::handle_with_submitter(room, cell_execution_ids, submitter_actor_label)
+                .await
         }
 
         NotebookRequest::RunAllCellsGuarded {
             cell_execution_ids,
             observed_heads,
-        } => run_all_cells::handle_guarded(room, cell_execution_ids, observed_heads).await,
+        } => {
+            run_all_cells::handle_guarded_with_submitter(
+                room,
+                cell_execution_ids,
+                observed_heads,
+                submitter_actor_label,
+            )
+            .await
+        }
 
         NotebookRequest::SendComm { message } => send_comm::handle(room, message).await,
 
