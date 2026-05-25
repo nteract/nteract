@@ -1537,6 +1537,72 @@ impl RuntimeStateDoc {
         Ok(output_id)
     }
 
+    /// Append or replace multiple output manifests for one execution.
+    ///
+    /// This is the hot path for display bursts. It computes the next sequence
+    /// number once, then assigns sequence numbers as new output entries are
+    /// created. Calling [`append_output`] repeatedly would rescan and sort all
+    /// existing outputs for every item in the batch.
+    pub fn append_outputs(
+        &mut self,
+        execution_id: &str,
+        manifests: &[serde_json::Value],
+    ) -> Result<Vec<String>, RuntimeStateError> {
+        let output_ids = manifests
+            .iter()
+            .map(|manifest| extract_output_id(manifest).ok_or(RuntimeStateError::MissingOutputId))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let Some(outputs) = self.ensure_output_map(execution_id) else {
+            return Ok(output_ids);
+        };
+
+        let mut next_seq = self.next_output_seq(&outputs);
+        let mut first_error = None;
+        for (manifest, output_id) in manifests.iter().zip(output_ids.iter()) {
+            let output_entry = match self.doc.get(&outputs, output_id).ok().flatten() {
+                Some((Value::Object(ObjType::Map), id)) => id,
+                _ => {
+                    let id = match self.doc.put_object(&outputs, output_id, ObjType::Map) {
+                        Ok(id) => id,
+                        Err(e) => {
+                            first_error.get_or_insert_with(|| e.into());
+                            continue;
+                        }
+                    };
+                    if let Err(e) = self.doc.put(&id, "seq", ScalarValue::Uint(next_seq)) {
+                        first_error.get_or_insert_with(|| e.into());
+                        let _ = self.doc.delete(&outputs, output_id);
+                        continue;
+                    }
+                    next_seq = next_seq.saturating_add(1);
+                    id
+                }
+            };
+
+            if let Some(old_manifest) = self.read_output_manifest(&output_entry) {
+                if let Some(display_id) = Self::display_id_for_manifest(&old_manifest) {
+                    self.remove_display_index_entry(display_id, execution_id, output_id);
+                }
+            }
+
+            if let Err(e) = self.write_output_manifest(&output_entry, manifest) {
+                first_error.get_or_insert_with(|| e.into());
+                continue;
+            }
+
+            if let Some(display_id) = Self::display_id_for_manifest(manifest) {
+                self.add_display_index_entry(display_id, execution_id, output_id);
+            }
+        }
+
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+
+        Ok(output_ids)
+    }
+
     /// Replace all outputs for an execution.
     ///
     /// Used during notebook load to populate outputs for synthetic execution_ids.
@@ -4329,6 +4395,22 @@ mod tests {
         assert_eq!(id1, "stream-hash-b");
 
         assert_eq!(doc.get_outputs("exec-1"), vec![m_a, m_b]);
+    }
+
+    #[test]
+    fn append_outputs_preserves_batch_order() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1").unwrap();
+        let m_a = test_stream("hash-a");
+        let m_b = test_stream("hash-b");
+        let m_c = test_stream("hash-c");
+
+        let ids = doc
+            .append_outputs("exec-1", &[m_a.clone(), m_b.clone(), m_c.clone()])
+            .unwrap();
+
+        assert_eq!(ids, vec!["stream-hash-a", "stream-hash-b", "stream-hash-c"]);
+        assert_eq!(doc.get_outputs("exec-1"), vec![m_a, m_b, m_c]);
     }
 
     #[test]
