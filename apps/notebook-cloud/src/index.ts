@@ -430,20 +430,17 @@ function cloudflareAccessHealth(env: Env): {
 } {
   const hasTeamDomain = Boolean(env.NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN?.trim());
   const hasAudience = Boolean(env.NOTEBOOK_CLOUD_ACCESS_AUD?.trim());
+  const hasPinnedJwks = Boolean(env.NOTEBOOK_CLOUD_ACCESS_JWKS_JSON?.trim());
   const status =
     hasTeamDomain && hasAudience
       ? "configured"
-      : hasTeamDomain || hasAudience
+      : hasTeamDomain || hasAudience || hasPinnedJwks
         ? "partial"
         : "disabled";
 
   return {
     status,
-    jwks: env.NOTEBOOK_CLOUD_ACCESS_JWKS_JSON?.trim()
-      ? "pinned"
-      : status === "configured"
-        ? "remote"
-        : "none",
+    jwks: hasPinnedJwks ? "pinned" : status === "configured" ? "remote" : "none",
   };
 }
 

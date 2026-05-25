@@ -13,6 +13,8 @@ export async function accessTokenFixture(options: {
   includeKid?: boolean;
   includeMalformedKey?: boolean;
   includeUnmatchedKey?: boolean;
+  matchingKeyOps?: JsonWebKey["key_ops"];
+  matchingKeyUse?: JsonWebKey["use"] | null;
   name?: string;
   subject: string;
 }): Promise<AccessTokenFixture> {
@@ -77,7 +79,13 @@ export async function accessTokenFixture(options: {
           ...(unmatchedPublicJwk
             ? [{ ...unmatchedPublicJwk, alg: "RS256", kid: "unmatched", use: "sig" }]
             : []),
-          { ...publicJwk, alg: "RS256", kid, use: "sig" },
+          {
+            ...publicJwk,
+            alg: "RS256",
+            kid,
+            ...(options.matchingKeyUse === null ? {} : { use: options.matchingKeyUse ?? "sig" }),
+            ...(options.matchingKeyOps ? { key_ops: options.matchingKeyOps } : {}),
+          },
         ],
       }),
       NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN: issuer,

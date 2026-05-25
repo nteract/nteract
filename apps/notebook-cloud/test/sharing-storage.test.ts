@@ -442,6 +442,31 @@ describe("hosted sharing storage", () => {
     assert.equal(env.DB.invites.get("invite-expired")?.status, "pending");
   });
 
+  it("expires storage invites with numeric time comparisons instead of string ordering", async () => {
+    const env = fakeEnv();
+    await createPendingNotebookInvite(env, {
+      id: "invite-expired-no-fraction",
+      notebookId: "notebook-1",
+      email: "alice@example.com",
+      providerHint: "cloudflare-access",
+      scope: "editor",
+      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      expiresAt: "2026-05-24T00:00:00Z",
+      timestamp: "2026-05-23T23:00:00.000Z",
+    });
+
+    const resolution = await resolveNotebookInvitesForLogin(
+      env,
+      accessLogin(),
+      "2026-05-24T00:00:00.000Z",
+    );
+
+    assert.equal(resolution.acceptedInvites.length, 0);
+    assert.equal(resolution.aclGrants.length, 0);
+    assert.equal(env.DB.acl.length, 0);
+    assert.equal(env.DB.invites.get("invite-expired-no-fraction")?.status, "pending");
+  });
+
   it("does not re-accept revoked invites from storage resolution", async () => {
     const env = fakeEnv();
     await createPendingNotebookInvite(env, {

@@ -8,6 +8,8 @@ import {
   accessAuthHeaders,
   accessPrincipalFromJwt,
   assertHostedAccessSmokeEnv,
+  safePublicBaseUrl,
+  safePublicViewerUrl,
 } from "./hosted-access-smoke-env.mjs";
 import {
   clientForSocket,
@@ -146,11 +148,11 @@ console.log(
     {
       ok: true,
       auth_mode: "cloudflare_access",
-      baseUrl,
+      baseUrl: safePublicBaseUrl(baseUrl),
       origin: smokeOrigin,
       access_health: accessHealth,
       roomId,
-      viewerUrl: new URL(`/n/${encodeURIComponent(roomId)}`, baseUrl).href,
+      viewerUrl: safePublicViewerUrl(baseUrl, roomId),
       principal_fingerprints: {
         owner: fingerprintPrincipal(ownerPrincipal),
         editor: fingerprintPrincipal(editorPrincipal),

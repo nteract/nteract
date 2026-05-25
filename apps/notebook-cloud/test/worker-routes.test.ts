@@ -88,6 +88,27 @@ describe("Worker artifact routes", () => {
     });
   });
 
+  it("reports partial Cloudflare Access readiness for pinned JWKS without issuer config", async () => {
+    const env = fakeEnv({
+      NOTEBOOK_CLOUD_ACCESS_JWKS_JSON: '{"keys":[]}',
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/health"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      auth: { cloudflare_access: { status: string; jwks: string } };
+    };
+    assert.deepEqual(body.auth.cloudflare_access, {
+      status: "partial",
+      jwks: "pinned",
+    });
+  });
+
   it("serves viewer bundle assets through the Worker assets binding", async () => {
     const env = fakeEnv({
       ASSETS: {
@@ -968,6 +989,162 @@ describe("Worker artifact routes", () => {
     assert.equal(cliNoOrigin.status, 201);
   });
 
+  it("requires trusted origins for Access-backed ACL deletes", async () => {
+    const { env: accessEnv, token } = await accessTokenFixture({ subject: "alice" });
+    const env = fakeEnv(accessEnv);
+    seedNotebook(env, "access-acl-delete-demo");
+    seedAcl(env, {
+      notebookId: "access-acl-delete-demo",
+      subject: "user:cloudflare-access:alice",
+      scope: "owner",
+    });
+    seedAcl(env, {
+      notebookId: "access-acl-delete-demo",
+      subject: "user:cloudflare-access:bob",
+      scope: "editor",
+    });
+
+    const body = JSON.stringify({
+      subject_kind: "principal",
+      subject: "user:cloudflare-access:bob",
+      scope: "editor",
+    });
+    const headers = {
+      "Content-Type": "application/json",
+      Cookie: `CF_Authorization=${token}`,
+      "X-Operator": "browser:tab",
+      "X-Scope": "owner",
+    };
+
+    const missingOrigin = await worker.fetch(
+      new Request("https://cloud.test/api/n/access-acl-delete-demo/acl", {
+        method: "DELETE",
+        headers,
+        body,
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(missingOrigin.status, 403);
+    assert.deepEqual(await missingOrigin.json(), { error: "request origin is required" });
+    assert.equal(
+      (
+        await getNotebookAclRowsForPrincipal(
+          env,
+          "access-acl-delete-demo",
+          "user:cloudflare-access:bob",
+        )
+      ).length,
+      1,
+    );
+
+    const untrustedOrigin = await worker.fetch(
+      new Request("https://cloud.test/api/n/access-acl-delete-demo/acl", {
+        method: "DELETE",
+        headers: {
+          ...headers,
+          Origin: "https://evil.example",
+        },
+        body,
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(untrustedOrigin.status, 403);
+    assert.deepEqual(await untrustedOrigin.json(), { error: "request origin is not allowed" });
+
+    const trustedOrigin = await worker.fetch(
+      new Request("https://cloud.test/api/n/access-acl-delete-demo/acl", {
+        method: "DELETE",
+        headers: {
+          ...headers,
+          Origin: "https://cloud.test",
+        },
+        body,
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(trustedOrigin.status, 200);
+    assert.equal(
+      (
+        await getNotebookAclRowsForPrincipal(
+          env,
+          "access-acl-delete-demo",
+          "user:cloudflare-access:bob",
+        )
+      ).length,
+      0,
+    );
+  });
+
+  it("allows no-Origin CLI Access-token ACL deletes but rejects browser origins", async () => {
+    const { env: accessEnv, token } = await accessTokenFixture({ subject: "alice" });
+    const env = fakeEnv({
+      ...accessEnv,
+      NOTEBOOK_CLOUD_ALLOWED_ORIGINS: "https://notebooks.example.com",
+    });
+    seedNotebook(env, "access-token-acl-delete-demo");
+    seedAcl(env, {
+      notebookId: "access-token-acl-delete-demo",
+      subject: "user:cloudflare-access:alice",
+      scope: "owner",
+    });
+    seedAcl(env, {
+      notebookId: "access-token-acl-delete-demo",
+      subject: "user:cloudflare-access:bob",
+      scope: "editor",
+    });
+
+    const body = JSON.stringify({
+      subject_kind: "principal",
+      subject: "user:cloudflare-access:bob",
+      scope: "editor",
+    });
+    const headers = {
+      "CF-Access-Token": token,
+      "Content-Type": "application/json",
+      "X-Operator": "cli:smoke",
+      "X-Scope": "owner",
+    };
+
+    const untrustedOrigin = await worker.fetch(
+      new Request("https://cloud.test/api/n/access-token-acl-delete-demo/acl", {
+        method: "DELETE",
+        headers: {
+          ...headers,
+          Origin: "https://evil.example",
+        },
+        body,
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(untrustedOrigin.status, 403);
+    assert.deepEqual(await untrustedOrigin.json(), { error: "request origin is not allowed" });
+
+    const cliNoOrigin = await worker.fetch(
+      new Request("https://cloud.test/api/n/access-token-acl-delete-demo/acl", {
+        method: "DELETE",
+        headers,
+        body,
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(cliNoOrigin.status, 200);
+    assert.equal(
+      (
+        await getNotebookAclRowsForPrincipal(
+          env,
+          "access-token-acl-delete-demo",
+          "user:cloudflare-access:bob",
+        )
+      ).length,
+      0,
+    );
+  });
+
   it("lets owners grant and revoke explicit public viewer ACL rows", async () => {
     const env = fakeEnv();
     seedNotebook(env, "public-acl-demo");
@@ -1753,6 +1930,47 @@ describe("Worker artifact routes", () => {
     assert.equal(roomFetches, 1);
   });
 
+  it("rejects untrusted browser origins for Access-token and bearer WebSocket upgrades", async () => {
+    const { env: accessEnv, token } = await accessTokenFixture({ subject: "alice" });
+    for (const [label, credentialHeaders] of [
+      ["token", { "CF-Access-Token": token }],
+      ["bearer", { Authorization: `Bearer ${token}` }],
+    ] as const) {
+      let roomFetches = 0;
+      const env = fakeEnv({
+        ...accessEnv,
+        NOTEBOOK_ROOMS: {
+          idFromName: (name: string) => ({ toString: () => name }),
+          get: () => ({
+            fetch: async () => {
+              roomFetches += 1;
+              return new Response("unexpected room fetch", { status: 500 });
+            },
+          }),
+        } satisfies DurableObjectNamespace,
+      });
+
+      const response = await worker.fetch(
+        new Request(
+          `https://cloud.test/n/untrusted-${label}-origin-demo/sync?operator=browser:tab&scope=owner`,
+          {
+            headers: {
+              ...credentialHeaders,
+              Origin: "https://evil.example",
+              Upgrade: "websocket",
+            },
+          },
+        ),
+        env,
+        fakeContext(),
+      );
+
+      assert.equal(response.status, 403, label);
+      assert.deepEqual(await response.json(), { error: "websocket origin is not allowed" }, label);
+      assert.equal(roomFetches, 0, label);
+    }
+  });
+
   it("requires Origin for Access-token WebSocket subprotocol credentials", async () => {
     const { env: accessEnv, token } = await accessTokenFixture({ subject: "alice" });
     let roomFetches = 0;
@@ -1784,6 +2002,55 @@ describe("Worker artifact routes", () => {
     assert.equal(response.status, 403);
     assert.deepEqual(await response.json(), { error: "websocket origin is required" });
     assert.equal(roomFetches, 0);
+  });
+
+  it("allows same-origin Access assertion and subprotocol WebSocket upgrades", async () => {
+    const { env: accessEnv, token } = await accessTokenFixture({ subject: "alice" });
+    for (const [label, credentialHeaders] of [
+      ["assertion", { "Cf-Access-Jwt-Assertion": token }],
+      [
+        "subprotocol",
+        { "Sec-WebSocket-Protocol": `${ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url(token)}` },
+      ],
+    ] as const) {
+      let roomFetches = 0;
+      const env = fakeEnv({
+        ...accessEnv,
+        NOTEBOOK_ROOMS: {
+          idFromName: (name: string) => ({ toString: () => name }),
+          get: () => ({
+            fetch: async () => {
+              roomFetches += 1;
+              return new Response("room ok");
+            },
+          }),
+        } satisfies DurableObjectNamespace,
+      });
+      seedNotebook(env, `same-origin-${label}-demo`);
+      seedAcl(env, {
+        notebookId: `same-origin-${label}-demo`,
+        subject: "user:cloudflare-access:alice",
+        scope: "owner",
+      });
+
+      const response = await worker.fetch(
+        new Request(
+          `https://cloud.test/n/same-origin-${label}-demo/sync?operator=browser:tab&scope=owner`,
+          {
+            headers: {
+              ...credentialHeaders,
+              Origin: "https://cloud.test",
+              Upgrade: "websocket",
+            },
+          },
+        ),
+        env,
+        fakeContext(),
+      );
+
+      assert.equal(response.status, 200, label);
+      assert.equal(roomFetches, 1, label);
+    }
   });
 
   it("does not create notebook rows from unauthorized WebSocket opens", async () => {

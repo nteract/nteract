@@ -518,6 +518,66 @@ describe("Cloudflare Access identity", () => {
     assert.equal(identity.metadata.transport, "access-token-header");
   });
 
+  it("prefers bearer Access tokens over ambient Access cookies", async () => {
+    const { env, token } = await accessTokenFixture({ subject: "alice" });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?operator=cli:smoke&scope=owner", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Cookie: `CF_Authorization=${token}`,
+        },
+      }),
+      env,
+    );
+
+    assert.equal(identity.actorLabel, "user:cloudflare-access:alice/cli:smoke");
+    assert.equal(identity.metadata.transport, "access-bearer");
+  });
+
+  it("rejects multiple explicit Access token credentials", async () => {
+    const { env, token } = await accessTokenFixture({ subject: "alice" });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync?operator=cli:smoke&scope=owner", {
+            headers: {
+              "CF-Access-Token": token,
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          env,
+        ),
+      (error) =>
+        error instanceof AuthError &&
+        error.status === 400 &&
+        /multiple identity credentials/.test(error.message),
+    );
+  });
+
+  it("rejects Access token headers mixed with Access subprotocol credentials", async () => {
+    const { env, token } = await accessTokenFixture({ subject: "alice" });
+    const protocol = `${ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url(token)}`;
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync?operator=cli:smoke&scope=owner", {
+            headers: {
+              "CF-Access-Token": token,
+              "Sec-WebSocket-Protocol": protocol,
+            },
+          }),
+          env,
+        ),
+      (error) =>
+        error instanceof AuthError &&
+        error.status === 400 &&
+        /multiple identity credentials/.test(error.message),
+    );
+  });
+
   it("rejects Access tokens with the wrong audience", async () => {
     const { env, token } = await accessTokenFixture({
       audience: "wrong-audience",
@@ -575,6 +635,26 @@ describe("Cloudflare Access identity", () => {
     );
   });
 
+  it("rejects Access credentials when only a pinned JWKS is configured", async () => {
+    const { env, token } = await accessTokenFixture({ subject: "alice" });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              "Cf-Access-Jwt-Assertion": token,
+            },
+          }),
+          { NOTEBOOK_CLOUD_ACCESS_JWKS_JSON: env.NOTEBOOK_CLOUD_ACCESS_JWKS_JSON },
+        ),
+      (error) =>
+        error instanceof AuthError &&
+        error.status === 503 &&
+        /not fully configured/.test(error.message),
+    );
+  });
+
   it("tries matching RSA keys when a rotating Access JWT omits kid", async () => {
     const { env, token } = await accessTokenFixture({
       includeKid: false,
@@ -592,6 +672,52 @@ describe("Cloudflare Access identity", () => {
     );
 
     assert.equal(identity.actorLabel, "user:cloudflare-access:alice/desktop:a");
+  });
+
+  it("rejects Access JWKS candidates marked for encryption use", async () => {
+    const { env, token } = await accessTokenFixture({
+      matchingKeyUse: "enc",
+      subject: "alice",
+    });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync?operator=desktop:a", {
+            headers: {
+              "Cf-Access-Jwt-Assertion": token,
+            },
+          }),
+          env,
+        ),
+      (error) =>
+        error instanceof AuthError &&
+        error.status === 401 &&
+        /signing key was not found/.test(error.message),
+    );
+  });
+
+  it("rejects Access JWKS candidates without verify key operations", async () => {
+    const { env, token } = await accessTokenFixture({
+      matchingKeyOps: ["encrypt"],
+      subject: "alice",
+    });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync?operator=desktop:a", {
+            headers: {
+              "Cf-Access-Jwt-Assertion": token,
+            },
+          }),
+          env,
+        ),
+      (error) =>
+        error instanceof AuthError &&
+        error.status === 401 &&
+        /signing key was not found/.test(error.message),
+    );
   });
 
   it("skips malformed Access JWKS candidates and tries the next matching key", async () => {
