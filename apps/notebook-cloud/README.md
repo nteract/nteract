@@ -281,6 +281,10 @@ viewer sees owner/editor markdown edits:
 cloudflared access login https://<notebook-host>
 export NOTEBOOK_CLOUD_ACCESS_JWT="$(cloudflared access token -app=https://<notebook-host>)"
 
+NOTEBOOK_CLOUD_URL=https://<notebook-host> \
+NOTEBOOK_CLOUD_ACCESS_JWT="$NOTEBOOK_CLOUD_ACCESS_JWT" \
+pnpm --dir apps/notebook-cloud smoke:hosted:access:preflight
+
 cargo xtask wasm runtimed --skip-renderer-plugins
 NOTEBOOK_CLOUD_URL=https://<notebook-host> \
 NOTEBOOK_CLOUD_ACCESS_ORIGIN=https://<notebook-host> \
