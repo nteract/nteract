@@ -293,10 +293,19 @@
       "destructiveHint": false,
       "openWorldHint": false
     },
-    "description": "Create a cell, optionally executing it and returning execution_id/output summary.",
+    "description": "Create a cell anchored by after_cell_id; omit after_cell_id to append.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
       "properties": {
+        "after_cell_id": {
+          "default": null,
+          "description": "Insert after this cell. Omit to append at the end; pass null to insert at the beginning.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "and_run": {
           "default": null,
           "description": "Execute the cell immediately after creation. Response includes the\nexecution_id plus a compact output summary when the cell is code.",
@@ -310,15 +319,6 @@
           "description": "Cell type: \"code\", \"markdown\", or \"raw\".",
           "type": [
             "string",
-            "null"
-          ]
-        },
-        "index": {
-          "default": null,
-          "description": "Position to insert (0-based index). None appends at end.",
-          "format": "int64",
-          "type": [
-            "integer",
             "null"
           ]
         },
@@ -358,6 +358,7 @@
     "description": "Replace a cell's source or type, optionally executing it and returning execution_id/output summary.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
       "properties": {
         "and_run": {
           "default": null,
@@ -413,6 +414,7 @@
     "description": "Delete a cell.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
       "properties": {
         "cell_id": {
           "description": "The cell ID to delete.",
@@ -433,9 +435,10 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Move a cell to a new position.",
+    "description": "Move a cell anchored by after_cell_id; null/omitted after_cell_id means start.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
       "properties": {
         "after_cell_id": {
           "default": null,

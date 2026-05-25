@@ -93,7 +93,7 @@
       "name": "get_all_cells"
     },
     {
-      "description": "Create a cell, optionally executing it and returning execution_id/output summary.",
+      "description": "Create a cell anchored by after_cell_id; omit after_cell_id to append.",
       "name": "create_cell"
     },
     {
@@ -105,7 +105,7 @@
       "name": "delete_cell"
     },
     {
-      "description": "Move a cell to a new position.",
+      "description": "Move a cell anchored by after_cell_id; null/omitted after_cell_id means start.",
       "name": "move_cell"
     },
     {

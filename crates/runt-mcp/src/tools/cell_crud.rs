@@ -10,10 +10,14 @@ use serde::Deserialize;
 use crate::execution;
 use crate::NteractMcp;
 
-use super::{arg_bool, arg_str, arg_string_array, assert_cell_exists, tool_error, tool_success};
+use super::{
+    arg_bool, arg_str, arg_string_array, assert_cell_exists, reject_unknown_args, tool_error,
+    tool_success,
+};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CreateCellParams {
     /// Cell source code or markdown content.
     #[serde(default)]
@@ -21,9 +25,9 @@ pub struct CreateCellParams {
     /// Cell type: "code", "markdown", or "raw".
     #[serde(default)]
     pub cell_type: Option<String>,
-    /// Position to insert (0-based index). None appends at end.
+    /// Insert after this cell. Omit to append at the end; pass null to insert at the beginning.
     #[serde(default)]
-    pub index: Option<i64>,
+    pub after_cell_id: Option<String>,
     /// Execute the cell immediately after creation. Response includes the
     /// execution_id plus a compact output summary when the cell is code.
     #[serde(default)]
@@ -35,6 +39,7 @@ pub struct CreateCellParams {
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SetCellParams {
     /// The cell ID to update.
     pub cell_id: String,
@@ -55,6 +60,7 @@ pub struct SetCellParams {
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DeleteCellParams {
     /// The cell ID to delete.
     pub cell_id: String,
@@ -62,6 +68,7 @@ pub struct DeleteCellParams {
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MoveCellParams {
     /// The cell ID to move.
     pub cell_id: String,
@@ -72,6 +79,7 @@ pub struct MoveCellParams {
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ClearOutputsParams {
     /// Cell IDs to clear outputs for. If omitted or empty, clears outputs for ALL cells (destructive).
     pub cell_ids: Option<Vec<String>>,
@@ -89,6 +97,16 @@ pub async fn create_cell(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
+    reject_unknown_args(
+        request,
+        &[
+            "source",
+            "cell_type",
+            "after_cell_id",
+            "and_run",
+            "timeout_secs",
+        ],
+    )?;
     let source = arg_str(request, "source").unwrap_or("");
     let cell_type = arg_str(request, "cell_type").unwrap_or("code");
 
@@ -98,11 +116,7 @@ pub async fn create_cell(
             VALID_CELL_TYPES.join(", ")
         ));
     }
-    let index = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("index"))
-        .and_then(|v| v.as_i64());
+    let explicit_after_cell_id = explicit_after_cell_id_arg(request)?;
     let and_run = arg_bool(request, "and_run").unwrap_or(false);
     let timeout_secs = request
         .arguments
@@ -117,23 +131,13 @@ pub async fn create_cell(
         let handle = require_handle!(server);
         let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
 
-        // Determine after_cell_id based on index
-        let after_cell_id = if let Some(idx) = index {
-            let cell_ids = handle.get_cell_ids();
-            if idx <= 0 {
-                None // Insert at beginning
-            } else {
-                let idx = (idx as usize).min(cell_ids.len());
-                if idx > 0 {
-                    Some(cell_ids[idx - 1].clone())
-                } else {
-                    None
-                }
-            }
-        } else {
-            // Append at end
-            handle.last_cell_id()
+        let after_cell_id = match explicit_after_cell_id {
+            Some(anchor) => anchor.map(str::to_string),
+            None => handle.last_cell_id(),
         };
+        if let Some(anchor) = after_cell_id.as_deref() {
+            assert_cell_exists(&handle, anchor)?;
+        }
 
         handle
             .add_cell_with_source(&cell_id, cell_type, after_cell_id.as_deref(), source)
@@ -168,6 +172,10 @@ pub async fn set_cell(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
+    reject_unknown_args(
+        request,
+        &["cell_id", "source", "cell_type", "and_run", "timeout_secs"],
+    )?;
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
 
@@ -234,6 +242,7 @@ pub async fn delete_cell(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
+    reject_unknown_args(request, &["cell_id"])?;
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
 
@@ -251,17 +260,18 @@ pub async fn delete_cell(
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
 }
 
-/// Move a cell to a new position.
+/// Move a cell after another cell, or to the start.
 pub async fn move_cell(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
+    reject_unknown_args(request, &["cell_id", "after_cell_id"])?;
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
 
     let handle = require_handle!(server);
 
-    let after_cell_id = arg_str(request, "after_cell_id");
+    let after_cell_id = explicit_after_cell_id_arg(request)?.flatten();
 
     assert_cell_exists(&handle, cell_id)?;
     if let Some(anchor) = after_cell_id {
@@ -288,6 +298,7 @@ pub async fn clear_outputs(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
+    reject_unknown_args(request, &["cell_ids"])?;
     let explicit_ids: Option<Vec<String>> = arg_string_array(request, "cell_ids");
 
     let handle = require_handle!(server);
@@ -328,4 +339,25 @@ pub async fn clear_outputs(
 
     let result = serde_json::json!({ "cleared": cleared });
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
+}
+
+fn explicit_after_cell_id_arg<'a>(
+    request: &'a CallToolRequestParams,
+) -> Result<Option<Option<&'a str>>, McpError> {
+    let Some(args) = request.arguments.as_ref() else {
+        return Ok(None);
+    };
+    let Some(value) = args.get("after_cell_id") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(Some(None));
+    }
+    if let Some(cell_id) = value.as_str() {
+        return Ok(Some(Some(cell_id)));
+    }
+    Err(McpError::invalid_params(
+        "after_cell_id must be a cell ID string or null",
+        None,
+    ))
 }

@@ -148,7 +148,7 @@ pub fn all_tools() -> Vec<Tool> {
         // -- Cell CRUD --
         Tool::new(
             "create_cell",
-            "Create a cell, optionally executing it and returning execution_id/output summary.",
+            "Create a cell anchored by after_cell_id; omit after_cell_id to append.",
             schema_for::<cell_crud::CreateCellParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false))
@@ -168,7 +168,7 @@ pub fn all_tools() -> Vec<Tool> {
         .annotate(ToolAnnotations::new().destructive(true).open_world(false)),
         Tool::new(
             "move_cell",
-            "Move a cell to a new position.",
+            "Move a cell anchored by after_cell_id; null/omitted after_cell_id means start.",
             schema_for::<cell_crud::MoveCellParams>(),
         )
         .annotate(
@@ -314,6 +314,40 @@ pub fn arg_str<'a>(request: &'a CallToolRequestParams, key: &str) -> Option<&'a 
         .as_ref()
         .and_then(|args| args.get(key))
         .and_then(|v| v.as_str())
+}
+
+/// Reject parameters outside a tool's advertised schema.
+pub fn reject_unknown_args(
+    request: &CallToolRequestParams,
+    allowed: &[&str],
+) -> Result<(), McpError> {
+    let Some(args) = request.arguments.as_ref() else {
+        return Ok(());
+    };
+
+    let mut unknown = args
+        .keys()
+        .filter(|key| !allowed.contains(&key.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort();
+
+    let mut message = format!(
+        "Unknown parameter(s): {}. Allowed parameters: {}.",
+        unknown.join(", "),
+        allowed.join(", ")
+    );
+    if allowed.contains(&"after_cell_id")
+        && unknown
+            .iter()
+            .any(|key| key == "position" || key == "index")
+    {
+        message.push_str(" Cell ordering uses after_cell_id; numeric positions are not supported.");
+    }
+    Err(McpError::invalid_params(message, None))
 }
 
 /// Helper: extract a boolean argument, tolerating string "true"/"false".
@@ -627,6 +661,61 @@ mod tests {
             .expect("create_notebook schema should expose properties");
 
         assert!(properties.contains_key("environment_mode"));
+    }
+
+    #[test]
+    fn create_cell_tool_uses_after_cell_id_not_index() {
+        let tool = registered_tool("create_cell");
+        let properties = tool
+            .input_schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .expect("create_cell schema should expose properties");
+
+        assert!(properties.contains_key("after_cell_id"));
+        assert!(!properties.contains_key("index"));
+        assert!(!properties.contains_key("position"));
+        assert_eq!(
+            tool.input_schema.get("additionalProperties"),
+            Some(&serde_json::Value::Bool(false))
+        );
+    }
+
+    #[test]
+    fn move_cell_tool_points_agents_to_after_cell_id() {
+        let tool = registered_tool("move_cell");
+        let properties = tool
+            .input_schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .expect("move_cell schema should expose properties");
+
+        let description = tool
+            .description
+            .as_ref()
+            .expect("move_cell should have a description");
+        assert!(description.contains("after_cell_id"));
+        assert!(properties.contains_key("after_cell_id"));
+        assert!(!properties.contains_key("index"));
+        assert!(!properties.contains_key("position"));
+        assert_eq!(
+            tool.input_schema.get("additionalProperties"),
+            Some(&serde_json::Value::Bool(false))
+        );
+    }
+
+    #[test]
+    fn reject_unknown_args_calls_out_numeric_cell_ordering() {
+        let req = make_request(serde_json::json!({
+            "cell_id": "cell-a",
+            "position": 3,
+        }));
+        let err = reject_unknown_args(&req, &["cell_id", "after_cell_id"]).unwrap_err();
+        let message = err.message.to_string();
+
+        assert!(message.contains("Unknown parameter(s): position"));
+        assert!(message.contains("after_cell_id"));
+        assert!(message.contains("numeric positions are not supported"));
     }
 
     #[test]
