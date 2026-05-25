@@ -53,10 +53,16 @@ Do not add the renderer asset origin to the notebook WebSocket origin allowlist.
 It serves public build artifacts only; notebook room traffic belongs to the
 notebook application origin.
 
-Untrusted output documents should use their own output-document origin before
-private hosted notebooks scale beyond the prototype. That origin is separate
-from both the Access-protected notebook host and the renderer asset host; see
-`hosted-output-origin-isolation.md`.
+Untrusted output documents use their own output-document origin:
+
+```text
+https://nteract-notebook-cloud-outputs.rgbkrk.workers.dev/frame/
+```
+
+That origin is separate from both the Access-protected notebook host and the
+renderer asset host; see `hosted-output-origin-isolation.md`. Do not protect it
+with the same Access application cookie and do not add it to the notebook
+WebSocket origin allowlist. It serves only the isolated output shell.
 
 ## Cloudflare Access Application
 
@@ -163,6 +169,7 @@ NOTEBOOK_CLOUD_ACCESS_AUD = "<Access application Audience Tag>"
 NOTEBOOK_CLOUD_ALLOWED_ORIGINS = "https://<notebook-host>"
 RENDERER_ASSETS_BASE_URL = "https://<asset-host>/renderer-assets/"
 RUNTIMED_WASM_BASE_URL = "https://<asset-host>/renderer-assets/"
+OUTPUT_DOCUMENT_BASE_URL = "https://<output-document-host>/frame/"
 ```
 
 `NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN` and `NOTEBOOK_CLOUD_ACCESS_AUD` are not

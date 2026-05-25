@@ -370,7 +370,7 @@ Bindings in `wrangler.toml`:
 - `ASSETS`: Worker static assets for `/assets/notebook-cloud-viewer.js`, renderer chunks, and `/plugins/sift_wasm.wasm`.
 - `RENDERER_ASSETS_BASE_URL` (optional): base URL for renderer plugin assets such as `sift_wasm.wasm`. The prototype deployment points this at the dedicated `nteract-notebook-cloud-assets` Worker. If unset, the viewer uses the main Worker-owned `/renderer-assets/` route so sandboxed `srcdoc` iframes can fetch plugin WASM through explicit CORS headers.
 - `RUNTIMED_WASM_BASE_URL` (optional): base URL for `runtimed_wasm.js` and `runtimed_wasm_bg.wasm`. The prototype deployment also points this at the dedicated asset Worker so the large WASM module is loaded as a CDN cacheable file instead of being inlined into the viewer bundle.
-- `OUTPUT_DOCUMENT_BASE_URL` (optional): URL for the isolated output document shell. If unset, the shared renderer keeps using browser `srcdoc`; hosted production can point this at a separate output-document origin.
+- `OUTPUT_DOCUMENT_BASE_URL` (optional): URL for the isolated output document shell. The prototype deployment points this at the dedicated `nteract-notebook-cloud-outputs` Worker. If unset, the shared renderer keeps using browser `srcdoc` for local/prototype fallback.
 - `NOTEBOOK_CLOUD_ALLOWED_ORIGINS` (optional): comma- or whitespace-separated notebook application origins added to the same-origin WebSocket allowlist. Cookie-backed Access WebSocket upgrades and browser-visible credential subprotocols always require an allowed `Origin`; header-authenticated native/CLI clients may omit `Origin`, but any supplied `Origin` must be allowed.
 
 The dedicated renderer asset Worker serves only public, build-time sidecar files from the plugin asset bundle. It intentionally sends `Access-Control-Allow-Origin: *` so sandboxed `srcdoc` iframes with opaque origins can fetch renderer WASM and so the parent viewer can import runtime WASM from a CDN origin. Do not serve authenticated, notebook-specific, or user-generated blobs from this origin; those belong behind the notebook host's blob resolver or a future signed output origin. Deploy the renderer asset Worker before the main Worker when `RENDERER_ASSETS_BASE_URL` or `RUNTIMED_WASM_BASE_URL` points at the separate origin.
@@ -401,12 +401,14 @@ Disposable Cloudflare resources currently wired in `wrangler.toml`:
 
 - Worker: `nteract-notebook-cloud`
 - Renderer asset Worker: `nteract-notebook-cloud-assets`
+- Output document Worker: `nteract-notebook-cloud-outputs`
 - URL: `https://nteract-notebook-cloud.rgbkrk.workers.dev`
 - Renderer assets URL: `https://nteract-notebook-cloud-assets.rgbkrk.workers.dev/renderer-assets/`
+- Output document URL: `https://nteract-notebook-cloud-outputs.rgbkrk.workers.dev/frame/`
 - D1: `nteract-notebook-cloud-prototype-db`
 - R2: `nteract-notebook-cloud-prototype`
 
-The renderer asset Worker binds only `dist/plugins`, not the full viewer bundle, so the separate origin is limited to renderer sidecars such as Sift's WASM binary.
+The renderer asset Worker binds only `dist/plugins`, not the full viewer bundle, so the separate origin is limited to renderer sidecars such as Sift's WASM binary. The output document Worker binds only `dist-output-document` and serves the shared isolated output shell; it does not expose notebook APIs, app bundle assets, renderer sidecars, blobs, or room WebSockets.
 
 The remote migration was applied with:
 
@@ -424,6 +426,7 @@ printf "%s" "$NOTEBOOK_CLOUD_DEV_TOKEN" \
       --config apps/notebook-cloud/wrangler.toml
 pnpm --dir apps/notebook-cloud build
 pnpm --workspace-root exec wrangler deploy --config apps/notebook-cloud/wrangler.renderer-assets.toml
+pnpm --workspace-root exec wrangler deploy --config apps/notebook-cloud/wrangler.output-document.toml
 pnpm --workspace-root exec wrangler deploy --config apps/notebook-cloud/wrangler.toml
 ```
 

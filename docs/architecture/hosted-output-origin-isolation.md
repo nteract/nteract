@@ -215,13 +215,18 @@ output documents to receive app-origin cookies or direct OIDC material.
    security review.
 3. **Separate renderer sidecars operationally.** Keep `RENDERER_ASSETS_BASE_URL`
    / equivalent config working so the deployed demo can move Sift WASM and
-   other sidecars to a dedicated Worker/CDN without code changes.
+   other sidecars to a dedicated Worker/CDN without code changes. The prototype
+   uses `nteract-notebook-cloud-assets.rgbkrk.workers.dev`.
 4. **Introduce an output-document host config.** Add a host-configured
    output-document base URL, analogous to `VITE_IFRAME_OUTPUT_URI`, for hosted
-   production. Browser-local development may continue using `srcDoc`.
+   production. Browser-local development may continue using `srcDoc`. The
+   prototype Worker sets `OUTPUT_DOCUMENT_BASE_URL` to the dedicated output
+   document Worker.
 5. **Build an output-document Worker.** Serve only the output document shell,
    with CSP tailored for renderers and no app APIs, room WebSockets, or
-   credentials.
+   credentials. The prototype uses
+   `nteract-notebook-cloud-outputs.rgbkrk.workers.dev/frame/`, backed only by
+   `dist-output-document/index.html`.
 6. **Capability-scope private blob reads.** Move private hosted blob reads from
    app-origin API routes to short-lived capability URLs or another equivalent
    cookie-free mechanism before broad private notebook sharing.
@@ -231,6 +236,27 @@ output documents to receive app-origin cookies or direct OIDC material.
    - output frames cannot access parent storage/cookies under the sandbox;
    - cloud viewer config can place renderer assets, runtimed WASM assets, and
      output documents on distinct origins.
+
+## Prototype Deployment Shape
+
+The current Cloudflare prototype uses three Workers:
+
+| Origin class | Worker | Current URL |
+|--------------|--------|-------------|
+| Notebook application origin | `nteract-notebook-cloud` | `https://nteract-notebook-cloud.rgbkrk.workers.dev` |
+| Renderer asset origin | `nteract-notebook-cloud-assets` | `https://nteract-notebook-cloud-assets.rgbkrk.workers.dev/renderer-assets/` |
+| Output document origin | `nteract-notebook-cloud-outputs` | `https://nteract-notebook-cloud-outputs.rgbkrk.workers.dev/frame/` |
+
+The output document Worker is intentionally narrow. It serves the shared
+isolated output shell and health checks only. It does not bind the notebook
+application bundle, renderer sidecars, notebook snapshots, blobs, APIs, or room
+WebSockets. The app Worker includes the output document origin in `frame-src`
+when `OUTPUT_DOCUMENT_BASE_URL` is configured, but it does not add that origin
+to the notebook room WebSocket allowlist.
+
+`srcDoc` remains the browser-local fallback when `OUTPUT_DOCUMENT_BASE_URL` is
+unset. Hosted deployments should configure the output document URL instead of
+depending on `srcDoc` as the security boundary.
 
 ## Non-Goals
 

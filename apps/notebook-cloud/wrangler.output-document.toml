@@ -1,0 +1,8 @@
+name = "nteract-notebook-cloud-outputs"
+main = "./src/output-document-worker.ts"
+compatibility_date = "2024-11-06"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./dist-output-document"
+binding = "ASSETS"

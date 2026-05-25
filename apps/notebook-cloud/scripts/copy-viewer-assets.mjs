@@ -16,17 +16,25 @@ const runtimedWasmUrl = new URL(
 );
 const runtimedOutputUrl = new URL("../dist/assets/runtimed_wasm_bg.wasm", import.meta.url);
 const runtimedPluginOutputUrl = new URL("../dist/plugins/runtimed_wasm_bg.wasm", import.meta.url);
+const outputDocumentFrameUrl = new URL(
+  "../../../src/components/isolated/frame.html",
+  import.meta.url,
+);
+const outputDocumentOutputUrl = new URL("../dist-output-document/index.html", import.meta.url);
 
 await assertExists(siftWasmUrl);
 await assertExists(runtimedWasmModuleUrl);
 await assertExists(runtimedWasmUrl);
+await assertExists(outputDocumentFrameUrl);
 await mkdir(new URL("../dist/plugins/", import.meta.url), { recursive: true });
 await mkdir(new URL("../dist/assets/", import.meta.url), { recursive: true });
+await mkdir(new URL("../dist-output-document/", import.meta.url), { recursive: true });
 await copyFile(siftWasmUrl, outputUrl);
 await copyFile(runtimedWasmModuleUrl, runtimedModuleOutputUrl);
 await copyFile(runtimedWasmUrl, runtimedOutputUrl);
 await copyFile(runtimedWasmModuleUrl, runtimedModulePluginOutputUrl);
 await copyFile(runtimedWasmUrl, runtimedPluginOutputUrl);
+await copyFile(outputDocumentFrameUrl, outputDocumentOutputUrl);
 
 console.log(`copied ${fileURLToPath(siftWasmUrl)} -> ${fileURLToPath(outputUrl)}`);
 console.log(
@@ -38,6 +46,9 @@ console.log(
 );
 console.log(
   `copied ${fileURLToPath(runtimedWasmUrl)} -> ${fileURLToPath(runtimedPluginOutputUrl)}`,
+);
+console.log(
+  `copied ${fileURLToPath(outputDocumentFrameUrl)} -> ${fileURLToPath(outputDocumentOutputUrl)}`,
 );
 
 async function assertExists(url) {
