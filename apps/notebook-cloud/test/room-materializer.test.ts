@@ -258,12 +258,14 @@ describe("RoomHostHandle", () => {
       success: boolean;
       execution_count: number;
       output_ids: string[];
+      submitted_by_actor_label: string | null;
     };
     assert.deepEqual(execution, {
       status: "done",
       success: true,
       execution_count: 1,
       output_ids: ["out-stdout-1"],
+      submitted_by_actor_label: null,
     });
     assert.deepEqual(viewer.get_output_by_id("out-stdout-1"), {
       output_type: "stream",
@@ -461,6 +463,7 @@ describe("RoomMaterializer", () => {
       success: null,
       execution_count: null,
       output_ids: [],
+      submitted_by_actor_label: null,
     });
 
     await assert.rejects(
