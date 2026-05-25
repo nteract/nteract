@@ -7,6 +7,7 @@ import {
 } from "@/components/cell/ReadOnlyNotebook";
 import { ReadOnlyNotebookCell } from "@/components/cell/ReadOnlyNotebookCell";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
+import { ThemeToggle } from "@/components/ui/theme-toggle";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import type { TracebackCellTarget } from "@/components/outputs/traceback-output";
@@ -44,7 +45,7 @@ import {
 import { resolveCell, type RenderCell, type ResolvedCell } from "./render-resolution";
 import { preloadSiftWasmForCells } from "./sift-preload";
 import { cloudSourceLanguage } from "./source-language";
-import { installDocumentThemeSync } from "./theme";
+import { installDocumentThemeSync, useCloudTheme } from "./theme";
 import "./index.css";
 
 interface CloudViewerConfig {
@@ -162,6 +163,7 @@ function App() {
 
 function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
   const { config, blobResolver, outputHostContext } = runtime;
+  const { theme, setTheme } = useCloudTheme();
   const [status, setStatus] = useState<ViewerStatus>({
     kind: "loading",
     message: "Loading notebook snapshot...",
@@ -487,6 +489,8 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         <CloudPresenceStatus presence={presence} connectionScope={connectionScope} />
 
         <div className="cloud-toolbar-actions">
+          <ThemeToggle theme={theme} onThemeChange={setTheme} className="cloud-theme-toggle" />
+
           <CloudAuthControls
             authState={authState}
             connectionActorLabel={connectionActorLabel}

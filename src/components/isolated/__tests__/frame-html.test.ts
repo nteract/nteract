@@ -75,10 +75,12 @@ describe("generateFrameHtml", () => {
   });
 
   it("keeps the iframe bootstrap script parseable", () => {
-    const script = html.match(/<script>([\s\S]*)<\/script>/)?.[1];
+    const scripts = Array.from(html.matchAll(/<script>([\s\S]*?)<\/script>/g), (match) => match[1]);
 
-    expect(script).toBeDefined();
-    expect(() => new Function(script ?? "")).not.toThrow();
+    expect(scripts.length).toBeGreaterThanOrEqual(1);
+    for (const script of scripts) {
+      expect(() => new Function(script)).not.toThrow();
+    }
   });
 
   it("renders text/plain without the obsolete ANSI fallback", () => {
@@ -88,12 +90,21 @@ describe("generateFrameHtml", () => {
   });
 
   describe("neutral defaults", () => {
-    it("bakes neutral dark defaults before theme sync arrives", () => {
+    it("seeds the frame theme before first paint", () => {
+      expect(source).toContain("new URLSearchParams(window.location.search)");
+      expect(source).toContain("params.get('nteract_theme')");
+      expect(source).toContain("matchMedia('(prefers-color-scheme: dark)')");
+      expect(source.indexOf("<script>")).toBeLessThan(source.indexOf("<style>"));
+    });
+
+    it("bakes neutral light defaults plus dark overrides before theme sync arrives", () => {
       expect(html).toContain("--bg-primary: transparent");
+      expect(html).toContain("--bg-secondary: #f5f5f5");
+      expect(html).toContain("--text-primary: #1a1a1a");
+      expect(html).toContain("--text-secondary: #666666");
+      expect(html).toContain("--border-color: #e0e0e0");
+      expect(html).toContain('[data-theme="dark"]');
       expect(html).toContain("--bg-secondary: #1a1a1a");
-      expect(html).toContain("--text-primary: #e0e0e0");
-      expect(html).toContain("--text-secondary: #a0a0a0");
-      expect(html).toContain("--border-color: #333333");
     });
 
     it("ships document typography for markdown and html outputs", () => {

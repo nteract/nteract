@@ -324,6 +324,10 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     const iframeRef = useRef<HTMLIFrameElement>(null);
     const runtimeRef = useRef<IsolatedFrameRuntime | null>(null);
     const initialContentRef = useRef(initialContent);
+    const initialThemeSeedRef = useRef({
+      theme: darkMode ? ("dark" as const) : ("light" as const),
+      colorTheme: colorTheme ?? null,
+    });
     const applyMeasuredHeightRef = useRef<(contentHeight: number) => void>(() => {});
     const [frameDocument, setFrameDocument] = useState<IsolatedFrameDocument | null>(null);
     // Track iframe ready (bootstrap HTML loaded)
@@ -483,7 +487,10 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     // non-React adapters, and tests on the same source/sandbox contract.
     useEffect(() => {
       setFrameDocument(
-        createIsolatedFrameDocument({ outputDocumentUrl: resolvedOutputDocumentUrl }),
+        createIsolatedFrameDocument({
+          outputDocumentUrl: resolvedOutputDocumentUrl,
+          themeSeed: initialThemeSeedRef.current,
+        }),
       );
     }, [resolvedOutputDocumentUrl]);
 

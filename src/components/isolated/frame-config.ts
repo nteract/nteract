@@ -27,6 +27,11 @@ export const ISOLATED_FRAME_ALLOW_ATTR = "fullscreen *";
 
 export type IsolatedFrameDocument = { kind: "src"; url: string } | { kind: "srcdoc"; html: string };
 
+export interface IsolatedFrameThemeSeed {
+  theme?: "light" | "dark" | null;
+  colorTheme?: string | null;
+}
+
 export interface TauriFrameGlobal {
   __TAURI__?: unknown;
   __TAURI_INTERNALS__?: unknown;
@@ -45,14 +50,43 @@ export function isTauriFrameRuntime(
 export function createIsolatedFrameDocument(options?: {
   isTauriRuntime?: boolean;
   outputDocumentUrl?: string | null;
+  themeSeed?: IsolatedFrameThemeSeed;
 }): IsolatedFrameDocument {
   const outputDocumentUrl = options?.outputDocumentUrl?.trim();
   if (outputDocumentUrl) {
-    return { kind: "src", url: outputDocumentUrl };
+    return { kind: "src", url: withIsolatedFrameThemeSeed(outputDocumentUrl, options?.themeSeed) };
   }
 
   if (options?.isTauriRuntime ?? isTauriFrameRuntime()) {
     return { kind: "src", url: NTERACT_FRAME_URL };
   }
   return { kind: "srcdoc", html: FRAME_HTML };
+}
+
+function withIsolatedFrameThemeSeed(
+  outputDocumentUrl: string,
+  themeSeed: IsolatedFrameThemeSeed | undefined,
+): string {
+  if (!themeSeed?.theme && !themeSeed?.colorTheme) {
+    return outputDocumentUrl;
+  }
+
+  try {
+    const isAbsoluteOrProtocolRelative =
+      /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(outputDocumentUrl) || outputDocumentUrl.startsWith("//");
+    const parsed = new URL(outputDocumentUrl, "https://nteract.invalid");
+    if (themeSeed.theme === "light" || themeSeed.theme === "dark") {
+      parsed.searchParams.set("nteract_theme", themeSeed.theme);
+    }
+    if (themeSeed.colorTheme && themeSeed.colorTheme !== "classic") {
+      parsed.searchParams.set("nteract_color_theme", themeSeed.colorTheme);
+    }
+
+    if (isAbsoluteOrProtocolRelative) {
+      return parsed.href;
+    }
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return outputDocumentUrl;
+  }
 }

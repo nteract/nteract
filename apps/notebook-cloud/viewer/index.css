@@ -87,6 +87,21 @@ body {
   pointer-events: auto;
 }
 
+.cloud-theme-toggle {
+  height: 2rem;
+  border-color: color-mix(in srgb, var(--foreground) 16%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--background) 90%, transparent);
+  box-shadow: 0 1px 8px color-mix(in srgb, #000 8%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.cloud-theme-toggle button {
+  width: 1.625rem;
+  height: 1.5rem;
+  border-radius: 999px;
+}
+
 .cloud-auth-menu {
   position: relative;
 }
