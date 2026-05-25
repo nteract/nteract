@@ -3,6 +3,7 @@ import { resolveEmbeddableOutputs } from "../embeddable-output";
 import {
   createMcpAppBlobResolver,
   mcpAppCellHasRichOutput,
+  mcpAppCellPreviewText,
   mcpAppCellsToSharedOutputs,
   mcpAppStructuredContentToSharedOutputInputs,
   type McpAppCellData,
@@ -189,5 +190,40 @@ describe("MCP App structured content adapter", () => {
         ]),
       ),
     ).toBe(false);
+  });
+
+  it("selects collapsed MCP App previews from shared structured content policy", () => {
+    expect(
+      mcpAppCellPreviewText(
+        cellWithOutputs([
+          {
+            output_type: "stream",
+            name: "stdout",
+            text: "raw stream\nsecond line",
+          },
+          {
+            output_type: "display_data",
+            data: {
+              "text/plain": "plain display\nsecond line",
+              "text/llm+plain": "assistant summary\nsecond line",
+            },
+          },
+        ]),
+      ),
+    ).toBe("assistant summary");
+
+    expect(
+      mcpAppCellPreviewText(
+        cellWithOutputs([
+          {
+            output_type: "error",
+            ename: "ValueError",
+            evalue: "bad value",
+          },
+        ]),
+      ),
+    ).toBe("ValueError: bad value");
+
+    expect(mcpAppCellPreviewText({ ...cellWithOutputs([]), status: "queued" })).toBe("queued");
   });
 });
