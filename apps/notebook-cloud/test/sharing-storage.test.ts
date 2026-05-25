@@ -156,6 +156,42 @@ describe("hosted sharing storage", () => {
     assert.equal(env.DB.invites.size, 1);
   });
 
+  it("recovers when a concurrent duplicate pending invite wins the insert race", async () => {
+    const env = fakeEnv();
+    env.DB.beforeInviteInsert = ({ notebookId, emailNormalized, providerHint, scope }) => {
+      env.DB.invites.set("invite-raced", {
+        id: "invite-raced",
+        notebook_id: notebookId,
+        email_normalized: emailNormalized,
+        provider_hint: providerHint,
+        scope,
+        status: "pending",
+        invited_by_actor_label: "user:cloudflare-access:owner/desktop:owner",
+        accepted_by_principal: null,
+        token_hash: null,
+        created_at: "2026-05-24T11:00:00.000Z",
+        expires_at: null,
+        accepted_at: null,
+        revoked_at: null,
+        revoked_by_actor_label: null,
+      });
+      env.DB.beforeInviteInsert = undefined;
+    };
+
+    const invite = await createPendingNotebookInvite(env, {
+      id: "invite-loser",
+      notebookId: "notebook-1",
+      email: "alice@example.com",
+      providerHint: "cloudflare-access",
+      scope: "editor",
+      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      timestamp: "2026-05-24T11:01:00.000Z",
+    });
+
+    assert.equal(invite?.id, "invite-raced");
+    assert.equal(env.DB.invites.size, 1);
+  });
+
   it("stores a profile but skips malformed or unverified email invite lookup", async () => {
     const env = fakeEnv();
     await createPendingNotebookInvite(env, {
@@ -327,6 +363,12 @@ class FakeD1 implements D1Database {
   readonly profiles = new Map<string, PrincipalProfileRow>();
   readonly invites = new Map<string, PendingNotebookInviteRow>();
   readonly acl: NotebookAclRow[] = [];
+  beforeInviteInsert?: (input: {
+    notebookId: string;
+    emailNormalized: string;
+    providerHint: string | null;
+    scope: PendingNotebookInviteRow["scope"];
+  }) => void;
   beforeInviteAccept?: (inviteId: string) => void;
 
   prepare(query: string): D1PreparedStatement {
@@ -450,6 +492,23 @@ class FakeD1Statement implements D1PreparedStatement {
         string,
         string | null,
       ];
+      this.db.beforeInviteInsert?.({
+        notebookId,
+        emailNormalized,
+        providerHint,
+        scope,
+      });
+      const duplicate = [...this.db.invites.values()].find(
+        (invite) =>
+          invite.notebook_id === notebookId &&
+          invite.email_normalized === emailNormalized &&
+          invite.provider_hint === providerHint &&
+          invite.scope === scope &&
+          invite.status === "pending",
+      );
+      if (duplicate) {
+        throw new Error("D1_ERROR: UNIQUE constraint failed: notebook_invites pending invite");
+      }
       this.db.invites.set(id, {
         id,
         notebook_id: notebookId,

@@ -165,8 +165,9 @@ export async function createPendingNotebookInvite(
     return existing;
   }
 
-  await env.DB.prepare(
-    `INSERT INTO notebook_invites (
+  try {
+    await env.DB.prepare(
+      `INSERT INTO notebook_invites (
        id,
        notebook_id,
        email_normalized,
@@ -178,19 +179,34 @@ export async function createPendingNotebookInvite(
        created_at,
        expires_at
      ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
-  )
-    .bind(
-      inviteId,
-      input.notebookId,
+    )
+      .bind(
+        inviteId,
+        input.notebookId,
+        email,
+        providerHint,
+        scope,
+        input.actorLabel,
+        input.tokenHash ?? null,
+        timestamp,
+        expiresAt,
+      )
+      .run();
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) {
+      throw error;
+    }
+    const raced = await getExistingPendingNotebookInvite(env, {
+      notebookId: input.notebookId,
       email,
       providerHint,
       scope,
-      input.actorLabel,
-      input.tokenHash ?? null,
-      timestamp,
-      expiresAt,
-    )
-    .run();
+    });
+    if (raced) {
+      return raced;
+    }
+    throw error;
+  }
 
   return await getPendingNotebookInvite(env, inviteId);
 }
@@ -312,6 +328,8 @@ export async function resolveNotebookInvitesForLogin(
   login: AuthenticatedLoginProfile,
   now = new Date().toISOString(),
 ): Promise<InviteResolution> {
+  // Trust boundary: callers must pass identity-provider verified claims.
+  // Invite acceptance is derived from login.email plus login.emailVerified.
   await upsertPrincipalProfile(env, {
     principal: login.principal,
     provider: login.provider,
@@ -501,4 +519,9 @@ function normalizeInviteExpiresAt(expiresAt: string | null): string | null {
 function d1Changes(result: { meta: Record<string, unknown> }): number {
   const changes = result.meta.changes;
   return typeof changes === "number" ? changes : 0;
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /unique|constraint/i.test(message);
 }
