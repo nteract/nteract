@@ -216,7 +216,17 @@ export class CloudWebSocketTransport implements NotebookTransport {
     this.socket = protocols.length > 0 ? new WebSocket(url, protocols) : new WebSocket(url);
     this.socket.binaryType = "arraybuffer";
     this.socket.addEventListener("message", (event) => {
-      void this.handleMessage(event.data);
+      void this.handleMessage(event.data).catch((error: unknown) => {
+        const reason =
+          error instanceof Error
+            ? new Error(`cloud sync socket message failed: ${error.message}`)
+            : new Error(`cloud sync socket message failed: ${String(error)}`);
+        if (!this.readySettled) {
+          this.readyReject(reason);
+        }
+        this.markClosed(reason);
+        this.socket.close();
+      });
     });
     this.socket.addEventListener("error", () => {
       const reason = new Error(`cloud sync socket failed`);
