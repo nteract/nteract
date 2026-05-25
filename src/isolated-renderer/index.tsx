@@ -58,6 +58,7 @@ import { VideoOutput } from "@/components/outputs/video-output";
 import { SvgOutput } from "@/components/outputs/svg-output";
 import { WidgetView } from "@/components/widgets/widget-view";
 import { measureDocumentHeight } from "./layout-measure";
+import { outputEntryIdForPayload } from "./output-identity";
 // Import widget support
 import { IframeWidgetStoreProvider } from "./widget-provider";
 
@@ -498,16 +499,7 @@ function IsolatedRendererApp() {
       case "render": {
         const renderPayload = payload as RenderPayload;
 
-        // Prefer the daemon-stamped output_id when available — it is stable
-        // across display_update, stream appends, and cell reorders, so
-        // React reconciliation won't re-mount sibling outputs. Fall back
-        // to cellId+outputIndex for render paths that don't carry one
-        // (e.g. the markdown cell renders a single payload with no id).
-        const id = renderPayload.outputId
-          ? renderPayload.outputId
-          : renderPayload.cellId
-            ? `${renderPayload.cellId}-${renderPayload.outputIndex ?? 0}`
-            : `output-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const id = outputEntryIdForPayload(renderPayload, { transientFallback: true });
 
         setState((prev) => {
           if (renderPayload.replace) {
@@ -532,14 +524,7 @@ function IsolatedRendererApp() {
       case "renderBatch": {
         const batchPayload = payload as { outputs: RenderPayload[] };
         const entries: OutputEntry[] = (batchPayload.outputs ?? []).map((p, i) => ({
-          // Prefer daemon-stamped output_id (stable across stream append /
-          // display_update / reorder). Fall back to positional key only for
-          // payloads without an id (legacy render paths).
-          id: p.outputId
-            ? p.outputId
-            : p.cellId
-              ? `${p.cellId}-${p.outputIndex ?? i}`
-              : `output-${i}`,
+          id: outputEntryIdForPayload(p, { fallbackIndex: i }),
           payload: p,
         }));
         setState((prev) => ({ ...prev, outputs: entries }));
