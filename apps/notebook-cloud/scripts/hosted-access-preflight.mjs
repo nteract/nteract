@@ -2,6 +2,7 @@ import {
   accessAuthHeaders,
   accessPrincipalFromJwt,
   assertAccessHealthConfigured,
+  safePublicBaseUrl,
 } from "./hosted-access-smoke-env.mjs";
 import { fingerprintPrincipal } from "./hosted-access-smoke-ws.mjs";
 
@@ -62,15 +63,6 @@ async function fetchAccessHealth() {
   }
 
   return assertAccessHealthConfigured(payload, { baseUrl });
-}
-
-function safePublicBaseUrl(value) {
-  try {
-    const url = new URL(value);
-    return url.origin;
-  } catch {
-    return "<invalid>";
-  }
 }
 
 function roundMs(value) {

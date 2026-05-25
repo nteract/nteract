@@ -9,6 +9,8 @@ import {
   accessPrincipalFromJwt,
   assertAccessHealthConfigured,
   assertHostedAccessSmokeEnv,
+  safePublicBaseUrl,
+  safePublicViewerUrl,
   webSocketUpgradeRequestHeaders,
 } from "../scripts/hosted-access-smoke-env.mjs";
 import { authenticateRequestWithProviders } from "../src/identity.ts";
@@ -138,6 +140,37 @@ describe("hosted Access smoke environment helpers", () => {
           },
         }),
       /Cloudflare Access auth is disabled; expected configured.*NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN and NOTEBOOK_CLOUD_ACCESS_AUD are not set.*jwks=none/,
+    );
+  });
+
+  it("redacts credential material from Access health diagnostics", () => {
+    assert.equal(
+      safePublicBaseUrl("https://user:secret@notebooks.example.com/path?token=abc"),
+      "https://notebooks.example.com",
+    );
+    assert.equal(
+      safePublicViewerUrl("https://user:secret@notebooks.example.com/path?token=abc", "room/slash"),
+      "https://notebooks.example.com/n/room%2Fslash",
+    );
+    assert.equal(safePublicViewerUrl("not a url", "room/slash"), "<invalid>");
+
+    assert.throws(
+      () =>
+        assertAccessHealthConfigured(
+          {
+            auth: {
+              cloudflare_access: {
+                status: "partial",
+                jwks: "pinned",
+              },
+            },
+          },
+          { baseUrl: "https://user:secret@notebooks.example.com/path?token=abc" },
+        ),
+      (error) =>
+        error instanceof Error &&
+        /for https:\/\/notebooks\.example\.com/.test(error.message) &&
+        !/secret|token=abc|\/path/.test(error.message),
     );
   });
 

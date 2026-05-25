@@ -16,7 +16,7 @@ export function assertAccessHealthConfigured(payload, { baseUrl } = {}) {
     return health;
   }
 
-  const target = baseUrl ? ` for ${baseUrl}` : "";
+  const target = baseUrl ? ` for ${safePublicBaseUrl(baseUrl)}` : "";
   const detail =
     health.status === "partial"
       ? "exactly one of NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN or NOTEBOOK_CLOUD_ACCESS_AUD is missing"
@@ -24,6 +24,23 @@ export function assertAccessHealthConfigured(payload, { baseUrl } = {}) {
   throw new Error(
     `Cloudflare Access auth is ${health.status}${target}; expected configured before running the hosted Access smoke (${detail}; jwks=${health.jwks}).`,
   );
+}
+
+export function safePublicBaseUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.origin;
+  } catch {
+    return "<invalid>";
+  }
+}
+
+export function safePublicViewerUrl(baseUrl, roomId) {
+  const base = safePublicBaseUrl(baseUrl);
+  if (base === "<invalid>") {
+    return base;
+  }
+  return new URL(`/n/${encodeURIComponent(roomId)}`, base).href;
 }
 
 export function accessHealthFromPayload(payload) {

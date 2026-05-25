@@ -762,6 +762,8 @@ function selectAccessJwks(jwks: JsonWebKeySet, header: JwtHeader): JsonWebKey[] 
   const candidates = keys.filter((key) => {
     if (key.kty !== "RSA") return false;
     if (key.alg && key.alg !== "RS256") return false;
+    if (key.use && key.use !== "sig") return false;
+    if (key.key_ops && !key.key_ops.includes("verify")) return false;
     if (header.kid && (key as JsonWebKey & { kid?: string }).kid !== header.kid) return false;
     return true;
   });
