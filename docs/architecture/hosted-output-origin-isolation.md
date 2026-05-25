@@ -29,9 +29,12 @@ HTML/SVG iframe output was served by a separate Cloudflare Worker on
 `https://runtusercontent.com` (preview: `https://preview.runtusercontent.com`).
 The main app was configured with `VITE_IFRAME_OUTPUT_URI` so the output frame
 boundary was a deploy-time origin decision, not a renderer implementation
-detail. That shape is the right starting point for notebook-cloud as well, but
-the nteract system also has separate renderer plugin sidecars, blob resolvers,
-and live room WebSockets that need sharper names.
+detail. That deployment is useful prior art, not a compatibility contract.
+Notebook-cloud should keep the underlying security property: untrusted output
+must not share ambient application authority. It should still adopt better
+Cloudflare, OIDC, browser-platform, or operational patterns where they improve
+the system instead of copying old domain names, environment variable names,
+Worker layouts, or auth shortcuts wholesale.
 
 Related docs:
 
@@ -183,6 +186,10 @@ The `runtimed/intheloop` precedent maps to notebook-cloud like this:
 | `VITE_IFRAME_OUTPUT_URI` | output-document base URL host config |
 | separate iframe-output deploy script | future output-document Worker deploy |
 | Cloudflare Worker assets for iframe shell | renderer/output shell assets |
+
+This table is a precedent map, not a deployment mandate. It names the boundary
+we want to preserve, while leaving the concrete hosting, CDN, Access/OIDC, and
+capability-token mechanics open to better current practice.
 
 Anaconda is the identity provider for the app origin. It is not a reason for
 output documents to receive app-origin cookies or direct OIDC material.
