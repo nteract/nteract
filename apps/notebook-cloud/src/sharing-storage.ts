@@ -89,8 +89,6 @@ export async function upsertPrincipalProfile(
        raw_claims_json
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(principal) DO UPDATE SET
-       provider = excluded.provider,
-       provider_subject = excluded.provider_subject,
        email_normalized = excluded.email_normalized,
        email_verified = excluded.email_verified,
        display_name = excluded.display_name,
@@ -157,6 +155,16 @@ export async function createPendingNotebookInvite(
   const scope = normalizeInviteScope(input.scope);
   const email = normalizeInviteEmail(input.email);
   const expiresAt = normalizeInviteExpiresAt(input.expiresAt ?? null);
+  const existing = await getExistingPendingNotebookInvite(env, {
+    notebookId: input.notebookId,
+    email,
+    providerHint,
+    scope,
+  });
+  if (existing) {
+    return existing;
+  }
+
   await env.DB.prepare(
     `INSERT INTO notebook_invites (
        id,
@@ -215,6 +223,44 @@ export async function getPendingNotebookInvite(
        WHERE id = ?`,
   )
     .bind(inviteId)
+    .first<PendingNotebookInviteRow>();
+}
+
+async function getExistingPendingNotebookInvite(
+  env: Env,
+  input: {
+    notebookId: string;
+    email: string;
+    providerHint: string | null;
+    scope: PendingNotebookInvite["scope"];
+  },
+): Promise<PendingNotebookInviteRow | null> {
+  return await env
+    .DB!.prepare(
+      `SELECT id,
+              notebook_id,
+              email_normalized,
+              provider_hint,
+              scope,
+              status,
+              invited_by_actor_label,
+              accepted_by_principal,
+              token_hash,
+              created_at,
+              expires_at,
+              accepted_at,
+              revoked_at,
+              revoked_by_actor_label
+         FROM notebook_invites
+        WHERE notebook_id = ?
+          AND email_normalized = ?
+          AND scope = ?
+          AND status = 'pending'
+          AND ((provider_hint IS NULL AND ? IS NULL) OR provider_hint = ?)
+        ORDER BY created_at
+        LIMIT 1`,
+    )
+    .bind(input.notebookId, input.email, input.scope, input.providerHint, input.providerHint)
     .first<PendingNotebookInviteRow>();
 }
 

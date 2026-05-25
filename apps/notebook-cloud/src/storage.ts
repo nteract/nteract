@@ -131,7 +131,13 @@ const SCHEMA_STATEMENTS = [
     FOREIGN KEY (notebook_id) REFERENCES notebooks(id)
   )`,
   `CREATE INDEX IF NOT EXISTS notebook_invites_pending_lookup_idx
-    ON notebook_invites(provider_hint, email_normalized, status)`,
+    ON notebook_invites(email_normalized, status, provider_hint)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS notebook_invites_pending_provider_unique_idx
+    ON notebook_invites(notebook_id, email_normalized, provider_hint, scope)
+    WHERE status = 'pending' AND provider_hint IS NOT NULL`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS notebook_invites_pending_wildcard_unique_idx
+    ON notebook_invites(notebook_id, email_normalized, scope)
+    WHERE status = 'pending' AND provider_hint IS NULL`,
   `CREATE INDEX IF NOT EXISTS notebook_invites_notebook_idx
     ON notebook_invites(notebook_id, status)`,
 ];

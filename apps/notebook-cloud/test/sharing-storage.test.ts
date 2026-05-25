@@ -11,6 +11,7 @@ import type {
 import {
   createPendingNotebookInvite,
   resolveNotebookInvitesForLogin,
+  upsertPrincipalProfile,
   type PendingNotebookInviteRow,
   type PrincipalProfileRow,
 } from "../src/sharing-storage.ts";
@@ -18,6 +19,36 @@ import type { NotebookAclRow } from "../src/storage.ts";
 import type { AuthenticatedLoginProfile } from "../src/sharing.ts";
 
 describe("hosted sharing storage", () => {
+  it("keeps principal provider identity stable while refreshing profile metadata", async () => {
+    const env = fakeEnv();
+    await upsertPrincipalProfile(env, {
+      principal: "user:cloudflare-access:access-sub-1",
+      provider: "cloudflare-access",
+      providerSubject: "access-sub-1",
+      email: "alice@example.com",
+      emailVerified: true,
+      displayName: "Alice Example",
+      timestamp: "2026-05-24T12:00:00.000Z",
+    });
+
+    const profile = await upsertPrincipalProfile(env, {
+      principal: "user:cloudflare-access:access-sub-1",
+      provider: "github",
+      providerSubject: "github-sub-1",
+      email: "alice-updated@example.com",
+      emailVerified: true,
+      displayName: "Alice Updated",
+      timestamp: "2026-05-24T12:05:00.000Z",
+    });
+
+    assert.equal(profile?.provider, "cloudflare-access");
+    assert.equal(profile?.provider_subject, "access-sub-1");
+    assert.equal(profile?.email_normalized, "alice-updated@example.com");
+    assert.equal(profile?.display_name, "Alice Updated");
+    assert.equal(profile?.first_seen_at, "2026-05-24T12:00:00.000Z");
+    assert.equal(profile?.last_seen_at, "2026-05-24T12:05:00.000Z");
+  });
+
   it("resolves verified email invites into principal ACL rows", async () => {
     const env = fakeEnv();
     await createPendingNotebookInvite(env, {
@@ -97,6 +128,32 @@ describe("hosted sharing storage", () => {
       env.DB.profiles.get("user:cloudflare-access:access-sub-1")?.last_seen_at,
       "2026-05-24T12:05:00.000Z",
     );
+  });
+
+  it("returns an existing pending invite instead of creating a duplicate", async () => {
+    const env = fakeEnv();
+    const first = await createPendingNotebookInvite(env, {
+      id: "invite-1",
+      notebookId: "notebook-1",
+      email: "alice@example.com",
+      providerHint: "cloudflare-access",
+      scope: "editor",
+      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      timestamp: "2026-05-24T11:00:00.000Z",
+    });
+    const second = await createPendingNotebookInvite(env, {
+      id: "invite-2",
+      notebookId: "notebook-1",
+      email: " Alice@Example.com ",
+      providerHint: " Cloudflare-Access ",
+      scope: "editor",
+      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      timestamp: "2026-05-24T11:05:00.000Z",
+    });
+
+    assert.equal(first?.id, "invite-1");
+    assert.equal(second?.id, "invite-1");
+    assert.equal(env.DB.invites.size, 1);
   });
 
   it("stores a profile but skips malformed or unverified email invite lookup", async () => {
@@ -281,6 +338,8 @@ class FakeD1 implements D1Database {
   }
 
   async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
+    // This test fake intentionally does not model D1's transaction rollback.
+    // The sharing-storage tests only assert successful guarded batches.
     const results: D1Result<T>[] = [];
     for (const statement of statements) {
       results.push(await statement.run<T>());
@@ -307,6 +366,25 @@ class FakeD1Statement implements D1PreparedStatement {
       return (this.db.profiles.get(this.values[0] as string) as T | undefined) ?? null;
     }
     if (this.query.includes("FROM notebook_invites")) {
+      if (this.query.includes("WHERE notebook_id = ?")) {
+        const [notebookId, email, scope, providerHint] = this.values as [
+          string,
+          string,
+          PendingNotebookInviteRow["scope"],
+          string | null,
+          string | null,
+        ];
+        return (
+          ([...this.db.invites.values()].find(
+            (invite) =>
+              invite.notebook_id === notebookId &&
+              invite.email_normalized === email &&
+              invite.scope === scope &&
+              invite.status === "pending" &&
+              invite.provider_hint === providerHint,
+          ) as T | undefined) ?? null
+        );
+      }
       return (this.db.invites.get(this.values[0] as string) as T | undefined) ?? null;
     }
     return null;
@@ -340,8 +418,8 @@ class FakeD1Statement implements D1PreparedStatement {
       const existing = this.db.profiles.get(principal);
       this.db.profiles.set(principal, {
         principal,
-        provider,
-        provider_subject: providerSubject,
+        provider: existing?.provider ?? provider,
+        provider_subject: existing?.provider_subject ?? providerSubject,
         email_normalized: emailNormalized,
         email_verified: emailVerified,
         display_name: displayName,
