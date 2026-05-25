@@ -8,10 +8,10 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "outDir": "dist",
-    "rootDir": "src",
-    "baseUrl": ".",
+    "rootDir": "../..",
+    "baseUrl": "../..",
     "paths": {
-      "@/*": ["../../src/*"]
+      "@/*": ["src/*"]
     }
   },
   "include": ["src"]

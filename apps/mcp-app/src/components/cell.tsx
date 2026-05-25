@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
+import type { McpUiHostContext } from "@modelcontextprotocol/ext-apps";
 import type { CellData } from "../types";
 import { getPreviewText } from "../lib/rich-output";
 import { CodeBlock } from "./code-block";
-import { ErrorOutput } from "./error-output";
-import { MimeRenderer, StreamOutput } from "./mime-renderer";
+import { SharedCellOutputs } from "./shared-cell-outputs";
 
 interface CellProps {
   cell: CellData;
   blobBaseUrl?: string;
+  hostContext?: McpUiHostContext | null;
   defaultExpanded: boolean;
   forceExpanded?: boolean | null;
   /** Hide the source toggle (single-cell responses don't need it). */
@@ -22,7 +23,14 @@ const STATUS_ICONS: Record<string, string> = {
   queued: "⧗",
 };
 
-export function Cell({ cell, blobBaseUrl, defaultExpanded, forceExpanded, hideSource }: CellProps) {
+export function Cell({
+  cell,
+  blobBaseUrl,
+  hostContext,
+  defaultExpanded,
+  forceExpanded,
+  hideSource,
+}: CellProps) {
   const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
   const prevForceExpanded = useRef(forceExpanded);
 
@@ -74,28 +82,7 @@ export function Cell({ cell, blobBaseUrl, defaultExpanded, forceExpanded, hideSo
           )}
           {cell.outputs?.length > 0 && (
             <div className="outputs">
-              {cell.outputs.map((output, i) => {
-                // Prefer the daemon-stamped output_id so stream appends
-                // don't re-mount sibling outputs. Fall back to position
-                // only if a legacy host hasn't surfaced the id.
-                const key = output.output_id ?? `output-${i}`;
-                switch (output.output_type) {
-                  case "stream":
-                    return <StreamOutput key={key} output={output} />;
-                  case "error":
-                    return <ErrorOutput key={key} output={output} />;
-                  case "display_data":
-                  case "execute_result":
-                    if (output.data) {
-                      return (
-                        <MimeRenderer key={key} data={output.data} blobBaseUrl={blobBaseUrl} />
-                      );
-                    }
-                    return null;
-                  default:
-                    return null;
-                }
-              })}
+              <SharedCellOutputs cell={cell} blobBaseUrl={blobBaseUrl} hostContext={hostContext} />
             </div>
           )}
         </div>

@@ -10,13 +10,17 @@
  * so Vite can code-split them into independent chunks that load only when
  * their MIME types appear in cell outputs.
  *
- * This module is the single source of truth for the MIME type → virtual
- * module mapping. Callers pass MIME types directly — no intermediate
- * "plugin name" concept.
+ * The MIME type → plugin name mapping lives in `renderer-plugin-info` so
+ * external embedders, like the MCP App, use the same dispatch table as the
+ * in-app notebook renderer.
  */
 
 import { logIsolatedDiagnostic } from "@/components/isolated/diagnostics";
-import { isVegaMimeType } from "@/components/outputs/vega-mime";
+import {
+  needsRendererPlugin,
+  rendererPluginNameForMime,
+  type RendererPluginName,
+} from "./renderer-plugin-info";
 
 interface PluginModule {
   code: string;
@@ -32,33 +36,22 @@ function normalize(m: { code: string; css?: string }): PluginModule {
   return { code: m.code, css: m.css || undefined };
 }
 
-/**
- * Canonical map: MIME type → lazy loader for the virtual module.
- * Extend this when adding support for new visualization libraries.
- */
-const PLUGIN_MIME_TYPES: Record<string, () => Promise<PluginModule>> = {
-  "text/markdown": () => import("virtual:renderer-plugin/markdown").then(normalize),
-  "text/latex": () => import("virtual:renderer-plugin/markdown").then(normalize),
-  "application/vnd.plotly.v1+json": () => import("virtual:renderer-plugin/plotly").then(normalize),
-  "application/geo+json": () => import("virtual:renderer-plugin/leaflet").then(normalize),
-  "application/vnd.apache.parquet": () => import("virtual:renderer-plugin/sift").then(normalize),
-  "application/vnd.apache.arrow.stream": () =>
-    import("virtual:renderer-plugin/sift").then(normalize),
-  "application/vnd.nteract.arrow-stream-manifest+json": () =>
-    import("virtual:renderer-plugin/sift").then(normalize),
+const PLUGIN_LOADERS: Record<RendererPluginName, () => Promise<PluginModule>> = {
+  markdown: () => import("virtual:renderer-plugin/markdown").then(normalize),
+  plotly: () => import("virtual:renderer-plugin/plotly").then(normalize),
+  vega: () => import("virtual:renderer-plugin/vega").then(normalize),
+  leaflet: () => import("virtual:renderer-plugin/leaflet").then(normalize),
+  sift: () => import("virtual:renderer-plugin/sift").then(normalize),
 };
-
-/** Lazy loader for all Vega/Vega-Lite MIME variants. */
-const loadVega = () => import("virtual:renderer-plugin/vega").then(normalize);
 
 /**
  * Check whether a MIME type requires a renderer plugin.
  */
 export function needsPlugin(mime: string): boolean {
-  return mime in PLUGIN_MIME_TYPES || isVegaMimeType(mime);
+  return needsRendererPlugin(mime);
 }
 
-/** Cache of plugin code promises, keyed by MIME type. */
+/** Cache of plugin code promises, keyed by shared plugin name. */
 const pluginCache = new Map<string, Promise<PluginModule>>();
 
 /**
@@ -66,20 +59,21 @@ const pluginCache = new Map<string, Promise<PluginModule>>();
  * Returns undefined if the MIME type doesn't need a plugin.
  * Deduplicates concurrent loads for the same MIME type.
  */
-function loadPluginForMime(mime: string): Promise<PluginModule> | undefined {
-  const cached = pluginCache.get(mime);
+export function loadPluginForMime(mime: string): Promise<PluginModule | undefined> {
+  const pluginName = rendererPluginNameForMime(mime);
+  if (!pluginName) return Promise.resolve(undefined);
+
+  const cached = pluginCache.get(pluginName);
   if (cached) return cached;
 
-  const loader = PLUGIN_MIME_TYPES[mime] ?? (isVegaMimeType(mime) ? loadVega : undefined);
-  if (!loader) return undefined;
-
+  const loader = PLUGIN_LOADERS[pluginName];
   const promise = loader().catch((error) => {
-    if (pluginCache.get(mime) === promise) {
-      pluginCache.delete(mime);
+    if (pluginCache.get(pluginName) === promise) {
+      pluginCache.delete(pluginName);
     }
     throw error;
   });
-  pluginCache.set(mime, promise);
+  pluginCache.set(pluginName, promise);
   return promise;
 }
 
@@ -89,7 +83,7 @@ function loadPluginForMime(mime: string): Promise<PluginModule> | undefined {
  */
 export function preWarmForMimes(mimes: Iterable<string>): void {
   for (const mime of mimes) {
-    loadPluginForMime(mime)?.catch((error) => {
+    loadPluginForMime(mime).catch((error) => {
       console.warn(`[iframe-libraries] failed to prewarm renderer plugin for "${mime}":`, error);
     });
   }

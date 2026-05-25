@@ -69,6 +69,8 @@ export type {
   NteractOutputEmbedHandle,
   NteractOutputEmbedOptions,
   NteractOutputRendererBundleProvider,
+  NteractOutputRendererPlugin,
+  NteractOutputRendererPluginLoader,
 } from "./output-embed";
 export {
   createBlobResolver,
@@ -89,6 +91,7 @@ export type {
 export { resolveEmbeddableOutputs } from "./embeddable-output";
 export type { NteractEmbeddableOutput, ResolveEmbeddableOutputsOptions } from "./embeddable-output";
 export {
+  createInlineOnlyBlobResolver,
   createMcpAppBlobResolver,
   mcpAppCellsToSharedOutputs,
   mcpAppStructuredContentToSharedOutputInputs,
@@ -99,6 +102,12 @@ export type {
   McpAppStructuredContent,
   McpSharedOutputInputs,
 } from "./mcp-app-structured-content";
+export {
+  needsRendererPlugin,
+  rendererPluginInfoForMime,
+  rendererPluginNameForMime,
+} from "./renderer-plugin-info";
+export type { RendererPluginInfo, RendererPluginName } from "./renderer-plugin-info";
 export type { IdentifiedJupyterOutput } from "./output-payloads";
 // Provider and hook for renderer bundle
 export { IsolatedRendererProvider, useIsolatedRenderer } from "./isolated-renderer-context";

@@ -37,6 +37,7 @@ const PREBUILT_DIR = path.resolve(__dirname, "../notebook/src/renderer-plugins")
 
 /** Plugin names that have pre-built artifacts. */
 const PLUGIN_NAMES = ["markdown", "plotly", "vega", "leaflet", "sift"];
+const PLUGIN_CSS_NAMES = new Set(["markdown", "leaflet", "sift"]);
 
 interface IsolatedRendererPluginOptions {
   /**
@@ -49,6 +50,13 @@ interface IsolatedRendererPluginOptions {
    * @default false
    */
   sourcemap?: false | "inline";
+  /**
+   * Plugin artifacts to require during production build startup.
+   * Consumers that provide their own plugin loader can set this to `[]` and
+   * still use the core isolated renderer bundle.
+   * @default ["markdown", "plotly", "vega", "leaflet", "sift"]
+   */
+  prebuiltPluginNames?: readonly string[];
 }
 
 /**
@@ -57,7 +65,9 @@ interface IsolatedRendererPluginOptions {
 function readPrebuilt(filename: string): string {
   const filepath = path.join(PREBUILT_DIR, filename);
   try {
-    return fs.readFileSync(filepath, "utf-8");
+    const source = fs.readFileSync(filepath, "utf-8");
+    if (source.startsWith("version https://git-lfs.github.com/spec/")) return "";
+    return source;
   } catch {
     return "";
   }
@@ -67,6 +77,7 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
   const {
     entry = path.resolve(__dirname, "../../src/isolated-renderer/index.tsx"),
     sourcemap = false,
+    prebuiltPluginNames = PLUGIN_NAMES,
   } = options;
 
   // In-memory cache for dev-mode rebuilds (overrides pre-built artifacts)
@@ -199,13 +210,18 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
     async buildStart() {
       // Production builds: verify all pre-built artifacts exist
       if (!isDevMode) {
-        const missing = ["isolated-renderer.js", ...PLUGIN_NAMES.map((n) => `${n}.js`)].filter(
-          (f) => !readPrebuilt(f),
-        );
+        const required = [
+          "isolated-renderer.js",
+          "isolated-renderer.css",
+          ...prebuiltPluginNames.flatMap((name) =>
+            PLUGIN_CSS_NAMES.has(name) ? [`${name}.js`, `${name}.css`] : [`${name}.js`],
+          ),
+        ];
+        const missing = required.filter((f) => !readPrebuilt(f));
         if (missing.length > 0) {
           throw new Error(
             `Pre-built renderer plugins missing: ${missing.join(", ")}\n` +
-              "Run `cargo xtask renderer-plugins` to build them.",
+              "Run `git lfs pull` for tracked stable bundles and `cargo xtask renderer-plugins` to rebuild generated bundles.",
           );
         }
       }

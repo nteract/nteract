@@ -6,6 +6,7 @@ import {
   createNteractOutputEmbed,
   type NteractOutputEmbedHandle,
 } from "@/components/isolated/output-embed";
+import { loadPluginForMime } from "@/components/isolated/iframe-libraries";
 import type { OutputBlobResolver } from "@/components/isolated/output-manifest";
 import type { IsolatedFrameRendererBundle } from "@/components/isolated/isolated-frame-runtime";
 import {
@@ -124,6 +125,7 @@ onMounted(async () => {
   const handle = createNteractOutputEmbed({
     target,
     rendererBundle: loadRendererBundle,
+    rendererPluginLoader: loadPluginForMime,
     hostContext: hostContext.value,
     blobResolver: resolvedBlobResolver.value,
     autoHeight: props.autoHeight,

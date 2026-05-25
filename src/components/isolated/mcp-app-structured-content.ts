@@ -140,7 +140,7 @@ export function createMcpAppBlobResolver(blobBaseUrl: string): OutputBlobResolve
   };
 }
 
-function createInlineOnlyBlobResolver(): OutputBlobResolver {
+export function createInlineOnlyBlobResolver(): OutputBlobResolver {
   return {
     url(ref) {
       throw new Error(`Cannot construct blob URL without blob_base_url: ${ref.blob}`);

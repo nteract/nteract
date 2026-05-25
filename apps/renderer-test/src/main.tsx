@@ -4,7 +4,11 @@ import {
   createNteractOutputEmbed,
   type NteractOutputEmbedHandle,
 } from "@/components/isolated/output-embed";
-import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe-libraries";
+import {
+  injectPluginsForMimes,
+  loadPluginForMime,
+  needsPlugin,
+} from "@/components/isolated/iframe-libraries";
 import { createRoot } from "react-dom/client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fixtures, getFixtureOutputs, markdownFixture, type Fixture } from "./fixtures";
@@ -288,6 +292,7 @@ function VanillaEmbedScenarioApp() {
     const handle = createNteractOutputEmbed({
       target,
       rendererBundle: defaultRendererLoader,
+      rendererPluginLoader: loadPluginForMime,
       blobResolver: fakeBlobResolver({
         pandasHtml:
           "<table><thead><tr><th></th><th>a</th><th>b</th></tr></thead><tbody><tr><th>0</th><td>1</td><td>3</td></tr><tr><th>1</th><td>2</td><td>4</td></tr></tbody></table>",
@@ -381,6 +386,7 @@ function VanillaRemountScenarioApp() {
     const handle = createNteractOutputEmbed({
       target,
       rendererBundle: defaultRendererLoader,
+      rendererPluginLoader: loadPluginForMime,
       output: {
         outputId: `vanilla-remount-${version}`,
         mimeType: "text/html",

@@ -149,7 +149,7 @@ const placeholderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="600" heig
   <text x="280" y="285" fill="#64748b" font-family="sans-serif" font-size="11" text-anchor="middle">March 2026</text>
 </svg>`;
 
-/** Single cell: image output (SVG renders via HtmlOutput iframe) */
+/** Single cell: image output (SVG renders in the shared output iframe) */
 export const singleCellImage: CellData = {
   cell_id: "cell-img1",
   cell_type: "code",

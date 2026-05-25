@@ -32,23 +32,23 @@ describe("hostLog", () => {
   });
 
   it("forwards warnings and errors to the host", () => {
-    hostLog("warning", "mime-renderer-no-supported-mime", { outputMimes: [] });
-    hostLog("error", "plugin-render-failed", { mime: "text/markdown" });
+    hostLog("warning", "shared-output-renderer-diagnostic", { phase: "resize" });
+    hostLog("error", "shared-output-render-failed", { mime: "text/markdown" });
 
     expect(logs).toEqual([
       expect.objectContaining({
         level: "warning",
         logger: "nteract.mcp-app",
         data: expect.objectContaining({
-          event: "mime-renderer-no-supported-mime",
-          outputMimes: [],
+          event: "shared-output-renderer-diagnostic",
+          phase: "resize",
         }),
       }),
       expect.objectContaining({
         level: "error",
         logger: "nteract.mcp-app",
         data: expect.objectContaining({
-          event: "plugin-render-failed",
+          event: "shared-output-render-failed",
           mime: "text/markdown",
         }),
       }),

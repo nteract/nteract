@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { createNteractOutputEmbed } from "../output-embed";
 import { ISOLATED_FRAME_SANDBOX_ATTRS } from "../frame-config";
-import { NTERACT_RENDER_OUTPUT, NTERACT_RENDERER_READY } from "../rpc-methods";
+import {
+  NTERACT_INSTALL_RENDERER,
+  NTERACT_RENDER_OUTPUT,
+  NTERACT_RENDERER_READY,
+} from "../rpc-methods";
 
 const { MockJsonRpcTransport } = vi.hoisted(() => {
   class MockJsonRpcTransport {
@@ -147,6 +151,40 @@ describe("createNteractOutputEmbed", () => {
     expect(transport.notify).toHaveBeenCalledWith(
       NTERACT_RENDER_OUTPUT,
       expect.objectContaining({ data: "queued output" }),
+    );
+  });
+
+  it("uses a custom renderer plugin loader before rendering plugin-backed outputs", async () => {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const rendererPluginLoader = vi.fn(async (mime: string) =>
+      mime === "text/markdown" ? { code: "markdown plugin", css: ".markdown{}" } : undefined,
+    );
+
+    const handle = createNteractOutputEmbed({
+      target,
+      rendererBundle: { rendererCode: "", rendererCss: "" },
+      rendererPluginLoader,
+    });
+    const frameWindow = handle.iframe.contentWindow!;
+    bootstrapFrame(frameWindow);
+    const transport = MockJsonRpcTransport.instances[0];
+    transport.notificationHandlers.get(NTERACT_RENDERER_READY)?.({});
+
+    await handle.render({
+      mimeType: "text/markdown",
+      data: "**hello**",
+      outputId: "markdown-output",
+    });
+
+    expect(rendererPluginLoader).toHaveBeenCalledWith("text/markdown");
+    expect(transport.notify).toHaveBeenCalledWith(NTERACT_INSTALL_RENDERER, {
+      code: "markdown plugin",
+      css: ".markdown{}",
+    });
+    expect(transport.notify).toHaveBeenCalledWith(
+      NTERACT_RENDER_OUTPUT,
+      expect.objectContaining({ mimeType: "text/markdown", data: "**hello**" }),
     );
   });
 
