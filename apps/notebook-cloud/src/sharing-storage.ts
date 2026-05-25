@@ -51,6 +51,8 @@ export interface PendingNotebookInviteRow {
   revoked_by_actor_label: string | null;
 }
 
+export type ListedPendingNotebookInviteRow = Omit<PendingNotebookInviteRow, "token_hash">;
+
 export interface PendingNotebookInviteInput {
   id?: string;
   notebookId: string;
@@ -62,6 +64,8 @@ export interface PendingNotebookInviteInput {
   tokenHash?: string | null;
   timestamp?: string;
 }
+
+const NOTEBOOK_INVITE_LIST_LIMIT = 200;
 
 export async function upsertPrincipalProfile(
   env: Env,
@@ -246,7 +250,7 @@ export async function getPendingNotebookInvite(
 export async function listNotebookInvites(
   env: Env,
   notebookId: string,
-): Promise<PendingNotebookInviteRow[]> {
+): Promise<ListedPendingNotebookInviteRow[]> {
   if (!env.DB) {
     return [];
   }
@@ -261,7 +265,6 @@ export async function listNotebookInvites(
             status,
             invited_by_actor_label,
             accepted_by_principal,
-            token_hash,
             created_at,
             expires_at,
             accepted_at,
@@ -269,10 +272,11 @@ export async function listNotebookInvites(
             revoked_by_actor_label
        FROM notebook_invites
        WHERE notebook_id = ?
-       ORDER BY created_at`,
+       ORDER BY created_at DESC, id DESC
+       LIMIT ?`,
   )
-    .bind(notebookId)
-    .all<PendingNotebookInviteRow>();
+    .bind(notebookId, NOTEBOOK_INVITE_LIST_LIMIT)
+    .all<ListedPendingNotebookInviteRow>();
   return rows.results ?? [];
 }
 

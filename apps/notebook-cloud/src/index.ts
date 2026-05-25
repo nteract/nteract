@@ -47,6 +47,7 @@ import {
   listNotebookInvites,
   resolveNotebookInvitesForLogin,
   revokePendingNotebookInvite,
+  type ListedPendingNotebookInviteRow,
   type PendingNotebookInviteRow,
 } from "./sharing-storage.ts";
 
@@ -813,7 +814,9 @@ async function parsePendingInviteInput(
   };
 }
 
-function inviteResponse(row: PendingNotebookInviteRow): Record<string, unknown> {
+function inviteResponse(
+  row: PendingNotebookInviteRow | ListedPendingNotebookInviteRow,
+): Record<string, unknown> {
   return {
     id: row.id,
     notebook_id: row.notebook_id,

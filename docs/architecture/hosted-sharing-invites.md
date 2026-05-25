@@ -158,8 +158,8 @@ the ACL subject is still the resolved principal.
 
 The initial Worker surface is deliberately small and owner-scoped:
 
-- `GET /api/n/:id/invites` lists pending, accepted, and revoked invite rows for
-  owners.
+- `GET /api/n/:id/invites` lists the most recent pending, accepted, and revoked
+  invite rows for owners.
 - `POST /api/n/:id/invites` creates or returns an existing pending invite for a
   normalized email, optional provider hint, and `viewer` or `editor` scope.
 - `DELETE /api/n/:id/invites/:inviteId` revokes a pending invite.
