@@ -50,6 +50,7 @@ import {
   type ListedPendingNotebookInviteRow,
   type PendingNotebookInviteRow,
 } from "./sharing-storage.ts";
+import { normalizeInviteEmail, normalizeProviderHint } from "./sharing.ts";
 
 export { NotebookRoom };
 
@@ -674,22 +675,14 @@ async function routeNotebookInvites(
     return inviteInput;
   }
 
-  let invite: PendingNotebookInviteRow | null;
-  try {
-    invite = await createPendingNotebookInvite(env, {
-      notebookId,
-      email: inviteInput.email,
-      providerHint: inviteInput.provider_hint,
-      scope: inviteInput.scope,
-      expiresAt: inviteInput.expires_at,
-      actorLabel: identity.actorLabel,
-    });
-  } catch (error) {
-    if (isInviteInputError(error)) {
-      return json({ error: errorMessage(error) }, 400);
-    }
-    throw error;
-  }
+  const invite = await createPendingNotebookInvite(env, {
+    notebookId,
+    email: inviteInput.email,
+    providerHint: inviteInput.provider_hint,
+    scope: inviteInput.scope,
+    expiresAt: inviteInput.expires_at,
+    actorLabel: identity.actorLabel,
+  });
 
   if (!invite) {
     return json({ error: "invite was not created" }, 500);
@@ -781,6 +774,12 @@ async function parsePendingInviteInput(
   if (email instanceof Response) {
     return email;
   }
+  let normalizedEmail: string;
+  try {
+    normalizedEmail = normalizeInviteEmail(email);
+  } catch (error) {
+    return json({ error: errorMessage(error) }, 400);
+  }
 
   const scopeValue = stringField(payload.scope, "scope");
   if (scopeValue instanceof Response) {
@@ -797,6 +796,12 @@ async function parsePendingInviteInput(
   if (providerHint instanceof Response) {
     return providerHint;
   }
+  let normalizedProviderHint: string | null;
+  try {
+    normalizedProviderHint = normalizeProviderHint(providerHint);
+  } catch (error) {
+    return json({ error: errorMessage(error) }, 400);
+  }
 
   const expiresAt = optionalStringField(payload.expires_at ?? payload.expiresAt, "expires_at");
   if (expiresAt instanceof Response) {
@@ -807,8 +812,8 @@ async function parsePendingInviteInput(
   }
 
   return {
-    email,
-    provider_hint: providerHint,
+    email: normalizedEmail,
+    provider_hint: normalizedProviderHint,
     scope: scopeValue,
     expires_at: expiresAt,
   };
@@ -1647,10 +1652,6 @@ function json(value: unknown, status = 200): Response {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function isInviteInputError(error: unknown): boolean {
-  return errorMessage(error).startsWith("invite ");
 }
 
 async function sha256Hex(body: ArrayBuffer): Promise<string> {

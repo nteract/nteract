@@ -1168,6 +1168,31 @@ describe("Worker artifact routes", () => {
     assert.deepEqual(await ownerInvite.json(), {
       error: "invite scope must be viewer or editor",
     });
+
+    const invalidEmail = await inviteRequest(
+      env,
+      "POST",
+      {
+        email: "not an email",
+        scope: "viewer",
+      },
+      "invite-private-demo",
+    );
+    assert.equal(invalidEmail.status, 400);
+    assert.deepEqual(await invalidEmail.json(), { error: "invite email is invalid" });
+
+    const invalidProvider = await inviteRequest(
+      env,
+      "POST",
+      {
+        email: "viewer@example.com",
+        provider_hint: "bad/provider",
+        scope: "viewer",
+      },
+      "invite-private-demo",
+    );
+    assert.equal(invalidProvider.status, 400);
+    assert.deepEqual(await invalidProvider.json(), { error: "invite provider hint is invalid" });
   });
 
   it("requires trusted origins for cookie-backed invite mutations", async () => {
@@ -2717,8 +2742,15 @@ class FakeD1Statement implements D1PreparedStatement {
   async all<T = unknown>(): Promise<D1Result<T>> {
     if (this.query.includes("FROM notebook_invites")) {
       const notebookId = this.values[0] as string;
+      const limit = typeof this.values[1] === "number" ? this.values[1] : Number.POSITIVE_INFINITY;
       return okResult(
-        [...this.db.invites.values()].filter((invite) => invite.notebook_id === notebookId) as T[],
+        [...this.db.invites.values()]
+          .filter((invite) => invite.notebook_id === notebookId)
+          .sort(
+            (left, right) =>
+              right.created_at.localeCompare(left.created_at) || right.id.localeCompare(left.id),
+          )
+          .slice(0, limit) as T[],
       );
     }
     if (this.query.includes("FROM notebook_acl")) {
