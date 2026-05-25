@@ -17,7 +17,9 @@ Related docs:
 Prototype code:
 
 - `apps/notebook-cloud/src/sharing.ts`
+- `apps/notebook-cloud/src/sharing-storage.ts`
 - `apps/notebook-cloud/test/sharing.test.ts`
+- `apps/notebook-cloud/test/sharing-storage.test.ts`
 
 ## What The Older Prototype Already Proved
 
@@ -316,9 +318,11 @@ The checked-in TypeScript prototype models the core transition:
 - `shareTargetDisplay(...)` maps principal profiles, pending invites, and
   public viewer rows into UI labels.
 
-The prototype is intentionally pure TypeScript for now. The D1 transaction and
-HTTP routes should come after the Access demo proves principal shape and after
-we choose the final share API names.
+The checked-in storage foundation now creates the `principal_profiles` and
+`notebook_invites` D1 tables and exposes helpers that upsert profiles, create
+pending invites, and resolve first-login invites into principal ACL rows. HTTP
+routes should come after the Access demo proves principal shape and after we
+choose the final share API names.
 
 ## Open Decisions
 
