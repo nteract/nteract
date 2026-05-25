@@ -341,7 +341,7 @@ pub async fn run_runtime_agent(
                                     let sync_result = ctx.state.with_doc(|sd| {
                                         // Snapshot comm state before applying sync so we can
                                         // detect frontend-originated widget state changes.
-                                        let comms_before = sd.read_state().comms;
+                                        let comms_before = sd.get_comms();
 
                                         // Per-change actor filter: diff comm state against a
                                         // foreign-only view of the post-sync doc.
@@ -365,7 +365,7 @@ pub async fn run_runtime_agent(
                                                         Vec::new()
                                                     }
                                                 };
-                                                let comms_after = sd.read_state().comms;
+                                                let comms_after = sd.get_comms();
                                                 let superseded_hashes =
                                                     superseded_content_ref_hashes_by_comm(
                                                         &comms_before,

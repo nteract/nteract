@@ -75,6 +75,17 @@ pub struct OutputCommitMeasurement {
     pub total_nanos: u128,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeStateReaderMeasurement {
+    pub strategy: &'static str,
+    pub output_count: usize,
+    pub payload_bytes: usize,
+    pub committed_outputs: usize,
+    pub comms_seen: usize,
+    pub queued_executions_seen: usize,
+    pub reader_nanos: u128,
+}
+
 impl OutputCommitMeasurement {
     fn new(strategy: &'static str, config: OutputCommitMeasurementConfig) -> Self {
         Self {
@@ -224,6 +235,93 @@ pub async fn measure_ordered_worker_output_commit_model(
     Ok(metrics)
 }
 
+pub async fn measure_runtime_state_reader_paths(
+    config: OutputCommitMeasurementConfig,
+) -> anyhow::Result<Vec<RuntimeStateReaderMeasurement>> {
+    let blob_root = output_commit_measure_blob_root();
+    tokio::fs::create_dir_all(&blob_root)
+        .await
+        .with_context(|| format!("create blob root {}", blob_root.display()))?;
+    let blob_store = BlobStore::new(blob_root.clone());
+    let redactor = OutputRedactor::disabled();
+    let mut doc = RuntimeStateDoc::new();
+    doc.create_execution_with_source(EXECUTION_ID, "pass", 0)?;
+    doc.set_execution_running(EXECUTION_ID)?;
+    doc.put_comm(
+        "comm-output-measure",
+        "jupyter.widget",
+        "@jupyter-widgets/output",
+        "OutputModel",
+        &serde_json::json!({"value": "ready"}),
+        0,
+    )?;
+
+    for index in 0..config.output_count {
+        let output = measured_output(config.kind, index, config.payload_bytes);
+        let manifest = output_store::create_manifest_with_redactor(
+            &output,
+            &blob_store,
+            DEFAULT_INLINE_THRESHOLD,
+            &redactor,
+        )
+        .await
+        .context("create output manifest")?;
+        doc.append_output(EXECUTION_ID, &manifest.to_json())?;
+    }
+    doc.set_execution_done(EXECUTION_ID, true)?;
+    doc.create_execution_with_source("exec-output-commit-queued", "pass", 1)?;
+
+    let full_started = Instant::now();
+    let state = doc.read_state();
+    let full_comms_seen = state.comms.len();
+    let full_queued_seen = state
+        .executions
+        .values()
+        .filter(|execution| execution.status == "queued")
+        .count();
+    let full_nanos = full_started.elapsed().as_nanos();
+
+    let targeted_started = Instant::now();
+    let targeted_comms_seen = doc.get_comms().len();
+    let targeted_queued_seen = doc.get_queued_executions().len();
+    let targeted_nanos = targeted_started.elapsed().as_nanos();
+
+    ensure!(
+        full_comms_seen == targeted_comms_seen,
+        "comm reader mismatch"
+    );
+    ensure!(
+        full_queued_seen == targeted_queued_seen,
+        "queued execution reader mismatch"
+    );
+    ensure!(
+        doc.get_outputs(EXECUTION_ID).len() == config.output_count,
+        "reader measurement committed an unexpected number of outputs"
+    );
+
+    let _ = tokio::fs::remove_dir_all(&blob_root).await;
+    Ok(vec![
+        RuntimeStateReaderMeasurement {
+            strategy: "full_read_state_projection",
+            output_count: config.output_count,
+            payload_bytes: config.payload_bytes,
+            committed_outputs: config.output_count,
+            comms_seen: full_comms_seen,
+            queued_executions_seen: full_queued_seen,
+            reader_nanos: full_nanos,
+        },
+        RuntimeStateReaderMeasurement {
+            strategy: "targeted_comm_queue_readers",
+            output_count: config.output_count,
+            payload_bytes: config.payload_bytes,
+            committed_outputs: config.output_count,
+            comms_seen: targeted_comms_seen,
+            queued_executions_seen: targeted_queued_seen,
+            reader_nanos: targeted_nanos,
+        },
+    ])
+}
+
 fn output_commit_measure_blob_root() -> std::path::PathBuf {
     std::env::temp_dir().join(format!("runtimed-output-commit-measure-{}", Uuid::new_v4()))
 }
@@ -314,5 +412,25 @@ mod tests {
         assert_eq!(metrics.manifest_creations, 4);
         assert_eq!(metrics.output_appends, 4);
         assert_eq!(metrics.committed_outputs, 4);
+    }
+
+    #[tokio::test]
+    async fn runtime_state_reader_measure_compares_equivalent_paths() {
+        let metrics = measure_runtime_state_reader_paths(OutputCommitMeasurementConfig {
+            output_count: 4,
+            payload_bytes: 16,
+            kind: OutputCommitKind::DisplayData,
+        })
+        .await
+        .expect("measurement should run");
+
+        assert_eq!(metrics.len(), 2);
+        assert_eq!(metrics[0].strategy, "full_read_state_projection");
+        assert_eq!(metrics[1].strategy, "targeted_comm_queue_readers");
+        for metric in metrics {
+            assert_eq!(metric.committed_outputs, 4);
+            assert_eq!(metric.comms_seen, 1);
+            assert_eq!(metric.queued_executions_seen, 1);
+        }
     }
 }
