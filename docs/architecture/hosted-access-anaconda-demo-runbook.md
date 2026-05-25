@@ -17,7 +17,10 @@ Related design docs:
 
 ## Target Topology
 
-Use one notebook application hostname for the demo:
+Use one notebook application hostname for the demo. For a fast prototype this
+can be the Worker's `workers.dev` route; for a product-facing demo or anything
+business-critical, prefer a Worker route or custom domain so the URL is stable,
+brandable, and not tied to the account-level `workers.dev` subdomain.
 
 ```text
 https://<notebook-host>
@@ -30,7 +33,7 @@ https://notebooks.example.com
 https://nteract-notebook-cloud.rgbkrk.workers.dev
 ```
 
-The Access application protects that host. Browser users authenticate through
+Cloudflare Access protects that host. Browser users authenticate through
 Anaconda OIDC in Cloudflare Access. Cloudflare forwards Access assertions to the
 Worker, and the Worker maps the Access subject to:
 
@@ -57,7 +60,17 @@ from both the Access-protected notebook host and the renderer asset host; see
 
 ## Cloudflare Access Application
 
-Create a Cloudflare Access self-hosted application for the notebook host.
+Create or enable a Cloudflare Access application for the notebook host.
+
+For the prototype `workers.dev` route:
+
+1. In the Cloudflare dashboard, go to `Workers & Pages`.
+2. Select the notebook-cloud Worker.
+3. Go to `Settings > Domains & Routes`.
+4. For `workers.dev`, click `Enable Cloudflare Access`.
+5. Click `Manage Cloudflare Access` to customize the Access policy and IdP.
+
+For a custom hostname or Worker route:
 
 1. In Cloudflare Zero Trust, go to `Access controls > Applications`.
 2. Add an application and choose `Self-hosted`.
@@ -68,19 +81,21 @@ Create a Cloudflare Access self-hosted application for the notebook host.
    https://<notebook-host>
    ```
 
-5. Use a session duration suitable for a live demo, for example `8 hours`.
-6. Add an `Allow` policy for the demo cohort:
+Then, for either host shape:
+
+1. Use a session duration suitable for a live demo, for example `8 hours`.
+2. Add an `Allow` policy for the demo cohort:
    - Identity provider: the Anaconda OIDC provider configured below.
    - Include: exact demo emails, an Anaconda-backed email domain, or an Access
      group used only for the demo.
    - Require: optional device posture or MFA if the account policy demands it.
-7. Copy the application's `Audience Tag`. This is the Worker value:
+3. Copy the application's `Audience Tag`. This is the Worker value:
 
    ```text
    NOTEBOOK_CLOUD_ACCESS_AUD=<Access application Audience Tag>
    ```
 
-8. Record the Cloudflare One team domain:
+4. Record the Cloudflare One team domain:
 
    ```text
    NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN=<team-name>.cloudflareaccess.com
@@ -92,6 +107,7 @@ JWT validation here:
 - `https://developers.cloudflare.com/cloudflare-one/applications/configure-apps/self-hosted-apps/`
 - `https://developers.cloudflare.com/cloudflare-one/identity/authorization-cookie/`
 - `https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/`
+- `https://developers.cloudflare.com/workers/configuration/routing/workers-dev/`
 
 ## Anaconda OIDC Provider In Access
 
@@ -359,6 +375,13 @@ The first request is a token-authenticated `/api/health` preflight. It requires
 one of `NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN` or `NOTEBOOK_CLOUD_ACCESS_AUD` is
 missing.
 
+Against the current prototype host, `cloudflared access token -app=...` must
+succeed before the smoke can run. If it reports that no Access application was
+found, the Worker route is still public and only the dev-token prototype auth
+path is available. After Access is enabled and the Worker variables are
+deployed, `/api/health` should move from `status: "disabled"` to
+`status: "configured"`.
+
 It intentionally sends one client-carried Access credential transport per
 request. If Access forwards `Cf-Access-Jwt-Assertion` to the origin after
 admitting the request, the Worker validates that forwarded assertion as the
@@ -428,8 +451,11 @@ are in place, but an Anaconda-backed trial still depends on these deployment
 and product decisions:
 
 1. **Access application and IdP setup.** The demo host must be protected by a
-   Cloudflare Access self-hosted application whose IdP is Anaconda OIDC. The
-   Worker must receive the matching Access audience and team domain.
+   Cloudflare Access application whose IdP is Anaconda OIDC. For the
+   `workers.dev` prototype, this can be enabled directly on the Worker's
+   `workers.dev` route from `Workers & Pages > Settings > Domains & Routes`.
+   For a product-facing demo, use a custom hostname or Worker route. The Worker
+   must receive the matching Access audience and team domain.
 2. **Principal namespace.** Until the Worker validates an Anaconda-issued token
    or Access forwards a deployment-approved stable Anaconda subject claim, ACL
    rows should use `user:cloudflare-access:<encoded-access-sub>`. Do not switch
