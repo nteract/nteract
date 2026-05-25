@@ -162,6 +162,7 @@ describe("nteract embed host context", () => {
     });
     expect(patch.styles?.variables).not.toHaveProperty("--ignored-non-string");
     expect(patch.containerDimensions).toBeUndefined();
+    expect(patch.nteract).not.toHaveProperty("outputDocumentUrl");
   });
 
   it("can opt into MCP App host dimensions for direct embedders", () => {
@@ -181,6 +182,24 @@ describe("nteract embed host context", () => {
     expect(patch.containerDimensions).toEqual({
       width: 800,
       height: 300,
+    });
+  });
+
+  it("does not clobber existing nteract fields with undefined adapter values", () => {
+    const merged = mergeNteractEmbedHostContext(
+      {
+        nteract: {
+          outputDocumentUrl: "https://outputs.example/frame",
+        },
+      },
+      mcpAppHostContextToNteractEmbedPatch(null, {
+        rendererAssetsBaseUrl: "https://assets.example/plugins/",
+      }),
+    );
+
+    expect(merged.nteract).toEqual({
+      outputDocumentUrl: "https://outputs.example/frame",
+      rendererAssetsBaseUrl: "https://assets.example/plugins/",
     });
   });
 });

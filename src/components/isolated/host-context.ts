@@ -182,6 +182,16 @@ function mcpAppContainerDimensions(
   return Object.keys(next).length > 0 ? next : undefined;
 }
 
+function definedNteractPatch(
+  patch: NteractEmbedHostContextPatch["nteract"],
+): NteractEmbedHostContextPatch["nteract"] | undefined {
+  if (!patch) return undefined;
+  const entries = Object.entries(patch).filter(([, value]) => value !== undefined);
+  return entries.length > 0
+    ? (Object.fromEntries(entries) as NonNullable<NteractEmbedHostContextPatch["nteract"]>)
+    : undefined;
+}
+
 function themePalette(isDark: boolean, colorTheme?: string | null): ThemePalette {
   const isCream = colorTheme === "cream";
   if (isCream) {
@@ -329,11 +339,11 @@ export function mcpAppHostContextToNteractEmbedPatch(
   const modes = hostContext?.availableDisplayModes
     ?.map(validMcpAppDisplayMode)
     .filter((mode): mode is NteractEmbedDisplayMode => mode !== undefined);
-  const nteract = {
+  const nteract = definedNteractPatch({
     ...options.nteract,
     rendererAssetsBaseUrl: options.rendererAssetsBaseUrl ?? options.nteract?.rendererAssetsBaseUrl,
     outputDocumentUrl: options.outputDocumentUrl ?? options.nteract?.outputDocumentUrl,
-  };
+  });
 
   return {
     theme: validMcpAppTheme(hostContext?.theme),
@@ -355,7 +365,7 @@ export function mcpAppHostContextToNteractEmbedPatch(
     platform: validMcpAppPlatform(hostContext?.platform),
     deviceCapabilities: hostContext?.deviceCapabilities,
     safeAreaInsets: hostContext?.safeAreaInsets,
-    nteract: Object.values(nteract).some((value) => value !== undefined) ? nteract : undefined,
+    nteract,
   };
 }
 
