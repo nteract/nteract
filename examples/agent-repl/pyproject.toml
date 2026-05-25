@@ -1,0 +1,33 @@
+[project]
+name = "agent-repl"
+version = "0.1.0"
+description = "Prototype persistent Python REPL tool for agents"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "ipython>=8.0",
+    "mcp>=1.2.0",
+]
+
+[project.scripts]
+agent-repl-mcp = "agent_repl.mcp_server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_repl"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.9",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "B", "SIM"]
