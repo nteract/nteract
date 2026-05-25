@@ -1882,6 +1882,12 @@ impl RuntimeStateDoc {
             .collect()
     }
 
+    /// Read one output manifest by execution id and output id.
+    pub fn get_output(&self, execution_id: &str, output_id: &str) -> Option<serde_json::Value> {
+        let output_entry = self.get_output_entry(execution_id, output_id)?;
+        self.read_output_manifest(&output_entry)
+    }
+
     /// Get all outputs across all executions.
     ///
     /// Returns `(execution_id, output_id, manifest)` triples.
@@ -5746,6 +5752,32 @@ mod tests {
         let outputs = sd.get_outputs("exec-1");
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0]["output_id"], "my-uuid-123");
+    }
+
+    #[test]
+    fn get_output_reads_exact_manifest_by_id() {
+        let mut sd = RuntimeStateDoc::new();
+        sd.create_execution("exec-1").unwrap();
+
+        let m1 = serde_json::json!({
+            "output_type": "stream",
+            "output_id": "stdout-1",
+            "name": "stdout",
+            "text": {"inline": "first\n"}
+        });
+        let m2 = serde_json::json!({
+            "output_type": "display_data",
+            "output_id": "display-1",
+            "data": {"text/plain": {"inline": "second"}},
+            "metadata": {},
+            "transient": {"display_id": "disp-1"}
+        });
+        sd.append_output("exec-1", &m1).unwrap();
+        sd.append_output("exec-1", &m2).unwrap();
+
+        assert_eq!(sd.get_output("exec-1", "display-1"), Some(m2));
+        assert!(sd.get_output("exec-1", "missing").is_none());
+        assert!(sd.get_output("missing-exec", "display-1").is_none());
     }
 
     #[test]
