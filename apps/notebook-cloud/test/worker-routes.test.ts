@@ -736,6 +736,55 @@ describe("Worker artifact routes", () => {
     assert.equal(trustedOrigin.status, 201);
   });
 
+  it("requires trusted origins for Access assertion ACL mutations", async () => {
+    const { env: accessEnv, token } = await accessTokenFixture({ subject: "alice" });
+    const env = fakeEnv(accessEnv);
+    seedNotebook(env, "access-assertion-acl-demo");
+    seedAcl(env, {
+      notebookId: "access-assertion-acl-demo",
+      subject: "user:cloudflare-access:alice",
+      scope: "owner",
+    });
+
+    const body = JSON.stringify({
+      subject_kind: "principal",
+      subject: "user:cloudflare-access:bob",
+      scope: "editor",
+    });
+    const headers = {
+      "Cf-Access-Jwt-Assertion": token,
+      "Content-Type": "application/json",
+      "X-Operator": "browser:tab",
+      "X-Scope": "owner",
+    };
+
+    const missingOrigin = await worker.fetch(
+      new Request("https://cloud.test/api/n/access-assertion-acl-demo/acl", {
+        method: "POST",
+        headers,
+        body,
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(missingOrigin.status, 403);
+    assert.deepEqual(await missingOrigin.json(), { error: "request origin is required" });
+
+    const trustedOrigin = await worker.fetch(
+      new Request("https://cloud.test/api/n/access-assertion-acl-demo/acl", {
+        method: "POST",
+        headers: {
+          ...headers,
+          Origin: "https://cloud.test",
+        },
+        body,
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(trustedOrigin.status, 201);
+  });
+
   it("lets owners grant and revoke explicit public viewer ACL rows", async () => {
     const env = fakeEnv();
     seedNotebook(env, "public-acl-demo");
@@ -1171,6 +1220,41 @@ describe("Worker artifact routes", () => {
           Upgrade: "websocket",
         },
       }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { error: "websocket origin is required" });
+    assert.equal(roomFetches, 0);
+  });
+
+  it("rejects Access assertion WebSocket upgrades with no Origin before room dispatch", async () => {
+    const { env: accessEnv, token } = await accessTokenFixture({ subject: "alice" });
+    let roomFetches = 0;
+    const env = fakeEnv({
+      ...accessEnv,
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async () => {
+            roomFetches += 1;
+            return new Response("unexpected room fetch", { status: 500 });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+
+    const response = await worker.fetch(
+      new Request(
+        "https://cloud.test/n/access-assertion-origin-demo/sync?operator=browser:tab&scope=owner",
+        {
+          headers: {
+            "Cf-Access-Jwt-Assertion": token,
+            Upgrade: "websocket",
+          },
+        },
+      ),
       env,
       fakeContext(),
     );

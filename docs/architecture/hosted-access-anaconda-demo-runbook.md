@@ -190,14 +190,16 @@ Rules:
 - Do not include the renderer asset Worker origin.
 - Do not include sandboxed output iframe origins.
 - Do not use `*`.
-- Leaving the variable unset keeps the same-origin default only. Cookie-backed
-  Access WebSockets still reject missing or untrusted `Origin`.
+- Leaving the variable unset keeps the same-origin default only. Access
+  assertion-backed and cookie-backed WebSockets still reject missing or
+  untrusted `Origin`.
 
 The Worker checks `Origin` before WebSocket auth whenever a client sends one.
-Malformed or untrusted origins are rejected. Browser Access-cookie sessions
-must always send an allowed `Origin` so a malicious site cannot use an ambient
-Access cookie to open a private room socket. Browser-visible credential
-subprotocols also require `Origin`.
+Malformed or untrusted origins are rejected. Browser Access sessions must
+always send an allowed `Origin` so a malicious site cannot use an ambient
+Access cookie, or the forwarded `Cf-Access-Jwt-Assertion` derived from it, to
+open a private room socket. Browser-visible credential subprotocols also
+require `Origin`.
 
 Header-authenticated CLI, native, and future runtime clients may omit `Origin`,
 even when `NOTEBOOK_CLOUD_ALLOWED_ORIGINS` is configured. If those clients send

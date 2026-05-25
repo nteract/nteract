@@ -3,6 +3,7 @@ import { NotebookRoom } from "./notebook-room.ts";
 import {
   ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
   AuthError,
+  CLOUDFLARE_ACCESS_JWT_HEADER,
   allowsBlobUpload,
   allowsPublish,
   authenticateRequestWithProviders,
@@ -310,7 +311,9 @@ function rejectUntrustedWebSocketOrigin(request: Request, env: Env): Response | 
 }
 
 function requiresWebSocketOrigin(request: Request): boolean {
-  return hasCloudflareAccessCookie(request) || hasCredentialWebSocketSubprotocol(request);
+  return (
+    hasCloudflareAccessSessionCredential(request) || hasCredentialWebSocketSubprotocol(request)
+  );
 }
 
 function rejectUntrustedMutationOrigin(request: Request, env: Env): Response | null {
@@ -321,7 +324,7 @@ function rejectUntrustedMutationOrigin(request: Request, env: Env): Response | n
     return json({ error: "request origin is not allowed" }, 403);
   }
   if (!origin) {
-    if (hasCloudflareAccessCookie(request)) {
+    if (hasCloudflareAccessSessionCredential(request)) {
       return json({ error: "request origin is required" }, 403);
     }
     return null;
@@ -370,6 +373,13 @@ function hasCloudflareAccessCookie(request: Request): boolean {
   }
 
   return cookie.split(";").some((part) => part.trim().split("=")[0] === "CF_Authorization");
+}
+
+function hasCloudflareAccessSessionCredential(request: Request): boolean {
+  return (
+    hasCloudflareAccessCookie(request) ||
+    Boolean(request.headers.get(CLOUDFLARE_ACCESS_JWT_HEADER)?.trim())
+  );
 }
 
 function hasCredentialWebSocketSubprotocol(request: Request): boolean {

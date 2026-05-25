@@ -283,17 +283,19 @@ This answers the central authorization question: the identity provider does not
 need to encode nteract room roles. It may bound global capabilities, but D1 room
 ACL rows grant notebook-specific scopes.
 
-## Decision 8: Origin checks are part of cookie-backed WebSocket auth
+## Decision 8: Origin checks are part of Access session WebSocket auth
 
 Any credential that rides automatically with browser requests requires an
 origin gate for WebSocket upgrades.
 
 Minimum policy:
 
-- Reject cookie-backed WebSocket upgrades with missing or untrusted `Origin`.
-  This applies to viewer and writer connections. A private viewer socket can
-  still leak notebook contents to a malicious page if ambient cookies are
-  enough to authenticate it.
+- Reject cookie-backed and Access assertion-backed WebSocket upgrades with
+  missing or untrusted `Origin`. This applies to viewer and writer
+  connections. A private viewer socket can still leak notebook contents to a
+  malicious page if ambient cookies are enough to authenticate it; the Worker
+  treats `Cf-Access-Jwt-Assertion` as part of the same Access session path
+  because the edge derives it from the browser session.
 - Reject browser-visible credential subprotocol upgrades with missing or
   untrusted `Origin`, because page JavaScript can initiate those connections.
 - Maintain an allowlist of notebook application origins that are allowed to
