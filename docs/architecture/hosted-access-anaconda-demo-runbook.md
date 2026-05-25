@@ -262,7 +262,7 @@ policies. Access authenticates the user. D1 grants the notebook role.
 For a demo notebook:
 
 1. Create or publish the notebook with an owner ACL row.
-2. Grant collaborators by principal:
+2. Grant known collaborators by principal:
 
    ```json
    {
@@ -272,7 +272,7 @@ For a demo notebook:
    }
    ```
 
-3. Grant a viewer by principal:
+3. Grant a known viewer by principal:
 
    ```json
    {
@@ -282,7 +282,15 @@ For a demo notebook:
    }
    ```
 
-4. Public viewer is a separate explicit row, and only applies when the request
+4. For share-by-email bootstrapping, create a pending invite row with the
+   normalized email and optional provider hint. On the invited user's first
+   Cloudflare Access login, the Worker resolves the invite before notebook ACL
+   authorization, upserts `principal_profiles`, marks the invite accepted, and
+   inserts a `notebook_acl` row whose subject is the resolved
+   `user:cloudflare-access:<encoded-access-sub>` principal. The email remains
+   lookup and display metadata; it is never the ACL subject.
+
+5. Public viewer is a separate explicit row, and only applies when the request
    can reach the Worker without being blocked by Access:
 
    ```json
@@ -427,8 +435,9 @@ and product decisions:
    rows should use `user:cloudflare-access:<encoded-access-sub>`. Do not switch
    to `user:anaconda:*` based on email.
 3. **Collaborator bootstrap.** The current owner/editor/viewer smoke can derive
-   principals from local Access JWT subjects and seed D1 ACL rows. The browser
-   product still needs share-by-email routes before non-operators can grant
+   principals from local Access JWT subjects, seed D1 ACL rows, or resolve
+   pre-created pending invite rows on first Access login. The browser product
+   still needs share-by-email creation routes before non-operators can grant
    collaborators by email.
 4. **Public viewers.** A fully Access-protected hostname blocks anonymous
    viewers at the edge. Public published notebooks need an Access bypass rule,

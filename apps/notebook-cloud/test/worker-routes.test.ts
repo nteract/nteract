@@ -31,6 +31,7 @@ import {
   renderKey,
   snapshotKey,
 } from "../src/storage.ts";
+import type { PendingNotebookInviteRow, PrincipalProfileRow } from "../src/sharing-storage.ts";
 import { accessTokenFixture } from "./access-jwt-fixture.ts";
 
 const wasmBytes = await readFile(
@@ -676,6 +677,62 @@ describe("Worker artifact routes", () => {
     assert.equal(response.status, 200);
     const catalog = (await response.json()) as { notebook: { id: string } };
     assert.equal(catalog.notebook.id, "access-demo");
+  });
+
+  it("resolves Cloudflare Access pending invites before ACL authorization", async () => {
+    const { env: accessEnv, token } = await accessTokenFixture({
+      subject: "bob",
+      email: "Bob@Example.COM",
+      name: "Bob Example",
+    });
+    const env = fakeEnv(accessEnv);
+    seedNotebook(env, "invite-demo");
+    seedAcl(env, {
+      notebookId: "invite-demo",
+      subject: "user:cloudflare-access:alice",
+      scope: "owner",
+    });
+    seedPendingInvite(env, {
+      id: "invite-bob",
+      notebookId: "invite-demo",
+      email: "bob@example.com",
+      providerHint: "cloudflare-access",
+      scope: "editor",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/n/invite-demo?scope=editor", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Operator": "browser:tab",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(
+      (await getNotebookAclRowsForPrincipal(env, "invite-demo", "user:cloudflare-access:bob")).map(
+        (row) => row.scope,
+      ),
+      ["editor"],
+    );
+    const acceptedInvite = env.DB.invites.get("invite-bob");
+    assert.equal(acceptedInvite?.status, "accepted");
+    assert.equal(acceptedInvite?.accepted_by_principal, "user:cloudflare-access:bob");
+    assert.equal(acceptedInvite?.email_normalized, "bob@example.com");
+    assert.equal(acceptedInvite?.provider_hint, "cloudflare-access");
+    assert.equal(acceptedInvite?.scope, "editor");
+    assert.ok(acceptedInvite?.accepted_at);
+    const profile = env.DB.profiles.get("user:cloudflare-access:bob");
+    assert.equal(profile?.principal, "user:cloudflare-access:bob");
+    assert.equal(profile?.provider, "cloudflare-access");
+    assert.equal(profile?.email_normalized, "bob@example.com");
+    assert.equal(profile?.email_verified, 1);
+    assert.equal(profile?.display_name, "Bob Example");
+    assert.ok(profile?.first_seen_at);
+    assert.ok(profile?.last_seen_at);
   });
 
   it("lets owners inspect and grant principal ACL rows", async () => {
@@ -1819,6 +1876,34 @@ function seedAcl(
   });
 }
 
+function seedPendingInvite(
+  env: FakeEnv,
+  input: {
+    id: string;
+    notebookId: string;
+    email: string;
+    providerHint: string | null;
+    scope: PendingNotebookInviteRow["scope"];
+  },
+): void {
+  env.DB.invites.set(input.id, {
+    id: input.id,
+    notebook_id: input.notebookId,
+    email_normalized: input.email,
+    provider_hint: input.providerHint,
+    scope: input.scope,
+    status: "pending",
+    invited_by_actor_label: "user:cloudflare-access:alice/browser:tab",
+    accepted_by_principal: null,
+    token_hash: null,
+    created_at: "2026-05-22T00:00:00.000Z",
+    expires_at: null,
+    accepted_at: null,
+    revoked_at: null,
+    revoked_by_actor_label: null,
+  });
+}
+
 async function sha256Hex(body: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", body);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -1891,6 +1976,8 @@ class FakeD1 implements D1Database {
   readonly revisions: RevisionRow[] = [];
   readonly blobs = new Map<string, BlobRow>();
   readonly acl: NotebookAclRow[] = [];
+  readonly profiles = new Map<string, PrincipalProfileRow>();
+  readonly invites = new Map<string, PendingNotebookInviteRow>();
   readonly batchSizes: number[] = [];
   afterBlockedOwnerDelete?: () => void;
 
@@ -1970,6 +2057,56 @@ class FakeD1Statement implements D1PreparedStatement {
           created_by_actor_label: actorLabel,
         });
       }
+    } else if (
+      this.query.includes("INSERT INTO notebook_acl") &&
+      this.query.includes("FROM notebook_invites")
+    ) {
+      const [
+        subject,
+        createdAt,
+        updatedAt,
+        actorLabel,
+        inviteId,
+        acceptedByPrincipal,
+        acceptedAt,
+        email,
+        providerHint,
+        now,
+      ] = this.values as [
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string | null,
+        string,
+      ];
+      const invite = this.db.invites.get(inviteId);
+      if (
+        invite &&
+        invite.status === "accepted" &&
+        invite.accepted_by_principal === acceptedByPrincipal &&
+        invite.accepted_at === acceptedAt &&
+        invite.email_normalized === email &&
+        (invite.provider_hint === providerHint || invite.provider_hint === null) &&
+        (!invite.expires_at || Date.parse(invite.expires_at) > Date.parse(now)) &&
+        this.db.notebooks.has(invite.notebook_id)
+      ) {
+        this.insertAclIfMissing({
+          notebook_id: invite.notebook_id,
+          subject_kind: "principal",
+          subject,
+          scope: invite.scope,
+          created_at: createdAt,
+          updated_at: updatedAt,
+          created_by_actor_label: actorLabel,
+        });
+        return okResult(undefined, { changes: 1 });
+      }
+      return okResult(undefined, { changes: 0 });
     } else if (this.query.includes("INSERT INTO notebook_acl")) {
       const [notebookId, subjectKind, subject, scope, createdAt, updatedAt, actorLabel] = this
         .values as [
@@ -2098,6 +2235,67 @@ class FakeD1Statement implements D1PreparedStatement {
         r2_key: r2Key,
         uploaded_at: new Date().toISOString(),
       });
+    } else if (this.query.includes("INSERT INTO principal_profiles")) {
+      const [
+        principal,
+        provider,
+        providerSubject,
+        emailNormalized,
+        emailVerified,
+        displayName,
+        avatarUrl,
+        firstSeenAt,
+        lastSeenAt,
+        rawClaimsJson,
+      ] = this.values as [
+        string,
+        string,
+        string | null,
+        string | null,
+        number,
+        string | null,
+        string | null,
+        string,
+        string,
+        string | null,
+      ];
+      const existing = this.db.profiles.get(principal);
+      this.db.profiles.set(principal, {
+        principal,
+        provider,
+        provider_subject: existing?.provider_subject ?? providerSubject,
+        email_normalized: emailNormalized,
+        email_verified: emailVerified,
+        display_name: displayName,
+        avatar_url: avatarUrl,
+        first_seen_at: existing?.first_seen_at ?? firstSeenAt,
+        last_seen_at: lastSeenAt,
+        raw_claims_json: rawClaimsJson,
+      });
+    } else if (this.query.includes("UPDATE notebook_invites")) {
+      const [principal, acceptedAt, inviteId, email, providerHint, now] = this.values as [
+        string,
+        string,
+        string,
+        string,
+        string | null,
+        string,
+      ];
+      const invite = this.db.invites.get(inviteId);
+      if (
+        invite &&
+        invite.status === "pending" &&
+        invite.email_normalized === email &&
+        (invite.provider_hint === providerHint || invite.provider_hint === null) &&
+        (!invite.expires_at || Date.parse(invite.expires_at) > Date.parse(now)) &&
+        this.db.notebooks.has(invite.notebook_id)
+      ) {
+        invite.status = "accepted";
+        invite.accepted_by_principal = principal;
+        invite.accepted_at = acceptedAt;
+        return okResult(undefined, { changes: 1 });
+      }
+      return okResult(undefined, { changes: 0 });
     }
     return okResult();
   }
@@ -2120,6 +2318,12 @@ class FakeD1Statement implements D1PreparedStatement {
   async first<T = unknown>(): Promise<T | null> {
     if (this.query.includes("FROM notebooks")) {
       return (this.db.notebooks.get(this.values[0] as string) as T | undefined) ?? null;
+    }
+    if (this.query.includes("FROM principal_profiles")) {
+      return (this.db.profiles.get(this.values[0] as string) as T | undefined) ?? null;
+    }
+    if (this.query.includes("FROM notebook_invites")) {
+      return (this.db.invites.get(this.values[0] as string) as T | undefined) ?? null;
     }
     return null;
   }
@@ -2165,6 +2369,18 @@ class FakeD1Statement implements D1PreparedStatement {
       const notebookId = this.values[0] as string;
       return okResult(
         Array.from(this.db.blobs.values()).filter((blob) => blob.notebook_id === notebookId) as T[],
+      );
+    }
+    if (this.query.includes("FROM notebook_invites")) {
+      const [email, provider, now] = this.values as [string, string, string];
+      return okResult(
+        Array.from(this.db.invites.values()).filter(
+          (invite) =>
+            invite.email_normalized === email &&
+            invite.status === "pending" &&
+            (invite.provider_hint === provider || invite.provider_hint === null) &&
+            (!invite.expires_at || Date.parse(invite.expires_at) > Date.parse(now)),
+        ) as T[],
       );
     }
     return okResult([]);

@@ -41,6 +41,7 @@ import {
 } from "./blob-resolver.ts";
 import { collectBlobRefs } from "./blob-refs.ts";
 import { cloudLog, durationMs } from "./observability.ts";
+import { resolveNotebookInvitesForLogin } from "./sharing-storage.ts";
 
 export { NotebookRoom };
 
@@ -1239,7 +1240,9 @@ async function authenticateRequestOrResponse(
   env: Env,
 ): Promise<AuthenticatedConnection | Response> {
   try {
-    return await authenticateRequestWithProviders(request, env);
+    const identity = await authenticateRequestWithProviders(request, env);
+    await resolveLoginInvites(env, identity);
+    return identity;
   } catch (error) {
     if (error instanceof AuthError) {
       cloudLog(error.status >= 500 ? "warn" : "info", "auth.failed", {
@@ -1261,6 +1264,43 @@ async function authenticateRequestOrResponse(
       counter_delta: 1,
     });
     return json({ error: String(error) }, 400);
+  }
+}
+
+async function resolveLoginInvites(env: Env, identity: AuthenticatedConnection): Promise<void> {
+  if (identity.metadata.provider !== "cloudflare-access") {
+    return;
+  }
+
+  try {
+    // Access has already authenticated this email claim; use it only to resolve
+    // pending invite rows into principal ACL rows before authorization.
+    const resolution = await resolveNotebookInvitesForLogin(env, {
+      principal: identity.principal,
+      provider: identity.metadata.provider,
+      email: identity.metadata.email ?? null,
+      emailVerified: Boolean(identity.metadata.email),
+      displayName: identity.metadata.displayName ?? null,
+    });
+    if (resolution.acceptedInvites.length === 0 && resolution.aclGrants.length === 0) {
+      return;
+    }
+    cloudLog("info", "invites.resolution.completed", {
+      principal: identity.principal,
+      provider: identity.metadata.provider,
+      accepted_invite_count: resolution.acceptedInvites.length,
+      acl_grant_count: resolution.aclGrants.length,
+      counter: "invite_resolutions",
+      counter_delta: resolution.acceptedInvites.length,
+    });
+  } catch (error) {
+    cloudLog("warn", "invites.resolution.failed", {
+      principal: identity.principal,
+      provider: identity.metadata.provider,
+      reason: error instanceof Error ? error.message : String(error),
+      counter: "invite_resolution_failures",
+      counter_delta: 1,
+    });
   }
 }
 
