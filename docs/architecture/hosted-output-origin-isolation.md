@@ -72,6 +72,15 @@ should be able to point renderer assets and output documents at dedicated
 origins. Shared renderer code must not infer cloud paths from app-specific
 routes such as `/api/n/:id`.
 
+The current `/n/:id` published viewer is also a prototype convenience served
+from the notebook application origin. That keeps the early demo simple, but it
+means the read-only viewer page currently shares an origin with authenticated
+APIs, localStorage, and WebSocket credential bootstrapping. Before broad private
+notebook sharing, the published read-only viewer should move to a less
+privileged preview/viewer origin, or the privileged application shell should be
+split from the unauthenticated output/viewer surface so the app-origin
+definition above is true in practice.
+
 ## Decision 2: A separate output origin does not replace the sandbox
 
 The iframe sandbox remains load-bearing. Output frames must continue to omit
@@ -85,6 +94,9 @@ coordination space. These are complementary controls:
 - output origin: deployment and browser-policy separation from the app;
 - sandbox without `allow-same-origin`: parent DOM, storage, cookies, and
   inter-output isolation.
+- app-origin hardening: future deployments should evaluate
+  `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` once renderer
+  assets, WASM sidecars, and output documents have explicit CORS/CORP behavior.
 
 Do not loosen the sandbox to make plugin loading easier. If a renderer needs a
 new network dependency, add it through the host context, renderer asset origin,
@@ -244,7 +256,10 @@ output documents to receive app-origin cookies or direct OIDC material.
    clearer.
 4. Whether the renderer asset origin and output document origin can share a
    registrable domain without weakening cookie/storage isolation. The safer
-   default is separate hosts with no shared cookie domain.
+   default is separate hosts with no shared cookie domain. Different subdomains
+   on the same registrable domain are not sufficient if any app, asset, or
+   output host can set `Domain=<registrable-domain>` cookies; app and output
+   hosts must never share registrable-domain-scoped cookies.
 
 ## References
 
