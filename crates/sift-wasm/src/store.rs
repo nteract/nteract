@@ -1,7 +1,7 @@
 use arrow::array::{
-    Array, BinaryArray, BooleanArray, Float64Array, Int32Array, Int64Array, LargeBinaryArray,
-    LargeListArray, LargeStringArray, ListArray, StringArray, StructArray, UInt32Array,
-    UInt64Array,
+    Array, BinaryArray, BinaryViewArray, BooleanArray, Float64Array, Int32Array, Int64Array,
+    LargeBinaryArray, LargeListArray, LargeStringArray, ListArray, StringArray, StructArray,
+    UInt32Array, UInt64Array,
 };
 use arrow::datatypes::{DataType, TimeUnit};
 use arrow::ipc::reader::StreamReader;
@@ -24,6 +24,8 @@ use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 use wasm_bindgen::prelude::*;
 
+const MAX_INLINE_BINARY_BYTES: usize = 512;
+
 /// A loaded dataset stored in WASM memory.
 struct DataStore {
     schema: Option<Arc<arrow::datatypes::Schema>>,
@@ -33,7 +35,7 @@ struct DataStore {
     total_rows: usize,
     num_cols: usize,
     col_names: Vec<String>,
-    col_types: Vec<String>, // "numeric", "categorical", "boolean", "timestamp"
+    col_types: Vec<String>, // "numeric", "categorical", "boolean", "timestamp", "image"
     col_timezones: Vec<Option<String>>,
     /// Original column arrays saved before casting, keyed by column index.
     /// Used to restore original data when casting back to the original type.
@@ -71,6 +73,10 @@ impl DataStore {
     }
 
     fn detect_col_type(dt: &DataType) -> &'static str {
+        if is_image_like_data_type(dt) {
+            return "image";
+        }
+
         match dt {
             DataType::Boolean => "boolean",
             DataType::Int8
@@ -90,6 +96,147 @@ impl DataStore {
             _ => "categorical",
         }
     }
+}
+
+fn is_binary_data_type(dt: &DataType) -> bool {
+    matches!(
+        dt,
+        DataType::Binary | DataType::LargeBinary | DataType::BinaryView
+    )
+}
+
+fn is_image_struct_data_type(dt: &DataType) -> bool {
+    let DataType::Struct(fields) = dt else {
+        return false;
+    };
+
+    let has_bytes = fields
+        .iter()
+        .any(|field| field.name() == "bytes" && is_binary_data_type(field.data_type()));
+    let has_path = fields.iter().any(|field| field.name() == "path");
+
+    has_bytes && has_path
+}
+
+fn is_image_like_data_type(dt: &DataType) -> bool {
+    if is_image_struct_data_type(dt) {
+        return true;
+    }
+
+    match dt {
+        DataType::List(field) | DataType::LargeList(field) => {
+            is_image_struct_data_type(field.data_type())
+        }
+        _ => false,
+    }
+}
+
+fn format_byte_size(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
+fn binary_value_len(column: &dyn Array, row: usize) -> Option<usize> {
+    match column.data_type() {
+        DataType::Binary => column
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .map(|a| a.value(row).len()),
+        DataType::LargeBinary => column
+            .as_any()
+            .downcast_ref::<LargeBinaryArray>()
+            .map(|a| a.value(row).len()),
+        DataType::BinaryView => column
+            .as_any()
+            .downcast_ref::<BinaryViewArray>()
+            .map(|a| a.value(row).len()),
+        _ => None,
+    }
+}
+
+fn list_value_len(column: &dyn Array, row: usize) -> Option<usize> {
+    match column.data_type() {
+        DataType::List(_) => column
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .map(|a| a.value_length(row) as usize),
+        DataType::LargeList(_) => column
+            .as_any()
+            .downcast_ref::<LargeListArray>()
+            .map(|a| a.value_length(row) as usize),
+        _ => None,
+    }
+}
+
+fn binary_payload_exceeds(column: &dyn Array, row: usize, remaining: &mut usize) -> bool {
+    if cell_is_null(column, row) {
+        return false;
+    }
+
+    if let Some(len) = binary_value_len(column, row) {
+        if len > *remaining {
+            return true;
+        }
+        *remaining -= len;
+        return false;
+    }
+
+    match column.data_type() {
+        DataType::Struct(_) => {
+            let Some(s) = column.as_any().downcast_ref::<StructArray>() else {
+                return false;
+            };
+            s.columns()
+                .iter()
+                .any(|child| binary_payload_exceeds(child.as_ref(), row, remaining))
+        }
+        DataType::List(_) => column
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .map(|a| binary_payload_array_exceeds(a.value(row).as_ref(), remaining))
+            .unwrap_or(false),
+        DataType::LargeList(_) => column
+            .as_any()
+            .downcast_ref::<LargeListArray>()
+            .map(|a| binary_payload_array_exceeds(a.value(row).as_ref(), remaining))
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+fn binary_payload_array_exceeds(array: &dyn Array, remaining: &mut usize) -> bool {
+    for row in 0..array.len() {
+        if binary_payload_exceeds(array, row, remaining) {
+            return true;
+        }
+    }
+    false
+}
+
+fn compact_binary_cell_string(column: &dyn Array, row: usize) -> Option<String> {
+    let mut remaining = MAX_INLINE_BINARY_BYTES;
+    if !binary_payload_exceeds(column, row, &mut remaining) {
+        return None;
+    }
+
+    if let Some(item_count) = list_value_len(column, row) {
+        return Some(format!("list of size {}", item_count));
+    }
+
+    if let Some(byte_count) = binary_value_len(column, row) {
+        return Some(format!("bytes ({})", format_byte_size(byte_count)));
+    }
+
+    if matches!(column.data_type(), DataType::Struct(_)) {
+        return Some("struct (binary data)".to_string());
+    }
+
+    Some("binary data".to_string())
 }
 
 fn cell_is_null(column: &dyn Array, row: usize) -> bool {
@@ -423,6 +570,14 @@ fn cell_string_for(store: &DataStore, col: usize, column: &dyn Array, local_row:
         return String::new();
     }
 
+    if matches!(store.col_types.get(col).map(String::as_str), Some("image")) {
+        return String::new();
+    }
+
+    if let Some(compact) = compact_binary_cell_string(column, local_row) {
+        return compact;
+    }
+
     // Strings (Utf8 / LargeUtf8 / Utf8View / Dict<string>) route through
     // the shared helper so all variants dispatch correctly.
     if let Some(s) = nteract_predicate::arrow_utils::string_at(column, local_row) {
@@ -531,8 +686,12 @@ fn viewport_cells_for(s: &DataStore, rows: &[u32]) -> ViewportCells {
                 continue;
             }
 
-            out.strings
-                .push(cell_string_for(s, col, column.as_ref(), local_row));
+            if matches!(s.col_types.get(col).map(String::as_str), Some("image")) {
+                out.strings.push(String::new());
+            } else {
+                out.strings
+                    .push(cell_string_for(s, col, column.as_ref(), local_row));
+            }
             if matches!(
                 s.col_types.get(col).map(String::as_str),
                 Some("numeric" | "timestamp")
@@ -592,6 +751,11 @@ fn extract_bytes_from_struct(arr: &dyn Array, idx: usize) -> Vec<u8> {
         DataType::LargeBinary => bytes_col
             .as_any()
             .downcast_ref::<LargeBinaryArray>()
+            .map(|a| a.value(idx).to_vec())
+            .unwrap_or_default(),
+        DataType::BinaryView => bytes_col
+            .as_any()
+            .downcast_ref::<BinaryViewArray>()
             .map(|a| a.value(idx).to_vec())
             .unwrap_or_default(),
         _ => Vec::new(),
@@ -795,7 +959,9 @@ pub fn store_value_counts(handle: u32, col: usize) -> Result<JsValue, JsValue> {
                     {
                         for i in 0..column.len() {
                             if !cell_is_null(column.as_ref(), i) {
-                                *freq.entry(formatter.value(i).to_string()).or_insert(0) += 1;
+                                let key = compact_binary_cell_string(column.as_ref(), i)
+                                    .unwrap_or_else(|| formatter.value(i).to_string());
+                                *freq.entry(key).or_insert(0) += 1;
                             }
                         }
                     }
@@ -1270,7 +1436,9 @@ pub fn store_filtered_value_counts(
                                 && mask[global_row + i] != 0
                                 && !cell_is_null(column.as_ref(), i)
                             {
-                                *freq.entry(formatter.value(i).to_string()).or_insert(0) += 1;
+                                let key = compact_binary_cell_string(column.as_ref(), i)
+                                    .unwrap_or_else(|| formatter.value(i).to_string());
+                                *freq.entry(key).or_insert(0) += 1;
                             }
                         }
                     }
@@ -2516,6 +2684,7 @@ mod tests {
 
     fn store_with_one_struct_column(arr: StructArray) -> DataStore {
         let total_rows = arr.len();
+        let col_type = DataStore::detect_col_type(arr.data_type()).to_string();
         let schema = Arc::new(Schema::new(vec![Field::new(
             "img",
             arr.data_type().clone(),
@@ -2530,7 +2699,7 @@ mod tests {
             total_rows,
             num_cols: 1,
             col_names: vec!["img".to_string()],
-            col_types: vec!["categorical".to_string()],
+            col_types: vec![col_type],
             col_timezones: vec![None],
             original_columns: HashMap::new(),
             streaming_complete: true,
@@ -2606,19 +2775,16 @@ mod tests {
     /// a per-cell count + per-index byte access so the renderer can lay out a
     /// row of thumbnails. The list-cell helpers wrap that.
     fn list_of_image_struct(rows: Vec<Vec<&'static [u8]>>) -> ListArray {
-        use arrow::array::ListBuilder;
         use arrow::buffer::OffsetBuffer;
 
         // Build flat children + offsets
         let mut all_bytes: Vec<Option<&[u8]>> = Vec::new();
         let mut all_paths: Vec<Option<&str>> = Vec::new();
         let mut offsets: Vec<i32> = vec![0];
-        let _ = ListBuilder::<arrow::array::StringBuilder>::default;
 
         for row in &rows {
-            for (i, b) in row.iter().enumerate() {
+            for b in row {
                 all_bytes.push(Some(b));
-                let _ = i;
                 all_paths.push(Some("p"));
             }
             offsets.push(all_bytes.len() as i32);
@@ -2644,8 +2810,35 @@ mod tests {
         )
     }
 
+    fn list_of_blob_struct(rows: Vec<Vec<&'static [u8]>>) -> ListArray {
+        use arrow::buffer::OffsetBuffer;
+
+        let mut all_bytes: Vec<Option<&[u8]>> = Vec::new();
+        let mut offsets: Vec<i32> = vec![0];
+
+        for row in &rows {
+            for b in row {
+                all_bytes.push(Some(b));
+            }
+            offsets.push(all_bytes.len() as i32);
+        }
+        let bytes_arr = BinaryArray::from_opt_vec(all_bytes);
+        let inner_struct = StructArray::from(vec![(
+            Arc::new(Field::new("bytes", DataType::Binary, true)),
+            Arc::new(bytes_arr) as ArrayRef,
+        )]);
+        let inner_field = Arc::new(Field::new("item", inner_struct.data_type().clone(), true));
+        ListArray::new(
+            inner_field,
+            OffsetBuffer::new(offsets.into()),
+            Arc::new(inner_struct) as ArrayRef,
+            None,
+        )
+    }
+
     fn store_with_one_list_column(arr: ListArray) -> DataStore {
         let total_rows = arr.len();
+        let col_type = DataStore::detect_col_type(arr.data_type()).to_string();
         let schema = Arc::new(Schema::new(vec![Field::new(
             "images",
             arr.data_type().clone(),
@@ -2660,11 +2853,66 @@ mod tests {
             total_rows,
             num_cols: 1,
             col_names: vec!["images".to_string()],
-            col_types: vec!["categorical".to_string()],
+            col_types: vec![col_type],
             col_timezones: vec![None],
             original_columns: HashMap::new(),
             streaming_complete: true,
         }
+    }
+
+    #[test]
+    fn detects_image_columns_from_huggingface_struct_shapes_without_metadata() {
+        let arr = image_struct(vec![Some(b"x")], vec![Some("a.png")]);
+        assert_eq!(DataStore::detect_col_type(arr.data_type()), "image");
+
+        let list = list_of_image_struct(vec![vec![b"\x89PNG"]]);
+        assert_eq!(DataStore::detect_col_type(list.data_type()), "image");
+    }
+
+    #[test]
+    fn viewport_cells_do_not_format_image_bytes_as_text() {
+        let arr = image_struct(
+            vec![Some(b"\x89PNG\r\n\x1a\nnot formatted as a struct")],
+            vec![Some("a.png")],
+        );
+        let store = store_with_one_struct_column(arr);
+
+        let out = viewport_cells_for(&store, &[0]);
+
+        assert_eq!(out.rows, vec![0]);
+        assert_eq!(out.strings, vec![""]);
+        assert_eq!(out.numeric_values, vec![None]);
+        assert_eq!(out.nulls, vec![false]);
+    }
+
+    #[test]
+    fn viewport_cells_compact_large_binary_lists() {
+        static LARGE_BYTES: [u8; MAX_INLINE_BINARY_BYTES + 1] = [b'x'; MAX_INLINE_BINARY_BYTES + 1];
+        let arr = list_of_blob_struct(vec![vec![&LARGE_BYTES, b"small"]]);
+        let total_rows = arr.len();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "payloads",
+            arr.data_type().clone(),
+            true,
+        )]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(arr) as ArrayRef]).expect("record batch");
+        let store = DataStore {
+            schema: Some(batch.schema()),
+            batches: vec![batch],
+            batch_offsets: vec![0],
+            total_rows,
+            num_cols: 1,
+            col_names: vec!["payloads".to_string()],
+            col_types: vec!["categorical".to_string()],
+            col_timezones: vec![None],
+            original_columns: HashMap::new(),
+            streaming_complete: true,
+        };
+
+        let out = viewport_cells_for(&store, &[0]);
+
+        assert_eq!(out.strings, vec!["list of size 2"]);
     }
 
     #[test]
