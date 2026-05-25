@@ -243,6 +243,68 @@ export async function getPendingNotebookInvite(
     .first<PendingNotebookInviteRow>();
 }
 
+export async function listNotebookInvites(
+  env: Env,
+  notebookId: string,
+): Promise<PendingNotebookInviteRow[]> {
+  if (!env.DB) {
+    return [];
+  }
+
+  await ensureCatalogSchema(env);
+  const rows = await env.DB.prepare(
+    `SELECT id,
+            notebook_id,
+            email_normalized,
+            provider_hint,
+            scope,
+            status,
+            invited_by_actor_label,
+            accepted_by_principal,
+            token_hash,
+            created_at,
+            expires_at,
+            accepted_at,
+            revoked_at,
+            revoked_by_actor_label
+       FROM notebook_invites
+       WHERE notebook_id = ?
+       ORDER BY created_at`,
+  )
+    .bind(notebookId)
+    .all<PendingNotebookInviteRow>();
+  return rows.results ?? [];
+}
+
+export async function revokePendingNotebookInvite(
+  env: Env,
+  input: {
+    notebookId: string;
+    inviteId: string;
+    actorLabel: string;
+    timestamp?: string;
+  },
+): Promise<boolean> {
+  if (!env.DB) {
+    return false;
+  }
+
+  await ensureCatalogSchema(env);
+  const timestamp = input.timestamp ?? new Date().toISOString();
+  const result = await env.DB.prepare(
+    `UPDATE notebook_invites
+        SET status = 'revoked',
+            revoked_at = ?,
+            revoked_by_actor_label = ?
+      WHERE notebook_id = ?
+        AND id = ?
+        AND status = 'pending'`,
+  )
+    .bind(timestamp, input.actorLabel, input.notebookId, input.inviteId)
+    .run();
+  return d1Changes(result) > 0;
+}
+
 async function getExistingPendingNotebookInvite(
   env: Env,
   input: {

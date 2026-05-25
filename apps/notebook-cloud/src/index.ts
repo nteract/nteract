@@ -42,8 +42,12 @@ import {
 import { collectBlobRefs } from "./blob-refs.ts";
 import { cloudLog, durationMs } from "./observability.ts";
 import {
+  createPendingNotebookInvite,
   getPendingNotebookInvitesForLogin,
+  listNotebookInvites,
   resolveNotebookInvitesForLogin,
+  revokePendingNotebookInvite,
+  type PendingNotebookInviteRow,
 } from "./sharing-storage.ts";
 
 export { NotebookRoom };
@@ -148,6 +152,21 @@ const worker: ExportedHandler<Env> = {
     const aclMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/acl\/?$/);
     if (aclMatch) {
       return routeNotebookAcl(request, env, decodeURIComponent(aclMatch[1]));
+    }
+
+    const inviteMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/invites\/?$/);
+    if (inviteMatch) {
+      return routeNotebookInvites(request, env, decodeURIComponent(inviteMatch[1]));
+    }
+
+    const inviteItemMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/invites\/([^/]+)\/?$/);
+    if (inviteItemMatch) {
+      return routeNotebookInvite(
+        request,
+        env,
+        decodeURIComponent(inviteItemMatch[1]),
+        decodeURIComponent(inviteItemMatch[2]),
+      );
     }
 
     const renderMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/renders\/([^/]+)$/);
@@ -599,6 +618,217 @@ async function routeRuntimeSnapshot(
   });
 
   return json({ ok: true, key, size: body.byteLength }, 201);
+}
+
+interface PendingInvitePayload {
+  email?: unknown;
+  provider_hint?: unknown;
+  providerHint?: unknown;
+  scope?: unknown;
+  expires_at?: unknown;
+  expiresAt?: unknown;
+}
+
+interface ParsedPendingInviteInput {
+  email: string;
+  provider_hint: string | null;
+  scope: "viewer" | "editor";
+  expires_at: string | null;
+}
+
+async function routeNotebookInvites(
+  request: Request,
+  env: Env,
+  notebookId: string,
+): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  if (request.method === "POST") {
+    const originRejection = rejectUntrustedMutationOrigin(request, env);
+    if (originRejection) {
+      return originRejection;
+    }
+  }
+
+  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "owner");
+  if (identity instanceof Response) {
+    return identity;
+  }
+
+  if (request.method === "GET") {
+    return json({
+      notebook_id: notebookId,
+      invites: (await listNotebookInvites(env, notebookId)).map(inviteResponse),
+    });
+  }
+
+  if (request.method !== "POST") {
+    return json({ error: "method not allowed" }, 405);
+  }
+
+  const inviteInput = await parsePendingInviteInput(request);
+  if (inviteInput instanceof Response) {
+    return inviteInput;
+  }
+
+  let invite: PendingNotebookInviteRow | null;
+  try {
+    invite = await createPendingNotebookInvite(env, {
+      notebookId,
+      email: inviteInput.email,
+      providerHint: inviteInput.provider_hint,
+      scope: inviteInput.scope,
+      expiresAt: inviteInput.expires_at,
+      actorLabel: identity.actorLabel,
+    });
+  } catch (error) {
+    if (isInviteInputError(error)) {
+      return json({ error: errorMessage(error) }, 400);
+    }
+    throw error;
+  }
+
+  if (!invite) {
+    return json({ error: "invite was not created" }, 500);
+  }
+
+  cloudLog("info", "invite.create.completed", {
+    notebook_id: notebookId,
+    principal: identity.principal,
+    actor_label: identity.actorLabel,
+    invite_id: invite.id,
+    invite_scope: invite.scope,
+    provider_hint: invite.provider_hint,
+    counter: "invite_creates",
+    counter_delta: 1,
+  });
+
+  return json(
+    {
+      ok: true,
+      notebook_id: notebookId,
+      invite: inviteResponse(invite),
+    },
+    201,
+  );
+}
+
+async function routeNotebookInvite(
+  request: Request,
+  env: Env,
+  notebookId: string,
+  inviteId: string,
+): Promise<Response> {
+  if (!env.DB) {
+    return json({ error: "D1 binding DB is not configured" }, 503);
+  }
+
+  if (request.method === "DELETE") {
+    const originRejection = rejectUntrustedMutationOrigin(request, env);
+    if (originRejection) {
+      return originRejection;
+    }
+  }
+
+  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "owner");
+  if (identity instanceof Response) {
+    return identity;
+  }
+
+  if (request.method !== "DELETE") {
+    return json({ error: "method not allowed" }, 405);
+  }
+
+  const revoked = await revokePendingNotebookInvite(env, {
+    notebookId,
+    inviteId,
+    actorLabel: identity.actorLabel,
+  });
+  if (!revoked) {
+    return json({ error: "pending invite not found" }, 404);
+  }
+
+  cloudLog("info", "invite.revoke.completed", {
+    notebook_id: notebookId,
+    principal: identity.principal,
+    actor_label: identity.actorLabel,
+    invite_id: inviteId,
+    counter: "invite_revocations",
+    counter_delta: 1,
+  });
+
+  return json({
+    ok: true,
+    notebook_id: notebookId,
+    invites: (await listNotebookInvites(env, notebookId)).map(inviteResponse),
+  });
+}
+
+async function parsePendingInviteInput(
+  request: Request,
+): Promise<ParsedPendingInviteInput | Response> {
+  let payload: PendingInvitePayload;
+  try {
+    payload = (await request.json()) as PendingInvitePayload;
+  } catch {
+    return json({ error: "invite body must be JSON" }, 400);
+  }
+
+  const email = stringField(payload.email, "email");
+  if (email instanceof Response) {
+    return email;
+  }
+
+  const scopeValue = stringField(payload.scope, "scope");
+  if (scopeValue instanceof Response) {
+    return scopeValue;
+  }
+  if (scopeValue !== "viewer" && scopeValue !== "editor") {
+    return json({ error: "invite scope must be viewer or editor" }, 400);
+  }
+
+  const providerHint = optionalStringField(
+    payload.provider_hint ?? payload.providerHint,
+    "provider_hint",
+  );
+  if (providerHint instanceof Response) {
+    return providerHint;
+  }
+
+  const expiresAt = optionalStringField(payload.expires_at ?? payload.expiresAt, "expires_at");
+  if (expiresAt instanceof Response) {
+    return expiresAt;
+  }
+  if (expiresAt && !Number.isFinite(Date.parse(expiresAt))) {
+    return json({ error: "invite expiry is invalid" }, 400);
+  }
+
+  return {
+    email,
+    provider_hint: providerHint,
+    scope: scopeValue,
+    expires_at: expiresAt,
+  };
+}
+
+function inviteResponse(row: PendingNotebookInviteRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    notebook_id: row.notebook_id,
+    email: row.email_normalized,
+    provider_hint: row.provider_hint,
+    scope: row.scope,
+    status: row.status,
+    invited_by_actor_label: row.invited_by_actor_label,
+    accepted_by_principal: row.accepted_by_principal,
+    created_at: row.created_at,
+    expires_at: row.expires_at,
+    accepted_at: row.accepted_at,
+    revoked_at: row.revoked_at,
+    revoked_by_actor_label: row.revoked_by_actor_label,
+  };
 }
 
 async function routeNotebookAcl(request: Request, env: Env, notebookId: string): Promise<Response> {
@@ -1206,6 +1436,17 @@ function stringField(value: unknown, fieldName: string): string | Response {
   return value.trim();
 }
 
+function optionalStringField(value: unknown, fieldName: string): string | null | Response {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== "string") {
+    return json({ error: `${fieldName} must be a string` }, 400);
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
 function isOwnerAclInput(row: ParsedNotebookAclInput): boolean {
   return row.subject_kind === "principal" && row.scope === "owner";
 }
@@ -1403,6 +1644,10 @@ function json(value: unknown, status = 200): Response {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isInviteInputError(error: unknown): boolean {
+  return errorMessage(error).startsWith("invite ");
 }
 
 async function sha256Hex(body: ArrayBuffer): Promise<string> {
