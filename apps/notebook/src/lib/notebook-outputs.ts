@@ -22,6 +22,7 @@ import {
 //
 // Responsibilities:
 //   _outputMap    — output manifest by output_id
+//   _displayIndex — display_id -> output_ids for optimistic display updates
 //   subscribers   — per-output set of callbacks
 //
 // Writers: the frame pipeline, fed by `RuntimeStateSyncApplied.output_changeset`
@@ -29,8 +30,14 @@ import {
 // ---------------------------------------------------------------------------
 
 const _outputMap: Map<string, JupyterOutput> = new Map();
+const _displayIndex: Map<string, Set<string>> = new Map();
 
 const _subscribers = new Map<string, Set<() => void>>();
+
+type DisplayCapableOutput = Extract<
+  JupyterOutput,
+  { output_type: "display_data" | "execute_result" }
+>;
 
 // Coarse version counter bumped on every setOutput / deleteOutput. This
 // is intentionally NOT used by `useCellOutputs` (per-cell hooks subscribe
@@ -155,6 +162,44 @@ function getOutputSnapshot(output_id: string): () => JupyterOutput | undefined {
   return () => _outputMap.get(output_id);
 }
 
+function isDisplayCapableOutput(
+  output: JupyterOutput,
+): output is DisplayCapableOutput {
+  return (
+    output.output_type === "display_data" ||
+    output.output_type === "execute_result"
+  );
+}
+
+function getDisplayId(output: JupyterOutput): string | undefined {
+  if (isDisplayCapableOutput(output)) {
+    return output.display_id;
+  }
+  return undefined;
+}
+
+function addDisplayIndexEntry(output_id: string, output: JupyterOutput): void {
+  const display_id = getDisplayId(output);
+  if (display_id === undefined) return;
+  let outputIds = _displayIndex.get(display_id);
+  if (!outputIds) {
+    outputIds = new Set();
+    _displayIndex.set(display_id, outputIds);
+  }
+  outputIds.add(output_id);
+}
+
+function removeDisplayIndexEntry(output_id: string, output: JupyterOutput): void {
+  const display_id = getDisplayId(output);
+  if (display_id === undefined) return;
+  const outputIds = _displayIndex.get(display_id);
+  if (!outputIds) return;
+  outputIds.delete(output_id);
+  if (outputIds.size === 0) {
+    _displayIndex.delete(display_id);
+  }
+}
+
 // ── Write operations ────────────────────────────────────────────────────
 
 /**
@@ -166,13 +211,17 @@ function getOutputSnapshot(output_id: string): () => JupyterOutput | undefined {
 export function setOutput(output_id: string, output: JupyterOutput): void {
   const prev = _outputMap.get(output_id);
   if (prev === output) return;
+  if (prev) removeDisplayIndexEntry(output_id, prev);
   _outputMap.set(output_id, output);
+  addDisplayIndexEntry(output_id, output);
   emitOutputChange(output_id);
 }
 
 /** Remove a single output. Notifies its subscribers with `undefined`. */
 export function deleteOutput(output_id: string): void {
-  if (!_outputMap.has(output_id)) return;
+  const prev = _outputMap.get(output_id);
+  if (!prev) return;
+  removeDisplayIndexEntry(output_id, prev);
   _outputMap.delete(output_id);
   emitOutputChange(output_id);
 }
@@ -200,14 +249,18 @@ export function updateOutputsByDisplayId(
   data: Record<string, unknown>,
   metadata?: Record<string, unknown>,
 ): void {
-  for (const [output_id, output] of _outputMap) {
+  const outputIds = _displayIndex.get(display_id);
+  if (!outputIds) return;
+  for (const output_id of [...outputIds]) {
+    const output = _outputMap.get(output_id);
     if (
-      (output.output_type === "display_data" ||
-        output.output_type === "execute_result") &&
-      output.display_id === display_id
+      !output ||
+      !isDisplayCapableOutput(output) ||
+      output.display_id !== display_id
     ) {
-      setOutput(output_id, { ...output, data, metadata });
+      continue;
     }
+    setOutput(output_id, { ...output, data, metadata });
   }
 }
 
@@ -215,6 +268,7 @@ export function updateOutputsByDisplayId(
 export function resetNotebookOutputs(): void {
   const ids = [..._outputMap.keys()];
   _outputMap.clear();
+  _displayIndex.clear();
   for (const id of ids) emitOutputChange(id);
 }
 

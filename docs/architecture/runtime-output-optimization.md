@@ -49,7 +49,10 @@ known repeated work:
    only needs queued execution metadata or widget comm state.
 4. WASM-side output-id indexing so runtime sync handling does not repeatedly
    read the full runtime state just to derive output deltas.
-5. Frontend output materialization cleanup so runtime outputs flow through the
+5. Frontend display-id indexing so optimistic `update_display_data` repainting
+   touches only matching output ids instead of scanning the whole output store
+   for every display update.
+6. Frontend output materialization cleanup so runtime outputs flow through the
    output store rather than repeated whole-output JSON cache keys.
 
 Each item is independently mergeable and should include a small benchmark or

@@ -6,13 +6,9 @@ import {
   getOutputById,
   resetNotebookOutputs,
   setOutput,
+  updateOutputsByDisplayId,
   useOutput,
 } from "../notebook-outputs";
-
-// The useOutput hook is shaped like React's useSyncExternalStore; here we
-// reach into the subscribe/get pair via the exported module-level helpers
-// plus a manual subscribe on the store. Tests exercise the invariants at
-// the store layer only -- no React rendering.
 
 afterEach(() => {
   resetNotebookOutputs();
@@ -23,6 +19,20 @@ const streamOutput = (text: string): JupyterOutput => ({
   name: "stdout",
   text,
 });
+
+function displayOutput(
+  output_id: string,
+  display_id: string,
+  text: string,
+): JupyterOutput {
+  return {
+    output_id,
+    output_type: "display_data",
+    display_id,
+    data: { "text/plain": text },
+    metadata: {},
+  };
+}
 
 describe("notebook-outputs store", () => {
   it("returns undefined for unknown output_ids", () => {
@@ -97,5 +107,98 @@ describe("notebook-outputs store", () => {
     // outside a React test environment here, so the assertion is simply
     // that the export exists and is a function.
     expect(typeof useOutput).toBe("function");
+  });
+});
+
+describe("notebook output store display_id updates", () => {
+  it("updates every display-capable output with the matching display_id", () => {
+    setOutput("out-1", displayOutput("out-1", "plot", "before"));
+    setOutput("out-2", {
+      output_id: "out-2",
+      output_type: "execute_result",
+      display_id: "plot",
+      execution_count: 1,
+      data: { "text/plain": "old result" },
+      metadata: {},
+    });
+    setOutput("stream-1", {
+      output_id: "stream-1",
+      output_type: "stream",
+      name: "stdout",
+      text: "plot",
+    });
+
+    updateOutputsByDisplayId(
+      "plot",
+      { "text/plain": "after" },
+      { updated: true },
+    );
+
+    expect(getOutputById("out-1")).toMatchObject({
+      data: { "text/plain": "after" },
+      metadata: { updated: true },
+    });
+    expect(getOutputById("out-2")).toMatchObject({
+      data: { "text/plain": "after" },
+      metadata: { updated: true },
+    });
+    expect(getOutputById("stream-1")).toMatchObject({ text: "plot" });
+  });
+
+  it("moves an output between display_id buckets on replacement", () => {
+    setOutput("out-1", displayOutput("out-1", "old-display", "before"));
+    setOutput("out-1", displayOutput("out-1", "new-display", "before"));
+
+    updateOutputsByDisplayId("old-display", { "text/plain": "wrong" });
+    expect(getOutputById("out-1")).toMatchObject({
+      data: { "text/plain": "before" },
+    });
+
+    updateOutputsByDisplayId("new-display", { "text/plain": "right" });
+    expect(getOutputById("out-1")).toMatchObject({
+      data: { "text/plain": "right" },
+    });
+  });
+
+  it("removes deleted and reset outputs from display_id lookup", () => {
+    setOutput("deleted", displayOutput("deleted", "plot", "before"));
+    deleteOutput("deleted");
+    updateOutputsByDisplayId("plot", { "text/plain": "after" });
+    expect(getOutputById("deleted")).toBeUndefined();
+
+    setOutput("reset", displayOutput("reset", "plot", "before"));
+    resetNotebookOutputs();
+    updateOutputsByDisplayId("plot", { "text/plain": "after" });
+    expect(getOutputById("reset")).toBeUndefined();
+  });
+
+  it("does not scan unrelated outputs for every display update", () => {
+    let throwOnDisplayIdRead = false;
+    const unrelated = {
+      output_id: "unrelated",
+      output_type: "display_data",
+      data: { "text/plain": "unrelated" },
+      metadata: {},
+    } as JupyterOutput;
+    Object.defineProperty(unrelated, "display_id", {
+      enumerable: true,
+      get() {
+        if (throwOnDisplayIdRead) {
+          throw new Error("display_id scan reached unrelated output");
+        }
+        return "other-display";
+      },
+    });
+
+    setOutput("target", displayOutput("target", "target-display", "before"));
+    setOutput("unrelated", unrelated);
+    throwOnDisplayIdRead = true;
+
+    expect(() =>
+      updateOutputsByDisplayId("target-display", { "text/plain": "after" }),
+    ).not.toThrow();
+    expect(getOutputById("target")).toMatchObject({
+      data: { "text/plain": "after" },
+    });
   });
 });
