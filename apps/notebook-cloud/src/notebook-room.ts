@@ -1,6 +1,6 @@
 import type { CloudflareWebSocket, DurableObjectState, Env } from "./cloudflare-types.ts";
 import {
-  allowsRuntimeStateWrite,
+  allowsBlobUpload,
   isAnonymousViewer,
   readTrustedIdentity,
   type AuthenticatedConnection,
@@ -422,7 +422,7 @@ export class NotebookRoom {
         // document changes when the connection lacks write scope.
         return true;
       case FrameType.PUT_BLOB:
-        return allowsRuntimeStateWrite(identity.scope);
+        return allowsBlobUpload(identity.scope);
       case FrameType.POOL_STATE_SYNC:
         return identity.scope === "owner";
       case FrameType.REQUEST:

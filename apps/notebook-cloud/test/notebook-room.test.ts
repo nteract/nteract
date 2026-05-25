@@ -313,6 +313,71 @@ describe("NotebookRoom materialized sync persistence", () => {
       "cloud_frame_accepted",
     );
   });
+
+  it("rejects editor-scoped PUT_BLOB frames on the WebSocket path", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "editor",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+    };
+    const harness = roomHarness(room);
+    let persisted = 0;
+    harness.persistFrame = async () => {
+      persisted += 1;
+    };
+
+    await harness.handleMessage(
+      "demo",
+      peer,
+      encodeTypedFrame(FrameType.PUT_BLOB, new Uint8Array([1, 2, 3])),
+    );
+
+    assert.equal(persisted, 0);
+    assert.equal(socket.sent.length, 1);
+    const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    assert.equal(rejected.type, "cloud_frame_rejected");
+    assert.equal(rejected.reason, "editor cannot write put_blob frames");
+  });
+
+  it("accepts runtime peer PUT_BLOB frames on the WebSocket path", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const identity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:py&scope=runtime_peer",
+      ),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "runtime",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+    };
+    const harness = roomHarness(room);
+    let persisted = 0;
+    harness.persistFrame = async () => {
+      persisted += 1;
+    };
+
+    await harness.handleMessage(
+      "demo",
+      peer,
+      encodeTypedFrame(FrameType.PUT_BLOB, new Uint8Array([1, 2, 3])),
+    );
+
+    assert.equal(persisted, 1);
+    assert.equal(socket.sent.length, 1);
+    assert.equal(
+      decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1)).type,
+      "cloud_frame_accepted",
+    );
+  });
 });
 
 type PeerForTest = {

@@ -370,6 +370,29 @@ describe("Worker artifact routes", () => {
     assert.equal(env.NOTEBOOK_SNAPSHOTS.objects.size, 0);
   });
 
+  it("keeps editor scope from uploading runtime output blobs", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "editor-blob-demo");
+    seedAcl(env, {
+      notebookId: "editor-blob-demo",
+      subject: "user:dev:alice",
+      scope: "editor",
+    });
+    const body = new Uint8Array([1, 2, 3, 4]);
+    const hash = await sha256Hex(body);
+
+    const response = await scopedPut(env, `/api/n/editor-blob-demo/blobs/${hash}`, body, {
+      "X-Scope": "editor",
+      "X-User": "alice",
+      "X-Operator": "desktop:a",
+    });
+
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { error: "editor cannot upload blobs" });
+    assert.equal(env.NOTEBOOK_SNAPSHOTS.objects.size, 0);
+    assert.equal(env.DB.blobs.size, 0);
+  });
+
   it("requires trusted origins for cookie-backed artifact mutations", async () => {
     const { env: accessEnv, token } = await accessTokenFixture({ subject: "alice" });
     const env = fakeEnv(accessEnv);

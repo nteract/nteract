@@ -5,6 +5,8 @@ import {
   AuthError,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
   NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+  allowsBlobUpload,
+  allowsRuntimeStateWrite,
   authenticateAnonymousViewer,
   authenticateDevRequest,
   authenticateRequest,
@@ -313,6 +315,14 @@ describe("dev identity", () => {
     });
     assert.equal(parseScope("runtime_peer"), "runtime_peer");
     assert.throws(() => parseScope("admin"), /unknown connection scope/);
+  });
+
+  it("keeps runtime-state write scope distinct from blob upload scope", () => {
+    assert.equal(allowsRuntimeStateWrite("editor"), true);
+    assert.equal(allowsBlobUpload("editor"), false);
+    assert.equal(allowsBlobUpload("runtime_peer"), true);
+    assert.equal(allowsBlobUpload("owner"), true);
+    assert.equal(allowsBlobUpload("viewer"), false);
   });
 
   it("percent-encodes dev principal components", () => {
