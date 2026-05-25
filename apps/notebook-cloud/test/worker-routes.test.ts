@@ -42,6 +42,51 @@ before(async () => {
 });
 
 describe("Worker artifact routes", () => {
+  it("reports Cloudflare Access readiness without exposing configured values", async () => {
+    const env = fakeEnv({
+      NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
+      NOTEBOOK_CLOUD_ACCESS_AUD: "aud-secret-ish-value",
+      NOTEBOOK_CLOUD_ACCESS_JWKS_JSON: '{"keys":[]}',
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/health"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      auth: { cloudflare_access: { status: string; jwks: string } };
+    };
+    assert.deepEqual(body.auth.cloudflare_access, {
+      status: "configured",
+      jwks: "pinned",
+    });
+    assert.doesNotMatch(JSON.stringify(body), /team\.cloudflareaccess\.com|aud-secret-ish-value/);
+  });
+
+  it("reports partial Cloudflare Access readiness for incomplete deployments", async () => {
+    const env = fakeEnv({
+      NOTEBOOK_CLOUD_ACCESS_AUD: "aud-only",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/health"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      auth: { cloudflare_access: { status: string; jwks: string } };
+    };
+    assert.deepEqual(body.auth.cloudflare_access, {
+      status: "partial",
+      jwks: "none",
+    });
+  });
+
   it("serves viewer bundle assets through the Worker assets binding", async () => {
     const env = fakeEnv({
       ASSETS: {

@@ -90,6 +90,9 @@ const worker: ExportedHandler<Env> = {
         status: "ok",
         service: "nteract-notebook-cloud",
         deployment_env: env.DEPLOYMENT_ENV ?? "development",
+        auth: {
+          cloudflare_access: cloudflareAccessHealth(env),
+        },
       });
     }
 
@@ -394,6 +397,29 @@ function hasCredentialWebSocketSubprotocol(request: Request): boolean {
         part.trim().startsWith(prefix),
       ),
     );
+}
+
+function cloudflareAccessHealth(env: Env): {
+  status: "configured" | "partial" | "disabled";
+  jwks: "remote" | "pinned" | "none";
+} {
+  const hasTeamDomain = Boolean(env.NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN?.trim());
+  const hasAudience = Boolean(env.NOTEBOOK_CLOUD_ACCESS_AUD?.trim());
+  const status =
+    hasTeamDomain && hasAudience
+      ? "configured"
+      : hasTeamDomain || hasAudience
+        ? "partial"
+        : "disabled";
+
+  return {
+    status,
+    jwks: env.NOTEBOOK_CLOUD_ACCESS_JWKS_JSON?.trim()
+      ? "pinned"
+      : status === "configured"
+        ? "remote"
+        : "none",
+  };
 }
 
 async function routeSnapshot(
