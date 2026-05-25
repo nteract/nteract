@@ -295,11 +295,7 @@ impl ServerHandler for NteractMcp {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, McpError> {
-        Ok(ListResourceTemplatesResult {
-            resource_templates: vec![],
-            next_cursor: None,
-            meta: None,
-        })
+        Ok(resources::list_resource_templates())
     }
 }
 
