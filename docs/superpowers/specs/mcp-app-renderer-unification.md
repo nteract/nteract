@@ -34,13 +34,13 @@ The MCP Apps spec makes four parts relevant to this migration:
 - Nested frames are a declared CSP surface through `ui.csp.frameDomains`, so the
   runtime flip declares the daemon blob origin before creating the nested
   isolated output frame at `{blob_base_url}/output-frame`.
-- Static renderer sidecars remain declared as `ui.csp.resourceDomains`, while
-  blob fetches stay in `ui.csp.connectDomains`.
+- The MCP App fetches raw renderer plugin assets from the daemon blob origin, so
+  blob and plugin fetches stay in `ui.csp.connectDomains`. The nested output
+  frame gets its own daemon-served CSP header.
 
 ## Current Runtime Shape
 
-The MCP App now uses the shared output embed when a daemon `blob_base_url` is
-available:
+The MCP App now uses the shared output embed for all cell outputs:
 
 1. `ui/notifications/tool-result` provides MCP App structured cell output.
 2. The app adapts those outputs into shared `OutputManifest` values.
@@ -51,9 +51,8 @@ available:
 5. Heavy renderer plugins are fetched as raw CJS from
    `{blob_base_url}/renderer-plugins/{name}.js` and installed with
    `nteract/installRenderer`.
-
-The legacy MCP App MIME renderer remains as a fallback for hosts that omit
-`blob_base_url` or reject the nested frame path.
+6. The duplicate MCP App MIME renderer and `window.__nteract` plugin registry
+   are not part of the app bundle anymore.
 
 ## Migration Slices
 
@@ -70,4 +69,4 @@ The legacy MCP App MIME renderer remains as a fallback for hosts that omit
    current slice declares `frameDomains: [blob_base_url]`.
 5. Delete the duplicate MCP App MIME components and plugin registry after the
    shared renderer path covers text, images, HTML/SVG, errors, markdown,
-   Plotly/Vega/Leaflet, and Sift.
+   Plotly/Vega/Leaflet, and Sift. Done in the shared-only MCP App slice.

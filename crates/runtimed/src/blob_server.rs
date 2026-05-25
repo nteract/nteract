@@ -7,7 +7,7 @@
 //!
 //! Endpoints:
 //! - `GET /blob/{hash}` — raw bytes with `Content-Type` from metadata
-//! - `GET /plugins/{name}` — embedded renderer plugin assets (JS/CSS)
+//! - `GET /plugins/{name}` — legacy MCP App plugin assets and WASM sidecars
 //! - `GET /renderer-plugins/{name}` — raw renderer plugin assets for isolated output frames
 //! - `GET /output-frame` — shared isolated output iframe shell
 //! - `GET /health` — 200 OK
@@ -473,12 +473,8 @@ fn serve_raw_embedded_renderer_plugin(name: &str) -> Response<ResponseBody> {
         })
 }
 
-/// Apply the MCP App IIFE wrapper to a renderer-plugin body, if the body is
-/// JavaScript. Non-`.js` assets pass through untouched.
-///
-/// Equivalent to `apps/mcp-app/src/lib/wrap-plugin.js::wrapForMcpApp` - the
-/// `embedded_plugins_wrap_matches_js_helper` test in
-/// `embedded_plugins.rs` pins the two in lockstep.
+/// Apply the legacy MCP App IIFE wrapper to a renderer-plugin body, if the
+/// body is JavaScript. Non-`.js` assets pass through untouched.
 fn transform_plugin_body(name: &str, raw: Vec<u8>) -> Vec<u8> {
     if name.ends_with(".js") {
         wrap_for_mcp_app(&raw)
@@ -487,10 +483,7 @@ fn transform_plugin_body(name: &str, raw: Vec<u8>) -> Vec<u8> {
     }
 }
 
-/// Wrap a raw CJS renderer plugin in an IIFE for MCP App loading.
-///
-/// The wrapper matches `apps/mcp-app/src/lib/wrap-plugin.js::wrapForMcpApp`
-/// byte-for-byte (the `wrap_for_mcp_app_matches_js_helper` test pins this).
+/// Wrap a raw CJS renderer plugin in an IIFE for the legacy MCP App loader.
 ///
 /// Steps:
 ///   1. Local `module`/`exports`/`require` so the plugin doesn't leak into
@@ -947,9 +940,7 @@ mod tests {
     }
 
     #[test]
-    fn wrap_for_mcp_app_matches_js_helper() {
-        // Byte-equal pin against apps/mcp-app/src/lib/wrap-plugin.js.
-        // If the JS helper is updated, copy the template here verbatim.
+    fn wrap_for_mcp_app_matches_legacy_loader_shape() {
         let raw = "module.exports = { install: (n) => n.register('x', {}) };";
         let wrapped = wrap_for_mcp_app(raw.as_bytes());
         let expected = "(function(){\nvar exports={},module={exports:exports};\nvar require=window.__nteract.require;\nmodule.exports = { install: (n) => n.register('x', {}) };\n;var _i=module.exports&&module.exports.install;\nif(typeof _i==='function')_i(window.__nteract)\n})();";

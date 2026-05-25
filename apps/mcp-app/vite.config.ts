@@ -102,13 +102,6 @@ export default defineConfig(({ command }) => {
         build: {
           command: "vp build && node build-html.js",
         },
-        "build:plugins": {
-          command: "node build-plugins.ts",
-        },
-        "build:all": {
-          command: "echo 'MCP app build complete'",
-          dependsOn: ["build", "build:plugins"],
-        },
       },
     },
     define,

@@ -1,9 +1,10 @@
-//! Embedded renderer plugin assets for the MCP App.
+//! Embedded renderer plugin assets for MCP App output rendering.
 //!
 //! Heavy visualization renderers (plotly, vega, leaflet, markdown, sift) ship
-//! inside the daemon binary via `include_bytes!`. The blob server serves them
-//! at `GET /plugins/{name}`, wrapping `.js` responses in an IIFE for the MCP
-//! App loader at request time (see `blob_server::wrap_for_mcp_app`).
+//! inside the daemon binary via `include_bytes!`. The blob server serves raw
+//! JS/CSS assets at `GET /renderer-plugins/{name}` for the shared isolated
+//! renderer. It also keeps `GET /plugins/{name}` for legacy MCP App plugin
+//! loading and WASM sidecars.
 //!
 //! The canonical source directory is `apps/notebook/src/renderer-plugins/` -
 //! the same raw CJS bundles the notebook Vite app loads via its

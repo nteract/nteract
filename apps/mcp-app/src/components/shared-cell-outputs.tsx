@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { McpUiHostContext } from "@modelcontextprotocol/ext-apps";
 import { rendererCode, rendererCss } from "virtual:isolated-renderer";
 import {
+  createInlineOnlyBlobResolver,
   createMcpAppBlobResolver,
   mcpAppCellsToSharedOutputs,
 } from "@/components/isolated/mcp-app-structured-content";
@@ -17,8 +18,6 @@ import {
   createDaemonRendererPluginLoader,
   daemonOutputFrameUrl,
 } from "../lib/shared-renderer-plugin-loader";
-import { ErrorOutput } from "./error-output";
-import { MimeRenderer, StreamOutput } from "./mime-renderer";
 
 const SHARED_RENDERER_BUNDLE: NteractOutputRendererBundleProvider = {
   rendererCode,
@@ -29,29 +28,6 @@ interface SharedCellOutputsProps {
   cell: CellData;
   blobBaseUrl?: string;
   hostContext?: McpUiHostContext | null;
-}
-
-function LegacyCellOutputs({ cell, blobBaseUrl }: { cell: CellData; blobBaseUrl?: string }) {
-  return (
-    <>
-      {cell.outputs.map((output, i) => {
-        const key = output.output_id ?? `output-${i}`;
-        switch (output.output_type) {
-          case "stream":
-            return <StreamOutput key={key} output={output} />;
-          case "error":
-            return <ErrorOutput key={key} output={output} />;
-          case "display_data":
-          case "execute_result":
-            return output.data ? (
-              <MimeRenderer key={key} data={output.data} blobBaseUrl={blobBaseUrl} />
-            ) : null;
-          default:
-            return null;
-        }
-      })}
-    </>
-  );
 }
 
 export function SharedCellOutputs({ cell, blobBaseUrl, hostContext }: SharedCellOutputsProps) {
@@ -70,7 +46,7 @@ export function SharedCellOutputs({ cell, blobBaseUrl, hostContext }: SharedCell
   );
   const hostContextPatchRef = useRef(hostContextPatch);
   const blobResolver = useMemo(
-    () => (blobBaseUrl ? createMcpAppBlobResolver(blobBaseUrl) : undefined),
+    () => (blobBaseUrl ? createMcpAppBlobResolver(blobBaseUrl) : createInlineOnlyBlobResolver()),
     [blobBaseUrl],
   );
   const outputDocumentUrl = useMemo(() => daemonOutputFrameUrl(blobBaseUrl), [blobBaseUrl]);
@@ -80,7 +56,7 @@ export function SharedCellOutputs({ cell, blobBaseUrl, hostContext }: SharedCell
   }, [cell.cell_id, blobBaseUrl]);
 
   useEffect(() => {
-    if (failed || !targetRef.current || outputs.length === 0 || !blobBaseUrl) return;
+    if (failed || !targetRef.current || outputs.length === 0) return;
 
     const handle = createNteractOutputEmbed({
       target: targetRef.current,
@@ -131,9 +107,7 @@ export function SharedCellOutputs({ cell, blobBaseUrl, hostContext }: SharedCell
     handleRef.current?.setHostContext(hostContextPatch);
   }, [hostContextPatch]);
 
-  if (!blobBaseUrl || failed) {
-    return <LegacyCellOutputs cell={cell} blobBaseUrl={blobBaseUrl} />;
-  }
+  if (failed) return null;
 
   return <div ref={targetRef} className="shared-output-frame" />;
 }

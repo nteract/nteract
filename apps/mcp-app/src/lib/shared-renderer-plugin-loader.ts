@@ -1,5 +1,5 @@
 import type { NteractOutputRendererPluginLoader } from "@/components/isolated/output-embed";
-import { pluginInfoForMime } from "./plugin-loader";
+import { rendererPluginInfoForMime } from "@/components/isolated/renderer-plugin-info";
 
 declare const __DAEMON_PLUGIN_ASSET_HASHES__: Record<string, string> | undefined;
 
@@ -32,7 +32,7 @@ export function createDaemonRendererPluginLoader(
   const cache = new Map<string, Promise<{ code: string; css?: string } | undefined>>();
 
   return (mime) => {
-    const info = pluginInfoForMime(mime);
+    const info = rendererPluginInfoForMime(mime);
     if (!info) return Promise.resolve(undefined);
 
     const cached = cache.get(info.name);
