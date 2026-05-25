@@ -8,6 +8,7 @@ Arrow manifest with multiple independently decodable stream chunks.
 
 from __future__ import annotations
 
+import datetime as _dt
 import hashlib
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -71,6 +72,41 @@ def has_arrow_stream_protocol(obj: Any) -> bool:
         return isinstance(obj, pa.RecordBatchReader)
     except Exception:
         return False
+
+
+def _normalize_polars_object_dates(df: Any) -> Any:
+    try:
+        import polars as pl
+    except Exception:
+        return df
+
+    schema = getattr(df, "schema", None)
+    if not schema:
+        return df
+
+    object_columns = [name for name, dtype in schema.items() if dtype == pl.Object]
+    if not object_columns:
+        return df
+
+    date_exprs = []
+    for name in object_columns:
+        try:
+            values = df.get_column(name).drop_nulls().to_list()
+        except Exception:
+            continue
+
+        if values and all(
+            isinstance(value, _dt.date) and not isinstance(value, _dt.datetime) for value in values
+        ):
+            date_exprs.append(pl.col(name).map_elements(lambda value: value, return_dtype=pl.Date))
+
+    if not date_exprs:
+        return df
+
+    try:
+        return df.with_columns(date_exprs)
+    except Exception:
+        return df
 
 
 def _record_batch_reader_from_stream(source: Any) -> Any:
@@ -324,6 +360,7 @@ def serialize_dataframe(df: Any, *, max_bytes: int) -> tuple[bytes, str, int]:
     objects that do not expose the Arrow stream protocol or that need a chunked
     manifest.
     """
+    df = _normalize_polars_object_dates(df)
     if not has_arrow_stream_protocol(df):
         raise ValueError(f"unsupported DataFrame type: {type(df).__module__}.{type(df).__name__}")
     data, content_type, included_rows, _record_batch_count = serialize_arrow_stream(

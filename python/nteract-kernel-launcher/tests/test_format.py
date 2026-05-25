@@ -116,6 +116,31 @@ def test_serialize_dataframe_polars_emits_arrow_stream():
     assert table.num_rows == 3
 
 
+def test_serialize_dataframe_polars_object_dates_emit_arrow_date32():
+    import datetime as dt
+
+    np = pytest.importorskip("numpy")
+    pa = pytest.importorskip("pyarrow")
+    pl = pytest.importorskip("polars")
+    from nteract_kernel_launcher._format import serialize_dataframe
+
+    date_options = [
+        dt.date(1997, 1, 10),
+        dt.date(1985, 2, 15),
+        dt.date(1983, 3, 22),
+        dt.date(1981, 4, 30),
+    ]
+    birthdates = np.random.default_rng(0).choice(date_options, size=8)
+    df = pl.DataFrame({"birthdate": birthdates})
+    assert df.schema["birthdate"] == pl.Object
+
+    data, _, _ = serialize_dataframe(df, max_bytes=10_000_000)
+
+    table = pa.ipc.open_stream(io.BytesIO(data)).read_all()
+    assert table.schema.field("birthdate").type == pa.date32()
+    assert table.to_pydict()["birthdate"] == list(birthdates)
+
+
 def test_serialize_dataframe_polars_uses_arrow_stream_protocol(monkeypatch):
     pl = pytest.importorskip("polars")
     import nteract_kernel_launcher._format as fmt
