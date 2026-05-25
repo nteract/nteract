@@ -102,7 +102,7 @@
     "vite-plus": "catalog:",
     "vitest": "catalog:",
     "webdriverio": "^8.40.0",
-    "wrangler": "3.90.0"
+    "wrangler": "4.94.0"
   },
   "pnpm": {
     "overrides": {
