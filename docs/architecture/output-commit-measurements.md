@@ -51,5 +51,19 @@ The ordered-worker model uses an in-memory queue to isolate enqueue cost. A
 production queue must still be bounded or otherwise capacity-limited so sustained
 rich-output bursts do not trade IOPub latency for unbounded memory growth.
 
+## Production Queue
+
+The production implementation lives in `crates/runtimed/src/output_committer.rs`.
+It uses a bounded ordinary-output queue for `display_data`, `execute_result`,
+and `error`, plus priority flush barriers for ordering-sensitive transitions:
+
+- `CellError` waits for the queued error or rich traceback output to become
+  durable before the lifecycle signal reaches the runtime agent.
+- `ExecutionDone` waits for queued ordinary outputs, then the final stream flush
+  can emit the terminal lifecycle signal after stream state is durable.
+- `update_display_data` drains preceding ordinary outputs before queuing the
+  coalesced display update so an update immediately after a new display can find
+  its durable target.
+
 Wall-clock fields are for branch-to-branch comparison only; CI tests assert
 deterministic work counts, not absolute timings.
