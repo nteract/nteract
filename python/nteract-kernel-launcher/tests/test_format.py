@@ -141,6 +141,71 @@ def test_serialize_dataframe_polars_object_dates_emit_arrow_date32():
     assert table.to_pydict()["birthdate"] == list(birthdates)
 
 
+def test_normalize_polars_object_dates_uses_loaded_polars_module(monkeypatch):
+    import builtins
+    import datetime as dt
+    import sys
+    from types import SimpleNamespace
+
+    import nteract_kernel_launcher._format as fmt
+
+    class FakeColumn:
+        def __init__(self, values):
+            self._values = values
+
+        def drop_nulls(self):
+            return self
+
+        def to_list(self):
+            return self._values
+
+    class FakePolarsDataFrame:
+        __module__ = "polars.dataframe.frame"
+
+        schema = {"birthdate": "Object"}
+
+        def __init__(self):
+            self.series = None
+
+        def get_column(self, name):
+            assert name == "birthdate"
+            return FakeColumn([dt.date(1997, 1, 10)])
+
+        def with_columns(self, series):
+            self.series = series
+            return self
+
+    def make_series(name, values, dtype):
+        return {"name": name, "values": values, "dtype": dtype}
+
+    fake_pl = SimpleNamespace(Date=object(), Series=make_series)
+    monkeypatch.setitem(sys.modules, "polars", fake_pl)
+
+    polars_imports = 0
+    original_import = builtins.__import__
+
+    def import_spy(name, *args, **kwargs):
+        nonlocal polars_imports
+        if name == "polars" or name.startswith("polars."):
+            polars_imports += 1
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_spy)
+
+    df = FakePolarsDataFrame()
+    normalized = fmt._normalize_polars_object_dates(df)
+
+    assert normalized is df
+    assert df.series == [
+        {
+            "name": "birthdate",
+            "values": [dt.date(1997, 1, 10)],
+            "dtype": fake_pl.Date,
+        }
+    ]
+    assert polars_imports == 0
+
+
 def test_serialize_dataframe_polars_uses_arrow_stream_protocol(monkeypatch):
     pl = pytest.importorskip("polars")
     import nteract_kernel_launcher._format as fmt

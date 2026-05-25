@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import hashlib
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -75,6 +76,9 @@ def has_arrow_stream_protocol(obj: Any) -> bool:
 
 
 def _normalize_polars_object_dates(df: Any) -> Any:
+    if not type(df).__module__.startswith("polars"):
+        return df
+
     schema = getattr(df, "schema", None)
     if not schema or not hasattr(schema, "items"):
         return df
@@ -103,18 +107,16 @@ def _normalize_polars_object_dates(df: Any) -> Any:
     if not date_columns:
         return df
 
-    try:
-        import polars as pl
-    except Exception:
+    pl = sys.modules.get("polars")
+    if pl is None:
         return df
 
-    date_exprs = [
-        pl.col(name).map_elements(lambda value: value, return_dtype=pl.Date)
-        for name in date_columns
+    date_series = [
+        pl.Series(name, get_column(name).to_list(), dtype=pl.Date) for name in date_columns
     ]
 
     try:
-        return with_columns(date_exprs)
+        return with_columns(date_series)
     except Exception:
         return df
 
