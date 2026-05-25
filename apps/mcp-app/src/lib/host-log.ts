@@ -31,6 +31,10 @@ export function hostLog(
   };
 
   if (sink) {
+    if (!isHostFacingLevel(level)) {
+      return;
+    }
+
     try {
       void Promise.resolve(sink.sendLog(params)).catch((error) => {
         logToConsole("warning", "host-log-send-failed", {
@@ -48,6 +52,16 @@ export function hostLog(
   }
 
   logToConsole(level, event, details);
+}
+
+export function isHostFacingLevel(level: HostLogLevel): boolean {
+  return (
+    level === "warning" ||
+    level === "error" ||
+    level === "critical" ||
+    level === "alert" ||
+    level === "emergency"
+  );
 }
 
 export function errorDetails(error: unknown): Record<string, unknown> {
