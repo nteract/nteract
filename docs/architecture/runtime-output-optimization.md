@@ -56,7 +56,10 @@ known repeated work:
    output set without cloning every unchanged manifest into a fresh snapshot on
    each frame.
 7. Frontend output materialization cleanup so runtime outputs flow through the
-   output store rather than repeated whole-output JSON cache keys.
+   output store rather than repeated whole-output JSON cache keys. Notebook-wide
+   derived views should subscribe to the narrowest output signal they need:
+   tail pinning still observes every output payload change, while hidden-group
+   membership and error counts observe only output adds/removals/type changes.
 
 Each item is independently mergeable and should include a small benchmark or
 stress case that proves the eliminated work.

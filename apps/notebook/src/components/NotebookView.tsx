@@ -27,7 +27,11 @@ import { EditorRegistryProvider, useEditorRegistry } from "../hooks/useEditorReg
 import { useFocusedCellId, useSearchCurrentMatch } from "../lib/cell-ui-state";
 import { logger } from "../lib/logger";
 import { getNotebookCellsSnapshot, useCell, useMaterializeVersion } from "../lib/notebook-cells";
-import { getCellOutputsSnapshot, useOutputsVersion } from "../lib/notebook-outputs";
+import {
+  getCellOutputsSnapshot,
+  useOutputStructureVersion,
+  useOutputsVersion,
+} from "../lib/notebook-outputs";
 import type { CodeCell as CodeCellType, NotebookCell } from "../types";
 import { CellSkeleton } from "./CellSkeleton";
 import { CodeCell } from "./CodeCell";
@@ -459,10 +463,12 @@ function NotebookViewContent({
 
   // Track full materializations for cross-cell derived state
   const materializeVersion = useMaterializeVersion();
-  // Recompute hidden-group membership when any output changes. Phase
-  // C-lite stopped updating `cell.outputs` on output-only frames, so
-  // without this subscription a source-hidden cell receiving its first
-  // output would stay collapsed until a structural change fired.
+  // Recompute hidden-group membership when outputs are added, removed, or
+  // change kind. Phase C-lite stopped updating `cell.outputs` on output-only
+  // frames, so source-hidden cells still need a store signal when their
+  // output membership changes. Stream text/display payload updates keep the
+  // same membership and should not rescan all hidden groups.
+  const outputStructureVersion = useOutputStructureVersion();
   const outputsVersion = useOutputsVersion();
 
   // Drag-and-drop state
@@ -532,11 +538,11 @@ function NotebookViewContent({
   // Recomputes on structural changes and full materializations (metadata changes)
   const hiddenGroups = useMemo(() => {
     // Depend on cellIds (structural changes), materializeVersion (metadata
-    // changes like source_hidden), and outputsVersion (output appends that
-    // expand a source-hidden cell out of its collapsed group).
+    // changes like source_hidden), and outputStructureVersion (output adds,
+    // removals, or type changes that affect hidden grouping / error counts).
     void cellIds;
     void materializeVersion;
-    void outputsVersion;
+    void outputStructureVersion;
     const cells = getNotebookCellsSnapshot();
     const groups = new Map<
       string,
@@ -577,7 +583,7 @@ function NotebookViewContent({
       }
     }
     return groups;
-  }, [cellIds, materializeVersion, outputsVersion]);
+  }, [cellIds, materializeVersion, outputStructureVersion]);
   const hiddenGroupsRef = useRef(hiddenGroups);
   hiddenGroupsRef.current = hiddenGroups;
 
