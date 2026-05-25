@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import sys
+import time
+
 from agent_repl import ReplManager
+from agent_repl.manager import ReplTimeout, _WorkerSession
 
 
 def test_plain_python_session_persists_state() -> None:
@@ -46,6 +50,23 @@ def test_timeout_kills_only_that_session() -> None:
     assert still_alive.result_repr == "7"
     assert restarted.ok
     assert restarted.result_repr == "99"
+
+
+def test_timeout_budget_is_not_reset_by_discarded_responses() -> None:
+    worker = _WorkerSession("test", "python", sys.executable)
+    try:
+        worker._responses.put({"id": None, "ok": False})
+        started = time.monotonic()
+        try:
+            worker._request({"op": "run", "code": "import time; time.sleep(5)"}, timeout_s=0.2)
+        except ReplTimeout:
+            elapsed = time.monotonic() - started
+        else:
+            raise AssertionError("expected timeout")
+    finally:
+        worker.close()
+
+    assert elapsed < 0.35
 
 
 def test_ipython_backend_captures_rich_display() -> None:

@@ -48,13 +48,15 @@ async def reset_python(session: str = "default") -> dict[str, Any]:
 @mcp.tool()
 async def python_status(session: str = "default") -> dict[str, Any]:
     """Return status for a named Python session."""
-    return {"session": session, "status": as_jsonable(manager.status(session))}
+    status = await asyncio.to_thread(manager.status, session)
+    return {"session": session, "status": as_jsonable(status)}
 
 
 @mcp.tool()
 async def list_python_sessions() -> dict[str, Any]:
     """List active Python sessions for this MCP server process."""
-    return {"sessions": as_jsonable(manager.list_sessions())}
+    sessions = await asyncio.to_thread(manager.list_sessions)
+    return {"sessions": as_jsonable(sessions)}
 
 
 def main() -> None:

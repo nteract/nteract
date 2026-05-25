@@ -8,6 +8,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import asdict
 from itertools import count
 from pathlib import Path
@@ -104,10 +105,14 @@ class _WorkerSession:
         assert self._process.stdin is not None
         self._process.stdin.write(json.dumps(request) + "\n")
         self._process.stdin.flush()
+        deadline = time.monotonic() + timeout_s
 
         try:
             while True:
-                response = self._responses.get(timeout=timeout_s)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise queue.Empty
+                response = self._responses.get(timeout=remaining)
                 if response.get("id") == request_id:
                     return response
         except queue.Empty as exc:
