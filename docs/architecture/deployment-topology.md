@@ -18,6 +18,8 @@ layers:
   JupyterHub, browser WebSockets, and native clients present credentials.
 - `hosted-notebook-artifacts.md` defines the durable snapshot pair and blob
   layout.
+- `hosted-output-origin-isolation.md` defines why authenticated app origins,
+  renderer asset origins, and untrusted output-document origins stay separate.
 - `runtime-peer-and-blob-authority-audit.md` clarifies that `runtime_peer` is
   the room role, `RuntimeAgent` is local daemon machinery, and `PutBlob` is not
   runtime topology.
@@ -260,6 +262,9 @@ Minimum policy:
   third-party origins are never allowed to open authenticated room WebSockets;
 - header-authenticated native, CLI, agent, and runtime-peer clients may omit
   `Origin`, but any supplied `Origin` must still be valid and trusted.
+
+The origin classes and deployment reasons are defined in
+`hosted-output-origin-isolation.md`.
 
 This ADR decides where the origin gate lives: the Worker enforces it before
 credential normalization and before stamping trusted room headers. The detailed

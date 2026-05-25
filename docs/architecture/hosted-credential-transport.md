@@ -304,7 +304,9 @@ Minimum policy:
   `NOTEBOOK_CLOUD_ALLOWED_ORIGINS`.
 - Do not allow sandboxed output iframes or renderer asset origins to open
   authenticated notebook-room WebSockets.
-- Keep renderer asset origins separate from notebook-room origins.
+- Keep renderer asset origins and output-document origins separate from
+  notebook-room origins. `hosted-output-origin-isolation.md` defines that
+  origin split.
 
 Header-authenticated CLI, native, and runtime clients may omit `Origin` even
 when an allowlist is configured. If any client sends `Origin`, malformed or
@@ -377,6 +379,8 @@ configuration.
   Cloudflare Access + Anaconda demo deployment and smoke steps.
 - `docs/architecture/hosted-sharing-invites.md` - email invite to principal ACL
   resolution.
+- `docs/architecture/hosted-output-origin-isolation.md` - hosted output
+  document, renderer asset, and blob-origin separation.
 - `apps/notebook-cloud/src/identity.ts` - current Cloudflare Access JWT and
   dev-token credential extraction.
 - Cloudflare WebSockets docs:

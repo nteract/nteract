@@ -23,6 +23,8 @@ The shared runtime work now gives us a cleaner path:
   `{ "blob": "<sha256>" }` until the host maps them to a URL.
 - The Worker can use shared typed-frame size limits and shared CBOR presence
   helpers instead of local protocol copies.
+- Hosted output documents, renderer sidecars, and private blob reads have
+  separate origin boundaries; see `hosted-output-origin-isolation.md`.
 
 ## Decision 1: Durable publish artifacts are snapshot pairs
 
@@ -168,8 +170,10 @@ decision for public viewer presence is settled.
   behavior live in `docs/architecture/hosted-room-authorization.md`.
 - This ADR does not require hosted rooms to run kernels. Runtime snapshots can
   be imported from a local daemon or future remote runtime peer.
-- This ADR does not define the final blob origin. `/api/n/:id/blobs/:hash` is a
-  prototype origin; a separate output-blob origin with signed URLs remains open.
+- This ADR does not define the final blob or output-document origin.
+  `/api/n/:id/blobs/:hash` is a prototype origin; the production origin split
+  and signed/capability URL direction live in
+  `hosted-output-origin-isolation.md`.
 
 ## Open Questions
 
