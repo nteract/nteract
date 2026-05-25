@@ -35,7 +35,7 @@ The full dependency intent matters. For UV, `dependencies`, `requires-python`, a
 Cache paths are derived from this identity:
 
 ```text
-hash = sha256(sorted_deps + resolver_fields + env_id)[..16]
+hash = hex(sha256(sorted_deps + resolver_fields + env_id))[..16] // 16 hex chars
 env_path = backend_cache_dir / hash
 ```
 
@@ -177,6 +177,7 @@ Use "declared dependencies", not "saved dependencies"; saved can mean either the
 3. Disk state is `Missing`.
 4. Source resolution does not route as captured, preserving the existing fallback behavior.
 5. The daemon may rebuild through the normal inline/pool path according to the surrounding environment-resolution rules.
+6. That fallback does not preserve per-notebook `env_id` cache isolation for the rebuild; it may share an inline cache entry with another notebook that declares identical deps. This is the tradeoff for not treating every deps-plus-`env_id` metadata snapshot as captured when no derived env exists on disk.
 
 ### Corrupt but Python-present env
 
