@@ -340,9 +340,9 @@ pub async fn clear_outputs(
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
 }
 
-fn explicit_after_cell_id_arg<'a>(
-    request: &'a CallToolRequestParams,
-) -> Result<Option<Option<&'a str>>, McpError> {
+fn explicit_after_cell_id_arg(
+    request: &CallToolRequestParams,
+) -> Result<Option<Option<&str>>, McpError> {
     let Some(args) = request.arguments.as_ref() else {
         return Ok(None);
     };
