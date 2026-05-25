@@ -331,7 +331,7 @@ export async function resolveNotebookInvitesForLogin(
 ): Promise<InviteResolution> {
   // Trust boundary: callers must pass identity-provider verified claims.
   // Invite acceptance is derived from login.email plus login.emailVerified.
-  await upsertPrincipalProfile(env, {
+  const profile = await upsertPrincipalProfile(env, {
     principal: login.principal,
     provider: login.provider,
     email: login.email,
@@ -342,8 +342,12 @@ export async function resolveNotebookInvitesForLogin(
 
   const invites = await getPendingNotebookInvitesForLogin(env, login, now);
   const resolution = resolvePendingInvitesForLogin({ invites, login, now });
+  const resolutionWithProfile = {
+    ...resolution,
+    profile: profileFromRow(profile) ?? resolution.profile,
+  };
   if (!env.DB || resolution.aclGrants.length === 0) {
-    return resolution;
+    return resolutionWithProfile;
   }
 
   const operations: {
@@ -365,16 +369,16 @@ export async function resolveNotebookInvitesForLogin(
     });
   }
   if (operations.length === 0) {
-    return resolution;
+    return resolutionWithProfile;
   }
 
   const results = await env.DB.batch(
-    operations.flatMap((operation) => [operation.insertAcl, operation.acceptInvite]),
+    operations.flatMap((operation) => [operation.acceptInvite, operation.insertAcl]),
   );
   const acceptedInvites: PendingNotebookInvite[] = [];
   const aclGrants: InviteResolution["aclGrants"] = [];
   for (let index = 0; index < operations.length; index += 1) {
-    const acceptInviteResult = results[index * 2 + 1];
+    const acceptInviteResult = results[index * 2];
     if (!acceptInviteResult || d1Changes(acceptInviteResult) === 0) {
       continue;
     }
@@ -386,7 +390,7 @@ export async function resolveNotebookInvitesForLogin(
     });
     aclGrants.push(operations[index].grant);
   }
-  return { ...resolution, acceptedInvites, aclGrants };
+  return { ...resolutionWithProfile, acceptedInvites, aclGrants };
 }
 
 function inviteAclInsert(
@@ -409,7 +413,9 @@ function inviteAclInsert(
      SELECT notebook_id, 'principal', ?, scope, ?, ?, ?
        FROM notebook_invites
       WHERE id = ?
-        AND status = 'pending'
+        AND status = 'accepted'
+        AND accepted_by_principal = ?
+        AND accepted_at = ?
         AND email_normalized = ?
         AND (provider_hint = ? OR provider_hint IS NULL)
         AND (expires_at IS NULL OR unixepoch(expires_at) > unixepoch(?))
@@ -422,6 +428,8 @@ function inviteAclInsert(
       timestamp,
       grant.actorLabel,
       invite.id,
+      grant.subject,
+      timestamp,
       normalizeInviteEmail(invite.email),
       normalizeProviderHint(invite.providerHint),
       timestamp,
@@ -520,6 +528,20 @@ function normalizeInviteExpiresAt(expiresAt: string | null): string | null {
 function d1Changes(result: { meta: Record<string, unknown> }): number {
   const changes = result.meta.changes;
   return typeof changes === "number" ? changes : 0;
+}
+
+function profileFromRow(row: PrincipalProfileRow | null): InviteResolution["profile"] | null {
+  if (!row) {
+    return null;
+  }
+  return {
+    principal: row.principal,
+    provider: row.provider,
+    email: row.email_normalized,
+    displayName: row.display_name,
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
+  };
 }
 
 function isUniqueConstraintError(error: unknown): boolean {

@@ -148,6 +148,8 @@ describe("hosted sharing storage", () => {
       env.DB.profiles.get("user:cloudflare-access:access-sub-1")?.last_seen_at,
       "2026-05-24T12:05:00.000Z",
     );
+    assert.equal(second.profile.firstSeenAt, "2026-05-24T12:00:00.000Z");
+    assert.equal(second.profile.lastSeenAt, "2026-05-24T12:05:00.000Z");
   });
 
   it("accepts multiple pending invites in one resolution batch", async () => {
@@ -196,6 +198,56 @@ describe("hosted sharing storage", () => {
         ["notebook-1", "editor"],
         ["notebook-2", "viewer"],
       ],
+    );
+  });
+
+  it("reports only successful accepts from a partial multi-invite batch", async () => {
+    const env = fakeEnv();
+    await createPendingNotebookInvite(env, {
+      id: "invite-stolen",
+      notebookId: "notebook-1",
+      email: "alice@example.com",
+      providerHint: "cloudflare-access",
+      scope: "editor",
+      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      timestamp: "2026-05-24T11:00:00.000Z",
+    });
+    await createPendingNotebookInvite(env, {
+      id: "invite-kept",
+      notebookId: "notebook-2",
+      email: "alice@example.com",
+      providerHint: "cloudflare-access",
+      scope: "viewer",
+      actorLabel: "user:cloudflare-access:owner/desktop:owner",
+      timestamp: "2026-05-24T11:01:00.000Z",
+    });
+    env.DB.beforeInviteAccept = (inviteId) => {
+      if (inviteId !== "invite-stolen") {
+        return;
+      }
+      const invite = env.DB.invites.get(inviteId)!;
+      invite.status = "accepted";
+      invite.accepted_by_principal = "user:cloudflare-access:other";
+      invite.accepted_at = "2026-05-24T11:59:00.000Z";
+    };
+
+    const resolution = await resolveNotebookInvitesForLogin(
+      env,
+      accessLogin(),
+      "2026-05-24T12:00:00.000Z",
+    );
+
+    assert.deepEqual(
+      resolution.acceptedInvites.map((invite) => invite.id),
+      ["invite-kept"],
+    );
+    assert.deepEqual(
+      resolution.aclGrants.map((grant) => grant.inviteId),
+      ["invite-kept"],
+    );
+    assert.deepEqual(
+      env.DB.acl.map((row) => row.notebook_id),
+      ["notebook-2"],
     );
   });
 
@@ -598,10 +650,34 @@ class FakeD1Statement implements D1PreparedStatement {
       this.query.includes("INSERT INTO notebook_acl") &&
       this.query.includes("FROM notebook_invites")
     ) {
-      const [subject, createdAt, updatedAt, actorLabel, inviteId, email, providerHint, now] = this
-        .values as [string, string, string, string, string, string, string | null, string];
+      const [
+        subject,
+        createdAt,
+        updatedAt,
+        actorLabel,
+        inviteId,
+        acceptedByPrincipal,
+        acceptedAt,
+        email,
+        providerHint,
+        now,
+      ] = this.values as [
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string | null,
+        string,
+      ];
       const invite = this.db.invites.get(inviteId);
-      if (invite && inviteCanResolve(invite, email, providerHint, now)) {
+      if (
+        invite &&
+        inviteCanGrantAcl(invite, acceptedByPrincipal, acceptedAt, email, providerHint, now)
+      ) {
         this.insertAclIfMissing({
           notebook_id: invite.notebook_id,
           subject_kind: "principal",
@@ -677,6 +753,31 @@ function inviteCanResolve(
 ): boolean {
   if (
     invite.status !== "pending" ||
+    invite.email_normalized !== email ||
+    (invite.provider_hint !== null && invite.provider_hint !== providerHint)
+  ) {
+    return false;
+  }
+  if (!invite.expires_at) {
+    return true;
+  }
+  const expiresAtMs = Date.parse(invite.expires_at);
+  const nowMs = Date.parse(now);
+  return Number.isFinite(expiresAtMs) && Number.isFinite(nowMs) && expiresAtMs > nowMs;
+}
+
+function inviteCanGrantAcl(
+  invite: PendingNotebookInviteRow,
+  acceptedByPrincipal: string,
+  acceptedAt: string,
+  email: string,
+  providerHint: string | null,
+  now: string,
+): boolean {
+  if (
+    invite.status !== "accepted" ||
+    invite.accepted_by_principal !== acceptedByPrincipal ||
+    invite.accepted_at !== acceptedAt ||
     invite.email_normalized !== email ||
     (invite.provider_hint !== null && invite.provider_hint !== providerHint)
   ) {
