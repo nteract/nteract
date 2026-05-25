@@ -41,7 +41,10 @@ import {
 } from "./blob-resolver.ts";
 import { collectBlobRefs } from "./blob-refs.ts";
 import { cloudLog, durationMs } from "./observability.ts";
-import { resolveNotebookInvitesForLogin } from "./sharing-storage.ts";
+import {
+  getPendingNotebookInvitesForLogin,
+  resolveNotebookInvitesForLogin,
+} from "./sharing-storage.ts";
 
 export { NotebookRoom };
 
@@ -1275,13 +1278,18 @@ async function resolveLoginInvites(env: Env, identity: AuthenticatedConnection):
   try {
     // Access has already authenticated this email claim; use it only to resolve
     // pending invite rows into principal ACL rows before authorization.
-    const resolution = await resolveNotebookInvitesForLogin(env, {
+    const login = {
       principal: identity.principal,
       provider: identity.metadata.provider,
       email: identity.metadata.email ?? null,
       emailVerified: Boolean(identity.metadata.email),
       displayName: identity.metadata.displayName ?? null,
-    });
+    };
+    const pendingInvites = await getPendingNotebookInvitesForLogin(env, login);
+    if (pendingInvites.length === 0) {
+      return;
+    }
+    const resolution = await resolveNotebookInvitesForLogin(env, login);
     if (resolution.acceptedInvites.length === 0 && resolution.aclGrants.length === 0) {
       return;
     }

@@ -679,6 +679,35 @@ describe("Worker artifact routes", () => {
     assert.equal(catalog.notebook.id, "access-demo");
   });
 
+  it("keeps Access profile writes off the no-invite authorization path", async () => {
+    const { env: accessEnv, token } = await accessTokenFixture({
+      subject: "alice",
+      email: "alice@example.com",
+      name: "Alice Example",
+    });
+    const env = fakeEnv(accessEnv);
+    seedNotebook(env, "access-no-invite-demo");
+    seedAcl(env, {
+      notebookId: "access-no-invite-demo",
+      subject: "user:cloudflare-access:alice",
+      scope: "viewer",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/n/access-no-invite-demo?scope=viewer", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Operator": "browser:tab",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(env.DB.profiles.has("user:cloudflare-access:alice"), false);
+  });
+
   it("resolves Cloudflare Access pending invites before ACL authorization", async () => {
     const { env: accessEnv, token } = await accessTokenFixture({
       subject: "bob",
