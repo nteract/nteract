@@ -173,6 +173,55 @@ describe("cloud live sync", () => {
       fake.restore();
     }
   });
+
+  it("rejects ready when the bootstrap message cannot be decoded", async () => {
+    const fake = installFakeWebSocket();
+    try {
+      const transport = new CloudWebSocketTransport(new URL("wss://example.test/n/room/sync"), []);
+      const socket = fake.socket;
+      socket.open();
+      socket.message("not binary");
+
+      await assert.rejects(
+        transport.ready,
+        /cloud sync socket message failed: unsupported WebSocket message/,
+      );
+      assert.equal(socket.readyState, FakeWebSocket.CLOSED);
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("notifies disconnect when a post-ready message cannot be decoded", async () => {
+    const fake = installFakeWebSocket();
+    const disconnects: string[] = [];
+    try {
+      const transport = new CloudWebSocketTransport(
+        new URL("wss://example.test/n/room/sync"),
+        [],
+        undefined,
+        (reason) => disconnects.push(reason.message),
+      );
+      const socket = fake.socket;
+      socket.open();
+      socket.ready("peer-1");
+      await transport.ready;
+
+      socket.message("not binary");
+      await nextMicrotask();
+
+      assert.deepEqual(disconnects, [
+        "cloud sync socket message failed: unsupported WebSocket message [object String]",
+      ]);
+      assert.equal(socket.readyState, FakeWebSocket.CLOSED);
+      await assert.rejects(
+        transport.sendFrame(FrameType.PRESENCE, new Uint8Array([1, 2, 3])),
+        /cloud sync socket is closed/,
+      );
+    } finally {
+      fake.restore();
+    }
+  });
 });
 
 function installFakeWebSocket(): {
@@ -243,12 +292,20 @@ class FakeWebSocket extends EventTarget {
     frame.set(payload, 1);
     this.dispatchEvent(messageEvent(frame.buffer));
   }
+
+  message(data: unknown): void {
+    this.dispatchEvent(messageEvent(data));
+  }
 }
 
-function messageEvent(data: ArrayBuffer): Event {
+function messageEvent(data: unknown): Event {
   const event = new Event("message");
   Object.defineProperty(event, "data", { value: data });
   return event;
+}
+
+async function nextMicrotask(): Promise<void> {
+  await Promise.resolve();
 }
 
 function closeEvent(code: number, reason: string): Event {
