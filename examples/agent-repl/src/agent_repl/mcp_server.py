@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 from typing import Any, Literal
 
 from agent_repl.manager import ReplManager, as_jsonable
 
 Backend = Literal["auto", "ipython", "python"]
 manager = ReplManager()
+atexit.register(manager.close)
 
 
 def _mcp():

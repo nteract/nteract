@@ -55,7 +55,7 @@ def test_timeout_kills_only_that_session() -> None:
 def test_timeout_budget_is_not_reset_by_discarded_responses() -> None:
     worker = _WorkerSession("test", "python", sys.executable)
     try:
-        worker._responses.put({"id": None, "ok": False})
+        worker._responses.put({"id": 999, "ok": True})
         started = time.monotonic()
         try:
             worker._request({"op": "run", "code": "import time; time.sleep(5)"}, timeout_s=0.2)
@@ -67,6 +67,53 @@ def test_timeout_budget_is_not_reset_by_discarded_responses() -> None:
         worker.close()
 
     assert elapsed < 0.35
+
+
+def test_broken_pipe_during_request_is_structured_error() -> None:
+    class BrokenStdin:
+        def write(self, text: str) -> None:
+            raise BrokenPipeError("closed pipe")
+
+        def flush(self) -> None:
+            pass
+
+    worker = _WorkerSession("test", "python", sys.executable)
+    try:
+        worker._process.stdin = BrokenStdin()
+        try:
+            worker._request({"op": "run", "code": "1"}, timeout_s=0.2)
+        except RuntimeError as exc:
+            message = str(exc)
+        else:
+            raise AssertionError("expected broken pipe")
+    finally:
+        worker.close()
+
+    assert "worker died while accepting a request" in message
+
+
+def test_protocol_error_response_is_not_discarded() -> None:
+    worker = _WorkerSession("test", "python", sys.executable)
+    try:
+        worker._responses.put(
+            {
+                "id": None,
+                "ok": False,
+                "error_name": "WorkerProtocolError",
+                "traceback": "bad stdout",
+            }
+        )
+        try:
+            worker._request({"op": "run", "code": "import time; time.sleep(5)"}, timeout_s=1)
+        except RuntimeError as exc:
+            message = str(exc)
+        else:
+            raise AssertionError("expected protocol error")
+    finally:
+        worker.close()
+
+    assert "WorkerProtocolError" in message
+    assert "bad stdout" in message
 
 
 def test_manager_returns_structured_error_if_worker_dies_before_run() -> None:

@@ -93,6 +93,8 @@ class _WorkerSession:
             except subprocess.TimeoutExpired:
                 self._process.kill()
                 self._process.wait(timeout=2)
+        self._reader.join(timeout=1)
+        self._stderr_reader.join(timeout=1)
 
     def kill(self) -> None:
         self._closed = True
@@ -111,8 +113,13 @@ class _WorkerSession:
         request_id = next(self._ids)
         request["id"] = request_id
         assert self._process.stdin is not None
-        self._process.stdin.write(json.dumps(request) + "\n")
-        self._process.stdin.flush()
+        try:
+            self._process.stdin.write(json.dumps(request) + "\n")
+            self._process.stdin.flush()
+        except OSError as exc:
+            raise RuntimeError(
+                f"session {self.name!r} worker died while accepting a request"
+            ) from exc
         deadline = time.monotonic() + timeout_s
 
         try:
@@ -123,6 +130,10 @@ class _WorkerSession:
                 response = self._responses.get(timeout=remaining)
                 if response.get("id") == request_id:
                     return response
+                if response.get("id") is None and response.get("ok") is False:
+                    error_name = response.get("error_name") or "WorkerProtocolError"
+                    traceback_text = response.get("traceback") or "worker protocol error"
+                    raise RuntimeError(f"{error_name}: {traceback_text}")
         except queue.Empty as exc:
             self.kill()
             raise ReplTimeout(f"session {self.name!r} timed out after {timeout_s:g}s") from exc
