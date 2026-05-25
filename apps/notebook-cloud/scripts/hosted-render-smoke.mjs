@@ -15,14 +15,18 @@ import { catalogApiUrlForViewer, renderApiUrlForViewer } from "./hosted-render-s
 const DEFAULT_URL =
   "https://nteract-notebook-cloud.rgbkrk.workers.dev/n/nteract-cloud-live-mathnet";
 const DEFAULT_RENDERER_ASSET_ORIGIN = "https://nteract-notebook-cloud-assets.rgbkrk.workers.dev";
+const DEFAULT_OUTPUT_DOCUMENT_ORIGIN = "https://nteract-notebook-cloud-outputs.rgbkrk.workers.dev";
 const DEFAULT_CATALOG_OWNER_PRINCIPAL = "user:dev:live-publish";
 const DEFAULT_LATEST_REVISION_ACTOR_LABEL = "user:dev:live-publish/agent:publish-live";
 
 const targetUrl = process.argv[2] ?? process.env.NOTEBOOK_CLOUD_HOSTED_URL ?? DEFAULT_URL;
 const expectedRendererAssetOrigin =
   process.env.NOTEBOOK_CLOUD_EXPECTED_RENDERER_ASSET_ORIGIN ?? DEFAULT_RENDERER_ASSET_ORIGIN;
+const expectedOutputDocumentOrigin =
+  process.env.NOTEBOOK_CLOUD_EXPECTED_OUTPUT_DOCUMENT_ORIGIN ?? DEFAULT_OUTPUT_DOCUMENT_ORIGIN;
 const expectedSourceText = process.env.NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT ?? "import polars as pl";
 const expectedExecutionCount = process.env.NOTEBOOK_CLOUD_EXPECTED_EXECUTION_COUNT ?? null;
+const requireRenderedCellMarker = process.env.NOTEBOOK_CLOUD_REQUIRE_RENDERED_CELL_MARKER !== "0";
 const expectedPresenceText = process.env.NOTEBOOK_CLOUD_EXPECTED_PRESENCE_TEXT ?? "viewing";
 const expectedFrameTexts = parseExpectedTexts(process.env.NOTEBOOK_CLOUD_EXPECTED_FRAME_TEXTS, [
   "Loaded 25 rows",
@@ -45,6 +49,9 @@ const timeoutMs = Number(process.env.NOTEBOOK_CLOUD_SMOKE_TIMEOUT_MS ?? 60_000);
 const targetOrigin = new URL(targetUrl).origin;
 const rendererAssetOrigin = expectedRendererAssetOrigin
   ? new URL(expectedRendererAssetOrigin).origin
+  : null;
+const outputDocumentOrigin = expectedOutputDocumentOrigin
+  ? new URL(expectedOutputDocumentOrigin).origin
   : null;
 
 const failures = [];
@@ -159,22 +166,24 @@ async function main() {
         },
       );
     }
-    await page.waitForFunction(
-      (expected) => {
-        const reportCellCount = document.querySelectorAll(
-          "[data-slot='read-only-report-cell']",
-        ).length;
-        const counts = Array.from(document.querySelectorAll("[data-slot='execution-count']")).map(
-          (node) => node.textContent?.trim() ?? "",
-        );
-        if (expected) {
-          return counts.includes(expected);
-        }
-        return reportCellCount > 0 || counts.some((count) => /^\[\d+\]:$/.test(count));
-      },
-      expectedExecutionCount,
-      { timeout: timeoutMs },
-    );
+    if (requireRenderedCellMarker || expectedExecutionCount) {
+      await page.waitForFunction(
+        (expected) => {
+          const reportCellCount = document.querySelectorAll(
+            "[data-slot='read-only-report-cell']",
+          ).length;
+          const counts = Array.from(document.querySelectorAll("[data-slot='execution-count']")).map(
+            (node) => node.textContent?.trim() ?? "",
+          );
+          if (expected) {
+            return counts.includes(expected);
+          }
+          return reportCellCount > 0 || counts.some((count) => /^\[\d+\]:$/.test(count));
+        },
+        expectedExecutionCount,
+        { timeout: timeoutMs },
+      );
+    }
     if (expectedPresenceText) {
       await page.waitForFunction(
         (expected) => document.querySelector(".cloud-presence")?.textContent?.includes(expected),
@@ -186,7 +195,7 @@ async function main() {
       await page.waitForFunction(
         () =>
           Array.from(document.querySelectorAll("iframe[sandbox]")).some(
-            (iframe) => iframe.clientHeight >= 240,
+            (iframe) => iframe.clientWidth > 0 && iframe.clientHeight > 0,
           ),
         undefined,
         { timeout: timeoutMs },
@@ -208,6 +217,11 @@ async function main() {
         height: iframe.clientHeight,
         sandbox: iframe.getAttribute("sandbox"),
         allow: iframe.getAttribute("allow"),
+        src: iframe.getAttribute("src"),
+        srcdoc: iframe.hasAttribute("srcdoc"),
+        origin: iframe.getAttribute("src")
+          ? new URL(iframe.getAttribute("src"), location.href).origin
+          : null,
       })),
     );
     const reportCellCount = await page.locator("[data-slot='read-only-report-cell']").count();
@@ -282,6 +296,32 @@ async function main() {
         requests: runtimedWasmRequests.map((request) => request.url),
       });
     }
+    if (expectedOutputDocumentOrigin && expectedFrameTexts.length > 0) {
+      const matchingFrames = iframeMetrics.filter(
+        (iframe) => iframe.origin === outputDocumentOrigin,
+      );
+      if (matchingFrames.length === 0) {
+        failures.push({
+          kind: "output-document-origin",
+          text: `No output iframe loaded from ${expectedOutputDocumentOrigin}`,
+          frames: iframeMetrics,
+        });
+      }
+      if (matchingFrames.some((iframe) => iframe.srcdoc)) {
+        failures.push({
+          kind: "output-document-srcdoc",
+          text: "Output iframe used srcdoc despite an expected output-document origin",
+          frames: matchingFrames,
+        });
+      }
+      if (matchingFrames.some((iframe) => /\ballow-same-origin\b/.test(iframe.sandbox ?? ""))) {
+        failures.push({
+          kind: "output-document-sandbox",
+          text: "Output iframe sandbox included allow-same-origin",
+          frames: matchingFrames,
+        });
+      }
+    }
     if (screenshotPath) {
       await saveScreenshot(page);
     }
@@ -297,8 +337,10 @@ async function main() {
           targetUrl,
           expectedSourceText,
           expectedExecutionCount,
+          requireRenderedCellMarker,
           expectedPresenceText,
           expectedFrameTexts,
+          expectedOutputDocumentOrigin,
           expectedRenderSource,
           expectedCatalogOwnerPrincipal,
           expectedLatestRevisionActorLabel,
@@ -368,7 +410,11 @@ function isBenignConsoleError(text) {
 function isRelevantRequestUrl(value) {
   try {
     const url = new URL(value);
-    return url.origin === targetOrigin || url.origin === rendererAssetOrigin;
+    return (
+      url.origin === targetOrigin ||
+      url.origin === rendererAssetOrigin ||
+      url.origin === outputDocumentOrigin
+    );
   } catch {
     return false;
   }

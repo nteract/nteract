@@ -1679,7 +1679,6 @@ function withBrowserSecurityHeaders(response: Response, contentSecurityPolicy?: 
     "Permissions-Policy",
     [
       "accelerometer=()",
-      "ambient-light-sensor=()",
       "autoplay=()",
       "camera=()",
       "display-capture=()",
@@ -1695,7 +1694,6 @@ function withBrowserSecurityHeaders(response: Response, contentSecurityPolicy?: 
       "publickey-credentials-get=()",
       "screen-wake-lock=()",
       "usb=()",
-      "web-share=()",
       "xr-spatial-tracking=()",
     ].join(", "),
   );

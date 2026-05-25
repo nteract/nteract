@@ -138,16 +138,19 @@ from the Worker HTML shell as JSON:
 
 - render endpoint (`/api/n/:id/render` or pinned `/renders/:headsHash`);
 - sync endpoint for anonymous viewer-scope presence;
-- blob base path (`/api/n/:id/blobs/`).
+- blob base path (`/api/n/:id/blobs/`);
+- renderer asset base URL;
+- runtimed WASM base URL;
+- output document base URL when hosted output-origin isolation is configured.
 
 This keeps the cloud app from copying desktop renderer code while still leaving
 room host and artifact serving inside the Worker.
 
-The `/api/plugins/*` route exists for isolated iframes whose origin is `null`.
-Those iframes cannot fetch Worker Assets that are served before the Worker can
-add CORS headers, so cloud blob-backed Sift outputs load the WASM binary through
-the Worker-owned `/api/plugins/sift_wasm.wasm` path. Desktop keeps using the
-daemon-local `/plugins/sift_wasm.wasm` route.
+Renderer sidecars are served from `RENDERER_ASSETS_BASE_URL` in hosted
+deployments, with Worker-owned `/renderer-assets/*`, `/plugins/*`, and
+`/api/plugins/*` aliases kept as local/prototype compatibility routes. The
+dedicated renderer asset Worker binds only `dist/plugins`; it is not a notebook
+API or blob origin.
 
 ## Decision 6: Presence stays typed-frame v4 CBOR
 
@@ -170,10 +173,9 @@ decision for public viewer presence is settled.
   behavior live in `docs/architecture/hosted-room-authorization.md`.
 - This ADR does not require hosted rooms to run kernels. Runtime snapshots can
   be imported from a local daemon or future remote runtime peer.
-- This ADR does not define the final blob or output-document origin.
-  `/api/n/:id/blobs/:hash` is a prototype origin; the production origin split
-  and signed/capability URL direction live in
-  `hosted-output-origin-isolation.md`.
+- This ADR does not define the final private blob origin. The prototype still
+  reads `/api/n/:id/blobs/:hash`; the production signed/capability URL direction
+  lives in `hosted-output-origin-isolation.md`.
 
 ## Open Questions
 

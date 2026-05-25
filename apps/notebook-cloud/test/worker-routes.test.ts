@@ -1762,6 +1762,37 @@ describe("Worker artifact routes", () => {
     assert.equal(roomFetches, 0);
   });
 
+  it("rejects output-document origins at the room WebSocket gate", async () => {
+    let roomFetches = 0;
+    const env = fakeEnv({
+      NOTEBOOK_CLOUD_ALLOWED_ORIGINS: "https://nteract-notebook-cloud.rgbkrk.workers.dev",
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async () => {
+            roomFetches += 1;
+            return new Response("unexpected room fetch", { status: 500 });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+
+    const response = await worker.fetch(
+      new Request("https://nteract-notebook-cloud.rgbkrk.workers.dev/n/acl-demo/sync", {
+        headers: {
+          Origin: "https://nteract-notebook-cloud-outputs.rgbkrk.workers.dev",
+          Upgrade: "websocket",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { error: "websocket origin is not allowed" });
+    assert.equal(roomFetches, 0);
+  });
+
   it("rejects malformed WebSocket Origin headers even without an allowlist", async () => {
     let roomFetches = 0;
     const env = fakeEnv({

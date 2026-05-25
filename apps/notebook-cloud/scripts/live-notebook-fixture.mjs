@@ -1,8 +1,11 @@
 export async function createLiveNotebookFixture(rt, { preset = "mathnet" } = {}) {
-  if (preset !== "mathnet") {
-    throw new Error(`Unknown NOTEBOOK_CLOUD_LIVE_PRESET ${preset}`);
+  if (preset === "mathnet") {
+    return createMathNetNotebook(rt);
   }
-  return createMathNetNotebook(rt);
+  if (preset === "html-output") {
+    return createHtmlOutputNotebook(rt);
+  }
+  throw new Error(`Unknown NOTEBOOK_CLOUD_LIVE_PRESET ${preset}`);
 }
 
 async function createMathNetNotebook(rt) {
@@ -47,6 +50,46 @@ async function createMathNetNotebook(rt) {
         "df",
       ].join("\n"),
       { timeoutMs: 10 * 60 * 1000 },
+    );
+    return session;
+  } catch (error) {
+    await session.shutdownNotebook().catch(() => {});
+    await session.close().catch(() => {});
+    throw error;
+  }
+}
+
+async function createHtmlOutputNotebook(rt) {
+  const session = await rt.createNotebook({
+    runtime: "python",
+    description: "notebook-cloud HTML output publish",
+    packageManager: "uv",
+    environmentMode: "notebook",
+  });
+
+  try {
+    await session.createCell(
+      [
+        "# HTML output document origin smoke",
+        "",
+        "This notebook verifies that hosted HTML outputs render in the dedicated output document origin.",
+      ].join("\n"),
+      { cellType: "markdown" },
+    );
+    await session.approveTrust();
+    await session.syncEnvironment();
+    await session.runCell(
+      [
+        "from IPython.display import HTML, display",
+        "",
+        'display(HTML("""',
+        "<section data-testid='html-output-origin-probe'>",
+        "  <h2>Hello from HTML output document</h2>",
+        "  <p>This HTML came from a live runtime snapshot.</p>",
+        "</section>",
+        '"""))',
+      ].join("\n"),
+      { timeoutMs: 2 * 60 * 1000 },
     );
     return session;
   } catch (error) {
