@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 use std::time::Instant;
 
 use anyhow::{ensure, Context};
-use runtime_doc::RuntimeStateDoc;
+use runtime_doc::{diff_output_ids, diff_output_ids_in_place, RuntimeStateDoc};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -84,6 +84,18 @@ pub struct RuntimeStateReaderMeasurement {
     pub comms_seen: usize,
     pub queued_executions_seen: usize,
     pub reader_nanos: u128,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OutputIdDiffMeasurement {
+    pub strategy: &'static str,
+    pub output_count: usize,
+    pub payload_bytes: usize,
+    pub committed_outputs: usize,
+    pub changed_outputs: usize,
+    pub removed_outputs: usize,
+    pub snapshot_outputs: usize,
+    pub diff_nanos: u128,
 }
 
 impl OutputCommitMeasurement {
@@ -322,6 +334,91 @@ pub async fn measure_runtime_state_reader_paths(
     ])
 }
 
+pub async fn measure_output_id_diff_paths(
+    config: OutputCommitMeasurementConfig,
+) -> anyhow::Result<Vec<OutputIdDiffMeasurement>> {
+    let blob_root = output_commit_measure_blob_root();
+    tokio::fs::create_dir_all(&blob_root)
+        .await
+        .with_context(|| format!("create blob root {}", blob_root.display()))?;
+    let blob_store = BlobStore::new(blob_root.clone());
+    let redactor = OutputRedactor::disabled();
+    let mut doc = RuntimeStateDoc::new();
+    doc.create_execution_with_source(EXECUTION_ID, "pass", 0)?;
+    doc.set_execution_running(EXECUTION_ID)?;
+
+    for index in 0..config.output_count {
+        let output = measured_output(config.kind, index, config.payload_bytes);
+        let manifest = output_store::create_manifest_with_redactor(
+            &output,
+            &blob_store,
+            DEFAULT_INLINE_THRESHOLD,
+            &redactor,
+        )
+        .await
+        .context("create output manifest")?;
+        doc.append_output(EXECUTION_ID, &manifest.to_json())?;
+    }
+
+    let previous_state = doc.read_state();
+    let (_, previous_snapshot) = diff_output_ids(&Default::default(), &previous_state.executions);
+
+    let output = measured_output(config.kind, config.output_count, config.payload_bytes);
+    let manifest = output_store::create_manifest_with_redactor(
+        &output,
+        &blob_store,
+        DEFAULT_INLINE_THRESHOLD,
+        &redactor,
+    )
+    .await
+    .context("create output manifest")?;
+    doc.append_output(EXECUTION_ID, &manifest.to_json())?;
+    let current_state = doc.read_state();
+
+    let rebuild_started = Instant::now();
+    let (rebuild_diff, rebuild_snapshot) =
+        diff_output_ids(&previous_snapshot, &current_state.executions);
+    let rebuild_nanos = rebuild_started.elapsed().as_nanos();
+
+    let mut in_place_snapshot = previous_snapshot.clone();
+    let in_place_started = Instant::now();
+    let in_place_diff = diff_output_ids_in_place(&mut in_place_snapshot, &current_state.executions);
+    let in_place_nanos = in_place_started.elapsed().as_nanos();
+
+    ensure!(
+        rebuild_diff == in_place_diff,
+        "output-id diff paths produced different diffs"
+    );
+    ensure!(
+        rebuild_snapshot == in_place_snapshot,
+        "output-id diff paths produced different snapshots"
+    );
+
+    let _ = tokio::fs::remove_dir_all(&blob_root).await;
+    Ok(vec![
+        OutputIdDiffMeasurement {
+            strategy: "rebuild_output_id_snapshot",
+            output_count: config.output_count,
+            payload_bytes: config.payload_bytes,
+            committed_outputs: config.output_count + 1,
+            changed_outputs: rebuild_diff.changed.len(),
+            removed_outputs: rebuild_diff.removed_output_ids.len(),
+            snapshot_outputs: rebuild_snapshot.len(),
+            diff_nanos: rebuild_nanos,
+        },
+        OutputIdDiffMeasurement {
+            strategy: "in_place_output_id_snapshot",
+            output_count: config.output_count,
+            payload_bytes: config.payload_bytes,
+            committed_outputs: config.output_count + 1,
+            changed_outputs: in_place_diff.changed.len(),
+            removed_outputs: in_place_diff.removed_output_ids.len(),
+            snapshot_outputs: in_place_snapshot.len(),
+            diff_nanos: in_place_nanos,
+        },
+    ])
+}
+
 fn output_commit_measure_blob_root() -> std::path::PathBuf {
     std::env::temp_dir().join(format!("runtimed-output-commit-measure-{}", Uuid::new_v4()))
 }
@@ -431,6 +528,27 @@ mod tests {
             assert_eq!(metric.committed_outputs, 4);
             assert_eq!(metric.comms_seen, 1);
             assert_eq!(metric.queued_executions_seen, 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn output_id_diff_measure_compares_equivalent_paths() {
+        let metrics = measure_output_id_diff_paths(OutputCommitMeasurementConfig {
+            output_count: 4,
+            payload_bytes: 16,
+            kind: OutputCommitKind::DisplayData,
+        })
+        .await
+        .expect("measurement should run");
+
+        assert_eq!(metrics.len(), 2);
+        assert_eq!(metrics[0].strategy, "rebuild_output_id_snapshot");
+        assert_eq!(metrics[1].strategy, "in_place_output_id_snapshot");
+        for metric in metrics {
+            assert_eq!(metric.committed_outputs, 5);
+            assert_eq!(metric.changed_outputs, 1);
+            assert_eq!(metric.removed_outputs, 0);
+            assert_eq!(metric.snapshot_outputs, 5);
         }
     }
 }

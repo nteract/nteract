@@ -3487,6 +3487,51 @@ pub fn diff_output_ids(
     )
 }
 
+/// Diff execution outputs by `output_id`, updating the caller-owned snapshot.
+///
+/// This is the hot-path variant used by WASM runtime-state sync. It still
+/// walks the current flat outputs, but it only clones manifests that are new
+/// or changed. Unchanged entries remain in `prev` in place, avoiding a full
+/// `output_id -> manifest` snapshot rebuild on every sync frame.
+pub fn diff_output_ids_in_place(
+    prev: &mut HashMap<String, serde_json::Value>,
+    current_executions: &HashMap<String, ExecutionState>,
+) -> OutputIdDiff {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut changed: Vec<(String, serde_json::Value)> = Vec::new();
+
+    for exec in current_executions.values() {
+        for output in &exec.outputs {
+            let Some(oid) = extract_output_id(output) else {
+                continue;
+            };
+            seen.insert(oid.clone());
+            let is_changed = match prev.get(&oid) {
+                None => true,
+                Some(prev_output) => prev_output != output,
+            };
+            if is_changed {
+                changed.push((oid.clone(), output.clone()));
+                prev.insert(oid, output.clone());
+            }
+        }
+    }
+
+    let mut removed: Vec<String> = Vec::new();
+    prev.retain(|oid, _| {
+        let keep = seen.contains(oid);
+        if !keep {
+            removed.push(oid.clone());
+        }
+        keep
+    });
+
+    OutputIdDiff {
+        changed,
+        removed_output_ids: removed,
+    }
+}
+
 /// Collect the ordered list of `output_id`s for a single execution.
 ///
 /// Returns the output_ids in order. Outputs without an `output_id` are skipped
@@ -4973,6 +5018,79 @@ mod tests {
         assert_eq!(extract_output_id(&with_id), Some("abc".to_string()));
         assert_eq!(extract_output_id(&empty), None);
         assert_eq!(extract_output_id(&missing), None);
+    }
+
+    #[test]
+    fn test_diff_output_ids_in_place_updates_only_changed_entries() {
+        let mut snapshot = HashMap::new();
+        let unchanged = test_stream("hash1");
+        let changed = test_stream("hash2-old");
+        let removed = test_stream("hash3");
+        snapshot.insert("stream-hash1".to_string(), unchanged.clone());
+        snapshot.insert("stream-hash2-old".to_string(), changed);
+        snapshot.insert("stream-hash3".to_string(), removed);
+
+        let mut changed_output = test_stream("hash2-old");
+        changed_output["text"]["blob"] = serde_json::Value::String("hash2-new".to_string());
+        changed_output["text"]["size"] = serde_json::Value::from(9);
+        let new_output = test_stream("hash4");
+        let mut execs = HashMap::new();
+        execs.insert(
+            "exec-1".to_string(),
+            ExecutionState {
+                status: "running".to_string(),
+                execution_count: Some(1),
+                success: None,
+                outputs: vec![
+                    unchanged.clone(),
+                    changed_output.clone(),
+                    new_output.clone(),
+                ],
+                source: None,
+                seq: None,
+                submitted_by_actor_label: None,
+            },
+        );
+
+        let diff = diff_output_ids_in_place(&mut snapshot, &execs);
+
+        assert_eq!(
+            diff.changed,
+            vec![
+                ("stream-hash2-old".to_string(), changed_output.clone()),
+                ("stream-hash4".to_string(), new_output.clone()),
+            ]
+        );
+        assert_eq!(diff.removed_output_ids, vec!["stream-hash3"]);
+        assert_eq!(snapshot.get("stream-hash1"), Some(&unchanged));
+        assert_eq!(snapshot.get("stream-hash2-old"), Some(&changed_output));
+        assert_eq!(snapshot.get("stream-hash4"), Some(&new_output));
+        assert!(!snapshot.contains_key("stream-hash3"));
+    }
+
+    #[test]
+    fn test_diff_output_ids_wrapper_matches_in_place_diff() {
+        let prev = HashMap::from([("stream-hash1".to_string(), test_stream("hash1"))]);
+        let mut execs = HashMap::new();
+        execs.insert(
+            "exec-1".to_string(),
+            ExecutionState {
+                status: "done".to_string(),
+                execution_count: Some(1),
+                success: Some(true),
+                outputs: vec![test_stream("hash1"), test_stream("hash2")],
+                source: None,
+                seq: None,
+                submitted_by_actor_label: None,
+            },
+        );
+
+        let (wrapper_diff, wrapper_snapshot) = diff_output_ids(&prev, &execs);
+        let mut in_place_snapshot = prev.clone();
+        let in_place_diff = diff_output_ids_in_place(&mut in_place_snapshot, &execs);
+
+        assert_eq!(wrapper_diff, in_place_diff);
+        assert_eq!(wrapper_snapshot, in_place_snapshot);
     }
 
     #[test]
