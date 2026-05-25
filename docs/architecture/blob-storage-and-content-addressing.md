@@ -368,6 +368,14 @@ it should never reconstruct a cloud route shape from `notebookId` or any
 other doc-level value. On the desktop, both default to the daemon's local
 HTTP origin and the same port, but the contracts can move independently.
 
+The resolver boundary is also an authority boundary. `BlobBackend` stores bytes;
+`BlobResolver` decides how an authorized viewer obtains them. `PutBlob` and
+multipart upload only transfer bytes into the backend. They do not grant read
+access, mutate room state, or prove that a peer may reference the hash from a
+particular document path. Hosted room hosts must authorize both the upload
+surface and the later `NotebookDoc` / `RuntimeStateDoc` reference that makes the
+blob reachable.
+
 1. **Port-change tolerance.** Daemon restart with a new port is one refresh
    on the resolver, not a doc rewrite.
 2. **Cloud transport reuse.** The hosted notebook path

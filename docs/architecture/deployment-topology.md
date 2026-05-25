@@ -38,6 +38,22 @@ placement as the same concept. The current model has sharper nouns:
 - **file binding**: an optional local `.ipynb` persistence surface, not the
   identity of the room.
 
+Authority boundaries:
+
+- A **room locator** is an address for reaching a room host. It is not an ACL
+  grant, runtime attachment, owner claim, blob credential, or file lock.
+- The **room host** is document authority. It owns live document materialization,
+  scope enforcement, sync fanout, and snapshot persistence for the room.
+- The **room ACL** is access authority. Credentials authenticate principals;
+  ACL rows and provider bounds decide the connection scope.
+- A **runtime peer** is compute authority only for the room surfaces its scope
+  grants: runtime state, output, lifecycle, and referenced blobs. It does not
+  own the room and does not move the document authority to JupyterHub.
+- A **blob upload** is byte transfer. It becomes reachable room state only when
+  an authorized `NotebookDoc` or `RuntimeStateDoc` mutation references it.
+- A **file binding** is local persistence metadata. It is not the room identity
+  and should not decide who owns a hosted room.
+
 The desired product direction is:
 
 ```text
@@ -49,7 +65,7 @@ Cloudflare Worker + Durable Object room host
         |
         | scoped runtime_peer WebSocket
         v
-JupyterHub-spawned compute / kernel sidecar
+JupyterHub runtime sidecar / compute
 ```
 
 Cloudflare is the document engine and collaboration surface. Anaconda OIDC,
@@ -269,6 +285,11 @@ hosted room, or refuse to autosave if another daemon owns the same file binding.
 The same-path autosave collision remains tracked by #2285 and should be fixed
 with a local lock/heartbeat or dirty-disk refusal independent of this hosted
 topology.
+
+Do not encode runtime provider, identity provider, owner principal, or blob
+backend into a locator unless that component is actually the room host. A
+JupyterHub-backed kernel for an Anaconda-hosted room remains runtime attachment
+metadata and an ACL grant, not part of the room address.
 
 ## Decision 6: Durable state is split by responsibility
 
