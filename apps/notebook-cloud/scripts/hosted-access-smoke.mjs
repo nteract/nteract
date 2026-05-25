@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { FrameType } from "runtimed";
 
 import {
+  assertAccessHealthConfigured,
   accessAuthHeaders,
   accessPrincipalFromJwt,
   assertHostedAccessSmokeEnv,
@@ -37,6 +38,7 @@ const wasmBytesUrl = new URL(
 
 const startedAt = performance.now();
 assertHostedAccessSmokeEnv({ ownerToken });
+const accessHealth = await timed("access_health", () => assertAccessHealthReady());
 await assertWasmBuildExists();
 
 const ownerPrincipal = accessPrincipalFromJwt(ownerToken);
@@ -146,6 +148,7 @@ console.log(
       auth_mode: "cloudflare_access",
       baseUrl,
       origin: smokeOrigin,
+      access_health: accessHealth,
       roomId,
       viewerUrl: new URL(`/n/${encodeURIComponent(roomId)}`, baseUrl).href,
       principal_fingerprints: {
@@ -154,6 +157,7 @@ console.log(
         viewer: fingerprintPrincipal(viewerPrincipal),
       },
       checks: [
+        "cloudflare_access_worker_configured",
         "cloudflare_access_jwt_validated_by_worker",
         "owner_acl_room_seeded",
         "editor_principal_acl_granted",
@@ -204,6 +208,23 @@ async function assertWasmBuildExists() {
       "Missing apps/notebook/src/wasm/runtimed-wasm output. Run `cargo xtask wasm runtimed --skip-renderer-plugins` first.",
     );
   }
+}
+
+async function assertAccessHealthReady() {
+  const response = await fetch(new URL("/api/health", baseUrl), {
+    headers: accessAuthHeaders(ownerToken),
+  });
+  const text = await response.text();
+  assert(response.ok, `Access health preflight failed: ${response.status} ${previewText(text)}`);
+
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    throw new Error(`Access health preflight did not return JSON: ${previewText(text)}`);
+  }
+
+  return assertAccessHealthConfigured(payload, { baseUrl });
 }
 
 async function seedNotebookOwner(notebookId) {
@@ -325,6 +346,13 @@ async function connectAnonymous(notebookId, viewerSession) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function previewText(text, maxLength = 300) {
+  const value = String(text ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 }
 
 function assert(condition, message) {
