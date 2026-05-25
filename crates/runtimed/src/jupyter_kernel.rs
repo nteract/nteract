@@ -32,6 +32,7 @@ use crate::async_outcome::{
     await_result_with_timeout, recv_oneshot_with_timeout, TimedOneShot, TimedResult,
 };
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
+use crate::output_committer::{OrdinaryOutputCommit, OrdinaryOutputKind};
 use crate::output_prep::{
     blob_store_large_state_values, escape_glob_pattern, extract_buffer_paths,
     media_to_display_data, message_content_to_nbformat, queue_command_channels,
@@ -1328,6 +1329,13 @@ impl KernelConnection for JupyterKernel {
                 iopub_lifecycle_tx.clone(),
                 iopub_output_redactor.clone(),
             );
+        let output_committer = crate::output_committer::start_output_committer(
+            state_for_iopub.clone(),
+            blob_store.clone(),
+            iopub_kernel_actor_id.clone(),
+            iopub_lifecycle_tx.clone(),
+            iopub_output_redactor.clone(),
+        );
 
         // Create coalescing channel early so the IOPub task can capture the sender.
         let (coalesce_tx, coalesce_rx) = mpsc::unbounded_channel::<(String, serde_json::Value)>();
@@ -1458,11 +1466,11 @@ impl KernelConnection for JupyterKernel {
                                             );
                                         }
 
-                                        display_update_committer.flush_for_ordering().await;
-
                                         if let Some(eid) =
                                             execution_id.clone().filter(|_| is_registered_execution)
                                         {
+                                            output_committer.flush_for_ordering().await;
+                                            display_update_committer.flush_for_ordering().await;
                                             stream_committer.flush_then_signal(
                                                 final_stream_flushes,
                                                 LifecycleSignal::ExecutionDone {
@@ -1470,6 +1478,7 @@ impl KernelConnection for JupyterKernel {
                                                 },
                                             );
                                         } else {
+                                            display_update_committer.flush_for_ordering().await;
                                             stream_committer.request_flushes(final_stream_flushes);
                                         }
                                         if execution_id.is_some() && !is_registered_execution {
@@ -1725,12 +1734,14 @@ impl KernelConnection for JupyterKernel {
                                     }
 
                                     if is_registered_execution {
-                                        let _output_type = match &message.content {
-                                            JupyterMessageContent::DisplayData(_) => "display_data",
-                                            JupyterMessageContent::ExecuteResult(_) => {
-                                                "execute_result"
+                                        let output_kind = match &message.content {
+                                            JupyterMessageContent::DisplayData(_) => {
+                                                OrdinaryOutputKind::DisplayData
                                             }
-                                            _ => "unknown",
+                                            JupyterMessageContent::ExecuteResult(_) => {
+                                                OrdinaryOutputKind::ExecuteResult
+                                            }
+                                            _ => unreachable!(),
                                         };
                                         let Some(eid) = execution_id.clone() else {
                                             continue;
@@ -1749,81 +1760,36 @@ impl KernelConnection for JupyterKernel {
                                         if let Some(nbformat_value) =
                                             message_content_to_nbformat(&message.content)
                                         {
-                                            crate::output_store::preflight_ref_buffers(
-                                                &nbformat_value,
-                                                &iopub_buffers,
-                                                &blob_store,
-                                            )
-                                            .await;
-                                            let manifest_json =
-                                                match output_store::create_manifest_with_redactor(
-                                                    &nbformat_value,
-                                                    &blob_store,
-                                                    DEFAULT_INLINE_THRESHOLD,
-                                                    &iopub_output_redactor,
-                                                )
-                                                .await
-                                                {
-                                                    Ok(manifest) => manifest.to_json(),
-                                                    Err(e) => {
-                                                        warn!(
-                                                        "[jupyter-kernel] Failed to create manifest: {}",
-                                                        e
-                                                    );
-                                                        let redacted = iopub_output_redactor
-                                                            .redact_output_value(&nbformat_value);
-                                                        crate::notebook_sync_server::fallback_output_with_id(&redacted)
-                                                    }
-                                                };
-
-                                            if let Err(e) = state_for_iopub
-                                                .transact_at_current_heads(
-                                                    Some(&iopub_kernel_actor_id),
-                                                    "runtime-state-iopub-output-transaction",
-                                                    |sd| {
-                                                        // Preserve the old fork+merge behavior:
-                                                        // append errors are logged but do not
-                                                        // turn the transaction into a recovery
-                                                        // failure.
-                                                        if let Err(e) = sd
-                                                            .append_output(&eid, &manifest_json)
-                                                        {
-                                                            warn!(
-                                                                "[jupyter-kernel] Failed to append output to state doc: {}",
-                                                                e
-                                                            );
-                                                        }
-                                                        Ok(())
-                                                    },
-                                                )
-                                            {
-                                                warn!("[runtime-state] {}", e);
-                                            }
-                                        }
-
-                                        // Rich-traceback detection. A display_data or
-                                        // execute_result carrying TRACEBACK_MIME IS an error
-                                        // semantically — the launcher short-circuits
-                                        // `_showtraceback` and emits rich display_data instead
-                                        // of classic ErrorOutput. Without this, the runtime
-                                        // never flips `execution_had_error`, and
-                                        // `Execution.result().success` comes back true for
-                                        // failed cells. Route through the same CellError
-                                        // command the classic arm uses.
-                                        if matches!(
-                                            crate::user_error::UserErrorOutput::from_iopub(
-                                                &message.content
-                                            ),
-                                            Some(crate::user_error::UserErrorOutput::Rich(_))
-                                        ) {
-                                            if let Err(e) = iopub_lifecycle_tx.send(
-                                                LifecycleSignal::CellError {
+                                            let is_rich_error = matches!(
+                                                crate::user_error::UserErrorOutput::from_iopub(
+                                                    &message.content
+                                                ),
+                                                Some(crate::user_error::UserErrorOutput::Rich(_))
+                                            );
+                                            output_committer
+                                                .enqueue_output(OrdinaryOutputCommit {
                                                     execution_id: eid.clone(),
-                                                },
-                                            ) {
-                                                warn!(
-                                                    "[jupyter-kernel] CellError (rich traceback) signal lost for execution={} because runtime agent receiver closed: {}",
-                                                    eid, e
+                                                    nbformat_value,
+                                                    buffers: iopub_buffers,
+                                                    kind: output_kind,
+                                                })
+                                                .await;
+
+                                            // Rich-traceback detection. A display_data or
+                                            // execute_result carrying TRACEBACK_MIME IS an error
+                                            // semantically — the launcher short-circuits
+                                            // `_showtraceback` and emits rich display_data instead
+                                            // of classic ErrorOutput. Without this, the runtime
+                                            // never flips `execution_had_error`, and
+                                            // `Execution.result().success` comes back true for
+                                            // failed cells. Route through the same CellError
+                                            // command the classic arm uses, after queued output
+                                            // commits are durable.
+                                            if is_rich_error {
+                                                output_committer.flush_then_signal(
+                                                    LifecycleSignal::CellError {
+                                                        execution_id: eid.clone(),
+                                                    },
                                                 );
                                             }
                                         }
@@ -1836,6 +1802,11 @@ impl KernelConnection for JupyterKernel {
                                             serde_json::to_value(&update.data).unwrap_or_default();
                                         let iopub_buffers: Vec<Vec<u8>> =
                                             message.buffers.iter().map(|b| b.to_vec()).collect();
+                                        // An update_display_data can target a display_data that
+                                        // arrived immediately before it. Drain ordinary output
+                                        // commits first so the coalesced display updater can find
+                                        // that durable target instead of dropping the update.
+                                        output_committer.flush_for_ordering().await;
                                         display_update_committer.request_update(
                                             display_id.clone(),
                                             data_value,
@@ -1953,62 +1924,21 @@ impl KernelConnection for JupyterKernel {
                                         if let Some(nbformat_value) =
                                             message_content_to_nbformat(&message.content)
                                         {
-                                            let manifest_json =
-                                                match output_store::create_manifest_with_redactor(
-                                                    &nbformat_value,
-                                                    &blob_store,
-                                                    DEFAULT_INLINE_THRESHOLD,
-                                                    &iopub_output_redactor,
-                                                )
-                                                .await
-                                                {
-                                                    Ok(manifest) => manifest.to_json(),
-                                                    Err(e) => {
-                                                        warn!(
-                                                        "[jupyter-kernel] Failed to create error manifest: {}",
-                                                        e
-                                                    );
-                                                        let redacted = iopub_output_redactor
-                                                            .redact_output_value(&nbformat_value);
-                                                        crate::notebook_sync_server::fallback_output_with_id(&redacted)
-                                                    }
-                                                };
-
-                                            if let Err(e) = state_for_iopub
-                                                .transact_at_current_heads(
-                                                    Some(&iopub_kernel_actor_id),
-                                                    "runtime-state-iopub-error-transaction",
-                                                    |sd| {
-                                                        // Preserve the old fork+merge behavior:
-                                                        // append errors are logged but do not
-                                                        // turn the transaction into a recovery
-                                                        // failure.
-                                                        if let Err(e) = sd
-                                                            .append_output(&eid, &manifest_json)
-                                                        {
-                                                            warn!(
-                                                                "[jupyter-kernel] Failed to append error output to state doc: {}",
-                                                                e
-                                                            );
-                                                        }
-                                                        Ok(())
-                                                    },
-                                                )
-                                            {
-                                                warn!("[runtime-state] {}", e);
-                                            }
+                                            output_committer
+                                                .enqueue_output(OrdinaryOutputCommit {
+                                                    execution_id: eid.clone(),
+                                                    nbformat_value,
+                                                    buffers: Vec::new(),
+                                                    kind: OrdinaryOutputKind::Error,
+                                                })
+                                                .await;
                                         }
 
-                                        if let Err(e) =
-                                            iopub_lifecycle_tx.send(LifecycleSignal::CellError {
+                                        output_committer.flush_then_signal(
+                                            LifecycleSignal::CellError {
                                                 execution_id: eid.clone(),
-                                            })
-                                        {
-                                            warn!(
-                                                "[jupyter-kernel] CellError signal lost for execution={} because runtime agent receiver closed: {}",
-                                                eid, e
-                                            );
-                                        }
+                                            },
+                                        );
                                     }
                                 }
 
