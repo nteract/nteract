@@ -2740,7 +2740,10 @@ class FakeD1Statement implements D1PreparedStatement {
   }
 
   async all<T = unknown>(): Promise<D1Result<T>> {
-    if (this.query.includes("FROM notebook_invites")) {
+    if (
+      this.query.includes("FROM notebook_invites") &&
+      this.query.includes("WHERE notebook_id = ?")
+    ) {
       const notebookId = this.values[0] as string;
       const limit = typeof this.values[1] === "number" ? this.values[1] : Number.POSITIVE_INFINITY;
       return okResult(
