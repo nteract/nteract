@@ -1,5 +1,6 @@
 import type { NteractEmbeddableOutput, ResolveEmbeddableOutputsOptions } from "./embeddable-output";
 import type { ContentRef, OutputBlobResolver, OutputManifest } from "./output-manifest";
+import { selectMimeType } from "@/components/outputs/mime-priority";
 
 export interface McpAppCellOutput {
   output_type: "stream" | "error" | "display_data" | "execute_result";
@@ -32,6 +33,8 @@ export interface McpSharedOutputInputs {
   outputs: NteractEmbeddableOutput[];
   resolveOptions: ResolveEmbeddableOutputsOptions;
 }
+
+const COLLAPSED_PREVIEW_MIME_TYPES = new Set(["text/plain", "text/llm+plain", "application/json"]);
 
 function trimTrailingSlash(value: string): string {
   return value.endsWith("/") ? value.slice(0, -1) : value;
@@ -127,6 +130,18 @@ export function mcpAppCellsToSharedOutputs(
       return manifest ? [manifest] : [];
     }),
   );
+}
+
+export function mcpAppCellHasRichOutput(cell: McpAppCellData): boolean {
+  return (cell.outputs ?? []).some((output) => {
+    if (output.output_type !== "display_data" && output.output_type !== "execute_result") {
+      return false;
+    }
+    if (!output.data) return false;
+
+    const selectedMime = selectMimeType(output.data);
+    return selectedMime != null && !COLLAPSED_PREVIEW_MIME_TYPES.has(selectedMime);
+  });
 }
 
 export function createMcpAppBlobResolver(blobBaseUrl: string): OutputBlobResolver {

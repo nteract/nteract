@@ -1,40 +1,9 @@
 import type { CellData } from "../types";
-
-/** MIME types that represent rich visual content the human needs to see. */
-const RICH_MIME_TYPES = new Set([
-	"image/png",
-	"image/jpeg",
-	"image/gif",
-	"image/webp",
-	"image/svg+xml",
-	"text/html",
-	"text/markdown",
-	"text/latex",
-	"application/vnd.plotly.v1+json",
-	"application/geo+json",
-]);
-
-/** Prefix patterns for vega/vegalite (versioned MIME types). */
-const RICH_MIME_PREFIXES = [
-	"application/vnd.vegalite.v",
-	"application/vnd.vega.v",
-];
-
-function isRichMime(mime: string): boolean {
-	if (RICH_MIME_TYPES.has(mime)) return true;
-	return RICH_MIME_PREFIXES.some((p) => mime.startsWith(p));
-}
+import { mcpAppCellHasRichOutput } from "@/components/isolated/mcp-app-structured-content";
 
 /** Whether a cell has any output that should be visually expanded. */
 export function hasRichOutput(cell: CellData): boolean {
-	if (!cell.outputs?.length) return false;
-	return cell.outputs.some((output) => {
-		if (output.output_type === "display_data" || output.output_type === "execute_result") {
-			if (!output.data) return false;
-			return Object.keys(output.data).some(isRichMime);
-		}
-		return false;
-	});
+	return mcpAppCellHasRichOutput(cell);
 }
 
 /** Extract a one-line preview string for a collapsed cell. */
