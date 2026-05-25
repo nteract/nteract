@@ -127,7 +127,16 @@ class _WorkerSession:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise queue.Empty
-                response = self._responses.get(timeout=remaining)
+                try:
+                    response = self._responses.get(timeout=min(remaining, 0.05))
+                except queue.Empty:
+                    if not self.alive:
+                        message = f"session {self.name!r} worker exited before responding"
+                        stderr_tail = self.stderr_tail()
+                        if stderr_tail:
+                            message = f"{message}\n\nworker stderr:\n{stderr_tail}"
+                        raise RuntimeError(message) from None
+                    continue
                 if response.get("id") == request_id:
                     return response
                 if response.get("id") is None and response.get("ok") is False:

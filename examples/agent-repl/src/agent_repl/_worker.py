@@ -19,7 +19,28 @@ import json
 import sys
 import traceback
 import warnings
+from threading import Lock
 from typing import Any
+
+
+class _BackgroundStream(io.TextIOBase):
+    """Absorb writes that happen outside the active execution capture."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._lines: list[str] = []
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, text: str) -> int:
+        with self._lock:
+            self._lines.append(text)
+            del self._lines[:-80]
+        return len(text)
+
+    def flush(self) -> None:
+        pass
 
 
 def _jsonable(value: Any) -> Any:
@@ -63,7 +84,7 @@ class PlainPythonBackend:
         try:
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 value = await self._eval_or_exec(code)
-        except BaseException as exc:
+        except Exception as exc:
             return {
                 "backend": self.name,
                 "ok": False,
@@ -197,6 +218,10 @@ async def _handle_request(backend: PlainPythonBackend | IPythonBackend, request:
 
 async def _run_loop(backend_kind: str) -> None:
     backend = _create_backend(backend_kind)
+    transport = sys.stdout
+    sys.stdout = _BackgroundStream()
+    sys.stderr = _BackgroundStream()
+
     while True:
         line = await asyncio.to_thread(sys.stdin.readline)
         if line == "":
@@ -205,7 +230,7 @@ async def _run_loop(backend_kind: str) -> None:
         try:
             request = json.loads(line)
             response = await _handle_request(backend, request)
-        except BaseException as exc:
+        except Exception as exc:
             response = {
                 "id": None,
                 "backend": getattr(backend, "name", backend_kind),
@@ -214,7 +239,8 @@ async def _run_loop(backend_kind: str) -> None:
                 "traceback": traceback.format_exc(),
             }
 
-        print(json.dumps(response, ensure_ascii=False), flush=True)
+        transport.write(json.dumps(response, ensure_ascii=False) + "\n")
+        transport.flush()
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -116,6 +116,43 @@ def test_protocol_error_response_is_not_discarded() -> None:
     assert "bad stdout" in message
 
 
+def test_user_exit_becomes_structured_session_error() -> None:
+    manager = ReplManager(backend="python")
+    try:
+        exited = manager.run("import sys; sys.exit(3)", timeout_s=1)
+        restarted = manager.run("42")
+    finally:
+        manager.close()
+
+    assert not exited.ok
+    assert exited.error_name == "SessionUnavailable"
+    assert "worker exited before responding" in (exited.traceback or "")
+    assert restarted.ok
+    assert restarted.result_repr == "42"
+
+
+def test_background_thread_print_does_not_corrupt_transport() -> None:
+    manager = ReplManager(backend="python")
+    try:
+        started = manager.run(
+            "import threading, time\n"
+            "def later():\n"
+            "    time.sleep(0.1)\n"
+            "    print('late background output')\n"
+            "threading.Thread(target=later).start()\n"
+            "'started'"
+        )
+        time.sleep(0.2)
+        after = manager.run("21 + 21")
+    finally:
+        manager.close()
+
+    assert started.ok
+    assert started.result_repr == "'started'"
+    assert after.ok
+    assert after.result_repr == "42"
+
+
 def test_manager_returns_structured_error_if_worker_dies_before_run() -> None:
     class BrokenWorker:
         backend = "python"
