@@ -19,6 +19,8 @@ function mapColType(wasmType: string): ColumnType {
       return "boolean";
     case "timestamp":
       return "timestamp";
+    case "image":
+      return "image";
     default:
       return "categorical";
   }
@@ -108,6 +110,7 @@ export function createWasmTableData(
     columns,
     rowCount: numRows,
     getCell(row: number, col: number): string {
+      if (columns[col].columnType === "image") return "";
       const cached = cache.get(row);
       if (cached) return cached.strings[col];
       if (mod.is_null(handle, row, col)) return "";

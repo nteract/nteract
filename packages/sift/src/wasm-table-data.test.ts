@@ -28,6 +28,8 @@ const predicateModule = vi.hoisted(() => ({
   get_cell_f64: vi.fn(() => {
     throw new Error("get_cell_f64 should not be called during batched prefetch");
   }),
+  get_cell_image_count: vi.fn(() => 0),
+  get_cell_image_bytes_at: vi.fn(() => new Uint8Array()),
   free: vi.fn(),
 }));
 
@@ -72,5 +74,29 @@ describe("createWasmTableData", () => {
 
     expect(predicateModule.free).toHaveBeenCalledTimes(1);
     expect(predicateModule.free).toHaveBeenCalledWith(7);
+  });
+
+  it("maps image columns and reads image bytes without using formatted cell text", () => {
+    const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    predicateModule.num_cols.mockReturnValueOnce(1);
+    predicateModule.col_names.mockReturnValueOnce(["image"]);
+    predicateModule.col_type.mockReturnValueOnce("image");
+    predicateModule.store_viewport_cells.mockReturnValueOnce({
+      rows: [0],
+      strings: ["very large formatted bytes that should be ignored"],
+      numeric_values: [null],
+      nulls: [false],
+    });
+    predicateModule.is_null.mockReturnValueOnce(false);
+    predicateModule.get_cell_image_count.mockReturnValueOnce(1);
+    predicateModule.get_cell_image_bytes_at.mockReturnValueOnce(imageBytes);
+
+    const { columns, tableData, prefetchViewport } = createWasmTableData(7);
+    prefetchViewport([0]);
+
+    expect(columns[0].columnType).toBe("image");
+    expect(tableData.getCell(0, 0)).toBe("");
+    expect(tableData.getCellRaw(0, 0)).toEqual([imageBytes]);
+    expect(predicateModule.get_cell_string).not.toHaveBeenCalled();
   });
 });
