@@ -15,8 +15,6 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
-jupyter-protocol = { workspace = true }
-jupyter-zmq-client = { workspace = true, features = ["tokio-runtime", "aws-lc-rs"] }
 runtimed-client = { path = "../runtimed-client" }
 runtimed-service = { path = "../runtimed-service" }
 nteract-telemetry = { path = "../nteract-telemetry" }
@@ -29,10 +27,8 @@ clap = { version = "4.5.1", features = ["derive", "color"] }
 colored = "3"
 tokio = { version = "1", features = ["full"] }
 petname = "2"
-rpassword = "7"
 dirs = "6"
 tabled = "0.20"
-futures = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 flate2 = "1"
 notify = "8"
