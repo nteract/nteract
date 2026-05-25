@@ -558,5 +558,5 @@ function profileFromRow(row: PrincipalProfileRow | null): InviteResolution["prof
 
 function isUniqueConstraintError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /unique|constraint/i.test(message);
+  return /unique constraint failed/i.test(message);
 }
