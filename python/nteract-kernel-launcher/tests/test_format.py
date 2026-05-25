@@ -205,6 +205,29 @@ def test_serialize_dataframe_accepts_pyarrow_table_when_polars_is_importable():
     assert table.to_pydict() == {"a": [1, 2, 3]}
 
 
+def test_serialize_dataframe_pyarrow_table_does_not_import_polars(monkeypatch):
+    import builtins
+
+    pa = pytest.importorskip("pyarrow")
+    pytest.importorskip("polars")
+    from nteract_kernel_launcher._format import serialize_dataframe
+
+    polars_imports = 0
+    original_import = builtins.__import__
+
+    def import_spy(name, *args, **kwargs):
+        nonlocal polars_imports
+        if name == "polars" or name.startswith("polars."):
+            polars_imports += 1
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_spy)
+
+    serialize_dataframe(pa.table({"a": [1, 2, 3]}), max_bytes=10_000_000)
+
+    assert polars_imports == 0
+
+
 def test_serialize_dataframe_rejects_oversized_generic_pycapsule_stream():
     pa = pytest.importorskip("pyarrow")
     from nteract_kernel_launcher._format import serialize_dataframe

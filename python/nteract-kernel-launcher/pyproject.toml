@@ -20,4 +20,11 @@ build-backend = "hatchling.build"
 packages = ["nteract_kernel_launcher"]
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+dev = [
+    "pytest>=8.0",
+    "pyarrow>=14",
+    "pandas",
+    "polars",
+    "numpy>=2.2.6",
+    "narwhals>=1.0",
+]

@@ -75,39 +75,46 @@ def has_arrow_stream_protocol(obj: Any) -> bool:
 
 
 def _normalize_polars_object_dates(df: Any) -> Any:
-    try:
-        import polars as pl
-    except Exception:
-        return df
-
-    if not isinstance(df, pl.DataFrame):
-        return df
-
     schema = getattr(df, "schema", None)
-    if not schema:
+    if not schema or not hasattr(schema, "items"):
         return df
 
-    object_columns = [name for name, dtype in schema.items() if dtype == pl.Object]
+    get_column = getattr(df, "get_column", None)
+    with_columns = getattr(df, "with_columns", None)
+    if not callable(get_column) or not callable(with_columns):
+        return df
+
+    object_columns = [name for name, dtype in schema.items() if str(dtype) == "Object"]
     if not object_columns:
         return df
 
-    date_exprs = []
+    date_columns = []
     for name in object_columns:
         try:
-            values = df.get_column(name).drop_nulls().to_list()
+            values = get_column(name).drop_nulls().to_list()
         except Exception:
             continue
 
         if values and all(
             isinstance(value, _dt.date) and not isinstance(value, _dt.datetime) for value in values
         ):
-            date_exprs.append(pl.col(name).map_elements(lambda value: value, return_dtype=pl.Date))
+            date_columns.append(name)
 
-    if not date_exprs:
+    if not date_columns:
         return df
 
     try:
-        return df.with_columns(date_exprs)
+        import polars as pl
+    except Exception:
+        return df
+
+    date_exprs = [
+        pl.col(name).map_elements(lambda value: value, return_dtype=pl.Date)
+        for name in date_columns
+    ]
+
+    try:
+        return with_columns(date_exprs)
     except Exception:
         return df
 
