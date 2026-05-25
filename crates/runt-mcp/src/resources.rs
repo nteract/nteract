@@ -77,7 +77,7 @@ pub async fn list_resources(server: &NteractMcp) -> Result<ListResourcesResult, 
         None,
     ));
 
-    for (notebook_id, handle) in known_session_handles(server).await {
+    for notebook_id in known_session_notebook_ids(server).await {
         resources.push(resource(
             notebook_cells_uri(&notebook_id),
             format!("nteract cells {notebook_id}"),
@@ -85,15 +85,6 @@ pub async fn list_resources(server: &NteractMcp) -> Result<ListResourcesResult, 
             CELLS_MIME_TYPE,
             None,
         ));
-        for cell in handle.get_cells() {
-            resources.push(resource(
-                notebook_cell_uri(&notebook_id, &cell.id),
-                format!("nteract cell {}", cell.id),
-                "Notebook cell snapshot for a connected or parked notebook session",
-                CELLS_MIME_TYPE,
-                None,
-            ));
-        }
     }
 
     Ok(ListResourcesResult {
@@ -214,19 +205,17 @@ async fn active_notebooks_json(server: &NteractMcp) -> Result<String, McpError> 
         .map_err(|e| McpError::internal_error(format!("Failed to serialize notebooks: {e}"), None))
 }
 
-async fn known_session_handles(
-    server: &NteractMcp,
-) -> Vec<(String, notebook_sync::handle::DocHandle)> {
-    let mut handles = Vec::new();
+async fn known_session_notebook_ids(server: &NteractMcp) -> Vec<String> {
+    let mut notebook_ids = Vec::new();
     if let Some(session) = server.session.read().await.as_ref() {
-        handles.push((session.notebook_id.clone(), session.handle.clone()));
+        notebook_ids.push(session.notebook_id.clone());
     }
-    for (notebook_id, session) in server.parked_sessions.read().await.iter() {
-        if !handles.iter().any(|(known_id, _)| known_id == notebook_id) {
-            handles.push((notebook_id.clone(), session.handle.clone()));
+    for notebook_id in server.parked_sessions.read().await.keys() {
+        if !notebook_ids.iter().any(|known_id| known_id == notebook_id) {
+            notebook_ids.push(notebook_id.clone());
         }
     }
-    handles
+    notebook_ids
 }
 
 async fn handle_for_notebook(
