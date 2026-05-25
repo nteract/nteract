@@ -7,8 +7,8 @@ This plugin runs the real `@nteract/sift` table in the plugin UI. Arrow IPC and 
 ## Build
 
 ```sh
+cargo xtask wasm sift
 pnpm --filter @nteract/figma-sift-slides build
 ```
 
 Load `plugins/figma-sift-slides/manifest.json` as a development plugin in the Figma desktop app.
-
