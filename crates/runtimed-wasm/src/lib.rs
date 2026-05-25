@@ -18,7 +18,7 @@ use notebook_doc::{CellSnapshot, NotebookDoc};
 use notebook_wire::{frame_types, SessionControlMessage, SessionSyncStatusWire};
 use nteract_identity::{ActorLabel, Operator, Principal};
 use runtime_doc::{
-    diff_output_ids, output_ids_for_execution, ExecutionState, ExecutionViewChangeset,
+    diff_output_ids_in_place, output_ids_for_execution, ExecutionState, ExecutionViewChangeset,
     ExecutionViewProjector, RuntimeState, RuntimeStateDoc,
 };
 use serde::{Deserialize, Serialize};
@@ -2577,9 +2577,10 @@ impl NotebookHandle {
                 };
 
                 let output_changeset = if let Some(current_state) = state.as_ref() {
-                    let (id_diff, new_id_snapshot) =
-                        diff_output_ids(&self.prev_output_by_id, &current_state.executions);
-                    self.prev_output_by_id = new_id_snapshot;
+                    let id_diff = diff_output_ids_in_place(
+                        &mut self.prev_output_by_id,
+                        &current_state.executions,
+                    );
 
                     // Narrow each changed manifest inline so the frontend
                     // writes directly into the outputs store with no

@@ -1,6 +1,7 @@
 use runtimed::output_commit_measure::{
     measure_current_output_commit_loop, measure_ordered_worker_output_commit_model,
-    measure_runtime_state_reader_paths, OutputCommitKind, OutputCommitMeasurementConfig,
+    measure_output_id_diff_paths, measure_runtime_state_reader_paths, OutputCommitKind,
+    OutputCommitMeasurementConfig,
 };
 
 #[tokio::main]
@@ -39,6 +40,10 @@ async fn main() -> anyhow::Result<()> {
 
             for reader in measure_runtime_state_reader_paths(config).await? {
                 println!("{}", serde_json::to_string(&reader)?);
+            }
+
+            for diff in measure_output_id_diff_paths(config).await? {
+                println!("{}", serde_json::to_string(&diff)?);
             }
         }
     }

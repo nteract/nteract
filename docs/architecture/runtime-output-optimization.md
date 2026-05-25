@@ -52,7 +52,10 @@ known repeated work:
 5. Remove the dormant frontend optimistic `update_display_data` overlay instead
    of indexing it. RuntimeStateDoc changesets already carry display updates to
    the output store, so the best optimization is not maintaining unused work.
-6. Frontend output materialization cleanup so runtime outputs flow through the
+6. In-place WASM output-id diff snapshots so runtime sync compares the flat
+   output set without cloning every unchanged manifest into a fresh snapshot on
+   each frame.
+7. Frontend output materialization cleanup so runtime outputs flow through the
    output store rather than repeated whole-output JSON cache keys.
 
 Each item is independently mergeable and should include a small benchmark or
