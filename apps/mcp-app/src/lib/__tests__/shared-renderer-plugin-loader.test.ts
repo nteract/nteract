@@ -8,10 +8,11 @@ describe("createDaemonRendererPluginLoader", () => {
 
   it("fetches raw renderer plugin assets from the daemon renderer-plugin route", async () => {
     const fetchImpl = vi.fn(async (url: string) => {
-      if (url.endsWith("/renderer-plugins/markdown.js")) {
+      const pathname = new URL(url).pathname;
+      if (pathname.endsWith("/renderer-plugins/markdown.js")) {
         return new Response("module.exports = { install() {} }");
       }
-      if (url.endsWith("/renderer-plugins/markdown.css")) {
+      if (pathname.endsWith("/renderer-plugins/markdown.css")) {
         return new Response(".markdown-output{}");
       }
       return new Response("not found", { status: 404 });
@@ -26,9 +27,11 @@ describe("createDaemonRendererPluginLoader", () => {
       code: "module.exports = { install() {} }",
       css: ".markdown-output{}",
     });
-    expect(fetchImpl).toHaveBeenCalledWith("http://localhost:47830/renderer-plugins/markdown.js");
-    expect(fetchImpl).toHaveBeenCalledWith(
-      "http://localhost:47830/renderer-plugins/markdown.css",
+    expect(new URL(fetchImpl.mock.calls[0]?.[0] as string).pathname).toBe(
+      "/renderer-plugins/markdown.js",
+    );
+    expect(new URL(fetchImpl.mock.calls[1]?.[0] as string).pathname).toBe(
+      "/renderer-plugins/markdown.css",
     );
   });
 

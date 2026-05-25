@@ -16,8 +16,6 @@ const SHARED_RENDERER_BUNDLE: NteractOutputRendererBundleProvider = {
   rendererCss,
 };
 
-const SHARED_OUTPUT_MAX_HEIGHT = 2000;
-
 interface SharedCellOutputsProps {
   cell: CellData;
   blobBaseUrl?: string;
@@ -65,7 +63,6 @@ export function SharedCellOutputs({ cell, blobBaseUrl, hostContext }: SharedCell
       rendererPluginLoader={rendererPluginLoader}
       rendererAssetsBaseUrl={rendererAssetsBaseUrl}
       outputDocumentUrl={outputDocumentUrl}
-      maxHeight={SHARED_OUTPUT_MAX_HEIGHT}
       className="shared-output-frame"
       onDiagnostic={handleDiagnostic}
       onError={handleError}
