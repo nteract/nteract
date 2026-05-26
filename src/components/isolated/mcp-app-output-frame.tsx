@@ -16,8 +16,6 @@ import {
 
 export type { McpAppCellData } from "./mcp-app-structured-content";
 
-const DEFAULT_MCP_APP_OUTPUT_MAX_HEIGHT = 2000;
-
 export interface McpAppOutputFrameProps {
   cell?: McpAppCellData;
   cells?: readonly McpAppCellData[];
@@ -49,8 +47,8 @@ export function McpAppOutputFrame({
   rendererPluginLoader,
   rendererAssetsBaseUrl,
   outputDocumentUrl,
-  autoHeight = false,
-  maxHeight = DEFAULT_MCP_APP_OUTPUT_MAX_HEIGHT,
+  autoHeight,
+  maxHeight,
   className,
   onDiagnostic,
   onError,
@@ -98,8 +96,8 @@ export function McpAppOutputFrame({
       blobResolver,
       hostContext: hostContextPatchRef.current,
       outputDocumentUrl,
-      autoHeight,
-      maxHeight,
+      ...(autoHeight === undefined ? {} : { autoHeight }),
+      ...(maxHeight === undefined ? {} : { maxHeight }),
       onDiagnostic(...args) {
         onDiagnosticRef.current?.(...args);
       },

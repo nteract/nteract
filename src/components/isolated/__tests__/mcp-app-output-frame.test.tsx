@@ -65,8 +65,6 @@ describe("McpAppOutputFrame", () => {
         rendererBundle,
         rendererPluginLoader,
         outputDocumentUrl: "http://localhost:47830/output-frame",
-        autoHeight: false,
-        maxHeight: 2000,
         hostContext: expect.objectContaining({
           theme: "dark",
           containerDimensions: undefined,
@@ -77,6 +75,12 @@ describe("McpAppOutputFrame", () => {
         }),
       }),
     );
+    const options = vi.mocked(createNteractOutputEmbed).mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    expect(options).not.toHaveProperty("autoHeight");
+    expect(options).not.toHaveProperty("maxHeight");
     expect(mockHandle.renderBatch).toHaveBeenCalledWith([
       expect.objectContaining({
         output_id: "output-1",
@@ -87,5 +91,28 @@ describe("McpAppOutputFrame", () => {
         },
       }),
     ]);
+  });
+
+  it("preserves explicit capped sizing for callers that opt into it", async () => {
+    const rendererBundle = { rendererCode: "renderer", rendererCss: "css" };
+
+    render(
+      <McpAppOutputFrame
+        cell={cellWithHtmlOutput()}
+        rendererBundle={rendererBundle}
+        autoHeight={false}
+        maxHeight={480}
+      />,
+    );
+
+    await waitFor(() => expect(mockHandle.renderBatch).toHaveBeenCalled());
+
+    expect(createNteractOutputEmbed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rendererBundle,
+        autoHeight: false,
+        maxHeight: 480,
+      }),
+    );
   });
 });

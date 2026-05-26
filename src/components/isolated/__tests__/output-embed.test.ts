@@ -92,6 +92,31 @@ describe("createNteractOutputEmbed", () => {
     handle.dispose();
   });
 
+  it("expands to the renderer-reported height by default", () => {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const onSizeChanged = vi.fn();
+
+    const handle = createNteractOutputEmbed({
+      target,
+      rendererBundle: { rendererCode: "", rendererCss: "" },
+      onSizeChanged,
+    });
+    const frameWindow = handle.iframe.contentWindow!;
+
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        source: frameWindow,
+        data: { type: "resize", payload: { height: 2600 } },
+      }),
+    );
+
+    expect(handle.iframe.style.height).toBe("2600px");
+    expect(onSizeChanged).toHaveBeenCalledWith({ height: 2600 });
+
+    handle.dispose();
+  });
+
   it("advertises and enforces capped height when auto-height is disabled", () => {
     const target = document.createElement("div");
     document.body.appendChild(target);
