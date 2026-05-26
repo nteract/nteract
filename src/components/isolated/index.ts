@@ -101,6 +101,21 @@ export {
   undefinedIfEmptyContainerDimensions,
 } from "./output-frame-sizing";
 export type { OutputFrameSizingPolicy } from "./output-frame-sizing";
+export {
+  anyOutputNeedsIsolation,
+  hasWidgetOutputs,
+  isScrollPassthroughMimeType,
+  isSiftMimeType,
+  outputAllowsScrollPassthrough,
+  outputNeedsIsolation,
+  outputSegmentLane,
+  outputUsesSift,
+  outputUsesWidget,
+  segmentedOutputLanes,
+  selectedOutputMimeType,
+  splitOutputSegments,
+} from "./output-lane-policy";
+export type { OutputLane, OutputSegment, OutputSegmentationOptions } from "./output-lane-policy";
 export { McpAppOutputFrame } from "./mcp-app-output-frame";
 export type { McpAppOutputFrameProps } from "./mcp-app-output-frame";
 export {
