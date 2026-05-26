@@ -1,12 +1,14 @@
 import { Check, Copy } from "lucide-react";
 import { useState } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Options as ReactMarkdownOptions } from "react-markdown";
 import { StaticCodeBlock } from "@/components/editor/static-highlight";
+import type { Options as RehypeKatexOptions } from "rehype-katex";
 import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
+import { katexStrict } from "@/lib/katex-options";
 import { cn } from "@/lib/utils";
 
 import "katex/dist/katex.min.css";
@@ -25,6 +27,15 @@ interface MarkdownOutputProps {
    */
   enableCopyCode?: boolean;
 }
+
+const remarkPlugins: NonNullable<ReactMarkdownOptions["remarkPlugins"]> = [remarkGfm, remarkMath];
+const rehypeKatexOptions = {
+  strict: katexStrict,
+} satisfies RehypeKatexOptions;
+const rehypePlugins: NonNullable<ReactMarkdownOptions["rehypePlugins"]> = [
+  [rehypeKatex, rehypeKatexOptions],
+  rehypeRaw,
+];
 
 /**
  * Check if the current window is inside an iframe
@@ -112,9 +123,6 @@ export function MarkdownOutput({
         "Use OutputArea or IsolatedFrame for markdown content.",
     );
   }
-
-  const remarkPlugins = [remarkGfm, remarkMath];
-  const rehypePlugins = [rehypeKatex, rehypeRaw];
 
   return (
     <div data-slot="markdown-output" className={cn("not-prose py-2", className)}>

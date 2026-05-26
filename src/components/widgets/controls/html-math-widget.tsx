@@ -9,6 +9,7 @@ import "katex/dist/katex.min.css";
 
 import katex from "katex";
 import { Label } from "@/components/ui/label";
+import { katexStrict } from "@/lib/katex-options";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
 import { useWidgetModelValue } from "../widget-store-context";
@@ -20,6 +21,7 @@ function processMath(content: string): string {
     try {
       return katex.renderToString(math.trim(), {
         displayMode: true,
+        strict: katexStrict,
         throwOnError: false,
       });
     } catch {
@@ -32,6 +34,7 @@ function processMath(content: string): string {
     try {
       return katex.renderToString(math.trim(), {
         displayMode: false,
+        strict: katexStrict,
         throwOnError: false,
       });
     } catch {

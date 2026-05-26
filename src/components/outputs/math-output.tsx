@@ -1,5 +1,6 @@
 import katex from "katex";
 import { useEffect, useRef } from "react";
+import { katexStrict } from "@/lib/katex-options";
 import { cn } from "@/lib/utils";
 
 import "katex/dist/katex.min.css";
@@ -40,6 +41,7 @@ export function MathOutput({ content, className }: MathOutputProps) {
     const { latex, displayMode } = parseLatex(content);
     katex.render(latex, ref.current, {
       displayMode,
+      strict: katexStrict,
       throwOnError: false,
       trust: true,
     });
