@@ -1,5 +1,6 @@
 use super::*;
 use automerge::{transaction::Transactable, ActorId, AutoCommit, ObjType};
+use base64::Engine;
 use runtime_doc::{KernelActivity, KernelErrorReason, RuntimeLifecycle};
 use uuid::Uuid;
 
@@ -1102,6 +1103,18 @@ fn test_room_with_path_and_store(
     (room, notebook_path)
 }
 
+fn notebook_text_mime(value: Option<&serde_json::Value>) -> Option<String> {
+    match value? {
+        serde_json::Value::String(text) => Some(text.clone()),
+        serde_json::Value::Array(lines) => lines
+            .iter()
+            .map(serde_json::Value::as_str)
+            .collect::<Option<Vec<_>>>()
+            .map(|parts| parts.concat()),
+        _ => None,
+    }
+}
+
 #[tokio::test]
 async fn test_save_notebook_to_disk_creates_valid_nbformat() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1360,6 +1373,160 @@ async fn test_save_notebook_to_disk_with_outputs() {
         !content.contains("output_id"),
         "saved notebook should not contain runtime-only output_id field, got:\n{content}"
     );
+}
+
+#[tokio::test]
+async fn test_save_notebook_to_disk_externalizes_arrow_stream_outputs() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "arrow-output.ipynb");
+    let eid = "arrow-exec-1";
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-arrow", "code").unwrap();
+        doc.update_source("cell-arrow", "table").unwrap();
+        doc.set_execution_id("cell-arrow", Some(eid)).unwrap();
+    }
+
+    let arrow_bytes = b"ARROW1-stream-payload-bytes-large-enough";
+    let arrow_ref = crate::output_store::ContentRef::from_binary(
+        arrow_bytes,
+        notebook_doc::mime::ARROW_STREAM_MIME,
+        &room.blob_store,
+    )
+    .await
+    .unwrap();
+    let manifest = crate::output_store::OutputManifest::DisplayData {
+        output_id: "arrow-output-runtime-only".to_string(),
+        data: HashMap::from([
+            (notebook_doc::mime::ARROW_STREAM_MIME.to_string(), arrow_ref),
+            (
+                "text/plain".to_string(),
+                crate::output_store::ContentRef::Inline {
+                    inline: "pyarrow.Table\nimage: struct<bytes: binary, path: string>".to_string(),
+                },
+            ),
+        ]),
+        metadata: HashMap::new(),
+        transient: Default::default(),
+    };
+
+    room.state
+        .with_doc(|sd| {
+            sd.create_execution(eid)?;
+            sd.set_execution_count(eid, 1)?;
+            sd.set_outputs(eid, &[manifest.to_json()])?;
+            sd.set_execution_done(eid, true)?;
+            Ok(())
+        })
+        .unwrap();
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+
+    let content = std::fs::read_to_string(&notebook_path).unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let data = saved["cells"][0]["outputs"][0]["data"]
+        .as_object()
+        .expect("output data object");
+    assert!(
+        !data.contains_key(notebook_doc::mime::ARROW_STREAM_MIME),
+        "raw Arrow stream MIME should be replaced by blob-ref MIME: {data:?}"
+    );
+    let ref_entry = data
+        .get(notebook_doc::mime::BLOB_REF_MIME)
+        .expect("Arrow stream saved as blob-ref MIME");
+    assert_eq!(
+        ref_entry["content_type"],
+        notebook_doc::mime::ARROW_STREAM_MIME
+    );
+    assert_eq!(ref_entry["size"], arrow_bytes.len());
+    assert!(ref_entry["hash"].as_str().is_some());
+    assert_eq!(
+        notebook_text_mime(data.get("text/plain")).as_deref(),
+        Some("pyarrow.Table\nimage: struct<bytes: binary, path: string>")
+    );
+    assert!(
+        !content.contains("arrow-output-runtime-only"),
+        "runtime-only output_id leaked to saved .ipynb:\n{content}"
+    );
+}
+
+#[tokio::test]
+async fn test_save_notebook_to_disk_keeps_image_outputs_self_contained() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "image-output.ipynb");
+    let eid = "image-exec-1";
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-image", "code").unwrap();
+        doc.update_source("cell-image", "image").unwrap();
+        doc.set_execution_id("cell-image", Some(eid)).unwrap();
+    }
+
+    let png_bytes = b"\x89PNG\r\n\x1a\nfake image payload";
+    let image_ref =
+        crate::output_store::ContentRef::from_binary(png_bytes, "image/png", &room.blob_store)
+            .await
+            .unwrap();
+    let manifest = crate::output_store::OutputManifest::DisplayData {
+        output_id: "image-output-runtime-only".to_string(),
+        data: HashMap::from([
+            ("image/png".to_string(), image_ref),
+            (
+                "text/plain".to_string(),
+                crate::output_store::ContentRef::Inline {
+                    inline: "<PNG image>".to_string(),
+                },
+            ),
+        ]),
+        metadata: HashMap::new(),
+        transient: Default::default(),
+    };
+
+    room.state
+        .with_doc(|sd| {
+            sd.create_execution(eid)?;
+            sd.set_execution_count(eid, 1)?;
+            sd.set_outputs(eid, &[manifest.to_json()])?;
+            sd.set_execution_done(eid, true)?;
+            Ok(())
+        })
+        .unwrap();
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+
+    let content = std::fs::read_to_string(&notebook_path).unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let data = saved["cells"][0]["outputs"][0]["data"]
+        .as_object()
+        .expect("output data object");
+    assert!(
+        !data.contains_key(notebook_doc::mime::BLOB_REF_MIME),
+        "ordinary image outputs should remain vanilla-Jupyter compatible"
+    );
+    let image_base64 = data
+        .get("image/png")
+        .and_then(|v| v.as_str())
+        .expect("image/png base64 payload");
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(image_base64)
+        .unwrap();
+    assert_eq!(decoded, png_bytes);
+    assert_eq!(
+        notebook_text_mime(data.get("text/plain")).as_deref(),
+        Some("<PNG image>")
+    );
+    assert!(
+        !content.contains("image-output-runtime-only"),
+        "runtime-only output_id leaked to saved .ipynb:\n{content}"
+    );
+    for formatted_binary_marker in ["list of size", "struct (binary data)", "bytes ("] {
+        assert!(
+            !content.contains(formatted_binary_marker),
+            "Sift display-only binary text leaked into saved .ipynb:\n{content}"
+        );
+    }
 }
 
 #[tokio::test]
