@@ -87,6 +87,15 @@ export type {
   NteractOutputRendererPlugin,
   NteractOutputRendererPluginLoader,
 } from "./output-embed";
+export {
+  DEFAULT_OUTPUT_FRAME_MAX_HEIGHT,
+  DEFAULT_OUTPUT_FRAME_MIN_HEIGHT,
+  outputFrameContainerDimensions,
+  outputFrameDisplayHeight,
+  sameOutputFrameContainerDimensions,
+  undefinedIfEmptyContainerDimensions,
+} from "./output-frame-sizing";
+export type { OutputFrameSizingPolicy } from "./output-frame-sizing";
 export { McpAppOutputFrame } from "./mcp-app-output-frame";
 export type { McpAppOutputFrameProps } from "./mcp-app-output-frame";
 export {
