@@ -28,8 +28,10 @@ const expectedSourceText = process.env.NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT ?? "i
 const expectedExecutionCount = process.env.NOTEBOOK_CLOUD_EXPECTED_EXECUTION_COUNT ?? null;
 const requireRenderedCellMarker = process.env.NOTEBOOK_CLOUD_REQUIRE_RENDERED_CELL_MARKER !== "0";
 const expectedPresenceText = process.env.NOTEBOOK_CLOUD_EXPECTED_PRESENCE_TEXT ?? "viewing";
-const expectedFrameTexts = parseExpectedTexts(process.env.NOTEBOOK_CLOUD_EXPECTED_FRAME_TEXTS, [
+const expectedPageTexts = parseExpectedTexts("NOTEBOOK_CLOUD_EXPECTED_PAGE_TEXTS", [
   "Loaded 25 rows",
+]);
+const expectedFrameTexts = parseExpectedTexts("NOTEBOOK_CLOUD_EXPECTED_FRAME_TEXTS", [
   "PROBLEM_MARKDOWN",
 ]);
 const expectedRenderSource = process.env.NOTEBOOK_CLOUD_EXPECTED_RENDER_SOURCE ?? "snapshot-pair";
@@ -64,6 +66,7 @@ const diagnosticTasks = [];
 let renderApiCheck = null;
 let catalogApiCheck = null;
 let screenshotSaved = false;
+let pageTextMatches = {};
 
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
@@ -165,6 +168,9 @@ async function main() {
           timeout: timeoutMs,
         },
       );
+    }
+    if (expectedPageTexts.length > 0) {
+      pageTextMatches = await waitForPageText(page, expectedPageTexts);
     }
     if (requireRenderedCellMarker || expectedExecutionCount) {
       await page.waitForFunction(
@@ -336,6 +342,7 @@ async function main() {
           ok: true,
           targetUrl,
           expectedSourceText,
+          expectedPageTexts,
           expectedExecutionCount,
           requireRenderedCellMarker,
           expectedPresenceText,
@@ -352,6 +359,7 @@ async function main() {
           reportCellCount,
           presenceText,
           frameTextMatches,
+          pageTextMatches,
           iframeMetrics,
           siftWasmRequests,
           runtimedWasmRequests,
@@ -379,7 +387,8 @@ async function main() {
   }
 }
 
-function parseExpectedTexts(value, fallback) {
+function parseExpectedTexts(envName, fallback) {
+  const value = process.env[envName];
   if (value === undefined) {
     return fallback;
   }
@@ -390,7 +399,7 @@ function parseExpectedTexts(value, fallback) {
   if (trimmed.startsWith("[")) {
     const parsed = JSON.parse(trimmed);
     if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === "string")) {
-      throw new Error("NOTEBOOK_CLOUD_EXPECTED_FRAME_TEXTS JSON must be an array of strings");
+      throw new Error(`${envName} JSON must be an array of strings`);
     }
     return parsed;
   }
@@ -398,6 +407,33 @@ function parseExpectedTexts(value, fallback) {
     .split("|")
     .map((entry) => entry.trim())
     .filter(Boolean);
+}
+
+async function waitForPageText(page, expectedTexts) {
+  const deadline = Date.now() + timeoutMs;
+  const matches = new Map(expectedTexts.map((text) => [text, false]));
+
+  while (Date.now() < deadline) {
+    const text = await page
+      .locator("body")
+      .innerText({ timeout: 1_000 })
+      .catch(() => "");
+    for (const expectedText of expectedTexts) {
+      if (text.includes(expectedText)) {
+        matches.set(expectedText, true);
+      }
+    }
+
+    if (Array.from(matches.values()).every(Boolean)) {
+      return Object.fromEntries(matches);
+    }
+    await page.waitForTimeout(250);
+  }
+
+  const missing = Array.from(matches.entries())
+    .filter(([, found]) => !found)
+    .map(([text]) => text);
+  throw new Error(`Timed out waiting for hosted page text: ${missing.join(", ")}`);
 }
 
 function isBenignConsoleError(text) {
