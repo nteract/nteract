@@ -338,7 +338,7 @@ def test_install_registers_pre_run_cell_provenance_hook(monkeypatch):
     )
     ip = _FakeKernelShell(
         {
-            "metadata": {"nteract": {"execution_id": "exec-1"}},
+            "metadata": {"nteract": {"execution_id": "exec-1", "cell_id": "cell-1"}},
             "header": {"msg_id": "exec-1"},
         }
     )
@@ -351,11 +351,13 @@ def test_install_registers_pre_run_cell_provenance_hook(monkeypatch):
 
     registry = getattr(ip, _traceback._CELL_REGISTRY_ATTR)
     assert registry["/tmp/ipykernel_1/abc.py"]["execution_id"] == "exec-1"
+    assert registry["/tmp/ipykernel_1/abc.py"]["cell_id"] == "cell-1"
     assert registry["/tmp/ipykernel_1/abc.py"]["execution_count"] == 1
     assert registry["/tmp/ipykernel_1/abc.py"]["source_hash"].startswith("sha256:")
     assert registry["/tmp/ipykernel_1/abc.py"]["source_ref"] == {
         "kind": "notebook_execution",
         "execution_id": "exec-1",
+        "cell_id": "cell-1",
         "execution_count": 1,
         "source_hash": registry["/tmp/ipykernel_1/abc.py"]["source_hash"],
         "compiled_filename": "/tmp/ipykernel_1/abc.py",
@@ -363,6 +365,64 @@ def test_install_registers_pre_run_cell_provenance_hook(monkeypatch):
 
 
 def test_build_payload_attaches_execution_provenance_to_prior_function_frame():
+    filename = "/tmp/ipykernel_1/defined_elsewhere.py"
+    source = "def defined_elsewhere():\n    raise RuntimeError('from definition')\n"
+    linecache.cache[filename] = (len(source), None, source.splitlines(True), filename)
+    ip = SimpleNamespace(
+        execution_count=4,
+        parent_header={
+            "metadata": {},
+            "header": {"msg_id": "exec-run"},
+        },
+    )
+    setattr(
+        ip,
+        _traceback._CELL_REGISTRY_ATTR,
+        {
+            filename: {
+                "execution_id": "exec-def",
+                "cell_id": "cell-def",
+                "execution_count": 2,
+                "source_hash": "sha256:def",
+                "source_ref": {
+                    "kind": "notebook_execution",
+                    "execution_id": "exec-def",
+                    "cell_id": "cell-def",
+                    "execution_count": 2,
+                    "source_hash": "sha256:def",
+                    "compiled_filename": filename,
+                },
+            }
+        },
+    )
+    namespace = {}
+    try:
+        exec(compile(source, filename, "exec"), namespace)
+        namespace["defined_elsewhere"]()
+    except RuntimeError as exc:
+        payload = build_rich_payload(type(exc), exc, exc.__traceback__, ip)
+    finally:
+        linecache.cache.pop(filename, None)
+
+    frame = next(frame for frame in payload["frames"] if frame["filename"] == filename)
+    assert frame["execution_id"] == "exec-def"
+    assert frame["cell_id"] == "cell-def"
+    assert frame["execution_count"] == 2
+    assert frame["source_hash"] == "sha256:def"
+    assert frame["source_ref"]["kind"] == "notebook_execution"
+    assert frame["source_ref"]["compiled_filename"] == filename
+    assert (
+        "Line 2 in Cell cell-def "
+        "(cell_id=cell-def, execution_id=exec-def, source_hash=sha256:def), "
+        "in defined_elsewhere"
+    ) in payload["text"]
+    assert "In[" not in payload["text"]
+    assert filename not in payload["text"]
+    assert filename in payload["raw_text"]
+    assert payload["execution"] == {"execution_id": "exec-run", "execution_count": 3}
+
+
+def test_build_payload_preserves_execution_count_when_cell_id_unavailable():
     filename = "/tmp/ipykernel_1/defined_elsewhere.py"
     source = "def defined_elsewhere():\n    raise RuntimeError('from definition')\n"
     linecache.cache[filename] = (len(source), None, source.splitlines(True), filename)
@@ -400,16 +460,12 @@ def test_build_payload_attaches_execution_provenance_to_prior_function_frame():
     finally:
         linecache.cache.pop(filename, None)
 
-    frame = next(frame for frame in payload["frames"] if frame["filename"] == filename)
-    assert frame["execution_id"] == "exec-def"
-    assert frame["execution_count"] == 2
-    assert frame["source_hash"] == "sha256:def"
-    assert frame["source_ref"]["kind"] == "notebook_execution"
-    assert frame["source_ref"]["compiled_filename"] == filename
-    assert "Line 2 in Earlier Cell (In[2]), in defined_elsewhere" in payload["text"]
-    assert filename not in payload["text"]
-    assert filename in payload["raw_text"]
-    assert payload["execution"] == {"execution_id": "exec-run", "execution_count": 3}
+    assert (
+        "Line 2 in Notebook Execution "
+        "(execution_id=exec-def, execution_count=2, source_hash=sha256:def), "
+        "in defined_elsewhere"
+    ) in payload["text"]
+    assert "In[" not in payload["text"]
 
 
 def test_syntax_error_payload_attaches_execution_provenance():
@@ -417,7 +473,7 @@ def test_syntax_error_payload_attaches_execution_provenance():
     ip = SimpleNamespace(
         execution_count=6,
         parent_header={
-            "metadata": {"nteract": {"execution_id": "exec-syntax"}},
+            "metadata": {"nteract": {"execution_id": "exec-syntax", "cell_id": "cell-syntax"}},
             "header": {"msg_id": "exec-syntax"},
         },
     )
@@ -427,11 +483,13 @@ def test_syntax_error_payload_attaches_execution_provenance():
         {
             filename: {
                 "execution_id": "exec-syntax",
+                "cell_id": "cell-syntax",
                 "execution_count": 5,
                 "source_hash": "sha256:syntax",
                 "source_ref": {
                     "kind": "notebook_execution",
                     "execution_id": "exec-syntax",
+                    "cell_id": "cell-syntax",
                     "execution_count": 5,
                     "source_hash": "sha256:syntax",
                     "compiled_filename": filename,
@@ -446,10 +504,15 @@ def test_syntax_error_payload_attaches_execution_provenance():
         payload = build_rich_payload(type(exc), exc, exc.__traceback__, ip)
 
     assert payload["syntax"]["execution_id"] == "exec-syntax"
+    assert payload["syntax"]["cell_id"] == "cell-syntax"
     assert payload["syntax"]["execution_count"] == 5
     assert payload["syntax"]["source_hash"] == "sha256:syntax"
     assert payload["syntax"]["source_ref"]["kind"] == "notebook_execution"
-    assert "Line 1 in Current Cell (In[5])" in payload["text"]
+    assert (
+        "Line 1 in Cell cell-syntax "
+        "(cell_id=cell-syntax, execution_id=exec-syntax, source_hash=sha256:syntax)"
+    ) in payload["text"]
+    assert "In[" not in payload["text"]
     assert filename not in payload["text"]
     assert filename in payload["raw_text"]
 

@@ -180,6 +180,8 @@ export interface ExecutionState {
   status: "queued" | "running" | "done" | "error";
   execution_count: number | null;
   success: boolean | null;
+  /** Notebook cell that submitted this execution, when available. */
+  cell_id?: string | null;
   /** Queue sequence number from RuntimeStateDoc; used as execution recency. */
   seq?: number | null;
   /**

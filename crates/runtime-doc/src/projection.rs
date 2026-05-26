@@ -340,6 +340,7 @@ mod tests {
             success: None,
             outputs: vec![],
             source: None,
+            cell_id: None,
             seq: None,
             submitted_by_actor_label: None,
         }
@@ -360,6 +361,7 @@ mod tests {
                 .map(|output_id| json!({ "output_id": output_id }))
                 .collect(),
             source: None,
+            cell_id: None,
             seq: None,
             submitted_by_actor_label: None,
         }

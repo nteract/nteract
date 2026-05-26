@@ -39,6 +39,7 @@ interface Frame {
   name: string;
   /** Execution provenance for clients that want to jump to source. */
   execution_id?: string;
+  cell_id?: string;
   execution_count?: number;
   source_hash?: string;
   source_ref?: SourceRef;
@@ -60,6 +61,7 @@ interface SyntaxInfo {
   lineno: number;
   offset: number;
   execution_id?: string;
+  cell_id?: string;
   execution_count?: number;
   source_hash?: string;
   source_ref?: SourceRef;
@@ -109,12 +111,14 @@ interface TracebackPayload {
 
 interface ExecutionInfo {
   execution_id?: string;
+  cell_id?: string;
   execution_count?: number;
 }
 
 interface SourceRef {
   kind?: string;
   execution_id?: string;
+  cell_id?: string;
   execution_count?: number;
   source_hash?: string;
   compiled_filename?: string;
@@ -561,7 +565,7 @@ function LocationLabel({
 function sourceLocation(
   source: Pick<
     Frame | SyntaxInfo,
-    "filename" | "execution_id" | "execution_count" | "source_hash" | "source_ref"
+    "filename" | "execution_id" | "cell_id" | "execution_count" | "source_hash" | "source_ref"
   >,
   currentExecutionId: string | undefined,
   resolveExecutionTarget?: TracebackExecutionResolver,
@@ -570,6 +574,7 @@ function sourceLocation(
   const filename = asOptionalString(source.filename) ?? "Unknown source";
   const executionId =
     asOptionalString(sourceRef?.execution_id) ?? asOptionalString(source.execution_id);
+  const cellId = asOptionalString(sourceRef?.cell_id) ?? asOptionalString(source.cell_id);
   const sourceHash =
     asOptionalString(sourceRef?.source_hash) ?? asOptionalString(source.source_hash);
   const compiledFilename = asOptionalString(sourceRef?.compiled_filename) ?? filename;
@@ -580,7 +585,9 @@ function sourceLocation(
 
   const isNotebookSource =
     sourceRef?.kind === "notebook_execution" || isSyntheticNotebookFilename(filename);
-  const target = executionId ? (resolveExecutionTarget?.(executionId, sourceHash) ?? null) : null;
+  const target =
+    (executionId ? (resolveExecutionTarget?.(executionId, sourceHash) ?? null) : null) ??
+    (cellId ? { cellId } : null);
   if (target) titleParts.unshift(`Cell: ${target.cellId}`);
   const title = titleParts.join("\n") || filename;
 
@@ -707,7 +714,13 @@ function synthesizeTracebackText(
 function copyLocationLine(
   source: Pick<
     Frame | SyntaxInfo,
-    "filename" | "lineno" | "execution_id" | "execution_count" | "source_hash" | "source_ref"
+    | "filename"
+    | "lineno"
+    | "execution_id"
+    | "cell_id"
+    | "execution_count"
+    | "source_hash"
+    | "source_ref"
   >,
   currentExecutionId: string | undefined,
   resolveExecutionTarget?: TracebackExecutionResolver,

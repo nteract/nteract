@@ -287,6 +287,7 @@ mod tests {
                     .or((status == "error").then_some(false)),
                 outputs,
                 source: Some("print('hi')".to_string()),
+                cell_id: None,
                 seq: Some(1),
                 submitted_by_actor_label: None,
             },

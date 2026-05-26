@@ -2783,7 +2783,12 @@ impl KernelConnection for JupyterKernel {
 
     // ── Execute ──────────────────────────────────────────────────────────
 
-    async fn execute(&mut self, execution_id: &str, source: &str) -> Result<()> {
+    async fn execute(
+        &mut self,
+        execution_id: &str,
+        cell_id: Option<&str>,
+        source: &str,
+    ) -> Result<()> {
         let shell = self
             .shell_writer
             .as_mut()
@@ -2795,10 +2800,14 @@ impl KernelConnection for JupyterKernel {
         let request = ExecuteRequest::new(source.to_string());
         let mut message: JupyterMessage = request.into();
         message.header.msg_id = execution_id.to_string();
+        let mut nteract_metadata = serde_json::json!({
+            "execution_id": execution_id,
+        });
+        if let Some(cell_id) = cell_id {
+            nteract_metadata["cell_id"] = serde_json::Value::String(cell_id.to_string());
+        }
         message.metadata = serde_json::json!({
-            "nteract": {
-                "execution_id": execution_id,
-            },
+            "nteract": nteract_metadata,
         });
 
         // Register execution_id BEFORE sending so IOPub can identify replies

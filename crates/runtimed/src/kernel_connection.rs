@@ -94,6 +94,7 @@ pub trait KernelConnection: Send {
     fn execute(
         &mut self,
         execution_id: &str,
+        cell_id: Option<&str>,
         source: &str,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 

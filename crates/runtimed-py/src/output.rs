@@ -1476,6 +1476,7 @@ mod tests {
                 success: Some(true),
                 outputs: vec![json!({"output_type": "stream", "name": "stdout"})],
                 source: Some("print('ok')".to_string()),
+                cell_id: None,
                 seq: Some(7),
                 submitted_by_actor_label: Some("local:kyle/agent:codex:s1".to_string()),
             },

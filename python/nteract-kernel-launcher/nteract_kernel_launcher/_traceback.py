@@ -129,6 +129,12 @@ def _metadata_execution_id(metadata: dict[str, Any]) -> str | None:
     return _coerce_metadata_str(nteract_execution_id)
 
 
+def _metadata_cell_id(metadata: dict[str, Any]) -> str | None:
+    nteract = metadata.get("nteract")
+    nteract_cell_id = nteract.get("cell_id") if isinstance(nteract, dict) else None
+    return _coerce_metadata_str(nteract_cell_id)
+
+
 def _current_parent(ip: Any | None) -> dict[str, Any]:
     if ip is None:
         return {}
@@ -153,6 +159,7 @@ def _current_execution_context(ip: Any | None) -> dict[str, Any]:
     context: dict[str, Any] = {
         "execution_id": _metadata_execution_id(metadata)
         or _coerce_metadata_str(header.get("msg_id")),
+        "cell_id": _metadata_cell_id(metadata),
         "execution_count": _current_input_count(ip),
     }
     return {key: value for key, value in context.items() if value}
@@ -181,6 +188,7 @@ def _register_cell_source(
     raw_cell: Any,
     *,
     execution_id: str | None,
+    cell_id: str | None,
     execution_count: int | None,
 ) -> None:
     if not isinstance(raw_cell, str):
@@ -193,6 +201,7 @@ def _register_cell_source(
     source_ref = {
         "kind": _NOTEBOOK_EXECUTION_SOURCE_KIND,
         "execution_id": execution_id,
+        "cell_id": cell_id,
         "execution_count": execution_count,
         "source_hash": source_hash,
         "compiled_filename": filename,
@@ -200,6 +209,7 @@ def _register_cell_source(
     source_ref = {key: value for key, value in source_ref.items() if value}
     provenance = {
         "execution_id": execution_id,
+        "cell_id": cell_id,
         "execution_count": execution_count,
         "source_hash": source_hash,
         "source_ref": source_ref,
@@ -249,11 +259,13 @@ def _install_cell_registry_hook(ip: Any) -> None:
             execution_id = _metadata_execution_id(metadata) or _coerce_metadata_str(
                 header.get("msg_id")
             )
+            cell_id = _metadata_cell_id(metadata)
             execution_count = _execution_count_for_info(ip, info)
             _register_cell_source(
                 ip,
                 getattr(info, "raw_cell", None),
                 execution_id=execution_id,
+                cell_id=cell_id,
                 execution_count=execution_count,
             )
         except BaseException as err:  # noqa: BLE001
@@ -342,25 +354,34 @@ def _is_notebook_source(item: dict[str, Any]) -> bool:
     )
 
 
-def _execution_count_label(item: dict[str, Any]) -> str | None:
+def _source_ref(item: dict[str, Any]) -> dict[str, Any] | None:
     source_ref = item.get("source_ref")
-    count = None
     if isinstance(source_ref, dict):
-        count = _coerce_execution_count(source_ref.get("execution_count"))
-    if count is None:
-        count = _coerce_execution_count(item.get("execution_count"))
-    return f"In[{count}]" if count is not None else None
+        return source_ref
+    return None
+
+
+def _source_ref_str(item: dict[str, Any], key: str) -> str | None:
+    source_ref = _source_ref(item)
+    value = source_ref.get(key) if source_ref is not None else None
+    return _coerce_metadata_str(value) or _coerce_metadata_str(item.get(key))
+
+
+def _source_ref_execution_count(item: dict[str, Any]) -> int | None:
+    source_ref = _source_ref(item)
+    value = source_ref.get("execution_count") if source_ref is not None else None
+    return _coerce_execution_count(value) or _coerce_execution_count(item.get("execution_count"))
 
 
 def _notebook_source_label(item: dict[str, Any], current_execution_id: str | None) -> str:
-    source_ref = item.get("source_ref")
-    execution_id = item.get("execution_id")
-    if isinstance(source_ref, dict):
-        execution_id = source_ref.get("execution_id") or execution_id
+    cell_id = _source_ref_str(item, "cell_id")
+    if cell_id:
+        return f"Cell {cell_id}"
+    execution_id = _source_ref_str(item, "execution_id")
     if execution_id and execution_id == current_execution_id:
         return "Current Cell"
     if execution_id:
-        return "Earlier Cell"
+        return "Notebook Execution"
     return "Notebook Cell"
 
 
@@ -373,10 +394,22 @@ def _format_traceback_location(
     lineno = item.get("lineno") or 0
     if _is_notebook_source(item):
         label = _notebook_source_label(item, current_execution_id)
-        count_label = _execution_count_label(item)
         location = f"Line {lineno} in {label}"
-        if count_label:
-            location += f" ({count_label})"
+        details = []
+        cell_id = _source_ref_str(item, "cell_id")
+        execution_id = _source_ref_str(item, "execution_id")
+        execution_count = _source_ref_execution_count(item)
+        source_hash = _source_ref_str(item, "source_hash")
+        if cell_id:
+            details.append(f"cell_id={cell_id}")
+        if execution_id:
+            details.append(f"execution_id={execution_id}")
+        if not cell_id and execution_count is not None:
+            details.append(f"execution_count={execution_count}")
+        if source_hash:
+            details.append(f"source_hash={source_hash}")
+        if details:
+            location += f" ({', '.join(details)})"
         if function_name and function_name != "<module>":
             location += f", in {function_name}"
         return location

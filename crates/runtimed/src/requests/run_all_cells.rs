@@ -194,12 +194,13 @@ async fn handle_inner(
                 // cannot dangle. Any single failure aborts the whole batch.
                 let mut created_execution_ids = Vec::new();
                 match room.state.with_doc(|sd| {
-                    for (execution_id, _, source, seq) in &entries {
-                        if sd.create_execution_with_source_and_submitter(
+                    for (execution_id, cell_id, source, seq) in &entries {
+                        if sd.create_execution_with_source_provenance(
                             execution_id,
                             source,
                             *seq,
                             submitter_actor_label,
+                            Some(cell_id),
                         )? {
                             created_execution_ids.push(execution_id.clone());
                         } else {
