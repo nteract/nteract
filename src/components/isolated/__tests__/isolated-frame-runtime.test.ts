@@ -5,6 +5,7 @@ import {
   MCP_NOTIFICATIONS_MESSAGE,
   MCP_UI_HOST_CONTEXT_CHANGED,
   MCP_UI_RESOURCE_TEARDOWN,
+  MCP_UI_SIZE_CHANGED,
   NTERACT_RENDER_OUTPUT,
   NTERACT_RENDERER_READY,
   NTERACT_THEME,
@@ -58,6 +59,7 @@ function createRuntime(
     onBootstrapReady: vi.fn(),
     onRendererReady: vi.fn(),
     onResize: vi.fn(),
+    onSizeChanged: vi.fn(),
     onRenderComplete: vi.fn(),
     onLinkClick: vi.fn(),
     onMouseDown: vi.fn(),
@@ -132,6 +134,19 @@ describe("IsolatedFrameRuntime", () => {
       "warn",
       "isolated-renderer",
     );
+  });
+
+  it("forwards MCP Apps size-changed dimensions alongside legacy height resize", () => {
+    const { callbacks, frameWindow, runtime } = createRuntime();
+
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
+    const transport = MockJsonRpcTransport.instances[0];
+    expect(transport).toBeDefined();
+
+    transport.notificationHandlers.get(MCP_UI_SIZE_CHANGED)?.({ height: 240, width: 640 });
+
+    expect(callbacks.onSizeChanged).toHaveBeenCalledWith({ height: 240, width: 640 });
+    expect(callbacks.onResize).toHaveBeenCalledWith(240);
   });
 
   it("sends host context once per channel for equivalent content", () => {

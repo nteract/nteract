@@ -1,7 +1,7 @@
 import type { IframeToParentMessage, ParentToIframeMessage, RenderPayload } from "./frame-bridge";
 import { isIframeMessage } from "./frame-bridge";
 import { rendererBundleDetails } from "./diagnostics";
-import type { NteractEmbedHostContext } from "./host-context";
+import type { NteractEmbedContainerDimensions, NteractEmbedHostContext } from "./host-context";
 import { JsonRpcTransport } from "./jsonrpc-transport";
 import {
   MCP_NOTIFICATIONS_MESSAGE,
@@ -64,6 +64,7 @@ export interface IsolatedFrameRuntimeCallbacks {
   onBootstrapReady: (event: { isReload: boolean; generation: number }) => void;
   onRendererReady: () => void;
   onResize: (height: number) => void;
+  onSizeChanged?: (size: NteractEmbedContainerDimensions) => void;
   onRenderComplete: (height: number) => void;
   onLinkClick: (url: string, newTab: boolean) => void;
   onMouseDown: () => void;
@@ -118,6 +119,10 @@ function objectRecord(value: unknown): Record<string, unknown> | null {
     return null;
   }
   return value as Record<string, unknown>;
+}
+
+function optionalFiniteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function stableHostContextKey(value: unknown): string {
@@ -550,14 +555,22 @@ export class IsolatedFrameRuntime {
       }
     });
     transport.onNotification(MCP_UI_SIZE_CHANGED, (params) => {
-      const p = params as { height?: number; width?: number };
+      const p = params as { height?: unknown; width?: unknown };
+      const height = optionalFiniteNumber(p.height);
+      const width = optionalFiniteNumber(p.width);
+      const size: NteractEmbedContainerDimensions = {};
+      if (height != null) size.height = height;
+      if (width != null) size.width = width;
       this.callbacks.onDiagnostic("size-changed", {
-        height: p.height ?? null,
-        width: p.width ?? null,
+        height: height ?? null,
+        width: width ?? null,
         protocol: "mcp-ui",
       });
-      if (p.height != null) {
-        this.callbacks.onResize(p.height);
+      if (Object.keys(size).length > 0) {
+        this.callbacks.onSizeChanged?.(size);
+      }
+      if (height != null) {
+        this.callbacks.onResize(height);
       }
     });
     transport.onNotification(NTERACT_RENDER_COMPLETE, (params) => {

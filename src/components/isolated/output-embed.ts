@@ -152,6 +152,7 @@ export function createNteractOutputEmbed(
       notifyHostContext();
     },
     onResize: (height: number) => applyHeight(height),
+    onSizeChanged: (size: NteractEmbedContainerDimensions) => applySizeChanged(size),
     onRenderComplete: (height: number) => applyHeight(height),
     onLinkClick: (url: string, newTab: boolean) =>
       options.onMessage?.({ type: "link_click", payload: { url, newTab } }),
@@ -182,6 +183,19 @@ export function createNteractOutputEmbed(
     lastHeight = nextHeight;
     iframe.style.height = `${nextHeight}px`;
     options.onSizeChanged?.({ height: nextHeight });
+  }
+
+  function applySizeChanged(size: NteractEmbedContainerDimensions) {
+    const nextSize: NteractEmbedContainerDimensions = { ...size };
+    if (size.height != null) {
+      const nextHeight = clampHeight(size.height, autoHeight, maxHeight);
+      nextSize.height = nextHeight;
+      if (nextHeight !== lastHeight) {
+        lastHeight = nextHeight;
+        iframe.style.height = `${nextHeight}px`;
+      }
+    }
+    options.onSizeChanged?.(nextSize);
   }
 
   function currentHostContext(): NteractEmbedHostContext {
