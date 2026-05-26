@@ -1,5 +1,5 @@
-import type { NteractOutputRendererPluginLoader } from "@/components/isolated/output-embed";
-import { rendererPluginInfoForMime } from "@/components/isolated/renderer-plugin-info";
+import type { NteractOutputRendererPluginLoader } from "./output-embed";
+import { rendererPluginInfoForMime } from "./renderer-plugin-info";
 
 declare const __DAEMON_PLUGIN_ASSET_HASHES__: Record<string, string> | undefined;
 
@@ -29,7 +29,7 @@ export function createDaemonRendererPluginLoader(
 ): NteractOutputRendererPluginLoader | undefined {
   if (!blobBaseUrl) return undefined;
 
-  const cache = new Map<string, Promise<{ code: string; css?: string } | undefined>>();
+  const cache = new Map<string, Promise<{ id: string; code: string; css?: string } | undefined>>();
 
   return (mime) => {
     const info = rendererPluginInfoForMime(mime);

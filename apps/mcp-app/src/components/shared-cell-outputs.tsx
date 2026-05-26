@@ -1,15 +1,15 @@
 import { useCallback, useMemo } from "react";
 import type { McpUiHostContext } from "@modelcontextprotocol/ext-apps";
 import { rendererCode, rendererCss } from "virtual:isolated-renderer";
-import { McpAppOutputFrame } from "@/components/isolated/mcp-app-output-frame";
-import type { NteractOutputRendererBundleProvider } from "@/components/isolated/output-embed";
-import type { CellData } from "../types";
-import { errorDetails, hostLog } from "../lib/host-log";
 import {
   createDaemonRendererPluginLoader,
   daemonOutputFrameUrl,
   daemonRendererAssetsBaseUrl,
-} from "../lib/shared-renderer-plugin-loader";
+} from "@/components/isolated/daemon-renderer-assets";
+import { McpAppOutputFrame } from "@/components/isolated/mcp-app-output-frame";
+import type { NteractOutputRendererBundleProvider } from "@/components/isolated/output-embed";
+import type { CellData } from "../types";
+import { errorDetails, hostLog } from "../lib/host-log";
 
 const SHARED_RENDERER_BUNDLE: NteractOutputRendererBundleProvider = {
   rendererCode,
