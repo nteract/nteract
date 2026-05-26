@@ -19,6 +19,14 @@ import type { NteractEmbedContainerDimensions, NteractEmbedHostContextPatch } fr
 import { createNteractEmbedHostContext, mergeNteractEmbedHostContext } from "./host-context";
 import { IsolatedFrameRuntime } from "./isolated-frame-runtime";
 import { useIsolatedRenderer } from "./isolated-renderer-context";
+import {
+  DEFAULT_OUTPUT_FRAME_MAX_HEIGHT,
+  DEFAULT_OUTPUT_FRAME_MIN_HEIGHT,
+  outputFrameContainerDimensions,
+  outputFrameDisplayHeight,
+  sameOutputFrameContainerDimensions,
+  undefinedIfEmptyContainerDimensions,
+} from "./output-frame-sizing";
 import { scrollFrameWheelBoundary } from "./scroll-boundary";
 
 export interface IsolatedFrameProps {
@@ -231,34 +239,6 @@ export interface IsolatedFrameHandle {
   isIframeReady: boolean;
 }
 
-function iframeContainerDimensions(
-  iframe: HTMLIFrameElement | null,
-  autoHeight: boolean,
-  maxHeight: number,
-): NteractEmbedContainerDimensions | undefined {
-  const dimensions: NteractEmbedContainerDimensions = {};
-  const width = iframe ? Math.round(iframe.getBoundingClientRect().width) : 0;
-  if (width > 0) {
-    dimensions.width = width;
-  }
-  if (!autoHeight && Number.isFinite(maxHeight)) {
-    dimensions.maxHeight = maxHeight;
-  }
-  return Object.keys(dimensions).length > 0 ? dimensions : undefined;
-}
-
-function sameContainerDimensions(
-  a: NteractEmbedContainerDimensions | undefined,
-  b: NteractEmbedContainerDimensions | undefined,
-): boolean {
-  return (
-    (a?.width ?? null) === (b?.width ?? null) &&
-    (a?.maxWidth ?? null) === (b?.maxWidth ?? null) &&
-    (a?.height ?? null) === (b?.height ?? null) &&
-    (a?.maxHeight ?? null) === (b?.maxHeight ?? null)
-  );
-}
-
 /**
  * IsolatedFrame component - Renders untrusted content in a secure iframe.
  *
@@ -302,8 +282,8 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       colorTheme,
       hostContext,
       outputDocumentUrl,
-      minHeight = 24,
-      maxHeight = 2000,
+      minHeight = DEFAULT_OUTPUT_FRAME_MIN_HEIGHT,
+      maxHeight = DEFAULT_OUTPUT_FRAME_MAX_HEIGHT,
       autoHeight = false,
       className = "",
       allowWheelBoundaryScroll = true,
@@ -416,9 +396,11 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     const applyMeasuredHeight = useCallback(
       (contentHeight: number) => {
         measuredHeightRef.current = contentHeight;
-        const newHeight = autoHeight
-          ? Math.max(minHeight, contentHeight)
-          : Math.max(minHeight, Math.min(maxHeight, contentHeight));
+        const newHeight = outputFrameDisplayHeight(contentHeight, {
+          autoHeight,
+          maxHeight,
+          minHeight,
+        });
         if (displayHeightRef.current === newHeight) {
           return;
         }
@@ -525,8 +507,12 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       if (!iframe) return;
 
       const updateContainerDimensions = () => {
-        const next = iframeContainerDimensions(iframe, autoHeight, maxHeight);
-        setContainerDimensions((prev) => (sameContainerDimensions(prev, next) ? prev : next));
+        const next = undefinedIfEmptyContainerDimensions(
+          outputFrameContainerDimensions(iframe, { autoHeight, maxHeight, minHeight }),
+        );
+        setContainerDimensions((prev) =>
+          sameOutputFrameContainerDimensions(prev, next) ? prev : next,
+        );
       };
 
       updateContainerDimensions();
@@ -540,7 +526,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         observer?.disconnect();
         window.removeEventListener("resize", updateContainerDimensions);
       };
-    }, [autoHeight, frameDocument, maxHeight]);
+    }, [autoHeight, frameDocument, maxHeight, minHeight]);
 
     const resolvedHostContext = useMemo(
       () =>

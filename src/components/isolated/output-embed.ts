@@ -17,6 +17,11 @@ import {
   type IsolatedFrameRuntimeDiagnosticLevel,
 } from "./isolated-frame-runtime";
 import {
+  DEFAULT_OUTPUT_FRAME_MAX_HEIGHT,
+  outputFrameContainerDimensions,
+  outputFrameDisplayHeight,
+} from "./output-frame-sizing";
+import {
   resolveEmbeddableOutputs,
   type NteractEmbeddableOutput,
   type ResolveEmbeddableOutputsOptions,
@@ -75,25 +80,7 @@ export interface NteractOutputEmbedHandle {
   dispose(): void;
 }
 
-const DEFAULT_MAX_HEIGHT = 2000;
 let frameCounter = 0;
-
-function clampHeight(height: number, autoHeight: boolean, maxHeight: number): number {
-  const rounded = Math.max(1, Math.ceil(height));
-  return autoHeight ? rounded : Math.min(maxHeight, rounded);
-}
-
-function containerDimensions(
-  iframe: HTMLIFrameElement,
-  autoHeight: boolean,
-  maxHeight: number,
-): NteractEmbedContainerDimensions {
-  const rect = iframe.getBoundingClientRect();
-  const dimensions: NteractEmbedContainerDimensions = {};
-  if (rect.width > 0) dimensions.width = Math.round(rect.width);
-  if (!autoHeight && Number.isFinite(maxHeight)) dimensions.maxHeight = maxHeight;
-  return dimensions;
-}
 
 function isBundleProvider(
   provider: NteractOutputRendererBundleProvider,
@@ -105,7 +92,7 @@ export function createNteractOutputEmbed(
   options: NteractOutputEmbedOptions,
 ): NteractOutputEmbedHandle {
   const autoHeight = options.autoHeight ?? true;
-  const maxHeight = options.maxHeight ?? DEFAULT_MAX_HEIGHT;
+  const maxHeight = options.maxHeight ?? DEFAULT_OUTPUT_FRAME_MAX_HEIGHT;
   const iframe = document.createElement("iframe");
   const documentSource = createIsolatedFrameDocument({
     outputDocumentUrl: options.outputDocumentUrl ?? options.hostContext?.nteract?.outputDocumentUrl,
@@ -178,7 +165,7 @@ export function createNteractOutputEmbed(
   runtime.activate();
 
   function applyHeight(height: number) {
-    const nextHeight = clampHeight(height, autoHeight, maxHeight);
+    const nextHeight = outputFrameDisplayHeight(height, { autoHeight, maxHeight });
     if (nextHeight === lastHeight) return;
     lastHeight = nextHeight;
     iframe.style.height = `${nextHeight}px`;
@@ -188,7 +175,7 @@ export function createNteractOutputEmbed(
   function applySizeChanged(size: NteractEmbedContainerDimensions) {
     const nextSize: NteractEmbedContainerDimensions = { ...size };
     if (size.height != null) {
-      const nextHeight = clampHeight(size.height, autoHeight, maxHeight);
+      const nextHeight = outputFrameDisplayHeight(size.height, { autoHeight, maxHeight });
       nextSize.height = nextHeight;
       if (nextHeight !== lastHeight) {
         lastHeight = nextHeight;
@@ -204,7 +191,7 @@ export function createNteractOutputEmbed(
       createNteractEmbedHostContext({
         isDark,
         colorTheme: hostContextPatch.nteract?.colorTheme,
-        containerDimensions: containerDimensions(iframe, autoHeight, maxHeight),
+        containerDimensions: outputFrameContainerDimensions(iframe, { autoHeight, maxHeight }),
       }),
       hostContextPatch,
     );
