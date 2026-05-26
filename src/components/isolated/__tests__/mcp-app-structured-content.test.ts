@@ -176,6 +176,36 @@ describe("MCP App structured content adapter", () => {
     ).toBe(true);
   });
 
+  it("keeps richer blob-backed renders selected when an LLM preview is present", async () => {
+    const outputs = mcpAppCellsToSharedOutputs(
+      [
+        cellWithOutputs([
+          {
+            output_id: "sift-output",
+            output_type: "display_data",
+            data: {
+              "text/llm+plain": "assistant summary",
+              "application/vnd.apache.parquet": "http://localhost:47830/blob/table-hash",
+              "text/plain": "table fallback",
+            },
+          },
+        ]),
+      ],
+      "http://localhost:47830",
+    );
+
+    const [payload] = await resolveEmbeddableOutputs(outputs, {
+      blobResolver: createMcpAppBlobResolver("http://localhost:47830"),
+    });
+
+    expect(payload).toMatchObject({
+      mimeType: "application/vnd.apache.parquet",
+      data: "http://localhost:47830/blob/table-hash",
+      outputId: "sift-output",
+    });
+    expect(payload.data).not.toBe("assistant summary");
+  });
+
   it("keeps plain and JSON-only MCP App cells collapsed by default", () => {
     expect(
       mcpAppCellHasRichOutput(
