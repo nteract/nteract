@@ -10,10 +10,11 @@ use runtimed_outputs::output_resolver;
 use crate::formatting;
 use crate::NteractMcp;
 
-use super::{arg_bool, arg_str, tool_error, tool_success};
+use super::{arg_bool, arg_str, reject_unknown_args, tool_error, tool_success};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GetCellParams {
     /// The cell ID to retrieve. Response includes execution status/id and
     /// compact output summaries before any output text.
@@ -29,10 +30,11 @@ pub struct GetCellParams {
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GetAllCellsParams {
     /// Output format: "summary" (default), "json", or "rich".
     #[serde(default = "default_format")]
-    pub format: Option<String>,
+    pub format: Option<GetAllCellsFormat>,
     /// Starting cell index (0-based).
     #[serde(default)]
     pub start: Option<i64>,
@@ -40,15 +42,24 @@ pub struct GetAllCellsParams {
     #[serde(default)]
     pub count: Option<i64>,
     /// Include compact output summaries/previews in summary format.
+    /// These are bounded summaries, not full output bodies.
     #[serde(default)]
-    pub include_outputs: Option<bool>,
+    pub include_output_summaries: Option<bool>,
     /// Max chars for source preview in summary format.
     #[serde(default)]
     pub preview_chars: Option<i64>,
 }
 
-fn default_format() -> Option<String> {
-    Some("summary".to_string())
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GetAllCellsFormat {
+    Summary,
+    Json,
+    Rich,
+}
+
+fn default_format() -> Option<GetAllCellsFormat> {
+    Some(GetAllCellsFormat::Summary)
 }
 
 /// Get a single cell by ID with source and outputs.
@@ -56,6 +67,7 @@ pub async fn get_cell(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
+    reject_unknown_args(request, &["cell_id", "full_output"])?;
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
     let full_output = arg_bool(request, "full_output").unwrap_or(false);
@@ -168,9 +180,19 @@ pub async fn get_all_cells(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
+    reject_unknown_args(
+        request,
+        &[
+            "format",
+            "start",
+            "count",
+            "include_output_summaries",
+            "preview_chars",
+        ],
+    )?;
     let handle = require_handle!(server);
 
-    let format = arg_str(request, "format").unwrap_or("summary");
+    let format = get_all_cells_format(request)?;
     let start = request
         .arguments
         .as_ref()
@@ -183,7 +205,7 @@ pub async fn get_all_cells(
         .and_then(|a| a.get("count"))
         .and_then(|v| v.as_i64())
         .map(|v| v as usize);
-    let include_outputs = arg_bool(request, "include_outputs").unwrap_or(false);
+    let include_output_summaries = arg_bool(request, "include_output_summaries").unwrap_or(false);
     let preview_chars = request
         .arguments
         .as_ref()
@@ -209,7 +231,7 @@ pub async fn get_all_cells(
     let empty_outputs: Vec<serde_json::Value> = Vec::new();
 
     match format {
-        "json" => {
+        GetAllCellsFormat::Json => {
             let mut json_cells = Vec::new();
             for cell in slice {
                 let status = cell_status_map.get(&cell.id).map(String::as_str);
@@ -262,7 +284,7 @@ pub async fn get_all_cells(
             let text = serde_json::to_string_pretty(&json_cells).unwrap_or_default();
             Ok(CallToolResult::success(vec![Content::text(text)]))
         }
-        "rich" => {
+        GetAllCellsFormat::Rich => {
             let mut items = Vec::new();
             for cell in slice {
                 let status = cell_status_map.get(&cell.id).map(String::as_str);
@@ -312,7 +334,7 @@ pub async fn get_all_cells(
             }
             Ok(CallToolResult::success(items))
         }
-        _ => {
+        GetAllCellsFormat::Summary => {
             // summary format
             let mut blocks = Vec::new();
             for cell in slice {
@@ -322,7 +344,7 @@ pub async fn get_all_cells(
                 let display_status =
                     display_status_for_cell(&cell.cell_type, status, execution_id.as_deref());
                 let raw_outputs = outputs_by_cell.get(&cell.id).unwrap_or(&empty_outputs);
-                let outputs = if include_outputs && !raw_outputs.is_empty() {
+                let outputs = if include_output_summaries && !raw_outputs.is_empty() {
                     output_resolver::resolve_cell_outputs_for_llm(
                         raw_outputs,
                         output_resolver::ResolveCtx {
@@ -352,6 +374,18 @@ pub async fn get_all_cells(
             }
             tool_success(&blocks.join("\n\n"))
         }
+    }
+}
+
+fn get_all_cells_format(request: &CallToolRequestParams) -> Result<GetAllCellsFormat, McpError> {
+    match arg_str(request, "format").unwrap_or("summary") {
+        "summary" => Ok(GetAllCellsFormat::Summary),
+        "json" => Ok(GetAllCellsFormat::Json),
+        "rich" => Ok(GetAllCellsFormat::Rich),
+        other => Err(McpError::invalid_params(
+            format!("Invalid format: {other}. Allowed formats: summary, json, rich."),
+            None,
+        )),
     }
 }
 
@@ -553,6 +587,14 @@ mod tests {
     use super::*;
     use runtimed_outputs::resolved_output::Output;
 
+    fn make_request(args: serde_json::Value) -> CallToolRequestParams {
+        serde_json::from_value(serde_json::json!({
+            "name": "test",
+            "arguments": args,
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn raw_output_summary_falls_back_when_resolver_returns_no_outputs() {
         let raw_outputs = vec![serde_json::json!({
@@ -594,5 +636,33 @@ mod tests {
             display_status_for_cell("code", Some("running"), None),
             Some("running")
         );
+    }
+
+    #[test]
+    fn get_all_cells_format_defaults_to_summary() {
+        let req = make_request(serde_json::json!({}));
+        assert_eq!(
+            get_all_cells_format(&req).unwrap(),
+            GetAllCellsFormat::Summary
+        );
+    }
+
+    #[test]
+    fn get_all_cells_format_accepts_known_values() {
+        let req = make_request(serde_json::json!({"format": "json"}));
+        assert_eq!(get_all_cells_format(&req).unwrap(), GetAllCellsFormat::Json);
+
+        let req = make_request(serde_json::json!({"format": "rich"}));
+        assert_eq!(get_all_cells_format(&req).unwrap(), GetAllCellsFormat::Rich);
+    }
+
+    #[test]
+    fn get_all_cells_format_rejects_unknown_values() {
+        let req = make_request(serde_json::json!({"format": "raw"}));
+        let err = get_all_cells_format(&req).unwrap_err();
+        let message = err.message.to_string();
+
+        assert!(message.contains("Invalid format: raw"));
+        assert!(message.contains("summary, json, rich"));
     }
 }
