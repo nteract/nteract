@@ -45,7 +45,7 @@ init = mod.default;
 NotebookHandle = mod.NotebookHandle;
 
 const wasmBytes = await Deno.readFile(wasmBinPath);
-await init(wasmBytes);
+await init({ module_or_path: wasmBytes });
 
 // ── Helpers ──────────────────────────────────────────────────────────
 

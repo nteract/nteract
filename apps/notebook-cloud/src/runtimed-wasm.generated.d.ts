@@ -1,5 +1,7 @@
 declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
-  export default function init(moduleOrPath?: unknown): Promise<unknown>;
+  export default function init(moduleOrPath?: {
+    module_or_path: unknown | Promise<unknown>;
+  }): Promise<unknown>;
   export function decode_presence_frame(payload: Uint8Array): unknown;
   export function encode_cursor_presence(
     peerId: string,

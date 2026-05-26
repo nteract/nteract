@@ -23,7 +23,7 @@ const wasmBinPath = new URL(
 
 const mod = await import(wasmJsPath.href);
 const wasmBytes = await Deno.readFile(wasmBinPath);
-await mod.default(wasmBytes);
+await mod.default({ module_or_path: wasmBytes });
 
 Deno.test("Presence: standalone decoder reads real cursor CBOR", () => {
   const payload = mod.encode_cursor_presence(

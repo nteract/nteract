@@ -3,7 +3,6 @@ import { cloudOutputParityExpectedMarkers } from "../../test/fixtures/cloud-outp
 
 const ALLOWED_CONSOLE_MESSAGES = new Set([
   "Allow attribute will take precedence over 'allowfullscreen'.",
-  "using deprecated parameters for the initialization function; pass a single object instead",
 ]);
 
 test.describe("cloud renderer parity harness", () => {
