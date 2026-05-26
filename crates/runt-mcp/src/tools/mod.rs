@@ -709,6 +709,23 @@ mod tests {
     }
 
     #[test]
+    fn get_all_cells_tool_names_output_summaries_explicitly() {
+        let tool = registered_tool("get_all_cells");
+        let properties = tool
+            .input_schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .expect("get_all_cells schema should expose properties");
+
+        assert!(properties.contains_key("include_output_summaries"));
+        assert!(!properties.contains_key("include_outputs"));
+        assert_eq!(
+            tool.input_schema.get("additionalProperties"),
+            Some(&serde_json::Value::Bool(false))
+        );
+    }
+
+    #[test]
     fn reject_unknown_args_calls_out_numeric_cell_ordering() {
         let req = make_request(serde_json::json!({
             "cell_id": "cell-a",

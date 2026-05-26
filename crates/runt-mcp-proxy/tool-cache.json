@@ -203,6 +203,7 @@
     "description": "Get a cell by ID, including execution status/id and compact output summaries.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
       "properties": {
         "cell_id": {
           "description": "The cell ID to retrieve. Response includes execution status/id and\ncompact output summaries before any output text.",
@@ -232,7 +233,18 @@
     },
     "description": "Get all cells as summary, json, or rich format with compact execution/output summaries.",
     "inputSchema": {
+      "$defs": {
+        "GetAllCellsFormat": {
+          "enum": [
+            "summary",
+            "json",
+            "rich"
+          ],
+          "type": "string"
+        }
+      },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
       "properties": {
         "count": {
           "default": null,
@@ -244,16 +256,19 @@
           ]
         },
         "format": {
-          "default": "summary",
-          "description": "Output format: \"summary\" (default), \"json\", or \"rich\".",
-          "type": [
-            "string",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GetAllCellsFormat"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Output format: \"summary\" (default), \"json\", or \"rich\"."
         },
-        "include_outputs": {
+        "include_output_summaries": {
           "default": null,
-          "description": "Include compact output summaries/previews in summary format.",
+          "description": "Include compact output summaries/previews in summary format.\nThese are bounded summaries, not full output bodies.",
           "type": [
             "boolean",
             "null"
