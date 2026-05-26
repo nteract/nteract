@@ -29,6 +29,7 @@ import type {
 import { mergeNteractEmbedHostContext } from "@/components/isolated/host-context";
 import { JsonRpcTransport } from "@/components/isolated/jsonrpc-transport";
 import {
+  MCP_NOTIFICATIONS_MESSAGE,
   MCP_UI_HOST_CONTEXT_CHANGED,
   MCP_UI_RESOURCE_TEARDOWN,
   MCP_UI_SIZE_CHANGED,
@@ -275,6 +276,19 @@ function emitRendererDiagnostic(
   level: IsolatedDiagnosticLevel = "debug",
 ) {
   if (rpcTransport) {
+    if (level === "warn" || level === "error") {
+      rpcTransport.notify(MCP_NOTIFICATIONS_MESSAGE, {
+        level: level === "warn" ? "warning" : "error",
+        logger: "nteract.isolated-renderer",
+        data: {
+          source: "isolated-renderer",
+          phase,
+          details,
+        },
+      });
+      return;
+    }
+
     rpcTransport.notify(NTERACT_DIAGNOSTIC, {
       source: "isolated-renderer",
       phase,

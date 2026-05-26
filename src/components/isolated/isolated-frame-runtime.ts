@@ -105,6 +105,21 @@ function diagnosticLevelFromMcpLog(level: string | undefined): IsolatedFrameRunt
   return "debug";
 }
 
+function isDiagnosticSource(
+  value: unknown,
+): value is "isolated-frame" | "isolated-renderer" | "iframe-libraries" {
+  return (
+    value === "isolated-frame" || value === "isolated-renderer" || value === "iframe-libraries"
+  );
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
 function stableHostContextKey(value: unknown): string {
   // Host-context patches can arrive with equivalent object content but different
   // key insertion order. Use a stable key for delivery deduping instead of
@@ -624,15 +639,15 @@ export class IsolatedFrameRuntime {
         logger?: string;
         data?: unknown;
       };
-      this.callbacks.onDiagnostic(
-        "iframe-log-message",
-        {
-          logger: p.logger ?? null,
-          data: p.data ?? null,
-          protocol: "mcp-ui",
-        },
-        diagnosticLevelFromMcpLog(p.level),
-      );
+      const data = objectRecord(p.data);
+      const phase = typeof data?.phase === "string" ? data.phase : "iframe-log-message";
+      const source = isDiagnosticSource(data?.source) ? data.source : "isolated-frame";
+      const structuredDetails = objectRecord(data?.details);
+      const details =
+        structuredDetails && phase !== "iframe-log-message"
+          ? { logger: p.logger ?? null, protocol: "mcp-ui", ...structuredDetails }
+          : { logger: p.logger ?? null, data: p.data ?? null, protocol: "mcp-ui" };
+      this.callbacks.onDiagnostic(phase, details, diagnosticLevelFromMcpLog(p.level), source);
     });
   }
 

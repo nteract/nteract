@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import {
   MCP_UI_HOST_CONTEXT_CHANGED,
   MCP_UI_RESOURCE_TEARDOWN,
+  MCP_UI_SIZE_CHANGED,
   NTERACT_RENDERER_READY,
   NTERACT_RESIZE,
   NTERACT_THEME,
@@ -254,13 +255,21 @@ describe("IsolatedFrame theme updates", () => {
   });
 
   it("keeps the JSON-RPC transport alive when frame diagnostics props change", () => {
+    const onDiagnosticA = vi.fn();
+    const onDiagnosticB = vi.fn();
     const { container, rerender, unmount } = render(
-      <IsolatedFrame darkMode={false} name="code-Out[*]" />,
+      <IsolatedFrame darkMode={false} name="code-Out[*]" onDiagnostic={onDiagnosticA} />,
     );
     const iframe = container.querySelector("iframe") as HTMLIFrameElement;
     const iframeWindow = iframe.contentWindow as Window;
 
     dispatchIframeReady(iframeWindow);
+    expect(onDiagnosticA).toHaveBeenCalledWith(
+      "bootstrap-ready",
+      expect.objectContaining({ frameName: "code-Out[*]" }),
+      "debug",
+      "isolated-frame",
+    );
 
     const transport = MockJsonRpcTransport.instances[0];
     expect(transport).toBeDefined();
@@ -269,12 +278,23 @@ describe("IsolatedFrame theme updates", () => {
       transport.notificationHandlers.get(NTERACT_RENDERER_READY)?.({});
     });
 
-    rerender(<IsolatedFrame darkMode={false} name="code-Out[1]" />);
+    rerender(<IsolatedFrame darkMode={false} name="code-Out[1]" onDiagnostic={onDiagnosticB} />);
 
     expect(transport.stop).not.toHaveBeenCalled();
     expect(transport.request).not.toHaveBeenCalledWith(MCP_UI_RESOURCE_TEARDOWN, {
       reason: "unmount",
     });
+
+    act(() => {
+      transport.notificationHandlers.get(MCP_UI_SIZE_CHANGED)?.({ height: 42, width: 320 });
+    });
+
+    expect(onDiagnosticB).toHaveBeenCalledWith(
+      "size-changed",
+      expect.objectContaining({ frameName: "code-Out[1]", height: 42, width: 320 }),
+      "debug",
+      "isolated-frame",
+    );
 
     unmount();
 

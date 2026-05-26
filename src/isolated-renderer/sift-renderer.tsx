@@ -273,7 +273,6 @@ function SiftRenderer({ data, mimeType, interactionActive = false }: RendererPro
     console.warn("[sift-renderer] missing table URL", { mimeType, data });
     return <pre style={{ whiteSpace: "pre-wrap" }}>Unable to load Arrow stream manifest</pre>;
   }
-  console.debug("[sift-renderer] render", { mimeType, url: url.slice(0, 120) });
   configureWasm(url);
 
   return (
