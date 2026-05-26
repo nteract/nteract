@@ -119,7 +119,7 @@ export function setWasmUrl(url: string): void {
 export async function ensureModule(): Promise<PredicateModule> {
   if (mod) return mod;
   const wasm = await import("sift-wasm/sift_wasm.js");
-  await wasm.default(configuredWasmUrl);
+  await wasm.default({ module_or_path: configuredWasmUrl });
   mod = wasm as unknown as PredicateModule;
   return mod;
 }

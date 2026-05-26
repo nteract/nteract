@@ -29,7 +29,7 @@ init = mod.default;
 NotebookHandle = mod.NotebookHandle;
 
 const wasmBytes = await Deno.readFile(wasmBinPath);
-await init(wasmBytes);
+await init({ module_or_path: wasmBytes });
 
 async function readFixtureBytes(scenario: string, name: string): Promise<Uint8Array> {
   return await Deno.readFile(new URL(`${scenario}/${name}`, fixturesDir));
