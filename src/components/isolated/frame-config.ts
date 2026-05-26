@@ -27,6 +27,11 @@ export const ISOLATED_FRAME_ALLOW_ATTR = "fullscreen *";
 
 export type IsolatedFrameDocument = { kind: "src"; url: string } | { kind: "srcdoc"; html: string };
 
+export interface IsolatedFrameThemeSeed {
+  theme?: "light" | "dark" | null;
+  colorTheme?: string | null;
+}
+
 export interface TauriFrameGlobal {
   __TAURI__?: unknown;
   __TAURI_INTERNALS__?: unknown;
@@ -44,12 +49,12 @@ export function isTauriFrameRuntime(
 
 export function createIsolatedFrameDocument(options?: {
   isTauriRuntime?: boolean;
-  initialTheme?: "light" | "dark";
   outputDocumentUrl?: string | null;
+  themeSeed?: IsolatedFrameThemeSeed;
 }): IsolatedFrameDocument {
   const outputDocumentUrl = options?.outputDocumentUrl?.trim();
   if (outputDocumentUrl) {
-    return { kind: "src", url: withThemeHint(outputDocumentUrl, options?.initialTheme) };
+    return { kind: "src", url: withIsolatedFrameThemeSeed(outputDocumentUrl, options?.themeSeed) };
   }
 
   if (options?.isTauriRuntime ?? isTauriFrameRuntime()) {
@@ -58,18 +63,30 @@ export function createIsolatedFrameDocument(options?: {
   return { kind: "srcdoc", html: FRAME_HTML };
 }
 
-function withThemeHint(outputDocumentUrl: string, theme: "light" | "dark" | undefined): string {
-  if (!theme) return outputDocumentUrl;
+function withIsolatedFrameThemeSeed(
+  outputDocumentUrl: string,
+  themeSeed: IsolatedFrameThemeSeed | undefined,
+): string {
+  if (!themeSeed?.theme && !themeSeed?.colorTheme) {
+    return outputDocumentUrl;
+  }
 
   try {
-    const url = new URL(outputDocumentUrl);
-    url.searchParams.set("nteract_theme", theme);
-    return url.href;
+    const isAbsoluteOrProtocolRelative =
+      /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(outputDocumentUrl) || outputDocumentUrl.startsWith("//");
+    const parsed = new URL(outputDocumentUrl, "https://nteract.invalid");
+    if (themeSeed.theme === "light" || themeSeed.theme === "dark") {
+      parsed.searchParams.set("nteract_theme", themeSeed.theme);
+    }
+    if (themeSeed.colorTheme && themeSeed.colorTheme !== "classic") {
+      parsed.searchParams.set("nteract_color_theme", themeSeed.colorTheme);
+    }
+
+    if (isAbsoluteOrProtocolRelative) {
+      return parsed.href;
+    }
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
   } catch {
-    const hashIndex = outputDocumentUrl.indexOf("#");
-    const beforeHash = hashIndex === -1 ? outputDocumentUrl : outputDocumentUrl.slice(0, hashIndex);
-    const hash = hashIndex === -1 ? "" : outputDocumentUrl.slice(hashIndex);
-    const separator = beforeHash.includes("?") ? "&" : "?";
-    return `${beforeHash}${separator}nteract_theme=${theme}${hash}`;
+    return outputDocumentUrl;
   }
 }

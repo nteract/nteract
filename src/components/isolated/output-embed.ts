@@ -109,6 +109,10 @@ export function createNteractOutputEmbed(
   const iframe = document.createElement("iframe");
   const documentSource = createIsolatedFrameDocument({
     outputDocumentUrl: options.outputDocumentUrl ?? options.hostContext?.nteract?.outputDocumentUrl,
+    themeSeed: {
+      theme: options.hostContext?.theme ?? null,
+      colorTheme: options.hostContext?.nteract?.colorTheme ?? null,
+    },
   });
   const injectedPlugins = new Set<string>();
   let disposed = false;

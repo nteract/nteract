@@ -135,6 +135,36 @@ describe("IsolatedFrame theme updates", () => {
     });
   });
 
+  it("seeds hosted output-document URLs with the mount-time theme without reloading on theme changes", async () => {
+    const { container, rerender } = render(
+      <IsolatedFrame
+        darkMode={false}
+        colorTheme="cream"
+        outputDocumentUrl="https://outputs.example/frame/"
+      />,
+    );
+
+    const iframe = container.querySelector("iframe") as HTMLIFrameElement;
+
+    await waitFor(() => {
+      expect(iframe.src).toBe(
+        "https://outputs.example/frame/?nteract_theme=light&nteract_color_theme=cream",
+      );
+    });
+
+    rerender(
+      <IsolatedFrame
+        darkMode={true}
+        colorTheme="cream"
+        outputDocumentUrl="https://outputs.example/frame/"
+      />,
+    );
+
+    expect(iframe.src).toBe(
+      "https://outputs.example/frame/?nteract_theme=light&nteract_color_theme=cream",
+    );
+  });
+
   it("merges imperative host-context updates into MCP Apps-compatible notifications", async () => {
     const frameRef = { current: null as IsolatedFrameHandle | null };
     const { container } = render(

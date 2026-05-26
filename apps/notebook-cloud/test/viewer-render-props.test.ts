@@ -49,3 +49,13 @@ test("cloud report-mode rendering leaves output iframes unfocused for page scrol
     "cloud report rendering should not focus output iframes; focused iframes trap page scroll",
   );
 });
+
+test("cloud viewer exposes the shared theme toggle and shared theme hook", () => {
+  const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /import \{ ThemeToggle \} from "@\/components\/ui\/theme-toggle";/);
+  assert.match(sourceText, /useTheme\(CLOUD_VIEWER_THEME_STORAGE_KEY\)/);
+  assert.match(sourceText, /<ThemeToggle/);
+  assert.match(sourceText, /className="cloud-theme-toggle"/);
+});
