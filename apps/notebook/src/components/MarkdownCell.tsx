@@ -31,6 +31,7 @@ import {
 } from "../lib/cell-ui-state";
 import { onEditorRegistered, onEditorUnregistered } from "../lib/cursor-registry";
 import { registerCellEditor, unregisterCellEditor } from "../lib/editor-registry";
+import { logNotebookIsolatedDiagnostic } from "../lib/isolated-diagnostics";
 import { logger } from "../lib/logger";
 import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";
 import { openUrl } from "../lib/open-url";
@@ -568,6 +569,7 @@ export const MarkdownCell = memo(function MarkdownCell({
                 onMouseDown={activatePreviewFrameInteraction}
                 onDoubleClick={handleDoubleClick}
                 onError={handleIframeError}
+                onDiagnostic={logNotebookIsolatedDiagnostic}
                 className="w-full"
               />
             </div>

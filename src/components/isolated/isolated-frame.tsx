@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 import type { IframeToParentMessage, ParentToIframeMessage, RenderPayload } from "./frame-bridge";
-import { logIsolatedDiagnostic } from "./diagnostics";
+import { logIsolatedDiagnostic, type IsolatedDiagnosticHandler } from "./diagnostics";
 import {
   createIsolatedFrameDocument,
   ISOLATED_FRAME_ALLOW_ATTR,
@@ -146,6 +146,12 @@ export interface IsolatedFrameProps {
    * Callback for all messages from the iframe (for debugging or custom handling).
    */
   onMessage?: (message: IframeToParentMessage) => void;
+
+  /**
+   * Callback for structured renderer diagnostics. Hosts can route this to their
+   * own logging transport; when omitted, diagnostics use the console fallback.
+   */
+  onDiagnostic?: IsolatedDiagnosticHandler;
 
   /**
    * When true, iframe starts hidden (0 height, 0 opacity) and reveals
@@ -310,6 +316,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       onWidgetUpdate,
       onError,
       onMessage,
+      onDiagnostic,
       revealOnRender = false,
     },
     ref,
@@ -354,7 +361,12 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     const onWidgetUpdateRef = useRef(onWidgetUpdate);
     const onErrorRef = useRef(onError);
     const onMessageRef = useRef(onMessage);
+    const onDiagnosticRef = useRef(onDiagnostic);
     const allowWheelBoundaryScrollRef = useRef(allowWheelBoundaryScroll);
+    const frameDiagnosticContextRef = useRef({
+      frameId: id ?? null,
+      frameName: name ?? null,
+    });
 
     const logFrameDiagnostic = useCallback(
       (
@@ -388,8 +400,13 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     onWidgetUpdateRef.current = onWidgetUpdate;
     onErrorRef.current = onError;
     onMessageRef.current = onMessage;
+    onDiagnosticRef.current = onDiagnostic;
     allowWheelBoundaryScrollRef.current = allowWheelBoundaryScroll;
     initialContentRef.current = initialContent;
+    frameDiagnosticContextRef.current = {
+      frameId: id ?? null,
+      frameName: name ?? null,
+    };
     logFrameDiagnosticRef.current = logFrameDiagnostic;
 
     const applyMeasuredHeight = useCallback(
@@ -467,7 +484,16 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
             onMessageRef.current?.(message);
           },
           onDiagnostic: (phase, details = {}, level = "debug", source = "isolated-frame") => {
-            logFrameDiagnosticRef.current(phase, details, level, source);
+            const enrichedDetails = {
+              ...frameDiagnosticContextRef.current,
+              generation: runtimeRef.current?.generation ?? 0,
+              ...details,
+            };
+            if (onDiagnosticRef.current) {
+              onDiagnosticRef.current(phase, enrichedDetails, level, source);
+            } else {
+              logFrameDiagnosticRef.current(phase, details, level, source);
+            }
           },
         },
       });

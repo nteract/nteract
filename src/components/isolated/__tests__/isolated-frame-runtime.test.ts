@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { IsolatedFrameRuntime } from "../isolated-frame-runtime";
 import type { IsolatedFrameRendererBundle } from "../isolated-frame-runtime";
 import {
+  MCP_NOTIFICATIONS_MESSAGE,
   MCP_UI_HOST_CONTEXT_CHANGED,
   MCP_UI_RESOURCE_TEARDOWN,
   NTERACT_RENDER_OUTPUT,
@@ -102,6 +103,35 @@ describe("IsolatedFrameRuntime", () => {
     transport.notificationHandlers.get(NTERACT_RENDERER_READY)?.({});
 
     expect(transport.notify).toHaveBeenCalledWith(NTERACT_RENDER_OUTPUT, payload);
+  });
+
+  it("preserves structured MCP log notifications as isolated diagnostics", () => {
+    const { callbacks, frameWindow, runtime } = createRuntime();
+
+    runtime.handleWindowMessage(frameMessage(frameWindow, { type: "ready", payload: null }));
+    const transport = MockJsonRpcTransport.instances[0];
+    expect(transport).toBeDefined();
+
+    transport.notificationHandlers.get(MCP_NOTIFICATIONS_MESSAGE)?.({
+      level: "warning",
+      logger: "nteract.isolated-renderer",
+      data: {
+        source: "isolated-renderer",
+        phase: "renderer-plugin-install-failed",
+        details: { message: "failed" },
+      },
+    });
+
+    expect(callbacks.onDiagnostic).toHaveBeenCalledWith(
+      "renderer-plugin-install-failed",
+      {
+        logger: "nteract.isolated-renderer",
+        protocol: "mcp-ui",
+        message: "failed",
+      },
+      "warn",
+      "isolated-renderer",
+    );
   });
 
   it("sends host context once per channel for equivalent content", () => {

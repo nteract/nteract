@@ -59,6 +59,18 @@ export type {
 export { IsolationTest } from "./IsolationTest";
 export type { IsolatedFrameHandle, IsolatedFrameProps } from "./isolated-frame";
 export { IsolatedFrame } from "./isolated-frame";
+export {
+  ISOLATED_DIAGNOSTICS_STORAGE_KEY,
+  isolatedDebugDiagnosticsEnabled,
+  logIsolatedDiagnostic,
+  shouldLogIsolatedDiagnostic,
+} from "./diagnostics";
+export type {
+  IsolatedDiagnosticEvent,
+  IsolatedDiagnosticHandler,
+  IsolatedDiagnosticLevel,
+  IsolatedDiagnosticSource,
+} from "./diagnostics";
 export { IsolatedFrameRuntime, TYPE_TO_METHOD } from "./isolated-frame-runtime";
 export type {
   IsolatedFrameRendererBundle,

@@ -31,6 +31,7 @@ import {
   useCellExecutionId,
   useExecution,
 } from "../lib/notebook-executions";
+import { logNotebookIsolatedDiagnostic } from "../lib/isolated-diagnostics";
 import { useCellOutputs } from "../lib/notebook-outputs";
 import { openUrl } from "../lib/open-url";
 import { presenceSenderExtension } from "../lib/presence-sender";
@@ -484,6 +485,7 @@ export const CodeCell = memo(function CodeCell({
               onSearchMatchCount={onSearchMatchCount}
               onLinkClick={handleLinkClick}
               onIframeMouseDown={handleOutputMouseDown}
+              onDiagnostic={logNotebookIsolatedDiagnostic}
               resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
               onNavigateToTracebackCell={handleTracebackCellNavigate}
               focused={outputFocused}

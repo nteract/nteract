@@ -15,6 +15,7 @@ import {
   CommBridgeManager,
   type IframeToParentMessage,
   IsolatedFrame,
+  type IsolatedDiagnosticHandler,
   type IsolatedFrameHandle,
   type RenderPayload,
 } from "@/components/isolated";
@@ -183,6 +184,10 @@ interface OutputAreaProps {
    * Use to update cell focus when the click is captured by the iframe.
    */
   onIframeMouseDown?: () => void;
+  /**
+   * Callback for structured isolated renderer diagnostics.
+   */
+  onDiagnostic?: IsolatedDiagnosticHandler;
   /**
    * Host-specific context passed through to isolated output iframes. Cloud
    * viewers use this for renderer sidecar asset bases; desktop callers can
@@ -505,6 +510,7 @@ export function OutputArea({
   searchQuery,
   onSearchMatchCount,
   onIframeMouseDown,
+  onDiagnostic,
   hostContext,
   resolveTracebackExecutionTarget,
   onNavigateToTracebackCell,
@@ -927,6 +933,7 @@ export function OutputArea({
                 onWidgetUpdate={onWidgetUpdate}
                 onMessage={handleIframeMessage}
                 onError={handleIframeError}
+                onDiagnostic={onDiagnostic}
                 hostContext={hostContext}
                 outputDocumentUrl={hostContext?.nteract?.outputDocumentUrl}
               />
