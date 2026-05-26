@@ -57,7 +57,13 @@ export const DEFAULT_PRIORITY = [
   "text/plain",
 ] as const;
 
+const PREVIEW_ONLY_MIME_TYPES = new Set(["text/llm+plain"]);
+
 export type MimeType = (typeof DEFAULT_PRIORITY)[number] | string;
+
+export function isPreviewOnlyMimeType(mimeType: string): boolean {
+  return PREVIEW_ONLY_MIME_TYPES.has(mimeType);
+}
 
 /**
  * Select the best MIME type from available data based on priority.
@@ -68,10 +74,16 @@ export function selectMimeType(
 ): MimeType | null {
   const availableTypes = Object.keys(data);
   for (const mimeType of priority) {
-    if (availableTypes.includes(mimeType) && data[mimeType] != null) {
+    if (
+      availableTypes.includes(mimeType) &&
+      !isPreviewOnlyMimeType(mimeType) &&
+      data[mimeType] != null
+    ) {
       return mimeType;
     }
   }
-  const firstAvailable = availableTypes.find((type) => data[type] != null);
+  const firstAvailable = availableTypes.find(
+    (type) => !isPreviewOnlyMimeType(type) && data[type] != null,
+  );
   return firstAvailable || null;
 }

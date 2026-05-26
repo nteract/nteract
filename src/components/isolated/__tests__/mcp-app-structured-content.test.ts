@@ -206,6 +206,27 @@ describe("MCP App structured content adapter", () => {
     expect(payload.data).not.toBe("assistant summary");
   });
 
+  it("keeps LLM previews out of MCP App render payloads", async () => {
+    const cell = cellWithOutputs([
+      {
+        output_id: "preview-only-output",
+        output_type: "display_data",
+        data: {
+          "text/llm+plain": "assistant summary\nsecond line",
+        },
+      },
+    ]);
+
+    const outputs = mcpAppCellsToSharedOutputs([cell], undefined);
+    const payloads = await resolveEmbeddableOutputs(outputs, {
+      blobResolver: createMcpAppBlobResolver("http://localhost:47830"),
+    });
+
+    expect(mcpAppCellPreviewText(cell)).toBe("assistant summary");
+    expect(mcpAppCellHasRichOutput(cell)).toBe(false);
+    expect(payloads).toEqual([]);
+  });
+
   it("keeps plain and JSON-only MCP App cells collapsed by default", () => {
     expect(
       mcpAppCellHasRichOutput(

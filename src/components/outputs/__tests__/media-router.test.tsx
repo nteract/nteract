@@ -76,6 +76,27 @@ describe("getSelectedMimeType", () => {
       expect(getSelectedMimeType(data)).toBe("custom/mime-type");
     });
 
+    it("skips LLM previews when falling back to unknown renderable MIME types", () => {
+      const data = {
+        "text/llm+plain": "assistant summary",
+        "application/x-custom-rich+json": { value: 42 },
+      };
+      expect(getSelectedMimeType(data)).toBe("application/x-custom-rich+json");
+    });
+
+    it("never selects LLM preview MIME as a render target", () => {
+      expect(getSelectedMimeType({ "text/llm+plain": "assistant summary" })).toBeNull();
+      expect(
+        getSelectedMimeType(
+          {
+            "text/llm+plain": "assistant summary",
+            "text/plain": "plain fallback",
+          },
+          ["text/llm+plain", "text/plain"],
+        ),
+      ).toBe("text/plain");
+    });
+
     it("uses DEFAULT_PRIORITY when no custom priority provided", () => {
       const data = {
         "text/plain": "plain",
