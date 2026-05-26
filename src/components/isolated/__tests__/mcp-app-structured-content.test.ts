@@ -226,4 +226,42 @@ describe("MCP App structured content adapter", () => {
 
     expect(mcpAppCellPreviewText({ ...cellWithOutputs([]), status: "queued" })).toBe("queued");
   });
+
+  it("uses daemon-provided LLM previews for blob-backed streams and tracebacks", () => {
+    expect(
+      mcpAppCellPreviewText(
+        cellWithOutputs([
+          {
+            output_type: "stream",
+            name: "stdout",
+            text: "http://localhost:47830/blob/stream-hash",
+            llm_preview: {
+              head: "line 0\nline 1\n",
+              tail: "line 99\n",
+              total_lines: 100,
+              total_bytes: 50_000,
+            },
+          },
+        ]),
+      ),
+    ).toBe("line 0");
+
+    expect(
+      mcpAppCellPreviewText(
+        cellWithOutputs([
+          {
+            output_type: "error",
+            ename: "RecursionError",
+            evalue: "too deep",
+            traceback: "http://localhost:47830/blob/traceback-hash",
+            llm_preview: {
+              last_frame: "RecursionError: too deep",
+              frames: 200,
+              total_bytes: 8_000,
+            },
+          },
+        ]),
+      ),
+    ).toBe("RecursionError: too deep");
+  });
 });
