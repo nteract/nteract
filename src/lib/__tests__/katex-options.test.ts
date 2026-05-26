@@ -7,9 +7,8 @@ describe("katexStrict", () => {
     vi.restoreAllMocks();
   });
 
-  it("suppresses only display newline strict warnings", () => {
-    expect(katexStrict("newLineInDisplayMode", "", {} as never)).toBe("ignore");
-    expect(katexStrict("htmlExtension", "", {} as never)).toBe("warn");
+  it("uses permissive KaTeX compatibility mode", () => {
+    expect(katexStrict).toBe("ignore");
   });
 
   it("prevents KaTeX from logging display newline warnings", () => {

@@ -1,6 +1,4 @@
-import type { StrictFunction } from "katex";
+import type { KatexOptions } from "katex";
 
-const SUPPRESSED_KATEX_STRICT_CODES = new Set(["newLineInDisplayMode"]);
-
-export const katexStrict: StrictFunction = (errorCode) =>
-  SUPPRESSED_KATEX_STRICT_CODES.has(errorCode) ? "ignore" : "warn";
+// Prefer Jupyter/MathJax-style permissive rendering for user-authored math.
+export const katexStrict = "ignore" satisfies NonNullable<KatexOptions["strict"]>;
