@@ -51,6 +51,7 @@ import {
   type PendingNotebookInviteRow,
 } from "./sharing-storage.ts";
 import { normalizeInviteEmail, normalizeProviderHint } from "./sharing.ts";
+import { viewerThemeBootstrapScript } from "./viewer-theme-bootstrap.ts";
 
 export { NotebookRoom };
 
@@ -1774,6 +1775,7 @@ function viewer(notebookId: string, env: Env, headsHash?: string): Response {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>nteract cloud notebook ${title}</title>
+  <script>${viewerThemeBootstrapScript()}</script>
   <link rel="stylesheet" href="/assets/notebook-cloud-viewer.css" />
 </head>
 <body>

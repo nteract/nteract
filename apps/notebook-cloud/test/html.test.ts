@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import worker, { escapeHtml, scriptJsonForHtml } from "../src/index.ts";
 import type { DurableObjectNamespace, Env, ExecutionContext } from "../src/cloudflare-types.ts";
+import { viewerThemeBootstrapScript } from "../src/viewer-theme-bootstrap.ts";
 
 describe("HTML script serialization", () => {
   it("escapes text and attribute metacharacters", () => {
@@ -52,6 +53,11 @@ describe("HTML script serialization", () => {
     assert.match(html, /id="nteract-cloud-viewer-config" type="application\/json"/);
     assert.match(html, /href="\/assets\/notebook-cloud-viewer\.css"/);
     assert.match(html, /src="\/assets\/notebook-cloud-viewer\.js"/);
+    assert.ok(
+      html.indexOf(viewerThemeBootstrapScript()) <
+        html.indexOf("/assets/notebook-cloud-viewer.css"),
+      "theme bootstrap must run before the stylesheet to avoid dark-to-light first paint",
+    );
     assert.match(html, /"renderEndpoint":"\/api\/n\/demo\/renders\/heads-123"/);
     assert.match(html, /"blobBasePath":"\/api\/n\/demo\/blobs\/"/);
     assert.match(html, /"rendererAssetsBasePath":"\/renderer-assets\/"/);
