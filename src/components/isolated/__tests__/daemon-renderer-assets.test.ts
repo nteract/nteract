@@ -21,6 +21,40 @@ describe("daemon renderer assets", () => {
     expect(daemonRendererAssetsBaseUrl(undefined)).toBeUndefined();
   });
 
+  it("uses the daemon output frame only when the host frame CSP allows it", () => {
+    expect(
+      daemonOutputFrameUrl("http://localhost:47830/", {
+        frameDomains: ["http://localhost:47830"],
+      }),
+    ).toBe("http://localhost:47830/output-frame");
+    expect(
+      daemonOutputFrameUrl("http://localhost:47830/", {
+        frameDomains: ["http://localhost:*"],
+      }),
+    ).toBe("http://localhost:47830/output-frame");
+    expect(
+      daemonOutputFrameUrl("https://renderer.example.test/", {
+        frameDomains: ["https://*.example.test"],
+      }),
+    ).toBe("https://renderer.example.test/output-frame");
+    expect(
+      daemonOutputFrameUrl("https://renderer.example.test/", {
+        frameDomains: ["https://renderer.example.test:443"],
+      }),
+    ).toBe("https://renderer.example.test/output-frame");
+    expect(
+      daemonOutputFrameUrl("http://localhost/", {
+        frameDomains: ["http://localhost:80"],
+      }),
+    ).toBe("http://localhost/output-frame");
+    expect(
+      daemonOutputFrameUrl("http://localhost:47830/", {
+        frameDomains: ["https://outputs.example.test"],
+      }),
+    ).toBeNull();
+    expect(daemonOutputFrameUrl("http://localhost:47830/", { frameDomains: [] })).toBeNull();
+  });
+
   it("fetches raw renderer plugin assets from the daemon renderer-plugin route", async () => {
     const fetchImpl = vi.fn(async (url: string) => {
       const pathname = new URL(url).pathname;
