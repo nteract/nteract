@@ -1,7 +1,8 @@
+import { CLOUD_VIEWER_THEME_STORAGE_KEY } from "../src/viewer-theme-bootstrap.ts";
+export { CLOUD_VIEWER_THEME_STORAGE_KEY } from "../src/viewer-theme-bootstrap.ts";
+
 export type CloudViewerThemeMode = "light" | "dark" | "system";
 export type ResolvedCloudViewerTheme = "light" | "dark";
-
-export const CLOUD_VIEWER_THEME_STORAGE_KEY = "nteract.cloud.viewer.theme";
 
 export function storedCloudViewerTheme(
   storage: Pick<Storage, "getItem"> | undefined = browserLocalStorage(),
