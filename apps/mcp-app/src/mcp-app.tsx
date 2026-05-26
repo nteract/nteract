@@ -14,6 +14,7 @@ import { Cell } from "./components/cell";
 import { SummaryHeader } from "./components/summary-header";
 import { hasRichOutput } from "./lib/rich-output";
 import { errorDetails, hostLog, setHostLogSink } from "./lib/host-log";
+import { NTERACT_MCP_APP_CAPABILITIES, NTERACT_MCP_APP_INFO } from "./app-config";
 
 /**
  * Collapse the widget to 0px when there's nothing to render.
@@ -70,7 +71,7 @@ function McpApp() {
   const [hostContext, setHostContext] = useState<McpUiHostContext | null>(null);
 
   useEffect(() => {
-    const app = new App({ name: "nteract", version: "0.1.0" });
+    const app = new App(NTERACT_MCP_APP_INFO, NTERACT_MCP_APP_CAPABILITIES);
 
     app.ontoolresult = (result: CallToolResult) => {
       const structured = result.structuredContent as NteractContent | undefined;
