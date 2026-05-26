@@ -24,7 +24,6 @@ export interface McpAppOutputFrameProps {
   rendererBundle: NteractOutputRendererBundleProvider;
   rendererPluginLoader?: NteractOutputRendererPluginLoader;
   rendererAssetsBaseUrl?: string;
-  outputDocumentUrl?: string | null;
   autoHeight?: boolean;
   maxHeight?: number;
   className?: string;
@@ -46,7 +45,6 @@ export function McpAppOutputFrame({
   rendererBundle,
   rendererPluginLoader,
   rendererAssetsBaseUrl,
-  outputDocumentUrl,
   autoHeight,
   maxHeight,
   className,
@@ -69,9 +67,8 @@ export function McpAppOutputFrame({
     () =>
       mcpAppHostContextToNteractEmbedPatch(hostContext, {
         rendererAssetsBaseUrl,
-        outputDocumentUrl: outputDocumentUrl ?? undefined,
       }),
-    [hostContext, rendererAssetsBaseUrl, outputDocumentUrl],
+    [hostContext, rendererAssetsBaseUrl],
   );
   const hostContextPatchRef = useRef(hostContextPatch);
   const onDiagnosticRef = useRef(onDiagnostic);
@@ -84,7 +81,7 @@ export function McpAppOutputFrame({
 
   useEffect(() => {
     setFailed(false);
-  }, [outputCells, blobBaseUrl, rendererBundle, rendererPluginLoader, outputDocumentUrl]);
+  }, [outputCells, blobBaseUrl, rendererBundle, rendererPluginLoader]);
 
   useEffect(() => {
     if (failed || !targetRef.current || outputs.length === 0) return;
@@ -95,7 +92,6 @@ export function McpAppOutputFrame({
       rendererPluginLoader,
       blobResolver,
       hostContext: hostContextPatchRef.current,
-      outputDocumentUrl,
       ...(autoHeight === undefined ? {} : { autoHeight }),
       ...(maxHeight === undefined ? {} : { maxHeight }),
       onDiagnostic(...args) {
@@ -119,7 +115,6 @@ export function McpAppOutputFrame({
     blobResolver,
     failed,
     maxHeight,
-    outputDocumentUrl,
     outputs.length,
     rendererBundle,
     rendererPluginLoader,

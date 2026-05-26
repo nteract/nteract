@@ -1,9 +1,8 @@
 import { useCallback, useMemo } from "react";
-import type { McpUiHostCapabilities, McpUiHostContext } from "@modelcontextprotocol/ext-apps";
+import type { McpUiHostContext } from "@modelcontextprotocol/ext-apps";
 import { rendererCode, rendererCss } from "virtual:isolated-renderer";
 import {
   createDaemonRendererPluginLoader,
-  daemonOutputFrameUrl,
   daemonRendererAssetsBaseUrl,
 } from "@/components/isolated/daemon-renderer-assets";
 import { McpAppOutputFrame } from "@/components/isolated/mcp-app-output-frame";
@@ -20,15 +19,9 @@ interface SharedCellOutputsProps {
   cell: CellData;
   blobBaseUrl?: string;
   hostContext?: McpUiHostContext | null;
-  hostCapabilities?: McpUiHostCapabilities | null;
 }
 
-export function SharedCellOutputs({
-  cell,
-  blobBaseUrl,
-  hostContext,
-  hostCapabilities,
-}: SharedCellOutputsProps) {
+export function SharedCellOutputs({ cell, blobBaseUrl, hostContext }: SharedCellOutputsProps) {
   const rendererPluginLoader = useMemo(
     () => createDaemonRendererPluginLoader(blobBaseUrl),
     [blobBaseUrl],
@@ -36,11 +29,6 @@ export function SharedCellOutputs({
   const rendererAssetsBaseUrl = useMemo(
     () => daemonRendererAssetsBaseUrl(blobBaseUrl),
     [blobBaseUrl],
-  );
-  const hostFrameCsp = hostCapabilities?.sandbox?.csp;
-  const outputDocumentUrl = useMemo(
-    () => daemonOutputFrameUrl(blobBaseUrl, hostFrameCsp ?? { frameDomains: [] }),
-    [blobBaseUrl, hostFrameCsp],
   );
   const handleDiagnostic = useCallback(
     (
@@ -72,7 +60,6 @@ export function SharedCellOutputs({
       rendererBundle={SHARED_RENDERER_BUNDLE}
       rendererPluginLoader={rendererPluginLoader}
       rendererAssetsBaseUrl={rendererAssetsBaseUrl}
-      outputDocumentUrl={outputDocumentUrl}
       className="shared-output-frame"
       onDiagnostic={handleDiagnostic}
       onError={handleError}

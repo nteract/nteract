@@ -27,7 +27,6 @@ const OUTPUT_HTML: &str = include_str!("../assets/_output.html");
 /// MCP Apps spec CSP fields (from ext-apps specification):
 /// - `resourceDomains` → `img-src`, `script-src`, `style-src`, `font-src`, `media-src`
 /// - `connectDomains`  → `connect-src` (fetch/XHR/WebSocket)
-/// - `frameDomains`    → `frame-src` (nested output iframe shell)
 ///
 /// `prefersBorder: false` asks hosts to avoid adding an extra host-provided
 /// border/background around the renderer. The output surface already owns its
@@ -35,11 +34,9 @@ const OUTPUT_HTML: &str = include_str!("../assets/_output.html");
 ///
 /// The daemon's blob HTTP server URL is needed in `connectDomains` for
 /// `fetch()` calls to resolve blob-stored output data and raw renderer plugin
-/// assets. It is also needed in `frameDomains` so the MCP App can host shared
-/// isolated output iframes from `{blob_base_url}/output-frame` instead of
-/// depending on host-specific `srcdoc` CSP behavior. `resourceDomains` keeps
-/// the daemon origin available for static sidecars and host implementations
-/// that treat iframe resource loads conservatively.
+/// assets. `resourceDomains` keeps the daemon origin available for static
+/// sidecars and host implementations that treat iframe resource loads
+/// conservatively.
 ///
 /// Claude Desktop requires `localhost` (not `127.0.0.1`) for domain allowlists.
 fn resource_ui_meta(blob_base_url: &Option<String>) -> Meta {
@@ -51,8 +48,7 @@ fn resource_ui_meta(blob_base_url: &Option<String>) -> Meta {
             "csp".to_string(),
             serde_json::json!({
                 "resourceDomains": [url],
-                "connectDomains": [url],
-                "frameDomains": [url]
+                "connectDomains": [url]
             }),
         );
     }
@@ -524,12 +520,7 @@ mod tests {
                 .expect("connect domains")[0],
             "https://outputs.example.test"
         );
-        assert_eq!(
-            csp.get("frameDomains")
-                .and_then(|value| value.as_array())
-                .expect("frame domains")[0],
-            "https://outputs.example.test"
-        );
+        assert!(csp.get("frameDomains").is_none());
     }
 
     #[test]

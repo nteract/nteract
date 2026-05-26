@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { McpUiHostCapabilities, McpUiHostContext } from "@modelcontextprotocol/ext-apps";
+import type { McpUiHostContext } from "@modelcontextprotocol/ext-apps";
 import type { CellData } from "../types";
 import { getPreviewText } from "../lib/rich-output";
 import { CodeBlock } from "./code-block";
@@ -9,7 +9,6 @@ interface CellProps {
   cell: CellData;
   blobBaseUrl?: string;
   hostContext?: McpUiHostContext | null;
-  hostCapabilities?: McpUiHostCapabilities | null;
   defaultExpanded: boolean;
   forceExpanded?: boolean | null;
   /** Hide the source toggle (single-cell responses don't need it). */
@@ -28,7 +27,6 @@ export function Cell({
   cell,
   blobBaseUrl,
   hostContext,
-  hostCapabilities,
   defaultExpanded,
   forceExpanded,
   hideSource,
@@ -84,12 +82,7 @@ export function Cell({
           )}
           {cell.outputs?.length > 0 && (
             <div className="outputs">
-              <SharedCellOutputs
-                cell={cell}
-                blobBaseUrl={blobBaseUrl}
-                hostContext={hostContext}
-                hostCapabilities={hostCapabilities}
-              />
+              <SharedCellOutputs cell={cell} blobBaseUrl={blobBaseUrl} hostContext={hostContext} />
             </div>
           )}
         </div>
