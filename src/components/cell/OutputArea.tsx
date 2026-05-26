@@ -296,28 +296,29 @@ function splitOutputSegments(
   return segments;
 }
 
-function shouldSegmentOutputLanes(
+function segmentedOutputLanes(
   outputs: readonly JupyterOutput[],
   isolated: OutputAreaProps["isolated"],
   onToggleCollapse: OutputAreaProps["onToggleCollapse"],
   priority: readonly string[] = DEFAULT_PRIORITY,
-): boolean {
-  if (isolated !== "auto") return false;
+): OutputSegment[] {
+  if (isolated !== "auto") return [];
   // The legacy collapse control is output-area scoped. Keep it as a single
   // control until segmentation owns one shared wrapper instead of several
   // sibling OutputAreaSingle wrappers.
-  if (onToggleCollapse) return false;
-  if (outputs.length <= 1) return false;
+  if (onToggleCollapse) return [];
+  if (outputs.length <= 1) return [];
 
-  return splitOutputSegments(outputs, priority).length > 1;
+  const segments = splitOutputSegments(outputs, priority);
+  return segments.length > 1 ? segments : [];
 }
 
 function outputSegmentKey(segment: OutputSegment, index: number): string {
-  return [
-    segment.lane,
-    index,
-    ...segment.outputs.map((output) => output.output_id ?? output.output_type),
-  ].join("\0");
+  const firstOutput = segment.outputs[0];
+  if (firstOutput?.output_id) {
+    return [segment.lane, firstOutput.output_id].join("\0");
+  }
+  return [segment.lane, index, firstOutput?.output_type ?? "empty"].join("\0");
 }
 
 function scrollElementIntoComfortableView(element: HTMLElement | null): boolean {
@@ -559,10 +560,12 @@ export function OutputArea({
   priority = DEFAULT_PRIORITY,
   ...props
 }: OutputAreaProps) {
-  if (shouldSegmentOutputLanes(outputs, isolated, onToggleCollapse, priority)) {
+  const outputSegments = segmentedOutputLanes(outputs, isolated, onToggleCollapse, priority);
+
+  if (outputSegments.length > 0) {
     return (
       <>
-        {splitOutputSegments(outputs, priority).map((segment, index) => (
+        {outputSegments.map((segment, index) => (
           <OutputAreaSingle
             key={outputSegmentKey(segment, index)}
             {...props}

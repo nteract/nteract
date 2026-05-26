@@ -6,6 +6,7 @@ import { OutputArea, type JupyterOutput } from "../OutputArea";
 let mockDarkMode = false;
 let mockColorTheme: string | undefined;
 let lastFrameMessageHandler: ((message: unknown) => void) | undefined;
+let isolatedFrameMountCount = 0;
 
 const mockFrameHandle = {
   send: vi.fn(),
@@ -50,6 +51,10 @@ vi.mock("@/components/isolated", async () => {
     ref,
   ) {
     React.useImperativeHandle(ref, () => mockFrameHandle);
+
+    React.useEffect(() => {
+      isolatedFrameMountCount += 1;
+    }, []);
 
     React.useEffect(() => {
       onReady?.();
@@ -201,6 +206,7 @@ describe("OutputArea iframe theme sync", () => {
     mockFrameHandle.search.mockClear();
     mockFrameHandle.searchNavigate.mockClear();
     lastFrameMessageHandler = undefined;
+    isolatedFrameMountCount = 0;
     vi.mocked(injectPluginsForMimes).mockResolvedValue(undefined);
     vi.mocked(needsPlugin).mockReturnValue(false);
   });
@@ -511,6 +517,42 @@ describe("OutputArea iframe theme sync", () => {
     });
   });
 
+  it("keeps an existing segmented iframe mounted when outputs append to its lane", async () => {
+    const stream = makeStreamOutput("stdout one\n");
+    const firstWidget = makeWidgetOutput("widget-progress-1", "model-progress-1");
+    const secondWidget = makeWidgetOutput("widget-progress-2", "model-progress-2");
+    const { rerender } = render(<OutputArea outputs={[...stream, firstWidget]} />);
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("isolated-frame")).toHaveLength(1);
+      expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
+        expect.objectContaining({
+          mimeType: "application/vnd.jupyter.widget-view+json",
+          outputId: "widget-progress-1",
+        }),
+      ]);
+    });
+
+    expect(isolatedFrameMountCount).toBe(1);
+
+    rerender(<OutputArea outputs={[...stream, firstWidget, secondWidget]} />);
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("isolated-frame")).toHaveLength(1);
+      expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
+        expect.objectContaining({
+          mimeType: "application/vnd.jupyter.widget-view+json",
+          outputId: "widget-progress-1",
+        }),
+        expect.objectContaining({
+          mimeType: "application/vnd.jupyter.widget-view+json",
+          outputId: "widget-progress-2",
+        }),
+      ]);
+    });
+    expect(isolatedFrameMountCount).toBe(1);
+  });
+
   it("keeps the legacy collapse control scoped to one mixed output area", () => {
     const outputs: JupyterOutput[] = [
       ...makeStreamOutput("stdout one\n"),
@@ -546,6 +588,30 @@ describe("OutputArea iframe theme sync", () => {
         }),
       ]);
     });
+  });
+
+  it("forwards traceback navigation messages from isolated outputs", async () => {
+    const onNavigateToTracebackCell = vi.fn();
+    const target = { cellId: "cell-from-traceback", label: "Cell [3]" };
+
+    render(
+      <OutputArea
+        outputs={makeMarkdownOutput()}
+        isolated
+        onNavigateToTracebackCell={onNavigateToTracebackCell}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(lastFrameMessageHandler).toBeDefined();
+    });
+
+    lastFrameMessageHandler?.({
+      type: "traceback_navigate",
+      payload: { target },
+    });
+
+    expect(onNavigateToTracebackCell).toHaveBeenCalledWith(target);
   });
 
   it("constrains isolated iframe outputs when maxHeight is explicit", () => {
