@@ -176,6 +176,36 @@ describe("MCP App structured content adapter", () => {
     ).toBe(true);
   });
 
+  it("keeps richer blob-backed renders selected when an LLM preview is present", async () => {
+    const outputs = mcpAppCellsToSharedOutputs(
+      [
+        cellWithOutputs([
+          {
+            output_id: "sift-output",
+            output_type: "display_data",
+            data: {
+              "text/llm+plain": "assistant summary",
+              "application/vnd.apache.parquet": "http://localhost:47830/blob/table-hash",
+              "text/plain": "table fallback",
+            },
+          },
+        ]),
+      ],
+      "http://localhost:47830",
+    );
+
+    const [payload] = await resolveEmbeddableOutputs(outputs, {
+      blobResolver: createMcpAppBlobResolver("http://localhost:47830"),
+    });
+
+    expect(payload).toMatchObject({
+      mimeType: "application/vnd.apache.parquet",
+      data: "http://localhost:47830/blob/table-hash",
+      outputId: "sift-output",
+    });
+    expect(payload.data).not.toBe("assistant summary");
+  });
+
   it("keeps plain and JSON-only MCP App cells collapsed by default", () => {
     expect(
       mcpAppCellHasRichOutput(
@@ -225,5 +255,43 @@ describe("MCP App structured content adapter", () => {
     ).toBe("ValueError: bad value");
 
     expect(mcpAppCellPreviewText({ ...cellWithOutputs([]), status: "queued" })).toBe("queued");
+  });
+
+  it("uses daemon-provided LLM previews for blob-backed streams and tracebacks", () => {
+    expect(
+      mcpAppCellPreviewText(
+        cellWithOutputs([
+          {
+            output_type: "stream",
+            name: "stdout",
+            text: "http://localhost:47830/blob/stream-hash",
+            llm_preview: {
+              head: "line 0\nline 1\n",
+              tail: "line 99\n",
+              total_lines: 100,
+              total_bytes: 50_000,
+            },
+          },
+        ]),
+      ),
+    ).toBe("line 0");
+
+    expect(
+      mcpAppCellPreviewText(
+        cellWithOutputs([
+          {
+            output_type: "error",
+            ename: "RecursionError",
+            evalue: "too deep",
+            traceback: "http://localhost:47830/blob/traceback-hash",
+            llm_preview: {
+              last_frame: "RecursionError: too deep",
+              frames: 200,
+              total_bytes: 8_000,
+            },
+          },
+        ]),
+      ),
+    ).toBe("RecursionError: too deep");
   });
 });

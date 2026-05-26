@@ -6,12 +6,13 @@ export interface McpAppCellOutput {
   output_type: "stream" | "error" | "display_data" | "execute_result";
   output_id?: string;
   name?: string;
-  text?: string;
+  text?: unknown;
   ename?: string;
   evalue?: string;
   traceback?: string[] | string;
-  data?: Record<string, string>;
+  data?: Record<string, unknown>;
   execution_count?: number | null;
+  llm_preview?: unknown;
 }
 
 export interface McpAppCellData {
@@ -148,11 +149,34 @@ function firstPreviewLine(text: string): string {
   return text.split("\n")[0]?.trim() ?? "";
 }
 
+function stringFromRecord(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function previewFromLlmPreview(preview: unknown): string {
+  if (typeof preview === "string") return firstPreviewLine(preview);
+  if (typeof preview !== "object" || preview === null) return "";
+
+  const record = preview as Record<string, unknown>;
+  return firstPreviewLine(
+    stringFromRecord(record, "last_frame") ??
+      stringFromRecord(record, "head") ??
+      stringFromRecord(record, "tail") ??
+      "",
+  );
+}
+
 export function mcpAppCellPreviewText(cell: McpAppCellData): string {
   for (const output of cell.outputs ?? []) {
     if (output.data?.["text/llm+plain"]) {
       return firstPreviewLine(String(output.data["text/llm+plain"]));
     }
+  }
+
+  for (const output of cell.outputs ?? []) {
+    const preview = previewFromLlmPreview(output.llm_preview);
+    if (preview) return preview;
   }
 
   for (const output of cell.outputs ?? []) {
