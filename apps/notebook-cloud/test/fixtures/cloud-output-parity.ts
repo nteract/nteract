@@ -167,6 +167,21 @@ export const cloudOutputParityRenderCells: readonly RenderCell[] = [
     execution_count: 7,
     outputs: [
       {
+        output_id: "sift-arrow-stdout",
+        output_type: "stream",
+        name: "stdout",
+        text: "Preparing Cloud Sift Arrow fixture\n",
+      },
+      {
+        output_id: "sift-arrow-widget-progress",
+        output_type: "display_data",
+        data: {
+          "application/vnd.jupyter.widget-view+json": { model_id: "cloud-sift-progress" },
+          "text/plain": "Cloud Sift widget progress marker",
+        },
+        metadata: {},
+      },
+      {
         output_id: "sift-arrow-display",
         output_type: "display_data",
         data: {
@@ -193,6 +208,7 @@ export const cloudOutputParityExpectedMarkers = {
   svg: "Cloud SVG marker",
   json: "Cloud JSON marker",
   fallback: "Plain text fallback marker",
+  siftStream: "Preparing Cloud Sift Arrow fixture",
   siftColumn: "score",
 } as const;
 

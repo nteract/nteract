@@ -261,6 +261,66 @@ function outputUsesSift(
   return false;
 }
 
+interface OutputSegment {
+  lane: "dom" | "static-frame" | "interactive-frame" | "sift-frame";
+  outputs: JupyterOutput[];
+}
+
+function outputSegmentLane(
+  output: JupyterOutput,
+  priority: readonly string[] = DEFAULT_PRIORITY,
+): OutputSegment["lane"] {
+  if (!outputNeedsIsolation(output, priority)) return "dom";
+  if (outputUsesSift(output, priority)) return "sift-frame";
+  if (outputAllowsScrollPassthrough(output, priority)) return "static-frame";
+  return "interactive-frame";
+}
+
+function splitOutputSegments(
+  outputs: readonly JupyterOutput[],
+  priority: readonly string[] = DEFAULT_PRIORITY,
+): OutputSegment[] {
+  const segments: OutputSegment[] = [];
+
+  for (const output of outputs) {
+    const lane = outputSegmentLane(output, priority);
+    const previous = segments.at(-1);
+
+    if (lane !== "sift-frame" && previous && previous.lane === lane) {
+      previous.outputs.push(output);
+    } else {
+      segments.push({ lane, outputs: [output] });
+    }
+  }
+
+  return segments;
+}
+
+function segmentedOutputLanes(
+  outputs: readonly JupyterOutput[],
+  isolated: OutputAreaProps["isolated"],
+  onToggleCollapse: OutputAreaProps["onToggleCollapse"],
+  priority: readonly string[] = DEFAULT_PRIORITY,
+): OutputSegment[] {
+  if (isolated !== "auto") return [];
+  // The legacy collapse control is output-area scoped. Keep it as a single
+  // control until segmentation owns one shared wrapper instead of several
+  // sibling OutputAreaSingle wrappers.
+  if (onToggleCollapse) return [];
+  if (outputs.length <= 1) return [];
+
+  const segments = splitOutputSegments(outputs, priority);
+  return segments.length > 1 ? segments : [];
+}
+
+function outputSegmentKey(segment: OutputSegment, index: number): string {
+  const firstOutput = segment.outputs[0];
+  if (firstOutput?.output_id) {
+    return [segment.lane, firstOutput.output_id].join("\0");
+  }
+  return [segment.lane, index, firstOutput?.output_type ?? "empty"].join("\0");
+}
+
 function scrollElementIntoComfortableView(element: HTMLElement | null): boolean {
   if (!element || typeof window === "undefined") return false;
 
@@ -303,7 +363,9 @@ function outputNeedsIsolation(
 
 /**
  * Check if any outputs in the array need iframe isolation.
- * If any output needs isolation, ALL outputs should go to the iframe.
+ * For a single render segment, any isolated output makes that segment render
+ * in the iframe. `OutputArea` splits mixed output lists into lane segments
+ * before this check so DOM-safe streams do not have to share widget/Sift frames.
  *
  * Not exported: keeping every `.tsx` export limited to components and
  * hooks lets React Fast Refresh hot-patch this module instead of bailing
@@ -492,6 +554,69 @@ function withTracebackExecutionTargets(
  * ```
  */
 export function OutputArea({
+  outputs,
+  isolated = "auto",
+  onToggleCollapse,
+  priority = DEFAULT_PRIORITY,
+  ...props
+}: OutputAreaProps) {
+  const { onSearchMatchCount, preloadIframe = false, ...passthroughProps } = props;
+  const segmentedSearchMatchCountsRef = useRef(new Map<string, number>());
+  const outputSegments = segmentedOutputLanes(outputs, isolated, onToggleCollapse, priority);
+  const outputSegmentKeys = outputSegments.map(outputSegmentKey);
+
+  if (outputSegments.length > 0) {
+    return (
+      <>
+        {outputSegments.map((segment, index) => {
+          const segmentKey = outputSegmentKeys[index] ?? outputSegmentKey(segment, index);
+          return (
+            <OutputAreaSingle
+              key={segmentKey}
+              {...passthroughProps}
+              outputs={segment.outputs}
+              isolated="auto"
+              onSearchMatchCount={
+                onSearchMatchCount
+                  ? (count) => {
+                      const counts = segmentedSearchMatchCountsRef.current;
+                      const activeKeys = new Set(outputSegmentKeys);
+                      for (const key of counts.keys()) {
+                        if (!activeKeys.has(key)) counts.delete(key);
+                      }
+                      counts.set(segmentKey, count);
+                      const total = outputSegmentKeys.reduce(
+                        (sum, key) => sum + (counts.get(key) ?? 0),
+                        0,
+                      );
+                      onSearchMatchCount(total);
+                    }
+                  : undefined
+              }
+              onToggleCollapse={onToggleCollapse}
+              preloadIframe={segment.lane === "dom" ? false : preloadIframe}
+              priority={priority}
+            />
+          );
+        })}
+      </>
+    );
+  }
+
+  return (
+    <OutputAreaSingle
+      {...passthroughProps}
+      outputs={outputs}
+      isolated={isolated}
+      onSearchMatchCount={onSearchMatchCount}
+      onToggleCollapse={onToggleCollapse}
+      preloadIframe={preloadIframe}
+      priority={priority}
+    />
+  );
+}
+
+function OutputAreaSingle({
   outputs,
   cellId,
   executionCount,
