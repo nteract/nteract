@@ -33,7 +33,8 @@ vi.mock("@/components/isolated/iframe-libraries", () => ({
   needsPlugin: vi.fn(() => false),
 }));
 
-vi.mock("@/components/isolated", async () => {
+vi.mock("@/components/isolated", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/components/isolated")>();
   const React = await import("react");
 
   const MockIsolatedFrame = React.forwardRef<
@@ -81,6 +82,7 @@ vi.mock("@/components/isolated", async () => {
   });
 
   return {
+    ...actual,
     CommBridgeManager: class CommBridgeManager {},
     IsolatedFrame: MockIsolatedFrame,
   };

@@ -12,12 +12,18 @@ import {
   useState,
 } from "react";
 import {
+  anyOutputNeedsIsolation,
   CommBridgeManager,
+  hasWidgetOutputs,
   type IframeToParentMessage,
   IsolatedFrame,
   type IsolatedDiagnosticHandler,
   type IsolatedFrameHandle,
+  outputAllowsScrollPassthrough,
+  type OutputSegment,
+  outputUsesSift,
   type RenderPayload,
+  segmentedOutputLanes,
 } from "@/components/isolated";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe-libraries";
@@ -26,9 +32,7 @@ import {
   type IdentifiedJupyterOutput,
 } from "@/components/isolated/output-payloads";
 import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-output";
-import { isSafeForMainDom } from "@/components/outputs/safe-mime-types";
 import { DEFAULT_PRIORITY, MediaRouter } from "@/components/outputs/media-router";
-import { selectMimeType } from "@/components/outputs/mime-priority";
 import {
   TracebackOutput,
   type TracebackCellTarget,
@@ -211,108 +215,6 @@ function normalizeText(text: string | string[]): string {
   return Array.isArray(text) ? text.join("") : text;
 }
 
-function isScrollPassthroughMimeType(mimeType: string): boolean {
-  // Static document-like outputs (markdown / HTML / SVG) and sift's
-  // interactive tables (parquet / arrow stream) all behave better as
-  // click-to-engage: the page wheels through them by default;
-  // pointer-down on the wrapper hands events back to the iframe so
-  // sift's column drag, sort, and internal scroll work; pointer-out
-  // releases. Without sift on this list the iframe traps every wheel
-  // gesture that crosses its 600px box.
-  return (
-    mimeType === "text/markdown" ||
-    mimeType === "text/html" ||
-    mimeType === "image/svg+xml" ||
-    mimeType === "application/vnd.apache.parquet" ||
-    mimeType === "application/vnd.apache.arrow.stream" ||
-    mimeType === "application/vnd.nteract.arrow-stream-manifest+json"
-  );
-}
-
-function isSiftMimeType(mimeType: string): boolean {
-  return (
-    mimeType === "application/vnd.apache.parquet" ||
-    mimeType === "application/vnd.apache.arrow.stream" ||
-    mimeType === "application/vnd.nteract.arrow-stream-manifest+json"
-  );
-}
-
-function outputAllowsScrollPassthrough(
-  output: JupyterOutput,
-  priority: readonly string[] = DEFAULT_PRIORITY,
-): boolean {
-  if (output.output_type === "execute_result" || output.output_type === "display_data") {
-    const mimeType = selectMimeType(output.data, priority);
-    return mimeType != null && isScrollPassthroughMimeType(mimeType);
-  }
-
-  return true;
-}
-
-function outputUsesSift(
-  output: JupyterOutput,
-  priority: readonly string[] = DEFAULT_PRIORITY,
-): boolean {
-  if (output.output_type === "execute_result" || output.output_type === "display_data") {
-    const mimeType = selectMimeType(output.data, priority);
-    return mimeType != null && isSiftMimeType(mimeType);
-  }
-
-  return false;
-}
-
-interface OutputSegment {
-  lane: "dom" | "static-frame" | "interactive-frame" | "sift-frame";
-  outputs: JupyterOutput[];
-}
-
-function outputSegmentLane(
-  output: JupyterOutput,
-  priority: readonly string[] = DEFAULT_PRIORITY,
-): OutputSegment["lane"] {
-  if (!outputNeedsIsolation(output, priority)) return "dom";
-  if (outputUsesSift(output, priority)) return "sift-frame";
-  if (outputAllowsScrollPassthrough(output, priority)) return "static-frame";
-  return "interactive-frame";
-}
-
-function splitOutputSegments(
-  outputs: readonly JupyterOutput[],
-  priority: readonly string[] = DEFAULT_PRIORITY,
-): OutputSegment[] {
-  const segments: OutputSegment[] = [];
-
-  for (const output of outputs) {
-    const lane = outputSegmentLane(output, priority);
-    const previous = segments.at(-1);
-
-    if (lane !== "sift-frame" && previous && previous.lane === lane) {
-      previous.outputs.push(output);
-    } else {
-      segments.push({ lane, outputs: [output] });
-    }
-  }
-
-  return segments;
-}
-
-function segmentedOutputLanes(
-  outputs: readonly JupyterOutput[],
-  isolated: OutputAreaProps["isolated"],
-  onToggleCollapse: OutputAreaProps["onToggleCollapse"],
-  priority: readonly string[] = DEFAULT_PRIORITY,
-): OutputSegment[] {
-  if (isolated !== "auto") return [];
-  // The legacy collapse control is output-area scoped. Keep it as a single
-  // control until segmentation owns one shared wrapper instead of several
-  // sibling OutputAreaSingle wrappers.
-  if (onToggleCollapse) return [];
-  if (outputs.length <= 1) return [];
-
-  const segments = splitOutputSegments(outputs, priority);
-  return segments.length > 1 ? segments : [];
-}
-
 function outputSegmentKey(segment: OutputSegment, index: number): string {
   const firstOutput = segment.outputs[0];
   if (firstOutput?.output_id) {
@@ -343,55 +245,6 @@ function scrollElementIntoComfortableView(element: HTMLElement | null): boolean 
 
   window.scrollBy({ top, behavior: "auto" });
   return true;
-}
-
-/**
- * Check if a single output needs iframe isolation.
- * Uses the safe-list: anything not explicitly safe defaults to isolation.
- */
-function outputNeedsIsolation(
-  output: JupyterOutput,
-  priority: readonly string[] = DEFAULT_PRIORITY,
-): boolean {
-  if (output.output_type === "execute_result" || output.output_type === "display_data") {
-    const mimeType = selectMimeType(output.data, priority);
-    return mimeType ? !isSafeForMainDom(mimeType) : false;
-  }
-  // stream and error outputs don't need isolation
-  return false;
-}
-
-/**
- * Check if any outputs in the array need iframe isolation.
- * For a single render segment, any isolated output makes that segment render
- * in the iframe. `OutputArea` splits mixed output lists into lane segments
- * before this check so DOM-safe streams do not have to share widget/Sift frames.
- *
- * Not exported: keeping every `.tsx` export limited to components and
- * hooks lets React Fast Refresh hot-patch this module instead of bailing
- * to a full reload on every edit.
- */
-function anyOutputNeedsIsolation(
-  outputs: JupyterOutput[],
-  priority: readonly string[] = DEFAULT_PRIORITY,
-): boolean {
-  return outputs.some((output) => outputNeedsIsolation(output, priority));
-}
-
-/**
- * Check if outputs contain any widget MIME types.
- */
-function hasWidgetOutputs(
-  outputs: JupyterOutput[],
-  priority: readonly string[] = DEFAULT_PRIORITY,
-): boolean {
-  return outputs.some((output) => {
-    if (output.output_type === "execute_result" || output.output_type === "display_data") {
-      const mimeType = selectMimeType(output.data, priority);
-      return mimeType === "application/vnd.jupyter.widget-view+json";
-    }
-    return false;
-  });
 }
 
 function requireIdentifiedOutputs(outputs: JupyterOutput[]): IdentifiedJupyterOutput[] {
@@ -562,7 +415,11 @@ export function OutputArea({
 }: OutputAreaProps) {
   const { onSearchMatchCount, preloadIframe = false, ...passthroughProps } = props;
   const segmentedSearchMatchCountsRef = useRef(new Map<string, number>());
-  const outputSegments = segmentedOutputLanes(outputs, isolated, onToggleCollapse, priority);
+  const outputSegments = segmentedOutputLanes(outputs, {
+    isolated,
+    hasCollapseControl: onToggleCollapse !== undefined,
+    priority,
+  });
   const outputSegmentKeys = outputSegments.map(outputSegmentKey);
 
   if (outputSegments.length > 0) {
