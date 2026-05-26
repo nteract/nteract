@@ -1,13 +1,7 @@
 import { createRoot } from "react-dom/client";
 import { useEffect, useState } from "react";
 import "./style.css";
-import {
-  App,
-  applyDocumentTheme,
-  applyHostStyleVariables,
-  applyHostFonts,
-  type McpUiHostContext,
-} from "@modelcontextprotocol/ext-apps";
+import { App, type McpUiHostContext } from "@modelcontextprotocol/ext-apps";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { NteractContent } from "./types";
 import { Cell } from "./components/cell";
@@ -15,6 +9,7 @@ import { SummaryHeader } from "./components/summary-header";
 import { hasRichOutput } from "./lib/rich-output";
 import { errorDetails, hostLog, setHostLogSink } from "./lib/host-log";
 import { NTERACT_MCP_APP_CAPABILITIES, NTERACT_MCP_APP_INFO } from "./app-config";
+import { applyMcpAppHostDocumentContext } from "./lib/host-document-context";
 
 /**
  * Collapse the widget to 0px when there's nothing to render.
@@ -89,10 +84,9 @@ function McpApp() {
     };
 
     app.onhostcontextchanged = (ctx: McpUiHostContext) => {
-      setHostContext(app.getHostContext() ?? ctx);
-      if (ctx.theme) applyDocumentTheme(ctx.theme);
-      if (ctx.styles?.variables) applyHostStyleVariables(ctx.styles.variables);
-      if (ctx.styles?.css?.fonts) applyHostFonts(ctx.styles.css.fonts);
+      const nextContext = app.getHostContext() ?? ctx;
+      setHostContext(nextContext);
+      applyMcpAppHostDocumentContext(nextContext);
     };
 
     app.onerror = (error) => {
@@ -117,9 +111,7 @@ function McpApp() {
           displayMode: ctx?.displayMode,
           containerDimensions: ctx?.containerDimensions,
         });
-        if (ctx?.theme) applyDocumentTheme(ctx.theme);
-        if (ctx?.styles?.variables) applyHostStyleVariables(ctx.styles.variables);
-        if (ctx?.styles?.css?.fonts) applyHostFonts(ctx.styles.css.fonts);
+        applyMcpAppHostDocumentContext(ctx);
         setHostContext(ctx ?? null);
       })
       .catch((error) => {
