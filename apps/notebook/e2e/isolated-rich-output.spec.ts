@@ -9,7 +9,7 @@ import {
 } from "./helpers";
 
 test.describe("isolated rich output rendering", () => {
-  test("keeps stream text visible when a pandas dataframe renders in the iframe", async ({
+  test("keeps stream text in DOM when a pandas dataframe renders in the iframe", async ({
     page,
   }) => {
     test.setTimeout(180_000);
@@ -43,9 +43,12 @@ test.describe("isolated rich output rendering", () => {
     await executeCell(cell);
     await waitForKernelStatus(page, "idle", 120_000);
 
-    const frame = cell.frameLocator('[data-slot="isolated-frame"]');
+    const outputAreas = cell.locator('[data-slot="output-area"]');
+    await expect(outputAreas).toHaveCount(2, { timeout: 60_000 });
+    await expect(outputAreas.first()).toContainText("stream before", { timeout: 60_000 });
+
+    const frame = outputAreas.nth(1).frameLocator('[data-slot="isolated-frame"]');
     const frameBody = frame.locator("body");
-    await expect(frameBody).toContainText("stream before", { timeout: 60_000 });
     await expect
       .poll(async () => normalizeOutputText(await frameBody.innerText()), { timeout: 60_000 })
       .toMatch(/a\s*#\s*1|b\s*#\s*3|a b 0 1 3 1 2 4/i);
