@@ -492,6 +492,14 @@ fn pixi_prewarmed_packages(extra: &[String], install_default_data_packages: bool
     packages
 }
 
+fn effective_pool_target(config_pool_size: usize, synced_pool_size: u64) -> usize {
+    if config_pool_size == 0 {
+        0
+    } else {
+        synced_pool_size.min(runtimed_client::settings_doc::MAX_POOL_SIZE) as usize
+    }
+}
+
 fn expected_pool_package_hash(env_type: EnvType, packages: &[String]) -> String {
     let mut sorted = packages.to_vec();
     sorted.sort();
@@ -1454,10 +1462,20 @@ impl Daemon {
         };
         log_store_unavailable(&trusted_packages);
 
+        let initial_pool_settings = settings.get_all();
+        let initial_uv_pool_size =
+            effective_pool_target(config.uv_pool_size, initial_pool_settings.uv_pool_size);
+        let initial_conda_pool_size = effective_pool_target(
+            config.conda_pool_size,
+            initial_pool_settings.conda_pool_size,
+        );
+        let initial_pixi_pool_size =
+            effective_pool_target(config.pixi_pool_size, initial_pool_settings.pixi_pool_size);
+
         Ok(Arc::new(Self {
-            uv_pool: Mutex::new(Pool::new(config.uv_pool_size, config.max_age_secs)),
-            conda_pool: Mutex::new(Pool::new(config.conda_pool_size, config.max_age_secs)),
-            pixi_pool: Mutex::new(Pool::new(config.pixi_pool_size, config.max_age_secs)),
+            uv_pool: Mutex::new(Pool::new(initial_uv_pool_size, config.max_age_secs)),
+            conda_pool: Mutex::new(Pool::new(initial_conda_pool_size, config.max_age_secs)),
+            pixi_pool: Mutex::new(Pool::new(initial_pixi_pool_size, config.max_age_secs)),
             config,
             shutdown: Arc::new(Mutex::new(false)),
             shutdown_notify: Arc::new(Notify::new()),
@@ -4768,14 +4786,7 @@ impl Daemon {
             let (target, expected_packages) = {
                 let settings = self.settings.read().await;
                 let synced = settings.get_all();
-                let target = if self.config.uv_pool_size == 0 {
-                    0 // Test mode: explicit 0 in config means don't warm
-                } else {
-                    synced
-                        .uv_pool_size
-                        .min(runtimed_client::settings_doc::MAX_POOL_SIZE)
-                        as usize
-                };
+                let target = effective_pool_target(self.config.uv_pool_size, synced.uv_pool_size);
                 let pkgs = uv_prewarmed_packages(
                     &synced.uv.default_packages,
                     synced.install_default_data_packages,
@@ -4878,14 +4889,8 @@ impl Daemon {
             let (target, expected_packages) = {
                 let settings = self.settings.read().await;
                 let synced = settings.get_all();
-                let target = if self.config.conda_pool_size == 0 {
-                    0 // Test mode: explicit 0 in config means don't warm
-                } else {
-                    synced
-                        .conda_pool_size
-                        .min(runtimed_client::settings_doc::MAX_POOL_SIZE)
-                        as usize
-                };
+                let target =
+                    effective_pool_target(self.config.conda_pool_size, synced.conda_pool_size);
                 let pkgs = conda_prewarmed_packages(
                     &synced.conda.default_packages,
                     synced.install_default_data_packages,
@@ -4995,14 +5000,8 @@ impl Daemon {
             let (target, expected_packages) = {
                 let settings = self.settings.read().await;
                 let synced = settings.get_all();
-                let target = if self.config.pixi_pool_size == 0 {
-                    0 // Test mode: explicit 0 in config means don't warm
-                } else {
-                    synced
-                        .pixi_pool_size
-                        .min(runtimed_client::settings_doc::MAX_POOL_SIZE)
-                        as usize
-                };
+                let target =
+                    effective_pool_target(self.config.pixi_pool_size, synced.pixi_pool_size);
                 let pkgs = pixi_prewarmed_packages(
                     &synced.pixi.default_packages,
                     synced.install_default_data_packages,
@@ -7522,6 +7521,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn find_existing_environments_uses_synced_pool_target_before_restore() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = DaemonConfig {
+            uv_pool_size: 1,
+            ..lease_test_config(&temp_dir)
+        };
+        std::fs::create_dir_all(&config.cache_dir).unwrap();
+        std::fs::write(
+            config.resolved_settings_json_path(),
+            r#"{
+                "default_python_env": "uv",
+                "uv_pool_size": 3,
+                "conda_pool_size": 0,
+                "pixi_pool_size": 0,
+                "install_default_data_packages": true
+            }"#,
+        )
+        .unwrap();
+        let expected = uv_prewarmed_packages(&[], true);
+        for idx in 0..3 {
+            let env = create_test_env_in(&config.cache_dir, &format!("runtimed-uv-{idx}"));
+            write_pool_package_hash(&env.venv_path, EnvType::Uv, &expected)
+                .await
+                .unwrap();
+        }
+
+        let daemon = Daemon::new_for_test(config).unwrap();
+        daemon.find_existing_environments().await;
+
+        let pool = daemon.uv_pool.lock().await;
+        assert_eq!(pool.target, 3);
+        assert_eq!(pool.available.len(), 3);
+        assert!(pool.retired_paths.is_empty());
+    }
+
+    #[tokio::test]
     async fn find_existing_environments_recovers_pixi_matching_package_hash() {
         let temp_dir = TempDir::new().unwrap();
         let config = DaemonConfig {
@@ -7580,6 +7615,16 @@ mod tests {
             ..lease_test_config(&temp_dir)
         };
         std::fs::create_dir_all(&config.cache_dir).unwrap();
+        std::fs::write(
+            config.resolved_settings_json_path(),
+            r#"{
+                "default_python_env": "uv",
+                "uv_pool_size": 1,
+                "conda_pool_size": 0,
+                "pixi_pool_size": 0
+            }"#,
+        )
+        .unwrap();
         let env_a = create_test_env_in(&config.cache_dir, "runtimed-uv-legacy-a");
         let env_b = create_test_env_in(&config.cache_dir, "runtimed-uv-legacy-b");
         let root_a = pool_env_root(&env_a.venv_path);
