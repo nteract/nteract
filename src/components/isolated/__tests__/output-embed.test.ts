@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { createNteractOutputEmbed } from "../output-embed";
 import { ISOLATED_FRAME_SANDBOX_ATTRS } from "../frame-config";
 import {
+  MCP_UI_SIZE_CHANGED,
   NTERACT_INSTALL_RENDERER,
   NTERACT_RENDER_OUTPUT,
   NTERACT_RENDERER_READY,
@@ -142,6 +143,31 @@ describe("createNteractOutputEmbed", () => {
 
     expect(handle.iframe.style.height).toBe("400px");
     expect(onSizeChanged).toHaveBeenCalledWith({ height: 400 });
+
+    handle.dispose();
+  });
+
+  it("preserves MCP Apps size-changed width while applying height policy", () => {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const onSizeChanged = vi.fn();
+
+    const handle = createNteractOutputEmbed({
+      target,
+      rendererBundle: { rendererCode: "", rendererCss: "" },
+      autoHeight: false,
+      maxHeight: 400,
+      onSizeChanged,
+    });
+    const frameWindow = handle.iframe.contentWindow!;
+    bootstrapFrame(frameWindow);
+    const transport = MockJsonRpcTransport.instances[0];
+
+    onSizeChanged.mockClear();
+    transport.notificationHandlers.get(MCP_UI_SIZE_CHANGED)?.({ height: 900, width: 614 });
+
+    expect(handle.iframe.style.height).toBe("400px");
+    expect(onSizeChanged).toHaveBeenCalledWith({ height: 400, width: 614 });
 
     handle.dispose();
   });
