@@ -314,28 +314,16 @@ pub async fn get_all_cells(
         }
         _ => {
             // summary format
-            let mut lines = Vec::new();
-            for (i, cell) in slice.iter().enumerate() {
+            let mut blocks = Vec::new();
+            for cell in slice {
                 let status = cell_status_map.get(&cell.id).map(String::as_str);
                 let ec = cell_ec_map.get(&cell.id).map(String::as_str);
                 let execution_id = handle.get_cell_execution_id(&cell.id);
                 let display_status =
                     display_status_for_cell(&cell.cell_type, status, execution_id.as_deref());
-                let line = formatting::format_cell_summary(
-                    start + i,
-                    &cell.id,
-                    &cell.cell_type,
-                    &cell.source,
-                    formatting::CellSummaryContext {
-                        execution_count: ec,
-                        status: display_status,
-                        execution_id: execution_id.as_deref(),
-                    },
-                    preview_chars,
-                );
                 let raw_outputs = outputs_by_cell.get(&cell.id).unwrap_or(&empty_outputs);
-                if include_outputs && !raw_outputs.is_empty() {
-                    let outputs = output_resolver::resolve_cell_outputs_for_llm(
+                let outputs = if include_outputs && !raw_outputs.is_empty() {
+                    output_resolver::resolve_cell_outputs_for_llm(
                         raw_outputs,
                         output_resolver::ResolveCtx {
                             blob_base_url: server.blob_base_url.as_deref(),
@@ -345,24 +333,24 @@ pub async fn get_all_cells(
                             ..Default::default()
                         },
                     )
-                    .await;
-                    let output_summaries =
-                        output_summary_lines(&outputs, raw_outputs, preview_chars);
-                    if !output_summaries.is_empty() {
-                        let summary = output_summaries
-                            .into_iter()
-                            .map(|line| format!("  └─ {line}"))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        lines.push(format!("{line}\n{summary}"));
-                    } else {
-                        lines.push(line);
-                    }
+                    .await
                 } else {
-                    lines.push(line);
-                }
+                    Vec::new()
+                };
+                blocks.push(formatting::format_cell_summary(
+                    &cell.id,
+                    &cell.cell_type,
+                    &cell.source,
+                    formatting::CellSummaryContext {
+                        execution_count: ec,
+                        status: display_status,
+                        execution_id: execution_id.as_deref(),
+                    },
+                    preview_chars,
+                    &outputs,
+                ));
             }
-            tool_success(&lines.join("\n"))
+            tool_success(&blocks.join("\n\n"))
         }
     }
 }

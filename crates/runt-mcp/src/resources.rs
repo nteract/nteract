@@ -281,10 +281,11 @@ fn cells_json(notebook_id: &str, handle: &notebook_sync::handle::DocHandle) -> S
     let status_by_cell = crate::tools::cell_read::build_cell_status_map(handle);
     let execution_count_by_cell = crate::tools::cell_read::build_cell_execution_count_map(handle);
     let outputs_by_cell = handle.get_all_outputs();
-    let cells: Vec<_> = handle
-        .get_cells()
-        .into_iter()
-        .map(|cell| {
+    let cells = handle.get_cells();
+    let cell_entries: Vec<_> = cells
+        .iter()
+        .enumerate()
+        .map(|(index, cell)| {
             let execution_id = handle.get_cell_execution_id(&cell.id);
             let status = status_by_cell.get(&cell.id).cloned().or_else(|| {
                 (cell.cell_type == "code" && execution_id.is_none()).then(|| "never_run".into())
@@ -293,7 +294,8 @@ fn cells_json(notebook_id: &str, handle: &notebook_sync::handle::DocHandle) -> S
                 "cell_id": cell.id,
                 "uri": notebook_cell_uri(notebook_id, &cell.id),
                 "cell_type": cell.cell_type,
-                "position": cell.position,
+                "previous_cell_id": previous_cell_id(&cells, index),
+                "next_cell_id": next_cell_id(&cells, index),
                 "source_preview": source_preview(&cell.source, 160),
                 "execution_id": execution_id,
                 "execution_count": execution_count_by_cell.get(&cell.id),
@@ -304,9 +306,20 @@ fn cells_json(notebook_id: &str, handle: &notebook_sync::handle::DocHandle) -> S
         .collect();
     serde_json::to_string_pretty(&serde_json::json!({
         "notebook_id": notebook_id,
-        "cells": cells,
+        "cells": cell_entries,
     }))
     .unwrap_or_else(|_| "{}".into())
+}
+
+fn previous_cell_id(cells: &[notebook_doc::CellSnapshot], index: usize) -> Option<&str> {
+    index
+        .checked_sub(1)
+        .and_then(|previous| cells.get(previous))
+        .map(|cell| cell.id.as_str())
+}
+
+fn next_cell_id(cells: &[notebook_doc::CellSnapshot], index: usize) -> Option<&str> {
+    cells.get(index + 1).map(|cell| cell.id.as_str())
 }
 
 fn cell_json(
@@ -326,6 +339,10 @@ fn cell_json(
     });
     let outputs = handle.get_cell_outputs(cell_id).unwrap_or_default();
     let execution_count = (!execution_count.is_empty()).then_some(execution_count);
+    let cells = handle.get_cells();
+    let cell_index = cells.iter().position(|candidate| candidate.id == cell_id);
+    let previous_cell_id = cell_index.and_then(|index| previous_cell_id(&cells, index));
+    let next_cell_id = cell_index.and_then(|index| next_cell_id(&cells, index));
 
     Ok(serde_json::to_string_pretty(&serde_json::json!({
         "notebook_id": notebook_id,
@@ -333,7 +350,8 @@ fn cell_json(
             "cell_id": cell.id,
             "uri": notebook_cell_uri(notebook_id, cell_id),
             "cell_type": cell.cell_type,
-            "position": cell.position,
+            "previous_cell_id": previous_cell_id,
+            "next_cell_id": next_cell_id,
             "source": cell.source,
             "metadata": cell.metadata,
             "tags": cell.tags(),

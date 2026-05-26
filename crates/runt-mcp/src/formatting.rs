@@ -214,11 +214,20 @@ fn collapse_and_truncate(text: &str, preview_chars: usize) -> String {
     format!("{truncated}…[+{remaining} chars]")
 }
 
-/// Format a compact one-line cell summary (matches Python _format_cell_summary).
+/// Width of the visual divider in assistant-facing cell summaries.
+const CELL_SUMMARY_DIVIDER: &str =
+    "────────────────────────────────────────────────────────────────────";
+
+/// Upper bound for one rendered output body inside a cell summary.
 ///
-/// Example output:
-///   0 | markdown | id=cell-1be2a179 | # Crate Download Analysis
-///   1 | code | running | id=cell-e18fcc2a | exec=4 | exec_id=exec-7f3a2b | import requests…[+45 chars]
+/// Output resolvers already cap large payloads, but summaries often include
+/// many cells, so keep each output bounded independently.
+const MAX_CELL_SUMMARY_OUTPUT_CHARS: usize = 2_400;
+
+/// Format an assistant-friendly cell summary block.
+///
+/// The block intentionally avoids numeric cell positions. Agents should copy
+/// `cell_id` values and use `after_cell_id` for ordering mutations.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CellSummaryContext<'a> {
     pub execution_count: Option<&'a str>,
@@ -227,52 +236,130 @@ pub struct CellSummaryContext<'a> {
 }
 
 pub fn format_cell_summary(
-    index: usize,
     cell_id: &str,
     cell_type: &str,
     source: &str,
     context: CellSummaryContext<'_>,
     preview_chars: usize,
+    outputs: &[Output],
 ) -> String {
-    let mut parts = vec![index.to_string(), cell_type.to_string()];
-
-    // Status (running/queued) comes before id, like in Python
+    let mut header_parts = vec![format!("⏺ ━━━ cell {cell_id}"), format!("({cell_type})")];
     if let Some(st) = context.status {
         if !st.is_empty() {
-            parts.push(st.to_string());
+            header_parts.push(format!("{} {st}", status_icon(st)));
         }
     }
-
-    parts.push(format!("id={cell_id}"));
-
-    // execution_count as exec=N (only for code cells with a value)
     if let Some(ec) = context.execution_count {
         if !ec.is_empty() && cell_type == "code" {
-            parts.push(format!("exec={ec}"));
+            header_parts.push(format!("[{ec}]"));
         }
     }
-
     if let Some(eid) = context.execution_id {
         if !eid.is_empty() && cell_type == "code" {
-            parts.push(format!("exec_id={eid}"));
+            header_parts.push(format!("exec={eid}"));
         }
     }
+    header_parts.push("━━━".to_string());
 
-    // Source preview — collapse to single line, strip whitespace
-    if !source.is_empty() {
-        let source_line: String = source.split_whitespace().collect::<Vec<_>>().join(" ");
-        let char_count = source_line.chars().count();
-        let preview = if char_count > preview_chars {
-            let truncated: String = source_line.chars().take(preview_chars).collect();
-            let remaining = char_count - preview_chars;
-            format!("{truncated}…[+{remaining} chars]")
-        } else {
-            source_line
-        };
-        parts.push(preview);
+    let mut sections = vec![header_parts.join(" "), String::new(), "  In:".to_string()];
+    let source_preview = truncate_chars(source.trim_end(), preview_chars);
+    if source_preview.is_empty() {
+        sections.push("      (empty)".to_string());
+    } else {
+        sections.push(indent_block(&source_preview, "      "));
     }
 
-    parts.join(" | ")
+    for output in outputs {
+        let Some(output_section) = format_summary_output(output) else {
+            continue;
+        };
+        sections.push(String::new());
+        sections.push(format!("  {CELL_SUMMARY_DIVIDER}"));
+        sections.push(String::new());
+        sections.push(output_section);
+    }
+
+    sections.join("\n")
+}
+
+fn format_summary_output(output: &Output) -> Option<String> {
+    let label = output_summary_label(output);
+    let text = format_output_text(output).unwrap_or_else(|| non_text_output_summary(output));
+    let text = truncate_chars(text.trim_end(), MAX_CELL_SUMMARY_OUTPUT_CHARS);
+    if text.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "  Out [{label}]:\n{}",
+        indent_block(&text, "      ")
+    ))
+}
+
+fn output_summary_label(output: &Output) -> String {
+    match output.output_type.as_str() {
+        "stream" => output.name.as_deref().unwrap_or("stream").to_string(),
+        "error" => "error".to_string(),
+        "display_data" | "execute_result" => output
+            .data
+            .as_ref()
+            .and_then(best_output_mime)
+            .unwrap_or(output.output_type.as_str())
+            .to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn best_output_mime(data: &std::collections::HashMap<String, DataValue>) -> Option<&str> {
+    for mime in TEXT_MIME_PRIORITY {
+        if data.contains_key(*mime) {
+            return Some(*mime);
+        }
+    }
+    data.keys().map(String::as_str).min()
+}
+
+fn non_text_output_summary(output: &Output) -> String {
+    let Some(data) = &output.data else {
+        return String::new();
+    };
+    let mut mimes: Vec<&str> = data.keys().map(String::as_str).collect();
+    mimes.sort_unstable();
+    if mimes.is_empty() {
+        String::new()
+    } else {
+        format!("[non-text output: {}]", mimes.join(", "))
+    }
+}
+
+fn indent_block(text: &str, indent: &str) -> String {
+    text.lines()
+        .map(|line| format!("{indent}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let max_chars = max_chars.max(1);
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return text.to_string();
+    }
+    let truncated: String = text.chars().take(max_chars).collect();
+    let remaining = char_count - max_chars;
+    format!("{truncated}…[+{remaining} chars]")
+}
+
+fn status_icon(status: &str) -> &'static str {
+    match status {
+        "idle" | "done" => "✓",
+        "error" => "✗",
+        "running" => "◐",
+        "queued" => "⧗",
+        "cancelled" => "⊘",
+        "never_run" => "○",
+        _ => "?",
+    }
 }
 
 /// Format a cell header line (matches Python _format_header).
@@ -291,16 +378,7 @@ pub fn format_cell_header(
 
     if let Some(st) = status {
         if !st.is_empty() {
-            let icon = match st {
-                "idle" | "done" => "✓",
-                "error" => "✗",
-                "running" => "◐",
-                "queued" => "⧗",
-                "cancelled" => "⊘",
-                "never_run" => "○",
-                _ => "?",
-            };
-            parts.push(format!("{icon} {st}"));
+            parts.push(format!("{} {st}", status_icon(st)));
         }
     }
 
@@ -517,7 +595,6 @@ mod tests {
     #[test]
     fn format_cell_summary_truncates_long_source() {
         let summary = format_cell_summary(
-            3,
             "cell-abc",
             "code",
             "import numpy as np\nimport pandas as pd",
@@ -527,9 +604,10 @@ mod tests {
                 execution_id: Some("exec-123"),
             },
             15,
+            &[],
         );
-        assert!(summary.starts_with("3 | code | idle | id=cell-abc | exec=5 | "));
-        assert!(summary.contains("exec_id=exec-123"));
+        assert!(summary.starts_with("⏺ ━━━ cell cell-abc (code) ✓ idle [5] exec=exec-123"));
+        assert!(summary.contains("\n  In:\n"));
         assert!(summary.contains("…[+"));
         assert!(summary.contains(" chars]"));
     }
@@ -539,7 +617,6 @@ mod tests {
         // Markdown cells don't have execution counts; the exec= field
         // must not appear even if a value was threaded through.
         let summary = format_cell_summary(
-            0,
             "cell-md",
             "markdown",
             "# Hello",
@@ -549,25 +626,50 @@ mod tests {
                 execution_id: Some("exec-md"),
             },
             50,
+            &[],
         );
         assert!(!summary.contains("exec="));
-        assert!(!summary.contains("exec_id="));
         assert!(summary.contains("# Hello"));
     }
 
     #[test]
-    fn format_cell_summary_collapses_whitespace() {
-        // Multi-line or multi-space source must render on a single line.
+    fn format_cell_summary_preserves_multiline_source() {
         let summary = format_cell_summary(
-            0,
             "cell-x",
             "code",
             "x = 1\n\n\n  y   =    2",
             CellSummaryContext::default(),
             100,
+            &[],
         );
-        assert!(summary.contains("x = 1 y = 2"));
-        assert!(!summary.contains('\n'));
+        assert!(summary.contains("      x = 1"));
+        assert!(summary.contains("        y   =    2"));
+    }
+
+    #[test]
+    fn format_cell_summary_renders_text_output_blocks() {
+        let outputs = vec![Output::display_data(data(&[(
+            "text/llm+plain",
+            DataValue::Text("HuggingFace Dataset: 2,000 rows × 12 features".into()),
+        )]))];
+
+        let summary = format_cell_summary(
+            "73fe9d2b-b4ab-4d39-ba90-fec52a1c3360",
+            "code",
+            "ds_slice",
+            CellSummaryContext {
+                execution_count: None,
+                status: Some("done"),
+                execution_id: None,
+            },
+            120,
+            &outputs,
+        );
+
+        assert!(summary.contains("⏺ ━━━ cell 73fe9d2b-b4ab-4d39-ba90-fec52a1c3360 (code) ✓ done"));
+        assert!(summary.contains("  In:\n      ds_slice"));
+        assert!(summary.contains("  Out [text/llm+plain]:"));
+        assert!(summary.contains("      HuggingFace Dataset: 2,000 rows × 12 features"));
     }
 
     #[test]
