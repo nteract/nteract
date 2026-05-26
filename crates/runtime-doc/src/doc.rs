@@ -194,6 +194,10 @@ pub struct ExecutionState {
     /// Set by the coordinator when creating the execution entry.
     #[serde(default)]
     pub source: Option<String>,
+    /// Notebook cell that submitted this execution, when the execution came
+    /// from a notebook cell.
+    #[serde(default)]
+    pub cell_id: Option<String>,
     /// Queue sequence number for ordering.
     /// Monotonic counter owned by the coordinator; the runtime agent sorts
     /// queued entries by this to determine execution order.
@@ -1219,6 +1223,25 @@ impl RuntimeStateDoc {
         seq: u64,
         submitted_by_actor_label: Option<&str>,
     ) -> Result<bool, RuntimeStateError> {
+        self.create_execution_with_source_provenance(
+            execution_id,
+            source,
+            seq,
+            submitted_by_actor_label,
+            None,
+        )
+    }
+
+    /// Create a new execution entry with source code, queue sequence number,
+    /// authenticated submitter, and optional notebook cell provenance.
+    pub fn create_execution_with_source_provenance(
+        &mut self,
+        execution_id: &str,
+        source: &str,
+        seq: u64,
+        submitted_by_actor_label: Option<&str>,
+        cell_id: Option<&str>,
+    ) -> Result<bool, RuntimeStateError> {
         let executions = self.scaffold_map("executions")?;
 
         // Don't overwrite if it already exists (idempotent)
@@ -1240,6 +1263,9 @@ impl RuntimeStateDoc {
         self.doc.put(&entry, "success", ScalarValue::Null)?;
         self.doc.put_object(&entry, "outputs", ObjType::Map)?;
         self.doc.put(&entry, "source", source)?;
+        if let Some(cell_id) = cell_id {
+            self.doc.put(&entry, "cell_id", cell_id)?;
+        }
         self.doc.put(&entry, "seq", ScalarValue::Uint(seq))?;
         if let Some(actor_label) = submitted_by_actor_label {
             self.doc
@@ -1353,6 +1379,7 @@ impl RuntimeStateDoc {
         let success = self.read_execution_success(&entry);
         let outputs = self.get_outputs(execution_id);
         let source = self.read_opt_str(&entry, "source");
+        let cell_id = self.read_opt_str(&entry, "cell_id");
         let seq = self.read_execution_seq(&entry);
 
         let submitted_by_actor_label = self.read_opt_str(&entry, "submitted_by_actor_label");
@@ -1363,6 +1390,7 @@ impl RuntimeStateDoc {
             success,
             outputs,
             source,
+            cell_id,
             seq,
             submitted_by_actor_label,
         })
@@ -1439,6 +1467,7 @@ impl RuntimeStateDoc {
                     success: self.read_execution_success(&entry),
                     outputs: Vec::new(),
                     source: self.read_opt_str(&entry, "source"),
+                    cell_id: self.read_opt_str(&entry, "cell_id"),
                     seq: self.read_execution_seq(&entry),
                     submitted_by_actor_label: self.read_opt_str(&entry, "submitted_by_actor_label"),
                 },
@@ -4165,6 +4194,34 @@ mod tests {
     }
 
     #[test]
+    fn test_create_execution_with_source_provenance() {
+        let mut doc = RuntimeStateDoc::new();
+        assert!(doc
+            .create_execution_with_source_provenance(
+                "exec-1",
+                "x = 42",
+                0,
+                Some("local:kyle/agent:codex:s1"),
+                Some("cell-1"),
+            )
+            .unwrap());
+
+        let es = doc.get_execution("exec-1").unwrap();
+        assert_eq!(es.status, "queued");
+        assert_eq!(es.source.as_deref(), Some("x = 42"));
+        assert_eq!(es.cell_id.as_deref(), Some("cell-1"));
+        assert_eq!(es.seq, Some(0));
+        assert_eq!(
+            es.submitted_by_actor_label.as_deref(),
+            Some("local:kyle/agent:codex:s1")
+        );
+
+        let queued = doc.get_queued_executions();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].1.cell_id.as_deref(), Some("cell-1"));
+    }
+
+    #[test]
     fn test_get_queued_executions_sorted_by_seq() {
         let mut doc = RuntimeStateDoc::new();
         doc.create_execution_with_source("exec-3", "z = 3", 2)
@@ -5047,6 +5104,7 @@ mod tests {
                     new_output.clone(),
                 ],
                 source: None,
+                cell_id: None,
                 seq: None,
                 submitted_by_actor_label: None,
             },
@@ -5080,6 +5138,7 @@ mod tests {
                 success: Some(true),
                 outputs: vec![test_stream("hash1"), test_stream("hash2")],
                 source: None,
+                cell_id: None,
                 seq: None,
                 submitted_by_actor_label: None,
             },
@@ -5567,6 +5626,7 @@ mod tests {
                 success: Some(true),
                 outputs: vec![test_stream("hash1")],
                 source: None,
+                cell_id: None,
                 seq: None,
                 submitted_by_actor_label: None,
             },
@@ -5587,6 +5647,7 @@ mod tests {
                 success: None,
                 outputs: vec![],
                 source: None,
+                cell_id: None,
                 seq: None,
                 submitted_by_actor_label: None,
             },
@@ -5608,6 +5669,7 @@ mod tests {
                 success: Some(true),
                 outputs: vec![],
                 source: None,
+                cell_id: None,
                 seq: None,
                 submitted_by_actor_label: None,
             },
@@ -5632,6 +5694,7 @@ mod tests {
                 success: Some(true),
                 outputs: vec![test_stream("hash1")],
                 source: None,
+                cell_id: None,
                 seq: None,
                 submitted_by_actor_label: None,
             },
@@ -5653,6 +5716,7 @@ mod tests {
                 success: None,
                 outputs: vec![],
                 source: None,
+                cell_id: None,
                 seq: None,
                 submitted_by_actor_label: None,
             },
@@ -5686,6 +5750,7 @@ mod tests {
                 success: Some(true),
                 outputs: vec![],
                 source: None,
+                cell_id: None,
                 seq: None,
                 submitted_by_actor_label: None,
             },

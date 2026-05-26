@@ -369,6 +369,7 @@ pub async fn get_results(
             success: record.success,
             outputs: record.outputs,
             source: record.source,
+            cell_id: record.cell_id.clone(),
             seq: record.seq,
             submitted_by_actor_label: record.submitted_by_actor_label,
         };

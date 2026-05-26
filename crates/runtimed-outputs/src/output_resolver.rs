@@ -651,18 +651,18 @@ pub async fn resolve_output_for_llm(
             if ctx.length == OutputLength::Preview {
                 if let Some(blob_hash) = traceback_val.get("blob").and_then(|v| v.as_str()) {
                     if let Some(preview) = manifest.get("llm_preview") {
-                        if let Some(cell_map) = ctx.execution_cell_map {
-                            if let Some(tb) = rich_traceback_lines_for_llm(
-                                manifest,
-                                cell_map,
-                                &blob_base_url,
-                                &blob_store_path,
-                                ctx.length,
-                            )
-                            .await
-                            {
-                                return Some(Output::error(&ename, &evalue, tb));
-                            }
+                        // Prefer structured rich traceback content even for preview output so
+                        // notebook frames can use stable cell IDs. If the blob is unavailable
+                        // or malformed, fall back to the precomputed lightweight preview below.
+                        if let Some(tb) = rich_traceback_lines_for_llm(
+                            manifest,
+                            ctx.execution_cell_map,
+                            &blob_base_url,
+                            &blob_store_path,
+                        )
+                        .await
+                        {
+                            return Some(Output::error(&ename, &evalue, tb));
                         }
                         let tb = render_error_preview(preview, blob_hash, &blob_base_url);
                         return Some(Output::error(&ename, &evalue, tb));
@@ -678,19 +678,14 @@ pub async fn resolve_output_for_llm(
                     resolve_text_ref(traceback_val, &blob_base_url, &blob_store_path).await?;
                 serde_json::from_str::<Vec<String>>(&tb_str).ok()?
             };
-            let traceback = if let Some(cell_map) = ctx.execution_cell_map {
-                rich_traceback_lines_for_llm(
-                    manifest,
-                    cell_map,
-                    &blob_base_url,
-                    &blob_store_path,
-                    ctx.length,
-                )
-                .await
-                .unwrap_or(traceback)
-            } else {
-                traceback
-            };
+            let traceback = rich_traceback_lines_for_llm(
+                manifest,
+                ctx.execution_cell_map,
+                &blob_base_url,
+                &blob_store_path,
+            )
+            .await
+            .unwrap_or(traceback);
             Some(Output::error(&ename, &evalue, traceback))
         }
         "display_data" | "execute_result" => {
@@ -709,15 +704,11 @@ pub async fn resolve_output_for_llm(
 
 async fn rich_traceback_lines_for_llm(
     manifest: &serde_json::Value,
-    execution_cell_map: &HashMap<String, String>,
+    execution_cell_map: Option<&HashMap<String, String>>,
     blob_base_url: &Option<String>,
     blob_store_path: &Option<PathBuf>,
-    length: OutputLength,
 ) -> Option<Vec<String>> {
     let rich_ref = manifest.get("rich")?;
-    if length == OutputLength::Preview && rich_ref.get("blob").is_some() {
-        return None;
-    }
     let rich_json = resolve_text_ref(rich_ref, blob_base_url, blob_store_path).await?;
     let payload: Value = serde_json::from_str(&rich_json).ok()?;
     synthesize_rich_traceback_lines(&payload, execution_cell_map)
@@ -725,7 +716,7 @@ async fn rich_traceback_lines_for_llm(
 
 fn synthesize_rich_traceback_lines(
     payload: &Value,
-    execution_cell_map: &HashMap<String, String>,
+    execution_cell_map: Option<&HashMap<String, String>>,
 ) -> Option<Vec<String>> {
     let ename = payload.get("ename")?.as_str()?;
     let evalue = payload.get("evalue").and_then(Value::as_str).unwrap_or("");
@@ -767,7 +758,7 @@ fn synthesize_rich_traceback_lines(
 
 fn rich_location_line(
     source: &Value,
-    execution_cell_map: &HashMap<String, String>,
+    execution_cell_map: Option<&HashMap<String, String>>,
     name: Option<&str>,
 ) -> Option<String> {
     let filename = source.get("filename").and_then(Value::as_str).unwrap_or("");
@@ -790,11 +781,21 @@ fn rich_location_line(
         .and_then(|r| r.get("execution_id"))
         .or_else(|| source.get("execution_id"))
         .and_then(Value::as_str);
+    let explicit_cell_id = source_ref
+        .and_then(|r| r.get("cell_id"))
+        .or_else(|| source.get("cell_id"))
+        .and_then(Value::as_str);
     let source_hash = source_ref
         .and_then(|r| r.get("source_hash"))
         .or_else(|| source.get("source_hash"))
         .and_then(Value::as_str);
-    let cell_id = execution_id.and_then(|eid| execution_cell_map.get(eid));
+    let execution_count = source_ref
+        .and_then(|r| r.get("execution_count"))
+        .or_else(|| source.get("execution_count"))
+        .and_then(Value::as_i64);
+    let mapped_cell_id =
+        execution_id.and_then(|eid| execution_cell_map.and_then(|map| map.get(eid)));
+    let cell_id = explicit_cell_id.or(mapped_cell_id.map(String::as_str));
 
     let label = cell_id
         .map(|cid| format!("Cell {cid}"))
@@ -805,6 +806,11 @@ fn rich_location_line(
     }
     if let Some(eid) = execution_id {
         details.push(format!("execution_id={eid}"));
+    }
+    if cell_id.is_none() {
+        if let Some(count) = execution_count {
+            details.push(format!("execution_count={count}"));
+        }
     }
     if let Some(hash) = source_hash {
         details.push(format!("source_hash={hash}"));
@@ -2679,6 +2685,172 @@ mod tests {
         assert!(!traceback.contains("In["));
         assert!(traceback.contains("pd.not_real()"));
         assert!(!traceback.contains("/var/folders/x/T/ipykernel_39879"));
+    }
+
+    #[tokio::test]
+    async fn llm_error_prefers_blobbed_rich_traceback_over_legacy_preview() {
+        let Ok(dir) = tempfile::tempdir() else {
+            panic!("tempdir should succeed");
+        };
+        let store_path = dir.path().to_path_buf();
+        let rich_hash = "abcdef1234567890";
+        let rich_dir = store_path.join(&rich_hash[..2]);
+        std::fs::create_dir_all(&rich_dir).expect("create rich blob dir");
+
+        let rich = json!({
+            "ename": "IndexError",
+            "evalue": "list index out of range",
+            "execution": {"execution_id": "exec-run", "cell_id": "cell-run"},
+            "frames": [
+                {
+                    "filename": "/tmp/ipykernel_1/run.py",
+                    "lineno": 6,
+                    "name": "<module>",
+                    "source_ref": {
+                        "kind": "notebook_execution",
+                        "execution_id": "exec-run",
+                        "cell_id": "cell-run",
+                        "compiled_filename": "/tmp/ipykernel_1/run.py"
+                    },
+                    "lines": [{"lineno": 6, "source": "records = image_scatter_records(ds_slice)", "highlight": true}]
+                },
+                {
+                    "filename": "/tmp/ipykernel_1/helper.py",
+                    "lineno": 12,
+                    "name": "image_scatter_records",
+                    "source_ref": {
+                        "kind": "notebook_execution",
+                        "execution_id": "exec-helper",
+                        "cell_id": "cell-helper",
+                        "compiled_filename": "/tmp/ipykernel_1/helper.py"
+                    },
+                    "lines": [{"lineno": 12, "source": "\"image\": row[\"images\"][0],", "highlight": true}]
+                }
+            ],
+            "text": "Traceback fallback still says Current Cell (In[21])"
+        });
+        std::fs::write(
+            rich_dir.join(&rich_hash[2..]),
+            serde_json::to_string(&rich).unwrap(),
+        )
+        .expect("write rich blob");
+
+        let fallback_traceback = serde_json::to_string(&json!(["legacy traceback"])).unwrap();
+        let manifest = serde_json::json!({
+            "output_type": "error",
+            "ename": "IndexError",
+            "evalue": "list index out of range",
+            "traceback": inline_ref(&fallback_traceback),
+            "rich": {"blob": rich_hash, "size": 4096},
+            "llm_preview": {
+                "last_frame": "Line 12 in Earlier Cell (In[20]), in image_scatter_records",
+                "total_bytes": 4096u64,
+                "frames": 2u32,
+            },
+        });
+
+        let Some(out) = resolve_output_for_llm(
+            &manifest,
+            ResolveCtx {
+                blob_store_path: Some(&store_path),
+                ..Default::default()
+            },
+        )
+        .await
+        else {
+            panic!("resolve should succeed");
+        };
+        let traceback = out.traceback.unwrap_or_default().join("\n");
+
+        assert!(
+            traceback.contains("Line 6 in Cell cell-run (cell_id=cell-run, execution_id=exec-run)")
+        );
+        assert!(traceback.contains(
+            "Line 12 in Cell cell-helper (cell_id=cell-helper, execution_id=exec-helper), in image_scatter_records"
+        ));
+        assert!(traceback.contains("\"image\": row[\"images\"][0],"));
+        assert!(!traceback.contains("In["));
+        assert!(!traceback.contains("full traceback at"));
+    }
+
+    #[tokio::test]
+    async fn llm_error_preview_falls_back_when_rich_blob_is_unavailable() {
+        let Ok(dir) = tempfile::tempdir() else {
+            panic!("tempdir should succeed");
+        };
+        let missing_rich_hash = "missing1234567890";
+        let traceback_hash = "traceback1234567";
+        let manifest = serde_json::json!({
+            "output_type": "error",
+            "ename": "IndexError",
+            "evalue": "list index out of range",
+            "traceback": {"blob": traceback_hash, "size": 4096},
+            "rich": {"blob": missing_rich_hash, "size": 4096},
+            "llm_preview": {
+                "last_frame": "Line 12 in Earlier Cell (In[20]), in image_scatter_records",
+                "total_bytes": 4096u64,
+                "frames": 2u32,
+            },
+        });
+
+        let Some(out) = resolve_output_for_llm(
+            &manifest,
+            ResolveCtx {
+                blob_store_path: Some(dir.path()),
+                ..Default::default()
+            },
+        )
+        .await
+        else {
+            panic!("resolve should succeed");
+        };
+        let traceback = out.traceback.unwrap_or_default().join("\n");
+
+        assert!(traceback.contains("Line 12 in Earlier Cell (In[20]), in image_scatter_records"));
+        assert!(traceback.contains("2 traceback frames, 4096 bytes total"));
+    }
+
+    #[tokio::test]
+    async fn llm_error_rich_traceback_without_cell_ids_keeps_execution_count() {
+        let rich = json!({
+            "ename": "RuntimeError",
+            "evalue": "boom",
+            "frames": [
+                {
+                    "filename": "/tmp/ipykernel_1/helper.py",
+                    "lineno": 12,
+                    "name": "image_scatter_records",
+                    "source_ref": {
+                        "kind": "notebook_execution",
+                        "execution_id": "exec-helper",
+                        "execution_count": 20,
+                        "compiled_filename": "/tmp/ipykernel_1/helper.py"
+                    },
+                    "lines": [{"lineno": 12, "source": "\"image\": row[\"images\"][0],", "highlight": true}]
+                }
+            ],
+            "text": "fallback text"
+        });
+        let fallback_traceback = serde_json::to_string(&json!(["fallback traceback"])).unwrap();
+        let rich_json = serde_json::to_string(&rich).unwrap();
+        let manifest = serde_json::json!({
+            "output_type": "error",
+            "ename": "RuntimeError",
+            "evalue": "boom",
+            "traceback": inline_ref(&fallback_traceback),
+            "rich": inline_ref(&rich_json),
+        });
+
+        let Some(out) = resolve_output_for_llm(&manifest, ResolveCtx::default()).await else {
+            panic!("resolve should succeed");
+        };
+        let traceback = out.traceback.unwrap_or_default().join("\n");
+
+        assert!(traceback.contains(
+            "Line 12 in Notebook Execution (execution_id=exec-helper, execution_count=20), in image_scatter_records"
+        ));
+        assert!(traceback.contains("\"image\": row[\"images\"][0],"));
+        assert!(!traceback.contains("In["));
     }
 
     #[tokio::test]

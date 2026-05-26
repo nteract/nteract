@@ -99,6 +99,7 @@ impl KernelState {
     pub async fn queue_cell(
         &mut self,
         execution_id: String,
+        cell_id: Option<String>,
         source: String,
         conn: &mut impl KernelConnection,
     ) -> Result<String> {
@@ -123,6 +124,7 @@ impl KernelState {
         // Add to queue.
         self.queue.push_back(QueuedCell {
             execution_id: execution_id.clone(),
+            cell_id,
             code: source,
         });
 
@@ -336,7 +338,8 @@ impl KernelState {
         }
 
         // Send execute request via the connection
-        conn.execute(&cell.execution_id, &cell.code).await?;
+        conn.execute(&cell.execution_id, cell.cell_id.as_deref(), &cell.code)
+            .await?;
 
         info!(
             "[kernel-state] Sent execute_request: execution_id={}",
@@ -429,7 +432,12 @@ mod tests {
             unimplemented!("tests create MockKernel directly")
         }
 
-        async fn execute(&mut self, execution_id: &str, _source: &str) -> Result<()> {
+        async fn execute(
+            &mut self,
+            execution_id: &str,
+            _cell_id: Option<&str>,
+            _source: &str,
+        ) -> Result<()> {
             self.executes.push(execution_id.to_string());
             Ok(())
         }
@@ -507,11 +515,11 @@ mod tests {
 
         // Queue two cells — first starts executing, second stays queued
         state
-            .queue_cell("e1".into(), "x=1".into(), &mut mock)
+            .queue_cell("e1".into(), None, "x=1".into(), &mut mock)
             .await
             .unwrap();
         state
-            .queue_cell("e2".into(), "x=2".into(), &mut mock)
+            .queue_cell("e2".into(), None, "x=2".into(), &mut mock)
             .await
             .unwrap();
 
@@ -539,7 +547,7 @@ mod tests {
         state.set_idle();
 
         state
-            .queue_cell("e1".into(), "x=1".into(), &mut mock)
+            .queue_cell("e1".into(), None, "x=1".into(), &mut mock)
             .await
             .unwrap();
 
@@ -572,11 +580,11 @@ mod tests {
         state.set_idle();
 
         state
-            .queue_cell("e1".into(), "x=1".into(), &mut mock)
+            .queue_cell("e1".into(), None, "x=1".into(), &mut mock)
             .await
             .unwrap();
         state
-            .queue_cell("e2".into(), "x=2".into(), &mut mock)
+            .queue_cell("e2".into(), None, "x=2".into(), &mut mock)
             .await
             .unwrap();
 

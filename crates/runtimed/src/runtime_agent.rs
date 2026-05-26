@@ -463,6 +463,7 @@ pub async fn run_runtime_agent(
                                                         if let Some(ref mut k) = kernel {
                                                             match kernel_state.queue_cell(
                                                                 eid.clone(),
+                                                                exec.cell_id.clone(),
                                                                 source.clone(),
                                                                 k,
                                                             ).await {
@@ -1721,7 +1722,7 @@ mod tests {
         ) -> Result<(Self, QueueCommandReceivers)> {
             unimplemented!()
         }
-        async fn execute(&mut self, _: &str, _: &str) -> Result<()> {
+        async fn execute(&mut self, _: &str, _: Option<&str>, _: &str) -> Result<()> {
             Ok(())
         }
         async fn interrupt(&mut self) -> Result<()> {
@@ -1818,11 +1819,11 @@ mod tests {
 
         // Queue two cells: c1 starts executing, c2 stays queued
         state
-            .queue_cell("e1".into(), "x=1".into(), &mut mock)
+            .queue_cell("e1".into(), None, "x=1".into(), &mut mock)
             .await
             .unwrap();
         state
-            .queue_cell("e2".into(), "x=2".into(), &mut mock)
+            .queue_cell("e2".into(), None, "x=2".into(), &mut mock)
             .await
             .unwrap();
 
@@ -1928,7 +1929,7 @@ mod tests {
 
         // Cell A is executing via the normal queue path
         state
-            .queue_cell("eA".into(), "while True: pass".into(), &mut mock)
+            .queue_cell("eA".into(), None, "while True: pass".into(), &mut mock)
             .await
             .unwrap();
         assert!(state.executing_cell().is_some());
@@ -1984,11 +1985,11 @@ mod tests {
 
         // Queue cell A (executing) and cell B (queued)
         state
-            .queue_cell("eA".into(), "while True: pass".into(), &mut mock)
+            .queue_cell("eA".into(), None, "while True: pass".into(), &mut mock)
             .await
             .unwrap();
         state
-            .queue_cell("eB".into(), "1 + 1".into(), &mut mock)
+            .queue_cell("eB".into(), None, "1 + 1".into(), &mut mock)
             .await
             .unwrap();
 
@@ -2023,7 +2024,7 @@ mod tests {
         // A stale CellError from eA must not poison the next execution.
         let mut mock = MockKernel;
         state
-            .queue_cell("eC".into(), "1 + 1".into(), &mut mock)
+            .queue_cell("eC".into(), None, "1 + 1".into(), &mut mock)
             .await
             .unwrap();
         assert!(state.executing_cell().is_none());

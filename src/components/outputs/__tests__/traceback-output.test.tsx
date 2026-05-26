@@ -163,6 +163,39 @@ describe("TracebackOutput", () => {
     expect(onNavigateToCell).toHaveBeenCalledWith({ cellId: "cell-def" });
   });
 
+  it("uses structured cell ids when execution lookup is unavailable", () => {
+    const onNavigateToCell = vi.fn();
+
+    render(
+      <TracebackOutput
+        data={{
+          ename: "IndexError",
+          evalue: "list index out of range",
+          frames: [
+            {
+              filename: "/var/folders/x/T/ipykernel_39879/3398808089.py",
+              lineno: 12,
+              name: "image_scatter_records",
+              cell_id: "cell-helper",
+              source_ref: {
+                kind: "notebook_execution",
+                cell_id: "cell-helper",
+                execution_id: "exec-helper",
+                compiled_filename: "/var/folders/x/T/ipykernel_39879/3398808089.py",
+              },
+              lines: [{ lineno: 12, source: 'row["images"][0]', highlight: true }],
+            },
+          ],
+        }}
+        onNavigateToCell={onNavigateToCell}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Go to cell cell-helper" }));
+
+    expect(onNavigateToCell).toHaveBeenCalledWith({ cellId: "cell-helper" });
+  });
+
   it("copies the sanitized traceback text", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {

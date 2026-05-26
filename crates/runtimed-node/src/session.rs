@@ -2068,6 +2068,7 @@ async fn cell_result_from_record(
         success: record.success,
         outputs: record.outputs,
         source: record.source,
+        cell_id: record.cell_id,
         seq: record.seq,
         submitted_by_actor_label: record.submitted_by_actor_label,
     };
@@ -2386,6 +2387,7 @@ mod tests {
             success: Some(true),
             outputs: vec![],
             source: Some("1 + 1".to_string()),
+            cell_id: None,
             seq: Some(9),
             submitted_by_actor_label: None,
         };
@@ -2423,6 +2425,7 @@ mod tests {
             success: Some(true),
             outputs: vec![],
             source: Some("print('ok')".to_string()),
+            cell_id: None,
             seq: Some(11),
             submitted_by_actor_label: None,
         };

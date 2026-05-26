@@ -46,6 +46,8 @@ pub struct RichSourceRef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_count: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_hash: Option<String>,
@@ -62,6 +64,8 @@ pub struct RichFrame {
     /// Execution provenance for frames compiled from notebook source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_count: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -89,6 +93,8 @@ pub struct RichSyntax {
     pub offset: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_count: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -131,6 +137,8 @@ pub struct RichTraceback {
 pub struct RichExecutionContext {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_count: Option<u32>,
 }
@@ -396,6 +404,7 @@ impl PendingFrame {
             lineno: self.lineno,
             name: self.name,
             execution_id: None,
+            cell_id: None,
             execution_count: None,
             source_hash: None,
             source_ref: None,
@@ -822,6 +831,7 @@ mod tests {
                     "evalue": "bad",
                     "execution": {
                         "execution_id": "exec-run",
+                        "cell_id": "cell-run",
                         "execution_count": 3
                     },
                     "frames": [{
@@ -829,11 +839,13 @@ mod tests {
                         "lineno": 2,
                         "name": "boom",
                         "execution_id": "exec-def",
+                        "cell_id": "cell-def",
                         "execution_count": 2,
                         "source_hash": "sha256:abc",
                         "source_ref": {
                             "kind": "notebook_execution",
                             "execution_id": "exec-def",
+                            "cell_id": "cell-def",
                             "execution_count": 2,
                             "source_hash": "sha256:abc",
                             "compiled_filename": "/tmp/ipykernel_1/123.py"
@@ -856,10 +868,17 @@ mod tests {
         assert_eq!(
             rt.execution
                 .as_ref()
+                .and_then(|execution| execution.cell_id.as_deref()),
+            Some("cell-run")
+        );
+        assert_eq!(
+            rt.execution
+                .as_ref()
                 .and_then(|execution| execution.execution_count),
             Some(3)
         );
         assert_eq!(rt.frames[0].execution_id.as_deref(), Some("exec-def"));
+        assert_eq!(rt.frames[0].cell_id.as_deref(), Some("cell-def"));
         assert_eq!(rt.frames[0].execution_count, Some(2));
         assert_eq!(rt.frames[0].source_hash.as_deref(), Some("sha256:abc"));
         assert_eq!(
@@ -868,6 +887,13 @@ mod tests {
                 .as_ref()
                 .map(|source_ref| source_ref.kind.as_str()),
             Some("notebook_execution")
+        );
+        assert_eq!(
+            rt.frames[0]
+                .source_ref
+                .as_ref()
+                .and_then(|source_ref| source_ref.cell_id.as_deref()),
+            Some("cell-def")
         );
         assert_eq!(
             rt.frames[0]

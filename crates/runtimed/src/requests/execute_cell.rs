@@ -263,11 +263,12 @@ async fn queue_cell_if_current(
             if sd.get_execution(&execution_id).is_some() {
                 return Ok(false);
             }
-            sd.create_execution_with_source_and_submitter(
+            sd.create_execution_with_source_provenance(
                 &execution_id,
                 &cell.source,
                 seq,
                 submitter_actor_label,
+                Some(cell_id),
             )
         }) {
             Ok(true) => break,
