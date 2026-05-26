@@ -553,6 +553,40 @@ describe("OutputArea iframe theme sync", () => {
     expect(isolatedFrameMountCount).toBe(1);
   });
 
+  it("aggregates search match counts across segmented output lanes", async () => {
+    const onSearchMatchCount = vi.fn();
+
+    render(
+      <OutputArea
+        outputs={[...makeStreamOutput("foo foo\n"), makeWidgetOutput()]}
+        searchQuery="foo"
+        onSearchMatchCount={onSearchMatchCount}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(onSearchMatchCount).toHaveBeenCalledWith(2);
+    });
+
+    lastFrameMessageHandler?.({
+      type: "search_results",
+      payload: { count: 1 },
+    });
+
+    expect(onSearchMatchCount).toHaveBeenLastCalledWith(3);
+  });
+
+  it("does not preload hidden iframes for DOM-only segments", () => {
+    render(
+      <OutputArea
+        outputs={[...makeStreamOutput("stdout one\n"), makeWidgetOutput()]}
+        preloadIframe
+      />,
+    );
+
+    expect(screen.getAllByTestId("isolated-frame")).toHaveLength(1);
+  });
+
   it("keeps the legacy collapse control scoped to one mixed output area", () => {
     const outputs: JupyterOutput[] = [
       ...makeStreamOutput("stdout one\n"),

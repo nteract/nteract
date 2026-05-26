@@ -560,31 +560,57 @@ export function OutputArea({
   priority = DEFAULT_PRIORITY,
   ...props
 }: OutputAreaProps) {
+  const { onSearchMatchCount, preloadIframe = false, ...passthroughProps } = props;
+  const segmentedSearchMatchCountsRef = useRef(new Map<string, number>());
   const outputSegments = segmentedOutputLanes(outputs, isolated, onToggleCollapse, priority);
+  const outputSegmentKeys = outputSegments.map(outputSegmentKey);
 
   if (outputSegments.length > 0) {
     return (
       <>
-        {outputSegments.map((segment, index) => (
-          <OutputAreaSingle
-            key={outputSegmentKey(segment, index)}
-            {...props}
-            outputs={segment.outputs}
-            isolated="auto"
-            onToggleCollapse={onToggleCollapse}
-            priority={priority}
-          />
-        ))}
+        {outputSegments.map((segment, index) => {
+          const segmentKey = outputSegmentKeys[index] ?? outputSegmentKey(segment, index);
+          return (
+            <OutputAreaSingle
+              key={segmentKey}
+              {...passthroughProps}
+              outputs={segment.outputs}
+              isolated="auto"
+              onSearchMatchCount={
+                onSearchMatchCount
+                  ? (count) => {
+                      const counts = segmentedSearchMatchCountsRef.current;
+                      const activeKeys = new Set(outputSegmentKeys);
+                      for (const key of counts.keys()) {
+                        if (!activeKeys.has(key)) counts.delete(key);
+                      }
+                      counts.set(segmentKey, count);
+                      const total = outputSegmentKeys.reduce(
+                        (sum, key) => sum + (counts.get(key) ?? 0),
+                        0,
+                      );
+                      onSearchMatchCount(total);
+                    }
+                  : undefined
+              }
+              onToggleCollapse={onToggleCollapse}
+              preloadIframe={segment.lane === "dom" ? false : preloadIframe}
+              priority={priority}
+            />
+          );
+        })}
       </>
     );
   }
 
   return (
     <OutputAreaSingle
-      {...props}
+      {...passthroughProps}
       outputs={outputs}
       isolated={isolated}
+      onSearchMatchCount={onSearchMatchCount}
       onToggleCollapse={onToggleCollapse}
+      preloadIframe={preloadIframe}
       priority={priority}
     />
   );
