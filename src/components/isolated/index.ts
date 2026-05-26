@@ -60,6 +60,11 @@ export { IsolationTest } from "./IsolationTest";
 export type { IsolatedFrameHandle, IsolatedFrameProps } from "./isolated-frame";
 export { IsolatedFrame } from "./isolated-frame";
 export {
+  createDaemonRendererPluginLoader,
+  daemonOutputFrameUrl,
+  daemonRendererAssetsBaseUrl,
+} from "./daemon-renderer-assets";
+export {
   ISOLATED_DIAGNOSTICS_STORAGE_KEY,
   isolatedDebugDiagnosticsEnabled,
   logIsolatedDiagnostic,

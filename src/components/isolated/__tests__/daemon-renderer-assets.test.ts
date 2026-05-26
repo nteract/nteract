@@ -1,9 +1,24 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import { createDaemonRendererPluginLoader } from "../shared-renderer-plugin-loader";
+import {
+  createDaemonRendererPluginLoader,
+  daemonOutputFrameUrl,
+  daemonRendererAssetsBaseUrl,
+} from "../daemon-renderer-assets";
 
-describe("createDaemonRendererPluginLoader", () => {
+describe("daemon renderer assets", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("builds daemon output frame and plugin asset base URLs from the blob base URL", () => {
+    expect(daemonOutputFrameUrl("http://localhost:47830/")).toBe(
+      "http://localhost:47830/output-frame",
+    );
+    expect(daemonRendererAssetsBaseUrl("http://localhost:47830/")).toBe(
+      "http://localhost:47830/plugins/",
+    );
+    expect(daemonOutputFrameUrl(undefined)).toBeNull();
+    expect(daemonRendererAssetsBaseUrl(undefined)).toBeUndefined();
   });
 
   it("fetches raw renderer plugin assets from the daemon renderer-plugin route", async () => {
