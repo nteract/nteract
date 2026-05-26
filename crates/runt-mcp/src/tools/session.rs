@@ -386,8 +386,7 @@ fn format_cell_summaries(handle: &notebook_sync::handle::DocHandle) -> String {
     let cell_ec_map = crate::tools::cell_read::build_cell_execution_count_map(handle);
     cells
         .iter()
-        .enumerate()
-        .map(|(i, cell)| {
+        .map(|cell| {
             let status = cell_status_map.get(&cell.id).map(String::as_str);
             let ec = cell_ec_map.get(&cell.id).map(String::as_str);
             let execution_id = handle.get_cell_execution_id(&cell.id);
@@ -399,7 +398,6 @@ fn format_cell_summaries(handle: &notebook_sync::handle::DocHandle) -> String {
                 }
             });
             formatting::format_cell_summary(
-                i,
                 &cell.id,
                 &cell.cell_type,
                 &cell.source,
@@ -409,10 +407,11 @@ fn format_cell_summaries(handle: &notebook_sync::handle::DocHandle) -> String {
                     execution_id: execution_id.as_deref(),
                 },
                 60,
+                &[],
             )
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n\n")
 }
 
 #[allow(dead_code)] // Fields used by schemars for tool input schema generation
