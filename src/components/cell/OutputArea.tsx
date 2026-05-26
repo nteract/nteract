@@ -261,6 +261,65 @@ function outputUsesSift(
   return false;
 }
 
+interface OutputSegment {
+  lane: "dom" | "static-frame" | "interactive-frame" | "sift-frame";
+  outputs: JupyterOutput[];
+}
+
+function outputSegmentLane(
+  output: JupyterOutput,
+  priority: readonly string[] = DEFAULT_PRIORITY,
+): OutputSegment["lane"] {
+  if (!outputNeedsIsolation(output, priority)) return "dom";
+  if (outputUsesSift(output, priority)) return "sift-frame";
+  if (outputAllowsScrollPassthrough(output, priority)) return "static-frame";
+  return "interactive-frame";
+}
+
+function splitOutputSegments(
+  outputs: readonly JupyterOutput[],
+  priority: readonly string[] = DEFAULT_PRIORITY,
+): OutputSegment[] {
+  const segments: OutputSegment[] = [];
+
+  for (const output of outputs) {
+    const lane = outputSegmentLane(output, priority);
+    const previous = segments.at(-1);
+
+    if (lane !== "sift-frame" && previous && previous.lane === lane) {
+      previous.outputs.push(output);
+    } else {
+      segments.push({ lane, outputs: [output] });
+    }
+  }
+
+  return segments;
+}
+
+function shouldSegmentOutputLanes(
+  outputs: readonly JupyterOutput[],
+  isolated: OutputAreaProps["isolated"],
+  onToggleCollapse: OutputAreaProps["onToggleCollapse"],
+  priority: readonly string[] = DEFAULT_PRIORITY,
+): boolean {
+  if (isolated !== "auto") return false;
+  // The legacy collapse control is output-area scoped. Keep it as a single
+  // control until segmentation owns one shared wrapper instead of several
+  // sibling OutputAreaSingle wrappers.
+  if (onToggleCollapse) return false;
+  if (outputs.length <= 1) return false;
+
+  return splitOutputSegments(outputs, priority).length > 1;
+}
+
+function outputSegmentKey(segment: OutputSegment, index: number): string {
+  return [
+    segment.lane,
+    index,
+    ...segment.outputs.map((output) => output.output_id ?? output.output_type),
+  ].join("\0");
+}
+
 function scrollElementIntoComfortableView(element: HTMLElement | null): boolean {
   if (!element || typeof window === "undefined") return false;
 
@@ -303,7 +362,9 @@ function outputNeedsIsolation(
 
 /**
  * Check if any outputs in the array need iframe isolation.
- * If any output needs isolation, ALL outputs should go to the iframe.
+ * For a single render segment, any isolated output makes that segment render
+ * in the iframe. `OutputArea` splits mixed output lists into lane segments
+ * before this check so DOM-safe streams do not have to share widget/Sift frames.
  *
  * Not exported: keeping every `.tsx` export limited to components and
  * hooks lets React Fast Refresh hot-patch this module instead of bailing
@@ -492,6 +553,41 @@ function withTracebackExecutionTargets(
  * ```
  */
 export function OutputArea({
+  outputs,
+  isolated = "auto",
+  onToggleCollapse,
+  priority = DEFAULT_PRIORITY,
+  ...props
+}: OutputAreaProps) {
+  if (shouldSegmentOutputLanes(outputs, isolated, onToggleCollapse, priority)) {
+    return (
+      <>
+        {splitOutputSegments(outputs, priority).map((segment, index) => (
+          <OutputAreaSingle
+            key={outputSegmentKey(segment, index)}
+            {...props}
+            outputs={segment.outputs}
+            isolated="auto"
+            onToggleCollapse={onToggleCollapse}
+            priority={priority}
+          />
+        ))}
+      </>
+    );
+  }
+
+  return (
+    <OutputAreaSingle
+      {...props}
+      outputs={outputs}
+      isolated={isolated}
+      onToggleCollapse={onToggleCollapse}
+      priority={priority}
+    />
+  );
+}
+
+function OutputAreaSingle({
   outputs,
   cellId,
   executionCount,

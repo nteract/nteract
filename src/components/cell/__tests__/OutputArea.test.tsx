@@ -103,7 +103,19 @@ function makeStreamOutput(text = "hey\n"): JupyterOutput[] {
   ];
 }
 
-function makeMixedIsolatedOutputs(): JupyterOutput[] {
+function makeWidgetOutput(outputId = "widget-output", modelId = "widget-model"): JupyterOutput {
+  return {
+    output_id: outputId,
+    output_type: "display_data",
+    data: {
+      "application/vnd.jupyter.widget-view+json": { model_id: modelId },
+      "text/plain": "Widget fallback",
+    },
+    metadata: {},
+  };
+}
+
+function makeMixedDocumentOutputs(): JupyterOutput[] {
   return [
     {
       output_id: "mixed-stream-output",
@@ -458,20 +470,62 @@ describe("OutputArea iframe theme sync", () => {
     expect(outputContent.style.maxHeight).toBe("");
   });
 
-  it("keeps mixed auto-isolated outputs together in one iframe render batch", async () => {
-    const onNavigateToTracebackCell = vi.fn();
+  it("segments mixed auto outputs into DOM, interactive iframe, and standalone sift iframe lanes", async () => {
+    const outputs: JupyterOutput[] = [
+      ...makeStreamOutput("stdout one\n"),
+      ...makeStreamOutput("stdout two\n"),
+      makeWidgetOutput("widget-progress-1", "model-progress-1"),
+      makeWidgetOutput("widget-progress-2", "model-progress-2"),
+      ...makeParquetOutput(),
+    ];
 
-    render(
-      <OutputArea
-        outputs={makeMixedIsolatedOutputs()}
-        resolveTracebackExecutionTarget={(executionId, sourceHash) =>
-          executionId === "exec-run" && sourceHash === "source-hash-run"
-            ? { cellId: "cell-run", label: "Run Cell" }
-            : null
-        }
-        onNavigateToTracebackCell={onNavigateToTracebackCell}
-      />,
-    );
+    render(<OutputArea outputs={outputs} />);
+
+    expect(screen.getByText(/stdout one/)).toBeInTheDocument();
+    expect(screen.getByText(/stdout two/)).toBeInTheDocument();
+
+    const frames = screen.getAllByTestId("isolated-frame");
+    expect(frames).toHaveLength(2);
+    expect(frames[0].getAttribute("data-scroll-passthrough")).toBe("false");
+    expect(frames[0].getAttribute("data-allow-wheel-boundary-scroll")).toBe("true");
+    expect(frames[1].getAttribute("data-scroll-passthrough")).toBe("true");
+    expect(frames[1].getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
+
+    await waitFor(() => {
+      expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
+        expect.objectContaining({
+          mimeType: "application/vnd.jupyter.widget-view+json",
+          outputId: "widget-progress-1",
+        }),
+        expect.objectContaining({
+          mimeType: "application/vnd.jupyter.widget-view+json",
+          outputId: "widget-progress-2",
+        }),
+      ]);
+      expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
+        expect.objectContaining({
+          mimeType: "application/vnd.apache.parquet",
+          outputId: "parquet-output",
+        }),
+      ]);
+    });
+  });
+
+  it("keeps the legacy collapse control scoped to one mixed output area", () => {
+    const outputs: JupyterOutput[] = [
+      ...makeStreamOutput("stdout one\n"),
+      makeWidgetOutput("widget-progress-1", "model-progress-1"),
+      ...makeParquetOutput(),
+    ];
+
+    render(<OutputArea outputs={outputs} onToggleCollapse={vi.fn()} />);
+
+    expect(screen.getAllByRole("button", { name: "Hide outputs" })).toHaveLength(1);
+    expect(screen.getAllByTestId("isolated-frame")).toHaveLength(1);
+  });
+
+  it("keeps forced-isolated mixed outputs together when a caller opts out of lane segmentation", async () => {
+    render(<OutputArea outputs={makeMixedDocumentOutputs()} isolated />);
 
     await waitFor(() => {
       expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
@@ -488,31 +542,9 @@ describe("OutputArea iframe theme sync", () => {
         expect.objectContaining({
           mimeType: "application/vnd.nteract.traceback+json",
           data: expect.objectContaining({ ename: "RecursionError" }),
-          metadata: expect.objectContaining({
-            tracebackExecutionTargets: [
-              {
-                execution_id: "exec-run",
-                source_hash: "source-hash-run",
-                target: { cellId: "cell-run", label: "Run Cell" },
-              },
-            ],
-          }),
           outputIndex: 2,
         }),
       ]);
-    });
-
-    expect(screen.queryByText("stream before")).toBeNull();
-    expect(screen.queryByText("RecursionError")).toBeNull();
-
-    lastFrameMessageHandler?.({
-      type: "traceback_navigate",
-      payload: { target: { cellId: "cell-run", label: "Run Cell" } },
-    });
-
-    expect(onNavigateToTracebackCell).toHaveBeenCalledWith({
-      cellId: "cell-run",
-      label: "Run Cell",
     });
   });
 

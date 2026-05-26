@@ -25,6 +25,8 @@ The shared runtime work now gives us a cleaner path:
   helpers instead of local protocol copies.
 - Hosted output documents, renderer sidecars, and private blob reads have
   separate origin boundaries; see `hosted-output-origin-isolation.md`.
+- Mixed output lists are segmented by the shared output renderer, not by the
+  cloud viewer; see `output-rendering-segmentation.md`.
 
 ## Decision 1: Durable publish artifacts are snapshot pairs
 

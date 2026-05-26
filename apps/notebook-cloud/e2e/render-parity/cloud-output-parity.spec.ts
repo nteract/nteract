@@ -102,8 +102,15 @@ test.describe("cloud renderer parity harness", () => {
     await openParityHarness(page);
 
     const siftCell = page.locator('[data-cell-id="sift-arrow-output"]');
+    await expect(siftCell).toContainText(cloudOutputParityExpectedMarkers.siftStream);
+    await expect(siftCell).toContainText("Cloud Sift widget progress marker");
     await expect(siftCell.locator('[data-sift-output="true"]')).toBeVisible({ timeout: 60_000 });
-    await expect(siftCell.locator("iframe")).toHaveAttribute(
+    await expect(siftCell.locator('iframe[data-slot="isolated-frame"]')).toHaveCount(1);
+    await expect(siftCell.locator('[data-sift-output="true"] iframe')).toHaveCSS(
+      "pointer-events",
+      "none",
+    );
+    await expect(siftCell.locator('[data-sift-output="true"] iframe')).toHaveAttribute(
       "src",
       /\/output-document\/frame\.html\?nteract_theme=light$/,
     );
