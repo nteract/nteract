@@ -46,6 +46,11 @@ const expectedLatestRevisionRuntimeHeadsHash =
   process.env.NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_RUNTIME_HEADS_HASH ?? "";
 const requireSiftWasm = process.env.NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM !== "0";
 const requireRuntimedWasm = process.env.NOTEBOOK_CLOUD_REQUIRE_RUNTIMED_WASM !== "0";
+const expectedThemeModes = parseExpectedTexts("NOTEBOOK_CLOUD_SMOKE_THEME_MODES", [
+  "light",
+  "dark",
+  "system-dark",
+]);
 const screenshotPath = process.env.NOTEBOOK_CLOUD_SMOKE_SCREENSHOT;
 const timeoutMs = Number(process.env.NOTEBOOK_CLOUD_SMOKE_TIMEOUT_MS ?? 60_000);
 const targetOrigin = new URL(targetUrl).origin;
@@ -67,6 +72,7 @@ let renderApiCheck = null;
 let catalogApiCheck = null;
 let screenshotSaved = false;
 let pageTextMatches = {};
+let themeModeChecks = [];
 
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
@@ -331,6 +337,9 @@ async function main() {
     if (screenshotPath) {
       await saveScreenshot(page);
     }
+    if (expectedThemeModes.length > 0) {
+      themeModeChecks = await checkHostedThemeModes(browser, expectedThemeModes);
+    }
 
     if (failures.length > 0) {
       throw new SmokeFailure(failures);
@@ -360,6 +369,7 @@ async function main() {
           presenceText,
           frameTextMatches,
           pageTextMatches,
+          themeModeChecks,
           iframeMetrics,
           siftWasmRequests,
           runtimedWasmRequests,
@@ -407,6 +417,204 @@ function parseExpectedTexts(envName, fallback) {
     .split("|")
     .map((entry) => entry.trim())
     .filter(Boolean);
+}
+
+function themeModeSpec(value) {
+  switch (value) {
+    case "light":
+      return { mode: value, storedTheme: "light", mediaColorScheme: null, expectedTheme: "light" };
+    case "dark":
+      return { mode: value, storedTheme: "dark", mediaColorScheme: null, expectedTheme: "dark" };
+    case "system":
+      return { mode: value, storedTheme: "system", mediaColorScheme: null, expectedTheme: null };
+    case "system-light":
+      return {
+        mode: value,
+        storedTheme: "system",
+        mediaColorScheme: "light",
+        expectedTheme: "light",
+      };
+    case "system-dark":
+      return {
+        mode: value,
+        storedTheme: "system",
+        mediaColorScheme: "dark",
+        expectedTheme: "dark",
+      };
+    default:
+      throw new Error(
+        `NOTEBOOK_CLOUD_SMOKE_THEME_MODES contains unsupported mode ${JSON.stringify(value)}`,
+      );
+  }
+}
+
+async function checkHostedThemeModes(browser, modes) {
+  const checks = [];
+
+  for (const mode of modes) {
+    const spec = themeModeSpec(mode);
+    const page = await browser.newPage({
+      viewport: { width: 1280, height: 900 },
+      deviceScaleFactor: 1,
+    });
+    const localFailures = [];
+    const localWarnings = [];
+
+    page.on("console", (message) => {
+      const text = message.text();
+      if (message.type() === "error" && !isBenignConsoleError(text)) {
+        localFailures.push({ kind: "theme-console-error", mode, text });
+      }
+      if (message.type() === "warning") {
+        localWarnings.push(text);
+      }
+    });
+    page.on("pageerror", (error) => {
+      localFailures.push({ kind: "theme-page-error", mode, text: error.message });
+    });
+    page.on("requestfailed", (request) => {
+      if (!isRelevantRequestUrl(request.url())) {
+        return;
+      }
+      localFailures.push({
+        kind: "theme-request-failed",
+        mode,
+        url: request.url(),
+        error: request.failure()?.errorText ?? "unknown",
+      });
+    });
+
+    try {
+      if (spec.mediaColorScheme) {
+        await page.emulateMedia({ colorScheme: spec.mediaColorScheme });
+      }
+      await page.addInitScript(
+        ({ storedTheme }) => {
+          try {
+            if (window.top === window) {
+              window.localStorage.setItem("nteract.cloud.viewer.theme", storedTheme);
+            }
+          } catch {
+            // Sandboxed output documents correctly cannot read localStorage.
+          }
+        },
+        { storedTheme: spec.storedTheme },
+      );
+      await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+      await page.waitForLoadState("networkidle", { timeout: timeoutMs }).catch(() => {});
+
+      if (expectedSourceText) {
+        await page.waitForFunction(
+          (text) => document.body.innerText.includes(text),
+          expectedSourceText,
+          { timeout: timeoutMs },
+        );
+      }
+      await page.waitForFunction(
+        () =>
+          Array.from(document.querySelectorAll("iframe[sandbox]")).some(
+            (iframe) => iframe.clientWidth > 0 && iframe.clientHeight > 0,
+          ),
+        undefined,
+        { timeout: timeoutMs },
+      );
+
+      const observed = await page.evaluate(() => ({
+        className: document.documentElement.className,
+        datasetTheme: document.documentElement.dataset.theme ?? null,
+        colorScheme: getComputedStyle(document.documentElement).colorScheme,
+        outputFrames: Array.from(document.querySelectorAll("iframe[sandbox]")).map((iframe) => ({
+          src: iframe.getAttribute("src"),
+          srcdoc: iframe.hasAttribute("srcdoc"),
+          sandbox: iframe.getAttribute("sandbox"),
+          origin: iframe.getAttribute("src")
+            ? new URL(iframe.getAttribute("src"), location.href).origin
+            : null,
+        })),
+      }));
+      const resolvedTheme = observed.datasetTheme;
+      const expectedTheme = spec.expectedTheme ?? resolvedTheme;
+      const outputFrames = observed.outputFrames.filter(
+        (frame) => frame.origin === outputDocumentOrigin,
+      );
+
+      if (expectedTheme !== "light" && expectedTheme !== "dark") {
+        localFailures.push({
+          kind: "theme-resolution",
+          mode,
+          text: `expected a light or dark resolved theme, got ${expectedTheme ?? "missing"}`,
+          observed,
+        });
+      } else if (resolvedTheme !== expectedTheme) {
+        localFailures.push({
+          kind: "theme-resolution",
+          mode,
+          text: `expected ${expectedTheme}, got ${resolvedTheme ?? "missing"}`,
+          observed,
+        });
+      }
+      if (!observed.className.split(/\s+/).includes(expectedTheme)) {
+        localFailures.push({
+          kind: "theme-class",
+          mode,
+          text: `documentElement class did not include ${expectedTheme}`,
+          observed,
+        });
+      }
+      if (!observed.colorScheme.includes(expectedTheme)) {
+        localFailures.push({
+          kind: "theme-color-scheme",
+          mode,
+          text: `color-scheme did not include ${expectedTheme}`,
+          observed,
+        });
+      }
+      if (expectedOutputDocumentOrigin && outputFrames.length === 0) {
+        localFailures.push({
+          kind: "theme-output-document-origin",
+          mode,
+          text: `No output iframe loaded from ${expectedOutputDocumentOrigin}`,
+          observed,
+        });
+      }
+      for (const frame of outputFrames) {
+        const frameUrl = new URL(frame.src, targetUrl);
+        const frameTheme = frameUrl.searchParams.get("nteract_theme");
+        if (frameTheme !== expectedTheme) {
+          localFailures.push({
+            kind: "theme-output-document-url",
+            mode,
+            text: `output frame theme was ${frameTheme ?? "missing"}, expected ${expectedTheme}`,
+            frame,
+          });
+        }
+        if (/\ballow-same-origin\b/.test(frame.sandbox ?? "")) {
+          localFailures.push({
+            kind: "theme-output-document-sandbox",
+            mode,
+            text: "Output iframe sandbox included allow-same-origin",
+            frame,
+          });
+        }
+      }
+
+      failures.push(...localFailures);
+      checks.push({
+        mode,
+        storedTheme: spec.storedTheme,
+        mediaColorScheme: spec.mediaColorScheme,
+        expectedTheme,
+        resolvedTheme,
+        outputFrameCount: outputFrames.length,
+        warnings: localWarnings,
+        failures: localFailures,
+      });
+    } finally {
+      await page.close();
+    }
+  }
+
+  return checks;
 }
 
 async function waitForPageText(page, expectedTexts) {

@@ -36,12 +36,16 @@ export function preloadSiftWasmForCells(
   if (!href) return null;
 
   const existing = Array.from(targetDocument.head.querySelectorAll<HTMLLinkElement>("link")).some(
-    (link) => link.rel === "preload" && link.href === href,
+    (link) => link.rel === "prefetch" && link.href === href,
   );
   if (existing) return href;
 
   const link = targetDocument.createElement("link");
-  link.rel = "preload";
+  // The Sift renderer fetches WASM from inside a sandboxed opaque-origin output
+  // document, so a parent-page preload is never consumed by the same context
+  // and Chrome warns. Prefetch still warms the immutable sidecar without
+  // loosening the output-frame sandbox or producing an unused-preload warning.
+  link.rel = "prefetch";
   link.as = "fetch";
   link.type = "application/wasm";
   link.href = href;
