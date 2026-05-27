@@ -100,12 +100,13 @@ should be:
 
 ## SDK Findings
 
-The SDK path tested locally was `/Users/kyle/Developer/PlaydateSDK`.
+The SDK validation used a local Playdate SDK checkout exposed through
+`PLAYDATE_SDK_PATH`.
 
 Useful commands and findings:
 
 ```bash
-/Users/kyle/Developer/PlaydateSDK/bin/pdc source.png compiled
+$PLAYDATE_SDK_PATH/bin/pdc source.png compiled
 ```
 
 This creates `compiled.pdx/source.pdi`. `pdc` does not produce a bare PDI at the
@@ -142,7 +143,7 @@ cargo run --quiet --manifest-path .context/playdate-image-roundtrip/Cargo.toml -
 Compile with the local SDK harness:
 
 ```bash
-/Users/kyle/codex/playdate-harness/scripts/compile.py \
+$PLAYDATE_HARNESS/scripts/compile.py \
   --project .context/playdate-ntpdimg-viewer \
   --name NTPDIMGViewer
 ```
@@ -150,7 +151,7 @@ Compile with the local SDK harness:
 Run the Simulator autotest:
 
 ```bash
-/Users/kyle/codex/playdate-harness/scripts/sim_autotest.py \
+$PLAYDATE_HARNESS/scripts/sim_autotest.py \
   --project .context/playdate-ntpdimg-viewer \
   --name NTPDIMGViewer \
   --bundle-id com.nteract.playdate-image.validation \
