@@ -140,10 +140,13 @@ export function segmentedOutputLanes(
     priority = DEFAULT_PRIORITY,
   }: OutputSegmentationOptions = {},
 ): OutputSegment[] {
-  if (isolated !== "auto") return [];
-  if (hasCollapseControl) return [];
   if (outputs.length <= 1) return [];
 
   const segments = splitOutputSegments(outputs, priority);
+  const hasSiftBoundary = segments.some((segment) => segment.lane === "sift-frame");
+  if (isolated !== "auto" || hasCollapseControl) {
+    return hasSiftBoundary && segments.length > 1 ? segments : [];
+  }
+
   return segments.length > 1 ? segments : [];
 }

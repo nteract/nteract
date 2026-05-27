@@ -1,5 +1,6 @@
 import { StrictMode, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { OutputArea } from "../../../../../src/components/cell/OutputArea";
 import { ReadOnlyNotebook } from "../../../../../src/components/cell/ReadOnlyNotebook";
 import { IsolatedRendererProvider } from "../../../../../src/components/isolated/isolated-renderer-context";
 import { MediaProvider } from "../../../../../src/components/outputs/media-provider";
@@ -20,8 +21,13 @@ const rendererBundle = () => import("virtual:isolated-renderer");
 function CloudRendererParityHarness() {
   const { theme, setTheme, resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const [cells, setCells] = useState<Awaited<ReturnType<typeof resolveCloudOutputParityCells>>>([]);
+  const [boundaryCollapsed, setBoundaryCollapsed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const hostContext = useMemo(() => cloudOutputParityHostContext(), []);
+  const boundaryOutputs = useMemo(
+    () => [...(cells.find((cell) => cell.id === "sift-html-boundary-output")?.outputs ?? [])],
+    [cells],
+  );
 
   useEffect(() => {
     applyDocumentTheme(resolvedTheme);
@@ -78,6 +84,31 @@ function CloudRendererParityHarness() {
             className="cloud-render-parity-notebook"
             label="Cloud renderer parity notebook"
           />
+          {boundaryOutputs.length > 0 ? (
+            <section aria-label="Sift boundary controls" className="cloud-render-parity-boundaries">
+              <div data-testid="forced-sift-boundary">
+                <h2>Forced isolated Sift boundary</h2>
+                <OutputArea
+                  cellId="forced-sift-boundary"
+                  outputs={boundaryOutputs}
+                  isolated
+                  priority={CLOUD_VIEWER_PRIORITY}
+                  hostContext={hostContext}
+                />
+              </div>
+              <div data-testid="collapsible-sift-boundary">
+                <h2>Collapsible Sift boundary</h2>
+                <OutputArea
+                  cellId="collapsible-sift-boundary"
+                  outputs={boundaryOutputs}
+                  collapsed={boundaryCollapsed}
+                  onToggleCollapse={() => setBoundaryCollapsed((value) => !value)}
+                  priority={CLOUD_VIEWER_PRIORITY}
+                  hostContext={hostContext}
+                />
+              </div>
+            </section>
+          ) : null}
         </MediaProvider>
       </IsolatedRendererProvider>
     </main>

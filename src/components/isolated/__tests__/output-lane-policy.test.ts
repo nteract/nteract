@@ -111,7 +111,7 @@ describe("output lane policy", () => {
     expect(hasWidgetOutputs(segments[1].outputs)).toBe(true);
   });
 
-  it("only enables segmentation for mixed auto-isolated output groups without collapse controls", () => {
+  it("keeps ordinary mixed output groups together when forced or collapsible", () => {
     const outputs = [
       streamOutput(),
       displayOutput("widget", {
@@ -126,5 +126,22 @@ describe("output lane policy", () => {
     expect(segmentedOutputLanes(outputs, { isolated: true })).toEqual([]);
     expect(segmentedOutputLanes(outputs, { hasCollapseControl: true })).toEqual([]);
     expect(segmentedOutputLanes([outputs[1]])).toEqual([]);
+  });
+
+  it("still splits Sift into standalone boundaries when forced or collapsible", () => {
+    const outputs = [
+      streamOutput(),
+      displayOutput("html", { "text/html": "<b>html</b>" }),
+      displayOutput("table", {
+        "application/vnd.apache.parquet": "http://localhost/blob/table",
+      }),
+    ];
+
+    expect(
+      segmentedOutputLanes(outputs, { isolated: true }).map((segment) => segment.lane),
+    ).toEqual(["dom", "static-frame", "sift-frame"]);
+    expect(
+      segmentedOutputLanes(outputs, { hasCollapseControl: true }).map((segment) => segment.lane),
+    ).toEqual(["dom", "static-frame", "sift-frame"]);
   });
 });

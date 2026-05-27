@@ -258,6 +258,50 @@ export const cloudOutputParityRenderCells: readonly RenderCell[] = [
       },
     ],
   },
+  {
+    id: "sift-html-boundary-output",
+    cell_type: "code",
+    source: [
+      "print('Cloud boundary stream marker')",
+      "display(HTML('<strong>Cloud boundary HTML marker</strong>'))",
+      "display(df)",
+    ].join("\n"),
+    execution_count: 9,
+    outputs: [
+      {
+        output_id: "boundary-output-stream",
+        output_type: "stream",
+        name: "stdout",
+        text: "Cloud boundary stream marker\n",
+      },
+      {
+        output_id: "boundary-output-html",
+        output_type: "display_data",
+        data: {
+          "text/html": {
+            inline:
+              '<section id="cloud-boundary-html-marker"><strong>Cloud boundary HTML marker</strong></section>',
+          },
+          "text/plain": { inline: "Cloud boundary HTML marker" },
+        },
+        metadata: {},
+      },
+      {
+        output_id: "boundary-output-sift",
+        output_type: "display_data",
+        data: {
+          "application/vnd.nteract.arrow-stream-manifest+json": {
+            inline: JSON.stringify({
+              chunks: [{ hash: ARROW_BLOB_HASH, size: 9352, row_count: 96 }],
+              complete: true,
+            }),
+          },
+          "text/plain": { inline: "Cloud boundary Sift Arrow marker" },
+        },
+        metadata: {},
+      },
+    ],
+  },
 ];
 
 export const cloudOutputParityExpectedMarkers = {
@@ -272,6 +316,8 @@ export const cloudOutputParityExpectedMarkers = {
   siftStream: "Preparing Cloud Sift Arrow fixture",
   siftColumn: "score",
   mixedStream: "Cloud mixed stream marker",
+  boundaryStream: "Cloud boundary stream marker",
+  boundaryHtml: "Cloud boundary HTML marker",
 } as const;
 
 export function cloudOutputParityBlobResolver(): BlobResolver {
