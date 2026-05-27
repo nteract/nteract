@@ -90,7 +90,30 @@ test.describe("cloud renderer parity harness", () => {
       page.frameLocator('[data-cell-id="html-output"] iframe').locator("html"),
     ).toHaveAttribute("data-theme", "light", { timeout: 30_000 });
 
-    await page.getByTestId("theme-dark").click();
+    await page.getByTitle("Dark theme").click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+    await expect(
+      page.frameLocator('[data-cell-id="html-output"] iframe').locator("html"),
+    ).toHaveAttribute("data-theme", "dark", { timeout: 30_000 });
+  });
+
+  test("resolves system theme through the shared cloud theme toggle", async ({ page }) => {
+    await page.emulateMedia({ colorScheme: "dark" });
+    await openParityHarness(page);
+
+    await expect(page.getByTestId("cloud-render-parity")).toHaveAttribute(
+      "data-theme-mode",
+      "system",
+    );
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+    await expect(
+      page.frameLocator('[data-cell-id="html-output"] iframe').locator("html"),
+    ).toHaveAttribute("data-theme", "dark", { timeout: 30_000 });
+
+    await page.getByTitle("Light theme").click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+
+    await page.getByTitle("System theme").click();
     await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
     await expect(
       page.frameLocator('[data-cell-id="html-output"] iframe').locator("html"),

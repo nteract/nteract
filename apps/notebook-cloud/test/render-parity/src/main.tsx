@@ -3,7 +3,10 @@ import { createRoot } from "react-dom/client";
 import { ReadOnlyNotebook } from "../../../../../src/components/cell/ReadOnlyNotebook";
 import { IsolatedRendererProvider } from "../../../../../src/components/isolated/isolated-renderer-context";
 import { MediaProvider } from "../../../../../src/components/outputs/media-provider";
+import { ThemeToggle } from "../../../../../src/components/ui/theme-toggle";
+import { useTheme } from "../../../../../src/hooks/useTheme";
 import { CLOUD_VIEWER_PRIORITY } from "../../../viewer/mime-policy";
+import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "../../../viewer/theme";
 import {
   cloudOutputParityExpectedMarkers,
   cloudOutputParityHostContext,
@@ -14,24 +17,15 @@ import "./style.css";
 
 const rendererBundle = () => import("virtual:isolated-renderer");
 
-type ThemeMode = "light" | "dark";
-
-function applyTheme(theme: ThemeMode): void {
-  document.documentElement.classList.toggle("dark", theme === "dark");
-  document.documentElement.classList.toggle("light", theme === "light");
-  document.documentElement.dataset.theme = theme;
-  document.documentElement.style.colorScheme = theme;
-}
-
 function CloudRendererParityHarness() {
-  const [theme, setTheme] = useState<ThemeMode>("light");
+  const { theme, setTheme, resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const [cells, setCells] = useState<Awaited<ReturnType<typeof resolveCloudOutputParityCells>>>([]);
   const [error, setError] = useState<string | null>(null);
   const hostContext = useMemo(() => cloudOutputParityHostContext(), []);
 
   useEffect(() => {
-    applyTheme(theme);
-  }, [theme]);
+    applyDocumentTheme(resolvedTheme);
+  }, [resolvedTheme]);
 
   useEffect(() => {
     let cancelled = false;
@@ -60,7 +54,8 @@ function CloudRendererParityHarness() {
       className="cloud-render-parity-page"
       data-testid="cloud-render-parity"
       data-ready={cells.length > 0 ? "true" : "false"}
-      data-theme={theme}
+      data-theme={resolvedTheme}
+      data-theme-mode={theme}
     >
       <header className="cloud-render-parity-header">
         <div>
@@ -68,22 +63,7 @@ function CloudRendererParityHarness() {
           <h1>Renderer parity fixture</h1>
         </div>
         <div className="cloud-render-parity-actions" aria-label="Theme controls">
-          <button
-            type="button"
-            data-testid="theme-light"
-            data-active={theme === "light" ? "true" : "false"}
-            onClick={() => setTheme("light")}
-          >
-            Light
-          </button>
-          <button
-            type="button"
-            data-testid="theme-dark"
-            data-active={theme === "dark" ? "true" : "false"}
-            onClick={() => setTheme("dark")}
-          >
-            Dark
-          </button>
+          <ThemeToggle theme={theme} onThemeChange={setTheme} className="cloud-theme-toggle" />
         </div>
       </header>
       <div data-testid="fixture-markers" hidden>
