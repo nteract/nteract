@@ -11,6 +11,7 @@ publish = false
 workspace = true
 
 [dependencies]
+base64 = { workspace = true }
 rmcp = { version = "1.4", features = ["server", "transport-io"] }
 repr-llm = { path = "../repr-llm" }
 runtimed-client = { path = "../runtimed-client" }

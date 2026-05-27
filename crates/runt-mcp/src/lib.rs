@@ -23,6 +23,7 @@ pub mod daemon_watch;
 pub mod editing;
 pub mod execution;
 pub mod formatting;
+mod icons;
 pub mod presence;
 pub mod project_file;
 mod resources;
