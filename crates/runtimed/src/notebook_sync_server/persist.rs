@@ -510,8 +510,21 @@ async fn widget_state_metadata_from_comms(
             continue;
         };
 
-        let (resolved_state, buffers) =
-            resolve_widget_state_content_refs(entry.state.clone(), blob_store).await?;
+        let (resolved_state, buffers) = match resolve_widget_state_content_refs(
+            entry.state.clone(),
+            blob_store,
+        )
+        .await
+        {
+            Ok(resolved) => resolved,
+            Err(err) => {
+                warn!(
+                        "[notebook-sync] Skipping widget comm {} while materializing widget state metadata: {err}",
+                        comm_id
+                    );
+                continue;
+            }
+        };
         let mut model = serde_json::Map::new();
         model.insert(
             "model_name".to_string(),

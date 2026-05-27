@@ -1548,6 +1548,65 @@ async fn test_save_notebook_to_disk_resolves_widget_state_content_refs() {
 }
 
 #[tokio::test]
+async fn test_save_notebook_to_disk_skips_only_widget_with_unresolved_state_blob() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "widget-state-partial.ipynb");
+
+    room.state
+        .with_doc(|sd| {
+            sd.put_comm(
+                "healthy-widget",
+                "jupyter.widget",
+                "@jupyter-widgets/controls",
+                "IntSliderModel",
+                &serde_json::json!({
+                    "_model_module": "@jupyter-widgets/controls",
+                    "_model_module_version": "2.0.0",
+                    "_model_name": "IntSliderModel",
+                    "value": 7
+                }),
+                0,
+            )?;
+            sd.put_comm(
+                "broken-widget",
+                "jupyter.widget",
+                "@jupyter-widgets/controls",
+                "ImageModel",
+                &serde_json::json!({
+                    "_model_module": "@jupyter-widgets/controls",
+                    "_model_module_version": "2.0.0",
+                    "_model_name": "ImageModel",
+                    "value": {
+                        "blob": "missing-widget-state-blob",
+                        "size": 6,
+                        "media_type": "application/octet-stream"
+                    }
+                }),
+                1,
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+
+    let content = std::fs::read_to_string(&notebook_path).unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let widget_models = saved["metadata"]["widgets"][WIDGET_STATE_MIME]["state"]
+        .as_object()
+        .expect("widget state map");
+    assert!(widget_models.contains_key("healthy-widget"));
+    assert!(
+        !widget_models.contains_key("broken-widget"),
+        "a single unresolved widget blob should not poison every other widget model"
+    );
+    assert_eq!(
+        widget_models["healthy-widget"]["state"]["value"],
+        serde_json::json!(7)
+    );
+}
+
+#[tokio::test]
 async fn test_save_notebook_to_disk_externalizes_arrow_stream_outputs() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, notebook_path) = test_room_with_path(&tmp, "arrow-output.ipynb");
