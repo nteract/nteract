@@ -129,9 +129,9 @@ grant different write surfaces. Treat them as capability sets:
 | Scope | Capabilities |
 |-------|--------------|
 | `viewer` | read room state, receive sync, send empty sync negotiation, send presence; anonymous viewer presence may be connection-local |
-| `editor` | viewer + write `NotebookDoc` + client-mediated widget comm-state writes |
-| `runtime_peer` | viewer + write `RuntimeStateDoc` + upload output blobs + emit runtime lifecycle broadcasts |
-| `owner` | editor + runtime_peer + publish revisions + mutate ACLs |
+| `editor` | viewer + write allowed `NotebookDoc` fields + server-validated existing widget comm-state writes |
+| `runtime_peer` | viewer + write kernel lifecycle, comm topology, output routing, and progress/output state for accepted executions + upload output blobs; cannot create execution intent or rewrite trust/environment/path/project metadata |
+| `owner` | editor + publish revisions + mutate ACLs; may hold separate `runtime_peer` capability through an explicit ACL row when it needs runtime progress authorship |
 
 The provider gives a maximum capability set for the credential. The ACL gives
 one or more room grants. A connection also has a requested role. Anonymous
@@ -233,9 +233,10 @@ room host:
    to R2 and record a revision/checkpoint row in D1.
 
 The DO does not host kernels in this phase. Kernel execution enters later as a
-`runtime_peer` connection that writes `RuntimeStateDoc` and uploads output
-blobs. The DO hosts documents, presence, auth context, snapshots, and scope
-enforcement.
+`runtime_peer` connection that reports lifecycle, comm topology, output routing,
+and progress/output for room-accepted executions and uploads output blobs. The
+DO hosts documents, presence, auth context, snapshots, scope enforcement, and
+the request path that creates execution intent.
 
 Durable Object storage is not the source of truth for notebook content. It may
 hold hibernation metadata and a small amount of transient room state. R2
@@ -262,14 +263,13 @@ mutation API. Either is acceptable for the prototype as long as the accepted
 surface is server-enforced. "Only the cloud UI exposes markdown editing" is not
 sufficient.
 
-The same release must also close the editor `RuntimeStateDoc` write surface.
-Editor scope may write only the widget comm-state subtree
-(`doc.comms/*/state/*`). In a multi-user room, an editor sending arbitrary
-`RuntimeStateDoc` sync changes is privilege escalation into runtime lifecycle,
-execution status, or fabricated outputs. Step 7 below must therefore ship with
-server-side path validation for `0x05` editor frames, or editor-scope WebSockets
-must remain restricted to trusted first-party clients until that validation
-lands.
+The editor `RuntimeStateDoc` write surface is closed by the shared runtime-doc
+policy used by the hosted room host and daemon. Editor and owner scopes may
+mutate only existing widget comm-state values (`doc.comms/*/state/*`). In a
+multi-user room, an editor sending arbitrary `RuntimeStateDoc` sync changes
+would be privilege escalation into runtime lifecycle, execution status, or
+fabricated outputs, so frames that touch those fields are rejected before the
+real room document mutates.
 
 Full code-cell editing is a later phase. Code cells can render read-only while
 markdown cells are editable.
@@ -330,9 +330,11 @@ enforce equivalent access.
 6. **DO snapshot materialization.** Load latest snapshot pair into
    `runtimed-wasm` inside the DO and use it as the room state, initially still
    without kernels.
-7. **Editor RuntimeStateDoc path enforcement.** Before exposing editor-scope
-   WebSockets to untrusted clients, validate editor `RuntimeStateDoc` changes
-   server-side and accept only `doc.comms/*/state/*` widget-state writes.
+7. **Editor RuntimeStateDoc path enforcement.** Done in the shared
+   runtime-doc policy: editor/owner `RuntimeStateDoc` sync may mutate only
+   existing widget comm-state values, while queue, execution, kernel,
+   environment, output routing, comm topology, and schema/root writes remain
+   runtime-owned.
 8. **Markdown-only edit slice.** Add the server-side semantic gate or request
    API, then expose markdown editing for authenticated `editor`/`owner`
    connections.
