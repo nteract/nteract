@@ -4393,6 +4393,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
+name = "mcp-client-branding"
+version = "0.1.0"
+
+[[package]]
 name = "mcp-supervisor"
 version = "0.4.1"
 dependencies = [
@@ -7312,6 +7316,7 @@ dependencies = [
  "chrono",
  "dirs",
  "fancy-regex 0.14.0",
+ "mcp-client-branding",
  "notebook-doc",
  "notebook-protocol",
  "notebook-sync",

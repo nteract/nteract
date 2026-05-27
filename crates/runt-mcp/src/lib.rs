@@ -240,19 +240,18 @@ impl ServerHandler for NteractMcp {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         // Sniff client name on first call for use as the notebook peer label.
-        // The title (e.g., "Claude Desktop") is preferred over the name ("claude-desktop").
+        // The title (e.g., "Claude Desktop") is preferred over the raw
+        // implementation name ("claude-ai"), then known names are canonicalized.
         {
             let current = self.peer_label.read().await;
             if *current == "Inkwell" {
                 drop(current);
                 if let Some(info) = context.peer.peer_info() {
-                    let label = info
-                        .client_info
-                        .title
-                        .as_deref()
-                        .unwrap_or(&info.client_info.name);
-                    if !label.is_empty() {
-                        *self.peer_label.write().await = label.to_string();
+                    if let Some(label) = mcp_client_branding::display_name(
+                        &info.client_info.name,
+                        info.client_info.title.as_deref(),
+                    ) {
+                        *self.peer_label.write().await = label.into_owned();
                     }
                 }
             }
