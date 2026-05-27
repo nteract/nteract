@@ -16,10 +16,11 @@ use notebook_doc::pool_state::{PoolDoc, PoolState};
 use notebook_doc::presence;
 use notebook_doc::{CellSnapshot, NotebookDoc};
 use notebook_wire::{frame_types, SessionControlMessage, SessionSyncStatusWire};
-use nteract_identity::{ActorLabel, Operator, Principal};
+use nteract_identity::{ActorLabel, ConnectionScope, Operator, Principal};
 use runtime_doc::{
-    diff_output_ids_in_place, output_ids_for_execution, ExecutionState, ExecutionViewChangeset,
-    ExecutionViewProjector, RuntimeState, RuntimeStateDoc,
+    diff_output_ids_in_place, output_ids_for_execution, runtime_state_policy_snapshot,
+    validate_runtime_state_sync_scope, ExecutionState, ExecutionViewChangeset,
+    ExecutionViewProjector, RuntimeState, RuntimeStateDoc, RuntimeStateWriteScope,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -412,6 +413,29 @@ impl RuntimeStatePeerHandle {
             .append_output(execution_id, &manifest)
             .map_err(|e| JsError::new(&format!("append output failed: {e}")))
     }
+
+    pub fn put_comm_json(
+        &mut self,
+        comm_id: &str,
+        target_name: &str,
+        model_module: &str,
+        model_name: &str,
+        state_json: &str,
+        seq: u32,
+    ) -> Result<(), JsError> {
+        let state: serde_json::Value = serde_json::from_str(state_json)
+            .map_err(|e| JsError::new(&format!("decode comm state json: {e}")))?;
+        self.state_doc
+            .put_comm(
+                comm_id,
+                target_name,
+                model_module,
+                model_name,
+                &state,
+                seq.into(),
+            )
+            .map_err(|e| JsError::new(&format!("put comm failed: {e}")))
+    }
 }
 
 /// Durable-Object room host for NotebookDoc + RuntimeStateDoc sync.
@@ -473,17 +497,13 @@ impl RoomHostHandle {
     /// The Worker calls this immediately after accepting a socket and after the
     /// peer receives `cloud_room_ready`. It lets read-only viewers receive the
     /// current document without authoring any local Automerge changes.
-    pub fn sync_peer(
-        &mut self,
-        peer_id: &str,
-        can_write_notebook: bool,
-        can_write_runtime_state: bool,
-    ) -> Result<JsValue, JsError> {
+    pub fn sync_peer(&mut self, peer_id: &str, connection_scope: &str) -> Result<JsValue, JsError> {
+        let connection_scope = parse_connection_scope(connection_scope)?;
         let mut result = RoomHostFrameResult::empty();
         self.queue_current_sync_for_peer(
             peer_id,
-            can_write_notebook,
-            can_write_runtime_state,
+            connection_scope.allows_notebook_write(),
+            connection_scope.allows_runtime_state_write(),
             &mut result.outbound,
         )?;
         serialize_to_js(&result).map_err(|e| JsError::new(&format!("serialize room result: {e}")))
@@ -499,7 +519,7 @@ impl RoomHostHandle {
         &mut self,
         peer_id: &str,
         principal: &str,
-        can_write: bool,
+        connection_scope: &str,
         can_write_all_notebook_changes: bool,
         frame_bytes: &[u8],
     ) -> Result<JsValue, JsError> {
@@ -507,18 +527,21 @@ impl RoomHostHandle {
             return Err(JsError::new("typed frame cannot be empty"));
         }
 
+        let connection_scope = parse_connection_scope(connection_scope)?;
+        let runtime_scope = runtime_state_write_scope(connection_scope);
+        let can_write_notebook = connection_scope.allows_notebook_write();
         let frame_type = frame_bytes[0];
         let payload = &frame_bytes[1..];
         let result = match frame_type {
             frame_types::AUTOMERGE_SYNC => self.receive_notebook_sync(
                 peer_id,
                 principal,
-                can_write,
+                can_write_notebook,
                 can_write_all_notebook_changes,
                 payload,
             )?,
             frame_types::RUNTIME_STATE_SYNC => {
-                self.receive_runtime_state_sync(peer_id, principal, can_write, payload)?
+                self.receive_runtime_state_sync(peer_id, principal, runtime_scope, payload)?
             }
             _ => RoomHostFrameResult::empty(),
         };
@@ -620,12 +643,13 @@ impl RoomHostHandle {
         &mut self,
         peer_id: &str,
         principal: &str,
-        can_write: bool,
+        scope: RuntimeStateWriteScope,
         payload: &[u8],
     ) -> Result<RoomHostFrameResult, JsError> {
         let message = sync::Message::decode(payload)
             .map_err(|e| JsError::new(&format!("decode runtime state sync: {e}")))?;
         let has_changes = !message.changes.is_empty();
+        let can_write = scope.allows_runtime_state_write();
         if has_changes && !can_write {
             return Err(JsError::new(
                 "connection scope cannot write RuntimeStateDoc changes",
@@ -648,6 +672,10 @@ impl RoomHostHandle {
                 .map_err(|e| JsError::new(&format!("runtime state auth preview failed: {e}")))?;
             let actors = extract_change_actors(preview.doc_mut(), &heads_before);
             validate_room_actor_labels(principal, actors.iter().map(String::as_str))?;
+            let state_before = runtime_state_policy_snapshot(&self.state_doc);
+            let state_after = runtime_state_policy_snapshot(&preview);
+            validate_runtime_state_sync_scope(&state_before, &state_after, scope)
+                .map_err(|e| JsError::new(&e.to_string()))?;
         }
 
         let heads_before = self.state_doc.get_heads();
@@ -783,6 +811,21 @@ fn room_peer_sync_state(can_write: bool) -> sync::State {
     }
 }
 
+fn parse_connection_scope(scope: &str) -> Result<ConnectionScope, JsError> {
+    scope
+        .parse()
+        .map_err(|e| JsError::new(&format!("unknown connection scope: {e}")))
+}
+
+fn runtime_state_write_scope(scope: ConnectionScope) -> RuntimeStateWriteScope {
+    match scope {
+        ConnectionScope::Viewer => RuntimeStateWriteScope::Viewer,
+        ConnectionScope::Editor => RuntimeStateWriteScope::Editor,
+        ConnectionScope::RuntimePeer => RuntimeStateWriteScope::RuntimePeer,
+        ConnectionScope::Owner => RuntimeStateWriteScope::Owner,
+    }
+}
+
 fn validate_room_actor_labels<'a>(
     principal: &str,
     labels: impl IntoIterator<Item = &'a str>,
@@ -791,7 +834,6 @@ fn validate_room_actor_labels<'a>(
         .map_err(|e| JsError::new(&format!("authenticated principal is invalid: {e}")))?;
     for label in labels {
         match ActorLabel::parse(label.to_string()) {
-            Ok(actor) if actor.principal() == Principal::SYSTEM => {}
             Ok(actor) if actor.principal() == expected.as_str() => {}
             Ok(actor) => {
                 return Err(JsError::new(&format!(
@@ -1129,11 +1171,13 @@ impl NotebookHandle {
     /// This is the preferred constructor for sync-only clients. The daemon
     /// populates the full document via Automerge sync.
     pub fn create_bootstrap(actor_label: &str) -> Result<NotebookHandle, JsError> {
+        let mut state_doc = RuntimeStateDoc::try_new_empty()
+            .map_err(|e| JsError::new(&format!("create runtime state doc failed: {}", e)))?;
+        state_doc.set_actor(actor_label);
         Ok(NotebookHandle {
             doc: NotebookDoc::bootstrap(notebook_doc::TextEncoding::Utf16CodeUnit, actor_label),
             sync_state: sync::State::new(),
-            state_doc: RuntimeStateDoc::try_new_empty()
-                .map_err(|e| JsError::new(&format!("create runtime state doc failed: {}", e)))?,
+            state_doc,
             state_sync_state: sync::State::new(),
             prev_output_by_id: HashMap::new(),
             execution_view_projector: ExecutionViewProjector::default(),
@@ -1220,6 +1264,7 @@ impl NotebookHandle {
     /// Tags all subsequent edits with this label for provenance tracking.
     pub fn set_actor(&mut self, actor_label: &str) {
         self.doc.set_actor(actor_label);
+        self.state_doc.set_actor(actor_label);
     }
 
     /// Return the deduplicated, sorted list of actor labels that have

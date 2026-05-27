@@ -47,9 +47,12 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
     get_dependency_fingerprint(): string | undefined;
     get_heads_hex(): string[];
     get_metadata_snapshot_json(): string | undefined;
+    get_runtime_state(): unknown;
     get_runtime_state_heads_hex(): string[];
     receive_frame(frameBytes: Uint8Array): unknown;
     reset_sync_state(): void;
+    set_comm_state_batch(commId: string, patchJson: string): boolean;
+    set_comm_state_property(commId: string, key: string, valueJson: string): boolean;
     update_source(cellId: string, source: string): boolean;
     free(): void;
   }
@@ -62,14 +65,17 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
     receive_peer_frame(
       peerId: string,
       principal: string,
-      canWrite: boolean,
+      connectionScope: "viewer" | "editor" | "runtime_peer" | "owner",
       canWriteAllNotebookChanges: boolean,
       frameBytes: Uint8Array,
     ): unknown;
     remove_peer(peerId: string): void;
     save_notebook(): Uint8Array;
     save_runtime_state_doc(): Uint8Array;
-    sync_peer(peerId: string, canWriteNotebook: boolean, canWriteRuntimeState: boolean): unknown;
+    sync_peer(
+      peerId: string,
+      connectionScope: "viewer" | "editor" | "runtime_peer" | "owner",
+    ): unknown;
     free(): void;
   }
 
@@ -81,6 +87,14 @@ declare module "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js" {
     create_execution_with_source(executionId: string, source: string, seq: number): boolean;
     flush_runtime_state_sync(): Uint8Array | undefined;
     generate_runtime_state_sync_reply(): Uint8Array | undefined;
+    put_comm_json(
+      commId: string,
+      targetName: string,
+      modelModule: string,
+      modelName: string,
+      stateJson: string,
+      seq: number,
+    ): void;
     receive_frame(frameBytes: Uint8Array): unknown;
     save(): Uint8Array;
     set_actor(actorLabel: string): void;

@@ -62,8 +62,6 @@ impl RoomConnectionIdentity {
     ) -> anyhow::Result<()> {
         for label in labels {
             match ActorLabel::parse(label.to_string()) {
-                // Reserved for future system/schema:* seed and import writes.
-                Ok(actor) if actor.principal() == nteract_identity::Principal::SYSTEM => {}
                 Ok(actor) if actor.principal() == self.auth.principal().as_str() => {}
                 Ok(actor) => anyhow::bail!(
                     "actor principal {} is not authorized for authenticated principal {}",
