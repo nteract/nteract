@@ -7,14 +7,21 @@
  * - Unknown widgets → UnsupportedWidget fallback
  */
 
+import type { ReactNode } from "react";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
 import { WidgetErrorFallback } from "@/lib/widget-error-fallback";
 import { AnyWidgetView, isAnyWidget } from "./anywidget-view";
+import { useSavedWidgetModel } from "./saved-widget-state-context";
 import { useLayoutStyles } from "./use-layout-styles";
 import { getWidgetComponent } from "./widget-registry";
 import type { WidgetModel } from "./widget-store";
 import { useWasWidgetClosed, useWidgetModel } from "./widget-store-context";
+import {
+  formatSavedWidgetSummary,
+  type SavedWidgetModel,
+  type WidgetViewStateHint,
+} from "./widget-state";
 
 // === Props ===
 
@@ -23,6 +30,8 @@ export interface WidgetViewProps {
   modelId: string;
   /** Optional className for the container */
   className?: string;
+  /** Optional non-live state for disconnected/static render surfaces. */
+  widgetStateHint?: WidgetViewStateHint;
 }
 
 // === Fallback Components ===
@@ -35,6 +44,31 @@ function LoadingWidget({ modelId, className }: WidgetViewProps) {
       data-widget-loading="true"
     >
       Loading widget...
+    </div>
+  );
+}
+
+interface StaticWidgetProps extends WidgetViewProps {
+  savedModel?: SavedWidgetModel;
+  summary?: string;
+}
+
+function StaticWidget({ modelId, className, savedModel, summary }: StaticWidgetProps) {
+  const text = summary ?? (savedModel ? formatSavedWidgetSummary(savedModel) : null);
+
+  return (
+    <div
+      className={cn(
+        "rounded border border-dashed border-muted-foreground/40 bg-muted/30 p-3 text-sm",
+        className,
+      )}
+      data-widget-id={modelId}
+      data-widget-static="true"
+    >
+      <div className="font-medium text-muted-foreground">
+        {savedModel ? "Widget snapshot" : "Widget state unavailable"}
+      </div>
+      {text && <div className="text-xs text-muted-foreground/80 mt-1">{text}</div>}
     </div>
   );
 }
@@ -73,9 +107,11 @@ function UnsupportedWidget({ model, className }: UnsupportedWidgetProps) {
  * </WidgetStoreProvider>
  * ```
  */
-export function WidgetView({ modelId, className }: WidgetViewProps) {
+export function WidgetView({ modelId, className, widgetStateHint }: WidgetViewProps) {
   const model = useWidgetModel(modelId);
   const wasClosed = useWasWidgetClosed(modelId);
+  const savedModelFromContext = useSavedWidgetModel(modelId);
+  const savedModel = widgetStateHint?.savedModel ?? savedModelFromContext;
   // Get child layout styles (grid_area for positioning within grid containers)
   const { childStyle } = useLayoutStyles(modelId);
 
@@ -84,13 +120,27 @@ export function WidgetView({ modelId, className }: WidgetViewProps) {
     return null;
   }
 
-  // Model not loaded yet - show loading state
+  // Model not loaded yet. Prefer an explicit static/saved snapshot when
+  // available; otherwise keep the true loading state for live widget bridges.
   if (!model) {
+    if (savedModel || widgetStateHint?.summary) {
+      return (
+        <StaticWidget
+          modelId={modelId}
+          className={className}
+          savedModel={savedModel}
+          summary={widgetStateHint?.summary}
+        />
+      );
+    }
+    if (widgetStateHint?.missingState === "stale") {
+      return <StaticWidget modelId={modelId} className={className} />;
+    }
     return <LoadingWidget modelId={modelId} className={className} />;
   }
 
   // Determine the rendered widget content
-  let renderedWidget: React.ReactNode;
+  let renderedWidget: ReactNode;
 
   // anywidgets have _esm field - render with ESM loader
   if (isAnyWidget(model)) {

@@ -176,6 +176,36 @@ describe("MCP App structured content adapter", () => {
     ).toBe(true);
   });
 
+  it("marks widget-view outputs as static when only MCP structured content is available", async () => {
+    const outputs = mcpAppCellsToSharedOutputs(
+      [
+        cellWithOutputs([
+          {
+            output_id: "widget-output",
+            output_type: "display_data",
+            data: {
+              "application/vnd.jupyter.widget-view+json": JSON.stringify({ model_id: "abc" }),
+              "text/llm+plain": "IntSlider abc: 7 (0-10)",
+            },
+          },
+        ]),
+      ],
+      undefined,
+    );
+
+    const [payload] = await resolveEmbeddableOutputs(outputs, {
+      blobResolver: createMcpAppBlobResolver("http://localhost:47830"),
+    });
+
+    expect(payload).toMatchObject({
+      mimeType: "application/vnd.jupyter.widget-view+json",
+      metadata: {
+        nteractWidgetMissingState: "stale",
+        nteractWidgetSummary: "IntSlider abc: 7 (0-10)",
+      },
+    });
+  });
+
   it("keeps richer blob-backed renders selected when an LLM preview is present", async () => {
     const outputs = mcpAppCellsToSharedOutputs(
       [

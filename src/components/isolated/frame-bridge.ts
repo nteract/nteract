@@ -1,4 +1,5 @@
 import type { NteractEmbedHostContextPatch } from "./host-context";
+import type { WidgetViewStateHint } from "@/components/widgets/widget-state";
 
 export interface EvalMessage {
   type: "eval";
@@ -37,6 +38,8 @@ export interface RenderPayload {
   append?: boolean;
   /** If true, replace all existing outputs with this single output */
   replace?: boolean;
+  /** Static widget-view state/summary for render surfaces without a live comm bridge. */
+  widgetStateHint?: WidgetViewStateHint;
 }
 
 /**

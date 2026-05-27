@@ -40,6 +40,13 @@ import {
   type TracebackExecutionResolver,
 } from "@/components/outputs/traceback-output";
 import { useWidgetStore } from "@/components/widgets/widget-store-context";
+import { useSavedWidgetModels } from "@/components/widgets/saved-widget-state-context";
+import {
+  parseWidgetViewModelId,
+  WIDGET_VIEW_MIME,
+  type SavedWidgetModels,
+} from "@/components/widgets/widget-state";
+import type { WidgetStore } from "@/components/widgets/widget-store";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { highlightTextInDom } from "@/lib/highlight-text";
@@ -51,6 +58,28 @@ const handleIframeError = (err: { message: string; stack?: string }) =>
 
 function formatPluginLoadError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function withSavedWidgetStateHint(
+  payload: RenderPayload,
+  store: WidgetStore | undefined,
+  savedWidgetModels: SavedWidgetModels,
+): RenderPayload {
+  if (payload.mimeType !== WIDGET_VIEW_MIME) return payload;
+
+  const modelId = parseWidgetViewModelId(payload.data);
+  if (!modelId || store?.getModel(modelId)) return payload;
+
+  const savedModel = savedWidgetModels.get(modelId);
+  if (!savedModel) return payload;
+
+  return {
+    ...payload,
+    widgetStateHint: {
+      ...payload.widgetStateHint,
+      savedModel,
+    },
+  };
 }
 
 const FOCUSED_OUTPUT_WELL_VIEWPORT_RATIO = 0.8;
@@ -539,6 +568,7 @@ function OutputAreaSingle({
 
   // Get widget store context (may be null if not in provider)
   const widgetContext = useWidgetStore();
+  const savedWidgetModels = useSavedWidgetModels();
 
   // Determine if we should use isolation (when we have outputs)
   const shouldIsolate =
@@ -776,7 +806,11 @@ function OutputAreaSingle({
           cellId,
           priority,
         }).map((payload) =>
-          withTracebackExecutionTargets(payload, resolveTracebackExecutionTarget),
+          withSavedWidgetStateHint(
+            withTracebackExecutionTargets(payload, resolveTracebackExecutionTarget),
+            widgetContext?.store,
+            savedWidgetModels,
+          ),
         );
       } catch (error) {
         if (gen !== renderGenRef.current) return;
@@ -801,7 +835,15 @@ function OutputAreaSingle({
         frameRef.current?.search(searchQueryRef.current);
       }
     },
-    [cellId, outputs, priority, resolveTracebackExecutionTarget, shouldUseBridge, widgetContext],
+    [
+      cellId,
+      outputs,
+      priority,
+      resolveTracebackExecutionTarget,
+      savedWidgetModels,
+      shouldUseBridge,
+      widgetContext,
+    ],
   );
 
   const handleIsolatedFrameReady = useCallback(() => {

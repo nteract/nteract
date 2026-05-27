@@ -282,6 +282,7 @@ pub async fn run_all_cells(
                     exec.execution_count,
                     display_status,
                     &server.blob_base_url,
+                    comms,
                 );
                 if let Some(mut cell_data) = wrapped.get("cell").cloned() {
                     if let Some(eid) = eid {
@@ -502,6 +503,7 @@ async fn render_execution_result(
             exec.execution_count,
             display_status,
             &server.blob_base_url,
+            comms,
         );
         wrapped.get("cell").cloned().map(|mut cell_data| {
             if let Some(obj) = cell_data.as_object_mut() {

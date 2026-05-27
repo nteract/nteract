@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   deriveEnvManager,
   deriveRuntimeKind,
@@ -11,10 +19,12 @@ import {
 import { IsolationTest } from "@/components/isolated";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { getCrdtCommWriter, setCrdtCommWriter } from "@/components/widgets/crdt-comm-writer";
+import { SavedWidgetStateProvider } from "@/components/widgets/saved-widget-state-context";
 import {
   useWidgetStoreRequired,
   WidgetStoreProvider,
 } from "@/components/widgets/widget-store-context";
+import { parseSavedWidgetModels, parseWidgetViewModelId } from "@/components/widgets/widget-state";
 import { type BlobUploader, WidgetUpdateManager } from "@/components/widgets/widget-update-manager";
 import { WidgetView } from "@/components/widgets/widget-view";
 import { useSyncedTheme } from "@/hooks/useSyncedSettings";
@@ -69,7 +79,7 @@ import { useObservable } from "./lib/use-observable";
 import { logger } from "./lib/logger";
 import { getNotebookCellsSnapshot } from "./lib/notebook-cells";
 import { useNotebookQueueProjection } from "./lib/notebook-executions";
-import { useDetectRuntime } from "./lib/notebook-metadata";
+import { useDetectRuntime, useNotebookMetadata } from "./lib/notebook-metadata";
 import { useNotebookHost } from "@nteract/notebook-host";
 import { startWindowFocusHandler } from "./lib/window-focus";
 import type { JupyterOutput } from "./types";
@@ -1871,21 +1881,30 @@ const updateManager = new WidgetUpdateManager({
 });
 
 function WidgetViewRenderer({ data }: { data: unknown }) {
-  const { model_id } = data as { model_id: string };
-  return <WidgetView modelId={model_id} />;
+  const modelId = parseWidgetViewModelId(data);
+  return modelId ? <WidgetView modelId={modelId} /> : null;
 }
 
 const MEDIA_RENDERERS = {
   "application/vnd.jupyter.widget-view+json": WidgetViewRenderer,
 };
 
+function NotebookSavedWidgetStateProvider({ children }: { children: ReactNode }) {
+  const metadata = useNotebookMetadata();
+  const savedWidgetModels = useMemo(() => parseSavedWidgetModels(metadata), [metadata]);
+
+  return <SavedWidgetStateProvider models={savedWidgetModels}>{children}</SavedWidgetStateProvider>;
+}
+
 export default function App() {
   return (
     <ErrorBoundary fallback={AppErrorFallback}>
       <WidgetStoreProvider sendMessage={sendMessage} updateManager={updateManager}>
-        <MediaProvider renderers={MEDIA_RENDERERS}>
-          <AppContent />
-        </MediaProvider>
+        <NotebookSavedWidgetStateProvider>
+          <MediaProvider renderers={MEDIA_RENDERERS}>
+            <AppContent />
+          </MediaProvider>
+        </NotebookSavedWidgetStateProvider>
       </WidgetStoreProvider>
     </ErrorBoundary>
   );

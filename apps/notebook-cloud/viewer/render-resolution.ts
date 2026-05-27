@@ -4,6 +4,7 @@ import {
   resolveManifest,
   type OutputManifest,
 } from "@/components/isolated/output-manifest";
+import { WIDGET_VIEW_MIME } from "@/components/widgets/widget-state";
 import type { BlobResolver } from "runtimed";
 
 export interface RenderCell {
@@ -85,7 +86,11 @@ async function resolveOutput(
   }
 
   if (isOutputManifest(output)) {
-    return resolveManifest(output as OutputManifest, blobResolver) as Promise<JupyterOutput>;
+    const resolved = (await resolveManifest(
+      output as OutputManifest,
+      blobResolver,
+    )) as JupyterOutput;
+    return normalizeStaticWidgetOutput(resolved);
   }
 
   if (isManifestWithMissingOutputId(output)) {
@@ -93,10 +98,25 @@ async function resolveOutput(
   }
 
   if (isJupyterOutput(output)) {
-    return identifyJupyterOutput(output, syntheticOutputId);
+    return normalizeStaticWidgetOutput(identifyJupyterOutput(output, syntheticOutputId));
   }
 
   return null;
+}
+
+function normalizeStaticWidgetOutput(output: JupyterOutput): JupyterOutput {
+  if (output.output_type !== "display_data" && output.output_type !== "execute_result") {
+    return output;
+  }
+  if (!(WIDGET_VIEW_MIME in output.data)) return output;
+
+  const fallback = output.data["text/plain"] ?? output.data["text/llm+plain"];
+
+  const data = { ...output.data };
+  delete data[WIDGET_VIEW_MIME];
+  if (!("text/plain" in data)) data["text/plain"] = String(fallback ?? "Widget state unavailable");
+
+  return { ...output, data };
 }
 
 function identifyJupyterOutput(output: JupyterOutput, outputId: string): JupyterOutput {
