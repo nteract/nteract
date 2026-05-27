@@ -197,6 +197,67 @@ export const cloudOutputParityRenderCells: readonly RenderCell[] = [
       },
     ],
   },
+  {
+    id: "mixed-interactive-sift-output",
+    cell_type: "code",
+    source: [
+      "display(plotly_figure)",
+      "display(df)",
+      "# Plotly and Sift should not share one isolated frame.",
+    ].join("\n"),
+    execution_count: 8,
+    outputs: [
+      {
+        output_id: "mixed-output-stream",
+        output_type: "stream",
+        name: "stdout",
+        text: "Cloud mixed stream marker\n",
+      },
+      {
+        output_id: "mixed-output-plotly",
+        output_type: "display_data",
+        data: {
+          "application/vnd.plotly.v1+json": {
+            inline: JSON.stringify({
+              data: [
+                {
+                  x: [1, 2, 3, 4],
+                  y: [2, 1, 4, 3],
+                  type: "scatter",
+                  mode: "lines+markers",
+                  name: "Cloud Plotly segment",
+                  marker: { color: "#0f766e" },
+                },
+              ],
+              layout: {
+                title: "Cloud Plotly segment marker",
+                width: 520,
+                height: 300,
+                margin: { t: 48, r: 16, b: 40, l: 48 },
+              },
+              config: { staticPlot: true, displayModeBar: false },
+            }),
+          },
+          "text/plain": { inline: "Cloud Plotly fallback marker" },
+        },
+        metadata: {},
+      },
+      {
+        output_id: "mixed-output-sift",
+        output_type: "display_data",
+        data: {
+          "application/vnd.nteract.arrow-stream-manifest+json": {
+            inline: JSON.stringify({
+              chunks: [{ hash: ARROW_BLOB_HASH, size: 9352, row_count: 96 }],
+              complete: true,
+            }),
+          },
+          "text/plain": { inline: "Cloud mixed Sift Arrow marker" },
+        },
+        metadata: {},
+      },
+    ],
+  },
 ];
 
 export const cloudOutputParityExpectedMarkers = {
@@ -210,6 +271,7 @@ export const cloudOutputParityExpectedMarkers = {
   fallback: "Plain text fallback marker",
   siftStream: "Preparing Cloud Sift Arrow fixture",
   siftColumn: "score",
+  mixedStream: "Cloud mixed stream marker",
 } as const;
 
 export function cloudOutputParityBlobResolver(): BlobResolver {
