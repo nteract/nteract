@@ -1,4 +1,5 @@
 import { layout, prepare } from "@chenglou/pretext";
+import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { type Column, createTable, type TableData, type TableEngine } from "./table";
 
@@ -362,11 +363,12 @@ describe("createTable", () => {
       expect(focusedRow).not.toBeNull();
     });
 
-    it("opens a larger image viewer when a thumbnail is clicked", async () => {
+    it("opens a larger image viewer with metadata and image-list navigation", async () => {
       engine.destroy();
       container.innerHTML = "";
 
       const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const gifBytes = new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61]);
       const columns: Column[] = [
         {
           key: "id",
@@ -385,7 +387,7 @@ describe("createTable", () => {
           columnType: "image",
         },
       ];
-      const imageRows: unknown[][] = [[1, [pngBytes]]];
+      const imageRows: unknown[][] = [[1, [pngBytes, gifBytes]]];
       const imageData: TableData = {
         columns,
         rowCount: imageRows.length,
@@ -407,21 +409,50 @@ describe("createTable", () => {
       expect(thumbButton).not.toBeNull();
       expect(thumbImg?.dataset.siftBlobUrl).toBeDefined();
 
-      thumbButton!.click();
+      await act(async () => {
+        thumbButton!.click();
+      });
+      await flushRAF();
 
       const viewer = document.body.querySelector<HTMLElement>(".sift-image-viewer");
       const viewerImg = viewer?.querySelector<HTMLImageElement>(".sift-image-viewer-img");
+      const viewerMeta = viewer?.querySelector<HTMLElement>(".sift-image-viewer-meta");
       expect(viewer).not.toBeNull();
       expect(viewerImg?.src).toMatch(/^blob:/);
       expect(viewerImg?.src).not.toBe(thumbImg!.dataset.siftBlobUrl);
+      expect(viewerImg?.dataset.siftImageViewerIndex).toBe("0");
+      expect(viewerMeta?.textContent).toBe("Image 1 of 2");
       expect(engine.getFocusedDataRow()).toBeNull();
 
-      const viewerUrl = viewerImg!.src;
       const revokeSpy = vi.spyOn(URL, "revokeObjectURL");
-      document.body.querySelector<HTMLButtonElement>(".sift-image-viewer-close")!.click();
+      const firstViewerUrl = viewerImg!.src;
+      await act(async () => {
+        document.body.querySelector<HTMLButtonElement>(".sift-image-viewer-next")!.click();
+      });
+      await flushRAF();
+      const secondViewerImg = viewer?.querySelector<HTMLImageElement>(".sift-image-viewer-img");
+      expect(secondViewerImg?.dataset.siftImageViewerIndex).toBe("1");
+      expect(viewerMeta?.textContent).toBe("Image 2 of 2");
+      expect(revokeSpy).toHaveBeenCalledWith(firstViewerUrl);
+
+      const secondViewerUrl = secondViewerImg!.src;
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft" }));
+      });
+      await flushRAF();
+      const finalViewerImg = viewer?.querySelector<HTMLImageElement>(".sift-image-viewer-img");
+      expect(finalViewerImg?.dataset.siftImageViewerIndex).toBe("0");
+      expect(viewerMeta?.textContent).toBe("Image 1 of 2");
+      expect(revokeSpy).toHaveBeenCalledWith(secondViewerUrl);
+
+      const finalViewerUrl = finalViewerImg!.src;
+      await act(async () => {
+        document.body.querySelector<HTMLButtonElement>(".sift-image-viewer-close")!.click();
+      });
+      await flushRAF();
 
       expect(document.body.querySelector(".sift-image-viewer")).toBeNull();
-      expect(revokeSpy).toHaveBeenCalledWith(viewerUrl);
+      expect(revokeSpy).toHaveBeenCalledWith(finalViewerUrl);
       revokeSpy.mockRestore();
     });
   });

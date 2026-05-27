@@ -37,10 +37,40 @@ test.describe("Image Viewer", () => {
     const viewerImg = viewer.locator(".sift-image-viewer-img");
     await expect(viewerImg).toBeVisible();
 
+    const naturalSize = await viewerImg.evaluate(
+      (img) =>
+        new Promise<{ width: number; height: number }>((resolve) => {
+          const finish = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+          if (img.complete && img.naturalWidth > 0) {
+            finish();
+          } else {
+            img.addEventListener("load", finish, { once: true });
+          }
+        }),
+    );
+
     const viewerBox = await viewerImg.boundingBox();
     expect(viewerBox).not.toBeNull();
     expect(viewerBox!.width).toBeGreaterThan(thumbBox!.width);
     expect(viewerBox!.height).toBeGreaterThan(thumbBox!.height);
+    expect(viewerBox!.width).toBeLessThanOrEqual(naturalSize.width + 1);
+    expect(viewerBox!.height).toBeLessThanOrEqual(naturalSize.height + 1);
+
+    const meta = viewer.locator(".sift-image-viewer-meta");
+    await expect(meta).toContainText(/^Image 1 of \d+/);
+    const initialMeta = (await meta.textContent()) ?? "";
+    const imageTotal = Number(initialMeta.match(/Image 1 of (\d+)/)?.[1] ?? 0);
+    expect(imageTotal).toBeGreaterThan(1);
+
+    const nextButton = viewer.locator(".sift-image-viewer-next");
+    await expect(nextButton).toBeVisible();
+    await nextButton.click();
+    await expect(viewerImg).toHaveAttribute("data-sift-image-viewer-index", "1");
+    await expect(meta).toContainText(`Image 2 of ${imageTotal}`);
+
+    await page.keyboard.press("ArrowLeft");
+    await expect(viewerImg).toHaveAttribute("data-sift-image-viewer-index", "0");
+    await expect(meta).toContainText(`Image 1 of ${imageTotal}`);
 
     await page.keyboard.press("Escape");
     await expect(viewer).toHaveCount(0);
