@@ -1,7 +1,8 @@
 use image::{ImageBuffer, ImageEncoder, Rgba, RgbaImage};
 use playdate_image::{
     convert_image, encode_playdate_bitmap, pack_image, ConversionOptions, DitherMode, PackedBitmap,
-    DEFAULT_MAX_OUTPUT_BYTES, PLAYDATE_BITMAP_MAGIC, PLAYDATE_BITMAP_MIME,
+    DEFAULT_MAX_OUTPUT_BYTES, PLAYDATE_BITMAP_HEADER_LEN, PLAYDATE_BITMAP_MAGIC,
+    PLAYDATE_BITMAP_MIME,
 };
 
 #[test]
@@ -56,7 +57,7 @@ fn converts_plot_like_png_to_serialized_payload() {
     assert_eq!(converted.height, 64);
     assert_eq!(converted.row_stride, 12);
     assert_eq!(converted.source_mime, "image/png");
-    assert_eq!(converted.byte_length, 16 + 12 * 64);
+    assert_eq!(converted.byte_length, PLAYDATE_BITMAP_HEADER_LEN + 12 * 64);
     assert_eq!(&converted.bytes[0..8], PLAYDATE_BITMAP_MAGIC);
     assert_eq!(&converted.bytes[8..10], &96_u16.to_le_bytes());
     assert_eq!(&converted.bytes[10..12], &64_u16.to_le_bytes());
@@ -129,7 +130,7 @@ fn rejects_payloads_above_configured_byte_budget() {
         &ConversionOptions {
             max_width: 96,
             max_height: 64,
-            max_output_bytes: 16,
+            max_output_bytes: PLAYDATE_BITMAP_HEADER_LEN + 12 * 64 - 1,
             dither: DitherMode::Threshold,
         },
     )

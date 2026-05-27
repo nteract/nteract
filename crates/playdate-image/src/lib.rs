@@ -11,6 +11,7 @@ use thiserror::Error;
 
 pub const PLAYDATE_BITMAP_MIME: &str = "application/x-nteract-playdate-bitmap";
 pub const PLAYDATE_BITMAP_MAGIC: &[u8; 8] = b"NTPDIMG1";
+pub const PLAYDATE_BITMAP_HEADER_LEN: usize = 16;
 pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,12 +132,18 @@ pub fn pack_image(
     }
     let rgba = resized.to_rgba8();
     let row_stride = row_stride(width, height, false)?;
-    let byte_length = usize::from(row_stride).checked_mul(height as usize).ok_or(
+    let pixel_byte_length = usize::from(row_stride).checked_mul(height as usize).ok_or(
         PlaydateImageError::PayloadTooLarge {
             byte_length: usize::MAX,
             max_byte_length: options.max_output_bytes,
         },
     )?;
+    let byte_length = PLAYDATE_BITMAP_HEADER_LEN
+        .checked_add(pixel_byte_length)
+        .ok_or(PlaydateImageError::PayloadTooLarge {
+            byte_length: usize::MAX,
+            max_byte_length: options.max_output_bytes,
+        })?;
     if byte_length > options.max_output_bytes {
         return Err(PlaydateImageError::PayloadTooLarge {
             byte_length,
@@ -169,7 +176,7 @@ pub fn encode_playdate_bitmap(bitmap: &PackedBitmap) -> Result<Vec<u8>, Playdate
         });
     }
 
-    let mut bytes = Vec::with_capacity(16 + bitmap.pixels.len());
+    let mut bytes = Vec::with_capacity(PLAYDATE_BITMAP_HEADER_LEN + bitmap.pixels.len());
     bytes.extend_from_slice(PLAYDATE_BITMAP_MAGIC);
     bytes.extend_from_slice(&(bitmap.width as u16).to_le_bytes());
     bytes.extend_from_slice(&(bitmap.height as u16).to_le_bytes());
