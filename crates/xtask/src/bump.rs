@@ -35,8 +35,8 @@ enum Format {
 struct Target {
     path: &'static str,
     format: Format,
-    /// How many version occurrences to bump in the file. `.claude-plugin/marketplace.json`
-    /// has two plugin entries; everything else has one top-level version.
+    /// How many version occurrences to bump in the file. Marketplace files
+    /// have two plugin entries; everything else has one top-level version.
     matches: usize,
 }
 
@@ -294,6 +294,11 @@ const TARGETS: &[Target] = &[
     },
     Target {
         path: ".claude-plugin/marketplace.json",
+        format: Format::Json,
+        matches: 2,
+    },
+    Target {
+        path: ".agents/plugins/marketplace.json",
         format: Format::Json,
         matches: 2,
     },
