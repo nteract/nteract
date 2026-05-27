@@ -69,6 +69,9 @@ export function aclRowsCoverScope(
   rows: NotebookAclRow[],
   requestedScope: ConnectionScope,
 ): boolean {
+  if (requestedScope === "runtime_peer") {
+    return rows.some((row) => row.scope === "runtime_peer");
+  }
   const granted = rows.reduce((mask, row) => mask | capabilityMask(row.scope), 0);
   const requested = capabilityMask(requestedScope);
   return (granted & requested) === requested;

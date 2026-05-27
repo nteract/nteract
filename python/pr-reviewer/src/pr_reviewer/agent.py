@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from pr_reviewer.config import ReviewerConfig
-from pr_reviewer.prompt import SYSTEM_PROMPT, build_review_prompt
+from pr_reviewer.prompt import SYSTEM_PROMPT, build_architecture_prompt, build_review_prompt
 from pr_reviewer.schema import ReviewReport, normalize_structured_output
 from pr_reviewer.workspace import ReviewWorkspace
 
@@ -225,6 +225,48 @@ async def run_review(
     extra_prompt: str | None = None,
 ) -> ReviewReport:
     prompt = f"{SYSTEM_PROMPT}\n\n{build_review_prompt(workspace, extra_prompt=extra_prompt)}"
+    try:
+        run = await run_opencode(prompt, cwd=workspace.path, config=config)
+        verdict, terminal_reason, summary, findings = normalize_structured_output(
+            parse_structured_review_json(run.text)
+        )
+    except RuntimeError as exc:
+        return build_infra_uncertain_report(
+            workspace=workspace,
+            config=config,
+            run=OpencodeRunResult(text="", session_id=None, cost_usd=None),
+            error=exc,
+        )
+    except (JSONDecodeError, ValueError) as exc:
+        return build_infra_uncertain_report(
+            workspace=workspace,
+            config=config,
+            run=run,
+            error=exc,
+        )
+    return ReviewReport(
+        verdict=verdict,
+        terminal_reason=terminal_reason,
+        summary=summary,
+        findings=findings,
+        reviewed_diff=workspace.reviewed_diff,
+        model=config.model,
+        session_id=run.session_id,
+        workspace=str(workspace.path),
+        cost_usd=run.cost_usd,
+        raw_result=run.text,
+    )
+
+
+async def run_architecture_review(
+    workspace: ReviewWorkspace,
+    *,
+    config: ReviewerConfig,
+    review_prompt: str,
+) -> ReviewReport:
+    prompt = (
+        f"{SYSTEM_PROMPT}\n\n{build_architecture_prompt(workspace, review_prompt=review_prompt)}"
+    )
     try:
         run = await run_opencode(prompt, cwd=workspace.path, config=config)
         verdict, terminal_reason, summary, findings = normalize_structured_output(

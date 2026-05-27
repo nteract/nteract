@@ -20,6 +20,8 @@ before(async () => {
   await initializeRuntimedWasm(wasmBytes);
 });
 
+type TestConnectionScope = "viewer" | "editor" | "runtime_peer" | "owner";
+
 describe("RoomHostHandle", () => {
   it("hosts NotebookDoc sync with per-peer state", async () => {
     const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
@@ -35,7 +37,7 @@ describe("RoomHostHandle", () => {
     const ownerResult = host.receive_peer_frame(
       "peer-owner",
       "user:dev:alice",
-      true,
+      "owner",
       true,
       encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
     ) as {
@@ -92,7 +94,7 @@ describe("RoomHostHandle", () => {
     const result = host.receive_peer_frame(
       "peer-owner",
       "user:dev:alice",
-      true,
+      "owner",
       true,
       encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
     ) as {
@@ -136,7 +138,7 @@ describe("RoomHostHandle", () => {
         host.receive_peer_frame(
           "peer-editor",
           "user:dev:bob",
-          true,
+          "editor",
           false,
           encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
         ),
@@ -158,7 +160,7 @@ describe("RoomHostHandle", () => {
         host.receive_peer_frame(
           "peer-editor",
           "user:dev:bob",
-          true,
+          "editor",
           false,
           encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
         ),
@@ -179,7 +181,7 @@ describe("RoomHostHandle", () => {
         host.receive_peer_frame(
           "peer-alice",
           "user:dev:alice",
-          true,
+          "owner",
           true,
           encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
         ),
@@ -200,7 +202,7 @@ describe("RoomHostHandle", () => {
         host.receive_peer_frame(
           "peer-viewer",
           "user:dev:alice",
-          false,
+          "viewer",
           false,
           encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
         ),
@@ -216,7 +218,7 @@ describe("RoomHostHandle", () => {
       host,
       "peer-runtime",
       "user:dev:runtime-service",
-      true,
+      "runtime_peer",
       false,
       runtime,
     );
@@ -240,7 +242,7 @@ describe("RoomHostHandle", () => {
     const result = host.receive_peer_frame(
       "peer-runtime",
       "user:dev:runtime-service",
-      true,
+      "runtime_peer",
       false,
       encodeTypedFrame(FrameType.RUNTIME_STATE_SYNC, message),
     ) as {
@@ -282,7 +284,7 @@ describe("RoomHostHandle", () => {
       host,
       "peer-runtime",
       "user:dev:runtime-service",
-      true,
+      "runtime_peer",
       false,
       forged,
     );
@@ -296,7 +298,36 @@ describe("RoomHostHandle", () => {
         host.receive_peer_frame(
           "peer-runtime",
           "user:dev:runtime-service",
-          true,
+          "runtime_peer",
+          false,
+          encodeTypedFrame(FrameType.RUNTIME_STATE_SYNC, message),
+        ),
+      /not authorized/,
+    );
+  });
+
+  it("rejects peer RuntimeStateDoc changes authored as system actors", async () => {
+    const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
+    const forged = new RuntimeStatePeerHandle("system/forged-runtime");
+    syncRuntimeHostWithRuntimePeer(
+      host,
+      "peer-runtime",
+      "user:dev:runtime-service",
+      "runtime_peer",
+      false,
+      forged,
+    );
+
+    forged.create_execution("exec-forged-system");
+    const message = forged.flush_runtime_state_sync();
+    assert.ok(message);
+
+    assert.throws(
+      () =>
+        host.receive_peer_frame(
+          "peer-runtime",
+          "user:dev:runtime-service",
+          "runtime_peer",
           false,
           encodeTypedFrame(FrameType.RUNTIME_STATE_SYNC, message),
         ),
@@ -325,7 +356,7 @@ describe("RoomHostHandle", () => {
         host.receive_peer_frame(
           "peer-runtime",
           "user:dev:runtime-service",
-          false,
+          "runtime_peer",
           false,
           encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
         ),
@@ -466,14 +497,74 @@ describe("RoomMaterializer", () => {
       submitted_by_actor_label: null,
     });
 
+    const forgedEditorRuntime = new RuntimeStatePeerHandle(editorIdentity.actorLabel);
+    await syncMaterializerWithRuntimePeer(materializer, editorPeerConnection, forgedEditorRuntime);
+    forgedEditorRuntime.create_execution_with_source("exec-editor-forged", "print('editor')", 0);
     await assert.rejects(
       () =>
-        materializer.receiveFrame(editorPeerConnection, {
-          type: FrameType.RUNTIME_STATE_SYNC,
-          payload: runtimeMessage,
-        }),
-      /cannot write RuntimeStateDoc changes/,
+        applyRuntimePeerChangesToMaterializer(
+          materializer,
+          editorPeerConnection,
+          forgedEditorRuntime,
+        ),
+      /executions/,
     );
+  });
+
+  it("allows owner-scoped RuntimeStateDoc changes to existing comm state", async () => {
+    const state = fakeState();
+    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const runtimeIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=runtime&operator=runtime:py&scope=runtime_peer",
+      ),
+    );
+    const runtimePeerConnection = { id: "peer-runtime", identity: runtimeIdentity };
+    const runtimePeer = new RuntimeStatePeerHandle(runtimeIdentity.actorLabel);
+    await syncMaterializerWithRuntimePeer(materializer, runtimePeerConnection, runtimePeer);
+    runtimePeer.put_comm_json(
+      "comm-widget",
+      "jupyter.widget",
+      "anywidget",
+      "AnyModel",
+      JSON.stringify({ value: 1, label: "before" }),
+      0,
+    );
+    const runtimeMessage = runtimePeer.flush_runtime_state_sync();
+    assert.ok(runtimeMessage);
+    await materializer.receiveFrame(runtimePeerConnection, {
+      type: FrameType.RUNTIME_STATE_SYNC,
+      payload: runtimeMessage,
+    });
+
+    const ownerIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=owner"),
+    );
+    const ownerPeerConnection = { id: "peer-owner", identity: ownerIdentity };
+    const owner = NotebookHandle.create_bootstrap(ownerIdentity.actorLabel);
+    await syncMaterializerRuntimeStateWithClient(materializer, ownerPeerConnection, owner);
+    assert.equal(owner.set_comm_state_property("comm-widget", "value", JSON.stringify(2)), true);
+    const accepted = await applyRuntimeClientChangesToMaterializer(
+      materializer,
+      ownerPeerConnection,
+      owner,
+    );
+    assert.equal(accepted.changed, true);
+    assert.equal(accepted.runtime_state_changed, true);
+
+    const viewerIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=carol&operator=desktop:c&scope=viewer"),
+    );
+    const viewer = NotebookHandle.create_bootstrap(viewerIdentity.actorLabel);
+    await syncMaterializerRuntimeStateWithClient(
+      materializer,
+      { id: "peer-viewer", identity: viewerIdentity },
+      viewer,
+    );
+    const runtimeState = viewer.get_runtime_state() as {
+      comms: Record<string, { state: Record<string, unknown> }>;
+    };
+    assert.equal(runtimeState.comms["comm-widget"].state.value, 2);
   });
 
   it("rejects owner-scoped RuntimeStateDoc execution changes", async () => {
@@ -502,7 +593,7 @@ describe("RoomMaterializer", () => {
           type: FrameType.RUNTIME_STATE_SYNC,
           payload: runtimeMessage,
         }),
-      /cannot write RuntimeStateDoc changes/,
+      /executions/,
     );
   });
 });
@@ -515,7 +606,8 @@ function syncHostWithClient(
   canWriteAllNotebookChanges: boolean,
   client: NotebookHandle,
 ): void {
-  let result = host.sync_peer(peerId, canWrite, canWrite) as {
+  const scope = notebookScopeFor(canWrite, canWriteAllNotebookChanges);
+  let result = host.sync_peer(peerId, scope) as {
     outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: number[] }>;
   };
   for (let round = 0; round < 8; round += 1) {
@@ -528,7 +620,7 @@ function syncHostWithClient(
       const next = host.receive_peer_frame(
         peerId,
         principal,
-        canWrite,
+        scope,
         canWriteAllNotebookChanges,
         reply,
       ) as {
@@ -548,12 +640,13 @@ function applyClientChangesToHost(
   canWriteAllNotebookChanges: boolean,
   client: NotebookHandle,
 ): void {
+  const scope = notebookScopeFor(canWrite, canWriteAllNotebookChanges);
   const message = client.flush_local_changes();
   assert.ok(message);
   host.receive_peer_frame(
     peerId,
     principal,
-    canWrite,
+    scope,
     canWriteAllNotebookChanges,
     encodeTypedFrame(FrameType.AUTOMERGE_SYNC, message),
   );
@@ -585,6 +678,88 @@ async function syncMaterializerWithClient(
       outbound,
     };
   }
+}
+
+async function applyRuntimeClientChangesToMaterializer(
+  materializer: RoomMaterializer,
+  peer: { id: string; identity: ReturnType<typeof authenticateDevRequest> },
+  client: NotebookHandle,
+) {
+  const message = client.flush_runtime_state_sync();
+  assert.ok(message);
+  let result = await materializer.receiveFrame(peer, {
+    type: FrameType.RUNTIME_STATE_SYNC,
+    payload: message,
+  });
+
+  for (let round = 0; round < 8 && !result.changed; round += 1) {
+    const replies = applyRuntimeOutboundToClient(result.outbound, peer.id, client);
+    if (replies.length === 0) {
+      break;
+    }
+    const outbound = [];
+    for (const reply of replies) {
+      const next = await materializer.receiveFrame(peer, {
+        type: FrameType.RUNTIME_STATE_SYNC,
+        payload: reply.slice(1),
+      });
+      if (next.changed) {
+        result = next;
+      }
+      outbound.push(...next.outbound);
+    }
+    if (!result.changed) {
+      result = {
+        changed: false,
+        notebook_changed: false,
+        runtime_state_changed: false,
+        outbound,
+      };
+    }
+  }
+
+  return result;
+}
+
+async function applyRuntimePeerChangesToMaterializer(
+  materializer: RoomMaterializer,
+  peer: { id: string; identity: ReturnType<typeof authenticateDevRequest> },
+  runtime: RuntimeStatePeerHandle,
+) {
+  const message = runtime.flush_runtime_state_sync();
+  assert.ok(message);
+  let result = await materializer.receiveFrame(peer, {
+    type: FrameType.RUNTIME_STATE_SYNC,
+    payload: message,
+  });
+
+  for (let round = 0; round < 8 && !result.changed; round += 1) {
+    const replies = applyRuntimeOutboundToRuntimePeer(result.outbound, peer.id, runtime);
+    if (replies.length === 0) {
+      break;
+    }
+    const outbound = [];
+    for (const reply of replies) {
+      const next = await materializer.receiveFrame(peer, {
+        type: FrameType.RUNTIME_STATE_SYNC,
+        payload: reply.slice(1),
+      });
+      if (next.changed) {
+        result = next;
+      }
+      outbound.push(...next.outbound);
+    }
+    if (!result.changed) {
+      result = {
+        changed: false,
+        notebook_changed: false,
+        runtime_state_changed: false,
+        outbound,
+      };
+    }
+  }
+
+  return result;
 }
 
 async function syncMaterializerWithRuntimePeer(
@@ -685,13 +860,14 @@ function syncRuntimeHostWithClient(
   canWriteAllNotebookChanges: boolean,
   client: NotebookHandle,
 ): void {
+  const scope = runtimeScopeFor(canWrite);
   const outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: number[] }> = [];
   const initial = client.flush_runtime_state_sync();
   if (initial) {
     const reply = host.receive_peer_frame(
       peerId,
       principal,
-      canWrite,
+      scope,
       canWriteAllNotebookChanges,
       encodeTypedFrame(FrameType.RUNTIME_STATE_SYNC, initial),
     ) as {
@@ -700,7 +876,7 @@ function syncRuntimeHostWithClient(
     outbound.push(...reply.outbound);
   }
 
-  const hostSync = host.sync_peer(peerId, false, canWrite) as {
+  const hostSync = host.sync_peer(peerId, scope) as {
     outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: number[] }>;
   };
   outbound.push(...hostSync.outbound);
@@ -715,7 +891,7 @@ function syncRuntimeHostWithClient(
       const next = host.receive_peer_frame(
         peerId,
         principal,
-        canWrite,
+        scope,
         canWriteAllNotebookChanges,
         reply,
       ) as {
@@ -731,11 +907,11 @@ function syncRuntimeHostWithRuntimePeer(
   host: Awaited<ReturnType<typeof createEmptyRoomHost>>,
   peerId: string,
   principal: string,
-  canWrite: boolean,
+  scope: TestConnectionScope,
   canWriteAllNotebookChanges: boolean,
   runtime: RuntimeStatePeerHandle,
 ): void {
-  let result = host.sync_peer(peerId, false, canWrite) as {
+  let result = host.sync_peer(peerId, scope) as {
     outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: number[] }>;
   };
   for (let round = 0; round < 8; round += 1) {
@@ -748,7 +924,7 @@ function syncRuntimeHostWithRuntimePeer(
       const next = host.receive_peer_frame(
         peerId,
         principal,
-        canWrite,
+        scope,
         canWriteAllNotebookChanges,
         reply,
       ) as {
@@ -758,6 +934,20 @@ function syncRuntimeHostWithRuntimePeer(
     }
     result = { outbound };
   }
+}
+
+function notebookScopeFor(
+  canWrite: boolean,
+  canWriteAllNotebookChanges: boolean,
+): TestConnectionScope {
+  if (!canWrite) {
+    return "viewer";
+  }
+  return canWriteAllNotebookChanges ? "owner" : "editor";
+}
+
+function runtimeScopeFor(canWrite: boolean): TestConnectionScope {
+  return canWrite ? "runtime_peer" : "viewer";
 }
 
 function applyRuntimeOutboundToClient(
@@ -773,9 +963,22 @@ function applyRuntimeOutboundToClient(
     const events = client.receive_frame(
       encodeTypedFrame(frame.frame_type, new Uint8Array(frame.payload)),
     ) as Array<{ type: string; reply?: number[] }>;
+    let sawRuntimeStateSync = false;
     for (const event of events ?? []) {
-      if (event.type === "runtime_state_sync_applied" && event.reply) {
+      if (
+        event.type === "runtime_state_sync_applied" ||
+        event.type === "runtime_state_sync_error"
+      ) {
+        sawRuntimeStateSync = true;
+      }
+      if (event.reply) {
         replies.push(encodeTypedFrame(FrameType.RUNTIME_STATE_SYNC, new Uint8Array(event.reply)));
+      }
+    }
+    if (sawRuntimeStateSync) {
+      const reply = client.generate_runtime_state_sync_reply();
+      if (reply) {
+        replies.push(encodeTypedFrame(FrameType.RUNTIME_STATE_SYNC, reply));
       }
     }
   }

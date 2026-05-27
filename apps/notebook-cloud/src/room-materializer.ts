@@ -2,7 +2,7 @@ import type { DurableObjectState, Env } from "./cloudflare-types.ts";
 import { FrameType, encodeTypedFrame, type FrameTypeValue, type TypedFrame } from "./protocol.ts";
 import { createEmptyRoomHost, loadRoomHostSnapshot, type RoomHostHandle } from "./runtimed-wasm.ts";
 import { getNotebookCatalog } from "./storage.ts";
-import { allowsNotebookWrite, type AuthenticatedConnection } from "./identity.ts";
+import type { AuthenticatedConnection } from "./identity.ts";
 import { cloudLog, durationMs, errorMessage } from "./observability.ts";
 
 const ROOM_HOST_ACTOR_LABEL = "system/schema:notebook-cloud-room";
@@ -47,15 +47,7 @@ export class RoomMaterializer {
   ) {}
 
   async syncPeer(peer: RoomPeer): Promise<RoomHostFrameResult> {
-    return this.withHost((host) =>
-      normalizeResult(
-        host.sync_peer(
-          peer.id,
-          allowsNotebookWrite(peer.identity.scope),
-          allowsHostedRuntimeStateWrite(peer.identity),
-        ),
-      ),
-    );
+    return this.withHost((host) => normalizeResult(host.sync_peer(peer.id, peer.identity.scope)));
   }
 
   async removePeer(peerId: string): Promise<void> {
@@ -65,10 +57,6 @@ export class RoomMaterializer {
   }
 
   async receiveFrame(peer: RoomPeer, frame: TypedFrame): Promise<RoomHostFrameResult> {
-    const canWrite =
-      frame.type === FrameType.AUTOMERGE_SYNC
-        ? allowsNotebookWrite(peer.identity.scope)
-        : allowsHostedRuntimeStateWrite(peer.identity);
     const canWriteAllNotebookChanges = peer.identity.scope === "owner";
     const encoded = encodeTypedFrame(frame.type, frame.payload);
     return this.withHost((host) =>
@@ -76,7 +64,7 @@ export class RoomMaterializer {
         host.receive_peer_frame(
           peer.id,
           peer.identity.principal,
-          canWrite,
+          peer.identity.scope,
           canWriteAllNotebookChanges,
           encoded,
         ),
@@ -249,12 +237,6 @@ export function isMaterializedSyncFrame(type: FrameTypeValue): boolean {
 
 export function typedFrameFromRoomHostOutbound(frame: RoomHostOutboundFrame): Uint8Array {
   return encodeTypedFrame(frame.frame_type, toUint8Array(frame.payload));
-}
-
-function allowsHostedRuntimeStateWrite(identity: AuthenticatedConnection): boolean {
-  // Hosted editors/owners are markdown-only: executable RuntimeStateDoc
-  // mutations come from explicit runtime peers, not the editing channel.
-  return identity.scope === "runtime_peer";
 }
 
 function normalizeResult(value: unknown): RoomHostFrameResult {

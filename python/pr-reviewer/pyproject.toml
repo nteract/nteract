@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.scripts]
+architecture-review = "pr_reviewer.architecture_cli:main"
 pr-review = "pr_reviewer.cli:main"
 
 [build-system]
