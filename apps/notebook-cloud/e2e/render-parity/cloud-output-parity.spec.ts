@@ -118,6 +118,49 @@ test.describe("cloud renderer parity harness", () => {
       page.frameLocator('[data-cell-id="sift-arrow-output"] iframe').locator("body"),
     ).toContainText(cloudOutputParityExpectedMarkers.siftColumn, { timeout: 90_000 });
   });
+
+  test("chains wheel scroll from engaged Sift frames back to the notebook page", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    await openParityHarness(page);
+
+    const siftCell = page.locator('[data-cell-id="sift-arrow-output"]');
+    await expect(
+      page.frameLocator('[data-cell-id="sift-arrow-output"] iframe').locator("body"),
+    ).toContainText(cloudOutputParityExpectedMarkers.siftColumn, { timeout: 90_000 });
+
+    await page.evaluate(() => {
+      const spacer = document.createElement("div");
+      spacer.dataset.testid = "scroll-boundary-spacer";
+      spacer.style.height = "2400px";
+      document.body.appendChild(spacer);
+    });
+    await siftCell.scrollIntoViewIfNeeded();
+
+    await siftCell.getByRole("button", { name: "Click inside the table to scroll" }).click({
+      force: true,
+    });
+    await expect(siftCell.locator('[data-sift-output="true"] iframe')).toHaveCSS(
+      "pointer-events",
+      "auto",
+    );
+
+    const viewport = page
+      .frameLocator('[data-cell-id="sift-arrow-output"] iframe')
+      .locator(".sift-viewport");
+    await viewport.waitFor({ timeout: 30_000 });
+    await expect(viewport).toHaveCSS("overscroll-behavior-y", "auto");
+    await viewport.evaluate((element) => {
+      element.scrollTop = element.scrollHeight - element.clientHeight;
+    });
+
+    const before = await page.evaluate(() => window.scrollY);
+    await viewport.dispatchEvent("wheel", { deltaY: 500, bubbles: true, cancelable: true });
+    await expect
+      .poll(() => page.evaluate(() => window.scrollY), { timeout: 5_000 })
+      .toBeGreaterThan(before);
+  });
 });
 
 async function openParityHarness(page: Page) {

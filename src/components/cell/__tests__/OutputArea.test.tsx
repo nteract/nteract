@@ -403,7 +403,7 @@ describe("OutputArea iframe theme sync", () => {
     expect(scrollBy).toHaveBeenCalledWith({ top: 604, behavior: "auto" });
     expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
     expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
-    expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
+    expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("true");
     expect(screen.queryByText("Click inside the table to scroll")).toBeNull();
 
     fireEvent.keyDown(activationWell, { key: "Escape" });
@@ -424,7 +424,7 @@ describe("OutputArea iframe theme sync", () => {
 
     expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
     expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
-    expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
+    expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("true");
     expect(screen.queryByRole("button", { name: "Click inside the table to scroll" })).toBeNull();
   });
 
