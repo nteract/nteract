@@ -563,7 +563,9 @@ function OutputAreaSingle({
     outputs.every((output) => outputAllowsScrollPassthrough(output, priority));
   const shouldScrollPassthroughFrame =
     shouldUseScrollPassthroughFrame && !staticFrameInteractionActive;
-  const allowWheelBoundaryScroll = !focused && !shouldScrollPassthroughFrame;
+  const shouldLockSiftWheelBoundary = hasSiftOutputs && staticFrameInteractionActive;
+  const allowWheelBoundaryScroll =
+    !focused && !shouldScrollPassthroughFrame && !shouldLockSiftWheelBoundary;
   const showSiftInteractionCue =
     hasSiftOutputs && shouldUseScrollPassthroughFrame && !staticFrameInteractionActive;
   const siftFrameAccent = siftFocusAccent(darkMode, colorTheme);

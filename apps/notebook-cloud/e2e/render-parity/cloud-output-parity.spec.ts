@@ -175,9 +175,7 @@ test.describe("cloud renderer parity harness", () => {
     );
   });
 
-  test("chains wheel scroll from engaged Sift frames back to the notebook page", async ({
-    page,
-  }) => {
+  test("locks wheel scroll inside engaged Sift frames at table boundaries", async ({ page }) => {
     test.setTimeout(120_000);
     await openParityHarness(page);
 
@@ -213,9 +211,8 @@ test.describe("cloud renderer parity harness", () => {
 
     const before = await page.evaluate(() => window.scrollY);
     await viewport.dispatchEvent("wheel", { deltaY: 500, bubbles: true, cancelable: true });
-    await expect
-      .poll(() => page.evaluate(() => window.scrollY), { timeout: 5_000 })
-      .toBeGreaterThan(before);
+    await page.waitForTimeout(250);
+    await expect(page.evaluate(() => window.scrollY)).resolves.toBe(before);
   });
 });
 
