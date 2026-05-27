@@ -27,33 +27,38 @@ fn is_viz_mime(mime: &str) -> bool {
             && (mime.ends_with("+json") || mime.ends_with(".json")))
 }
 
+/// Inputs for [`cell_structured_content_from_manifests`].
+pub struct CellStructuredContentManifestInput<'a> {
+    pub cell_id: &'a str,
+    pub cell_type: &'a str,
+    pub source: &'a str,
+    pub output_manifests: &'a [serde_json::Value],
+    pub execution_count: Option<i64>,
+    pub status: &'a str,
+    pub blob_base_url: &'a Option<String>,
+    pub comms: Option<&'a HashMap<String, CommDocEntry>>,
+}
+
 /// Build structuredContent JSON directly from manifest Values and blob URLs.
 ///
 /// Unlike [`cell_structured_content`] which requires fully-resolved outputs,
 /// this function reads inline content directly from ContentRef entries and
 /// emits blob URLs for anything stored in the blob store. Zero blob fetches.
 pub fn cell_structured_content_from_manifests(
-    cell_id: &str,
-    cell_type: &str,
-    source: &str,
-    output_manifests: &[serde_json::Value],
-    execution_count: Option<i64>,
-    status: &str,
-    blob_base_url: &Option<String>,
-    comms: Option<&HashMap<String, CommDocEntry>>,
+    input: CellStructuredContentManifestInput<'_>,
 ) -> Value {
     let mut content = json!({
         "cell": {
-            "cell_id": cell_id,
-            "source": source,
-            "cell_type": cell_type,
-            "outputs": output_manifests.iter().map(|m| manifest_output_to_structured(m, blob_base_url, comms)).collect::<Vec<_>>(),
-            "execution_count": execution_count,
-            "status": status,
+            "cell_id": input.cell_id,
+            "source": input.source,
+            "cell_type": input.cell_type,
+            "outputs": input.output_manifests.iter().map(|m| manifest_output_to_structured(m, input.blob_base_url, input.comms)).collect::<Vec<_>>(),
+            "execution_count": input.execution_count,
+            "status": input.status,
         }
     });
 
-    if let Some(base) = blob_base_url {
+    if let Some(base) = input.blob_base_url {
         content["blob_base_url"] = Value::String(base.clone());
     }
 
@@ -825,16 +830,16 @@ mod tests {
             "text": inline_ref("output"),
         })];
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = cell_structured_content_from_manifests(
-            "cell-123",
-            "code",
-            "print('hello')",
-            &manifests,
-            Some(3),
-            "done",
-            &blob_base,
-            None,
-        );
+        let result = cell_structured_content_from_manifests(CellStructuredContentManifestInput {
+            cell_id: "cell-123",
+            cell_type: "code",
+            source: "print('hello')",
+            output_manifests: &manifests,
+            execution_count: Some(3),
+            status: "done",
+            blob_base_url: &blob_base,
+            comms: None,
+        });
         assert_eq!(result["cell"]["cell_id"], "cell-123");
         assert_eq!(result["cell"]["cell_type"], "code");
         assert_eq!(result["cell"]["source"], "print('hello')");

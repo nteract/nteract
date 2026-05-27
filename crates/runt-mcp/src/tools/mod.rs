@@ -556,14 +556,16 @@ pub async fn build_execution_result(
             ec_str.parse().ok()
         };
         Some(crate::structured::cell_structured_content_from_manifests(
-            &snap.id,
-            &snap.cell_type,
-            &snap.source,
-            &outputs,
-            ec,
-            &result.status,
-            &server.blob_base_url,
-            runtime_comms.as_ref(),
+            crate::structured::CellStructuredContentManifestInput {
+                cell_id: &snap.id,
+                cell_type: &snap.cell_type,
+                source: &snap.source,
+                output_manifests: &outputs,
+                execution_count: ec,
+                status: &result.status,
+                blob_base_url: &server.blob_base_url,
+                comms: runtime_comms.as_ref(),
+            },
         ))
     } else {
         None
