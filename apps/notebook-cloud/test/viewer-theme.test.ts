@@ -6,11 +6,22 @@ import {
   resolveCloudViewerTheme,
   storedCloudViewerTheme,
 } from "../viewer/theme.ts";
-import { viewerThemeBootstrapScript } from "../src/viewer-theme-bootstrap.ts";
+import {
+  viewerThemeBootstrapScript,
+  viewerThemeFirstPaintStyle,
+} from "../src/viewer-theme-bootstrap.ts";
 
 describe("cloud viewer theme helpers", () => {
   it("uses the cloud-specific storage key", () => {
     assert.equal(CLOUD_VIEWER_THEME_STORAGE_KEY, "nteract.cloud.viewer.theme");
+  });
+
+  it("ships a light default surface that class changes can flip before the bundle CSS loads", () => {
+    const css = viewerThemeFirstPaintStyle();
+
+    assert.match(css, /html \{\s+background: oklch\(1 0 0\);\s+color-scheme: light;/);
+    assert.match(css, /html\.dark \{\s+background: oklch\(0\.145 0 0\);\s+color-scheme: dark;/);
+    assert.match(css, /html\.dark body \{/);
   });
 
   it("resolves explicit and system themes", () => {

@@ -90,6 +90,11 @@ describe("generateFrameHtml", () => {
   });
 
   describe("neutral defaults", () => {
+    it("starts from an explicit light color scheme until the theme hint script resolves", () => {
+      expect(html).toContain('<html style="background: transparent; color-scheme: light">');
+      expect(html).not.toContain("color-scheme: light dark");
+    });
+
     it("seeds the frame theme before first paint", () => {
       expect(source).toContain("new URLSearchParams(window.location.search)");
       expect(source).toContain("params.get('nteract_theme')");

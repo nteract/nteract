@@ -1,5 +1,28 @@
 export const CLOUD_VIEWER_THEME_STORAGE_KEY = "nteract.cloud.viewer.theme";
 
+export function viewerThemeFirstPaintStyle(): string {
+  return `html {
+  background: oklch(1 0 0);
+  color-scheme: light;
+}
+
+html.dark {
+  background: oklch(0.145 0 0);
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background: oklch(1 0 0);
+  color: oklch(0.145 0 0);
+}
+
+html.dark body {
+  background: oklch(0.145 0 0);
+  color: oklch(0.985 0 0);
+}`;
+}
+
 export function viewerThemeBootstrapScript(): string {
   return `(() => {
   let stored;
