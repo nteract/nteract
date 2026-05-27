@@ -19,9 +19,14 @@ describe("cloud viewer theme helpers", () => {
   it("ships a light default surface that class changes can flip before the bundle CSS loads", () => {
     const css = viewerThemeFirstPaintStyle();
 
-    assert.match(css, /html \{\s+background: oklch\(1 0 0\);\s+color-scheme: light;/);
-    assert.match(css, /html\.dark \{\s+background: oklch\(0\.145 0 0\);\s+color-scheme: dark;/);
-    assert.match(css, /html\.dark body \{/);
+    assert.match(css, /html \{\s+--background: oklch\(1 0 0\);/);
+    assert.match(css, /--foreground: oklch\(0\.145 0 0\);/);
+    assert.match(css, /html\.light,\s+html\[data-theme="light"\] \{/);
+    assert.match(css, /html\.dark,\s+html\[data-theme="dark"\] \{/);
+    assert.match(css, /--background: oklch\(0\.145 0 0\);/);
+    assert.match(css, /body,\s+#root \{\s+min-height: 100%;/);
+    assert.match(css, /background: var\(--background\);/);
+    assert.match(css, /color: var\(--foreground\);/);
   });
 
   it("resolves explicit and system themes", () => {
