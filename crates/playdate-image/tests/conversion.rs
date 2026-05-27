@@ -5,8 +5,10 @@ use playdate_image::{
     PLAYDATE_BITMAP_MIME,
 };
 
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
 #[test]
-fn packs_png_to_playdate_bit_order() {
+fn packs_png_to_playdate_bit_order() -> TestResult {
     let png = rgba_png(&[
         (0, 0, 0, 255),
         (255, 255, 255, 255),
@@ -16,7 +18,7 @@ fn packs_png_to_playdate_bit_order() {
         (255, 255, 255, 255),
         (255, 255, 255, 255),
         (0, 0, 0, 255),
-    ]);
+    ])?;
 
     let packed = pack_image(
         &png,
@@ -27,19 +29,19 @@ fn packs_png_to_playdate_bit_order() {
             dither: DitherMode::Threshold,
             ..ConversionOptions::default()
         },
-    )
-    .expect("png should pack");
+    )?;
 
     assert_eq!(packed.width, 8);
     assert_eq!(packed.height, 1);
     assert_eq!(packed.row_stride, 1);
     assert_eq!(packed.pixels, vec![0b0100_0110]);
     assert_eq!(packed.mask, Some(vec![0b1110_1111]));
+    Ok(())
 }
 
 #[test]
-fn converts_plot_like_png_to_serialized_payload() {
-    let png = plot_like_png();
+fn converts_plot_like_png_to_serialized_payload() -> TestResult {
+    let png = plot_like_png()?;
 
     let converted = convert_image(
         &png,
@@ -50,8 +52,7 @@ fn converts_plot_like_png_to_serialized_payload() {
             dither: DitherMode::Bayer4x4,
             ..ConversionOptions::default()
         },
-    )
-    .expect("plot should convert");
+    )?;
 
     assert_eq!(converted.content_type, PLAYDATE_BITMAP_MIME);
     assert_eq!(converted.width, 96);
@@ -64,15 +65,16 @@ fn converts_plot_like_png_to_serialized_payload() {
     assert_eq!(&converted.bytes[10..12], &64_u16.to_le_bytes());
     assert_eq!(&converted.bytes[12..14], &12_u16.to_le_bytes());
     assert_eq!(&converted.bytes[14..16], &0_u16.to_le_bytes());
+    Ok(())
 }
 
 #[test]
-fn decodes_jpeg_sources_before_packing() {
+fn decodes_jpeg_sources_before_packing() -> TestResult {
     let pixels = [(10, 10, 10); 8]
         .into_iter()
         .chain([(240, 240, 240); 8])
         .collect::<Vec<_>>();
-    let jpeg = rgb_jpeg(&pixels);
+    let jpeg = rgb_jpeg(&pixels)?;
 
     let packed = pack_image(
         &jpeg,
@@ -83,22 +85,21 @@ fn decodes_jpeg_sources_before_packing() {
             dither: DitherMode::Threshold,
             ..ConversionOptions::default()
         },
-    )
-    .expect("jpeg should pack");
+    )?;
 
     assert_eq!(packed.width, 16);
     assert_eq!(packed.height, 1);
     assert_eq!(packed.pixels, vec![0x00, 0xff]);
+    Ok(())
 }
 
 #[test]
 fn rejects_non_image_mime_types() {
-    let err = pack_image(
+    let err = err_from(pack_image(
         b"not an image",
         "application/octet-stream",
         &ConversionOptions::default(),
-    )
-    .expect_err("non image MIME should be rejected");
+    ));
 
     assert!(
         err.to_string().contains("unsupported image MIME"),
@@ -108,14 +109,13 @@ fn rejects_non_image_mime_types() {
 
 #[test]
 fn rejects_oversized_public_bitmap_encoding() {
-    let err = encode_playdate_bitmap(&PackedBitmap {
+    let err = err_from(encode_playdate_bitmap(&PackedBitmap {
         width: u32::from(u16::MAX) + 1,
         height: 1,
         row_stride: 1,
         pixels: Vec::new(),
         mask: None,
-    })
-    .expect_err("oversized public bitmap should be rejected");
+    }));
 
     assert!(
         err.to_string().contains("too large"),
@@ -125,14 +125,13 @@ fn rejects_oversized_public_bitmap_encoding() {
 
 #[test]
 fn rejects_malformed_public_bitmap_planes() {
-    let err = encode_playdate_bitmap(&PackedBitmap {
+    let err = err_from(encode_playdate_bitmap(&PackedBitmap {
         width: 8,
         height: 1,
         row_stride: 1,
         pixels: vec![0xff],
         mask: Some(Vec::new()),
-    })
-    .expect_err("mask length should be validated");
+    }));
 
     assert!(
         err.to_string().contains("mask plane length"),
@@ -141,10 +140,10 @@ fn rejects_malformed_public_bitmap_planes() {
 }
 
 #[test]
-fn rejects_payloads_above_configured_byte_budget() {
-    let png = plot_like_png();
+fn rejects_payloads_above_configured_byte_budget() -> TestResult {
+    let png = plot_like_png()?;
 
-    let err = pack_image(
+    let err = err_from(pack_image(
         &png,
         "image/png",
         &ConversionOptions {
@@ -154,17 +153,17 @@ fn rejects_payloads_above_configured_byte_budget() {
             dither: DitherMode::Threshold,
             ..ConversionOptions::default()
         },
-    )
-    .expect_err("payload should exceed configured budget");
+    ));
 
     assert!(
         err.to_string().contains("payload is too large"),
         "unexpected error: {err}"
     );
+    Ok(())
 }
 
 #[test]
-fn encodes_mask_plane_after_color_plane() {
+fn encodes_mask_plane_after_color_plane() -> TestResult {
     let png = rgba_png(&[
         (0, 0, 0, 255),
         (255, 255, 255, 255),
@@ -174,7 +173,7 @@ fn encodes_mask_plane_after_color_plane() {
         (255, 255, 255, 255),
         (255, 255, 255, 255),
         (0, 0, 0, 255),
-    ]);
+    ])?;
     let packed = pack_image(
         &png,
         "image/png",
@@ -184,10 +183,9 @@ fn encodes_mask_plane_after_color_plane() {
             dither: DitherMode::Threshold,
             ..ConversionOptions::default()
         },
-    )
-    .expect("transparent png should pack");
+    )?;
 
-    let encoded = encode_playdate_bitmap(&packed).expect("encode with mask");
+    let encoded = encode_playdate_bitmap(&packed)?;
 
     assert_eq!(
         &encoded[14..16],
@@ -195,13 +193,14 @@ fn encodes_mask_plane_after_color_plane() {
     );
     assert_eq!(encoded[PLAYDATE_BITMAP_HEADER_LEN], 0b0100_0110);
     assert_eq!(encoded[PLAYDATE_BITMAP_HEADER_LEN + 1], 0b1101_1111);
+    Ok(())
 }
 
 #[test]
-fn rejects_decoded_sources_above_configured_dimensions() {
-    let png = plot_like_png();
+fn rejects_decoded_sources_above_configured_dimensions() -> TestResult {
+    let png = plot_like_png()?;
 
-    let err = pack_image(
+    let err = err_from(pack_image(
         &png,
         "image/png",
         &ConversionOptions {
@@ -212,16 +211,16 @@ fn rejects_decoded_sources_above_configured_dimensions() {
             dither: DitherMode::Threshold,
             ..ConversionOptions::default()
         },
-    )
-    .expect_err("source dimensions should exceed decode limit");
+    ));
 
     assert!(
         err.to_string().contains("failed to decode"),
         "unexpected error: {err}"
     );
+    Ok(())
 }
 
-fn rgba_png(pixels: &[(u8, u8, u8, u8)]) -> Vec<u8> {
+fn rgba_png(pixels: &[(u8, u8, u8, u8)]) -> TestResult<Vec<u8>> {
     let image: ImageBuffer<Rgba<u8>, Vec<u8>> =
         ImageBuffer::from_fn(pixels.len() as u32, 1, |x, _| {
             let (r, g, b, a) = pixels[x as usize];
@@ -230,7 +229,7 @@ fn rgba_png(pixels: &[(u8, u8, u8, u8)]) -> Vec<u8> {
     encode_rgba_png(&image)
 }
 
-fn plot_like_png() -> Vec<u8> {
+fn plot_like_png() -> TestResult<Vec<u8>> {
     let width = 96;
     let height = 64;
     let mut image = RgbaImage::from_pixel(width, height, Rgba([255, 255, 255, 255]));
@@ -272,27 +271,35 @@ fn draw_point(image: &mut RgbaImage, x: u32, y: u32, color: Rgba<u8>) {
     }
 }
 
-fn encode_rgba_png(image: &RgbaImage) -> Vec<u8> {
+fn encode_rgba_png(image: &RgbaImage) -> TestResult<Vec<u8>> {
     let mut bytes = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut bytes)
-        .write_image(
-            image.as_raw(),
-            image.width(),
-            image.height(),
-            image::ExtendedColorType::Rgba8,
-        )
-        .expect("encode png");
-    bytes
+    image::codecs::png::PngEncoder::new(&mut bytes).write_image(
+        image.as_raw(),
+        image.width(),
+        image.height(),
+        image::ExtendedColorType::Rgba8,
+    )?;
+    Ok(bytes)
 }
 
-fn rgb_jpeg(pixels: &[(u8, u8, u8)]) -> Vec<u8> {
+fn rgb_jpeg(pixels: &[(u8, u8, u8)]) -> TestResult<Vec<u8>> {
     let mut raw = Vec::with_capacity(pixels.len() * 3);
     for &(r, g, b) in pixels {
         raw.extend_from_slice(&[r, g, b]);
     }
     let mut bytes = Vec::new();
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 100)
-        .write_image(&raw, pixels.len() as u32, 1, image::ExtendedColorType::Rgb8)
-        .expect("encode jpeg");
-    bytes
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 100).write_image(
+        &raw,
+        pixels.len() as u32,
+        1,
+        image::ExtendedColorType::Rgb8,
+    )?;
+    Ok(bytes)
+}
+
+fn err_from<T, E>(result: Result<T, E>) -> E {
+    match result {
+        Ok(_) => panic!("expected an error"),
+        Err(err) => err,
+    }
 }

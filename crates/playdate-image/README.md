@@ -122,6 +122,61 @@ PDI encoder ourselves.
 The current crate takes the simpler route: store a custom packed bitmap blob and
 render it in the Playdate viewer.
 
+## Playdate Validation
+
+A disposable Lua validation app was built under
+`.context/playdate-ntpdimg-viewer`. It embeds a 96 x 64 Matplotlib plot
+converted through this crate to `Source/assets/sample.ntpdimg`, parses the
+`NTPDIMG1` header in Lua, and draws black pixels to the Simulator screen.
+
+Generate the fixture blob and preview:
+
+```bash
+cargo run --quiet --manifest-path .context/playdate-image-roundtrip/Cargo.toml -- \
+  .context/playdate-ntpdimg-viewer/matplotlib-small-source.png \
+  .context/playdate-ntpdimg-viewer/Source/assets/sample.ntpdimg \
+  .context/playdate-ntpdimg-viewer/qa/matplotlib-small-preview.png \
+  .context/playdate-ntpdimg-viewer/qa/matplotlib-small-preview-2x.png
+```
+
+Compile with the local SDK harness:
+
+```bash
+/Users/kyle/codex/playdate-harness/scripts/compile.py \
+  --project .context/playdate-ntpdimg-viewer \
+  --name NTPDIMGViewer
+```
+
+Run the Simulator autotest:
+
+```bash
+/Users/kyle/codex/playdate-harness/scripts/sim_autotest.py \
+  --project .context/playdate-ntpdimg-viewer \
+  --name NTPDIMGViewer \
+  --bundle-id com.nteract.playdate-image.validation \
+  --out .context/playdate-ntpdimg-viewer/qa/autotest-result.txt \
+  --timeout 20
+```
+
+Observed result:
+
+```text
+AUTOTEST result=PASS
+AUTOTEST width=96
+AUTOTEST height=64
+AUTOTEST row_stride=12
+AUTOTEST byte_length=784
+AUTOTEST has_mask=false
+AUTOTEST black_pixels=774
+AUTOTEST transparent_pixels=0
+```
+
+This proves a Playdate app can load and parse the custom blob from a bundled
+asset. It also confirms `pdc` copies the unknown `.ntpdimg` file into the PDX
+bundle. Full-screen and scrolling report rendering should still use a native C
+or Rust helper that blits packed rows into the framebuffer; the Lua proof is
+only a correctness harness.
+
 ## Open Risks
 
 - The format now preserves binary transparency, but partial alpha is thresholded
@@ -134,7 +189,8 @@ render it in the Playdate viewer.
 - Matplotlib plots are more legible when rendered with a Playdate-aware style
   before conversion: heavier strokes, fewer ticks, larger labels, and no tiny
   legend text. The converter preserves pixels; it cannot recover readability
-  lost in the source PNG.
-- The Playdate-side renderer still needs a small validation app or harness test
-  that fetches or embeds an `NTPDIMG1` blob, blits rows into the framebuffer, and
-  verifies the rendered screen in Simulator.
+  lost in the source PNG. A notebook-side Matplotlib integration could emit this
+  compact Playdate variant alongside the normal PNG.
+- The validation app embeds the blob. A downloaded-blob datastore path still
+  needs to be checked in the eventual viewer, but the same Lua file API should
+  be able to read either bundled assets or downloaded data files.
