@@ -118,6 +118,6 @@ Maintaining a long-lived fork is a known cost; the patches are deliberately smal
 - Pre-existing fork patches (whatever's on `nteract/automerge` today vs upstream `main`). The history is in the fork; this ADR is about what we want to add.
 - Whether we should switch to `automerge-repo` for any part of the sync transport (separate question, separate ADR if it ever becomes one).
 
-## Status
+## Acceptance Criteria
 
 Draft. Becomes accepted when patch 1 lands on the fork.

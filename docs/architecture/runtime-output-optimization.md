@@ -1,5 +1,8 @@
 # Runtime Output Optimization Plan
 
+**Status:** Measurement / plan, 2026-05-25. This is not an ADR; it is the
+optimization sequence behind the output-related ADRs and measurements.
+
 Runtime output performance has two different problems:
 
 - **Hot-path duplication**: repeated output scans, manifest decoding, sorting,

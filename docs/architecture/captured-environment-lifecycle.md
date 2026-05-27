@@ -1,6 +1,8 @@
 # Captured Environment Lifecycle
 
-**Status:** Draft, 2026-05-24.
+**Status:** Draft / planned, 2026-05-24. This document records the target
+lifecycle shape; parts of the current daemon still use the older boolean
+`unified_env_on_disk()` model.
 
 ## Related ADRs
 
@@ -56,6 +58,10 @@ The old question was "does `unified_env_on_disk()` return a Python path?" That b
 This distinction is load-bearing. A missing dir is ambiguous and must preserve the existing fallback behavior. A partial dir is not ambiguous: it is a broken on-disk realization of this notebook's captured identity and should be rebuilt through the captured path.
 
 The resolution helper must therefore be typed. A plan that detects `Partial` only inside `acquire_prewarmed_env_with_capture()` is insufficient if the source-resolution layer never routes partial dirs to `uv:prewarmed` or `conda:prewarmed`.
+
+Implementation note: this is the intended architecture, not the current state
+of every code path. The cleanup punchlist tracks the remaining boolean-path
+implementation gap as CEL-1.
 
 ## Decision 3: The happy path stays cheap
 

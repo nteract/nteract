@@ -453,7 +453,7 @@ responsibility (covered explicitly by the R2 layout in
    removes the bytes and sidecar. If younger, the grace keeps it for a
    future tick.
 
-## Open questions
+## Open Questions
 
 These are the gaps that came out of writing the ADR. Some are tracked
 elsewhere, some are surfaced here for the first time.

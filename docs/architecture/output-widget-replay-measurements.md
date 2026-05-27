@@ -1,6 +1,7 @@
 # Output Widget Replay Measurements
 
-**Status:** Draft, 2026-05-24.
+**Status:** Measurement, 2026-05-24. This is benchmark evidence for the runtime
+output optimization plan, not an ADR.
 
 This note records the reproducible measurement surface for the current
 runtime-agent to IPython Output widget replay path. It is intentionally a

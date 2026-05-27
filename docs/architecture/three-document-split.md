@@ -40,7 +40,11 @@ Each ingress path is a separate handler (`handle_notebook_doc_frame`, `handle_ru
 The reasons for keeping them separate, not just logically but physically on the wire:
 
 1. **Different write frequencies.** `NotebookDoc` writes on user-paced events: keystrokes, cell adds, structural moves. `RuntimeStateDoc` writes on kernel-paced events: queue advances, IOPub output streams, widget comm churn, env-sync recalculation. `PoolDoc` writes on prewarm-pool-paced events: maybe seconds apart when idle, sub-second under load. Interleaving them in one Automerge document would make every frontend re-render on stdout flood, and every typing change generate cross-cutting sync messages to peers that only care about pool health.
-2. **Different fan-out scopes.** `PoolDoc` fans out to every peer of the daemon, including peers that aren't even attached to a notebook (`Handshake::Pool` connections from the system-tray UI, env-management tools). `NotebookDoc` and `RuntimeStateDoc` fan out only to peers attached to that room.
+2. **Different fan-out scopes.** `PoolDoc` sync frames fan out to notebook-room
+   typed peers so each open notebook can render daemon pool state. `Handshake::Pool`
+   clients, such as system-tray UI or env-management tools, use the separate
+   JSON-IPC pool/admin channel instead of Automerge `PoolStateSync`. `NotebookDoc`
+   and `RuntimeStateDoc` fan out only to peers attached to that room.
 3. **Different write authority.** `NotebookDoc` is multi-writer (any editor-scope peer authors cells). `RuntimeStateDoc` has two writer paths: the daemon, and the runtime-agent peer that attaches over the `Handshake::RuntimeAgent` channel and writes under its own actor (`crates/runtimed/src/runtime_agent.rs:96`). Browser clients are allowed to author into the `comms/*/state/*` subtree only. `PoolDoc` is daemon-only, with all client changes stripped at ingress (`pool_state.rs:341`, `message.changes = Vec::<Vec<u8>>::new().into()`).
 4. **Different lifetimes.** `NotebookDoc` persists to disk (`.automerge` for ephemeral rooms; `.ipynb` for file-backed). `RuntimeStateDoc` is in-memory only. `PoolDoc` lives for the daemon's lifetime. See Decision 4.
 5. **Different trust scopes.** The identity ADR (`docs/architecture/identity-and-trust.md` Decision 5) carves four scopes precisely along these lines. `viewer` reads all three. `editor` writes `NotebookDoc` and the widget subtree of `RuntimeStateDoc`. `runtime_peer` writes `RuntimeStateDoc` only. `owner` writes both notebook docs and manages the ACL. `PoolDoc` is daemon-write-only across every scope.
@@ -175,7 +179,7 @@ This is three different ingress shapes for what looks like one protocol. `PoolDo
 3. `pool_doc_changed.send(())` fans out to every peer subscribed in `peer_loop.rs`. That includes peers attached to notebooks via `NotebookSync`, and peers attached via `Pool` handshakes (system tray, env tools).
 4. The frontend `usePoolState` hook re-renders the pool banner. The banner appears once per app instance, not once per open notebook.
 
-## Open questions
+## Open Questions
 
 1. **Should server-side path enforcement land for `RuntimeStateDoc` editor writes?** Today the WASM handle is the gatekeeper. A custom client that crafted change bytes targeting `executions/*/status` would pass the frame validator. The identity ADR explicitly defers this; the question is whether it should land before any deployment that admits browser clients without a vetted WASM build.
 2. **Is `last_saved` in the right document?** It lives in `RuntimeStateDoc`, which does not persist. The justification in the field's doc comment is that it tracks ephemeral save bookkeeping, not document schema. But the field survives only as long as the room is open, which means a room reopened from disk has no record of when it was last saved. If the answer is "use mtime on the `.ipynb`," that should be explicit.

@@ -117,7 +117,7 @@ let handle = {
 handle.with_doc(|doc| { ... });
 ```
 
-Tool code that doesn't use the macro and holds the lock through an `.await` is the most likely way to wedge the child. The `tokio-mutex-guard-stays-sync` rule in CLAUDE.md applies here too.
+Tool code that doesn't use the macro and holds the lock through an `.await` is the most likely way to wedge the child. The `tokio-mutex-guard-stays-sync` rule in `AGENTS.md` / `CLAUDE.md` applies here too.
 
 ## Decision 4: The session-write guard is the convergence point
 
@@ -245,9 +245,14 @@ The error message is generated at the point of tool failure (`no_session_error()
 
 ### Daemon goes away mid-execution
 
-1. Agent calls `execute_cell`. Tool dispatch clones the handle, sends the request, awaits the broadcast for `ExecutionDone`.
+1. Agent calls `execute_cell`. Tool dispatch clones the handle, sends the
+   request, then polls `RuntimeStateDoc` until the execution reaches a terminal
+   state, with the execution pipeline's output-sync grace applied before
+   returning outputs.
 2. Daemon process is killed (SIGKILL from `runt daemon stop`, or a crash). Watch loop receives `DaemonEvent::Disconnected`, classifies as `MarkDisconnected`. Stashes `disconnect_target = "/tmp/foo.ipynb"`, sets `session = None`, sets `last_session_drop = Disconnected`. Also drains `parked_sessions` (their handles are dead).
-3. In-flight `execute_cell` tool call's `DocHandle` is now connected to a closed socket. Whatever it was awaiting (RPC response, broadcast) errors out. Tool returns failure to the agent.
+3. In-flight `execute_cell` tool call's `DocHandle` is now connected to a
+   closed socket. Whatever it was awaiting (RPC response or RuntimeStateDoc
+   convergence) errors out. Tool returns failure to the agent.
 4. Daemon comes back (launchd respawn, or user restart). Child's `DaemonConnection` reconnects; emits `Connected`.
 5. Watch loop classifies as `RejoinInitial("/tmp/foo.ipynb")` because `disconnect_target` is set and `was_disconnected = true`. Runs `rejoin()` via `connect_open`, installs new session.
 6. Next tool call from the agent lands on a fresh `DocHandle` for the same notebook. Cells the agent had already authored before the disconnect are still there (loaded from `.ipynb`); cells authored during the disconnect window (there are none, because the agent's tool call failed) are not lost.
@@ -260,7 +265,7 @@ The error message is generated at the point of tool failure (`no_session_error()
 4. One agent calls `execute_cell`; the other agent sees the cell-state changes via Automerge sync. There is no per-client routing, no per-client identity, no per-client scope (Decision 5 in `identity-and-trust.md` will eventually change this).
 5. If Claude Code exits, its child closes the socket, daemon decrements `active_peers` to 1. The daemon does *not* tear down because Codex is still connected. The daemon is now orphan-owned (Claude Code started it, Codex is using it). If Codex also exits, `active_peers` goes to 0 and the kernel-teardown timer starts.
 
-## Open questions
+## Open Questions
 
 These are the architectural gaps surfaced while writing this ADR. None block the current shape; all need decisions before we scale beyond one-MCP-client-per-daemon.
 

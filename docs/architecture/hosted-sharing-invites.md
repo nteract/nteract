@@ -1,11 +1,12 @@
-# Hosted Notebook Sharing And Invites
+# Hosted Notebook Sharing and Invites
 
-**Status:** Draft, 2026-05-24.
+**Status:** PRD draft, 2026-05-24.
 
-This note designs the product and data path from "share with email" to
-principal-backed `notebook_acl` rows. The important rule is unchanged from the
-identity docs: email is useful for lookup and display, but it is not the room
-principal.
+This PRD defines the user-facing sharing requirements and the product/data path
+from "share with email" to principal-backed `notebook_acl` rows. It relies on
+the hosted-room ADRs for credential, authorization, artifact, and output-origin
+decisions. The important rule is unchanged from the identity docs: email is
+useful for lookup and display, but it is not the room principal.
 
 Related docs:
 
@@ -338,7 +339,7 @@ pending invites, and resolve first-login invites into principal ACL rows. HTTP
 routes should come after the Access demo proves principal shape and after we
 choose the final share API names.
 
-## Open Decisions
+## Open Questions
 
 1. **Provider subject source.** For the first Access demo, the principal is
    Access-scoped. If Access can pass a stable Anaconda subject claim, decide the

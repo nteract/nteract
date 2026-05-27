@@ -332,7 +332,7 @@ The upstream `filters` work (`origin/filters` branch on `automerge/automerge`, p
 
 The repo currently persists `.automerge` only for untitled ephemeral notebooks. No production-shipped notebook has long-lived Automerge actor labels in the legacy format. The new `<principal>/<operator>` format is adopted from day one of the change. Old in-memory actor labels in current sessions get replaced on next daemon restart; nothing on disk to migrate.
 
-## What this leaves open
+## Open Questions
 
 These follow-up ADRs and design decisions are tracked but not decided here:
 
