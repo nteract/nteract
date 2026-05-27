@@ -14,7 +14,7 @@ Keep the sandbox to exactly these flags:
 allow-scripts allow-downloads allow-forms allow-pointer-lock
 ```
 
-Fullscreen (sift maximize, maps, 3D) comes from the separate `allowFullScreen` iframe attribute, not a sandbox token. `allow-same-origin` stays off — adding it would give cell output access to `window.__TAURI__`, all Tauri APIs, parent DOM, localStorage, and cookies. A CI test in `src/components/isolated/__tests__/isolated-frame.test.ts` asserts the list stays clean; it's the single most important security invariant in this tree. `allow-popups` and `allow-modals` were removed to shrink the phishing surface — leave them out.
+Fullscreen (sift maximize, maps, 3D) comes from the iframe `allow="fullscreen *"` Permissions Policy attribute, not a sandbox token. `allow-same-origin` stays off — adding it would give cell output access to `window.__TAURI__`, all Tauri APIs, parent DOM, localStorage, and cookies. A CI test in `src/components/isolated/__tests__/isolated-frame.test.ts` asserts the list stays clean; it's the single most important security invariant in this tree. `allow-popups` and `allow-modals` were removed to shrink the phishing surface — leave them out.
 
 ### Custom URI scheme + sandbox-induced opaque origin
 
