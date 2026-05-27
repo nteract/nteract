@@ -347,6 +347,20 @@ fn validate_comm_state_only_runtime_delta(
         validate_comm_metadata_unchanged(scope, comm_id, before_comm, after_comm)?;
     }
 
+    let mut expected_state = before.state.clone();
+    for (comm_id, after_comm) in &after.state.comms {
+        if let Some(expected_comm) = expected_state.comms.get_mut(comm_id) {
+            expected_comm.state = after_comm.state.clone();
+        }
+    }
+    if expected_state != after.state {
+        return Err(runtime_state_policy_error(
+            scope,
+            "runtime state",
+            "only comm state property mutations are allowed",
+        ));
+    }
+
     Ok(())
 }
 
