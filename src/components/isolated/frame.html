@@ -854,12 +854,10 @@
           return false;
         }
 
-        // Honor the inner scroller's `overscroll-behavior-y`. Sift sets
-        // `overscroll-behavior: none` on `.sift-viewport` to opt out of
-        // scroll-chaining; without this check we'd forward the wheel to
-        // the parent at the table's top/bottom anyway, scrolling the
-        // notebook out from under the user mid-interaction. `contain`
-        // also opts out — same behavior as `none` for chaining purposes.
+        // Honor the inner scroller's `overscroll-behavior-y`. Renderers that
+        // set `none` or `contain` are explicitly asking not to chain vertical
+        // scroll to the host. Sift leaves vertical chaining enabled so the
+        // notebook can keep scrolling when the table reaches a boundary.
         function scrollerOptsOutOfChaining(scroller) {
           if (!scroller) return false;
           var behavior = window.getComputedStyle(scroller).overscrollBehaviorY;
