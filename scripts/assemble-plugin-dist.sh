@@ -191,12 +191,12 @@ PY
 codex_marketplace_json="$out_dir/.agents/plugins/marketplace.json"
 mkdir -p "$out_dir/.agents/plugins"
 
-python3 - "$codex_marketplace_json" "$plugin_name" "./plugins/$plugin_name" <<'PY'
+python3 - "$codex_marketplace_json" "$plugin_name" "./plugins/$plugin_name" "$plugin_version" <<'PY'
 import json
 import os
 import sys
 
-path, plugin_name, source_path = sys.argv[1:4]
+path, plugin_name, source_path, plugin_version = sys.argv[1:5]
 
 try:
     with open(path) as f:
@@ -211,6 +211,7 @@ plugins = data.setdefault("plugins", [])
 
 entry = {
     "name": plugin_name,
+    "version": plugin_version,
     "source": {
         "source": "local",
         "path": source_path,
