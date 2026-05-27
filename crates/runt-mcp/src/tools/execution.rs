@@ -275,13 +275,16 @@ pub async fn run_all_cells(
             let snap_outputs = handle.get_cell_outputs(&cell.id).unwrap_or_default();
             if !snap_outputs.is_empty() {
                 let wrapped = crate::structured::cell_structured_content_from_manifests(
-                    &snap.id,
-                    &snap.cell_type,
-                    &snap.source,
-                    &snap_outputs,
-                    exec.execution_count,
-                    display_status,
-                    &server.blob_base_url,
+                    crate::structured::CellStructuredContentManifestInput {
+                        cell_id: &snap.id,
+                        cell_type: &snap.cell_type,
+                        source: &snap.source,
+                        output_manifests: &snap_outputs,
+                        execution_count: exec.execution_count,
+                        status: display_status,
+                        blob_base_url: &server.blob_base_url,
+                        comms,
+                    },
                 );
                 if let Some(mut cell_data) = wrapped.get("cell").cloned() {
                     if let Some(eid) = eid {
@@ -495,13 +498,16 @@ async fn render_execution_result(
         None
     } else {
         let wrapped = crate::structured::cell_structured_content_from_manifests(
-            &snap.id,
-            &snap.cell_type,
-            &snap.source,
-            &exec.outputs,
-            exec.execution_count,
-            display_status,
-            &server.blob_base_url,
+            crate::structured::CellStructuredContentManifestInput {
+                cell_id: &snap.id,
+                cell_type: &snap.cell_type,
+                source: &snap.source,
+                output_manifests: &exec.outputs,
+                execution_count: exec.execution_count,
+                status: display_status,
+                blob_base_url: &server.blob_base_url,
+                comms,
+            },
         );
         wrapped.get("cell").cloned().map(|mut cell_data| {
             if let Some(obj) = cell_data.as_object_mut() {

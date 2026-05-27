@@ -4,6 +4,58 @@ import type { BlobResolver } from "runtimed";
 import { resolveCell, resolveOutputs } from "../viewer/render-resolution.ts";
 
 describe("cloud viewer render resolution", () => {
+  it("turns static widget views into text fallbacks", async () => {
+    const outputs = await resolveOutputs(
+      [
+        {
+          output_id: "widget-output",
+          output_type: "display_data",
+          data: {
+            "application/vnd.jupyter.widget-view+json": {
+              model_id: "slider-1",
+            },
+            "text/llm+plain": "IntSlider slider: 7 (0-10)",
+          },
+          metadata: {},
+        },
+      ],
+      rejectingBlobResolver(),
+    );
+
+    assert.equal(outputs.length, 1);
+    assert.equal(outputs[0].output_type, "display_data");
+    if (outputs[0].output_type === "display_data") {
+      assert.equal(outputs[0].data["application/vnd.jupyter.widget-view+json"], undefined);
+      assert.equal(outputs[0].data["text/plain"], "IntSlider slider: 7 (0-10)");
+      assert.equal(outputs[0].data["text/llm+plain"], "IntSlider slider: 7 (0-10)");
+    }
+  });
+
+  it("does not leave widget-only outputs on a loading state", async () => {
+    const outputs = await resolveOutputs(
+      [
+        {
+          output_id: "widget-output",
+          output_type: "display_data",
+          data: {
+            "application/vnd.jupyter.widget-view+json": {
+              model_id: "slider-1",
+            },
+          },
+          metadata: {},
+        },
+      ],
+      rejectingBlobResolver(),
+    );
+
+    assert.equal(outputs.length, 1);
+    assert.equal(outputs[0].output_type, "display_data");
+    if (outputs[0].output_type === "display_data") {
+      assert.equal(outputs[0].data["application/vnd.jupyter.widget-view+json"], undefined);
+      assert.equal(outputs[0].data["text/plain"], "Widget state unavailable");
+    }
+  });
+
   it("keeps healthy outputs when one manifest fails to resolve", async () => {
     const outputs = await resolveOutputs(
       [

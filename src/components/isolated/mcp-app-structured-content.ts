@@ -1,6 +1,7 @@
 import type { NteractEmbeddableOutput, ResolveEmbeddableOutputsOptions } from "./embeddable-output";
 import type { ContentRef, OutputBlobResolver, OutputManifest } from "./output-manifest";
 import { selectMimeType } from "@/components/outputs/mime-priority";
+import { parseWidgetViewModelId, WIDGET_VIEW_MIME } from "@/components/widgets/widget-state";
 
 export interface McpAppCellOutput {
   output_type: "stream" | "error" | "display_data" | "execute_result";
@@ -65,6 +66,19 @@ function fallbackOutputId(cell: McpAppCellData, outputIndex: number): string {
   return `${cell.cell_id}:output:${outputIndex}`;
 }
 
+function widgetViewMetadata(data: Record<string, unknown>): Record<string, unknown> {
+  if (selectMimeType(data) !== WIDGET_VIEW_MIME) return {};
+  if (!parseWidgetViewModelId(data[WIDGET_VIEW_MIME])) return {};
+
+  const summary = typeof data["text/llm+plain"] === "string" ? data["text/llm+plain"] : undefined;
+  return {
+    [WIDGET_VIEW_MIME]: {
+      nteractWidgetMissingState: "stale",
+      ...(summary ? { nteractWidgetSummary: summary } : {}),
+    },
+  };
+}
+
 function cellOutputToManifest(
   cell: McpAppCellData,
   output: McpAppCellOutput,
@@ -88,7 +102,7 @@ function cellOutputToManifest(
           output_id,
           output_type: "execute_result",
           data,
-          metadata: {},
+          metadata: widgetViewMetadata(output.data),
           execution_count: output.execution_count ?? null,
         };
       }
@@ -96,7 +110,7 @@ function cellOutputToManifest(
         output_id,
         output_type: "display_data",
         data,
-        metadata: {},
+        metadata: widgetViewMetadata(output.data),
       };
     }
     case "stream":

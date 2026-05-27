@@ -546,6 +546,7 @@ pub async fn build_execution_result(
     // Outputs live in RuntimeStateDoc, keyed by execution_id, so we fetch
     // them separately from the cell snapshot.
     let cell_snapshot = handle.get_cell(&result.cell_id);
+    let runtime_comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
     let mut structured_content = if let Some(snap) = cell_snapshot {
         let outputs = handle.get_cell_outputs(&result.cell_id).unwrap_or_default();
         let ec_str = cell_read::get_cell_execution_count_from_runtime(handle, &snap.id);
@@ -555,13 +556,16 @@ pub async fn build_execution_result(
             ec_str.parse().ok()
         };
         Some(crate::structured::cell_structured_content_from_manifests(
-            &snap.id,
-            &snap.cell_type,
-            &snap.source,
-            &outputs,
-            ec,
-            &result.status,
-            &server.blob_base_url,
+            crate::structured::CellStructuredContentManifestInput {
+                cell_id: &snap.id,
+                cell_type: &snap.cell_type,
+                source: &snap.source,
+                output_manifests: &outputs,
+                execution_count: ec,
+                status: &result.status,
+                blob_base_url: &server.blob_base_url,
+                comms: runtime_comms.as_ref(),
+            },
         ))
     } else {
         None

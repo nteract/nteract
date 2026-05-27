@@ -10,8 +10,12 @@
 //! fetches — structured content is always compact.
 
 use notebook_doc::mime::MimeKind;
+use runtime_doc::CommDocEntry;
 use runtimed_outputs::output_resolver;
 use serde_json::{json, Value};
+use std::collections::HashMap;
+
+const WIDGET_VIEW_MIME: &str = "application/vnd.jupyter.widget-view+json";
 
 /// Check if a MIME type is a visualization spec (Plotly, Vega-Lite, Vega).
 fn is_viz_mime(mime: &str) -> bool {
@@ -23,32 +27,38 @@ fn is_viz_mime(mime: &str) -> bool {
             && (mime.ends_with("+json") || mime.ends_with(".json")))
 }
 
+/// Inputs for [`cell_structured_content_from_manifests`].
+pub struct CellStructuredContentManifestInput<'a> {
+    pub cell_id: &'a str,
+    pub cell_type: &'a str,
+    pub source: &'a str,
+    pub output_manifests: &'a [serde_json::Value],
+    pub execution_count: Option<i64>,
+    pub status: &'a str,
+    pub blob_base_url: &'a Option<String>,
+    pub comms: Option<&'a HashMap<String, CommDocEntry>>,
+}
+
 /// Build structuredContent JSON directly from manifest Values and blob URLs.
 ///
 /// Unlike [`cell_structured_content`] which requires fully-resolved outputs,
 /// this function reads inline content directly from ContentRef entries and
 /// emits blob URLs for anything stored in the blob store. Zero blob fetches.
 pub fn cell_structured_content_from_manifests(
-    cell_id: &str,
-    cell_type: &str,
-    source: &str,
-    output_manifests: &[serde_json::Value],
-    execution_count: Option<i64>,
-    status: &str,
-    blob_base_url: &Option<String>,
+    input: CellStructuredContentManifestInput<'_>,
 ) -> Value {
     let mut content = json!({
         "cell": {
-            "cell_id": cell_id,
-            "source": source,
-            "cell_type": cell_type,
-            "outputs": output_manifests.iter().map(|m| manifest_output_to_structured(m, blob_base_url)).collect::<Vec<_>>(),
-            "execution_count": execution_count,
-            "status": status,
+            "cell_id": input.cell_id,
+            "source": input.source,
+            "cell_type": input.cell_type,
+            "outputs": input.output_manifests.iter().map(|m| manifest_output_to_structured(m, input.blob_base_url, input.comms)).collect::<Vec<_>>(),
+            "execution_count": input.execution_count,
+            "status": input.status,
         }
     });
 
-    if let Some(base) = blob_base_url {
+    if let Some(base) = input.blob_base_url {
         content["blob_base_url"] = Value::String(base.clone());
     }
 
@@ -59,7 +69,11 @@ pub fn cell_structured_content_from_manifests(
 ///
 /// Reads inline content directly from ContentRef entries and emits blob URLs
 /// for blob-stored content. No blob fetches are performed.
-fn manifest_output_to_structured(manifest: &Value, blob_base_url: &Option<String>) -> Value {
+fn manifest_output_to_structured(
+    manifest: &Value,
+    blob_base_url: &Option<String>,
+    comms: Option<&HashMap<String, CommDocEntry>>,
+) -> Value {
     let output_type = manifest
         .get("output_type")
         .and_then(|v| v.as_str())
@@ -230,6 +244,19 @@ fn manifest_output_to_structured(manifest: &Value, blob_base_url: &Option<String
                 }
             }
 
+            // Synthesize a safe widget summary for MCP App/static clients that
+            // cannot attach to the live comm bridge. Do not include raw widget
+            // state here; Password widgets can store plaintext values.
+            if !data.contains_key("text/llm+plain") {
+                if let (Some(data_map), Some(comms)) =
+                    (manifest.get("data").and_then(|v| v.as_object()), comms)
+                {
+                    if let Some(summary) = widget_summary_from_data_map(data_map, comms) {
+                        data.insert("text/llm+plain".to_string(), Value::String(summary));
+                    }
+                }
+            }
+
             let mut result = json!({
                 "output_type": output_type,
                 "data": data,
@@ -243,6 +270,38 @@ fn manifest_output_to_structured(manifest: &Value, blob_base_url: &Option<String
         }
         _ => attach_id(json!({"output_type": output_type})),
     }
+}
+
+fn widget_model_id_from_content_ref(content_ref: &Value) -> Option<String> {
+    if let Some(inline) = content_ref.get("inline") {
+        if let Some(raw) = inline.as_str() {
+            return serde_json::from_str::<Value>(raw).ok().and_then(|v| {
+                v.get("model_id")
+                    .and_then(|id| id.as_str())
+                    .map(str::to_string)
+            });
+        }
+        return inline
+            .get("model_id")
+            .and_then(|id| id.as_str())
+            .map(str::to_string);
+    }
+
+    content_ref
+        .get("model_id")
+        .and_then(|id| id.as_str())
+        .map(str::to_string)
+}
+
+fn widget_summary_from_data_map(
+    data_map: &serde_json::Map<String, Value>,
+    comms: &HashMap<String, CommDocEntry>,
+) -> Option<String> {
+    let model_id = widget_model_id_from_content_ref(data_map.get(WIDGET_VIEW_MIME)?)?;
+    let entry = comms.get(&model_id)?;
+    Some(output_resolver::format_widget_summary(
+        &model_id, entry, comms,
+    ))
 }
 
 /// Resolve a text ContentRef to a JSON value (inline text or blob URL).
@@ -281,7 +340,7 @@ mod tests {
             },
         });
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let result = manifest_output_to_structured(&manifest, &blob_base, None);
         let Some(data) = result["data"].as_object() else {
             panic!("data should be an object");
         };
@@ -297,7 +356,7 @@ mod tests {
             },
         });
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let result = manifest_output_to_structured(&manifest, &blob_base, None);
         let Some(data) = result["data"].as_object() else {
             panic!("data should be an object");
         };
@@ -313,7 +372,7 @@ mod tests {
                 "text/plain": inline_ref("fallback"),
             },
         });
-        let result = manifest_output_to_structured(&manifest, &None);
+        let result = manifest_output_to_structured(&manifest, &None, None);
         let Some(data) = result["data"].as_object() else {
             panic!("data should be an object");
         };
@@ -337,7 +396,7 @@ mod tests {
             },
         });
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let result = manifest_output_to_structured(&manifest, &blob_base, None);
         let Some(data) = result["data"].as_object() else {
             panic!("data should be an object");
         };
@@ -356,7 +415,7 @@ mod tests {
             },
         });
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let result = manifest_output_to_structured(&manifest, &blob_base, None);
         let Some(data) = result["data"].as_object() else {
             panic!("data should be an object");
         };
@@ -377,7 +436,7 @@ mod tests {
             "text": inline_ref("hi"),
         });
         assert_eq!(
-            manifest_output_to_structured(&stream, &blob_base)["output_id"],
+            manifest_output_to_structured(&stream, &blob_base, None)["output_id"],
             "id-stream"
         );
 
@@ -389,7 +448,7 @@ mod tests {
             "traceback": inline_ref("[\"l1\"]"),
         });
         assert_eq!(
-            manifest_output_to_structured(&error, &blob_base)["output_id"],
+            manifest_output_to_structured(&error, &blob_base, None)["output_id"],
             "id-error"
         );
 
@@ -401,7 +460,7 @@ mod tests {
             },
         });
         assert_eq!(
-            manifest_output_to_structured(&display, &blob_base)["output_id"],
+            manifest_output_to_structured(&display, &blob_base, None)["output_id"],
             "id-display"
         );
     }
@@ -416,7 +475,7 @@ mod tests {
             "name": "stdout",
             "text": inline_ref("hi"),
         });
-        let result = manifest_output_to_structured(&manifest, &None);
+        let result = manifest_output_to_structured(&manifest, &None, None);
         assert!(result.get("output_id").is_none());
     }
 
@@ -428,7 +487,7 @@ mod tests {
             "name": "stdout",
             "text": inline_ref("hi"),
         });
-        let result = manifest_output_to_structured(&manifest, &None);
+        let result = manifest_output_to_structured(&manifest, &None, None);
         assert!(result.get("output_id").is_none());
     }
 
@@ -445,7 +504,7 @@ mod tests {
             },
         });
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let result = manifest_output_to_structured(&manifest, &blob_base, None);
         let data = result["data"]
             .as_object()
             .expect("data should be an object");
@@ -469,7 +528,7 @@ mod tests {
             },
         });
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let result = manifest_output_to_structured(&manifest, &blob_base, None);
         let data = result["data"]
             .as_object()
             .expect("data should be an object");
@@ -490,7 +549,7 @@ mod tests {
                 "text/plain": inline_ref("<Figure>"),
             },
         });
-        let result = manifest_output_to_structured(&manifest, &None);
+        let result = manifest_output_to_structured(&manifest, &None, None);
         let data = result["data"]
             .as_object()
             .expect("data should be an object");
@@ -511,7 +570,7 @@ mod tests {
                 "text/plain": inline_ref("<Audio>"),
             },
         });
-        let result = manifest_output_to_structured(&manifest, &None);
+        let result = manifest_output_to_structured(&manifest, &None, None);
         let data = result["data"]
             .as_object()
             .expect("data should be an object");
@@ -531,7 +590,7 @@ mod tests {
             },
         });
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let result = manifest_output_to_structured(&manifest, &blob_base, None);
         let Some(data) = result["data"].as_object() else {
             panic!("data should be an object");
         };
@@ -549,11 +608,73 @@ mod tests {
             },
         });
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let result = manifest_output_to_structured(&manifest, &blob_base, None);
         let Some(data) = result["data"].as_object() else {
             panic!("data should be an object");
         };
         assert_eq!(data["text/llm+plain"], "Summary of output");
+    }
+
+    #[test]
+    fn structured_widget_view_gets_safe_summary_from_comms() {
+        let manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "application/vnd.jupyter.widget-view+json": inline_ref(r#"{"model_id":"slider-1"}"#),
+            },
+        });
+        let mut comms = HashMap::new();
+        comms.insert(
+            "slider-1".to_string(),
+            CommDocEntry {
+                target_name: "jupyter.widget".to_string(),
+                model_module: "@jupyter-widgets/controls".to_string(),
+                model_name: "IntSliderModel".to_string(),
+                state: json!({"value": 7, "min": 0, "max": 10}),
+                outputs: Vec::new(),
+                seq: 0,
+                capture_msg_id: String::new(),
+            },
+        );
+
+        let result = manifest_output_to_structured(&manifest, &None, Some(&comms));
+        let summary = result["data"]["text/llm+plain"]
+            .as_str()
+            .expect("widget summary should be present");
+
+        assert!(summary.contains("IntSlider"));
+        assert!(summary.contains("7"));
+    }
+
+    #[test]
+    fn structured_widget_summary_masks_password_values() {
+        let manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "application/vnd.jupyter.widget-view+json": inline_ref(r#"{"model_id":"password-1"}"#),
+            },
+        });
+        let mut comms = HashMap::new();
+        comms.insert(
+            "password-1".to_string(),
+            CommDocEntry {
+                target_name: "jupyter.widget".to_string(),
+                model_module: "@jupyter-widgets/controls".to_string(),
+                model_name: "PasswordModel".to_string(),
+                state: json!({"value": "hunter2"}),
+                outputs: Vec::new(),
+                seq: 0,
+                capture_msg_id: String::new(),
+            },
+        );
+
+        let result = manifest_output_to_structured(&manifest, &None, Some(&comms));
+        let summary = result["data"]["text/llm+plain"]
+            .as_str()
+            .expect("widget summary should be present");
+
+        assert!(summary.contains("****"));
+        assert!(!summary.contains("hunter2"));
     }
 
     #[test]
@@ -563,7 +684,7 @@ mod tests {
             "name": "stdout",
             "text": inline_ref("hello"),
         });
-        let result = manifest_output_to_structured(&manifest, &None);
+        let result = manifest_output_to_structured(&manifest, &None, None);
         assert_eq!(result["output_type"], "stream");
         assert_eq!(result["name"], "stdout");
         assert_eq!(result["text"], "hello");
@@ -577,7 +698,7 @@ mod tests {
             "text": blob_ref("stream_hash", 5_000),
         });
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let result = manifest_output_to_structured(&manifest, &blob_base, None);
         assert_eq!(result["text"], "http://localhost:9999/blob/stream_hash");
     }
 
@@ -590,7 +711,7 @@ mod tests {
             "evalue": "bad",
             "traceback": inline_ref(r#"["line 1", "line 2"]"#),
         });
-        let result = manifest_output_to_structured(&manifest, &None);
+        let result = manifest_output_to_structured(&manifest, &None, None);
         assert_eq!(result["output_type"], "error");
         assert_eq!(result["ename"], "ValueError");
         // Traceback should be a parsed JSON array, not the raw ContentRef
@@ -611,7 +732,7 @@ mod tests {
             "traceback": blob_ref("tb_hash_123", 8_000),
         });
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let result = manifest_output_to_structured(&manifest, &blob_base, None);
         assert_eq!(
             result["traceback"],
             "http://localhost:9999/blob/tb_hash_123"
@@ -627,7 +748,7 @@ mod tests {
             "evalue": "oops",
             "traceback": ["line 1", "line 2"],
         });
-        let result = manifest_output_to_structured(&manifest, &None);
+        let result = manifest_output_to_structured(&manifest, &None, None);
         let Some(tb) = result["traceback"].as_array() else {
             panic!("legacy array should pass through");
         };
@@ -643,7 +764,7 @@ mod tests {
             },
             "execution_count": 7,
         });
-        let result = manifest_output_to_structured(&manifest, &None);
+        let result = manifest_output_to_structured(&manifest, &None, None);
         assert_eq!(result["execution_count"], 7);
     }
 
@@ -661,7 +782,7 @@ mod tests {
             },
         });
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let result = manifest_output_to_structured(&manifest, &blob_base, None);
         assert_eq!(result["text"], "http://localhost:9999/blob/stream_hash");
         assert_eq!(result["llm_preview"]["total_lines"], 100);
         assert_eq!(result["llm_preview"]["head"], "line 0\n");
@@ -681,7 +802,7 @@ mod tests {
             },
         });
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let result = manifest_output_to_structured(&manifest, &blob_base, None);
         assert_eq!(result["traceback"], "http://localhost:9999/blob/tb_hash");
         assert_eq!(result["llm_preview"]["frames"], 200);
         assert_eq!(
@@ -697,7 +818,7 @@ mod tests {
             "name": "stdout",
             "text": inline_ref("hello"),
         });
-        let result = manifest_output_to_structured(&manifest, &None);
+        let result = manifest_output_to_structured(&manifest, &None, None);
         assert!(result.get("llm_preview").is_none());
     }
 
@@ -709,15 +830,16 @@ mod tests {
             "text": inline_ref("output"),
         })];
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = cell_structured_content_from_manifests(
-            "cell-123",
-            "code",
-            "print('hello')",
-            &manifests,
-            Some(3),
-            "done",
-            &blob_base,
-        );
+        let result = cell_structured_content_from_manifests(CellStructuredContentManifestInput {
+            cell_id: "cell-123",
+            cell_type: "code",
+            source: "print('hello')",
+            output_manifests: &manifests,
+            execution_count: Some(3),
+            status: "done",
+            blob_base_url: &blob_base,
+            comms: None,
+        });
         assert_eq!(result["cell"]["cell_id"], "cell-123");
         assert_eq!(result["cell"]["cell_type"], "code");
         assert_eq!(result["cell"]["source"], "print('hello')");

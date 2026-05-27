@@ -58,6 +58,7 @@ import {
 import { VideoOutput } from "@/components/outputs/video-output";
 import { SvgOutput } from "@/components/outputs/svg-output";
 import { WidgetView } from "@/components/widgets/widget-view";
+import { parseWidgetViewModelId, WIDGET_VIEW_MIME } from "@/components/widgets/widget-state";
 import { measureDocumentHeight } from "./layout-measure";
 import { outputEntryIdForPayload } from "./output-identity";
 // Import widget support
@@ -749,9 +750,24 @@ function OutputRenderer({
   }
 
   // Widget view - render interactive Jupyter widget
-  if (mimeType === "application/vnd.jupyter.widget-view+json") {
-    const widgetData = data as { model_id: string };
-    return <WidgetView modelId={widgetData.model_id} />;
+  if (mimeType === WIDGET_VIEW_MIME) {
+    const modelId = parseWidgetViewModelId(data);
+    if (!modelId) return null;
+    const metadataHint =
+      metadata?.nteractWidgetMissingState === "stale" ||
+      typeof metadata?.nteractWidgetSummary === "string"
+        ? {
+            missingState:
+              metadata?.nteractWidgetMissingState === "stale" ? ("stale" as const) : undefined,
+            summary:
+              typeof metadata?.nteractWidgetSummary === "string"
+                ? metadata.nteractWidgetSummary
+                : undefined,
+          }
+        : undefined;
+    return (
+      <WidgetView modelId={modelId} widgetStateHint={payload.widgetStateHint ?? metadataHint} />
+    );
   }
 
   // HTML
