@@ -72,3 +72,47 @@ Full diff:
     if extra_prompt:
         prompt += f"\nAdditional review constraints:\n{extra_prompt}\n"
     return prompt
+
+
+def build_architecture_prompt(workspace: ReviewWorkspace, *, review_prompt: str) -> str:
+    files = "\n".join(f"- {name}" for name in workspace.reviewed_diff.changed_files)
+    return f"""\
+Review this local architecture diff.
+
+Review goal:
+{review_prompt}
+
+Base ref: {workspace.reviewed_diff.base_ref}
+Head ref: {workspace.reviewed_diff.head_ref}
+Merge base: {workspace.reviewed_diff.merge_base}
+
+Changed files:
+{files or "- (none)"}
+
+Diff stat:
+{workspace.reviewed_diff.diff_stat or "(empty)"}
+
+You are in the workspace being reviewed. Inspect files as needed and compare the
+current local changes against the full diff below. Return exactly one JSON
+object and no prose, markdown, or code fence. The JSON shape is:
+{{
+  "verdict": "clear" | "findings" | "needs_human" | "infra_uncertain",
+  "terminal_reason": "review_complete" | "actionable_findings" |
+    "needs_human" | "budget_exhausted" | "infra_uncertain",
+  "summary": "short architecture review summary",
+  "findings": [
+    {{
+      "severity": "blocker" | "high" | "medium" | "low",
+      "file": "path/to/file",
+      "line": 123,
+      "title": "short issue title",
+      "evidence": "why this is a real architecture, security, product, or maintenance risk",
+      "suggested_fix": "concrete fix, or null",
+      "confidence": "high" | "medium" | "low"
+    }}
+  ]
+}}
+
+Full diff:
+{workspace.diff_patch or "(empty)"}
+"""
