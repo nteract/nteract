@@ -9,6 +9,11 @@ import {
 } from "rxjs";
 import { fitColumnWidths } from "./auto-width";
 import { type ColumnAction, mountColumnMenu, unmountColumnMenu } from "./column-menu";
+import {
+  type ImageViewerHandle,
+  type ImageViewerItem,
+  mountImageViewer,
+} from "./components/image-viewer";
 import { renderColumnSummary, unmountColumnSummary } from "./sparkline";
 // --- Types ---
 
@@ -1580,70 +1585,34 @@ export function createTable(
     }
   }
 
-  type ActiveImageViewer = {
-    backdrop: HTMLDivElement;
-    dialog: HTMLDivElement;
-    objectUrl: string;
-  };
-
-  let activeImageViewer: ActiveImageViewer | null = null;
+  let activeImageViewer: ImageViewerHandle | null = null;
 
   function dismissImageViewer() {
     if (!activeImageViewer) return;
-    URL.revokeObjectURL(activeImageViewer.objectUrl);
-    activeImageViewer.backdrop.remove();
-    activeImageViewer.dialog.remove();
+    activeImageViewer.unmount();
     activeImageViewer = null;
-    window.removeEventListener("keydown", onImageViewerKeyDown);
   }
 
-  function onImageViewerKeyDown(e: KeyboardEvent) {
-    if (e.key === "Escape") {
-      dismissImageViewer();
-    }
+  function getImageViewerItems(chunks: Uint8Array[]): ImageViewerItem[] {
+    return chunks.flatMap((bytes, sourceIndex) => {
+      const mime = sniffImageMime(bytes);
+      return mime ? [{ bytes, mime, sourceIndex }] : [];
+    });
   }
 
   function showImageViewer(dataRow: number, colIndex: number, imageIndex: number) {
     const chunks = getImageChunks(data.getCellRaw(dataRow, colIndex));
-    const bytes = chunks[imageIndex];
-    if (!bytes) return;
-    const mime = sniffImageMime(bytes);
-    if (!mime) return;
+    const items = getImageViewerItems(chunks);
+    if (items.length === 0) return;
+    const initialIndex = items.findIndex((item) => item.sourceIndex === imageIndex);
+    if (initialIndex < 0) return;
 
     dismissImageViewer();
-
-    const objectUrl = createImageObjectUrl(bytes, mime);
-    const backdrop = document.createElement("div");
-    backdrop.className = "sift-image-viewer-backdrop";
-    backdrop.addEventListener("click", dismissImageViewer);
-
-    const dialog = document.createElement("div");
-    dialog.className = "sift-image-viewer";
-    dialog.setAttribute("role", "dialog");
-    dialog.setAttribute("aria-modal", "true");
-    dialog.setAttribute("aria-label", `${columns[colIndex]?.label ?? "Image"} viewer`);
-    dialog.tabIndex = -1;
-
-    const closeBtn = document.createElement("button");
-    closeBtn.type = "button";
-    closeBtn.className = "sift-image-viewer-close";
-    closeBtn.setAttribute("aria-label", "Close image viewer");
-    closeBtn.textContent = "×";
-    closeBtn.addEventListener("click", dismissImageViewer);
-
-    const img = document.createElement("img");
-    img.className = "sift-image-viewer-img";
-    img.alt = "";
-    img.decoding = "async";
-    img.src = objectUrl;
-
-    dialog.appendChild(closeBtn);
-    dialog.appendChild(img);
-    document.body.appendChild(backdrop);
-    document.body.appendChild(dialog);
-    activeImageViewer = { backdrop, dialog, objectUrl };
-    window.addEventListener("keydown", onImageViewerKeyDown);
-    dialog.focus({ preventScroll: true });
+    activeImageViewer = mountImageViewer({
+      items,
+      initialIndex,
+      columnLabel: columns[colIndex]?.label ?? "Image",
+    });
   }
 
   // --- Render loop ---
