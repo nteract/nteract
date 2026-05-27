@@ -1,48 +1,75 @@
-use std::path::PathBuf;
-
 use image::{ImageBuffer, ImageEncoder, Rgba, RgbaImage};
-use playdate_pdi::{
-    normalize_image, ConversionOptions, DitherMode, PlaydatePdiConverter, PLAYDATE_PDI_MIME,
+use playdate_image::{
+    convert_image, pack_image, ConversionOptions, DitherMode, PLAYDATE_BITMAP_MAGIC,
+    PLAYDATE_BITMAP_MIME,
 };
 
 #[test]
-fn normalizes_png_to_playdate_one_bit_pixels() {
+fn packs_png_to_playdate_bit_order() {
     let png = rgba_png(&[
         (0, 0, 0, 255),
         (255, 255, 255, 255),
         (127, 127, 127, 255),
         (255, 0, 0, 0),
+        (0, 0, 0, 255),
+        (255, 255, 255, 255),
+        (255, 255, 255, 255),
+        (0, 0, 0, 255),
     ]);
 
-    let normalized = normalize_image(
+    let packed = pack_image(
         &png,
         "image/png",
         &ConversionOptions {
-            max_width: 4,
+            max_width: 8,
             max_height: 1,
             dither: DitherMode::Threshold,
         },
     )
-    .expect("png should normalize");
+    .expect("png should pack");
 
-    assert_eq!(normalized.width, 4);
-    assert_eq!(normalized.height, 1);
-    assert_eq!(
-        normalized.pixels,
-        vec![0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 0]
-    );
-    assert!(normalized.png_bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+    assert_eq!(packed.width, 8);
+    assert_eq!(packed.height, 1);
+    assert_eq!(packed.row_stride, 1);
+    assert_eq!(packed.pixels, vec![0b0101_0110]);
 }
 
 #[test]
-fn decodes_jpeg_sources_before_normalizing() {
+fn converts_plot_like_png_to_serialized_payload() {
+    let png = plot_like_png();
+
+    let converted = convert_image(
+        &png,
+        "image/png",
+        &ConversionOptions {
+            max_width: 96,
+            max_height: 64,
+            dither: DitherMode::Bayer4x4,
+        },
+    )
+    .expect("plot should convert");
+
+    assert_eq!(converted.content_type, PLAYDATE_BITMAP_MIME);
+    assert_eq!(converted.width, 96);
+    assert_eq!(converted.height, 64);
+    assert_eq!(converted.row_stride, 12);
+    assert_eq!(converted.source_mime, "image/png");
+    assert_eq!(converted.byte_length, 16 + 12 * 64);
+    assert_eq!(&converted.bytes[0..8], PLAYDATE_BITMAP_MAGIC);
+    assert_eq!(&converted.bytes[8..10], &96_u16.to_le_bytes());
+    assert_eq!(&converted.bytes[10..12], &64_u16.to_le_bytes());
+    assert_eq!(&converted.bytes[12..14], &12_u16.to_le_bytes());
+}
+
+#[test]
+fn decodes_jpeg_sources_before_packing() {
     let pixels = [(10, 10, 10); 8]
         .into_iter()
         .chain([(240, 240, 240); 8])
         .collect::<Vec<_>>();
     let jpeg = rgb_jpeg(&pixels);
 
-    let normalized = normalize_image(
+    let packed = pack_image(
         &jpeg,
         "image/jpeg",
         &ConversionOptions {
@@ -51,17 +78,16 @@ fn decodes_jpeg_sources_before_normalizing() {
             dither: DitherMode::Threshold,
         },
     )
-    .expect("jpeg should normalize");
+    .expect("jpeg should pack");
 
-    assert_eq!(normalized.width, 16);
-    assert_eq!(normalized.height, 1);
-    assert_eq!(&normalized.pixels[0..4], &[0, 0, 0, 255]);
-    assert_eq!(&normalized.pixels[60..64], &[255, 255, 255, 255]);
+    assert_eq!(packed.width, 16);
+    assert_eq!(packed.height, 1);
+    assert_eq!(packed.pixels, vec![0x00, 0xff]);
 }
 
 #[test]
 fn rejects_non_image_mime_types() {
-    let err = normalize_image(
+    let err = pack_image(
         b"not an image",
         "application/octet-stream",
         &ConversionOptions::default(),
@@ -72,27 +98,6 @@ fn rejects_non_image_mime_types() {
         err.to_string().contains("unsupported image MIME"),
         "unexpected error: {err}"
     );
-}
-
-#[test]
-fn invokes_pdc_and_returns_pdi_bytes_when_sdk_is_available() {
-    let Some(sdk_path) = local_playdate_sdk_path() else {
-        eprintln!("skipping pdc integration test: Playdate SDK not found");
-        return;
-    };
-    let png = plot_like_png();
-    let converter = PlaydatePdiConverter::from_sdk_path(sdk_path);
-
-    let converted = converter
-        .convert_image(&png, "image/png", &ConversionOptions::default())
-        .expect("pdc should produce PDI bytes");
-
-    assert_eq!(converted.content_type, PLAYDATE_PDI_MIME);
-    assert_eq!(converted.width, 96);
-    assert_eq!(converted.height, 64);
-    assert!(!converted.bytes.is_empty());
-    assert_eq!(converted.byte_length, converted.bytes.len());
-    assert_eq!(converted.source_mime, "image/png");
 }
 
 fn rgba_png(pixels: &[(u8, u8, u8, u8)]) -> Vec<u8> {
@@ -169,14 +174,4 @@ fn rgb_jpeg(pixels: &[(u8, u8, u8)]) -> Vec<u8> {
         .write_image(&raw, pixels.len() as u32, 1, image::ExtendedColorType::Rgb8)
         .expect("encode jpeg");
     bytes
-}
-
-fn local_playdate_sdk_path() -> Option<PathBuf> {
-    std::env::var_os("PLAYDATE_SDK_PATH")
-        .or_else(|| std::env::var_os("PLAYDATE_SDK"))
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Developer/PlaydateSDK"))
-        })
-        .filter(|path| path.join("bin/pdc").is_file())
 }
