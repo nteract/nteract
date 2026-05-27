@@ -1,10 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { cloudOutputParityExpectedMarkers } from "../../test/fixtures/cloud-output-parity";
 
-const ALLOWED_CONSOLE_MESSAGES = new Set([
-  "Allow attribute will take precedence over 'allowfullscreen'.",
-]);
-
 test.describe("cloud renderer parity harness", () => {
   let consoleProblems: string[];
 
@@ -14,7 +10,6 @@ test.describe("cloud renderer parity harness", () => {
       const type = message.type();
       if (type !== "error" && type !== "warning") return;
       const text = message.text();
-      if (ALLOWED_CONSOLE_MESSAGES.has(text)) return;
       consoleProblems.push(`[${type}] ${text}`);
     });
   });
@@ -79,6 +74,8 @@ test.describe("cloud renderer parity harness", () => {
       const sandbox = await iframe.getAttribute("sandbox");
       expect(sandbox?.split(/\s+/)).toContain("allow-scripts");
       expect(sandbox?.split(/\s+/)).not.toContain("allow-same-origin");
+      await expect(iframe).toHaveAttribute("allow", "fullscreen *");
+      await expect(iframe).not.toHaveAttribute("allowfullscreen", /./);
     }
   });
 

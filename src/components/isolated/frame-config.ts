@@ -19,8 +19,8 @@ export const ISOLATED_FRAME_SANDBOX_ATTRS = [
   "allow-downloads", // Allow file downloads (e.g., from widgets)
   "allow-forms", // Allow form submissions
   "allow-pointer-lock", // For interactive visualizations
-  // Fullscreen for sift maximize, maps, 3D, etc. is enabled via the
-  // separate `allowFullScreen` iframe attribute (not a sandbox flag).
+  // Fullscreen for sift maximize, maps, 3D, etc. is enabled via the iframe
+  // `allow` policy below, not as a sandbox flag.
 ].join(" ");
 
 export const ISOLATED_FRAME_ALLOW_ATTR = "fullscreen *";

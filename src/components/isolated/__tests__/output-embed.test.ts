@@ -70,6 +70,7 @@ describe("createNteractOutputEmbed", () => {
     expect(handle.iframe.getAttribute("sandbox")).toBe(ISOLATED_FRAME_SANDBOX_ATTRS);
     expect(handle.iframe.getAttribute("sandbox")).not.toContain("allow-same-origin");
     expect(handle.iframe.getAttribute("allow")).toBe("fullscreen *");
+    expect(handle.iframe.hasAttribute("allowfullscreen")).toBe(false);
 
     handle.dispose();
 

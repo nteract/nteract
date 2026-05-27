@@ -656,7 +656,6 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         src={frameDocument.kind === "src" ? frameDocument.url : undefined}
         srcDoc={frameDocument.kind === "srcdoc" ? frameDocument.html : undefined}
         sandbox={ISOLATED_FRAME_SANDBOX_ATTRS}
-        allowFullScreen
         allow={ISOLATED_FRAME_ALLOW_ATTR}
         className={className}
         data-slot="isolated-frame"

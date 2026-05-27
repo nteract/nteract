@@ -113,7 +113,6 @@ export function createNteractOutputEmbed(
   iframe.title = "";
   iframe.setAttribute("sandbox", ISOLATED_FRAME_SANDBOX_ATTRS);
   iframe.setAttribute("allow", ISOLATED_FRAME_ALLOW_ATTR);
-  iframe.setAttribute("allowfullscreen", "");
   iframe.setAttribute("data-slot", "isolated-frame");
   iframe.style.width = "100%";
   iframe.style.height = "1px";

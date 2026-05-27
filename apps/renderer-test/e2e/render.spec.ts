@@ -12,7 +12,6 @@ test.describe("Renderer plugin fixtures", () => {
       const type = message.type();
       if (type !== "error" && type !== "warning") return;
       const text = message.text();
-      if (text === "Allow attribute will take precedence over 'allowfullscreen'.") return;
       consoleProblems.push(`[${type}] ${text}`);
     });
   });
