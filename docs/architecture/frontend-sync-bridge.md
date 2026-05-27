@@ -89,7 +89,7 @@ Stable-DOM-order rendering keeps every cell's iframe pinned to the same DOM node
 
 ### Why this is load-bearing across the codebase
 
-The invariant lives in `CLAUDE.md`. It is asserted three places: the `stableDomOrder` memo at `NotebookView.tsx:519`, the `order: index` style at `NotebookView.tsx:307`, and the parent flex container at `NotebookView.tsx:952`. Any one of them flipping back to "iterate cellIds and let React handle order" reintroduces the iframe reload. CI doesn't catch this; the visible failure is a paper cut that is easy to misdiagnose as "iframes are slow."
+The invariant lives in `AGENTS.md` (also available through the `CLAUDE.md` symlink). It is asserted three places: the `stableDomOrder` memo at `NotebookView.tsx:519`, the `order: index` style at `NotebookView.tsx:307`, and the parent flex container at `NotebookView.tsx:952`. Any one of them flipping back to "iterate cellIds and let React handle order" reintroduces the iframe reload. CI doesn't catch this; the visible failure is a paper cut that is easy to misdiagnose as "iframes are slow."
 
 ### Hidden-group rendering composes with this
 
@@ -99,23 +99,29 @@ Cells whose source and outputs are both hidden collapse into a group that render
 
 `dnd-kit`'s `SortableContext` is built around `transform` + `transition`. We feed it `cellIds` (the visual order) and let it drive an inline transform on the picked-up cell. On drop, `onMoveCell` mutates the WASM doc; the inbound `cellChanges$` re-projects `cellIds`; CSS `order` settles into the new positions. The cell's DOM node never changes parent; dnd-kit is purely visual.
 
-## Decision 3: `flushSync` is the contract between local edits and daemon-side reads
+## Decision 3: `required_heads` plus a forced flush is the contract between local edits and daemon-side reads
 
 A keystroke updates the WASM handle synchronously. The next sync to the daemon is debounced 20ms (`FLUSH_DEBOUNCE_MS`). Most of the time the debounce is invisible: by the time a user hits "execute," the source has been on the daemon for tens of milliseconds.
 
-Three operations need the daemon to have the latest source *before* they ask for anything:
+Three operations need the daemon to have the latest source before the daemon
+acts on the request:
 
-- **Execute cell.** The daemon reads source from the synced `NotebookDoc`. Without a forced flush, an execute request can race the debounce timer.
-- **Run all.** Same plus a `required_heads` handshake (Decision 4 below).
-- **Save / save as.** The daemon writes the on-disk snapshot from its replica.
+- **Execute cell.** The daemon reads source from the synced `NotebookDoc`. The
+  client captures current WASM heads, triggers a flush, and sends those heads as
+  `required_heads`; the daemon waits for them before reading source.
+- **Run all.** Same handshake, applied before the daemon snapshots the cell
+  list and source for the batch.
+- **Save / save as.** The UI awaits `flushSync()` because the daemon writes the
+  on-disk snapshot from its replica.
 
-`flushSync` is exposed off `useAutomergeNotebook` and delegates to `SyncEngine.flushAndWait()`:
+`flushSync` is exposed off `useAutomergeNotebook` and delegates to
+`SyncEngine.flushAndWait()`:
 
 1. Await every in-flight debounced flush. A new debounced flush can claim changes while the timer is mid-fire; awaiting them all keeps `flushAndWait` from returning before the timer's IPC actually completes.
 2. Flush any remaining changes (most of the time the debounce already got them).
 3. Await delivery, then return.
 
-The function returns `boolean`, not `void`, because outbound flush is the failure surface where the transport can drop or error. A `false` result is checked by callers: `handleSyncDeps`, save, execute. If the flush failed, the caller bails before issuing the dependent request.
+The function returns `boolean`, not `void`, because outbound flush is the failure surface where the transport can drop or error. Direct flush callers such as dependency sync and save check `false` and bail before issuing their dependent request. Execute and run-all use the `required_heads` path instead: the daemon fails closed if the triggered flush does not deliver the requested heads before its timeout.
 
 The `required_heads` extension lives in `App.tsx:374`: `NotebookClient` is constructed with `getRequiredHeads: () => getHandle()?.get_heads_hex() ?? []` and `flushBeforeRequiredHeadsRequest: () => getEngine()?.flush()`. Cross-reference `docs/architecture/execution-pipeline.md` for the daemon side. The bridge does not own this handshake; it owns the inbound projection that lets a UI read the result.
 
@@ -199,10 +205,19 @@ This is the one place where editor input bypasses the React render path entirely
 
 ### C. User hits "execute" while still typing
 
-1. UI dispatches execute. App.tsx code calls `await flushSync()` first.
-2. `flushAndWait` awaits the pending debounce, force-flushes any remainder, awaits delivery. Returns `true` once daemon has observed the source.
-3. App calls `notebookClient.executeCell(...)`. The client's `getRequiredHeads()` reads `handle.get_heads_hex()` and sends them with the request. Daemon will not start execution until its replica observes those heads.
-4. Daemon enqueues, executes, writes outputs and execution state to `RuntimeStateDoc`. Frontend's bridge picks up `runtimeState$`, `executionViewChanges$`, and `outputIdChanges$` separately; each updates its own store.
+1. UI dispatches execute. App.tsx calls `notebookClient.executeCell(...)`
+   directly.
+2. `NotebookClient` reads `handle.get_heads_hex()` through
+   `getRequiredHeads()`, then calls `flushBeforeRequiredHeadsRequest()` to force
+   the pending debounce to move.
+3. The request carries those heads as `required_heads`. Daemon will not start
+   execution until its replica observes them; if the flush does not arrive in
+   time, the request fails closed on the daemon timeout instead of reading stale
+   source.
+4. Daemon enqueues, executes, writes outputs and execution state to
+   `RuntimeStateDoc`. Frontend's bridge picks up `runtimeState$`,
+   `executionViewChanges$`, and `outputIdChanges$` separately; each updates its
+   own store.
 
 ### D. Remote peer moves a cell
 
@@ -215,9 +230,10 @@ This is the one place where editor input bypasses the React render path entirely
 
 1. Hook unmounts. Bridge's `stop()` runs: `stopped = true`, `subscription.unsubscribe()` releases every engine subscription.
 2. An async `materializeChangeset` in flight checks `stopped` before writing to stores. It returns without touching state.
-3. Hook remounts. New engine, new bridge, fresh subscription. The hook flushes pending changes and reuses the same WASM peer (the handle is owned by `NotebookHandleHost`, not the hook), so no doc-level state is lost.
+3. Hook remounts. New engine, new bridge, fresh subscription, fresh WASM peer.
+   Durable state comes back from daemon resync, so no notebook state is lost.
 
-## Open questions
+## Open Questions
 
 1. **Bridge introspection.** Stores publish version counters but the bridge itself doesn't expose how many in-flight materializations or output-changeset applies are pending. Adding bridge-level diagnostics (count, last-error) would help debug `cellChanges$` stalls under high-churn. Tracked in `cleanup-punchlist.md` follow-ups.
 
@@ -246,4 +262,4 @@ This is the one place where editor input bypasses the React render path entirely
 - `apps/notebook/src/lib/project-runtime-stores.ts` - execution-view projection.
 - `packages/runtimed/src/sync-engine.ts` - the engine: `flushAndWait`, `scheduleFlush`, every `*$` Observable.
 - `apps/notebook/src/AGENTS.md` - companion frontend-architecture map (data-flow diagram).
-- `CLAUDE.md` - "Cell list uses stable DOM order" load-bearing invariant.
+- `AGENTS.md` / `CLAUDE.md` - "Cell list uses stable DOM order" load-bearing invariant.

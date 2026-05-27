@@ -12,7 +12,7 @@ Two facts make this pipeline unusual:
 
 2. **The daemon multiplexes high-volume output traffic and low-volume lifecycle signals on the same async runtime.** stdout floods, image-display churn, and widget-comm replay must not delay the `KernelIdle` that releases the queue or the `ExecutionDone` that lets a client read outputs.
 
-This ADR captures the load-bearing decisions that make those facts work. Most of these rules live as paragraph-shaped invariants in `CLAUDE.md` and the `execution-pipeline` skill. Writing them down as decisions surfaces both the rationale and the gaps.
+This ADR captures the load-bearing decisions that make those facts work. Most of these rules live as paragraph-shaped invariants in `AGENTS.md` (also available through the `CLAUDE.md` symlink) and the `execution-pipeline` skill. Writing them down as decisions surfaces both the rationale and the gaps.
 
 Neighbors:
 
@@ -60,17 +60,24 @@ If we let consumers trust the broadcast, an MCP tool call ordering `execute_cell
 
 ## Decision 2: Control-plane signals do not share transport with output work
 
-Kernel-lifecycle signals (`KernelIdle`, `ExecutionDone`, `CellError`, `KernelDied`) ride a separate, unbounded `mpsc` from output-work commands (`SendCommUpdate` for widget replay). The split is enforced by the channel construction in `crates/runtimed/src/output_prep.rs:484-501`:
+Kernel-lifecycle signals (`KernelIdle`, `ExecutionDone`, `CellError`,
+`KernelDied`) ride a separate, unbounded `mpsc` from output-work commands
+(`SendCommUpdate` for widget replay). The split is enforced structurally by the
+`LifecycleSignal` / `WorkCommand` channel construction in
+`crates/runtimed/src/output_prep.rs`:
 
 ```rust
 pub fn queue_command_channels(work_capacity: usize) -> (
-    mpsc::UnboundedSender<QueueCommand>,  // lifecycle
-    mpsc::Sender<QueueCommand>,            // work
+    mpsc::UnboundedSender<LifecycleSignal>, // lifecycle
+    mpsc::Sender<WorkCommand>,              // work
     QueueCommandReceivers,
-) { … }
+) { ... }
 ```
 
-`QueueCommand::is_lifecycle()` is the type-system marker for which channel a command belongs on. The stream committer's `flush_then_signal` `debug_assert!`s that the signal is a lifecycle signal before forwarding it.
+The old `QueueCommand::is_lifecycle()` runtime discipline was replaced by this
+type split, so non-lifecycle work cannot compile on the lifecycle channel. The
+remaining ordering questions are about when lifecycle signals are drained, not
+about accidentally routing widget replay work onto the lifecycle path.
 
 The runtime agent's `select!` loop has two arms for these channels (`crates/runtimed/src/runtime_agent.rs:592-639`):
 
@@ -276,7 +283,7 @@ If lifecycle and work shared one channel, the interrupt's `KernelIdle` would hav
 5. Stream committer flushes any final stream output, then sends `ExecutionDone`. Reader proceeds to next message.
 6. Consumers reading `executions[eid].outputs` after `status: "done"` see the latest rendered state of `"x"`, not the second-to-last.
 
-## What this leaves open
+## Open Questions
 
 1. **Output sync-grace tuning under load.** `DEFAULT_OUTPUT_SYNC_GRACE = 500ms` is empirical. We don't have a measured upper bound on how long a final output manifest can take to sync under realistic load. Large DataFrames, batched plots, or congested socket scenarios may exceed it. There's no metric for "wait completed but outputs still empty" today.
 
@@ -284,7 +291,10 @@ If lifecycle and work shared one channel, the interrupt's `KernelIdle` would hav
 
 3. **What if `set_execution_done` is never written?** A panic or task drop between the final output write and `set_execution_done` leaves the execution in `running` forever. Consumers time out. There is no per-execution timeout or watchdog at the daemon side. `KernelDied` clears the queue but only fires when IOPub disconnects or a committer task panics (see `crates/runtimed/src/stream_committer.rs:227`, `display_update_committer.rs:259`). The framing of a *fix* for this — divergence detection rather than a wall-clock watchdog, since multi-hour training jobs are legitimate — is explored in `docs/architecture/execution-liveness.md`.
 
-4. **The `is_lifecycle()` discipline is a runtime check.** Both `flush_then_signal` (`stream_committer.rs:101-104`) and `drain_lifecycle_commands` (`runtime_agent.rs:1422-1425`) `debug_assert!` it. In release builds a non-lifecycle command would be silently forwarded onto the lifecycle channel. No CI lint enforces "only `KernelIdle | ExecutionDone | CellError | KernelDied` may travel on the lifecycle channel." The cleanup punchlist tracks this as EP-2.
+4. ~~**The `is_lifecycle()` discipline is a runtime check.**~~ **Resolved by
+   EP-2.** `LifecycleSignal` and `WorkCommand` are now separate types, so the
+   lifecycle channel no longer accepts widget replay work. Remaining lifecycle
+   concerns are tracked as EP-10 and EP-11.
 
 5. **`required_heads` is `NotebookDoc`-only.** A request that semantically depends on a recent RuntimeStateDoc write (rare in v1, but conceivable for future request types) has no causal gate.
 
@@ -314,4 +324,4 @@ If lifecycle and work shared one channel, the interrupt's `KernelIdle` would hav
 - `crates/runtimed/src/notebook_sync_server/peer_writer.rs:167-256` - `required_heads` gate.
 - `crates/runt-mcp/src/execution.rs` - MCP consumer pattern.
 - `.agents/skills/execution-pipeline/SKILL.md` - the agent-facing summary that this ADR expands.
-- `CLAUDE.md` "Runtime control-plane signals are not output transport" - the load-bearing paragraph this ADR is the long-form of.
+- `AGENTS.md` / `CLAUDE.md` "Runtime control-plane signals are not output transport" - the load-bearing paragraph this ADR is the long-form of.

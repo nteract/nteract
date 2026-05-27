@@ -269,7 +269,7 @@ If Claude later asks `manage_dependencies(add=["requests"])`, the same MCP-level
 5. Handler parses the YAML, calls `environment_yml_trust_info(&config)`, and inserts the deps+channels into the allowlist with source `project_env_dialog`.
 6. Next auto-launch check sees `project_environment_build_approved -> true` and proceeds to build the env.
 
-## Open questions
+## Open Questions
 
 1. **Per-version approval.** Today the allowlist is keyed by package *name*. Approving `pandas` covers every version, including future malicious releases. Pinning approval to a version range or a wheel hash is a stronger model but adds significant UX cost (every minor bump re-prompts). Tracked but not decided.
 2. **Revocation surface.** v1 has no UI for removing rows from the allowlist. "Untrust this package" requires editing SQLite manually. A management surface (probably under settings) is on the punchlist.

@@ -1,5 +1,8 @@
 # Non-Stream Output Commit Measurements
 
+**Status:** Measurement, 2026-05-24. This is benchmark evidence for the runtime
+output optimization plan, not an ADR.
+
 This measurement covers the remaining ordinary output path after the stream
 and `update_display_data` optimizations:
 

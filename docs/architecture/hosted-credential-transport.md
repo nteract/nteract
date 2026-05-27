@@ -346,7 +346,7 @@ hosted OIDC deployment, not a protocol dependency. Other OIDC-backed hosts can
 use the same transport and ACL model with different Access or direct-OIDC
 configuration.
 
-## What this leaves open
+## Open Questions
 
 1. **Direct Anaconda OIDC in the Worker.** The current Cloudflare path validates
    Access assertions. A direct Anaconda OIDC provider would validate Anaconda

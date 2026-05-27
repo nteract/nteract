@@ -1,6 +1,9 @@
 # Hosted Cloudflare Access + Anaconda Demo Runbook
 
-**Status:** Draft, verified against provider metadata on 2026-05-24.
+**Status:** Runbook, 2026-05-24.
+**Last verified:** Provider metadata on 2026-05-24.
+**Review trigger:** Re-check before any Anaconda-backed hosted demo or Access
+configuration change.
 
 This is the operational path for the Anaconda-hosted notebook-cloud demo:
 Cloudflare Access owns the browser login session, Anaconda is the Access OIDC
@@ -254,10 +257,14 @@ even when `NOTEBOOK_CLOUD_ALLOWED_ORIGINS` is configured. If those clients send
 an `Origin`, it must normalize to the notebook application origin or one of the
 configured values. The hosted Access smoke sends `NOTEBOOK_CLOUD_ACCESS_ORIGIN`
 by default to exercise the browser-compatible origin path while still carrying
-only one Worker-visible credential, `CF-Access-Token`.
-If the Access edge also forwards `Cf-Access-Jwt-Assertion` to the Worker, the
-Worker treats the forwarded assertion as authoritative for origin identity and
-ignores client-carried `CF-Access-Token` or bearer headers on that request.
+only one Worker-visible credential.
+
+Do not send both an Access-edge-forwarded `Cf-Access-Jwt-Assertion` and a
+client-carried `CF-Access-Token` / bearer token to the Worker. The credential
+transport ADR requires rejecting mixed identity-bearing credentials unless the
+deployment has defined them as one credential. Older prototype behavior that
+preferred the forwarded assertion over client-carried tokens is tracked as a
+pre-demo blocker in `cleanup-punchlist.md` HCA-1.
 
 ## Deploy
 

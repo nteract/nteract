@@ -1,4 +1,4 @@
-# Typed-frame v4 wire protocol
+# Typed-frame v4 Wire Protocol
 
 **Status:** Draft, 2026-05-22.
 
@@ -107,12 +107,15 @@ Every frame type has a hard cap (reject) and a soft warn threshold (log, continu
 | `SessionControl` | 1 MiB | 256 KiB | Tiny readiness JSON |
 | `PutBlob` | 32 MiB | 8 MiB | Single-frame blob upload ceiling |
 
-The caps and warns are duplicated across crates: `notebook_wire::frame_size_limits` (Rust), `packages/runtimed/src/transport.ts::frameSizeLimits` (TS). Two contract tests cover the Rust side:
+The caps and warns are duplicated across crates: `notebook_wire::frame_size_limits` (Rust), `packages/runtimed/src/transport.ts::frameSizeLimits` (TS). Three contract tests cover the split:
 
 - `crates/notebook-protocol/src/protocol.rs::typescript_protocol_contract_matches_rust_wire_discriminants` (`:1512`) compares **discriminant bytes** against a generated TS contract artifact.
 - `crates/notebook-protocol/src/connection.rs::frame_size_limits_cover_every_known_frame_type` (`:530`) asserts every known type has a tighter cap than the 100 MiB outer ceiling and that warn is strictly less than cap.
+- `crates/notebook-protocol/src/protocol.rs::frame_size_limits_match_typescript` compares each Rust cap and warn against the TypeScript `frameSizeLimits` table.
 
-Neither test compares the per-type Rust caps to the TS `frameSizeLimits` values. The two tables can drift silently. The cleanup punchlist tracks this as WP-3.
+The tables are still hand-mirrored. WP-12 tracks the deeper fix: expose the
+Rust table to JS consumers so the duplicate TS table and contract test can
+eventually disappear.
 
 ### Why the cap-first protocol matters
 
@@ -281,7 +284,11 @@ Between steps 3 and 6, the daemon may interleave `AutomergeSync` frames (for cel
 6. WASM applies the sync to its local `RuntimeStateDoc` replica.
 7. `useRuntimeState()` re-renders the output cell.
 
-The output stream is on `0x05`, not `0x03`. State-carrying broadcasts (`CommSync`, kernel state, output, env sync) were deliberately removed in favor of CRDT sync because broadcasts suffered from silent drops, no initial state for late joiners, and ordering races. `Broadcast` (0x03) is now reserved for ephemeral non-state events (`Comm` custom messages, `EnvProgress` snapshots).
+The output stream is on `0x05`, not `0x03`. State-carrying broadcasts
+(`CommSync`, kernel state, output, env sync) were deliberately removed in favor
+of CRDT sync because broadcasts suffered from silent drops, no initial state for
+late joiners, and ordering races. `Broadcast` (0x03) is now reserved for
+ephemeral non-state events such as `Comm` custom messages.
 
 ### Frontend → daemon: upload a 5 MiB widget asset
 
@@ -305,11 +312,14 @@ If the same upload were 40 MiB, step 3 would fail outbound with `"outbound frame
 
 The phase fields are deliberately ordered so a later snapshot never represents less progress than an earlier one (modulo the `failed` terminal). Clients can treat them as monotonic per-connection.
 
-## Open questions
+## Open Questions
 
 1. ~~**TS-Rust size-limit drift.**~~ **Resolved** by punchlist WP-3. New Rust contract test `frame_size_limits_match_typescript` parses the TS table and compares cap+warn per type against `notebook_wire::frame_size_limits`. Any Rust cap change that forgets the TS side now fails CI. The deeper fix is WP-12: expose the table through `runtimed-wasm` (or ts-rs codegen) so the mirror — and the contract test — disappear entirely.
 
-2. **AGENTS.md drift on `Handshake::Blob`.** `crates/notebook-wire/AGENTS.md` lists a `Blob` handshake variant for "Store blobs and query the localhost blob HTTP port." No such variant exists in `crates/notebook-protocol/src/connection/handshake.rs`. Blob uploads ride the `NotebookSync` channel as `0x08` frames; blob downloads go over the daemon's HTTP server (`GET /blob/{hash}`). The AGENTS.md row is stale.
+2. ~~**AGENTS.md drift on `Handshake::Blob`.**~~ **Resolved by punchlist
+   WP-1.** Blob uploads ride the `NotebookSync` channel as `PUT_BLOB` (`0x08`)
+   frames; blob downloads go over the daemon's HTTP server. The wire AGENTS
+   guide now calls out that there is no Blob handshake variant.
 
 3. ~~**Presence size cap is duplicated.**~~ **Resolved** by punchlist WP-2: the wire-layer cap was reduced from 1 MiB to 4 KiB to match `notebook-doc::presence::MAX_PRESENCE_FRAME_SIZE`. Two layers still hold the constant but the values agree, and the WP-3 contract test (next stack PR) prevents drift.
 

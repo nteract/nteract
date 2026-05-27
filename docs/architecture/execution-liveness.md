@@ -1,4 +1,4 @@
-# Execution Liveness: detecting divergence, not policing time
+# Execution Liveness: Detecting Divergence, Not Policing Time
 
 **Status:** Design memo, 2026-05-23.
 
@@ -118,7 +118,7 @@ Three candidate placements:
 
 Option 1 is the cleanest. The runtime agent already owns `pending_executions`, the committer queue handles, and the IOPub timestamp; a tick arm that reads those and decides "diverged or not" is a small addition.
 
-## Open questions
+## Open Questions
 
 1. **What's the IOPub silence threshold?** 60s? 300s? Does it depend on the cell's announced expected runtime (which the user could provide via cell metadata)? A bare model-training cell with no metadata gets the default; a cell tagged `runtime_hint: "long"` gets a longer threshold.
 
