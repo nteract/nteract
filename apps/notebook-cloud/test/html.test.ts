@@ -2,7 +2,10 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import worker, { escapeHtml, scriptJsonForHtml } from "../src/index.ts";
 import type { DurableObjectNamespace, Env, ExecutionContext } from "../src/cloudflare-types.ts";
-import { viewerThemeBootstrapScript } from "../src/viewer-theme-bootstrap.ts";
+import {
+  viewerThemeBootstrapScript,
+  viewerThemeFirstPaintStyle,
+} from "../src/viewer-theme-bootstrap.ts";
 
 describe("HTML script serialization", () => {
   it("escapes text and attribute metacharacters", () => {
@@ -53,6 +56,10 @@ describe("HTML script serialization", () => {
     assert.match(html, /id="nteract-cloud-viewer-config" type="application\/json"/);
     assert.match(html, /href="\/assets\/notebook-cloud-viewer\.css"/);
     assert.match(html, /src="\/assets\/notebook-cloud-viewer\.js"/);
+    assert.ok(
+      html.indexOf(viewerThemeFirstPaintStyle()) < html.indexOf(viewerThemeBootstrapScript()),
+      "theme first-paint style must apply before the bootstrap script resolves the final theme",
+    );
     assert.ok(
       html.indexOf(viewerThemeBootstrapScript()) <
         html.indexOf("/assets/notebook-cloud-viewer.css"),
