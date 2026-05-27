@@ -1376,6 +1376,178 @@ async fn test_save_notebook_to_disk_with_outputs() {
 }
 
 #[tokio::test]
+async fn test_save_notebook_to_disk_writes_widget_state_metadata_from_runtime_comms() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "widget-state.ipynb");
+    let eid = "widget-exec-1";
+    let model_id = "slider-model";
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-widget", "code").unwrap();
+        doc.update_source("cell-widget", "slider").unwrap();
+        doc.set_execution_id("cell-widget", Some(eid)).unwrap();
+    }
+
+    room.state
+        .with_doc(|sd| {
+            sd.create_execution(eid)?;
+            sd.set_execution_count(eid, 1)?;
+            sd.set_outputs(
+                eid,
+                &[serde_json::json!({
+                    "output_type": "display_data",
+                    "output_id": "widget-output-runtime-only",
+                    "data": {
+                        "text/plain": "IntSlider(value=42)",
+                        "application/vnd.jupyter.widget-view+json": {
+                            "version_major": 2,
+                            "version_minor": 0,
+                            "model_id": model_id
+                        }
+                    },
+                    "metadata": {}
+                })],
+            )?;
+            sd.set_execution_done(eid, true)?;
+            sd.put_comm(
+                model_id,
+                "jupyter.widget",
+                "@jupyter-widgets/controls",
+                "IntSliderModel",
+                &serde_json::json!({
+                    "_model_module": "@jupyter-widgets/controls",
+                    "_model_module_version": "2.0.0",
+                    "_model_name": "IntSliderModel",
+                    "_view_module": "@jupyter-widgets/controls",
+                    "_view_module_version": "2.0.0",
+                    "_view_name": "IntSliderView",
+                    "description": "Answer",
+                    "value": 42
+                }),
+                0,
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+
+    let content = std::fs::read_to_string(&notebook_path).unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let widget_state = &saved["metadata"]["widgets"][WIDGET_STATE_MIME];
+    assert_eq!(widget_state["version_major"], serde_json::json!(2));
+    assert_eq!(widget_state["version_minor"], serde_json::json!(0));
+    assert_eq!(
+        widget_state["state"][model_id]["model_name"],
+        serde_json::json!("IntSliderModel")
+    );
+    assert_eq!(
+        widget_state["state"][model_id]["model_module"],
+        serde_json::json!("@jupyter-widgets/controls")
+    );
+    assert_eq!(
+        widget_state["state"][model_id]["model_module_version"],
+        serde_json::json!("2.0.0")
+    );
+    assert_eq!(
+        widget_state["state"][model_id]["state"]["value"],
+        serde_json::json!(42)
+    );
+    assert_eq!(
+        saved["cells"][0]["outputs"][0]["data"]["application/vnd.jupyter.widget-view+json"]
+            ["model_id"],
+        serde_json::json!(model_id),
+        "the original widget view output should remain in the cell output"
+    );
+    assert!(
+        !content.contains("widget-output-runtime-only"),
+        "runtime-only output_id leaked to saved .ipynb:\n{content}"
+    );
+}
+
+#[tokio::test]
+async fn test_save_notebook_to_disk_resolves_widget_state_content_refs() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "widget-state-refs.ipynb");
+
+    let esm = "export default { render() {} }";
+    let esm_hash = room
+        .blob_store
+        .put(esm.as_bytes(), "text/javascript")
+        .await
+        .unwrap();
+    let options = serde_json::json!({"items": [1, 2, 3]});
+    let options_bytes = serde_json::to_vec(&options).unwrap();
+    let options_hash = room
+        .blob_store
+        .put(&options_bytes, "application/json")
+        .await
+        .unwrap();
+    let binary = b"abc123";
+    let binary_hash = room
+        .blob_store
+        .put(binary, "application/octet-stream")
+        .await
+        .unwrap();
+
+    room.state
+        .with_doc(|sd| {
+            sd.put_comm(
+                "binary-widget",
+                "jupyter.widget",
+                "anywidget",
+                "AnyModel",
+                &serde_json::json!({
+                    "_model_module": "anywidget",
+                    "_model_module_version": "0.9.18",
+                    "_model_name": "AnyModel",
+                    "_esm": {
+                        "blob": esm_hash,
+                        "size": esm.len(),
+                        "media_type": "text/javascript"
+                    },
+                    "options": {
+                        "blob": options_hash,
+                        "size": options_bytes.len(),
+                        "media_type": "application/json"
+                    },
+                    "value": {
+                        "blob": binary_hash,
+                        "size": binary.len(),
+                        "media_type": "application/octet-stream"
+                    }
+                }),
+                0,
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+
+    let content = std::fs::read_to_string(&notebook_path).unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let model = &saved["metadata"]["widgets"][WIDGET_STATE_MIME]["state"]["binary-widget"];
+    let state = &model["state"];
+
+    assert_eq!(state["_esm"], serde_json::json!(esm));
+    assert_eq!(state["options"], options);
+    assert!(
+        state.get("value").is_none(),
+        "binary object fields should be removed from state and represented in buffers"
+    );
+    let buffers = model["buffers"].as_array().expect("buffers array");
+    assert_eq!(buffers.len(), 1);
+    assert_eq!(buffers[0]["encoding"], serde_json::json!("base64"));
+    assert_eq!(buffers[0]["path"], serde_json::json!(["value"]));
+    assert_eq!(
+        buffers[0]["data"],
+        serde_json::json!(base64::engine::general_purpose::STANDARD.encode(binary))
+    );
+}
+
+#[tokio::test]
 async fn test_save_notebook_to_disk_externalizes_arrow_stream_outputs() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, notebook_path) = test_room_with_path(&tmp, "arrow-output.ipynb");
