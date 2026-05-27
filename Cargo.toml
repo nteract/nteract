@@ -27,6 +27,7 @@ members = [
     "crates/runtimed-wasm",
     "crates/mcp-client-branding",
     "crates/mcp-supervisor",
+    "crates/playdate-pdi",
     "crates/runt-mcp",
     "crates/runt-mcp-proxy",
     "crates/nteract-mcp",
