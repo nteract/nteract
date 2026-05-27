@@ -39,7 +39,7 @@ use notebook_protocol::connection::{
     PackageManager,
 };
 use notebook_protocol::protocol::{RuntimeAgentRequest, RuntimeAgentResponse};
-use runtime_doc::{CommDocEntry, RuntimeLifecycle, RuntimeStateDoc};
+use runtime_doc::{CommDocEntry, ExecutionState, RuntimeLifecycle, RuntimeStateDoc};
 use runtime_doc::{KernelActivity, RuntimeStateHandle};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{debug, error, info, warn};
@@ -456,34 +456,13 @@ pub async fn run_runtime_agent(
                                                 }
                                             }
 
-                                            // Check for new queued executions
-                                            for (eid, exec) in queued {
-                                                if seen_execution_ids.insert(eid.clone()) {
-                                                    if let Some(ref source) = exec.source {
-                                                        if let Some(ref mut k) = kernel {
-                                                            match kernel_state.queue_cell(
-                                                                eid.clone(),
-                                                                exec.cell_id.clone(),
-                                                                source.clone(),
-                                                                k,
-                                                            ).await {
-                                                                Ok(_) => {
-                                                                    info!(
-                                                                        "[runtime-agent] Queued execution {}",
-                                                                        eid
-                                                                    );
-                                                                }
-                                                                Err(e) => {
-                                                                    warn!(
-                                                                        "[runtime-agent] Failed to queue execution {}: {}",
-                                                                        eid, e
-                                                                    );
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
+                                            queue_synced_executions(
+                                                queued,
+                                                &mut seen_execution_ids,
+                                                &mut kernel_state,
+                                                kernel.as_mut(),
+                                            )
+                                            .await;
                                         }
                                         Ok(None) => {}
                                         Err(e) => {
@@ -789,6 +768,48 @@ async fn reconnect_with_backoff(
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("reconnect gave up with no last error")))
 }
 
+async fn queue_synced_executions<K: KernelConnection>(
+    queued: Vec<(String, ExecutionState)>,
+    seen_execution_ids: &mut HashSet<String>,
+    kernel_state: &mut KernelState,
+    kernel: Option<&mut K>,
+) -> usize {
+    let Some(kernel) = kernel else {
+        return 0;
+    };
+
+    let mut queued_count = 0;
+    for (eid, exec) in queued {
+        if seen_execution_ids.contains(&eid) {
+            continue;
+        }
+
+        let Some(source) = exec.source else {
+            debug!(
+                "[runtime-agent] Deferred queued execution {} without source",
+                eid
+            );
+            continue;
+        };
+
+        match kernel_state
+            .queue_cell(eid.clone(), exec.cell_id.clone(), source, &mut *kernel)
+            .await
+        {
+            Ok(_) => {
+                seen_execution_ids.insert(eid.clone());
+                queued_count += 1;
+                info!("[runtime-agent] Queued execution {}", eid);
+            }
+            Err(e) => {
+                warn!("[runtime-agent] Failed to queue execution {}: {}", eid, e);
+            }
+        }
+    }
+
+    queued_count
+}
+
 /// Handle a `RuntimeAgentRequest` and return a `RuntimeAgentResponse`.
 ///
 /// Also returns optional command receivers when a kernel is launched/restarted
@@ -868,6 +889,12 @@ async fn handle_runtime_agent_request(
                         launch_env_source,
                         launch_started.elapsed().as_millis()
                     );
+                    let queued = ctx
+                        .state
+                        .read(|sd| sd.get_queued_executions())
+                        .unwrap_or_default();
+                    queue_synced_executions(queued, seen_execution_ids, state, kernel.as_mut())
+                        .await;
                     (
                         RuntimeAgentResponse::KernelLaunched {
                             env_source: notebook_protocol::connection::EnvSource::parse(&es),
@@ -1809,6 +1836,50 @@ mod tests {
         };
         let state = KernelState::new(handle.clone());
         (ctx, state, handle)
+    }
+
+    #[tokio::test]
+    async fn queued_execution_seen_before_kernel_launch_is_not_dropped() {
+        let (_ctx, mut state, handle) = test_fixtures();
+        let mut seen_execution_ids = HashSet::new();
+
+        handle
+            .with_doc(|sd| sd.create_execution_with_source("e-prelaunch", "print('ready')", 0))
+            .unwrap();
+
+        let queued = handle.read(|sd| sd.get_queued_executions()).unwrap();
+        let queued_count = queue_synced_executions(
+            queued,
+            &mut seen_execution_ids,
+            &mut state,
+            None::<&mut MockKernel>,
+        )
+        .await;
+
+        assert_eq!(queued_count, 0);
+        assert!(seen_execution_ids.is_empty());
+        let pending = handle
+            .read(|sd| sd.get_execution("e-prelaunch").unwrap())
+            .unwrap();
+        assert_eq!(pending.status, "queued");
+
+        state.set_idle();
+        let mut mock = MockKernel;
+        let queued = handle.read(|sd| sd.get_queued_executions()).unwrap();
+        let queued_count =
+            queue_synced_executions(queued, &mut seen_execution_ids, &mut state, Some(&mut mock))
+                .await;
+
+        assert_eq!(queued_count, 1);
+        assert!(seen_execution_ids.contains("e-prelaunch"));
+        assert_eq!(
+            state.executing_cell().map(String::as_str),
+            Some("e-prelaunch")
+        );
+        let running = handle
+            .read(|sd| sd.get_execution("e-prelaunch").unwrap())
+            .unwrap();
+        assert_eq!(running.status, "running");
     }
 
     #[tokio::test]
