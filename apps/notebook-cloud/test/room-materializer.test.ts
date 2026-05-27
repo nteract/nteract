@@ -8,6 +8,7 @@ import { RoomMaterializer } from "../src/room-materializer.ts";
 import {
   createEmptyRoomHost,
   initializeRuntimedWasm,
+  loadRoomHostSnapshot,
   NotebookHandle,
   RuntimeStatePeerHandle,
 } from "../src/runtimed-wasm.ts";
@@ -210,8 +211,42 @@ describe("RoomHostHandle", () => {
     );
   });
 
-  it("allows runtime peers to publish RuntimeStateDoc executions and outputs", async () => {
+  it("rejects runtime peers creating RuntimeStateDoc execution intent", async () => {
     const host = await createEmptyRoomHost("demo", "system/schema:notebook-cloud-room");
+    const runtime = new RuntimeStatePeerHandle("user:dev:runtime-service/runtime:py-3.12");
+    syncRuntimeHostWithRuntimePeer(
+      host,
+      "peer-runtime",
+      "user:dev:runtime-service",
+      "runtime_peer",
+      false,
+      runtime,
+    );
+
+    runtime.create_execution_with_source("exec-1", "print('hosted runtime')", 0);
+
+    const message = runtime.flush_runtime_state_sync();
+    assert.ok(message);
+
+    assert.throws(
+      () =>
+        host.receive_peer_frame(
+          "peer-runtime",
+          "user:dev:runtime-service",
+          "runtime_peer",
+          false,
+          encodeTypedFrame(FrameType.RUNTIME_STATE_SYNC, message),
+        ),
+      /executions/,
+    );
+  });
+
+  it("allows runtime peers to publish progress for accepted RuntimeStateDoc executions", async () => {
+    const host = await createRoomHostWithAcceptedExecution(
+      "demo",
+      "exec-1",
+      "print('hosted runtime')",
+    );
     const runtime = new RuntimeStatePeerHandle("user:dev:runtime-service/runtime:py-3.12");
     const viewer = NotebookHandle.create_bootstrap("user:dev:carol/desktop:viewer");
     syncRuntimeHostWithRuntimePeer(
@@ -223,7 +258,6 @@ describe("RoomHostHandle", () => {
       runtime,
     );
 
-    runtime.create_execution_with_source("exec-1", "print('hosted runtime')", 0);
     runtime.set_execution_running("exec-1");
     runtime.set_execution_count("exec-1", 1);
     runtime.append_output_json(
@@ -461,7 +495,7 @@ describe("RoomMaterializer", () => {
     assert.deepEqual(JSON.parse(viewer.get_cells_json()), []);
   });
 
-  it("allows runtime peers, not editors, to author runtime state changes", async () => {
+  it("rejects runtime peer and editor execution creation over runtime-state sync", async () => {
     const state = fakeState();
     const materializer = new RoomMaterializer("demo", state, {} as Env);
     const runtimeIdentity = authenticateDevRequest(
@@ -473,30 +507,15 @@ describe("RoomMaterializer", () => {
     const runtimePeer = new RuntimeStatePeerHandle(runtimeIdentity.actorLabel);
     await syncMaterializerWithRuntimePeer(materializer, runtimePeerConnection, runtimePeer);
     runtimePeer.create_execution_with_source("exec-runtime", "print('runtime')", 0);
-    const runtimeMessage = runtimePeer.flush_runtime_state_sync();
-    assert.ok(runtimeMessage);
-
-    const accepted = await materializer.receiveFrame(runtimePeerConnection, {
-      type: FrameType.RUNTIME_STATE_SYNC,
-      payload: runtimeMessage,
-    });
-    assert.equal(accepted.changed, true);
-    assert.equal(accepted.runtime_state_changed, true);
+    await assert.rejects(
+      () => applyRuntimePeerChangesToMaterializer(materializer, runtimePeerConnection, runtimePeer),
+      /executions/,
+    );
 
     const editorIdentity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=editor"),
     );
     const editorPeerConnection = { id: "peer-editor", identity: editorIdentity };
-    const editorPeer = NotebookHandle.create_bootstrap(editorIdentity.actorLabel);
-    await syncMaterializerRuntimeStateWithClient(materializer, editorPeerConnection, editorPeer);
-    assert.deepEqual(editorPeer.get_execution_by_id("exec-runtime"), {
-      status: "queued",
-      success: null,
-      execution_count: null,
-      output_ids: [],
-      submitted_by_actor_label: null,
-    });
-
     const forgedEditorRuntime = new RuntimeStatePeerHandle(editorIdentity.actorLabel);
     await syncMaterializerWithRuntimePeer(materializer, editorPeerConnection, forgedEditorRuntime);
     forgedEditorRuntime.create_execution_with_source("exec-editor-forged", "print('editor')", 0);
@@ -760,6 +779,17 @@ async function applyRuntimePeerChangesToMaterializer(
   }
 
   return result;
+}
+
+async function createRoomHostWithAcceptedExecution(
+  notebookId: string,
+  executionId: string,
+  source: string,
+) {
+  const seedHost = await createEmptyRoomHost(notebookId, "system/schema:notebook-cloud-room");
+  const runtimeSeed = new RuntimeStatePeerHandle("system/schema:notebook-cloud-room");
+  runtimeSeed.create_execution_with_source(executionId, source, 0);
+  return loadRoomHostSnapshot(seedHost.save_notebook(), runtimeSeed.save());
 }
 
 async function syncMaterializerWithRuntimePeer(

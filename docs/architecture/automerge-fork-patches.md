@@ -86,11 +86,11 @@ Two paths:
 
 Cherry-picking buys subduction support sooner, costs us maintenance until upstream merges. The trigger to act is when revocation becomes a near-term need on the hosted product. Until then, watch the upstream PR.
 
-### 3. (Tentative) Path-aware filter hook on `receive_sync_message`
+### 3. (Resolved for v1) Path-aware filter hook on `receive_sync_message`
 
-For server-side enforcement of the `doc.comms/*/state/*` subtree as the only `RuntimeStateDoc` region the editor scope may write. Today this is enforced client-side via the approved comm writer. Server-side enforcement requires inspecting change ops to see what paths they touch. The shape of this is fuzzier than patch 1; we may decide it's not worth the complexity and stay with client-side discipline.
+This no longer blocks v1 authorization. The current room-host path enforces the editor/owner `RuntimeStateDoc` surface with before/after `RuntimeStatePolicySnapshot` validation: clone-preview the incoming sync, compare the accepted semantic state, and reject anything outside existing widget comm-state values before mutating the real room document.
 
-Decision deferred until we benchmark v1 in production. No code yet.
+An upstream path-aware hook could still be useful as a lower-cost optimization or for richer diagnostics, but it is no longer the authorization boundary.
 
 ### 4. (Speculative) Hooks for signed-change verification
 

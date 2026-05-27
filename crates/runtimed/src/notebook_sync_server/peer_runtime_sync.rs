@@ -102,15 +102,9 @@ pub(super) async fn handle_runtime_state_frame(
                         .map_err(|error| {
                             runtime_doc::RuntimeStateError::UnauthorizedActor(error.to_string())
                         })?;
-                    if write_scope != RuntimeStateWriteScope::RuntimePeer {
-                        let state_before = runtime_state_policy_snapshot(state_doc);
-                        let state_after = runtime_state_policy_snapshot(&preview);
-                        validate_runtime_state_sync_scope(
-                            &state_before,
-                            &state_after,
-                            write_scope,
-                        )?;
-                    }
+                    let state_before = runtime_state_policy_snapshot(state_doc);
+                    let state_after = runtime_state_policy_snapshot(&preview);
+                    validate_runtime_state_sync_scope(&state_before, &state_after, write_scope)?;
                     // `with_doc` holds the RuntimeStateDoc lock for the whole
                     // preview/apply sequence, so the validated message and peer
                     // state cannot diverge through another writer before apply.

@@ -33,8 +33,9 @@ placement as the same concept. The current model has sharper nouns:
   `RuntimeStateDoc` sync state;
 - **document engine**: the room-host implementation that materializes,
   validates, persists, and broadcasts document changes;
-- **runtime peer**: a scoped connection that writes runtime lifecycle, output,
-  and blob state, but cannot edit `NotebookDoc`;
+- **runtime peer**: a scoped connection that writes runtime lifecycle,
+  execution progress, output, and blob state for accepted work, but cannot edit
+  `NotebookDoc` or create execution intent;
 - **client/operator**: browser, desktop, TUI, or agent connection that acts on
   behalf of an authenticated principal;
 - **file binding**: an optional local `.ipynb` persistence surface, not the
@@ -324,8 +325,9 @@ in one of these states:
 
 The room should surface the active runtime peer, its provider, and its
 connection state as room metadata. Interrupt, restart, shutdown, and execution
-requests target the active runtime peer through scoped room requests and
-`RuntimeStateDoc` transitions. If no runtime peer is attached, execution
+requests target the active runtime peer through scoped room requests; the room
+host creates the accepted execution entry and the runtime peer reports progress
+through `RuntimeStateDoc` transitions. If no runtime peer is attached, execution
 requests fail with a typed "no runtime attached" response rather than trying to
 infer compute from the document host.
 

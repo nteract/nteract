@@ -31,7 +31,7 @@ Neighbors:
 
 | Term | Boundary | Allowed surface | Not allowed |
 |------|----------|-----------------|-------------|
-| `runtime_peer` | Room connection authenticated by the room host and authorized by the room ACL | Write `RuntimeStateDoc`, upload blobs referenced by runtime/output state, emit runtime lifecycle events, receive room sync needed to execute requested work | Edit `NotebookDoc`, mutate ACLs, publish revisions, host the room, or imply where the kernel process lives |
+| `runtime_peer` | Room connection authenticated by the room host and authorized by the room ACL | Write runtime progress/output state for room-accepted executions, upload blobs referenced by runtime/output state, emit runtime lifecycle events, receive room sync needed to execute requested work | Create execution intent, edit `NotebookDoc`, mutate ACLs, publish revisions, host the room, or imply where the kernel process lives |
 | `RuntimeAgent` | Local daemon implementation detail reached through the `RuntimeAgent` handshake | Supervise a kernel near the daemon that spawned it, receive daemon RPCs, and sync local `RuntimeStateDoc` changes | Serve as a cross-machine API boundary or product role |
 | JupyterHub runtime sidecar/service | Hub-authenticated compute adapter | Open an outbound room WebSocket requesting `runtime_peer`; start or reach a kernel using Hub-local authority | Become document authority for Anaconda-hosted rooms |
 | Remote daemon as runtime peer | Future daemon-mediated / SSH topology | Attach to a room or bridge as `runtime_peer`; run its own local `RuntimeAgent` beside the kernel | Expose the `RuntimeAgent` socket directly across machines |
@@ -103,8 +103,8 @@ that tries to make the blob reachable from room state.
 |-------|------------------|---------------------|----------------|
 | `viewer` | None | None | May resolve blobs already referenced by room state if the room host authorizes viewer access to that room |
 | `editor` | Blobs needed for allowed `NotebookDoc` edits and the allowed widget comm-state subtree | May reference uploads from allowed notebook fields, attachments, resolved assets, and permitted `doc.comms/*/state/*` writes | Same as viewer, plus any private editor-visible room blobs |
-| `runtime_peer` | Runtime output, execution, lifecycle, and comm-output blobs | May reference uploads from allowed `RuntimeStateDoc` output/lifecycle paths | Same as viewer for the attached room |
-| `owner` | Editor and runtime-peer upload surfaces | Editor and runtime-peer reference surfaces, plus publish/export flows | Same as editor/runtime-peer, plus owner-only artifact management |
+| `runtime_peer` | Runtime output, execution-progress, lifecycle, and comm-output blobs | May reference uploads from allowed `RuntimeStateDoc` output/lifecycle paths for accepted executions | Same as viewer for the attached room |
+| `owner` | Editor upload surface; runtime-peer upload surface only through an explicit runtime-peer connection | Editor reference surfaces, plus publish/export flows | Same as editor, plus owner-only artifact management |
 
 The `PutBlobHeader.purpose` field is a hint for routing, metrics, retention, or
 debugging. It is not an authorization decision. A malicious peer can choose any
@@ -156,9 +156,15 @@ document path that later references the content hash.
 
 - Add scope annotations for `PutBlob` and multipart upload request variants
   before exposing hosted multi-user room sockets.
-- Add server-side path validation for `RuntimeStateDoc` writes so `editor`
-  remains limited to widget comm state and `runtime_peer` remains limited to
-  runtime/output state.
+- Keep the shared `RuntimeStateDoc` write policy in the hosted room host and
+  daemon paths. `editor` and `owner` must remain limited to existing widget
+  comm state, while `runtime_peer` remains the explicit writer for runtime
+  lifecycle, execution progress, output, and comm topology state. Execution
+  intent creation still belongs to the room-host request path
+  (`ExecuteCell`/`RunAllCells`) so a runtime peer cannot enqueue work by syncing
+  a forged execution entry.
+  Future blob-reference validation should build on that policy rather than
+  reintroducing a separate runtime-state authorization surface.
 - Keep `BlobBackend` storage concerns separate from `BlobResolver` read
   authority. The former stores bytes; the latter decides how an authorized
   viewer obtains them.

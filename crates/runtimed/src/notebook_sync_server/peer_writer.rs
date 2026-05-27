@@ -350,7 +350,8 @@ mod tests {
     use super::*;
 
     use crate::blob_store::BlobStore;
-    use crate::protocol::NotebookRequest;
+    use crate::protocol::{NotebookRequest, NotebookResponse};
+    use runtime_doc::RuntimeLifecycle;
     use tokio::sync::oneshot;
     use uuid::Uuid;
 
@@ -413,6 +414,106 @@ mod tests {
             .await
             .expect("wait task should not panic")
             .expect("merged heads should satisfy the causal gate");
+    }
+
+    #[tokio::test]
+    async fn execute_cell_request_does_not_publish_startup_queue_before_required_heads() {
+        let room = test_room();
+        room.state
+            .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Resolving))
+            .expect("set startup lifecycle");
+
+        let mut incoming = {
+            let mut doc = room.doc.write().await;
+            doc.fork_with_actor("test:incoming")
+        };
+        incoming
+            .add_cell(0, "cell-1", "code")
+            .expect("add incoming cell");
+        incoming
+            .update_source("cell-1", "print('queued after sync')")
+            .expect("update incoming source");
+        let heads = incoming.get_heads_hex();
+
+        let request_room = room.clone();
+        let request_heads = heads.clone();
+        let request = tokio::spawn(async move {
+            wait_for_required_heads(&request_room, &request_heads)
+                .await
+                .expect("required heads should eventually arrive");
+            crate::requests::execute_cell::handle_with_submitter(
+                &request_room,
+                "cell-1".to_string(),
+                None,
+                Some("user:test/agent"),
+            )
+            .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        assert!(
+            !request.is_finished(),
+            "execute request should stay behind the missing required_heads gate"
+        );
+        let state = room.state.read(|sd| sd.read_state()).unwrap();
+        assert!(
+            state.executions.is_empty(),
+            "missing NotebookDoc heads must not create RuntimeStateDoc executions"
+        );
+        assert!(
+            state.queue.executing.is_none() && state.queue.queued.is_empty(),
+            "missing NotebookDoc heads must not publish startup queue state"
+        );
+        drop(state);
+
+        {
+            let mut doc = room.doc.write().await;
+            doc.merge(&mut incoming).expect("merge incoming change");
+        }
+        let _ = room.broadcasts.changed_tx.send(());
+
+        let response = tokio::time::timeout(std::time::Duration::from_secs(1), request)
+            .await
+            .expect("execute request should finish after heads arrive")
+            .expect("execute task should not panic");
+        let (cell_id, execution_id) = match response {
+            NotebookResponse::CellQueued {
+                cell_id,
+                execution_id,
+            } => (cell_id, execution_id),
+            other => panic!("expected CellQueued after heads arrive, got {other:?}"),
+        };
+        assert_eq!(cell_id, "cell-1");
+
+        let state = room.state.read(|sd| sd.read_state()).unwrap();
+        let execution = state
+            .executions
+            .get(&execution_id)
+            .expect("queued execution should exist after accepted request");
+        assert_eq!(execution.status, "queued");
+        assert_eq!(
+            execution.source.as_deref(),
+            Some("print('queued after sync')")
+        );
+        assert_eq!(execution.cell_id.as_deref(), Some("cell-1"));
+        assert_eq!(
+            execution.submitted_by_actor_label.as_deref(),
+            Some("user:test/agent")
+        );
+        let queued_ids: Vec<&str> = state
+            .queue
+            .queued
+            .iter()
+            .map(|entry| entry.execution_id.as_str())
+            .collect();
+        assert_eq!(queued_ids, vec![execution_id.as_str()]);
+        drop(state);
+
+        let cell_execution_id = {
+            let doc = room.doc.read().await;
+            doc.get_execution_id("cell-1")
+        };
+        assert_eq!(cell_execution_id.as_deref(), Some(execution_id.as_str()));
     }
 
     #[tokio::test]

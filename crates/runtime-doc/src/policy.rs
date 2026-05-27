@@ -1,6 +1,6 @@
 use automerge::{ObjType, ReadDoc, Value, ROOT};
 
-use crate::{CommDocEntry, RuntimeState, RuntimeStateDoc, RuntimeStateError};
+use crate::{CommDocEntry, ExecutionState, RuntimeState, RuntimeStateDoc, RuntimeStateError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeStateWriteScope {
@@ -118,10 +118,9 @@ pub fn validate_runtime_state_sync_scope(
     scope: RuntimeStateWriteScope,
 ) -> Result<(), RuntimeStateError> {
     match scope {
-        // Runtime peers are daemon-equivalent writers for RuntimeStateDoc.
-        // Hosted/cloud auth must grant this scope explicitly; it must not be
-        // derived from human editor/owner roles.
-        RuntimeStateWriteScope::RuntimePeer => Ok(()),
+        RuntimeStateWriteScope::RuntimePeer => {
+            validate_runtime_peer_runtime_delta(before, after, scope)
+        }
         RuntimeStateWriteScope::Editor | RuntimeStateWriteScope::Owner => {
             validate_comm_state_only_runtime_delta(before, after, scope)
         }
@@ -137,6 +136,162 @@ pub fn validate_runtime_state_sync_scope(
             }
         }
     }
+}
+
+fn validate_runtime_peer_runtime_delta(
+    before: &RuntimeStatePolicySnapshot,
+    after: &RuntimeStatePolicySnapshot,
+    scope: RuntimeStateWriteScope,
+) -> Result<(), RuntimeStateError> {
+    if before.root_keys != after.root_keys {
+        return Err(runtime_state_policy_error(
+            scope,
+            "schema",
+            "raw RuntimeStateDoc root keys are room-host/daemon-owned",
+        ));
+    }
+
+    validate_runtime_peer_execution_delta(before, after, scope)?;
+    validate_runtime_peer_queue_delta(before, after, scope)?;
+
+    Ok(())
+}
+
+fn validate_runtime_peer_execution_delta(
+    before: &RuntimeStatePolicySnapshot,
+    after: &RuntimeStatePolicySnapshot,
+    scope: RuntimeStateWriteScope,
+) -> Result<(), RuntimeStateError> {
+    for execution_id in after.state.executions.keys() {
+        if !before.state.executions.contains_key(execution_id) {
+            return Err(runtime_state_policy_error(
+                scope,
+                "executions",
+                "execution intent must go through ExecuteCell or RunAllCells",
+            ));
+        }
+    }
+    for execution_id in before.state.executions.keys() {
+        if !after.state.executions.contains_key(execution_id) {
+            return Err(runtime_state_policy_error(
+                scope,
+                "executions",
+                "accepted execution records cannot be removed by runtime-peer sync",
+            ));
+        }
+    }
+
+    for (execution_id, before_execution) in &before.state.executions {
+        let Some(after_execution) = after.state.executions.get(execution_id) else {
+            continue;
+        };
+        validate_runtime_peer_execution_update(
+            scope,
+            execution_id,
+            before_execution,
+            after_execution,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn validate_runtime_peer_execution_update(
+    scope: RuntimeStateWriteScope,
+    execution_id: &str,
+    before: &ExecutionState,
+    after: &ExecutionState,
+) -> Result<(), RuntimeStateError> {
+    let provenance_unchanged = before.source == after.source
+        && before.cell_id == after.cell_id
+        && before.seq == after.seq
+        && before.submitted_by_actor_label == after.submitted_by_actor_label;
+    if !provenance_unchanged {
+        return Err(runtime_state_policy_error(
+            scope,
+            "executions",
+            &format!("accepted execution provenance is coordinator-owned for {execution_id}"),
+        ));
+    }
+
+    if !runtime_peer_status_transition_allowed(&before.status, &after.status) {
+        return Err(runtime_state_policy_error(
+            scope,
+            "executions",
+            &format!(
+                "invalid runtime-peer status transition for {execution_id}: {} -> {}",
+                before.status, after.status
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
+fn runtime_peer_status_transition_allowed(before: &str, after: &str) -> bool {
+    if before == after {
+        return true;
+    }
+
+    matches!(
+        (before, after),
+        ("queued", "running")
+            | ("queued", "done")
+            | ("queued", "error")
+            | ("running", "done")
+            | ("running", "error")
+    )
+}
+
+fn validate_runtime_peer_queue_delta(
+    before: &RuntimeStatePolicySnapshot,
+    after: &RuntimeStatePolicySnapshot,
+    scope: RuntimeStateWriteScope,
+) -> Result<(), RuntimeStateError> {
+    if before.state.queue == after.state.queue {
+        return Ok(());
+    }
+
+    let mut seen = std::collections::BTreeSet::new();
+    let entries = after
+        .state
+        .queue
+        .executing
+        .iter()
+        .chain(after.state.queue.queued.iter());
+    for entry in entries {
+        if !seen.insert(entry.execution_id.as_str()) {
+            return Err(runtime_state_policy_error(
+                scope,
+                "queue",
+                "queue entries must not repeat an execution id",
+            ));
+        }
+
+        if !before.state.executions.contains_key(&entry.execution_id) {
+            return Err(runtime_state_policy_error(
+                scope,
+                "queue",
+                "queue entries must reference executions accepted through ExecuteCell or RunAllCells",
+            ));
+        };
+        let Some(execution_after) = after.state.executions.get(&entry.execution_id) else {
+            return Err(runtime_state_policy_error(
+                scope,
+                "queue",
+                "queue entries must reference existing executions",
+            ));
+        };
+        if matches!(execution_after.status.as_str(), "done" | "error") {
+            return Err(runtime_state_policy_error(
+                scope,
+                "queue",
+                "terminal executions cannot be re-queued by runtime-peer sync",
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_comm_state_only_runtime_delta(
@@ -270,6 +425,7 @@ fn runtime_state_policy_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::QueueEntry;
     use automerge::transaction::Transactable;
     use serde_json::json;
 
@@ -408,7 +564,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_peer_policy_allows_execution_creation() {
+    fn runtime_peer_policy_rejects_execution_creation() {
         let before = runtime_state_policy_snapshot(&RuntimeStateDoc::new());
         let mut after_doc = RuntimeStateDoc::new();
         after_doc
@@ -416,7 +572,66 @@ mod tests {
             .unwrap();
         let after = runtime_state_policy_snapshot(&after_doc);
 
+        let err =
+            validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
+                .unwrap_err();
+
+        assert!(
+            err.to_string().contains("executions"),
+            "error should identify execution intent writes: {err}"
+        );
+    }
+
+    #[test]
+    fn runtime_peer_policy_allows_existing_execution_progress_and_output() {
+        let mut before_doc = RuntimeStateDoc::new();
+        before_doc
+            .create_execution_with_source("exec-accepted", "print('accepted')", 0)
+            .unwrap();
+        let before = runtime_state_policy_snapshot(&before_doc);
+
+        let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+        after_doc.set_execution_running("exec-accepted").unwrap();
+        after_doc.set_execution_count("exec-accepted", 7).unwrap();
+        after_doc
+            .append_output(
+                "exec-accepted",
+                &json!({
+                    "output_type": "stream",
+                    "output_id": "out-stdout-1",
+                    "name": "stdout",
+                    "text": "accepted\n"
+                }),
+            )
+            .unwrap();
+        after_doc.set_execution_done("exec-accepted", true).unwrap();
+        let after = runtime_state_policy_snapshot(&after_doc);
+
         validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
             .unwrap();
+    }
+
+    #[test]
+    fn runtime_peer_policy_rejects_queue_entry_for_unaccepted_execution() {
+        let before = runtime_state_policy_snapshot(&RuntimeStateDoc::new());
+        let mut after_doc = RuntimeStateDoc::new();
+        after_doc
+            .set_queue(
+                None,
+                &[QueueEntry {
+                    execution_id: "exec-forged".to_string(),
+                }],
+            )
+            .unwrap();
+        let after = runtime_state_policy_snapshot(&after_doc);
+
+        let err =
+            validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
+                .unwrap_err();
+
+        assert!(
+            err.to_string().contains("queue"),
+            "error should identify queue writes: {err}"
+        );
     }
 }

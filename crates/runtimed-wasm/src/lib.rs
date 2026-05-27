@@ -672,12 +672,10 @@ impl RoomHostHandle {
                 .map_err(|e| JsError::new(&format!("runtime state auth preview failed: {e}")))?;
             let actors = extract_change_actors(preview.doc_mut(), &heads_before);
             validate_room_actor_labels(principal, actors.iter().map(String::as_str))?;
-            if scope != RuntimeStateWriteScope::RuntimePeer {
-                let state_before = runtime_state_policy_snapshot(&self.state_doc);
-                let state_after = runtime_state_policy_snapshot(&preview);
-                validate_runtime_state_sync_scope(&state_before, &state_after, scope)
-                    .map_err(|e| JsError::new(&e.to_string()))?;
-            }
+            let state_before = runtime_state_policy_snapshot(&self.state_doc);
+            let state_after = runtime_state_policy_snapshot(&preview);
+            validate_runtime_state_sync_scope(&state_before, &state_after, scope)
+                .map_err(|e| JsError::new(&e.to_string()))?;
             // This is a synchronous WASM host path: no await or host callback
             // can interleave another RuntimeStateDoc writer between the
             // validated preview and the real apply below.
