@@ -5,13 +5,18 @@
 //! directly. A native Playdate renderer can copy rows into `get_frame()` output
 //! or into an `LCDBitmap` data buffer, then call `mark_updated_rows()`.
 
+use std::io::Cursor;
+
 use image::imageops::FilterType;
-use image::{DynamicImage, GenericImageView, ImageFormat, RgbaImage};
+use image::{DynamicImage, GenericImageView, ImageFormat, ImageReader, Limits, RgbaImage};
 use thiserror::Error;
 
 pub const PLAYDATE_BITMAP_MIME: &str = "application/x-nteract-playdate-bitmap";
 pub const PLAYDATE_BITMAP_MAGIC: &[u8; 8] = b"NTPDIMG1";
 pub const PLAYDATE_BITMAP_HEADER_LEN: usize = 16;
+pub const PLAYDATE_BITMAP_FLAG_HAS_MASK: u16 = 0x0001;
+pub const DEFAULT_MAX_DECODE_WIDTH: u32 = 1600;
+pub const DEFAULT_MAX_DECODE_HEIGHT: u32 = 960;
 pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +31,8 @@ pub enum DitherMode {
 pub struct ConversionOptions {
     pub max_width: u32,
     pub max_height: u32,
+    pub max_decode_width: u32,
+    pub max_decode_height: u32,
     pub max_output_bytes: usize,
     pub dither: DitherMode,
 }
@@ -35,6 +42,8 @@ impl Default for ConversionOptions {
         Self {
             max_width: 400,
             max_height: 240,
+            max_decode_width: DEFAULT_MAX_DECODE_WIDTH,
+            max_decode_height: DEFAULT_MAX_DECODE_HEIGHT,
             max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
             dither: DitherMode::Bayer4x4,
         }
@@ -48,6 +57,7 @@ pub struct PlaydateBitmap {
     pub height: u32,
     pub row_stride: u16,
     pub byte_length: usize,
+    pub has_mask: bool,
     pub content_type: &'static str,
     pub source_mime: String,
     pub dither: DitherMode,
@@ -59,14 +69,22 @@ pub struct PackedBitmap {
     pub height: u32,
     pub row_stride: u16,
     pub pixels: Vec<u8>,
+    pub mask: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Error)]
 pub enum PlaydateImageError {
     #[error("unsupported image MIME type: {0}")]
     UnsupportedMime(String),
-    #[error("invalid conversion dimensions: max_width={max_width}, max_height={max_height}")]
-    InvalidDimensions { max_width: u32, max_height: u32 },
+    #[error(
+        "invalid conversion dimensions: max_width={max_width}, max_height={max_height}, max_decode_width={max_decode_width}, max_decode_height={max_decode_height}"
+    )]
+    InvalidDimensions {
+        max_width: u32,
+        max_height: u32,
+        max_decode_width: u32,
+        max_decode_height: u32,
+    },
     #[error("image is too large for Playdate bitmap payload: width={width}, height={height}")]
     ImageTooLarge { width: u32, height: u32 },
     #[error(
@@ -76,6 +94,8 @@ pub enum PlaydateImageError {
         byte_length: usize,
         max_byte_length: usize,
     },
+    #[error("invalid Playdate bitmap data: {0}")]
+    InvalidBitmapData(&'static str),
     #[error("failed to decode {mime} image: {source}")]
     Decode {
         mime: String,
@@ -99,6 +119,7 @@ pub fn convert_image(
         height: bitmap.height,
         row_stride: bitmap.row_stride,
         byte_length,
+        has_mask: bitmap.mask.is_some(),
         content_type: PLAYDATE_BITMAP_MIME,
         source_mime: source_mime.to_string(),
         dither: options.dither,
@@ -110,21 +131,22 @@ pub fn pack_image(
     source_mime: &str,
     options: &ConversionOptions,
 ) -> Result<PackedBitmap, PlaydateImageError> {
-    if options.max_width == 0 || options.max_height == 0 {
+    if options.max_width == 0
+        || options.max_height == 0
+        || options.max_decode_width == 0
+        || options.max_decode_height == 0
+    {
         return Err(PlaydateImageError::InvalidDimensions {
             max_width: options.max_width,
             max_height: options.max_height,
+            max_decode_width: options.max_decode_width,
+            max_decode_height: options.max_decode_height,
         });
     }
 
     let format = image_format_for_mime(source_mime)
         .ok_or_else(|| PlaydateImageError::UnsupportedMime(source_mime.to_string()))?;
-    let decoded = image::load_from_memory_with_format(input, format).map_err(|source| {
-        PlaydateImageError::Decode {
-            mime: source_mime.to_string(),
-            source,
-        }
-    })?;
+    let decoded = decode_with_limits(input, format, source_mime, options)?;
     let resized = resize_to_fit(decoded, options.max_width, options.max_height);
     let (width, height) = resized.dimensions();
     if width > u32::from(u16::MAX) || height > u32::from(u16::MAX) {
@@ -138,8 +160,11 @@ pub fn pack_image(
             max_byte_length: options.max_output_bytes,
         },
     )?;
+    let has_mask = rgba.pixels().any(|pixel| pixel.0[3] < 128);
+    let mask_byte_length = if has_mask { pixel_byte_length } else { 0 };
     let byte_length = PLAYDATE_BITMAP_HEADER_LEN
         .checked_add(pixel_byte_length)
+        .and_then(|length| length.checked_add(mask_byte_length))
         .ok_or(PlaydateImageError::PayloadTooLarge {
             byte_length: usize::MAX,
             max_byte_length: options.max_output_bytes,
@@ -150,13 +175,14 @@ pub fn pack_image(
             max_byte_length: options.max_output_bytes,
         });
     }
-    let pixels = pack_rgba_image(&rgba, row_stride, options.dither);
+    let (pixels, mask) = pack_rgba_image(&rgba, row_stride, options.dither, has_mask);
 
     Ok(PackedBitmap {
         width,
         height,
         row_stride,
         pixels,
+        mask,
     })
 }
 
@@ -166,8 +192,9 @@ pub fn pack_image(
 /// - u16 width
 /// - u16 height
 /// - u16 row stride in bytes
-/// - u16 flags, currently 0
+/// - u16 flags, bit 0 means an alpha mask plane follows the color plane
 /// - packed 1-bit rows, MSB first, white=1 and black=0
+/// - optional packed alpha rows, MSB first, opaque=1 and transparent=0
 pub fn encode_playdate_bitmap(bitmap: &PackedBitmap) -> Result<Vec<u8>, PlaydateImageError> {
     if bitmap.width > u32::from(u16::MAX) || bitmap.height > u32::from(u16::MAX) {
         return Err(PlaydateImageError::ImageTooLarge {
@@ -175,15 +202,68 @@ pub fn encode_playdate_bitmap(bitmap: &PackedBitmap) -> Result<Vec<u8>, Playdate
             height: bitmap.height,
         });
     }
+    let min_row_stride = bitmap.width.div_ceil(8);
+    if u32::from(bitmap.row_stride) < min_row_stride {
+        return Err(PlaydateImageError::InvalidBitmapData(
+            "row_stride is too small for width",
+        ));
+    }
+    let pixel_byte_length = usize::from(bitmap.row_stride)
+        .checked_mul(bitmap.height as usize)
+        .ok_or(PlaydateImageError::InvalidBitmapData("bitmap is too large"))?;
+    if bitmap.pixels.len() != pixel_byte_length {
+        return Err(PlaydateImageError::InvalidBitmapData(
+            "color plane length does not match row_stride * height",
+        ));
+    }
+    if let Some(mask) = &bitmap.mask {
+        if mask.len() != pixel_byte_length {
+            return Err(PlaydateImageError::InvalidBitmapData(
+                "mask plane length does not match row_stride * height",
+            ));
+        }
+    }
 
-    let mut bytes = Vec::with_capacity(PLAYDATE_BITMAP_HEADER_LEN + bitmap.pixels.len());
+    let flags = if bitmap.mask.is_some() {
+        PLAYDATE_BITMAP_FLAG_HAS_MASK
+    } else {
+        0
+    };
+    let mask_len = bitmap.mask.as_ref().map_or(0, Vec::len);
+    let mut bytes = Vec::with_capacity(PLAYDATE_BITMAP_HEADER_LEN + bitmap.pixels.len() + mask_len);
     bytes.extend_from_slice(PLAYDATE_BITMAP_MAGIC);
     bytes.extend_from_slice(&(bitmap.width as u16).to_le_bytes());
     bytes.extend_from_slice(&(bitmap.height as u16).to_le_bytes());
     bytes.extend_from_slice(&bitmap.row_stride.to_le_bytes());
-    bytes.extend_from_slice(&0_u16.to_le_bytes());
+    bytes.extend_from_slice(&flags.to_le_bytes());
     bytes.extend_from_slice(&bitmap.pixels);
+    if let Some(mask) = &bitmap.mask {
+        bytes.extend_from_slice(mask);
+    }
     Ok(bytes)
+}
+
+fn decode_with_limits(
+    input: &[u8],
+    format: ImageFormat,
+    source_mime: &str,
+    options: &ConversionOptions,
+) -> Result<DynamicImage, PlaydateImageError> {
+    let max_alloc = u64::from(options.max_decode_width)
+        .saturating_mul(u64::from(options.max_decode_height))
+        .saturating_mul(4);
+    let mut reader = ImageReader::with_format(Cursor::new(input), format);
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(options.max_decode_width);
+    limits.max_image_height = Some(options.max_decode_height);
+    limits.max_alloc = Some(max_alloc);
+    reader.limits(limits);
+    reader
+        .decode()
+        .map_err(|source| PlaydateImageError::Decode {
+            mime: source_mime.to_string(),
+            source,
+        })
 }
 
 fn image_format_for_mime(mime: &str) -> Option<ImageFormat> {
@@ -218,23 +298,34 @@ fn row_stride(
     u16::try_from(aligned).map_err(|_| PlaydateImageError::ImageTooLarge { width, height })
 }
 
-fn pack_rgba_image(image: &RgbaImage, row_stride: u16, mode: DitherMode) -> Vec<u8> {
+fn pack_rgba_image(
+    image: &RgbaImage,
+    row_stride: u16,
+    mode: DitherMode,
+    include_mask: bool,
+) -> (Vec<u8>, Option<Vec<u8>>) {
     let width = image.width();
     let height = image.height();
     let row_stride = usize::from(row_stride);
     let mut packed = vec![0_u8; row_stride * height as usize];
+    let mut mask = include_mask.then(|| vec![0_u8; row_stride * height as usize]);
 
     for (x, y, pixel) in image.enumerate_pixels() {
         let [red, green, blue, alpha] = pixel.0;
-        let visible = alpha != 0;
         let luminance =
             ((u32::from(red) * 299 + u32::from(green) * 587 + u32::from(blue) * 114) / 1000) as u8;
         let threshold = dither_threshold(mode, x, y);
-        let white = !visible || luminance >= threshold;
+        let white = luminance >= threshold;
+        let offset = y as usize * row_stride + x as usize / 8;
+        let bit = 0x80 >> (x % 8);
 
         if white {
-            let offset = y as usize * row_stride + x as usize / 8;
-            packed[offset] |= 0x80 >> (x % 8);
+            packed[offset] |= bit;
+        }
+        if alpha >= 128 {
+            if let Some(mask) = &mut mask {
+                mask[offset] |= bit;
+            }
         }
     }
 
@@ -249,7 +340,23 @@ fn pack_rgba_image(image: &RgbaImage, row_stride: u16, mode: DitherMode) -> Vec<
         }
     }
 
-    packed
+    if let Some(alpha_mask) = &mut mask {
+        set_padding_bits(alpha_mask, width, height, row_stride);
+    }
+
+    (packed, mask)
+}
+
+fn set_padding_bits(packed: &mut [u8], width: u32, height: u32, row_stride: usize) {
+    let padding_bits = width % 8;
+    if padding_bits == 0 {
+        return;
+    }
+    let mask = (1 << (8 - padding_bits)) - 1;
+    for y in 0..height as usize {
+        let offset = y * row_stride + width as usize / 8;
+        packed[offset] |= mask;
+    }
 }
 
 fn dither_threshold(mode: DitherMode, x: u32, y: u32) -> u8 {

@@ -12,12 +12,13 @@ viewer if the viewer is written in Rust.
 For cloud snapshots, prefer a target-specific derived image blob over PDI:
 
 1. Decode source `image/png`, `image/jpeg`, `image/gif`, or `image/webp`.
-2. Resize to viewer constraints, defaulting to 400 x 240.
-3. Quantize to 1-bit with the requested dither mode.
-4. Reject payloads above the configured output byte budget.
-5. Store the `application/x-nteract-playdate-bitmap` payload in the snapshot
+2. Reject decoded dimensions above the configured decode bounds.
+3. Resize to viewer constraints, defaulting to 400 x 240.
+4. Quantize to 1-bit with the requested dither mode.
+5. Reject payloads above the configured output byte budget.
+6. Store the `application/x-nteract-playdate-bitmap` payload in the snapshot
    blob store.
-6. Let the Playdate viewer render the packed rows with a native helper.
+7. Let the Playdate viewer render the packed rows with a native helper.
 
 This avoids running the Playdate SDK in Cloudflare while still keeping the
 viewer payload close to the hardware representation. A Rust Playdate viewer can
@@ -39,18 +40,31 @@ Binary layout is little-endian:
 | 8 | 2 | Width in pixels |
 | 10 | 2 | Height in pixels |
 | 12 | 2 | Source row stride in bytes |
-| 14 | 2 | Flags, currently `0` |
+| 14 | 2 | Flags |
 | 16 | n | Packed 1-bit rows |
+| 16+n | n | Optional packed alpha mask rows |
 
 Pixels are MSB-first in each byte, matching Playdate graphics conventions:
-white is `1`, black is `0`. Transparent source pixels are flattened to white for
-the first version of the format. Trailing padding bits in partial bytes are also
-set to white.
+white is `1`, black is `0`. This matches the Playdate framebuffer convention
+used by SDK examples, where a cleared bit is an on-screen black pixel.
+
+If flag `0x0001` is set, a second packed mask plane follows the color plane.
+Mask rows use Playdate image mask semantics: opaque is `1`, transparent is `0`.
+This keeps opaque black distinct from transparent pixels. Source alpha values
+below 128 are transparent; values 128 and above are opaque. Trailing padding bits
+in partial bytes are set to white/opaque.
 
 The payload stride is `ceil(width / 8)`, not the Playdate framebuffer stride.
 For full-width 400-pixel rows this is 50 bytes; the hardware framebuffer row is
 52 bytes, so the viewer copies 50 bytes per row and skips the framebuffer
 padding.
+
+The closest existing format is raw PBM (`P4`): it also stores 1-bit rows,
+high-bit first. PBM was not used directly because its convention is
+`1 = black, 0 = white`, it has no alpha mask plane, and its MIME type is only
+conventional (`image/x-portable-bitmap`). The nteract payload keeps the row
+packing but adds a fixed binary header, Playdate bit polarity, and an optional
+mask plane.
 
 ## Snapshot Contract
 
@@ -62,17 +76,19 @@ output item:
 - `width`, `height`
 - `byte_length`
 - `row_stride`
+- `has_mask`
 - `source_mime`
 - `source_blob_hash`
 - `dither`: `threshold`, `bayer2x2`, `bayer4x4`, or `bayer8x8`
 - `max_width`, `max_height`
+- `max_decode_width`, `max_decode_height`
 - `max_output_bytes`
 - `alt_text` or generated summary when available
 
 Use a cache key derived from:
 
 ```text
-playdate-image:v1:<source-blob-hash>:<source-mime>:<max-width>x<max-height>:<dither>
+playdate-image:v1:<source-blob-hash>:<source-mime>:<max-width>x<max-height>:decode=<max-decode-width>x<max-decode-height>:<dither>
 ```
 
 If conversion fails or a viewer cannot consume the derived blob, fallback order
@@ -108,12 +124,17 @@ render it in the Playdate viewer.
 
 ## Open Risks
 
-- The first format flattens transparency to white. If notebook outputs rely on
-  transparent overlays, add a second packed alpha mask and set a payload flag.
+- The format now preserves binary transparency, but partial alpha is thresholded
+  rather than composited. If notebook outputs rely on translucent overlays,
+  consider pre-compositing on white or adding a richer alpha policy.
 - Ordered dithering is deterministic and cheap, but plots with fine grid lines
   may need per-output tuning.
 - Large notebook outputs should be pre-rendered into scroll-sized tiles if the
   viewer cannot keep a full report image in memory.
+- Matplotlib plots are more legible when rendered with a Playdate-aware style
+  before conversion: heavier strokes, fewer ticks, larger labels, and no tiny
+  legend text. The converter preserves pixels; it cannot recover readability
+  lost in the source PNG.
 - The Playdate-side renderer still needs a small validation app or harness test
   that fetches or embeds an `NTPDIMG1` blob, blits rows into the framebuffer, and
   verifies the rendered screen in Simulator.

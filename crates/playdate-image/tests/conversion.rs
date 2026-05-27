@@ -1,7 +1,7 @@
 use image::{ImageBuffer, ImageEncoder, Rgba, RgbaImage};
 use playdate_image::{
     convert_image, encode_playdate_bitmap, pack_image, ConversionOptions, DitherMode, PackedBitmap,
-    DEFAULT_MAX_OUTPUT_BYTES, PLAYDATE_BITMAP_HEADER_LEN, PLAYDATE_BITMAP_MAGIC,
+    PLAYDATE_BITMAP_FLAG_HAS_MASK, PLAYDATE_BITMAP_HEADER_LEN, PLAYDATE_BITMAP_MAGIC,
     PLAYDATE_BITMAP_MIME,
 };
 
@@ -24,8 +24,8 @@ fn packs_png_to_playdate_bit_order() {
         &ConversionOptions {
             max_width: 8,
             max_height: 1,
-            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
             dither: DitherMode::Threshold,
+            ..ConversionOptions::default()
         },
     )
     .expect("png should pack");
@@ -33,7 +33,8 @@ fn packs_png_to_playdate_bit_order() {
     assert_eq!(packed.width, 8);
     assert_eq!(packed.height, 1);
     assert_eq!(packed.row_stride, 1);
-    assert_eq!(packed.pixels, vec![0b0101_0110]);
+    assert_eq!(packed.pixels, vec![0b0100_0110]);
+    assert_eq!(packed.mask, Some(vec![0b1110_1111]));
 }
 
 #[test]
@@ -46,8 +47,8 @@ fn converts_plot_like_png_to_serialized_payload() {
         &ConversionOptions {
             max_width: 96,
             max_height: 64,
-            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
             dither: DitherMode::Bayer4x4,
+            ..ConversionOptions::default()
         },
     )
     .expect("plot should convert");
@@ -62,6 +63,7 @@ fn converts_plot_like_png_to_serialized_payload() {
     assert_eq!(&converted.bytes[8..10], &96_u16.to_le_bytes());
     assert_eq!(&converted.bytes[10..12], &64_u16.to_le_bytes());
     assert_eq!(&converted.bytes[12..14], &12_u16.to_le_bytes());
+    assert_eq!(&converted.bytes[14..16], &0_u16.to_le_bytes());
 }
 
 #[test]
@@ -78,8 +80,8 @@ fn decodes_jpeg_sources_before_packing() {
         &ConversionOptions {
             max_width: 16,
             max_height: 1,
-            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
             dither: DitherMode::Threshold,
+            ..ConversionOptions::default()
         },
     )
     .expect("jpeg should pack");
@@ -111,11 +113,29 @@ fn rejects_oversized_public_bitmap_encoding() {
         height: 1,
         row_stride: 1,
         pixels: Vec::new(),
+        mask: None,
     })
     .expect_err("oversized public bitmap should be rejected");
 
     assert!(
         err.to_string().contains("too large"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn rejects_malformed_public_bitmap_planes() {
+    let err = encode_playdate_bitmap(&PackedBitmap {
+        width: 8,
+        height: 1,
+        row_stride: 1,
+        pixels: vec![0xff],
+        mask: Some(Vec::new()),
+    })
+    .expect_err("mask length should be validated");
+
+    assert!(
+        err.to_string().contains("mask plane length"),
         "unexpected error: {err}"
     );
 }
@@ -132,12 +152,71 @@ fn rejects_payloads_above_configured_byte_budget() {
             max_height: 64,
             max_output_bytes: PLAYDATE_BITMAP_HEADER_LEN + 12 * 64 - 1,
             dither: DitherMode::Threshold,
+            ..ConversionOptions::default()
         },
     )
     .expect_err("payload should exceed configured budget");
 
     assert!(
         err.to_string().contains("payload is too large"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn encodes_mask_plane_after_color_plane() {
+    let png = rgba_png(&[
+        (0, 0, 0, 255),
+        (255, 255, 255, 255),
+        (255, 0, 0, 0),
+        (0, 0, 0, 255),
+        (0, 0, 0, 255),
+        (255, 255, 255, 255),
+        (255, 255, 255, 255),
+        (0, 0, 0, 255),
+    ]);
+    let packed = pack_image(
+        &png,
+        "image/png",
+        &ConversionOptions {
+            max_width: 8,
+            max_height: 1,
+            dither: DitherMode::Threshold,
+            ..ConversionOptions::default()
+        },
+    )
+    .expect("transparent png should pack");
+
+    let encoded = encode_playdate_bitmap(&packed).expect("encode with mask");
+
+    assert_eq!(
+        &encoded[14..16],
+        &PLAYDATE_BITMAP_FLAG_HAS_MASK.to_le_bytes()
+    );
+    assert_eq!(encoded[PLAYDATE_BITMAP_HEADER_LEN], 0b0100_0110);
+    assert_eq!(encoded[PLAYDATE_BITMAP_HEADER_LEN + 1], 0b1101_1111);
+}
+
+#[test]
+fn rejects_decoded_sources_above_configured_dimensions() {
+    let png = plot_like_png();
+
+    let err = pack_image(
+        &png,
+        "image/png",
+        &ConversionOptions {
+            max_width: 96,
+            max_height: 64,
+            max_decode_width: 48,
+            max_decode_height: 64,
+            dither: DitherMode::Threshold,
+            ..ConversionOptions::default()
+        },
+    )
+    .expect_err("source dimensions should exceed decode limit");
+
+    assert!(
+        err.to_string().contains("failed to decode"),
         "unexpected error: {err}"
     );
 }
