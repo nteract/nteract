@@ -82,7 +82,7 @@ struct EmptyParams {}
 /// - `idempotent` — calling repeatedly with the same args has no additional effect
 /// - `open_world` — tool interacts with external entities beyond the notebook
 pub fn all_tools() -> Vec<Tool> {
-    vec![
+    let mut tools = vec![
         // -- Session management --
         Tool::new(
             "list_active_notebooks",
@@ -244,7 +244,15 @@ pub fn all_tools() -> Vec<Tool> {
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false))
         .with_meta(app_tool_meta()),
-    ]
+    ];
+
+    for tool in &mut tools {
+        tool.icons = Some(crate::icons::icons(crate::icons::tool_icon(
+            tool.name.as_ref(),
+        )));
+    }
+
+    tools
 }
 
 /// Dispatch a tool call to its handler.
@@ -593,6 +601,29 @@ mod tests {
             .into_iter()
             .find(|tool| tool.name == name)
             .unwrap_or_else(|| panic!("missing registered tool: {name}"))
+    }
+
+    fn assert_light_dark_icons(tool: &Tool) {
+        let icons = tool.icons.as_ref().expect("tool icons");
+        assert_eq!(icons.len(), 2);
+        assert!(icons
+            .iter()
+            .all(|icon| icon.src.starts_with("data:image/png;base64,")));
+        assert!(icons.iter().any(|icon| {
+            icon.theme == Some(rmcp::model::IconTheme::Light)
+                && icon.mime_type.as_deref() == Some("image/png")
+        }));
+        assert!(icons.iter().any(|icon| {
+            icon.theme == Some(rmcp::model::IconTheme::Dark)
+                && icon.mime_type.as_deref() == Some("image/png")
+        }));
+    }
+
+    #[test]
+    fn registered_tools_advertise_mcp_icons() {
+        for tool in all_tools() {
+            assert_light_dark_icons(&tool);
+        }
     }
 
     #[test]

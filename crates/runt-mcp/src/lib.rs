@@ -23,6 +23,7 @@ pub mod daemon_watch;
 pub mod editing;
 pub mod execution;
 pub mod formatting;
+mod icons;
 pub mod presence;
 pub mod project_file;
 mod resources;
@@ -190,6 +191,7 @@ impl ServerHandler for NteractMcp {
         if let Some(ref v) = self.daemon_version {
             impl_info.title = Some(format!("nteract (daemon {v})"));
         }
+        impl_info.icons = Some(icons::icons(icons::IconKind::Brand));
 
         ServerInfo::new(
             ServerCapabilities::builder()

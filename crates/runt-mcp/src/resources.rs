@@ -6,6 +6,7 @@ use rmcp::model::{
 };
 use rmcp::ErrorData as McpError;
 
+use crate::icons::{self, IconKind};
 use crate::NteractMcp;
 
 const OUTPUT_RESOURCE_URI: &str = "ui://nteract/output.html";
@@ -66,6 +67,7 @@ pub async fn list_resources(server: &NteractMcp) -> Result<ListResourcesResult, 
         "nteract output",
         "Interactive output renderer for notebook cells",
         OUTPUT_MIME_TYPE,
+        IconKind::ResourceOutput,
         Some(resource_ui_meta(&server.blob_base_url)),
     ));
     resources.push(assistant_resource(
@@ -73,6 +75,7 @@ pub async fn list_resources(server: &NteractMcp) -> Result<ListResourcesResult, 
         "nteract notebooks",
         "Active notebook rooms visible to this MCP server",
         NOTEBOOKS_MIME_TYPE,
+        IconKind::Brand,
         NOTEBOOK_CONTEXT_PRIORITY,
     ));
 
@@ -82,6 +85,7 @@ pub async fn list_resources(server: &NteractMcp) -> Result<ListResourcesResult, 
             format!("nteract cells {notebook_id}"),
             "Ordered cell list for a connected or parked notebook session",
             CELLS_MIME_TYPE,
+            IconKind::ResourceCells,
             NOTEBOOK_CONTEXT_PRIORITY,
         ));
     }
@@ -101,6 +105,7 @@ pub fn list_resource_templates() -> ListResourceTemplatesResult {
             "nteract notebook cells",
             "Ordered cell list for a connected or parked notebook session",
             CELLS_MIME_TYPE,
+            IconKind::ResourceCells,
             NOTEBOOK_CONTEXT_PRIORITY,
         ),
         assistant_resource_template(
@@ -108,6 +113,7 @@ pub fn list_resource_templates() -> ListResourceTemplatesResult {
             "nteract notebook cell",
             "Notebook cell snapshot for a connected or parked notebook session",
             CELLS_MIME_TYPE,
+            IconKind::CellRead,
             NOTEBOOK_CONTEXT_PRIORITY,
         ),
     ];
@@ -165,11 +171,13 @@ fn resource(
     name: impl Into<String>,
     description: impl Into<String>,
     mime_type: impl Into<String>,
+    icon: IconKind,
     meta: Option<Meta>,
 ) -> Annotated<RawResource> {
     let mut raw = RawResource::new(uri, name);
     raw.description = Some(description.into());
     raw.mime_type = Some(mime_type.into());
+    raw.icons = Some(icons::icons(icon));
     raw.meta = meta;
     Annotated {
         raw,
@@ -182,9 +190,10 @@ fn assistant_resource(
     name: impl Into<String>,
     description: impl Into<String>,
     mime_type: impl Into<String>,
+    icon: IconKind,
     priority: f32,
 ) -> Annotated<RawResource> {
-    resource(uri, name, description, mime_type, None)
+    resource(uri, name, description, mime_type, icon, None)
         .with_audience(vec![Role::Assistant])
         .with_priority(priority)
 }
@@ -194,10 +203,12 @@ fn resource_template(
     name: impl Into<String>,
     description: impl Into<String>,
     mime_type: impl Into<String>,
+    icon: IconKind,
 ) -> Annotated<RawResourceTemplate> {
     let mut raw = RawResourceTemplate::new(uri_template, name);
     raw.description = Some(description.into());
     raw.mime_type = Some(mime_type.into());
+    raw.icons = Some(icons::icons(icon));
     Annotated {
         raw,
         annotations: None,
@@ -209,9 +220,10 @@ fn assistant_resource_template(
     name: impl Into<String>,
     description: impl Into<String>,
     mime_type: impl Into<String>,
+    icon: IconKind,
     priority: f32,
 ) -> Annotated<RawResourceTemplate> {
-    resource_template(uri_template, name, description, mime_type)
+    resource_template(uri_template, name, description, mime_type, icon)
         .with_audience(vec![Role::Assistant])
         .with_priority(priority)
 }
@@ -501,6 +513,21 @@ mod tests {
         assert!(annotations.last_modified.is_none());
     }
 
+    fn assert_light_dark_icons(icons: &[rmcp::model::Icon]) {
+        assert_eq!(icons.len(), 2);
+        assert!(icons
+            .iter()
+            .all(|icon| icon.src.starts_with("data:image/png;base64,")));
+        assert!(icons.iter().any(|icon| {
+            icon.theme == Some(rmcp::model::IconTheme::Light)
+                && icon.mime_type.as_deref() == Some("image/png")
+        }));
+        assert!(icons.iter().any(|icon| {
+            icon.theme == Some(rmcp::model::IconTheme::Dark)
+                && icon.mime_type.as_deref() == Some("image/png")
+        }));
+    }
+
     #[test]
     fn output_resource_meta_includes_blob_domains_for_mcp_ui_csp() {
         let meta = resource_ui_meta(&Some("https://outputs.example.test".into()));
@@ -547,6 +574,7 @@ mod tests {
 
         assert_eq!(resource.raw.uri, OUTPUT_RESOURCE_URI);
         assert!(resource.annotations.is_none());
+        assert_light_dark_icons(resource.raw.icons.as_deref().expect("resource icons"));
         assert_eq!(ui.get("prefersBorder"), Some(&serde_json::json!(false)));
         assert!(ui.get("csp").is_some());
     }
@@ -569,6 +597,7 @@ mod tests {
                 .as_ref()
                 .expect("notebook resource annotations"),
         );
+        assert_light_dark_icons(resource.raw.icons.as_deref().expect("resource icons"));
     }
 
     #[test]
@@ -591,6 +620,7 @@ mod tests {
                     .as_ref()
                     .expect("notebook resource template annotations"),
             );
+            assert_light_dark_icons(template.raw.icons.as_deref().expect("template icons"));
         }
     }
 
