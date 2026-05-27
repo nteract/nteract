@@ -1,0 +1,6 @@
+name=Cloud Snapshot PDI Fixture
+author=nteract
+description=Fixture for validating Playdate PDI conversion and data-folder loading.
+bundleID=com.nteract.cloud-snapshot-pdi-fixture
+version=0.1.0
+buildNumber=1
