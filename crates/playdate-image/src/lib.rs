@@ -11,6 +11,7 @@ use thiserror::Error;
 
 pub const PLAYDATE_BITMAP_MIME: &str = "application/x-nteract-playdate-bitmap";
 pub const PLAYDATE_BITMAP_MAGIC: &[u8; 8] = b"NTPDIMG1";
+pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DitherMode {
@@ -24,6 +25,7 @@ pub enum DitherMode {
 pub struct ConversionOptions {
     pub max_width: u32,
     pub max_height: u32,
+    pub max_output_bytes: usize,
     pub dither: DitherMode,
 }
 
@@ -32,6 +34,7 @@ impl Default for ConversionOptions {
         Self {
             max_width: 400,
             max_height: 240,
+            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
             dither: DitherMode::Bayer4x4,
         }
     }
@@ -65,6 +68,13 @@ pub enum PlaydateImageError {
     InvalidDimensions { max_width: u32, max_height: u32 },
     #[error("image is too large for Playdate bitmap payload: width={width}, height={height}")]
     ImageTooLarge { width: u32, height: u32 },
+    #[error(
+        "converted Playdate bitmap payload is too large: byte_length={byte_length}, max_byte_length={max_byte_length}"
+    )]
+    PayloadTooLarge {
+        byte_length: usize,
+        max_byte_length: usize,
+    },
     #[error("failed to decode {mime} image: {source}")]
     Decode {
         mime: String,
@@ -119,9 +129,21 @@ pub fn pack_image(
     if width > u32::from(u16::MAX) || height > u32::from(u16::MAX) {
         return Err(PlaydateImageError::ImageTooLarge { width, height });
     }
-    let mut rgba = resized.to_rgba8();
+    let rgba = resized.to_rgba8();
     let row_stride = row_stride(width, height, false)?;
-    let pixels = pack_rgba_image(&mut rgba, row_stride, options.dither);
+    let byte_length = usize::from(row_stride).checked_mul(height as usize).ok_or(
+        PlaydateImageError::PayloadTooLarge {
+            byte_length: usize::MAX,
+            max_byte_length: options.max_output_bytes,
+        },
+    )?;
+    if byte_length > options.max_output_bytes {
+        return Err(PlaydateImageError::PayloadTooLarge {
+            byte_length,
+            max_byte_length: options.max_output_bytes,
+        });
+    }
+    let pixels = pack_rgba_image(&rgba, row_stride, options.dither);
 
     Ok(PackedBitmap {
         width,
@@ -189,13 +211,13 @@ fn row_stride(
     u16::try_from(aligned).map_err(|_| PlaydateImageError::ImageTooLarge { width, height })
 }
 
-fn pack_rgba_image(image: &mut RgbaImage, row_stride: u16, mode: DitherMode) -> Vec<u8> {
+fn pack_rgba_image(image: &RgbaImage, row_stride: u16, mode: DitherMode) -> Vec<u8> {
     let width = image.width();
     let height = image.height();
     let row_stride = usize::from(row_stride);
     let mut packed = vec![0_u8; row_stride * height as usize];
 
-    for (x, y, pixel) in image.enumerate_pixels_mut() {
+    for (x, y, pixel) in image.enumerate_pixels() {
         let [red, green, blue, alpha] = pixel.0;
         let visible = alpha != 0;
         let luminance =

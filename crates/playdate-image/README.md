@@ -14,9 +14,10 @@ For cloud snapshots, prefer a target-specific derived image blob over PDI:
 1. Decode source `image/png`, `image/jpeg`, `image/gif`, or `image/webp`.
 2. Resize to viewer constraints, defaulting to 400 x 240.
 3. Quantize to 1-bit with the requested dither mode.
-4. Store the `application/x-nteract-playdate-bitmap` payload in the snapshot
+4. Reject payloads above the configured output byte budget.
+5. Store the `application/x-nteract-playdate-bitmap` payload in the snapshot
    blob store.
-5. Let the Playdate viewer render the packed rows with a native helper.
+6. Let the Playdate viewer render the packed rows with a native helper.
 
 This avoids running the Playdate SDK in Cloudflare while still keeping the
 viewer payload close to the hardware representation. A Rust Playdate viewer can
@@ -65,6 +66,7 @@ output item:
 - `source_blob_hash`
 - `dither`: `threshold`, `bayer2x2`, `bayer4x4`, or `bayer8x8`
 - `max_width`, `max_height`
+- `max_output_bytes`
 - `alt_text` or generated summary when available
 
 Use a cache key derived from:

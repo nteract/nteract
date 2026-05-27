@@ -1,7 +1,7 @@
 use image::{ImageBuffer, ImageEncoder, Rgba, RgbaImage};
 use playdate_image::{
     convert_image, encode_playdate_bitmap, pack_image, ConversionOptions, DitherMode, PackedBitmap,
-    PLAYDATE_BITMAP_MAGIC, PLAYDATE_BITMAP_MIME,
+    DEFAULT_MAX_OUTPUT_BYTES, PLAYDATE_BITMAP_MAGIC, PLAYDATE_BITMAP_MIME,
 };
 
 #[test]
@@ -23,6 +23,7 @@ fn packs_png_to_playdate_bit_order() {
         &ConversionOptions {
             max_width: 8,
             max_height: 1,
+            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
             dither: DitherMode::Threshold,
         },
     )
@@ -44,6 +45,7 @@ fn converts_plot_like_png_to_serialized_payload() {
         &ConversionOptions {
             max_width: 96,
             max_height: 64,
+            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
             dither: DitherMode::Bayer4x4,
         },
     )
@@ -75,6 +77,7 @@ fn decodes_jpeg_sources_before_packing() {
         &ConversionOptions {
             max_width: 16,
             max_height: 1,
+            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
             dither: DitherMode::Threshold,
         },
     )
@@ -112,6 +115,28 @@ fn rejects_oversized_public_bitmap_encoding() {
 
     assert!(
         err.to_string().contains("too large"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn rejects_payloads_above_configured_byte_budget() {
+    let png = plot_like_png();
+
+    let err = pack_image(
+        &png,
+        "image/png",
+        &ConversionOptions {
+            max_width: 96,
+            max_height: 64,
+            max_output_bytes: 16,
+            dither: DitherMode::Threshold,
+        },
+    )
+    .expect_err("payload should exceed configured budget");
+
+    assert!(
+        err.to_string().contains("payload is too large"),
         "unexpected error: {err}"
     );
 }
