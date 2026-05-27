@@ -9,6 +9,14 @@ Run from the repository root:
 examples/playdate-pdi-fixture/scripts/verify.sh
 ```
 
+Override local tool locations when they are not in the default macOS paths:
+
+```sh
+PLAYDATE_SDK_PATH=/path/to/PlaydateSDK \
+PLAYDATE_HARNESS=/path/to/playdate-harness \
+examples/playdate-pdi-fixture/scripts/verify.sh
+```
+
 The verifier:
 
 1. Generates `Source/assets/cloud-figure.png`.
