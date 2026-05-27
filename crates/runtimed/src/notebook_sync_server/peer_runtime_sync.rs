@@ -87,7 +87,7 @@ pub(super) async fn handle_runtime_state_frame(
             // v1: clone-preview validator. Replace with sync_message_new_changes
             // once nteract/automerge ships Patch 1.
             let heads_before = state_doc.get_heads();
-            let state_before = runtime_state_policy_snapshot(state_doc);
+            let write_scope = runtime_state_write_scope(connection_identity.scope());
             let mut preview = runtime_doc::RuntimeStateDoc::from_doc(state_doc.doc().clone());
             let mut preview_peer_state = state_peer_state.clone();
             match preview.receive_sync_message_with_changes_recovering(
@@ -102,12 +102,18 @@ pub(super) async fn handle_runtime_state_frame(
                         .map_err(|error| {
                             runtime_doc::RuntimeStateError::UnauthorizedActor(error.to_string())
                         })?;
-                    let state_after = runtime_state_policy_snapshot(&preview);
-                    validate_runtime_state_sync_scope(
-                        &state_before,
-                        &state_after,
-                        runtime_state_write_scope(connection_identity.scope()),
-                    )?;
+                    if write_scope != RuntimeStateWriteScope::RuntimePeer {
+                        let state_before = runtime_state_policy_snapshot(state_doc);
+                        let state_after = runtime_state_policy_snapshot(&preview);
+                        validate_runtime_state_sync_scope(
+                            &state_before,
+                            &state_after,
+                            write_scope,
+                        )?;
+                    }
+                    // `with_doc` holds the RuntimeStateDoc lock for the whole
+                    // preview/apply sequence, so the validated message and peer
+                    // state cannot diverge through another writer before apply.
                 }
                 Ok(false) => {}
                 Err(e) => {

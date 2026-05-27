@@ -195,14 +195,6 @@ fn validate_comm_state_only_runtime_delta(
         ));
     }
 
-    if before.state.comms.len() != after.state.comms.len() {
-        return Err(runtime_state_policy_error(
-            scope,
-            "comms",
-            "only existing comm state properties are writable",
-        ));
-    }
-
     for (comm_id, before_comm) in &before.state.comms {
         let Some(after_comm) = after.state.comms.get(comm_id) else {
             return Err(runtime_state_policy_error(
@@ -212,6 +204,15 @@ fn validate_comm_state_only_runtime_delta(
             ));
         };
         validate_comm_metadata_unchanged(scope, comm_id, before_comm, after_comm)?;
+    }
+    for comm_id in after.state.comms.keys() {
+        if !before.state.comms.contains_key(comm_id) {
+            return Err(runtime_state_policy_error(
+                scope,
+                "comms",
+                "comm entries cannot be created by editor sync",
+            ));
+        }
     }
 
     let mut expected_state = before.state.clone();
