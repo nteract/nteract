@@ -5,7 +5,7 @@ const predicateModule = vi.hoisted(() => ({
   num_rows: vi.fn(() => 2),
   num_cols: vi.fn(() => 4),
   col_names: vi.fn(() => ["id", "name", "score", "active"]),
-  col_type: vi.fn((_handle: number, col: number) =>
+  col_type: vi.fn((_handle: number, col: number): string =>
     col === 0 || col === 2 ? "numeric" : col === 3 ? "boolean" : "categorical",
   ),
   col_timezone: vi.fn(() => null),
@@ -19,7 +19,7 @@ const predicateModule = vi.hoisted(() => ({
       nulls: [false, false, false, false, false, false, true, false],
     };
   }),
-  is_null: vi.fn(() => {
+  is_null: vi.fn((): boolean => {
     throw new Error("is_null should not be called during batched prefetch");
   }),
   get_cell_string: vi.fn(() => {

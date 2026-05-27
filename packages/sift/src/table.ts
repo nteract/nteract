@@ -1445,6 +1445,18 @@ export function createTable(
     return null;
   }
 
+  function getImageChunks(raw: unknown): Uint8Array[] {
+    return Array.isArray(raw) ? (raw as Uint8Array[]) : raw instanceof Uint8Array ? [raw] : [];
+  }
+
+  function createImageObjectUrl(bytes: Uint8Array, mime: string): string {
+    // `bytes.buffer` is typed `ArrayBufferLike` (could be SharedArrayBuffer)
+    // in lib.dom.d.ts; `slice()` returns a fresh ArrayBuffer-backed view.
+    return URL.createObjectURL(
+      new Blob([bytes.slice() as Uint8Array<ArrayBuffer>], { type: mime }),
+    );
+  }
+
   /**
    * Revoke any blob URLs attached to <img> children of `cellEl`. Called
    * before clearing the cell on rerender so the virtual scroll recycler
@@ -1503,18 +1515,15 @@ export function createTable(
       case "image": {
         // wasm-table-data normalizes both HF `Image` and `List<Image>` to
         // an array of byte chunks; HF `Image` is just an array of length 1.
-        const chunks: Uint8Array[] = Array.isArray(raw)
-          ? (raw as Uint8Array[])
-          : raw instanceof Uint8Array
-            ? [raw]
-            : [];
+        const chunks = getImageChunks(raw);
         if (chunks.length === 0) {
           cellEl.textContent = str;
           break;
         }
         cellEl.classList.add("sift-cell-image");
         const visible = chunks.slice(0, IMAGE_THUMB_CAP);
-        for (const bytes of visible) {
+        for (let imageIndex = 0; imageIndex < visible.length; imageIndex++) {
+          const bytes = visible[imageIndex];
           const mime = sniffImageMime(bytes);
           if (!mime) {
             // Unknown payload — keep the strip dense; show a small marker
@@ -1525,19 +1534,21 @@ export function createTable(
             cellEl.appendChild(span);
             continue;
           }
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "sift-cell-image-thumb-button";
+          button.dataset.siftImageIndex = String(imageIndex);
+          button.setAttribute("aria-label", "Open image");
           const img = document.createElement("img");
           img.className = "sift-cell-image-thumb";
           img.alt = "";
           img.decoding = "async";
           img.loading = "lazy";
-          // `raw.buffer` is typed `ArrayBufferLike` (could be SharedArrayBuffer)
-          // in lib.dom.d.ts; `slice()` returns a fresh ArrayBuffer-backed view.
-          const url = URL.createObjectURL(
-            new Blob([bytes.slice() as Uint8Array<ArrayBuffer>], { type: mime }),
-          );
+          const url = createImageObjectUrl(bytes, mime);
           img.src = url;
           img.dataset.siftBlobUrl = url;
-          cellEl.appendChild(img);
+          button.appendChild(img);
+          cellEl.appendChild(button);
         }
         if (chunks.length > IMAGE_THUMB_CAP) {
           const more = document.createElement("span");
@@ -1567,6 +1578,72 @@ export function createTable(
           cellEl.textContent = str;
         }
     }
+  }
+
+  type ActiveImageViewer = {
+    backdrop: HTMLDivElement;
+    dialog: HTMLDivElement;
+    objectUrl: string;
+  };
+
+  let activeImageViewer: ActiveImageViewer | null = null;
+
+  function dismissImageViewer() {
+    if (!activeImageViewer) return;
+    URL.revokeObjectURL(activeImageViewer.objectUrl);
+    activeImageViewer.backdrop.remove();
+    activeImageViewer.dialog.remove();
+    activeImageViewer = null;
+    window.removeEventListener("keydown", onImageViewerKeyDown);
+  }
+
+  function onImageViewerKeyDown(e: KeyboardEvent) {
+    if (e.key === "Escape") {
+      dismissImageViewer();
+    }
+  }
+
+  function showImageViewer(dataRow: number, colIndex: number, imageIndex: number) {
+    const chunks = getImageChunks(data.getCellRaw(dataRow, colIndex));
+    const bytes = chunks[imageIndex];
+    if (!bytes) return;
+    const mime = sniffImageMime(bytes);
+    if (!mime) return;
+
+    dismissImageViewer();
+
+    const objectUrl = createImageObjectUrl(bytes, mime);
+    const backdrop = document.createElement("div");
+    backdrop.className = "sift-image-viewer-backdrop";
+    backdrop.addEventListener("click", dismissImageViewer);
+
+    const dialog = document.createElement("div");
+    dialog.className = "sift-image-viewer";
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("aria-label", `${columns[colIndex]?.label ?? "Image"} viewer`);
+    dialog.tabIndex = -1;
+
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "sift-image-viewer-close";
+    closeBtn.setAttribute("aria-label", "Close image viewer");
+    closeBtn.textContent = "×";
+    closeBtn.addEventListener("click", dismissImageViewer);
+
+    const img = document.createElement("img");
+    img.className = "sift-image-viewer-img";
+    img.alt = "";
+    img.decoding = "async";
+    img.src = objectUrl;
+
+    dialog.appendChild(closeBtn);
+    dialog.appendChild(img);
+    document.body.appendChild(backdrop);
+    document.body.appendChild(dialog);
+    activeImageViewer = { backdrop, dialog, objectUrl };
+    window.addEventListener("keydown", onImageViewerKeyDown);
+    dialog.focus({ preventScroll: true });
   }
 
   // --- Render loop ---
@@ -1885,6 +1962,37 @@ export function createTable(
   // desktop / mouse, fall through to the mobile detail-sheet path below for
   // touch under 768 px. Track pointerdown/up coordinates so dragging to
   // select text doesn't trip the toggle.
+  viewport.addEventListener("click", (e) => {
+    const target = e.target as HTMLElement;
+    const button = target.closest(".sift-cell-image-thumb-button") as HTMLButtonElement | null;
+    if (!button) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const rowEl = button.closest(".sift-row") as HTMLDivElement | null;
+    const cellEl = button.closest(".sift-cell") as HTMLDivElement | null;
+    if (!rowEl || !cellEl) return;
+
+    const colIndex = Number.parseInt(cellEl.getAttribute("aria-colindex") ?? "", 10) - 1;
+    const imageIndex = Number.parseInt(button.dataset.siftImageIndex ?? "", 10);
+    if (
+      !Number.isInteger(colIndex) ||
+      !Number.isInteger(imageIndex) ||
+      colIndex < 0 ||
+      colIndex >= columns.length ||
+      imageIndex < 0
+    ) {
+      return;
+    }
+
+    for (const pr of pool) {
+      if (pr.el === rowEl && pr.assignedRow !== -1) {
+        showImageViewer(viewIndices[pr.assignedRow], colIndex, imageIndex);
+        break;
+      }
+    }
+  });
+
   let focusDownX = 0;
   let focusDownY = 0;
   let focusDownActive = false;
@@ -1950,6 +2058,9 @@ export function createTable(
 
     // Find which pool row was tapped
     const target = e.target as HTMLElement;
+    if (target.closest("button, a, .sift-resize-handle, .sift-cell-image-thumb")) {
+      return;
+    }
     const rowEl = target.closest(".sift-row") as HTMLDivElement | null;
     if (!rowEl) return;
 
@@ -2364,6 +2475,7 @@ export function createTable(
 
     // Dismiss detail sheet if open
     dismissDetailSheet();
+    dismissImageViewer();
 
     // Revoke every outstanding image Blob URL before we drop the DOM.
     // Cell recycling already revokes per-cell on rerender; destroy() is

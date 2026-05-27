@@ -361,6 +361,69 @@ describe("createTable", () => {
       const focusedRow = container.querySelector(".sift-row-focused");
       expect(focusedRow).not.toBeNull();
     });
+
+    it("opens a larger image viewer when a thumbnail is clicked", async () => {
+      engine.destroy();
+      container.innerHTML = "";
+
+      const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const columns: Column[] = [
+        {
+          key: "id",
+          label: "ID",
+          width: 80,
+          sortable: true,
+          numeric: true,
+          columnType: "numeric",
+        },
+        {
+          key: "image",
+          label: "Image",
+          width: 140,
+          sortable: false,
+          numeric: false,
+          columnType: "image",
+        },
+      ];
+      const imageRows: unknown[][] = [[1, [pngBytes]]];
+      const imageData: TableData = {
+        columns,
+        rowCount: imageRows.length,
+        getCell: (r, c) => String(imageRows[r][c] ?? ""),
+        getCellRaw: (r, c) => imageRows[r][c],
+        columnSummaries: columns.map(() => null),
+      };
+
+      engine = createTable(container, imageData);
+      const viewport = container.querySelector<HTMLElement>(".sift-viewport")!;
+      Object.defineProperty(viewport, "clientHeight", { value: 800, configurable: true });
+      viewport.dispatchEvent(new Event("scroll"));
+      await vi.advanceTimersByTimeAsync(20);
+
+      const thumbButton = container.querySelector<HTMLButtonElement>(
+        ".sift-cell-image-thumb-button",
+      );
+      const thumbImg = thumbButton?.querySelector<HTMLImageElement>(".sift-cell-image-thumb");
+      expect(thumbButton).not.toBeNull();
+      expect(thumbImg?.dataset.siftBlobUrl).toBeDefined();
+
+      thumbButton!.click();
+
+      const viewer = document.body.querySelector<HTMLElement>(".sift-image-viewer");
+      const viewerImg = viewer?.querySelector<HTMLImageElement>(".sift-image-viewer-img");
+      expect(viewer).not.toBeNull();
+      expect(viewerImg?.src).toMatch(/^blob:/);
+      expect(viewerImg?.src).not.toBe(thumbImg!.dataset.siftBlobUrl);
+      expect(engine.getFocusedDataRow()).toBeNull();
+
+      const viewerUrl = viewerImg!.src;
+      const revokeSpy = vi.spyOn(URL, "revokeObjectURL");
+      document.body.querySelector<HTMLButtonElement>(".sift-image-viewer-close")!.click();
+
+      expect(document.body.querySelector(".sift-image-viewer")).toBeNull();
+      expect(revokeSpy).toHaveBeenCalledWith(viewerUrl);
+      revokeSpy.mockRestore();
+    });
   });
 
   describe("filtering", () => {
