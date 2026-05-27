@@ -16,8 +16,11 @@ describe("notebook cloud authorization", () => {
 function aclRow(scope: NotebookAclRow["scope"]): NotebookAclRow {
   return {
     notebook_id: "demo",
+    subject_kind: "principal",
     subject: "user:dev:alice",
     scope,
     created_at: "2026-05-27T00:00:00.000Z",
+    updated_at: "2026-05-27T00:00:00.000Z",
+    created_by_actor_label: "system/test",
   };
 }
