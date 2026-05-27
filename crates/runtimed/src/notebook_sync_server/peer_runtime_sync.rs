@@ -39,7 +39,19 @@ enum RuntimeExecutionSavePhase {
 #[derive(Debug, Clone, PartialEq)]
 struct RuntimeStatePolicySnapshot {
     state: RuntimeState,
-    display_index: Option<Vec<(String, Vec<(String, String)>)>>,
+    display_index: Option<Vec<DisplayIndexPolicySnapshot>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct DisplayIndexPolicySnapshot {
+    display_id: String,
+    entries: Vec<DisplayIndexEntryPolicySnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct DisplayIndexEntryPolicySnapshot {
+    key: String,
+    value: String,
 }
 
 pub(super) fn runtime_file_save_fingerprint(
@@ -209,7 +221,7 @@ fn runtime_state_policy_snapshot(
 
 fn display_index_policy_snapshot(
     doc: &automerge::AutoCommit,
-) -> Option<Vec<(String, Vec<(String, String)>)>> {
+) -> Option<Vec<DisplayIndexPolicySnapshot>> {
     let Some((Value::Object(ObjType::Map), display_index_obj)) =
         doc.get(&ROOT, "display_index").ok().flatten()
     else {
@@ -232,26 +244,32 @@ fn display_index_policy_snapshot(
                         .flatten()
                         .map(|(value, _)| value.to_string())
                         .unwrap_or_else(|| "<missing>".to_string());
-                    entries.push((entry_key, value_repr));
+                    entries.push(DisplayIndexEntryPolicySnapshot {
+                        key: entry_key,
+                        value: value_repr,
+                    });
                 }
             }
             Some((value, _)) => {
-                entries.push((
-                    "<invalid-display-index-node>".to_string(),
-                    value.to_string(),
-                ));
+                entries.push(DisplayIndexEntryPolicySnapshot {
+                    key: "<invalid-display-index-node>".to_string(),
+                    value: value.to_string(),
+                });
             }
             None => {
-                entries.push((
-                    "<missing-display-index-node>".to_string(),
-                    "<missing>".to_string(),
-                ));
+                entries.push(DisplayIndexEntryPolicySnapshot {
+                    key: "<missing-display-index-node>".to_string(),
+                    value: "<missing>".to_string(),
+                });
             }
         }
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
-        display_index.push((display_id, entries));
+        entries.sort_by(|a, b| a.key.cmp(&b.key));
+        display_index.push(DisplayIndexPolicySnapshot {
+            display_id,
+            entries,
+        });
     }
-    display_index.sort_by(|a, b| a.0.cmp(&b.0));
+    display_index.sort_by(|a, b| a.display_id.cmp(&b.display_id));
     Some(display_index)
 }
 
