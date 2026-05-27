@@ -25,7 +25,7 @@ test.describe("cloud renderer parity harness", () => {
 
     await expect(page.locator('[data-slot="read-only-notebook"]')).toHaveAttribute(
       "data-cell-count",
-      "8",
+      "9",
     );
     await expect(page.locator('[data-cell-id="code-streams"]')).toContainText(
       cloudOutputParityExpectedMarkers.stdout,
@@ -137,6 +137,42 @@ test.describe("cloud renderer parity harness", () => {
     await expect(
       page.frameLocator('[data-cell-id="sift-arrow-output"] iframe').locator("body"),
     ).toContainText(cloudOutputParityExpectedMarkers.siftColumn, { timeout: 90_000 });
+  });
+
+  test("segments DOM output, interactive plugins, and Sift into separate lanes", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    await openParityHarness(page);
+
+    const mixedCell = page.locator('[data-cell-id="mixed-interactive-sift-output"]');
+    await expect(mixedCell).toContainText(cloudOutputParityExpectedMarkers.mixedStream);
+    await expect(mixedCell.locator('iframe[data-slot="isolated-frame"]')).toHaveCount(2, {
+      timeout: 60_000,
+    });
+    await expect(mixedCell.locator('[data-sift-output="true"]')).toHaveCount(1);
+    await expect(mixedCell.locator('[data-sift-output="true"] iframe')).toHaveCSS(
+      "pointer-events",
+      "none",
+    );
+
+    const frameHandles = await mixedCell
+      .locator('iframe[data-slot="isolated-frame"]')
+      .elementHandles();
+    const plotlyFrame = await frameHandles[0]?.contentFrame();
+    const siftFrame = await frameHandles[1]?.contentFrame();
+    if (!plotlyFrame || !siftFrame) {
+      throw new Error("mixed output segmentation frames did not attach");
+    }
+
+    await expect(plotlyFrame.locator('[data-slot="plotly-output"]')).toBeVisible({
+      timeout: 60_000,
+    });
+    await expect(plotlyFrame.locator(".js-plotly-plot")).toBeVisible({ timeout: 60_000 });
+    await expect(siftFrame.locator("body")).toContainText(
+      cloudOutputParityExpectedMarkers.siftColumn,
+      { timeout: 90_000 },
+    );
   });
 
   test("chains wheel scroll from engaged Sift frames back to the notebook page", async ({
