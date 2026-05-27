@@ -1,7 +1,7 @@
 use image::{ImageBuffer, ImageEncoder, Rgba, RgbaImage};
 use playdate_image::{
-    convert_image, pack_image, ConversionOptions, DitherMode, PLAYDATE_BITMAP_MAGIC,
-    PLAYDATE_BITMAP_MIME,
+    convert_image, encode_playdate_bitmap, pack_image, ConversionOptions, DitherMode, PackedBitmap,
+    PLAYDATE_BITMAP_MAGIC, PLAYDATE_BITMAP_MIME,
 };
 
 #[test]
@@ -96,6 +96,22 @@ fn rejects_non_image_mime_types() {
 
     assert!(
         err.to_string().contains("unsupported image MIME"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn rejects_oversized_public_bitmap_encoding() {
+    let err = encode_playdate_bitmap(&PackedBitmap {
+        width: u32::from(u16::MAX) + 1,
+        height: 1,
+        row_stride: 1,
+        pixels: Vec::new(),
+    })
+    .expect_err("oversized public bitmap should be rejected");
+
+    assert!(
+        err.to_string().contains("too large"),
         "unexpected error: {err}"
     );
 }

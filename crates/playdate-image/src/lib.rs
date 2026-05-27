@@ -79,7 +79,7 @@ pub fn convert_image(
     options: &ConversionOptions,
 ) -> Result<PlaydateBitmap, PlaydateImageError> {
     let bitmap = pack_image(input, source_mime, options)?;
-    let bytes = encode_playdate_bitmap(&bitmap);
+    let bytes = encode_playdate_bitmap(&bitmap)?;
     let byte_length = bytes.len();
 
     Ok(PlaydateBitmap {
@@ -139,7 +139,14 @@ pub fn pack_image(
 /// - u16 row stride in bytes
 /// - u16 flags, currently 0
 /// - packed 1-bit rows, MSB first, white=1 and black=0
-pub fn encode_playdate_bitmap(bitmap: &PackedBitmap) -> Vec<u8> {
+pub fn encode_playdate_bitmap(bitmap: &PackedBitmap) -> Result<Vec<u8>, PlaydateImageError> {
+    if bitmap.width > u32::from(u16::MAX) || bitmap.height > u32::from(u16::MAX) {
+        return Err(PlaydateImageError::ImageTooLarge {
+            width: bitmap.width,
+            height: bitmap.height,
+        });
+    }
+
     let mut bytes = Vec::with_capacity(16 + bitmap.pixels.len());
     bytes.extend_from_slice(PLAYDATE_BITMAP_MAGIC);
     bytes.extend_from_slice(&(bitmap.width as u16).to_le_bytes());
@@ -147,7 +154,7 @@ pub fn encode_playdate_bitmap(bitmap: &PackedBitmap) -> Vec<u8> {
     bytes.extend_from_slice(&bitmap.row_stride.to_le_bytes());
     bytes.extend_from_slice(&0_u16.to_le_bytes());
     bytes.extend_from_slice(&bitmap.pixels);
-    bytes
+    Ok(bytes)
 }
 
 fn image_format_for_mime(mime: &str) -> Option<ImageFormat> {
