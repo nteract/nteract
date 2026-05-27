@@ -283,15 +283,37 @@ fn validate_runtime_peer_execution_update(
             &format!("terminal execution result metadata is immutable for {execution_id}"),
         ));
     }
+    if matches!(before.status.as_str(), "done" | "error")
+        && before.status == after.status
+        && !runtime_peer_outputs_preserved_prefix(&before.outputs, &after.outputs)
+    {
+        return Err(runtime_state_policy_error(
+            scope,
+            "executions",
+            &format!("terminal execution outputs are append-only for {execution_id}"),
+        ));
+    }
 
     Ok(())
+}
+
+fn runtime_peer_outputs_preserved_prefix(
+    before: &[serde_json::Value],
+    after: &[serde_json::Value],
+) -> bool {
+    before.len() <= after.len()
+        && before
+            .iter()
+            .zip(after.iter())
+            .all(|(before_output, after_output)| before_output == after_output)
 }
 
 fn runtime_peer_status_transition_allowed(before: &str, after: &str) -> bool {
     if before == after {
         // Same-status updates are permitted so accepted executions can receive
-        // output/display-index hydration without inventing a second terminal
-        // transition. Terminal result fields are checked separately above.
+        // append-only output/display-index hydration without inventing a
+        // second terminal transition. Terminal result fields are checked
+        // separately above.
         return true;
     }
 
@@ -330,6 +352,9 @@ fn validate_runtime_peer_queue_delta(
             ));
         }
 
+        // The coupled before/after check is intentional: `before` proves the
+        // coordinator accepted the execution id, while `after` proves terminal
+        // executions are not still present in queue projection.
         if !before.state.executions.contains_key(&entry.execution_id) {
             return Err(runtime_state_policy_error(
                 scope,
@@ -760,6 +785,71 @@ mod tests {
     }
 
     #[test]
+    fn runtime_peer_policy_allows_terminal_output_append() {
+        let mut before_doc = RuntimeStateDoc::new();
+        before_doc
+            .create_execution_with_source("exec-accepted", "print('accepted')", 0)
+            .unwrap();
+        before_doc.set_execution_running("exec-accepted").unwrap();
+        before_doc
+            .append_output(
+                "exec-accepted",
+                &test_stream_output("out-before", "before\n"),
+            )
+            .unwrap();
+        before_doc
+            .set_execution_done("exec-accepted", true)
+            .unwrap();
+        let before = runtime_state_policy_snapshot(&before_doc);
+
+        let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+        after_doc
+            .append_output("exec-accepted", &test_stream_output("out-after", "after\n"))
+            .unwrap();
+        let after = runtime_state_policy_snapshot(&after_doc);
+
+        validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
+            .unwrap();
+    }
+
+    #[test]
+    fn runtime_peer_policy_rejects_terminal_output_rewrite() {
+        let mut before_doc = RuntimeStateDoc::new();
+        before_doc
+            .create_execution_with_source("exec-accepted", "print('accepted')", 0)
+            .unwrap();
+        before_doc.set_execution_running("exec-accepted").unwrap();
+        before_doc
+            .append_output(
+                "exec-accepted",
+                &test_stream_output("out-before", "before\n"),
+            )
+            .unwrap();
+        before_doc
+            .set_execution_done("exec-accepted", true)
+            .unwrap();
+        let before = runtime_state_policy_snapshot(&before_doc);
+
+        let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+        after_doc
+            .append_output(
+                "exec-accepted",
+                &test_stream_output("out-before", "rewritten\n"),
+            )
+            .unwrap();
+        let after = runtime_state_policy_snapshot(&after_doc);
+
+        let err =
+            validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
+                .unwrap_err();
+
+        assert!(
+            err.to_string().contains("terminal execution outputs"),
+            "error should identify terminal output rewrites: {err}"
+        );
+    }
+
+    #[test]
     fn runtime_peer_policy_rejects_queue_entry_for_unaccepted_execution() {
         let before = runtime_state_policy_snapshot(&RuntimeStateDoc::new());
         let mut after_doc = RuntimeStateDoc::new();
@@ -800,5 +890,14 @@ mod tests {
             err.to_string().contains(field),
             "error should identify {field} writes: {err}"
         );
+    }
+
+    fn test_stream_output(output_id: &str, text: &str) -> serde_json::Value {
+        json!({
+            "output_type": "stream",
+            "output_id": output_id,
+            "name": "stdout",
+            "text": text
+        })
     }
 }
