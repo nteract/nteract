@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use image::{ImageBuffer, ImageEncoder, Rgba};
+use image::{ImageBuffer, ImageEncoder, Rgba, RgbaImage};
 use playdate_pdi::{
     normalize_image, ConversionOptions, DitherMode, PlaydatePdiConverter, PLAYDATE_PDI_MIME,
 };
@@ -80,12 +80,7 @@ fn invokes_pdc_and_returns_pdi_bytes_when_sdk_is_available() {
         eprintln!("skipping pdc integration test: Playdate SDK not found");
         return;
     };
-    let png = rgba_png(&[
-        (0, 0, 0, 255),
-        (255, 255, 255, 255),
-        (0, 0, 0, 255),
-        (255, 255, 255, 255),
-    ]);
+    let png = plot_like_png();
     let converter = PlaydatePdiConverter::from_sdk_path(sdk_path);
 
     let converted = converter
@@ -93,8 +88,8 @@ fn invokes_pdc_and_returns_pdi_bytes_when_sdk_is_available() {
         .expect("pdc should produce PDI bytes");
 
     assert_eq!(converted.content_type, PLAYDATE_PDI_MIME);
-    assert_eq!(converted.width, 4);
-    assert_eq!(converted.height, 1);
+    assert_eq!(converted.width, 96);
+    assert_eq!(converted.height, 64);
     assert!(!converted.bytes.is_empty());
     assert_eq!(converted.byte_length, converted.bytes.len());
     assert_eq!(converted.source_mime, "image/png");
@@ -106,6 +101,52 @@ fn rgba_png(pixels: &[(u8, u8, u8, u8)]) -> Vec<u8> {
             let (r, g, b, a) = pixels[x as usize];
             Rgba([r, g, b, a])
         });
+    encode_rgba_png(&image)
+}
+
+fn plot_like_png() -> Vec<u8> {
+    let width = 96;
+    let height = 64;
+    let mut image = RgbaImage::from_pixel(width, height, Rgba([255, 255, 255, 255]));
+    let x_axis_y = height - 10;
+    let y_axis_x = 9;
+
+    for x in y_axis_x..(width - 4) {
+        image.put_pixel(x, x_axis_y, Rgba([0, 0, 0, 255]));
+    }
+    for y in 5..=x_axis_y {
+        image.put_pixel(y_axis_x, y, Rgba([0, 0, 0, 255]));
+    }
+    for y in (10..x_axis_y).step_by(12) {
+        for x in (y_axis_x + 1)..(width - 4) {
+            image.put_pixel(x, y, Rgba([220, 220, 220, 255]));
+        }
+    }
+
+    for x in (y_axis_x + 2)..(width - 5) {
+        let t = (x - y_axis_x - 2) as f32 / (width - y_axis_x - 7) as f32;
+        let y = 31.0 - (t * std::f32::consts::TAU).sin() * 18.0;
+        draw_point(&mut image, x, y.round() as u32, Rgba([24, 24, 24, 255]));
+    }
+
+    encode_rgba_png(&image)
+}
+
+fn draw_point(image: &mut RgbaImage, x: u32, y: u32, color: Rgba<u8>) {
+    let width = image.width();
+    let height = image.height();
+    for dx in 0..=1 {
+        for dy in 0..=1 {
+            let px = x + dx;
+            let py = y + dy;
+            if px < width && py < height {
+                image.put_pixel(px, py, color);
+            }
+        }
+    }
+}
+
+fn encode_rgba_png(image: &RgbaImage) -> Vec<u8> {
     let mut bytes = Vec::new();
     image::codecs::png::PngEncoder::new(&mut bytes)
         .write_image(
