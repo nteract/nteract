@@ -252,8 +252,9 @@ export function typedFrameFromRoomHostOutbound(frame: RoomHostOutboundFrame): Ui
 }
 
 function allowsHostedRuntimeStateWrite(identity: AuthenticatedConnection): boolean {
-  // Hosted editors are markdown-only until RuntimeStateDoc path validation lands.
-  return identity.scope === "owner" || identity.scope === "runtime_peer";
+  // Hosted editors/owners are markdown-only: executable RuntimeStateDoc
+  // mutations come from explicit runtime peers, not the editing channel.
+  return identity.scope === "runtime_peer";
 }
 
 function normalizeResult(value: unknown): RoomHostFrameResult {

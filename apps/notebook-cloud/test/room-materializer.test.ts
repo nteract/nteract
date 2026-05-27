@@ -475,6 +475,36 @@ describe("RoomMaterializer", () => {
       /cannot write RuntimeStateDoc changes/,
     );
   });
+
+  it("rejects owner-scoped RuntimeStateDoc execution changes", async () => {
+    const state = fakeState();
+    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const runtimeIdentity = authenticateDevRequest(
+      new Request(
+        "https://cloud.test/n/demo/sync?user=alice&operator=runtime:py&scope=runtime_peer",
+      ),
+    );
+    const runtimePeerConnection = { id: "peer-runtime-owner-principal", identity: runtimeIdentity };
+    const runtimePeer = new RuntimeStatePeerHandle(runtimeIdentity.actorLabel);
+    await syncMaterializerWithRuntimePeer(materializer, runtimePeerConnection, runtimePeer);
+    runtimePeer.create_execution_with_source("exec-owner-forged", "print('owner')", 0);
+    const runtimeMessage = runtimePeer.flush_runtime_state_sync();
+    assert.ok(runtimeMessage);
+
+    const ownerIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=owner"),
+    );
+    const ownerPeerConnection = { id: "peer-owner", identity: ownerIdentity };
+
+    await assert.rejects(
+      () =>
+        materializer.receiveFrame(ownerPeerConnection, {
+          type: FrameType.RUNTIME_STATE_SYNC,
+          payload: runtimeMessage,
+        }),
+      /cannot write RuntimeStateDoc changes/,
+    );
+  });
 });
 
 function syncHostWithClient(
