@@ -122,6 +122,17 @@ export const DATASETS: DatasetEntry[] = [
     rows: "10,000",
   },
   {
+    id: "mathnet-image-sample",
+    label: "MathNet image sample",
+    description:
+      "Tiny local fixture generated from ShadenA/MathNet train[:200] with seed 67, filtered to image-bearing rows; exercises List<Image> diagram cells without pulling the full shard",
+    source: "huggingface",
+    path: "ShadenA/MathNet",
+    config: "all",
+    split: "train",
+    rows: "5",
+  },
+  {
     id: "mathnet",
     label: "MathNet (math problems with images)",
     description:

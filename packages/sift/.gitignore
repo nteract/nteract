@@ -15,6 +15,7 @@ dist-ssr
 public/data.arrow
 public/wasm/
 public/datasets/*.parquet
+!public/datasets/mathnet-image-sample.parquet
 test-results/
 playwright-report/
 

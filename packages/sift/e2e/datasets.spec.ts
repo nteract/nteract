@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 test.describe("Dataset Picker", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/?dataset=generated");
-    await page.waitForSelector(".sift-table-container");
+    await page.waitForSelector("#dataset-select");
   });
 
   test("shows dataset dropdown with all options", async ({ page }) => {
@@ -11,7 +11,7 @@ test.describe("Dataset Picker", () => {
     await expect(select).toBeVisible();
 
     const options = select.locator("option");
-    await expect(options).toHaveCount(8);
+    await expect(options).toHaveCount(13);
     await expect(options.first()).toContainText("Generated");
   });
 
