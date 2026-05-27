@@ -3330,8 +3330,13 @@ fn cmd_sync_tool_cache(check: bool) {
         }
     }
 
-    // 4. Format the tool cache JSON
-    let formatted = serde_json::to_string_pretty(tools_arr).expect("Failed to format tool cache");
+    // 4. Format the built-in tool cache JSON. The live child can advertise
+    // richer metadata such as inline icon data; the checked-in fallback cache
+    // intentionally stays compact because it is only used until the child is
+    // ready and emits tools/list_changed.
+    let cache_tools = strip_tool_icons_for_builtin_cache(tools_arr);
+    let formatted =
+        serde_json::to_string_pretty(&cache_tools).expect("Failed to format tool cache");
 
     if check {
         // Check mode: compare against existing files
@@ -3399,6 +3404,19 @@ fn cmd_sync_tool_cache(check: bool) {
 
         eprintln!("Done. Review the changes and commit.");
     }
+}
+
+fn strip_tool_icons_for_builtin_cache(tools: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    tools
+        .iter()
+        .map(|tool| {
+            let mut tool = tool.clone();
+            if let Some(object) = tool.as_object_mut() {
+                object.remove("icons");
+            }
+            tool
+        })
+        .collect()
 }
 
 #[allow(clippy::expect_used)]
@@ -3638,6 +3656,28 @@ mod tests {
             Some(UNIX_EPOCH + Duration::from_secs(9)),
         ];
         assert_eq!(freshness_reason(Some(stamp), watched), None);
+    }
+
+    #[test]
+    fn built_in_tool_cache_strips_inline_icons() {
+        let tools = vec![serde_json::json!({
+            "name": "create_cell",
+            "description": "Create a cell.",
+            "icons": [
+                {
+                    "src": "data:image/png;base64,abc",
+                    "mimeType": "image/png",
+                    "sizes": ["96x96"],
+                    "theme": "light"
+                }
+            ]
+        })];
+
+        let stripped = strip_tool_icons_for_builtin_cache(&tools);
+
+        assert_eq!(stripped.len(), 1);
+        assert_eq!(stripped[0]["name"], "create_cell");
+        assert!(stripped[0].get("icons").is_none());
     }
 
     /// Build a minimal wasm module with an import section. Used to exercise
