@@ -333,10 +333,10 @@ fn pack_rgba_image(
     // if a viewer blits full bytes into a wider target.
     let padding_bits = width % 8;
     if padding_bits != 0 {
-        let mask = (1 << (8 - padding_bits)) - 1;
+        let pad_mask = (1 << (8 - padding_bits)) - 1;
         for y in 0..height as usize {
             let offset = y * row_stride + width as usize / 8;
-            packed[offset] |= mask;
+            packed[offset] |= pad_mask;
         }
     }
 
