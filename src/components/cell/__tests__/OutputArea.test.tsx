@@ -590,7 +590,7 @@ describe("OutputArea iframe theme sync", () => {
     expect(screen.getAllByTestId("isolated-frame")).toHaveLength(1);
   });
 
-  it("keeps the legacy collapse control scoped to one mixed output area", () => {
+  it("keeps one collapse control while splitting Sift into its own boundary", () => {
     const outputs: JupyterOutput[] = [
       ...makeStreamOutput("stdout one\n"),
       makeWidgetOutput("widget-progress-1", "model-progress-1"),
@@ -600,10 +600,36 @@ describe("OutputArea iframe theme sync", () => {
     render(<OutputArea outputs={outputs} onToggleCollapse={vi.fn()} />);
 
     expect(screen.getAllByRole("button", { name: "Hide outputs" })).toHaveLength(1);
-    expect(screen.getAllByTestId("isolated-frame")).toHaveLength(1);
+    const frames = screen.getAllByTestId("isolated-frame");
+    expect(frames).toHaveLength(2);
+    expect(frames[0].parentElement?.getAttribute("data-sift-output")).toBeNull();
+    expect(frames[1].parentElement?.getAttribute("data-sift-output")).toBe("true");
   });
 
-  it("keeps forced-isolated mixed outputs together when a caller opts out of lane segmentation", async () => {
+  it("reports the full collapsed output count for segmented Sift boundaries", () => {
+    const outputs: JupyterOutput[] = [
+      ...makeStreamOutput("stdout one\n"),
+      makeWidgetOutput("widget-progress-1", "model-progress-1"),
+      ...makeParquetOutput(),
+    ];
+
+    render(<OutputArea outputs={outputs} collapsed onToggleCollapse={vi.fn()} />);
+
+    expect(screen.getAllByRole("button", { name: "Show 3 outputs" })).toHaveLength(1);
+    expect(screen.queryByTestId("isolated-frame")).toBeNull();
+  });
+
+  it("preserves collapsed state for non-segmented mixed outputs", () => {
+    render(
+      <OutputArea outputs={makeMixedDocumentOutputs()} collapsed onToggleCollapse={vi.fn()} />,
+    );
+
+    expect(screen.getAllByRole("button", { name: "Show 3 outputs" })).toHaveLength(1);
+    expect(screen.queryByText("stream before")).toBeNull();
+    expect(screen.queryByTestId("isolated-frame")).toBeNull();
+  });
+
+  it("keeps forced-isolated non-Sift mixed outputs together", async () => {
     render(<OutputArea outputs={makeMixedDocumentOutputs()} isolated />);
 
     await waitFor(() => {
@@ -624,6 +650,46 @@ describe("OutputArea iframe theme sync", () => {
           outputIndex: 2,
         }),
       ]);
+    });
+  });
+
+  it("splits forced-isolated Sift outputs away from stream and HTML siblings", async () => {
+    const outputs: JupyterOutput[] = [
+      ...makeStreamOutput("stream before\n"),
+      {
+        output_id: "forced-html-output",
+        output_type: "display_data",
+        data: { "text/html": "<b>unsafe html</b>" },
+        metadata: {},
+      },
+      ...makeParquetOutput(),
+    ];
+
+    render(<OutputArea outputs={outputs} isolated />);
+
+    expect(screen.getByText(/stream before/)).toBeInTheDocument();
+    const frames = screen.getAllByTestId("isolated-frame");
+    expect(frames).toHaveLength(2);
+    expect(frames[0].parentElement?.getAttribute("data-sift-output")).toBeNull();
+    expect(frames[1].parentElement?.getAttribute("data-sift-output")).toBe("true");
+
+    await waitFor(() => {
+      const batches = mockFrameHandle.renderBatch.mock.calls.map(([batch]) => batch);
+      expect(
+        batches.some((batch) => batch.some((payload) => payload.mimeType === "text/html")),
+      ).toBe(true);
+      expect(
+        batches.some((batch) =>
+          batch.some((payload) => payload.mimeType === "application/vnd.apache.parquet"),
+        ),
+      ).toBe(true);
+      expect(
+        batches.some(
+          (batch) =>
+            batch.some((payload) => payload.mimeType === "text/html") &&
+            batch.some((payload) => payload.mimeType === "application/vnd.apache.parquet"),
+        ),
+      ).toBe(false);
     });
   });
 

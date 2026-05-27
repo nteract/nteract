@@ -116,6 +116,11 @@ interface OutputAreaProps {
    */
   onToggleCollapse?: () => void;
   /**
+   * Total output count to report when a segmented output area shares one
+   * collapse control across multiple rendered lanes.
+   */
+  collapseOutputCount?: number;
+  /**
    * Maximum height before scrolling. Set to enable scroll behavior.
    */
   maxHeight?: number;
@@ -413,7 +418,12 @@ export function OutputArea({
   priority = DEFAULT_PRIORITY,
   ...props
 }: OutputAreaProps) {
-  const { onSearchMatchCount, preloadIframe = false, ...passthroughProps } = props;
+  const {
+    onSearchMatchCount,
+    preloadIframe = false,
+    collapsed = false,
+    ...passthroughProps
+  } = props;
   const segmentedSearchMatchCountsRef = useRef(new Map<string, number>());
   const outputSegments = segmentedOutputLanes(outputs, {
     isolated,
@@ -426,11 +436,14 @@ export function OutputArea({
     return (
       <>
         {outputSegments.map((segment, index) => {
+          if (collapsed && index > 0) return null;
           const segmentKey = outputSegmentKeys[index] ?? outputSegmentKey(segment, index);
           return (
             <OutputAreaSingle
               key={segmentKey}
               {...passthroughProps}
+              collapsed={collapsed}
+              collapseOutputCount={outputs.length}
               outputs={segment.outputs}
               isolated="auto"
               onSearchMatchCount={
@@ -450,7 +463,7 @@ export function OutputArea({
                     }
                   : undefined
               }
-              onToggleCollapse={onToggleCollapse}
+              onToggleCollapse={index === 0 ? onToggleCollapse : undefined}
               preloadIframe={segment.lane === "dom" ? false : preloadIframe}
               priority={priority}
             />
@@ -463,6 +476,7 @@ export function OutputArea({
   return (
     <OutputAreaSingle
       {...passthroughProps}
+      collapsed={collapsed}
       outputs={outputs}
       isolated={isolated}
       onSearchMatchCount={onSearchMatchCount}
@@ -478,6 +492,7 @@ function OutputAreaSingle({
   cellId,
   executionCount,
   collapsed = false,
+  collapseOutputCount = outputs.length,
   onToggleCollapse,
   maxHeight,
   focused = false,
@@ -861,7 +876,7 @@ function OutputAreaSingle({
           {collapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
           <span>
             {collapsed
-              ? `Show ${outputs.length} output${outputs.length > 1 ? "s" : ""}`
+              ? `Show ${collapseOutputCount} output${collapseOutputCount > 1 ? "s" : ""}`
               : "Hide outputs"}
           </span>
         </button>

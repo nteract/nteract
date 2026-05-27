@@ -25,7 +25,7 @@ test.describe("cloud renderer parity harness", () => {
 
     await expect(page.locator('[data-slot="read-only-notebook"]')).toHaveAttribute(
       "data-cell-count",
-      "9",
+      "10",
     );
     await expect(page.locator('[data-cell-id="code-streams"]')).toContainText(
       cloudOutputParityExpectedMarkers.stdout,
@@ -173,6 +173,45 @@ test.describe("cloud renderer parity harness", () => {
       cloudOutputParityExpectedMarkers.siftColumn,
       { timeout: 90_000 },
     );
+  });
+
+  test("keeps Sift in a standalone iframe for forced and collapsible boundaries", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    await openParityHarness(page);
+
+    const forced = page.getByTestId("forced-sift-boundary");
+    await expect(forced).toContainText(cloudOutputParityExpectedMarkers.boundaryStream);
+    await expect(forced.locator('iframe[data-slot="isolated-frame"]')).toHaveCount(2, {
+      timeout: 60_000,
+    });
+    await expect(forced.locator('[data-sift-output="true"]')).toHaveCount(1);
+
+    const forcedFrameHandles = await forced
+      .locator('iframe[data-slot="isolated-frame"]')
+      .elementHandles();
+    const forcedHtmlFrame = await forcedFrameHandles[0]?.contentFrame();
+    const forcedSiftFrame = await forcedFrameHandles[1]?.contentFrame();
+    if (!forcedHtmlFrame || !forcedSiftFrame) {
+      throw new Error("forced Sift boundary frames did not attach");
+    }
+    await expect(forcedHtmlFrame.locator("body")).toContainText(
+      cloudOutputParityExpectedMarkers.boundaryHtml,
+      { timeout: 30_000 },
+    );
+    await expect(forcedSiftFrame.locator("body")).toContainText(
+      cloudOutputParityExpectedMarkers.siftColumn,
+      { timeout: 90_000 },
+    );
+
+    const collapsible = page.getByTestId("collapsible-sift-boundary");
+    await expect(collapsible.getByRole("button", { name: "Hide outputs" })).toHaveCount(1);
+    await expect(collapsible).toContainText(cloudOutputParityExpectedMarkers.boundaryStream);
+    await expect(collapsible.locator('iframe[data-slot="isolated-frame"]')).toHaveCount(2, {
+      timeout: 60_000,
+    });
+    await expect(collapsible.locator('[data-sift-output="true"]')).toHaveCount(1);
   });
 
   test("locks wheel scroll inside engaged Sift frames at table boundaries", async ({ page }) => {
