@@ -25,6 +25,7 @@ members = [
     "crates/runtimed-node",
     "crates/runtimed-py",
     "crates/runtimed-wasm",
+    "crates/mcp-client-branding",
     "crates/mcp-supervisor",
     "crates/runt-mcp",
     "crates/runt-mcp-proxy",
