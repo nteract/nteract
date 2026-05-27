@@ -130,7 +130,7 @@ grant different write surfaces. Treat them as capability sets:
 |-------|--------------|
 | `viewer` | read room state, receive sync, send empty sync negotiation, send presence; anonymous viewer presence may be connection-local |
 | `editor` | viewer + write allowed `NotebookDoc` fields + server-validated existing widget comm-state writes |
-| `runtime_peer` | viewer + write runtime progress/output state for accepted executions + upload output blobs + emit runtime lifecycle broadcasts |
+| `runtime_peer` | viewer + write kernel lifecycle, comm topology, output routing, and progress/output state for accepted executions + upload output blobs; cannot create execution intent or rewrite trust/environment/path/project metadata |
 | `owner` | editor + publish revisions + mutate ACLs; may hold separate `runtime_peer` capability through an explicit ACL row when it needs runtime progress authorship |
 
 The provider gives a maximum capability set for the credential. The ACL gives
@@ -233,10 +233,10 @@ room host:
    to R2 and record a revision/checkpoint row in D1.
 
 The DO does not host kernels in this phase. Kernel execution enters later as a
-`runtime_peer` connection that reports progress/output for room-accepted
-executions and uploads output blobs. The DO hosts documents, presence, auth
-context, snapshots, scope enforcement, and the request path that creates
-execution intent.
+`runtime_peer` connection that reports lifecycle, comm topology, output routing,
+and progress/output for room-accepted executions and uploads output blobs. The
+DO hosts documents, presence, auth context, snapshots, scope enforcement, and
+the request path that creates execution intent.
 
 Durable Object storage is not the source of truth for notebook content. It may
 hold hibernation metadata and a small amount of transient room state. R2

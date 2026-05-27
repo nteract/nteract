@@ -153,6 +153,54 @@ fn validate_runtime_peer_runtime_delta(
 
     validate_runtime_peer_execution_delta(before, after, scope)?;
     validate_runtime_peer_queue_delta(before, after, scope)?;
+    validate_runtime_peer_room_host_owned_delta(before, after, scope)?;
+
+    Ok(())
+}
+
+fn validate_runtime_peer_room_host_owned_delta(
+    before: &RuntimeStatePolicySnapshot,
+    after: &RuntimeStatePolicySnapshot,
+    scope: RuntimeStateWriteScope,
+) -> Result<(), RuntimeStateError> {
+    // Runtime peers own kernel-facing state: lifecycle/activity, output
+    // routing, comm topology, and accepted execution progress. Room hosts and
+    // local daemons still own deployment metadata and trust/environment facts.
+    if before.state.env != after.state.env {
+        return Err(runtime_state_policy_error(
+            scope,
+            "env",
+            "room-host/daemon-owned",
+        ));
+    }
+    if before.state.trust != after.state.trust {
+        return Err(runtime_state_policy_error(
+            scope,
+            "trust",
+            "room-host/daemon-owned",
+        ));
+    }
+    if before.state.last_saved != after.state.last_saved {
+        return Err(runtime_state_policy_error(
+            scope,
+            "last_saved",
+            "room-host/daemon-owned",
+        ));
+    }
+    if before.state.path != after.state.path {
+        return Err(runtime_state_policy_error(
+            scope,
+            "path",
+            "room-host/daemon-owned",
+        ));
+    }
+    if before.state.project_context != after.state.project_context {
+        return Err(runtime_state_policy_error(
+            scope,
+            "project_context",
+            "room-host/daemon-owned",
+        ));
+    }
 
     Ok(())
 }
@@ -225,11 +273,25 @@ fn validate_runtime_peer_execution_update(
         ));
     }
 
+    if matches!(before.status.as_str(), "done" | "error")
+        && before.status == after.status
+        && (before.success != after.success || before.execution_count != after.execution_count)
+    {
+        return Err(runtime_state_policy_error(
+            scope,
+            "executions",
+            &format!("terminal execution result metadata is immutable for {execution_id}"),
+        ));
+    }
+
     Ok(())
 }
 
 fn runtime_peer_status_transition_allowed(before: &str, after: &str) -> bool {
     if before == after {
+        // Same-status updates are permitted so accepted executions can receive
+        // output/display-index hydration without inventing a second terminal
+        // transition. Terminal result fields are checked separately above.
         return true;
     }
 
@@ -425,7 +487,7 @@ fn runtime_state_policy_error(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::QueueEntry;
+    use crate::{KernelActivity, ProjectContext, QueueEntry, RuntimeLifecycle};
     use automerge::transaction::Transactable;
     use serde_json::json;
 
@@ -612,6 +674,92 @@ mod tests {
     }
 
     #[test]
+    fn runtime_peer_policy_allows_kernel_comm_and_display_state() {
+        let before = runtime_state_policy_snapshot(&RuntimeStateDoc::new());
+        let mut after_doc = RuntimeStateDoc::new();
+        after_doc
+            .set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+            .unwrap();
+        after_doc
+            .put_comm(
+                "comm-1",
+                "jupyter.widget",
+                "anywidget",
+                "AnyModel",
+                &json!({ "value": 1 }),
+                0,
+            )
+            .unwrap();
+        after_doc.add_display_index_entry("display-1", "exec-accepted", "out-1");
+        let after = runtime_state_policy_snapshot(&after_doc);
+
+        validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
+            .unwrap();
+    }
+
+    #[test]
+    fn runtime_peer_policy_rejects_room_host_owned_state() {
+        assert_runtime_peer_rejects_field(
+            |doc| doc.set_env_sync(false, &["numpy".to_string()], &[], false, false),
+            "env",
+        );
+        assert_runtime_peer_rejects_field(|doc| doc.set_trust("trusted", false), "trust");
+        assert_runtime_peer_rejects_field(
+            |doc| doc.set_last_saved(Some("2026-05-27T00:00:00Z")),
+            "last_saved",
+        );
+        assert_runtime_peer_rejects_field(|doc| doc.set_path(Some("/tmp/notebook.ipynb")), "path");
+        assert_runtime_peer_rejects_field(
+            |doc| {
+                doc.set_project_context(&ProjectContext::NotFound {
+                    observed_at: "2026-05-27T00:00:00Z".to_string(),
+                })
+            },
+            "project_context",
+        );
+    }
+
+    #[test]
+    fn runtime_peer_policy_rejects_terminal_result_rewrite() {
+        let mut before_doc = RuntimeStateDoc::new();
+        before_doc
+            .create_execution_with_source("exec-accepted", "print('accepted')", 0)
+            .unwrap();
+        before_doc.set_execution_running("exec-accepted").unwrap();
+        before_doc.set_execution_count("exec-accepted", 7).unwrap();
+        before_doc
+            .set_execution_done("exec-accepted", true)
+            .unwrap();
+        let before = runtime_state_policy_snapshot(&before_doc);
+
+        let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+        let executions = match after_doc.doc().get(ROOT, "executions").unwrap().unwrap() {
+            (Value::Object(ObjType::Map), id) => id,
+            other => panic!("expected executions map, got {other:?}"),
+        };
+        let entry = match after_doc
+            .doc()
+            .get(&executions, "exec-accepted")
+            .unwrap()
+            .unwrap()
+        {
+            (Value::Object(ObjType::Map), id) => id,
+            other => panic!("expected execution map, got {other:?}"),
+        };
+        after_doc.doc_mut().put(&entry, "success", false).unwrap();
+        let after = runtime_state_policy_snapshot(&after_doc);
+
+        let err =
+            validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
+                .unwrap_err();
+
+        assert!(
+            err.to_string().contains("terminal execution result"),
+            "error should identify terminal result rewrites: {err}"
+        );
+    }
+
+    #[test]
     fn runtime_peer_policy_rejects_queue_entry_for_unaccepted_execution() {
         let before = runtime_state_policy_snapshot(&RuntimeStateDoc::new());
         let mut after_doc = RuntimeStateDoc::new();
@@ -632,6 +780,25 @@ mod tests {
         assert!(
             err.to_string().contains("queue"),
             "error should identify queue writes: {err}"
+        );
+    }
+
+    fn assert_runtime_peer_rejects_field<F>(mut mutate: F, field: &str)
+    where
+        F: FnMut(&mut RuntimeStateDoc) -> Result<(), RuntimeStateError>,
+    {
+        let before = runtime_state_policy_snapshot(&RuntimeStateDoc::new());
+        let mut after_doc = RuntimeStateDoc::new();
+        mutate(&mut after_doc).unwrap();
+        let after = runtime_state_policy_snapshot(&after_doc);
+
+        let err =
+            validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
+                .unwrap_err();
+
+        assert!(
+            err.to_string().contains(field),
+            "error should identify {field} writes: {err}"
         );
     }
 }
