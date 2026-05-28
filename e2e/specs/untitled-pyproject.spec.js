@@ -20,6 +20,7 @@ import {
   waitForCellOutput,
   waitForKernelReady,
   waitForNotebookSynced,
+  waitForSessionReady,
 } from "../helpers.js";
 
 describe("Untitled Notebook with pyproject.toml", () => {
@@ -55,6 +56,7 @@ describe("Untitled Notebook with pyproject.toml", () => {
     const code = "import httpx; print(httpx.__version__)";
     console.log(`[untitled-pyproject] Setting cell source: ${code}`);
     await setCellSource(codeCell, code);
+    await waitForSessionReady();
 
     // Click the execute button explicitly
     const executeButton = await codeCell.$('[data-testid="execute-button"]');

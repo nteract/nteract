@@ -16,6 +16,7 @@ import {
   waitForCellOutput,
   waitForKernelReady,
   waitForNotebookSynced,
+  waitForSessionReady,
 } from "../helpers.js";
 
 describe("Prewarmed Environment Pool", () => {
@@ -55,6 +56,7 @@ describe("Prewarmed Environment Pool", () => {
     // Ensure the cell has the right source via CodeMirror dispatch API.
     // The fixture has source but CRDT sync may not have delivered it yet.
     await setCellSource(codeCell, "import sys; print(sys.executable)");
+    await waitForSessionReady();
 
     // Execute via button click (reliable with tauri-plugin-webdriver)
     const executeButton = await codeCell.$('[data-testid="execute-button"]');

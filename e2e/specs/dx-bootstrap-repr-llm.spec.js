@@ -13,6 +13,7 @@ import {
   waitForCellOutputMatching,
   waitForKernelReady,
   waitForNotebookSynced,
+  waitForSessionReady,
 } from "../helpers.js";
 
 const LLM_REPR_SENTINEL = "llm-e2e: dx bootstrap repr";
@@ -44,6 +45,7 @@ print("HAS_LLM_MIME", "text/llm+plain" in data)
 print("LLM_VALUE", data.get("text/llm+plain"))
 `.trim(),
     );
+    await waitForSessionReady();
 
     const executeButton = await codeCell.$('[data-testid="execute-button"]');
     if (await executeButton.isExisting()) {

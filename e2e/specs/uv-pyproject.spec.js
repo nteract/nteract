@@ -18,6 +18,7 @@ import {
   waitForKernelReady,
   waitForNotebookSynced,
   waitForOutputContaining,
+  waitForSessionReady,
 } from "../helpers.js";
 
 describe("UV pyproject.toml Detection", () => {
@@ -60,6 +61,7 @@ describe("UV pyproject.toml Detection", () => {
     // Set source via CodeMirror dispatch (no keyboard events)
     await setCellSource(codeCell, "import sys; print(sys.executable)");
     console.log("[uv-pyproject] Set cell source to print sys.executable.");
+    await waitForSessionReady();
 
     // Click the execute button
     const executeButton = await codeCell.$('[data-testid="execute-button"]');
@@ -86,6 +88,7 @@ describe("UV pyproject.toml Detection", () => {
     // Set source via CodeMirror dispatch (replaces typeSlowly + keyboard shortcuts)
     await setCellSource(cell, "import httpx; print(httpx.__version__)");
     console.log("[uv-pyproject] Set cell source to import httpx.");
+    await waitForSessionReady();
 
     // Click the execute button
     const executeButton = await cell.$('[data-testid="execute-button"]');
