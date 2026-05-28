@@ -46,6 +46,7 @@ pub const MENU_INSTALL_CLAUDE_EXT: &str = "install_claude_ext";
 pub const MENU_CHECK_FOR_UPDATES: &str = "check_for_updates";
 pub const MENU_SETTINGS: &str = "settings";
 pub const MENU_SEND_FEEDBACK: &str = "send_feedback";
+pub const MENU_SEND_LOGS_TO_DEVELOPER: &str = "send_logs_to_developer";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const APP_COMMIT_SHA: &str = include_str!(concat!(env!("OUT_DIR"), "/git_hash.txt"));
 pub const APP_RELEASE_DATE: &str = include_str!(concat!(env!("OUT_DIR"), "/git_date.txt"));
@@ -385,6 +386,13 @@ pub fn create_menu(
         app,
         MENU_SEND_FEEDBACK,
         "Send Feedback...",
+        true,
+        None::<&str>,
+    )?)?;
+    help_menu.append(&MenuItem::with_id(
+        app,
+        MENU_SEND_LOGS_TO_DEVELOPER,
+        "Send Logs to Developer...",
         true,
         None::<&str>,
     )?)?;
