@@ -145,6 +145,11 @@ const worker: ExportedHandler<Env> = {
       return viewer(decodeURIComponent(viewerMatch[1]), env);
     }
 
+    const vanityViewerMatch = url.pathname.match(/^\/n\/([^/]+)\/([^/]+)\/?$/);
+    if (vanityViewerMatch && request.method === "GET") {
+      return viewer(decodeURIComponent(vanityViewerMatch[1]), env);
+    }
+
     const catalogMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/?$/);
     if (catalogMatch && request.method === "GET") {
       return routeCatalog(request, env, decodeURIComponent(catalogMatch[1]));

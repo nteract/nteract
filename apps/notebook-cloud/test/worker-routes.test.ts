@@ -130,6 +130,22 @@ describe("Worker artifact routes", () => {
     assert.equal(await response.text(), "console.log('viewer')");
   });
 
+  it("serves vanity viewer paths against the notebook id", async () => {
+    const env = fakeEnv();
+
+    const response = await worker.fetch(
+      new Request("http://localhost/n/notebook-123/topic-viz"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /nteract cloud notebook notebook-123/);
+    assert.match(html, /"notebookId":"notebook-123"/);
+    assert.doesNotMatch(html, /topic-viz.*render/);
+  });
+
   it("serves the viewer runtimed WASM asset through the Worker assets binding", async () => {
     const seenPaths: string[] = [];
     const env = fakeEnv({

@@ -1,0 +1,29 @@
+[package]
+name = "runt-publish"
+version = "0.1.0"
+edition.workspace = true
+description = "Prototype publisher for hosted nteract notebook-cloud demos"
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+automerge = { workspace = true }
+clap = { version = "4.5.1", features = ["derive", "env"] }
+hex = "0.4"
+notebook-sync = { path = "../notebook-sync" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
+runt-workspace = { path = "../runt-workspace" }
+runtimed-client = { path = "../runtimed-client" }
+runtime-doc = { path = "../runtime-doc" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.11"
+tokio = { workspace = true }
+url = "2"
+urlencoding = "2"
+uuid = { workspace = true }
