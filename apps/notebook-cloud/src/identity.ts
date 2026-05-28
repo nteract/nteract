@@ -164,6 +164,7 @@ interface JwtPayload {
 
 const JWT_CLOCK_TOLERANCE_SECONDS = 60;
 const JWKS_CACHE_TTL_MS = 5 * 60 * 1000;
+const ANACONDA_API_KEY_CACHE_MAX_ENTRIES = 256;
 const ANACONDA_API_KEY_CACHE_TTL_MS = 60 * 1000;
 const OIDC_SUBJECT_MAX_LENGTH = 256;
 const jwksCache = new Map<
@@ -426,21 +427,52 @@ async function loadAnacondaApiKeyUserInfo(
   token: string,
   config: AnacondaApiKeyConfig,
 ): Promise<AnacondaApiKeyUserInfo> {
+  const now = Date.now();
   const cacheKey = `${config.userinfoUrl}:${await sha256Hex(token)}`;
   const cached = anacondaApiKeyUserInfoCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) {
+  if (cached && cached.expiresAt > now) {
+    anacondaApiKeyUserInfoCache.delete(cacheKey);
+    anacondaApiKeyUserInfoCache.set(cacheKey, cached);
     return cached.ready;
+  }
+  if (cached) {
+    anacondaApiKeyUserInfoCache.delete(cacheKey);
   }
 
   const ready = fetchAnacondaApiKeyUserInfo(token, config).catch((error: unknown) => {
     anacondaApiKeyUserInfoCache.delete(cacheKey);
     throw error;
   });
-  anacondaApiKeyUserInfoCache.set(cacheKey, {
-    expiresAt: Date.now() + ANACONDA_API_KEY_CACHE_TTL_MS,
+  cacheAnacondaApiKeyUserInfo(cacheKey, {
+    expiresAt: now + ANACONDA_API_KEY_CACHE_TTL_MS,
     ready,
   });
   return ready;
+}
+
+function cacheAnacondaApiKeyUserInfo(
+  cacheKey: string,
+  entry: {
+    expiresAt: number;
+    ready: Promise<AnacondaApiKeyUserInfo>;
+  },
+): void {
+  const now = Date.now();
+  for (const [key, cached] of anacondaApiKeyUserInfoCache) {
+    if (cached.expiresAt <= now) {
+      anacondaApiKeyUserInfoCache.delete(key);
+    }
+  }
+
+  while (anacondaApiKeyUserInfoCache.size >= ANACONDA_API_KEY_CACHE_MAX_ENTRIES) {
+    const oldestKey = anacondaApiKeyUserInfoCache.keys().next().value;
+    if (!oldestKey) {
+      break;
+    }
+    anacondaApiKeyUserInfoCache.delete(oldestKey);
+  }
+
+  anacondaApiKeyUserInfoCache.set(cacheKey, entry);
 }
 
 async function fetchAnacondaApiKeyUserInfo(

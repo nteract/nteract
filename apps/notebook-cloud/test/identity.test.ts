@@ -896,6 +896,49 @@ describe("Anaconda API key identity", () => {
     assert.deepEqual(calls, [`Bearer ${token}`]);
   });
 
+  it("bounds successful API key whoami cache entries", async (t) => {
+    const { env: oidcEnv } = await oidcTokenFixture({ subject: "browser-user" });
+    const firstToken = anacondaApiKeyToken({ sub: "first-api-key-subject" });
+    let firstTokenLookups = 0;
+    let totalLookups = 0;
+    t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      totalLookups += 1;
+      if (request.headers.get("authorization") === `Bearer ${firstToken}`) {
+        firstTokenLookups += 1;
+      }
+      return jsonResponse(
+        anacondaWhoami({
+          userId: `api-key-user-${totalLookups}`,
+          scopes: ["cloud:write"],
+        }),
+      );
+    });
+
+    const env = {
+      ...oidcEnv,
+      ...anacondaApiKeyEnv(),
+    };
+    const authenticateToken = (token: string) =>
+      authenticateRequestWithProviders(
+        new Request("https://cloud.test/n/topic-viz/sync?operator=agent:runt-publish&scope=owner", {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }),
+        env,
+      );
+
+    await authenticateToken(firstToken);
+    for (let index = 0; index < 300; index += 1) {
+      await authenticateToken(anacondaApiKeyToken({ sub: `api-key-token-${index}` }));
+    }
+    await authenticateToken(firstToken);
+
+    assert.equal(firstTokenLookups, 2);
+    assert.equal(totalLookups, 302);
+  });
+
   it("rejects API keys without write scope for owner requests", async (t) => {
     const token = anacondaApiKeyToken();
     t.mock.method(globalThis, "fetch", async () =>
