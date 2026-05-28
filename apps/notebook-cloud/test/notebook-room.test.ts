@@ -314,6 +314,67 @@ describe("NotebookRoom materialized sync persistence", () => {
     );
   });
 
+  it("delivers materialized sync outbound frames to connected viewer peers", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const editorIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
+    );
+    const viewerIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
+    );
+    const editorSocket = new FakeSocket();
+    const viewerSocket = new FakeSocket();
+    const editorPeer = {
+      id: "editor",
+      socket: editorSocket.asCloudflareWebSocket(),
+      identity: editorIdentity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+    };
+    const viewerPeer = {
+      id: "viewer",
+      socket: viewerSocket.asCloudflareWebSocket(),
+      identity: viewerIdentity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+    };
+    const harness = roomHarness(room);
+    let persisted = 0;
+    harness.peers.set(editorPeer.id, editorPeer);
+    harness.peers.set(viewerPeer.id, viewerPeer);
+    harness.materializers.set(
+      "demo",
+      fakeMaterializer({
+        ...noopMaterializedResult(),
+        changed: true,
+        notebook_changed: true,
+        outbound: [
+          {
+            peer_id: viewerPeer.id,
+            frame_type: FrameType.AUTOMERGE_SYNC,
+            payload: [7, 8, 9],
+          },
+        ],
+      }),
+    );
+    harness.persistFrame = async () => {
+      persisted += 1;
+    };
+
+    await harness.handleMessage(
+      "demo",
+      editorPeer,
+      encodeTypedFrame(FrameType.AUTOMERGE_SYNC, new Uint8Array([1])),
+    );
+
+    assert.equal(persisted, 1);
+    assert.equal(viewerSocket.sent.length, 1);
+    assert.deepEqual([...viewerSocket.sent[0]], [FrameType.AUTOMERGE_SYNC, 7, 8, 9]);
+    assert.equal(editorSocket.sent.length, 1);
+    assert.equal(
+      decodeJsonPayload<Record<string, unknown>>(editorSocket.sent[0].slice(1)).type,
+      "cloud_frame_accepted",
+    );
+  });
+
   it("rejects editor-scoped PUT_BLOB frames on the WebSocket path", async () => {
     const room = new NotebookRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
