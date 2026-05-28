@@ -251,7 +251,8 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
 
         snapshotResolvedRef.current = true;
         await projectCloudWidgetComms(widgetStore, widgetComms, projectedWidgetCommIdsRef, {
-          isAllowedTextBlobUrl: (url) => isConfiguredBlobUrl(url, config.blobBasePath),
+          isAllowedBlobUrl: (url) => isConfiguredBlobUrl(url, config.blobBasePath),
+          shouldContinue: () => !cancelled && !liveMaterializedRef.current,
         });
         if (cancelled || liveMaterializedRef.current) return;
         preloadSiftWasmForCells(resolvedCells, {
@@ -335,7 +336,8 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
       if (disposed || sequence !== materializeSequence) return;
 
       await projectCloudWidgetComms(widgetStore, widgetComms, projectedWidgetCommIdsRef, {
-        isAllowedTextBlobUrl: (url) => isConfiguredBlobUrl(url, config.blobBasePath),
+        isAllowedBlobUrl: (url) => isConfiguredBlobUrl(url, config.blobBasePath),
+        shouldContinue: () => !disposed && sequence === materializeSequence,
       });
       if (disposed || sequence !== materializeSequence) return;
       liveMaterializedRef.current = true;

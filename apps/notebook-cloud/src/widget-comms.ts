@@ -33,11 +33,13 @@ export function resolveSnapshotWidgetComms(
     const bufferPaths: string[][] = [];
     const textPaths: string[][] = [];
     const state = resolveCommStateValue(comm.state, blobResolver, [], bufferPaths, textPaths);
+    const mergedBufferPaths = [...(comm.buffer_paths ?? []), ...bufferPaths];
+    const mergedTextPaths = [...(comm.text_paths ?? []), ...textPaths];
     return {
       ...comm,
       state: asRecord(state),
-      ...(bufferPaths.length > 0 ? { buffer_paths: bufferPaths } : {}),
-      ...(textPaths.length > 0 ? { text_paths: textPaths } : {}),
+      ...(mergedBufferPaths.length > 0 ? { buffer_paths: mergedBufferPaths } : {}),
+      ...(mergedTextPaths.length > 0 ? { text_paths: mergedTextPaths } : {}),
     };
   });
 }

@@ -6,6 +6,7 @@ import { createWidgetStore, type WidgetStore } from "@/components/widgets/widget
 import { parseWidgetViewModelId, WIDGET_VIEW_MIME } from "@/components/widgets/widget-state";
 import { WidgetView } from "@/components/widgets/widget-view";
 import { widgetCommStoreState, type SnapshotWidgetComm } from "../src/widget-comms";
+import { inlineWidgetBlobUrls } from "./widget-blob-inlining";
 import "@/components/widgets/controls";
 
 export const CLOUD_WIDGET_RENDERERS = {
@@ -13,7 +14,8 @@ export const CLOUD_WIDGET_RENDERERS = {
 };
 
 export interface ProjectCloudWidgetCommsOptions {
-  isAllowedTextBlobUrl?: (url: string) => boolean;
+  isAllowedBlobUrl?: (url: string) => boolean;
+  shouldContinue?: () => boolean;
 }
 
 export function CloudWidgetStoreProvider({ children }: { children: ReactNode }) {
@@ -52,10 +54,16 @@ export async function projectCloudWidgetComms(
   const nextCommIds = new Set<string>();
 
   for (const comm of comms) {
+    if (options.shouldContinue && !options.shouldContinue()) return;
     const commId = comm.comm_id;
     nextCommIds.add(commId);
     const state = widgetCommStoreState(comm);
-    await inlineTextBlobUrls(state, comm.text_paths, options.isAllowedTextBlobUrl);
+    await inlineWidgetBlobUrls(
+      state,
+      { textPaths: comm.text_paths, bufferPaths: comm.buffer_paths },
+      { isAllowedBlobUrl: options.isAllowedBlobUrl },
+    );
+    if (options.shouldContinue && !options.shouldContinue()) return;
     if (store.getModel(commId)) {
       store.updateModel(commId, state, comm.buffer_paths);
     } else {
@@ -69,49 +77,6 @@ export async function projectCloudWidgetComms(
     }
   }
   projectedCommIdsRef.current = nextCommIds;
-}
-
-async function inlineTextBlobUrls(
-  state: Record<string, unknown>,
-  textPaths: string[][] | undefined,
-  isAllowedTextBlobUrl: ((url: string) => boolean) | undefined,
-): Promise<void> {
-  if (!textPaths || textPaths.length === 0) return;
-  await Promise.all(
-    textPaths.map(async (path) => {
-      const url = readPath(state, path);
-      if (typeof url !== "string") return;
-      if (!isAllowedTextBlobUrl?.(url)) return;
-      try {
-        const response = await fetch(url);
-        if (!response.ok) return;
-        writePath(state, path, await response.text());
-      } catch {
-        // Keep the URL string; the widget will fail locally without blocking
-        // unrelated comms from rendering.
-      }
-    }),
-  );
-}
-
-function readPath(value: unknown, path: string[]): unknown {
-  let current = value;
-  for (const segment of path) {
-    if (typeof current !== "object" || current === null) return undefined;
-    current = (current as Record<string, unknown>)[segment];
-  }
-  return current;
-}
-
-function writePath(value: Record<string, unknown>, path: string[], next: unknown): void {
-  if (path.length === 0) return;
-  let current: Record<string, unknown> = value;
-  for (const segment of path.slice(0, -1)) {
-    const child = current[segment];
-    if (typeof child !== "object" || child === null) return;
-    current = child as Record<string, unknown>;
-  }
-  current[path[path.length - 1]] = next;
 }
 
 function CloudWidgetViewRenderer({ data }: { data: unknown }) {
