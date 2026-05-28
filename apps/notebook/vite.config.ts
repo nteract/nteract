@@ -49,7 +49,14 @@ export default defineConfig(() => {
       rawLibPlugin(path.resolve(__dirname, "../../node_modules")),
       isolatedRendererPlugin(),
       browserDevRelayPlugin({ repoRoot: path.resolve(__dirname, "../..") }),
-      subAppTrailingSlashRedirect(["onboarding", "settings", "feedback", "upgrade", "gallery"]),
+      subAppTrailingSlashRedirect([
+        "onboarding",
+        "settings",
+        "feedback",
+        "diagnostics",
+        "upgrade",
+        "gallery",
+      ]),
       visualizer({
         filename: "dist/stats.html",
         open: false,
@@ -75,6 +82,7 @@ export default defineConfig(() => {
           upgrade: path.resolve(__dirname, "upgrade/index.html"),
           settings: path.resolve(__dirname, "settings/index.html"),
           feedback: path.resolve(__dirname, "feedback/index.html"),
+          diagnostics: path.resolve(__dirname, "diagnostics/index.html"),
           gallery: path.resolve(__dirname, "gallery/index.html"),
         },
         output: {

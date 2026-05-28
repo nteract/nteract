@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "diagnostics",
+  "description": "Minimal capabilities for the diagnostics upload window",
+  "windows": ["diagnostics"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-close",
+    "core:window:allow-set-theme"
+  ]
+}

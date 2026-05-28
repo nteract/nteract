@@ -2,6 +2,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod cli_install;
+pub mod diagnostics_upload;
 pub mod mcpb_install;
 pub mod menu;
 
@@ -2987,6 +2988,34 @@ async fn open_feedback_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Open the diagnostics upload window.
+///
+/// Uses singleton pattern - focuses existing window if present, otherwise creates new one.
+#[tauri::command]
+async fn open_diagnostics_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(existing_window) = app.get_webview_window("diagnostics") {
+        existing_window
+            .set_focus()
+            .map_err(|e| format!("Failed to focus diagnostics window: {}", e))?;
+        return Ok(());
+    }
+
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        "diagnostics",
+        tauri::WebviewUrl::App("diagnostics/index.html".into()),
+    )
+    .title("Send Logs to Developer")
+    .inner_size(560.0, 560.0)
+    .min_inner_size(480.0, 470.0)
+    .resizable(true)
+    .center()
+    .build()
+    .map_err(|e| format!("Failed to create diagnostics window: {}", e))?;
+
+    Ok(())
+}
+
 fn focused_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
     app.webview_windows()
         .into_values()
@@ -3744,6 +3773,7 @@ pub fn run(
         .manage(restart_in_progress)
         .manage(daemon_status_state)
         .manage(SyncReadyState::default())
+        .manage(diagnostics_upload::DiagnosticsUploadState::default())
         .invoke_handler(tauri::generate_handler![
             // Notebook file operations. In-place saves go straight from the
             // frontend to the daemon via `send_frame(0x01)`; this handler
@@ -3795,6 +3825,11 @@ pub fn run(
             // Feedback
             open_feedback_window,
             get_feedback_system_info,
+            // Diagnostics upload
+            open_diagnostics_window,
+            diagnostics_upload::prepare_diagnostics_archive,
+            diagnostics_upload::upload_prepared_diagnostics,
+            diagnostics_upload::cleanup_prepared_diagnostics,
         ])
         .setup(move |app| {
             let setup_start = std::time::Instant::now();
@@ -4310,6 +4345,14 @@ pub fn run(
                     tauri::async_runtime::spawn(async move {
                         if let Err(e) = open_feedback_window(app_handle).await {
                             log::error!("[menu] Failed to open feedback window: {}", e);
+                        }
+                    });
+                }
+                crate::menu::MENU_SEND_LOGS_TO_DEVELOPER => {
+                    let app_handle = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = open_diagnostics_window(app_handle).await {
+                            log::error!("[menu] Failed to open diagnostics window: {}", e);
                         }
                     });
                 }
