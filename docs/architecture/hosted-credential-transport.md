@@ -12,8 +12,8 @@ The base identity ADR (`identity-and-trust.md`) already decides the principal /
 operator actor-label model and the per-room ACL model. The hosted authorization
 ADR (`hosted-room-authorization.md`) already decides that D1 ACL rows are the
 room authority. This ADR decides how credentials reach the hosted room and how
-Cloudflare Access, Anaconda OIDC, JupyterHub, native clients, and browser
-WebSockets fit into that model.
+direct OIDC providers, optional Cloudflare Access deployments, JupyterHub,
+native clients, and browser WebSockets fit into that model.
 
 Important constraints:
 
@@ -27,12 +27,15 @@ Important constraints:
 - JupyterHub deployments often prefer Hub tokens over Hub cookies for API and
   WebSocket clients. Cookie auth can work, but it is not the generic Hub
   recommendation because Hub cookie flows also bring CSRF handling.
-- Cloudflare Access can front a self-hosted Worker application, perform the
-  browser login flow with a configured identity provider, and pass an Access JWT
-  to the Worker as `Cf-Access-Jwt-Assertion`.
-- Anaconda is an OIDC identity provider. For the Anaconda-hosted demo, the
-  simplest deployable shape is likely Cloudflare Access in front of the Worker
-  with Anaconda OIDC configured as the Access identity provider.
+- Anaconda is an OIDC identity provider. The earlier Cloudflare Access path
+  added a second paid auth product in front of credentials we already control,
+  so the first hosted notebook-cloud path should validate Anaconda-issued OIDC
+  tokens directly in the Worker.
+- `runtimed/intheloop` already has deployed OIDC precedent: `app.runt.run`
+  uses production Anaconda OIDC, while `preview.runt.run` uses stage Anaconda
+  OIDC and redirects to `/oidc`. The preview app is no longer the active
+  prototype, so notebook-cloud can take over that staging domain and OIDC
+  client.
 
 ## Decision 1: Credential transport is separate from identity provider
 
@@ -75,65 +78,76 @@ The room ACL still derives final connection scope. A provider claim or group may
 cap what the credential can do globally, but it does not grant per-notebook
 editor or owner access by itself.
 
-## Decision 2: Cloudflare Access is the first hosted browser path
+## Decision 2: Direct OIDC is the first hosted browser path
 
-For the Anaconda-friendly hosted demo, use Cloudflare Access as the browser
-session layer:
+For the Anaconda-friendly hosted demo, the notebook application owns the OIDC
+browser flow directly:
 
 1. Browser visits the notebook host.
-2. Cloudflare Access redirects through the configured Anaconda OIDC provider.
-3. Access sets its application session cookie for the protected host.
-4. Browser opens `wss://.../n/<id>/sync`.
-5. Cloudflare evaluates the upgrade request and forwards an Access JWT to the
-   Worker as `Cf-Access-Jwt-Assertion`.
-6. The Worker validates the Access JWT signature, issuer, audience, expiry, and
-   not-before claims against the configured Access JWKS.
-7. The Worker maps the validated subject to a principal and calls the room ACL
-   authorization path.
-8. The Durable Object receives only trusted headers stamped by the Worker. It
+2. The viewer/editor shell starts an OIDC Authorization Code + PKCE flow against
+   the configured issuer.
+3. The OIDC provider redirects back to the notebook host's `/oidc` callback.
+4. The browser stores the short-lived access token in origin-local storage and
+   refreshes it through the normal OIDC refresh path.
+5. Browser HTTP requests use `Authorization: Bearer <access-token>` when the
+   platform allows headers.
+6. Browser WebSockets use the non-echoed credential subprotocol
+   `nteract-bearer.<base64url-token>` plus the application protocol
+   `nteract.v4`.
+7. Native, CLI, agent, and runtime clients use `Authorization: Bearer
+   <access-token>` directly on HTTP and WebSocket requests.
+8. The Worker validates the OIDC JWT signature, issuer, audience/client id,
+   expiry, and not-before claims against the provider JWKS before calling the
+   room ACL authorization path.
+9. The Durable Object receives only trusted headers stamped by the Worker. It
    never trusts browser-provided identity headers.
 
-This keeps the Anaconda login flow outside the notebook application while still
-letting the Worker independently verify the assertion that reached it.
+This removes Cloudflare Access from the default auth path. Cloudflare still
+hosts the Worker, Durable Object, D1, R2, assets, and custom domain, but it does
+not own the notebook user's login session for this deployment.
 
-### Principal namespace for Access-backed Anaconda login
+### Staging and production domain reuse
+
+The existing `runtimed/intheloop` Wrangler configuration records the OIDC lanes
+we should reuse:
+
+| Lane | Host | Issuer | Client id | Redirect URI | Output origin |
+|------|------|--------|-----------|--------------|---------------|
+| Local dev | `localhost:5173` | `https://auth.stage.anaconda.com/api/auth` | `b7296d39-c1eb-49f4-b9a1-f36e6d5b8b6d` | `http://localhost:5173/oidc` | local |
+| Staging takeover | `preview.runt.run` | `https://auth.stage.anaconda.com/api/auth` | `cec4781f-853c-4267-bf09-4bc59a2a3750` | `https://preview.runt.run/oidc` | `https://preview.runtusercontent.com` |
+| Production precedent | `app.runt.run` | `https://auth.anaconda.com/api/auth` | `74a51ff4-5814-48fa-9ae7-6d3ef0aca3e2` | `https://app.runt.run/oidc` | `https://runtusercontent.com` |
+
+Notebook-cloud should take over `preview.runt.run` first. The route transfer
+requires removing or replacing the old `runtimed/intheloop` preview Worker route
+and deploying notebook-cloud with the same OIDC redirect URI. The production
+`app.runt.run` lane is precedent, not the first target for notebook-cloud.
+
+### Principal namespace for direct OIDC login
 
 A principal namespace must name the authority whose credential we validated.
 
-If the Worker validates only a Cloudflare Access JWT, the conservative principal
-is Access-scoped, for example:
-
-```text
-user:cloudflare-access:<encoded-access-sub>
-```
-
-or, with an explicit deployment namespace:
-
-```text
-access:<team-domain>:<encoded-access-sub>
-```
-
-The Worker may emit an Anaconda-scoped principal:
+If the Worker validates an Anaconda-issued OIDC token, the principal is
+Anaconda-scoped:
 
 ```text
 user:anaconda:<encoded-anaconda-sub>
 ```
 
-only when it has a stable Anaconda subject from a validated Anaconda-issued
-credential or an Access assertion claim that the deployment explicitly treats as
-the Anaconda subject. Email is display metadata and invite UX material; it is
-not the stable principal key.
+If we deploy a first-party WorkOS app for a public `runtimed.com` viewer before
+Anaconda direct OIDC is available, the principal is WorkOS-scoped:
 
-For the first Cloudflare Access demo, using an Access-scoped principal is
-acceptable if the UI displays the Anaconda email/name. A later migration to
-`user:anaconda:*` should be explicit and should include a subject mapping or
-backfill plan for ACL rows.
+```text
+user:workos:<encoded-workos-sub>
+```
+
+Email is display metadata and invite UX material; it is not the stable
+principal key. If a later migration links WorkOS users to Anaconda subjects, it
+must include an explicit subject mapping or ACL-row backfill plan.
 
 ## Decision 3: Browser WebSocket bearer tokens use subprotocols
 
-When a browser already has a bearer token and Cloudflare Access is not the
-session layer, prefer a WebSocket subprotocol credential over a URL query
-parameter:
+When a browser has a bearer token, prefer a WebSocket subprotocol credential
+over a URL query parameter:
 
 ```text
 Sec-WebSocket-Protocol:
@@ -161,13 +175,10 @@ Subprotocol bearer tokens are appropriate for:
 
 - browser clients that have obtained an OIDC token through an application login
   flow;
-- browser clients talking to a notebook host that is not fronted by Cloudflare
-  Access;
+- browser clients talking to a notebook host that is not using cookies or
+  forwarded perimeter assertions as its credential transport;
 - future JupyterHub browser paths if the Hub or single-user server can provide a
   short-lived token to the page.
-
-They are not needed for same-origin Cloudflare Access browser sessions, where
-the Access cookie plus `Cf-Access-Jwt-Assertion` path is simpler.
 
 `nteract-bearer.*` is the proposed generic bearer-token convention. The hosted
 prototype currently has narrower prefixes for already-implemented paths:
@@ -206,13 +217,14 @@ because two concurrent upgrade requests could both validate the same ticket.
 The URL can still appear in CDN, WAF, browser, or Worker analytics before the
 Worker consumes it, so tickets are a narrow fallback rather than the preferred
 path for sensitive deployments. Deployments that cannot tolerate even
-short-lived opaque ticket exposure should use Cloudflare Access cookie/assertion
-auth or bearer-in-subprotocol auth with non-echoed credential subprotocols.
+short-lived opaque ticket exposure should use bearer-in-subprotocol auth with
+non-echoed credential subprotocols or a cookie/assertion perimeter whose origin
+policy is explicitly owned by the deployment.
 
-Tickets are not the default for the Cloudflare Access demo because Access
-already handles the browser session. They remain the preferred fallback when a
-deployment would otherwise need to put a long-lived bearer token in a WebSocket
-URL.
+Tickets are not the default for the direct-OIDC demo because the browser can
+present the OIDC access token as a non-echoed WebSocket subprotocol. They
+remain the preferred fallback when a deployment would otherwise need to put a
+long-lived bearer token in a WebSocket URL.
 
 ## Decision 5: Provider cookies are deployment-specific, not generic
 
@@ -249,10 +261,10 @@ upgrade when the platform allows it:
 - local or hosted agent process;
 - remote runtime sidecar or kernel service.
 
-For Cloudflare Access protected hosts, system clients may also use Access
-service tokens or another deployment-specific mechanism that yields an Access
-JWT or passes Access policy. The Worker still validates the resulting assertion
-or bearer token before it stamps trusted room headers.
+Cloudflare Access service tokens are deployment-specific and not part of the
+default direct-OIDC path. If a host elects to add Access as an outer perimeter,
+the Worker must still validate the resulting assertion or bearer token before it
+stamps trusted room headers.
 
 Longer term replay mitigation is out of scope for this ADR. DPoP,
 proof-of-possession tokens, mTLS, device posture, and short token lifetimes can
@@ -283,19 +295,17 @@ This answers the central authorization question: the identity provider does not
 need to encode nteract room roles. It may bound global capabilities, but D1 room
 ACL rows grant notebook-specific scopes.
 
-## Decision 8: Origin checks are part of Access session WebSocket auth
+## Decision 8: Origin checks are part of browser WebSocket auth
 
 Any credential that rides automatically with browser requests requires an
 origin gate for WebSocket upgrades.
 
 Minimum policy:
 
-- Reject cookie-backed and Access assertion-backed WebSocket upgrades with
+- Reject cookie-backed and forwarded assertion-backed WebSocket upgrades with
   missing or untrusted `Origin`. This applies to viewer and writer
   connections. A private viewer socket can still leak notebook contents to a
-  malicious page if ambient cookies are enough to authenticate it; the Worker
-  treats `Cf-Access-Jwt-Assertion` as part of the same Access session path
-  because the edge derives it from the browser session.
+  malicious page if ambient cookies are enough to authenticate it.
 - Reject browser-visible credential subprotocol upgrades with missing or
   untrusted `Origin`, because page JavaScript can initiate those connections.
 - Maintain an allowlist of notebook application origins that are allowed to
@@ -315,23 +325,27 @@ checks, but they do not rely on ambient cookies and therefore reduce CSRF risk.
 
 ## Operational path for the Anaconda demo
 
-The exact deployment steps, Anaconda endpoints, Worker variables, origin
-allowlist, and hosted Access smoke command live in
-`docs/architecture/hosted-access-anaconda-demo-runbook.md`.
+The exact deployment steps, direct OIDC variables, route takeover, and smoke
+shape live in `docs/architecture/hosted-direct-oidc-demo-runbook.md`.
 
-1. Configure Cloudflare Access for the notebook-cloud Worker.
-2. Add Anaconda OIDC as the Access identity provider.
-3. Configure Worker Access validation:
-   - `NOTEBOOK_CLOUD_ACCESS_AUD`
-   - `NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN`
-   - optional pinned `NOTEBOOK_CLOUD_ACCESS_JWKS_JSON`
-4. Keep credential subprotocol stripping covered by tests. The listener must
+1. Transfer `preview.runt.run` from the retired `runtimed/intheloop` preview
+   Worker to notebook-cloud.
+2. Reuse the existing Anaconda stage OIDC client:
+   - issuer: `https://auth.stage.anaconda.com/api/auth`
+   - client id: `cec4781f-853c-4267-bf09-4bc59a2a3750`
+   - redirect URI: `https://preview.runt.run/oidc`
+3. Configure Worker OIDC validation:
+   - `NOTEBOOK_CLOUD_OIDC_ISSUER`
+   - `NOTEBOOK_CLOUD_OIDC_AUDIENCE` or `NOTEBOOK_CLOUD_OIDC_CLIENT_ID`
+   - optional pinned `NOTEBOOK_CLOUD_OIDC_JWKS_JSON`
+   - `NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE=user:anaconda`
+4. Configure viewer build-time OIDC:
+   - `VITE_AUTH_URI`
+   - `VITE_AUTH_CLIENT_ID`
+   - `VITE_AUTH_REDIRECT_URI`
+5. Keep credential subprotocol stripping covered by tests. The listener must
    return only a non-sensitive application protocol such as `nteract.v4`, never
    `nteract-access-token.*`, `nteract-dev-token.*`, or `nteract-bearer.*`.
-5. Add a deployment-level principal namespace decision:
-   - Access-scoped by default;
-   - Anaconda-scoped only with a stable Anaconda subject claim or direct
-     Anaconda token validation.
 6. Configure `NOTEBOOK_CLOUD_ALLOWED_ORIGINS` for any notebook application
    origin that is not the Worker origin itself.
 7. Keep notebook sharing in D1 ACL rows:
@@ -343,18 +357,18 @@ allowlist, and hosted Access smoke command live in
 
 This path is provider-neutral in the public architecture. Anaconda is the first
 hosted OIDC deployment, not a protocol dependency. Other OIDC-backed hosts can
-use the same transport and ACL model with different Access or direct-OIDC
-configuration.
+use the same transport and ACL model with different issuer, audience, principal
+namespace, and optional perimeter configuration.
 
 ## Open Questions
 
-1. **Direct Anaconda OIDC in the Worker.** The current Cloudflare path validates
-   Access assertions. A direct Anaconda OIDC provider would validate Anaconda
-   JWTs or userinfo directly and can produce `user:anaconda:<sub>` without an
-   Access namespace.
-2. **Access claim mapping.** If Cloudflare Access can pass a stable upstream
-   Anaconda subject claim, define the exact claim name and migration strategy
-   before using it as the principal id.
+1. **Browser token storage and refresh.** The direct-OIDC viewer can reuse the
+   `runtimed/intheloop` PKCE/localStorage shape initially. Before private
+   notebooks become broad production surface, decide whether tokens should move
+   behind a same-site BFF/session-cookie layer.
+2. **WorkOS fallback.** If we run a public `runtimed.com` viewer through WorkOS
+   before Anaconda direct OIDC is fully available, define the principal
+   namespace and future subject-linking story up front.
 3. **Invite-by-email.** D1 ACLs key by principal, but people share by email.
    `docs/architecture/hosted-sharing-invites.md` sketches the pending-invite
    table, first-login resolution, display metadata, and public viewer UX.
@@ -366,7 +380,7 @@ configuration.
    Admin revocation and provider sign-out need the future `SESSION_CONTROL`
    close path.
 6. **Service-token runtime peers.** Runtime sidecars need a clean credential
-   story, likely Access service tokens, Anaconda scoped credentials, or a
+   story, likely Anaconda scoped credentials, WorkOS machine credentials, or a
    notebook-host-issued runtime ticket.
 
 ## References
@@ -375,8 +389,8 @@ configuration.
   actor validation, and base credential vocabulary.
 - `docs/architecture/hosted-room-authorization.md` - room ACLs and scope
   derivation.
-- `docs/architecture/hosted-access-anaconda-demo-runbook.md` - exact
-  Cloudflare Access + Anaconda demo deployment and smoke steps.
+- `docs/architecture/hosted-direct-oidc-demo-runbook.md` - exact direct OIDC
+  Anaconda demo deployment and smoke steps.
 - `docs/architecture/hosted-sharing-invites.md` - email invite to principal ACL
   resolution.
 - `docs/architecture/hosted-output-origin-isolation.md` - hosted output

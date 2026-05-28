@@ -82,7 +82,7 @@ These entries define the center of gravity for the system:
 | [Hosted Credential Transport and OIDC Binding](hosted-credential-transport.md) | Draft | Browser, native, agent, and runtime credential transport. |
 | [Hosted Notebook Artifacts](hosted-notebook-artifacts.md) | Draft | Published snapshots, R2 layout, and cloud viewer materialization. |
 | [Hosted Output Origin Isolation](hosted-output-origin-isolation.md) | Draft | App, output, and renderer origin separation. |
-| [Hosted Cloudflare Access + Anaconda Demo Runbook](hosted-access-anaconda-demo-runbook.md) | Runbook | Demo deployment and smoke-test instructions. |
+| [Hosted Direct OIDC Anaconda Demo Runbook](hosted-direct-oidc-demo-runbook.md) | Runbook | `preview.runt.run` route takeover, direct OIDC deployment, and smoke-test instructions. |
 | [Runtime Peer Contract and Blob Authority Audit](runtime-peer-and-blob-authority-audit.md) | Audit | Current runtime-peer and blob-authority evidence plus follow-ups. |
 
 ### Product Requirements

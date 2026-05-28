@@ -24,8 +24,8 @@ Neighbors:
 
 - `docs/architecture/identity-and-trust.md` - principal/operator labels,
   connection scopes, provider validation, and actor-principal enforcement.
-- `docs/architecture/hosted-credential-transport.md` - Cloudflare Access,
-  Anaconda OIDC, JupyterHub, browser WebSocket credential transports, and
+- `docs/architecture/hosted-credential-transport.md` - direct OIDC, optional
+  Cloudflare Access, JupyterHub, browser WebSocket credential transports, and
   origin policy.
 - `docs/architecture/hosted-notebook-artifacts.md` - R2 snapshot pair and
   render-cache layout.
@@ -340,11 +340,11 @@ enforce equivalent access.
    connections.
 9. **Runtime peer ingress.** Allow runtime peers to attach and update
    `RuntimeStateDoc` plus blobs without notebook edits.
-10. **OIDC/Cloudflare Access.** Wire real provider validation after ACL lookup
-   is in place. Browser WebSockets follow
-   `hosted-credential-transport.md` for Access assertions, subprotocol bearer
-   tokens, one-time tickets, cookies, and origin checks; native/system clients
-   may use headers.
+10. **Direct OIDC.** Wire real provider validation after ACL lookup is in
+   place. Browser WebSockets follow `hosted-credential-transport.md` for
+   non-echoed bearer subprotocols, one-time tickets, optional perimeter
+   assertions/cookies, and origin checks; native/system clients may use
+   headers.
 
 ## Prototype-only behavior to remove
 

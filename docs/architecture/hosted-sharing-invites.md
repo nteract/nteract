@@ -13,7 +13,7 @@ Related docs:
 - `docs/architecture/identity-and-trust.md`
 - `docs/architecture/hosted-room-authorization.md`
 - `docs/architecture/hosted-credential-transport.md`
-- `docs/architecture/hosted-access-anaconda-demo-runbook.md`
+- `docs/architecture/hosted-direct-oidc-demo-runbook.md`
 
 Prototype code:
 
@@ -71,7 +71,7 @@ CREATE INDEX principal_profiles_email_idx
 `principal` is the key used in `notebook_acl.subject`, for example:
 
 ```text
-user:cloudflare-access:<encoded-access-sub>
+user:anaconda:<encoded-anaconda-sub>
 ```
 
 Email and display name are not authorization keys. They can change without
@@ -109,8 +109,8 @@ CREATE INDEX notebook_invites_notebook_idx
 ```
 
 `provider_hint` is normalized to lowercase provider ids. It should be
-`cloudflare-access` for the Access + Anaconda demo. It may be `NULL` only when
-the invite intentionally allows resolution by any trusted login provider that
+`anaconda` for the direct Anaconda OIDC demo. It may be `NULL` only when the
+invite intentionally allows resolution by any trusted login provider that
 proves the same verified email.
 
 `scope` is limited to `viewer` and `editor` for invite UX. `owner` transfer and
@@ -142,7 +142,7 @@ Pending invites are not ACL rows and cannot authorize a socket.
    ```json
    {
      "subject_kind": "principal",
-     "subject": "user:cloudflare-access:<encoded-access-sub>",
+     "subject": "user:anaconda:<encoded-anaconda-sub>",
      "scope": "editor"
    }
    ```
@@ -199,7 +199,7 @@ The resulting ACL row should never contain the email:
 
 ```text
 subject_kind = principal
-subject      = user:cloudflare-access:<encoded-access-sub>
+subject      = user:anaconda:<encoded-anaconda-sub>
 scope        = editor
 ```
 
@@ -227,11 +227,10 @@ UX:
 - Anonymous public viewers cannot edit, upload blobs, mutate runtime state, or
   publish revisions.
 
-Network topology still matters. A hostname fully protected by Cloudflare Access
-will block anonymous public viewers before the Worker sees the request. Public
-published notebooks need either a public hostname, an Access bypass policy for
-public viewer routes, or a separate public deployment that still checks the
-Worker ACL row.
+Network topology still matters. A public published notebook URL must reach the
+Worker so the explicit public ACL row can be checked. If an optional outer
+perimeter such as Cloudflare Access protects the entire hostname, it will block
+anonymous public viewers before the Worker sees the request.
 
 ## Display Names And Privacy
 
@@ -287,7 +286,7 @@ DELETE /api/n/{notebookId}/public-viewer
 {
   "email": "alice@example.com",
   "scope": "editor",
-  "provider_hint": "cloudflare-access"
+  "provider_hint": "anaconda"
 }
 ```
 
@@ -298,7 +297,7 @@ Existing verified profile:
 ```json
 {
   "kind": "principal",
-  "principal": "user:cloudflare-access:access-sub",
+  "principal": "user:anaconda:anaconda-sub",
   "display_name": "Alice Example",
   "scope": "editor"
 }
@@ -336,20 +335,21 @@ The checked-in TypeScript prototype models the core transition:
 The checked-in storage foundation now creates the `principal_profiles` and
 `notebook_invites` D1 tables and exposes helpers that upsert profiles, create
 pending invites, and resolve first-login invites into principal ACL rows. HTTP
-routes should come after the Access demo proves principal shape and after we
-choose the final share API names.
+routes should come after the direct-OIDC demo proves principal shape and after
+we choose the final share API names.
 
 ## Open Questions
 
-1. **Provider subject source.** For the first Access demo, the principal is
-   Access-scoped. If Access can pass a stable Anaconda subject claim, decide the
-   claim and migration before switching to `user:anaconda:*`.
+1. **Provider subject source.** For the first direct-OIDC demo, the principal is
+   `user:anaconda:<sub>`. If a WorkOS public viewer ships first, decide the
+   subject-linking migration before granting cross-provider ACL rows.
 2. **Invite delivery.** Email delivery, invite-token links, and resend behavior
    are product work. ACL resolution does not depend on delivery mechanism.
 3. **Organization policy.** Some deployments may restrict invites to an
-   Anaconda org, email domain, or Access group. That should be a share API
+   Anaconda org, email domain, or WorkOS/IdP group. That should be a share API
    validation rule, not a different ACL subject type.
 4. **Owner transfer.** Owner transfer needs confirmation and orphan protection.
    It should not be hidden inside invite-by-email.
-5. **Public hostname.** Decide whether public viewers use the same hostname
-   with an Access bypass rule or a separate public viewer host.
+5. **Public hostname.** Decide whether public viewers use the same
+   direct-OIDC-capable hostname with anonymous ACL checks or a separate public
+   viewer host.

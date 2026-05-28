@@ -1,6 +1,6 @@
 # nteract notebook cloud prototype
 
-This app is a Cloudflare Worker prototype for hosted nteract notebook rooms. It is intentionally small: the Worker authenticates a dev, Cloudflare Access, or anonymous viewer connection, authorizes that principal through the D1 room ACL, stamps a trusted `<principal>/<operator>` actor label, and routes `/n/:notebookId/sync` to a Durable Object keyed by notebook id.
+This app is a Cloudflare Worker prototype for hosted nteract notebook rooms. It is intentionally small: the Worker authenticates a dev, currently implemented Cloudflare Access, future direct OIDC, or anonymous viewer connection, authorizes that principal through the D1 room ACL, stamps a trusted `<principal>/<operator>` actor label, and routes `/n/:notebookId/sync` to a Durable Object keyed by notebook id.
 
 The current Durable Object does not host kernels. It owns a `runtimed-wasm` room host for the notebook's `NotebookDoc` + `RuntimeStateDoc`, syncs peers with typed-frame v4, rejects unauthorized Automerge changes before mutating the room, checkpoints the materialized document pair in Durable Object storage, rewrites canonical CBOR presence through the shared helper, and stores bounded frame metadata for sync frames that actually change a materialized document. Viewer-scope peers use the normal sync exchange so they can materialize live room updates, while the room host uses read-only peer state as a protocol hint and still rejects any viewer-authored changes explicitly. No-op read-only sync control frames are acknowledged and delivered as protocol traffic, but they are not persisted as room-event history. Editor-scope live `NotebookDoc` writes are deliberately limited to existing markdown-cell source edits in this prototype; code cells and structural document changes remain read-only unless the connection has owner scope. Runtime peers use a separate `RuntimeStatePeerHandle` authoring surface: they can sync kernel lifecycle, widget comm topology, output routing, and progress/output state for room-accepted executions into `RuntimeStateDoc`, but they cannot create execution intent, edit `NotebookDoc`, rewrite trust/environment/path/project metadata, or acquire the frontend notebook editing API.
 
@@ -214,6 +214,12 @@ an anonymous viewer instead, and shows a visible diagnostic with a reset button.
 
 ## Cloudflare Access auth
 
+This is the currently implemented deployed-auth prototype path, but it is no
+longer the intended default production path. The architecture now points
+notebook-cloud at direct OIDC on `preview.runt.run`, reusing the retired
+`runtimed/intheloop` Anaconda stage OIDC lane. See
+`docs/architecture/hosted-direct-oidc-demo-runbook.md`.
+
 When `NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN` and `NOTEBOOK_CLOUD_ACCESS_AUD`
 are configured, the Worker can authenticate Cloudflare Access/OIDC-style JWTs
 before running the D1 ACL lookup. Tokens are accepted from:
@@ -304,8 +310,9 @@ users. Add `NOTEBOOK_CLOUD_ACCESS_PUBLIC_SMOKE=1` only for a host that allows
 unauthenticated public viewer sockets to reach the Worker. A hostname protected
 entirely by Access should block anonymous public viewers at the edge.
 
-The complete Access + Anaconda runbook is
-`docs/architecture/hosted-access-anaconda-demo-runbook.md`.
+The historical Access + Anaconda runbook is
+`docs/architecture/hosted-access-anaconda-demo-runbook.md`; the current target
+runbook is `docs/architecture/hosted-direct-oidc-demo-runbook.md`.
 
 The viewer auth menu has a "Use browser session" mode for Cloudflare Access
 trials. It stores only the requested room scope in localStorage; the credential
@@ -563,8 +570,8 @@ curl "http://127.0.0.1:8787/api/n/demo/render"
 
 1. Verify the deployed Alice/Bob/anonymous viewer trial against the current
    Worker after each live-sync change.
-2. Promote the Cloudflare Access path from prototype configuration to the
-   default hosted-room auth path.
+2. Implement direct OIDC and take over `preview.runt.run` from the retired
+   `runtimed/intheloop` preview app.
 3. Replace flat ACL rows with the relationship model chosen for hosted
    notebooks.
 4. Decide the runtime-peer upload flow for presigned blob writes and remote

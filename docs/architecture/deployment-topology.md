@@ -14,8 +14,9 @@ layers:
   per-frame actor validation.
 - `hosted-room-authorization.md` defines the hosted room ACL and makes the
   Durable Object the live document host.
-- `hosted-credential-transport.md` defines how Cloudflare Access, OIDC,
-  JupyterHub, browser WebSockets, and native clients present credentials.
+- `hosted-credential-transport.md` defines how direct OIDC, optional
+  Cloudflare Access, JupyterHub, browser WebSockets, and native clients present
+  credentials.
 - `hosted-notebook-artifacts.md` defines the durable snapshot pair and blob
   layout.
 - `hosted-output-origin-isolation.md` defines why authenticated app origins,
@@ -71,10 +72,11 @@ Cloudflare Worker + Durable Object room host
 JupyterHub runtime sidecar / compute
 ```
 
-Cloudflare is the document engine and collaboration surface. Anaconda OIDC,
-usually through Cloudflare Access for the first hosted path, authenticates users
-into the room. JupyterHub provides compute by attaching a runtime peer to that
-room, not by becoming the room's document authority.
+Cloudflare is the document engine and collaboration surface. Direct Anaconda
+OIDC authenticates users into the room for the first hosted path, using the
+retired `preview.runt.run` lane from `runtimed/intheloop` as staging. JupyterHub
+provides compute by attaching a runtime peer to that room, not by becoming the
+room's document authority.
 
 ## Research Notes
 
@@ -112,11 +114,11 @@ scopes authorize access to Hub compute. They do not grant nteract room roles;
 the nteract room ACL still grants `runtime_peer`, `editor`, or `owner`.
 
 Anaconda auth fits the hosted room side as an OIDC identity source. For the
-first Anaconda-friendly deployment, Cloudflare Access can own the browser login
-flow with Anaconda configured as a generic OIDC provider, and the Worker
-validates the Access assertion before consulting the room ACL. Direct Anaconda
-OIDC validation can come later if we need Anaconda-scoped principals instead of
-Access-scoped principals.
+first Anaconda-friendly deployment, the notebook app should use direct OIDC
+against Anaconda stage on `preview.runt.run`, and the Worker should validate
+Anaconda-issued bearer JWTs before consulting the room ACL. Cloudflare Access
+can remain an optional outer perimeter for deployments that deliberately want
+it, but it is not the default notebook-cloud login path.
 
 References:
 
@@ -124,10 +126,6 @@ References:
   `https://developers.cloudflare.com/durable-objects/best-practices/websockets/`
 - Cloudflare Durable Objects limits:
   `https://developers.cloudflare.com/durable-objects/platform/limits/`
-- Cloudflare Access generic OIDC:
-  `https://developers.cloudflare.com/cloudflare-one/identity/idp-integration/generic-oidc/`
-- Cloudflare Access JWT validation:
-  `https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/`
 - JupyterHub services:
   `https://jupyterhub.readthedocs.io/en/latest/reference/services.html`
 - JupyterHub scopes:
@@ -228,8 +226,8 @@ The identity model does not require a local daemon bridge for hosted rooms.
 Supported client-to-room patterns:
 
 - **Browser direct.** The browser connects to the hosted room WebSocket. For the
-  Anaconda-friendly path, Cloudflare Access handles browser login and forwards a
-  validated Access assertion to the Worker.
+  Anaconda-friendly path, the viewer/editor shell performs direct OIDC login and
+  sends a validated bearer token through the non-echoed WebSocket subprotocol.
 - **Native direct.** Desktop, CLI, TUI, and agents connect directly to the room
   WebSocket with an `Authorization` header or equivalent native credential
   transport.
@@ -238,9 +236,8 @@ Supported client-to-room patterns:
   clients to that remote room. This is a convenience and credential-management
   topology, not the security primitive.
 - **Mixed local and hosted rooms.** One process may hold a `local:*` connection
-  to a local daemon room and a `user:anaconda:*` or Access-scoped connection to
-  a hosted room at the same time. The two rooms have separate actor spaces and
-  ACLs.
+  to a local daemon room and a `user:anaconda:*` hosted-room connection at the
+  same time. The two rooms have separate actor spaces and ACLs.
 
 The local bridge is useful for desktop ergonomics and agent delegation, but it
 must not recreate #2284's implicit "the local daemon owns the room" model. When
@@ -251,9 +248,9 @@ operator on a remote room.
 
 Browser WebSocket upgrades to hosted rooms must pass an explicit origin gate.
 This topology inherits the credential transport ADR's rule: any browser-visible
-credential transport, and especially Cloudflare Access cookie/assertion auth,
-requires the Worker to reject missing, malformed, or untrusted `Origin` values
-before the Durable Object sees the connection.
+credential transport, including OIDC bearer subprotocols and optional
+cookie/assertion auth, requires the Worker to reject missing, malformed, or
+untrusted `Origin` values before the Durable Object sees the connection.
 
 Minimum policy:
 

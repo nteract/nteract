@@ -17,11 +17,10 @@ the shared isolated output frame:
   a sandbox-induced opaque origin.
 
 That model is still the core security boundary, but hosted production adds real
-authenticated browser sessions, notebook ACLs, Cloudflare Access cookies,
-viewer/editor WebSockets, and public CDN-style renderer assets. A hosted
-deployment must not let output JavaScript share cookies, localStorage, ambient
-credentials, room WebSocket privileges, or application-origin APIs with the
-notebook application.
+authenticated browser sessions, OIDC tokens, notebook ACLs, viewer/editor
+WebSockets, and public CDN-style renderer assets. A hosted deployment must not
+let output JavaScript share cookies, localStorage, ambient credentials, room
+WebSocket privileges, or application-origin APIs with the notebook application.
 
 Prior art exists in the older `runtimed/intheloop` deployment. The main
 application and API were served from `https://app.runt.run`, while user-created
@@ -51,9 +50,9 @@ A production hosted notebook deployment should separate at least these origin
 classes:
 
 1. **Notebook application origin.** Serves the authenticated UI, HTTP APIs, and
-   typed-frame room WebSockets. This origin is protected by Cloudflare Access or
-   another configured identity provider, owns cookies/session material, enforces
-   WebSocket `Origin` policy, and stamps trusted room identity headers.
+   typed-frame room WebSockets. This origin is protected by the configured
+   identity provider, owns browser auth material, enforces WebSocket `Origin`
+   policy, and stamps trusted room identity headers.
 2. **Renderer asset origin.** Serves public build-time renderer sidecars such
    as Sift WASM, plugin CSS, and future renderer chunk assets. It has no
    notebook identity, no room APIs, no authenticated WebSockets, and no
@@ -106,7 +105,8 @@ or blob resolver, not by giving the output frame application-origin powers.
 
 Output document JavaScript must not receive:
 
-- Cloudflare Access cookies or Access JWTs;
+- direct OIDC access or refresh tokens;
+- Cloudflare Access cookies or Access JWTs if an outer Access perimeter is used;
 - notebook room bearer tokens, one-time tickets, or dev tokens;
 - `Authorization` material;
 - trusted identity headers;
@@ -176,18 +176,17 @@ is deliberately public. In both cases, attribution and ACL decisions stay
 server-side; output JavaScript does not get to self-identify authors or
 principals.
 
-## Decision 6: The Anaconda demo uses Access for the app origin only
+## Decision 6: The Anaconda demo authenticates only the app origin
 
-The first Anaconda-friendly hosted demo uses Cloudflare Access with Anaconda
-configured as the OIDC provider. That Access application should protect the
-notebook application host only.
+The first Anaconda-friendly hosted demo uses direct OIDC on the notebook
+application host, starting with `preview.runt.run`. That browser credential
+belongs only to the notebook application origin.
 
 Do not put the output document origin or renderer asset origin behind the same
-Access application cookie. If those origins need access control, use
-capability URLs or an output-specific validation layer that does not share the
-notebook app's ambient browser credential. This avoids the main failure mode
-from issue #2645: untrusted output code becoming same-site with the
-authenticated notebook app.
+browser auth surface. If those origins need access control, use capability URLs
+or an output-specific validation layer that does not share the notebook app's
+ambient browser credential. This avoids the main failure mode from issue #2645:
+untrusted output code becoming same-site with the authenticated notebook app.
 
 The `runtimed/intheloop` precedent maps to notebook-cloud like this:
 
@@ -200,7 +199,7 @@ The `runtimed/intheloop` precedent maps to notebook-cloud like this:
 | Cloudflare Worker assets for iframe shell | renderer/output shell assets |
 
 This table is a precedent map, not a deployment mandate. It names the boundary
-we want to preserve, while leaving the concrete hosting, CDN, Access/OIDC, and
+we want to preserve, while leaving the concrete hosting, CDN, OIDC, and
 capability-token mechanics open to better current practice.
 
 Anaconda is the identity provider for the app origin. It is not a reason for
