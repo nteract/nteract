@@ -1,4 +1,16 @@
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { Check, Pencil } from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
+import { CellContainer } from "@/components/cell/CellContainer";
+import { OutputArea } from "@/components/cell/OutputArea";
+import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import { CodeMirrorEditor } from "@/components/editor/codemirror-editor";
 import type { CodeMirrorEditorRef } from "@/components/editor";
 import {
@@ -7,6 +19,8 @@ import {
   setRemoteSelections,
 } from "@/components/editor/remote-cursors";
 import type { RemoteCellPresence } from "@/components/editor/presence-state";
+import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
+import { cn } from "@/lib/utils";
 import {
   createCrdtBridge,
   remoteChangesFromTextAttributions,
@@ -29,6 +43,8 @@ export interface EditableMarkdownCellProps {
   cell: ResolvedCell;
   className?: string;
   sourceClassName?: string;
+  priority?: readonly string[];
+  hostContext?: NteractEmbedHostContextPatch;
   onSourceChange: (cellId: string, source: string) => void;
   onSyncNeeded: () => void;
   getHandle: () => NotebookHandle | null;
@@ -49,6 +65,8 @@ export function EditableMarkdownCell({
   cell,
   className,
   sourceClassName,
+  priority,
+  hostContext,
   onSourceChange,
   onSyncNeeded,
   getHandle,
@@ -58,6 +76,7 @@ export function EditableMarkdownCell({
   onPresenceCursor,
   onPresenceSelection,
 }: EditableMarkdownCellProps) {
+  const [editing, setEditing] = useState(cell.source.trim().length === 0);
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const getHandleRef = useRef(getHandle);
   const onSourceChangeRef = useRef(onSourceChange);
@@ -95,6 +114,36 @@ export function EditableMarkdownCell({
     return editorExtensions;
   }, [bridge.extension, cell.id, onPresenceCursor, onPresenceSelection]);
 
+  const markdownOutput = useMemo<JupyterOutput>(
+    () => ({
+      output_id: `markdown-source:${cell.id}`,
+      output_type: "display_data",
+      data: { "text/markdown": cell.source },
+      metadata: {},
+    }),
+    [cell.id, cell.source],
+  );
+
+  const enterEditing = useCallback(() => {
+    setEditing(true);
+  }, []);
+
+  const exitEditing = useCallback(() => {
+    if (cell.source.trim().length > 0) {
+      setEditing(false);
+    }
+  }, [cell.source]);
+
+  const handlePreviewKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        enterEditing();
+      }
+    },
+    [enterEditing],
+  );
+
   useLayoutEffect(() => {
     if (!textAttributionQueue) return;
 
@@ -116,29 +165,108 @@ export function EditableMarkdownCell({
   }, [bridge, cell.source]);
 
   useEffect(() => {
+    if (!editing) return;
+    const frame = requestAnimationFrame(() => {
+      editorRef.current?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [editing]);
+
+  useEffect(() => {
     const view = editorRef.current?.getEditor();
     if (!view) return;
     setRemoteCursors(view, remotePresence?.cursors ?? []);
     setRemoteSelections(view, remotePresence?.selections ?? []);
-  }, [remotePresence]);
+  }, [editing, remotePresence]);
 
   return (
-    <article
+    <CellContainer
+      id={cell.id}
+      cellType="markdown"
       className={className}
-      data-cell-id={cell.id}
-      data-cell-type="markdown"
-      data-slot="cloud-editable-markdown-cell"
-    >
-      <div className={sourceClassName} data-slot="cloud-editable-markdown-source">
-        <CodeMirrorEditor
-          ref={editorRef}
-          initialValue={cell.source}
-          language="markdown"
-          lineWrapping
-          extensions={extensions}
-          className="cloud-markdown-editor min-h-[2rem]"
+      presenceIndicators={<CloudMarkdownPresenceIndicators presence={remotePresence} />}
+      rightGutterContent={
+        <button
+          type="button"
+          className="cloud-markdown-cell-action"
+          aria-label={editing ? "Render markdown" : "Edit markdown"}
+          title={editing ? "Render markdown" : "Edit markdown"}
+          onClick={editing ? exitEditing : enterEditing}
+        >
+          {editing ? <Check aria-hidden="true" /> : <Pencil aria-hidden="true" />}
+        </button>
+      }
+      codeContent={
+        editing ? (
+          <div className={sourceClassName} data-slot="cloud-editable-markdown-source">
+            <CodeMirrorEditor
+              ref={editorRef}
+              initialValue={cell.source}
+              language="markdown"
+              lineWrapping
+              onBlur={exitEditing}
+              extensions={extensions}
+              placeholder="Markdown"
+              className="cloud-markdown-editor min-h-[2rem]"
+            />
+          </div>
+        ) : (
+          <div
+            className={cn("cloud-markdown-preview", sourceClassName)}
+            data-slot="cloud-editable-markdown-preview"
+            role="textbox"
+            aria-readonly
+            tabIndex={0}
+            onDoubleClick={enterEditing}
+            onKeyDown={handlePreviewKeyDown}
+          >
+            <OutputArea
+              cellId={cell.id}
+              outputs={[markdownOutput]}
+              isolated="auto"
+              priority={priority}
+              hostContext={hostContext}
+              className="cloud-markdown-preview-output"
+            />
+          </div>
+        )
+      }
+    />
+  );
+}
+
+function CloudMarkdownPresenceIndicators({ presence }: { presence?: RemoteCellPresence }) {
+  const peers = useMemo(() => {
+    const byPeer = new Map<string, { label: string; color: string }>();
+    for (const cursor of presence?.cursors ?? []) {
+      byPeer.set(cursor.peerId, {
+        label: cursor.peerLabel,
+        color: cursor.color,
+      });
+    }
+    for (const selection of presence?.selections ?? []) {
+      byPeer.set(selection.peerId, {
+        label: selection.peerLabel,
+        color: selection.color,
+      });
+    }
+    return Array.from(byPeer.entries()).map(([peerId, peer]) => ({ peerId, ...peer }));
+  }, [presence]);
+
+  if (peers.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="cloud-markdown-presence" aria-label="Remote editors">
+      {peers.slice(0, 4).map((peer) => (
+        <span
+          key={peer.peerId}
+          style={{ backgroundColor: peer.color }}
+          title={peer.label}
+          aria-label={peer.label}
         />
-      </div>
-    </article>
+      ))}
+    </div>
   );
 }

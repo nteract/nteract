@@ -1742,6 +1742,8 @@ function CloudLiveNotebook({
               cell={cell}
               className="cloud-cell cloud-editable-markdown-cell"
               sourceClassName="cloud-source-block"
+              priority={priority}
+              hostContext={hostContext}
               onSourceChange={onMarkdownSourceChange}
               onSyncNeeded={onMarkdownSyncNeeded}
               getHandle={getHandle}
