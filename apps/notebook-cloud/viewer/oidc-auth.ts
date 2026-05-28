@@ -71,17 +71,22 @@ export function normalizeOidcAuthConfig(
 export function readStoredOidcToken(
   storage: Pick<CloudOidcStorage, "getItem">,
   nowSeconds = currentEpochSeconds(),
-): { token: CloudOidcTokenState | null; problem: string | null; expired: boolean } {
+): {
+  token: CloudOidcTokenState | null;
+  problem: string | null;
+  expired: boolean;
+  expiredClaims: CloudOidcClaims | null;
+} {
   const parsed = readStoredOidcTokenState(storage);
   if (!parsed.token) {
-    return { ...parsed, expired: false };
+    return { ...parsed, expired: false, expiredClaims: null };
   }
   const { token } = parsed;
   if (token.expiresAt <= nowSeconds + EXPIRY_SKEW_SECONDS) {
-    return { token: null, problem: null, expired: true };
+    return { token: null, problem: null, expired: true, expiredClaims: token.claims };
   }
 
-  return { token, problem: null, expired: false };
+  return { token, problem: null, expired: false, expiredClaims: null };
 }
 
 export function storedOidcTokenNeedsRefresh(

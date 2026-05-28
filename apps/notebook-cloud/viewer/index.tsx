@@ -450,7 +450,9 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
             </button>
           )}
           <a href="/n/topic-viz">Open topic-viz</a>
-          {authState.mode === "invalid" || authState.mode === "access" ? (
+          {authState.mode === "invalid" ||
+          authState.mode === "access" ||
+          authState.mode === "oidc_expired" ? (
             <button type="button" onClick={resetAuth}>
               <RotateCcw aria-hidden="true" />
               Reset
@@ -998,7 +1000,7 @@ function NotebookViewer({
         </div>
       </div>
 
-      {authState.mode === "invalid" ? (
+      {authState.mode === "invalid" || authState.mode === "oidc_expired" ? (
         <div className="cloud-state cloud-auth-state mx-8 mr-4" data-kind="error">
           <span>{prototypeAuthSummary(authState)}</span>
           <button type="button" onClick={resetPrototypeAuth}>
@@ -1549,7 +1551,7 @@ function CloudAuthControls({
         ? (authState.user ?? "Signed in")
         : authState.mode === "access"
           ? "Browser session"
-          : authState.mode === "invalid"
+          : authState.mode === "invalid" || authState.mode === "oidc_expired"
             ? "Auth needs attention"
             : "Anonymous";
   const diagnostics = prototypeAuthDiagnostics(authState, {

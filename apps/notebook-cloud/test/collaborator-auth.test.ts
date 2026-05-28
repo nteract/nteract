@@ -122,7 +122,7 @@ describe("cloud collaborator auth", () => {
     assert.match(prototypeAuthSummary(state), /Anil requesting viewer/);
   });
 
-  it("falls back to anonymous auth for expired non-refreshable OIDC sessions", () => {
+  it("keeps expired non-refreshable OIDC sessions visible for renewal", () => {
     const storage = new MemoryStorage();
     storage.setItem(
       NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
@@ -145,10 +145,12 @@ describe("cloud collaborator auth", () => {
 
     const state = readCloudPrototypeAuth(storage);
 
-    assert.equal(state.mode, "anonymous");
+    assert.equal(state.mode, "oidc_expired");
     assert.equal(state.token, null);
-    assert.equal(state.problem, null);
-    assert.equal(prototypeAuthSummary(state), "Anonymous read-only viewer");
+    assert.equal(state.user, "Expired User");
+    assert.equal(state.requestedScope, NOTEBOOK_CLOUD_DEFAULT_SCOPE);
+    assert.equal(state.problem, "Stored OIDC session is expired. Sign in again.");
+    assert.equal(prototypeAuthSummary(state), "Expired User needs sign-in renewal.");
     assert.deepEqual(cloudSyncAuthFromPrototypeAuthState(state), {
       headers: {},
       protocols: [],
@@ -156,6 +158,39 @@ describe("cloud collaborator auth", () => {
       operator: null,
       requestedScope: null,
     });
+  });
+
+  it("diagnoses expired OIDC sessions without exposing stale bearer material", () => {
+    const storage = new MemoryStorage();
+    const accessToken = jwt({
+      sub: "anaconda-user-expired",
+      email: "expired@example.com",
+      name: "Expired User",
+    });
+    storage.setItem(
+      NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
+      JSON.stringify({
+        accessToken,
+        refreshToken: null,
+        expiresAt: Math.floor(Date.now() / 1000) - 3600,
+        claims: {
+          sub: "anaconda-user-expired",
+          email: "expired@example.com",
+          name: "Expired User",
+        },
+      }),
+    );
+
+    const diagnostics = prototypeAuthDiagnostics(readCloudPrototypeAuth(storage), {
+      actorLabel: null,
+      connectionError: null,
+      connectionScope: "viewer",
+    });
+
+    assert.match(diagnostics.copyText, /Stored identity: Expired User/);
+    assert.match(diagnostics.copyText, /Sign-in: Stored OIDC session is expired/);
+    assert.match(diagnostics.copyText, /Effective auth: No expired bearer token is sent/);
+    assert.doesNotMatch(diagnostics.copyText, new RegExp(accessToken.replaceAll(".", "\\.")));
   });
 
   it("can request an editor role from a browser Access session without JS token material", () => {

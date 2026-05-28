@@ -30,7 +30,7 @@ export interface CloudSyncAuth {
 }
 
 export interface CloudPrototypeAuthState {
-  mode: "anonymous" | "access" | "dev" | "invalid" | "oidc";
+  mode: "anonymous" | "access" | "dev" | "invalid" | "oidc" | "oidc_expired";
   token: string | null;
   user: string | null;
   oidcClaims: CloudOidcClaims | null;
@@ -109,7 +109,14 @@ export function readCloudPrototypeAuth(
       };
     }
     if (oidcSession.expired) {
-      return anonymousAuthState();
+      return {
+        mode: "oidc_expired",
+        token: null,
+        user: oidcSession.expiredClaims ? oidcDisplayName(oidcSession.expiredClaims) : null,
+        oidcClaims: oidcSession.expiredClaims,
+        requestedScope: NOTEBOOK_CLOUD_DEFAULT_SCOPE,
+        problem: "Stored OIDC session is expired. Sign in again.",
+      };
     }
     if (requestedScope) {
       return {
@@ -289,11 +296,14 @@ export function prototypeAuthSummary(state: CloudPrototypeAuthState): string {
       state.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE
     }`;
   }
+  if (state.mode === "oidc_expired") {
+    return `${state.user ?? "OIDC session"} needs sign-in renewal.`;
+  }
   if (state.mode === "access") {
     return `Browser session requesting ${state.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE}`;
   }
   if (state.mode === "invalid") {
-    return `${state.problem ?? "Stored collaborator token is invalid"} Connected anonymously.`;
+    return state.problem ?? "Stored collaborator token is invalid.";
   }
   return "Anonymous read-only viewer";
 }
@@ -338,6 +348,31 @@ export function prototypeAuthDiagnostics(
       rows.push({
         label: "Provider subject",
         value: state.oidcClaims.sub,
+      });
+    }
+  } else if (state.mode === "oidc_expired") {
+    rows.push(
+      {
+        label: "Stored identity",
+        value: state.user ?? "OIDC session",
+        tone: "warning",
+      },
+      {
+        label: "Sign-in",
+        value: state.problem ?? "Stored OIDC session is expired. Sign in again.",
+        tone: "warning",
+      },
+      {
+        label: "Effective auth",
+        value: "No expired bearer token is sent; public notebooks may still load as a viewer.",
+        tone: "warning",
+      },
+    );
+    if (state.oidcClaims?.sub) {
+      rows.push({
+        label: "Provider subject",
+        value: state.oidcClaims.sub,
+        tone: "warning",
       });
     }
   } else if (state.mode === "access") {
