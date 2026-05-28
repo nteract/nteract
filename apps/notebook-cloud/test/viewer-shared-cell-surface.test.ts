@@ -26,6 +26,14 @@ test("cloud markdown edit toggle avoids blur and stale-source races", () => {
   assert.match(sourceText, /onClick=\{handleActionClick\}/);
 });
 
+test("cloud markdown editor remounts with latest source state", () => {
+  const sourcePath = new URL("../viewer/editable-markdown-cell.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.match(sourceText, /if \(!editing\) return;\s+bridge\.applyFullSource\(cell\.source\);/);
+  assert.match(sourceText, /cell\.source\.trim\(\)\.length === 0 && !editing/);
+});
+
 test("cloud live notebook passes renderer policy into editable markdown cells", () => {
   const sourcePath = new URL("../viewer/index.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");

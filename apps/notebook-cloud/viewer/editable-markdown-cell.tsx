@@ -190,8 +190,15 @@ export function EditableMarkdownCell({
   }, [bridge, cell.id, localActorLabel, textAttributionQueue]);
 
   useLayoutEffect(() => {
+    if (!editing) return;
     bridge.applyFullSource(cell.source);
-  }, [bridge, cell.source]);
+  }, [bridge, cell.source, editing]);
+
+  useEffect(() => {
+    if (cell.source.trim().length === 0 && !editing) {
+      setEditing(true);
+    }
+  }, [cell.source, editing]);
 
   useEffect(() => {
     if (!editing) return;
