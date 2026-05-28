@@ -625,7 +625,7 @@ dependencies = [
 
 [[package]]
 name = "automerge-recovery"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "automerge",
  "thiserror 2.0.18",
@@ -633,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "automunge"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "automerge",
  "serde_json",
@@ -884,7 +884,7 @@ dependencies = [
 
 [[package]]
 name = "build-metadata"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "bumpalo"
@@ -4018,7 +4018,7 @@ dependencies = [
 
 [[package]]
 name = "kernel-env"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "dirs",
@@ -4045,7 +4045,7 @@ dependencies = [
 
 [[package]]
 name = "kernel-launch"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "dirs",
@@ -4444,11 +4444,11 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "mcp-client-branding"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "mcp-supervisor"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "dirs",
  "libc",
@@ -4768,7 +4768,7 @@ dependencies = [
 
 [[package]]
 name = "notebook"
-version = "2.5.1"
+version = "2.5.2"
 dependencies = [
  "anyhow",
  "build-metadata",
@@ -4809,7 +4809,7 @@ dependencies = [
 
 [[package]]
 name = "notebook-doc"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "automerge",
  "automerge-recovery",
@@ -4830,7 +4830,7 @@ dependencies = [
 
 [[package]]
 name = "notebook-protocol"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "log",
@@ -4842,7 +4842,7 @@ dependencies = [
 
 [[package]]
 name = "notebook-sync"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "automerge",
  "automerge-recovery",
@@ -4862,7 +4862,7 @@ dependencies = [
 
 [[package]]
 name = "notebook-wire"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "serde",
 ]
@@ -4908,7 +4908,7 @@ dependencies = [
 
 [[package]]
 name = "nteract-identity"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "jsonwebtoken",
@@ -4919,7 +4919,7 @@ dependencies = [
 
 [[package]]
 name = "nteract-mcp"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "dirs",
  "rmcp",
@@ -4932,7 +4932,7 @@ dependencies = [
 
 [[package]]
 name = "nteract-predicate"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "arrow",
  "arrow-cast",
@@ -4946,7 +4946,7 @@ dependencies = [
 
 [[package]]
 name = "nteract-telemetry"
-version = "2.5.1"
+version = "2.5.2"
 dependencies = [
  "log",
  "reqwest 0.12.28",
@@ -5960,7 +5960,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "playdate-image"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "image",
  "thiserror 2.0.18",
@@ -7061,7 +7061,7 @@ dependencies = [
 
 [[package]]
 name = "repr-llm"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "base64 0.22.1",
  "nteract-predicate",
@@ -7370,7 +7370,7 @@ dependencies = [
 
 [[package]]
 name = "runt"
-version = "2.5.1"
+version = "2.5.2"
 dependencies = [
  "anyhow",
  "build-metadata",
@@ -7404,7 +7404,7 @@ dependencies = [
 
 [[package]]
 name = "runt-mcp"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -7432,7 +7432,7 @@ dependencies = [
 
 [[package]]
 name = "runt-mcp-proxy"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "rmcp",
  "serde_json",
@@ -7443,7 +7443,7 @@ dependencies = [
 
 [[package]]
 name = "runt-publish"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "automerge",
@@ -7466,7 +7466,7 @@ dependencies = [
 
 [[package]]
 name = "runt-trust"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -7474,7 +7474,7 @@ dependencies = [
 
 [[package]]
 name = "runt-workspace"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "core-foundation",
  "dirs",
@@ -7487,7 +7487,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-doc"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "automerge",
  "automerge-recovery",
@@ -7501,7 +7501,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed"
-version = "2.5.1"
+version = "2.5.2"
 dependencies = [
  "aho-corasick",
  "alacritty_terminal",
@@ -7574,7 +7574,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed-client"
-version = "2.5.1"
+version = "2.5.2"
 dependencies = [
  "automerge",
  "automerge-recovery",
@@ -7600,7 +7600,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed-node"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "arrow",
  "base64 0.22.1",
@@ -7626,7 +7626,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed-outputs"
-version = "2.5.1"
+version = "2.5.2"
 dependencies = [
  "base64 0.22.1",
  "notebook-doc",
@@ -7641,7 +7641,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed-py"
-version = "2.5.1"
+version = "2.5.2"
 dependencies = [
  "kernel-env",
  "log",
@@ -7662,7 +7662,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed-service"
-version = "2.5.1"
+version = "2.5.2"
 dependencies = [
  "dirs",
  "log",
@@ -7673,7 +7673,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed-settings-sync"
-version = "2.5.1"
+version = "2.5.2"
 dependencies = [
  "automerge",
  "log",
@@ -7688,7 +7688,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed-wasm"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "automerge",
  "console_error_panic_hook",
@@ -8401,7 +8401,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "sift-wasm"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "arrow",
  "arrow-cast",
@@ -11656,7 +11656,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "dirs",
  "runt-workspace",

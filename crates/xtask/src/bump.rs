@@ -43,12 +43,22 @@ struct Target {
 const TARGETS: &[Target] = &[
     // Rust workspace crates (keep in sync with [workspace.members] in /Cargo.toml)
     Target {
+        path: "crates/build-metadata/Cargo.toml",
+        format: Format::Toml,
+        matches: 1,
+    },
+    Target {
         path: "crates/runt/Cargo.toml",
         format: Format::Toml,
         matches: 1,
     },
     Target {
         path: "crates/runtimed/Cargo.toml",
+        format: Format::Toml,
+        matches: 1,
+    },
+    Target {
+        path: "crates/runt-publish/Cargo.toml",
         format: Format::Toml,
         matches: 1,
     },
@@ -89,7 +99,17 @@ const TARGETS: &[Target] = &[
         matches: 1,
     },
     Target {
+        path: "crates/nteract-identity/Cargo.toml",
+        format: Format::Toml,
+        matches: 1,
+    },
+    Target {
         path: "crates/notebook-doc/Cargo.toml",
+        format: Format::Toml,
+        matches: 1,
+    },
+    Target {
+        path: "crates/notebook-wire/Cargo.toml",
         format: Format::Toml,
         matches: 1,
     },
@@ -119,6 +139,16 @@ const TARGETS: &[Target] = &[
         matches: 1,
     },
     Target {
+        path: "crates/mcp-client-branding/Cargo.toml",
+        format: Format::Toml,
+        matches: 1,
+    },
+    Target {
+        path: "crates/playdate-image/Cargo.toml",
+        format: Format::Toml,
+        matches: 1,
+    },
+    Target {
         path: "crates/runt-trust/Cargo.toml",
         format: Format::Toml,
         matches: 1,
@@ -135,6 +165,11 @@ const TARGETS: &[Target] = &[
     },
     Target {
         path: "crates/kernel-env/Cargo.toml",
+        format: Format::Toml,
+        matches: 1,
+    },
+    Target {
+        path: "crates/automerge-recovery/Cargo.toml",
         format: Format::Toml,
         matches: 1,
     },
@@ -483,6 +518,8 @@ fn bump_str(version: &str, kind: BumpKind) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     #[test]
@@ -567,5 +604,56 @@ mod tests {
             "crates/sift-wasm/pkg/package.json: expected 1 version line(s), found 0",
             "crates/sift-wasm/pkg/package.json"
         ));
+    }
+
+    #[test]
+    fn rust_workspace_crate_versions_are_bump_targets() {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let repo_root = manifest_dir
+            .parent()
+            .and_then(Path::parent)
+            .expect("xtask crate should live under crates/xtask");
+        let crates_dir = repo_root.join("crates");
+
+        let versioned_crates: BTreeSet<String> = fs::read_dir(&crates_dir)
+            .expect("read crates directory")
+            .map(|entry| entry.expect("read crate directory entry").path())
+            .filter(|path| path.is_dir())
+            .filter_map(|path| {
+                let cargo_toml = path.join("Cargo.toml");
+                let contents = fs::read_to_string(&cargo_toml).ok()?;
+                if contents.lines().any(|line| line.starts_with("version = ")) {
+                    Some(
+                        cargo_toml
+                            .strip_prefix(repo_root)
+                            .expect("crate manifest should be under repo root")
+                            .to_string_lossy()
+                            .replace('\\', "/"),
+                    )
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let bump_targets: BTreeSet<String> = TARGETS
+            .iter()
+            .filter_map(|target| match target.format {
+                Format::Toml
+                    if target.path.starts_with("crates/")
+                        && target.path.ends_with("/Cargo.toml") =>
+                {
+                    Some(target.path.to_string())
+                }
+                _ => None,
+            })
+            .collect();
+
+        let missing_targets: Vec<&String> = versioned_crates.difference(&bump_targets).collect();
+
+        assert!(
+            missing_targets.is_empty(),
+            "versioned crate manifests missing from bump TARGETS: {missing_targets:#?}"
+        );
     }
 }
