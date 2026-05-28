@@ -701,13 +701,19 @@ export function rewritePresenceFrame(
   return rewritePresenceIngress(
     frame.payload,
     peer.id,
-    peer.identity.principal,
+    presencePeerLabel(peer.identity),
     peer.identity.principal,
     peer.identity.operator,
   ).then((payload) => ({
     type: frame.type,
     payload,
   }));
+}
+
+export function presencePeerLabel(identity: AuthenticatedConnection): string {
+  return (
+    identity.metadata.displayName?.trim() || identity.metadata.email?.trim() || identity.principal
+  );
 }
 
 function notebookIdFromPath(pathname: string): string | undefined {

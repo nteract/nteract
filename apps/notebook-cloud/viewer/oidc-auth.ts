@@ -71,17 +71,17 @@ export function normalizeOidcAuthConfig(
 export function readStoredOidcToken(
   storage: Pick<CloudOidcStorage, "getItem">,
   nowSeconds = currentEpochSeconds(),
-): { token: CloudOidcTokenState | null; problem: string | null } {
+): { token: CloudOidcTokenState | null; problem: string | null; expired: boolean } {
   const parsed = readStoredOidcTokenState(storage);
   if (!parsed.token) {
-    return parsed;
+    return { ...parsed, expired: false };
   }
   const { token } = parsed;
   if (token.expiresAt <= nowSeconds + EXPIRY_SKEW_SECONDS) {
-    return { token: null, problem: "Stored OIDC session is expired." };
+    return { token: null, problem: null, expired: true };
   }
 
-  return { token, problem: null };
+  return { token, problem: null, expired: false };
 }
 
 export function storedOidcTokenNeedsRefresh(
@@ -94,7 +94,38 @@ export function storedOidcTokenNeedsRefresh(
   );
 }
 
-export async function refreshStoredOidcToken(
+const refreshesByStorage = new WeakMap<
+  CloudOidcStorage,
+  Map<string, Promise<CloudOidcTokenState>>
+>();
+
+export function refreshStoredOidcToken(
+  config: CloudOidcAuthConfig,
+  input: {
+    storage: CloudOidcStorage;
+    fetchImpl?: typeof fetch;
+    nowSeconds?: number;
+  },
+): Promise<CloudOidcTokenState> {
+  const refreshKey = oidcRefreshKey(config);
+  let storageRefreshes = refreshesByStorage.get(input.storage);
+  if (!storageRefreshes) {
+    storageRefreshes = new Map();
+    refreshesByStorage.set(input.storage, storageRefreshes);
+  }
+  const existing = storageRefreshes.get(refreshKey);
+  if (existing) {
+    return existing;
+  }
+
+  const refresh = refreshStoredOidcTokenUncoalesced(config, input).finally(() => {
+    storageRefreshes.delete(refreshKey);
+  });
+  storageRefreshes.set(refreshKey, refresh);
+  return refresh;
+}
+
+async function refreshStoredOidcTokenUncoalesced(
   config: CloudOidcAuthConfig,
   input: {
     storage: CloudOidcStorage;
@@ -123,6 +154,15 @@ export async function refreshStoredOidcToken(
     input.nowSeconds ?? currentEpochSeconds(),
     current.token,
   );
+}
+
+function oidcRefreshKey(config: CloudOidcAuthConfig): string {
+  return [
+    config.issuer,
+    config.clientId,
+    config.redirectUri,
+    config.scope ?? DEFAULT_OIDC_SCOPE,
+  ].join("\n");
 }
 
 function readStoredOidcTokenState(storage: Pick<CloudOidcStorage, "getItem">): {

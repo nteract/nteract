@@ -122,6 +122,42 @@ describe("cloud collaborator auth", () => {
     assert.match(prototypeAuthSummary(state), /Anil requesting viewer/);
   });
 
+  it("falls back to anonymous auth for expired non-refreshable OIDC sessions", () => {
+    const storage = new MemoryStorage();
+    storage.setItem(
+      NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
+      JSON.stringify({
+        accessToken: jwt({
+          sub: "anaconda-user-expired",
+          email: "expired@example.com",
+          name: "Expired User",
+        }),
+        refreshToken: null,
+        expiresAt: Math.floor(Date.now() / 1000) - 3600,
+        claims: {
+          sub: "anaconda-user-expired",
+          email: "expired@example.com",
+          name: "Expired User",
+        },
+      }),
+    );
+    storage.setItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY, "editor");
+
+    const state = readCloudPrototypeAuth(storage);
+
+    assert.equal(state.mode, "anonymous");
+    assert.equal(state.token, null);
+    assert.equal(state.problem, null);
+    assert.equal(prototypeAuthSummary(state), "Anonymous read-only viewer");
+    assert.deepEqual(cloudSyncAuthFromPrototypeAuthState(state), {
+      headers: {},
+      protocols: [],
+      user: null,
+      operator: null,
+      requestedScope: null,
+    });
+  });
+
   it("can request an editor role from a browser Access session without JS token material", () => {
     const storage = new MemoryStorage();
     storeCloudAccessAuth(storage, { scope: "editor" });

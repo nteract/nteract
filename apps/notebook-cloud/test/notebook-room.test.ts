@@ -11,6 +11,7 @@ import {
 } from "../src/identity.ts";
 import {
   NotebookRoom,
+  presencePeerLabel,
   rewritePresenceFrame,
   shouldBroadcastFrame,
   shouldPersistMaterializedSyncFrame,
@@ -38,7 +39,7 @@ before(async () => {
 });
 
 describe("NotebookRoom presence rewrite", () => {
-  it("rewrites canonical CBOR presence to the server peer and authenticated principal", async () => {
+  it("rewrites canonical CBOR presence to the server peer and friendly display label", async () => {
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
     );
@@ -57,8 +58,35 @@ describe("NotebookRoom presence rewrite", () => {
 
     assert.equal(rewritten.type, FrameType.PRESENCE);
     assert.equal(body.peer_id, "server-peer");
-    assert.equal(body.peer_label, "user:dev:alice");
+    assert.equal(body.peer_label, "alice");
     assert.equal(body.actor_label, "user:dev:alice/agent:codex:s1");
+  });
+
+  it("uses display name, email, then principal for rewritten presence peer labels", () => {
+    const baseIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=editor"),
+    );
+    const withoutDisplayName = {
+      ...baseIdentity,
+      metadata: {
+        provider: baseIdentity.metadata.provider,
+        transport: baseIdentity.metadata.transport,
+        principalNamespace: baseIdentity.metadata.principalNamespace,
+        email: "alice@example.com",
+      },
+    };
+    const withoutFriendlyMetadata = {
+      ...baseIdentity,
+      metadata: {
+        provider: baseIdentity.metadata.provider,
+        transport: baseIdentity.metadata.transport,
+        principalNamespace: baseIdentity.metadata.principalNamespace,
+      },
+    };
+
+    assert.equal(presencePeerLabel(baseIdentity), "alice");
+    assert.equal(presencePeerLabel(withoutDisplayName), "alice@example.com");
+    assert.equal(presencePeerLabel(withoutFriendlyMetadata), "user:dev:alice");
   });
 
   it("falls back to the authenticated operator for invalid presented actor labels", async () => {
@@ -80,7 +108,7 @@ describe("NotebookRoom presence rewrite", () => {
 
     assert.equal(rewritten.type, FrameType.PRESENCE);
     assert.equal(body.actor_label, "user:dev:alice/desktop:a");
-    assert.equal(body.peer_label, "user:dev:alice");
+    assert.equal(body.peer_label, "alice");
   });
 
   it("rejects non-CBOR presence payloads", async () => {

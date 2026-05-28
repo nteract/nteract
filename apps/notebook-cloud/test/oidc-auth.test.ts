@@ -200,6 +200,67 @@ describe("cloud OIDC browser auth", () => {
     assert.equal(readStoredOidcToken(storage, 100).token?.accessToken, refreshedAccessToken);
   });
 
+  it("treats expired non-refreshable OIDC tokens as unusable without invalidating auth", () => {
+    const storage = new MemoryStorage();
+    storage.setItem(
+      NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
+      JSON.stringify({
+        accessToken: jwt({ sub: "anaconda-user-expired", name: "Expired User" }),
+        refreshToken: null,
+        expiresAt: 100,
+        claims: { sub: "anaconda-user-expired", name: "Expired User" },
+      }),
+    );
+
+    const stored = readStoredOidcToken(storage, 200);
+
+    assert.equal(stored.token, null);
+    assert.equal(stored.problem, null);
+    assert.equal(stored.expired, true);
+    assert.equal(storedOidcTokenNeedsRefresh(storage, 200), false);
+  });
+
+  it("coalesces concurrent refreshes for the same stored OIDC session", async () => {
+    const storage = new MemoryStorage();
+    const refreshedAccessToken = jwt({ sub: "anaconda-user-123", name: "Alice Refreshed" });
+    storage.setItem(
+      NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
+      JSON.stringify({
+        accessToken: jwt({ sub: "anaconda-user-123", name: "Alice" }),
+        refreshToken: "refresh-secret",
+        expiresAt: 100,
+        claims: { sub: "anaconda-user-123", name: "Alice" },
+      }),
+    );
+    let discoveryRequests = 0;
+    let tokenRequests = 0;
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith("/.well-known/openid-configuration")) {
+        discoveryRequests += 1;
+        return Response.json({
+          authorization_endpoint: "https://auth.stage.anaconda.com/api/auth/authorize",
+          token_endpoint: "https://auth.stage.anaconda.com/api/auth/token",
+        });
+      }
+      tokenRequests += 1;
+      return Response.json({
+        access_token: refreshedAccessToken,
+        expires_in: 300,
+      });
+    };
+
+    const [first, second] = await Promise.all([
+      refreshStoredOidcToken(authConfig, { storage, fetchImpl, nowSeconds: 200 }),
+      refreshStoredOidcToken(authConfig, { storage, fetchImpl, nowSeconds: 200 }),
+    ]);
+
+    assert.equal(first.accessToken, refreshedAccessToken);
+    assert.equal(second.accessToken, refreshedAccessToken);
+    assert.equal(discoveryRequests, 1);
+    assert.equal(tokenRequests, 1);
+  });
+
   it("preserves refresh token and profile claims when refresh responses omit them", async () => {
     const storage = new MemoryStorage();
     storage.setItem(
