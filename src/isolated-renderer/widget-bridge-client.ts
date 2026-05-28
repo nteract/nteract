@@ -28,10 +28,14 @@ import {
 } from "@/components/isolated/rpc-methods";
 import { createWidgetStore, type WidgetStore } from "@/components/widgets/widget-store";
 
-function isHttpBlobUrl(value: string): boolean {
+function isLocalDaemonBlobUrl(value: string): boolean {
   try {
     const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      url.hostname === "127.0.0.1" &&
+      url.pathname.startsWith("/blob/")
+    );
   } catch {
     return false;
   }
@@ -59,7 +63,7 @@ async function resolveBlobUrlsInPlace(
         if (typeof current !== "object" || current === null) return;
         current = (current as Record<string, unknown>)[segment];
       }
-      if (typeof current !== "string" || !isHttpBlobUrl(current)) return;
+      if (typeof current !== "string" || !isLocalDaemonBlobUrl(current)) return;
       try {
         const resp = await fetch(current);
         if (!resp.ok) return;

@@ -250,7 +250,9 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         if (cancelled || liveMaterializedRef.current) return;
 
         snapshotResolvedRef.current = true;
-        await projectCloudWidgetComms(widgetStore, widgetComms, projectedWidgetCommIdsRef);
+        await projectCloudWidgetComms(widgetStore, widgetComms, projectedWidgetCommIdsRef, {
+          isAllowedTextBlobUrl: (url) => isConfiguredBlobUrl(url, config.blobBasePath),
+        });
         if (cancelled || liveMaterializedRef.current) return;
         preloadSiftWasmForCells(resolvedCells, {
           blobBasePath: config.blobBasePath,
@@ -332,7 +334,9 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
       );
       if (disposed || sequence !== materializeSequence) return;
 
-      await projectCloudWidgetComms(widgetStore, widgetComms, projectedWidgetCommIdsRef);
+      await projectCloudWidgetComms(widgetStore, widgetComms, projectedWidgetCommIdsRef, {
+        isAllowedTextBlobUrl: (url) => isConfiguredBlobUrl(url, config.blobBasePath),
+      });
       if (disposed || sequence !== materializeSequence) return;
       liveMaterializedRef.current = true;
       setCells(resolvedCells);
@@ -950,6 +954,17 @@ function parseJsonOrNull(value: string | undefined): unknown {
     return JSON.parse(value) as unknown;
   } catch {
     return null;
+  }
+}
+
+function isConfiguredBlobUrl(value: string, blobBasePath: string): boolean {
+  try {
+    const url = new URL(value, location.href);
+    const base = new URL(blobBasePath, location.href);
+    const basePath = base.pathname.endsWith("/") ? base.pathname : `${base.pathname}/`;
+    return url.origin === base.origin && url.pathname.startsWith(basePath);
+  } catch {
+    return false;
   }
 }
 

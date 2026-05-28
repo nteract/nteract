@@ -12,6 +12,10 @@ export const CLOUD_WIDGET_RENDERERS = {
   [WIDGET_VIEW_MIME]: CloudWidgetViewRenderer,
 };
 
+export interface ProjectCloudWidgetCommsOptions {
+  isAllowedTextBlobUrl?: (url: string) => boolean;
+}
+
 export function CloudWidgetStoreProvider({ children }: { children: ReactNode }) {
   const storeRef = useRef<WidgetStore | null>(null);
   if (!storeRef.current) {
@@ -43,6 +47,7 @@ export async function projectCloudWidgetComms(
   store: WidgetStore,
   comms: readonly SnapshotWidgetComm[],
   projectedCommIdsRef: { current: Set<string> },
+  options: ProjectCloudWidgetCommsOptions = {},
 ): Promise<void> {
   const nextCommIds = new Set<string>();
 
@@ -50,7 +55,7 @@ export async function projectCloudWidgetComms(
     const commId = comm.comm_id;
     nextCommIds.add(commId);
     const state = widgetCommStoreState(comm);
-    await inlineTextBlobUrls(state, comm.text_paths);
+    await inlineTextBlobUrls(state, comm.text_paths, options.isAllowedTextBlobUrl);
     if (store.getModel(commId)) {
       store.updateModel(commId, state, comm.buffer_paths);
     } else {
@@ -69,12 +74,14 @@ export async function projectCloudWidgetComms(
 async function inlineTextBlobUrls(
   state: Record<string, unknown>,
   textPaths: string[][] | undefined,
+  isAllowedTextBlobUrl: ((url: string) => boolean) | undefined,
 ): Promise<void> {
   if (!textPaths || textPaths.length === 0) return;
   await Promise.all(
     textPaths.map(async (path) => {
       const url = readPath(state, path);
       if (typeof url !== "string") return;
+      if (!isAllowedTextBlobUrl?.(url)) return;
       try {
         const response = await fetch(url);
         if (!response.ok) return;

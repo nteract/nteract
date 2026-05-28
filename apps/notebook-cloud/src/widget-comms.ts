@@ -141,6 +141,8 @@ function blobRefFromRecord(value: Record<string, unknown>): BlobRef | null {
 }
 
 function isTextMediaType(mediaType: unknown): boolean {
+  // Match runtimed-wasm's resolver: missing or unknown media_type stays on the
+  // binary path so legacy refs remain URL/DataView-compatible.
   return typeof mediaType === "string" && !isBinaryMimeType(mediaType);
 }
 
