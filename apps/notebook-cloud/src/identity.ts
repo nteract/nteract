@@ -133,6 +133,13 @@ interface AnacondaWhoamiResponse {
   };
 }
 
+interface AnacondaApiKeyUserInfo {
+  displayName?: string;
+  email?: string;
+  scopes: Set<string>;
+  subject: string;
+}
+
 interface JsonWebKeySet {
   keys?: JsonWebKey[];
 }
@@ -157,12 +164,20 @@ interface JwtPayload {
 
 const JWT_CLOCK_TOLERANCE_SECONDS = 60;
 const JWKS_CACHE_TTL_MS = 5 * 60 * 1000;
+const ANACONDA_API_KEY_CACHE_TTL_MS = 60 * 1000;
 const OIDC_SUBJECT_MAX_LENGTH = 256;
 const jwksCache = new Map<
   string,
   {
     expiresAt: number;
     ready: Promise<JsonWebKeySet>;
+  }
+>();
+const anacondaApiKeyUserInfoCache = new Map<
+  string,
+  {
+    expiresAt: number;
+    ready: Promise<AnacondaApiKeyUserInfo>;
   }
 >();
 
@@ -380,9 +395,61 @@ export async function authenticateAnacondaApiKeyRequest(
     throw new AuthError("Anaconda API key auth is not configured", 503);
   }
 
+  const userInfo = await loadAnacondaApiKeyUserInfo(credential.token, config);
+  const url = new URL(request.url);
+  const operator = headerOrQuery(request, url, "x-operator", "operator") ?? defaultOperator();
+  const scope = parseScope(headerOrQuery(request, url, "x-scope", "scope") ?? "viewer");
+  if (!anacondaApiKeyAllowsScope(userInfo.scopes, scope)) {
+    throw new AuthError("Anaconda API key scopes do not allow requested scope", 403);
+  }
+
+  const principal = `${config.principalNamespace}:${encodePrincipalComponent(userInfo.subject)}`;
+  validatePrincipal(principal);
+  validateOperator(operator);
+
+  return {
+    principal,
+    operator,
+    actorLabel: `${principal}/${operator}`,
+    scope,
+    metadata: {
+      provider: "anaconda-api-key",
+      transport: credential.transport,
+      principalNamespace: config.principalNamespace,
+      ...(userInfo.displayName ? { displayName: userInfo.displayName } : {}),
+      ...(userInfo.email ? { email: userInfo.email } : {}),
+    },
+  };
+}
+
+async function loadAnacondaApiKeyUserInfo(
+  token: string,
+  config: AnacondaApiKeyConfig,
+): Promise<AnacondaApiKeyUserInfo> {
+  const cacheKey = `${config.userinfoUrl}:${await sha256Hex(token)}`;
+  const cached = anacondaApiKeyUserInfoCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.ready;
+  }
+
+  const ready = fetchAnacondaApiKeyUserInfo(token, config).catch((error: unknown) => {
+    anacondaApiKeyUserInfoCache.delete(cacheKey);
+    throw error;
+  });
+  anacondaApiKeyUserInfoCache.set(cacheKey, {
+    expiresAt: Date.now() + ANACONDA_API_KEY_CACHE_TTL_MS,
+    ready,
+  });
+  return ready;
+}
+
+async function fetchAnacondaApiKeyUserInfo(
+  token: string,
+  config: AnacondaApiKeyConfig,
+): Promise<AnacondaApiKeyUserInfo> {
   const response = await fetch(config.userinfoUrl, {
     headers: {
-      Authorization: `Bearer ${credential.token}`,
+      Authorization: `Bearer ${token}`,
       "User-Agent": "nteract-notebook-cloud/1.0",
     },
   });
@@ -411,17 +478,6 @@ export async function authenticateAnacondaApiKeyRequest(
   }
 
   const scopes = anacondaApiKeyScopes(passport.scopes);
-  const url = new URL(request.url);
-  const operator = headerOrQuery(request, url, "x-operator", "operator") ?? defaultOperator();
-  const scope = parseScope(headerOrQuery(request, url, "x-scope", "scope") ?? "viewer");
-  if (!anacondaApiKeyAllowsScope(scopes, scope)) {
-    throw new AuthError("Anaconda API key scopes do not allow requested scope", 403);
-  }
-
-  const principal = `${config.principalNamespace}:${encodePrincipalComponent(subject)}`;
-  validatePrincipal(principal);
-  validateOperator(operator);
-
   const profile = passport.profile ?? {};
   const displayName =
     [profile.first_name, profile.last_name]
@@ -433,17 +489,10 @@ export async function authenticateAnacondaApiKeyRequest(
   const email = profile.email?.trim() || undefined;
 
   return {
-    principal,
-    operator,
-    actorLabel: `${principal}/${operator}`,
-    scope,
-    metadata: {
-      provider: "anaconda-api-key",
-      transport: credential.transport,
-      principalNamespace: config.principalNamespace,
-      ...(displayName ? { displayName } : {}),
-      ...(email ? { email } : {}),
-    },
+    scopes,
+    subject,
+    ...(displayName ? { displayName } : {}),
+    ...(email ? { email } : {}),
   };
 }
 
@@ -1281,7 +1330,12 @@ function validateOidcJwtClaims(payload: JwtPayload, config: OidcConfig): void {
 }
 
 function isAnacondaApiKeyToken(token: string): boolean {
-  return unverifiedJwtPayload(token)?.ver === "api:1";
+  const payload = unverifiedJwtPayload(token);
+  if (payload?.ver !== "api:1") {
+    return false;
+  }
+
+  return !("iss" in payload || "sub" in payload || "aud" in payload || "azp" in payload);
 }
 
 function unverifiedJwtPayload(token: string): JwtPayload | undefined {
@@ -1396,6 +1450,11 @@ function decodeBase64UrlBytes(value: string): Uint8Array {
   const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
   const binary = atob(padded);
   return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function defaultOperator(): string {

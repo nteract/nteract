@@ -835,6 +835,67 @@ describe("Anaconda API key identity", () => {
     assert.equal(identity.metadata.provider, "anaconda-api-key");
   });
 
+  it("keeps issuer-bearing OIDC tokens on the OIDC path even with an API-key version claim", async (t) => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      extraPayload: { ver: "api:1" },
+      subject: "browser-user",
+    });
+    t.mock.method(globalThis, "fetch", async () => {
+      throw new Error("Anaconda whoami should not be called for OIDC tokens");
+    });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/topic-viz/sync?operator=browser:tab&scope=viewer", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      {
+        ...oidcEnv,
+        ...anacondaApiKeyEnv(),
+      },
+    );
+
+    assert.equal(identity.actorLabel, "user:anaconda:browser-user/browser:tab");
+    assert.equal(identity.metadata.provider, "oidc");
+  });
+
+  it("caches successful API key whoami lookups during publish batches", async (t) => {
+    const token = anacondaApiKeyToken();
+    const calls: string[] = [];
+    t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      calls.push(request.headers.get("authorization") ?? "");
+      return jsonResponse(
+        anacondaWhoami({
+          userId: "cached-api-key-user",
+          scopes: ["cloud:write"],
+        }),
+      );
+    });
+
+    const first = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/topic-viz/runtime-snapshots/latest?scope=owner", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      anacondaApiKeyEnv(),
+    );
+    const second = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/topic-viz/blobs/blob-a?scope=owner", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      anacondaApiKeyEnv(),
+    );
+
+    assert.equal(first.principal, "user:anaconda:cached-api-key-user");
+    assert.equal(second.principal, "user:anaconda:cached-api-key-user");
+    assert.deepEqual(calls, [`Bearer ${token}`]);
+  });
+
   it("rejects API keys without write scope for owner requests", async (t) => {
     const token = anacondaApiKeyToken();
     t.mock.method(globalThis, "fetch", async () =>
@@ -1421,7 +1482,9 @@ function anacondaApiKeyEnv(): {
 function anacondaApiKeyToken(payload: Record<string, unknown> = {}): string {
   return [
     base64Url(JSON.stringify({ alg: "RS256", kid: "api-key-test", typ: "JWT" })),
-    base64Url(JSON.stringify({ kid: "api-key-test", ver: "api:1", ...payload })),
+    base64Url(
+      JSON.stringify({ jti: crypto.randomUUID(), kid: "api-key-test", ver: "api:1", ...payload }),
+    ),
     "signature",
   ].join(".");
 }

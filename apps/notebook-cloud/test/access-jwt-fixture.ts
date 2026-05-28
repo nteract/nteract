@@ -24,6 +24,7 @@ interface TokenFixtureOptions {
   email?: string;
   excludeMatchingKey?: boolean;
   expiresInSeconds?: number;
+  extraPayload?: Record<string, unknown>;
   includeKid?: boolean;
   includeMalformedKey?: boolean;
   includeUnmatchedKey?: boolean;
@@ -125,6 +126,7 @@ async function signedTokenFixture(
       ? { nbf: now + options.notBeforeSecondsFromNow }
       : {}),
     ...(options.subject ? { sub: options.subject } : {}),
+    ...options.extraPayload,
   };
   const signingInput = `${base64Url(JSON.stringify(header))}.${base64Url(JSON.stringify(payload))}`;
   const signature = await crypto.subtle.sign(
