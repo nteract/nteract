@@ -807,7 +807,7 @@ describe("Anaconda API key identity", () => {
     ]);
   });
 
-  it("routes API-key-shaped bearer tokens ahead of OIDC bearer handling", async (t) => {
+  it("routes explicit API-key bearer tokens ahead of OIDC bearer handling", async (t) => {
     const token = anacondaApiKeyToken({ sub: "api-key-token-subject" });
     const { env: oidcEnv } = await oidcTokenFixture({ subject: "browser-user" });
     t.mock.method(globalThis, "fetch", async () =>
@@ -823,6 +823,7 @@ describe("Anaconda API key identity", () => {
       new Request("https://cloud.test/n/topic-viz/sync?operator=agent:runt-publish&scope=owner", {
         headers: {
           Authorization: `Bearer ${token}`,
+          "X-Notebook-Cloud-Auth-Provider": "anaconda-api-key",
         },
       }),
       {
@@ -833,6 +834,37 @@ describe("Anaconda API key identity", () => {
 
     assert.equal(identity.actorLabel, "user:anaconda:api-key-user/agent:runt-publish");
     assert.equal(identity.metadata.provider, "anaconda-api-key");
+  });
+
+  it("does not use API-key shape sniffing when OIDC auth is configured", async (t) => {
+    const token = anacondaApiKeyToken({ sub: "api-key-token-subject" });
+    const { env: oidcEnv } = await oidcTokenFixture({ subject: "browser-user" });
+    t.mock.method(globalThis, "fetch", async () => {
+      throw new Error("Anaconda whoami should not be called without an explicit API-key provider");
+    });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request(
+            "https://cloud.test/n/topic-viz/sync?operator=agent:runt-publish&scope=owner",
+            {
+              headers: {
+                Authorization: `Bearer ${token}`,
+              },
+            },
+          ),
+          {
+            ...oidcEnv,
+            ...anacondaApiKeyEnv(),
+          },
+        ),
+      (error) =>
+        (error instanceof AuthError &&
+          error.status === 401 &&
+          /signature|issuer/.test(error.message)) ||
+        (error instanceof DOMException && /Invalid character/.test(error.message)),
+    );
   });
 
   it("keeps issuer-bearing OIDC tokens on the OIDC path even with an API-key version claim", async (t) => {
@@ -924,6 +956,7 @@ describe("Anaconda API key identity", () => {
         new Request("https://cloud.test/n/topic-viz/sync?operator=agent:runt-publish&scope=owner", {
           headers: {
             Authorization: `Bearer ${token}`,
+            "X-Notebook-Cloud-Auth-Provider": "anaconda-api-key",
           },
         }),
         env,

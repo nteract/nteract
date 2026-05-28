@@ -50,6 +50,7 @@ NOTEBOOK_CLOUD_OIDC_ISSUER = "https://auth.stage.anaconda.com/api/auth"
 NOTEBOOK_CLOUD_OIDC_CLIENT_ID = "cec4781f-853c-4267-bf09-4bc59a2a3750"
 NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE = "user:anaconda"
 NOTEBOOK_CLOUD_OIDC_REDIRECT_URI = "https://preview.runt.run/oidc"
+NOTEBOOK_CLOUD_OIDC_AUDIENCE = "anaconda"
 NOTEBOOK_CLOUD_ALLOWED_ORIGINS = "https://preview.runt.run"
 ```
 
@@ -61,6 +62,33 @@ where fetching the provider JWKS is intentionally disabled.
 `NOTEBOOK_CLOUD_DEV_TOKEN` may remain for scripted demo publishing and smoke
 tests until publish tooling has a first-class OIDC/API-key credential path. It
 is not the browser auth path.
+
+## API-key Publishing
+
+Browser sessions use direct OIDC. Non-browser publishing agents should use an
+Anaconda API key with `cloud:write`, presented as `Authorization: Bearer` plus
+an explicit provider header:
+
+```text
+X-Notebook-Cloud-Auth-Provider: anaconda-api-key
+```
+
+That header keeps API-key routing explicit when OIDC and API-key auth are both
+enabled on the same Worker. The Worker still validates the token by calling the
+configured Anaconda `whoami` endpoint and derives the ACL principal from the
+validated response, not from unverified JWT payload fields. Successful whoami
+responses are cached for 60 seconds with a bounded in-isolate cache; token
+revocation can therefore take up to 60 seconds to be observed by a hot Worker
+isolate.
+
+For `runt-publish`, use:
+
+```bash
+NOTEBOOK_CLOUD_URL=https://preview.runt.run \
+NOTEBOOK_CLOUD_BEARER_TOKEN="$ANACONDA_API_KEY" \
+NOTEBOOK_CLOUD_AUTH_PROVIDER=anaconda-api-key \
+cargo run -p runt-publish -- --id topic-viz --vanity-name topic-viz ~/notebooks/topic-viz.ipynb
+```
 
 ## Viewer Runtime OIDC Config
 

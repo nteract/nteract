@@ -62,6 +62,10 @@ struct Args {
     )]
     bearer_token: Option<String>,
 
+    /// Explicit provider for bearer-token auth.
+    #[arg(long = "auth-provider", env = "NOTEBOOK_CLOUD_AUTH_PROVIDER")]
+    auth_provider: Option<String>,
+
     /// User label sent to notebook-cloud dev auth.
     #[arg(long, default_value = "runt-publish")]
     user: String,
@@ -97,6 +101,7 @@ struct Publisher {
     vanity_name: Option<String>,
     dev_token: Option<String>,
     bearer_token: Option<String>,
+    auth_provider: Option<String>,
     user: String,
     operator: String,
     blob_base_url: Option<String>,
@@ -228,6 +233,7 @@ impl Publisher {
             vanity_name: args.vanity_name,
             dev_token: args.dev_token,
             bearer_token: args.bearer_token,
+            auth_provider: args.auth_provider,
             user: args.user,
             operator: args.operator,
             blob_base_url,
@@ -365,6 +371,9 @@ impl Publisher {
             .header("X-Scope", "owner");
 
         if let Some(token) = &self.bearer_token {
+            if let Some(provider) = &self.auth_provider {
+                request = request.header("X-Notebook-Cloud-Auth-Provider", provider);
+            }
             return request.bearer_auth(token);
         }
 

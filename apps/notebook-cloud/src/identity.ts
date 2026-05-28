@@ -79,6 +79,8 @@ export const TRUSTED_CREDENTIAL_TRANSPORT_HEADER = "x-nteract-credential-transpo
 export const TRUSTED_PRINCIPAL_NAMESPACE_HEADER = "x-nteract-principal-namespace";
 export const TRUSTED_DISPLAY_NAME_HEADER = "x-nteract-display-name";
 export const TRUSTED_EMAIL_HEADER = "x-nteract-email";
+const AUTH_PROVIDER_HEADER = "x-notebook-cloud-auth-provider";
+const ANACONDA_API_KEY_AUTH_PROVIDER = "anaconda-api-key";
 export const CLOUDFLARE_ACCESS_JWT_HEADER = "cf-access-jwt-assertion";
 
 interface AccessCredential {
@@ -226,9 +228,11 @@ export async function authenticateRequestWithProviders(
   env: IdentityEnvironment = {},
 ): Promise<AuthenticatedConnection> {
   const anacondaApiKeyConfig = anacondaApiKeyConfigFromEnv(env);
-  const anacondaApiKeyCredential = anacondaApiKeyCredentialFromRequest(request);
   const oidcConfig = oidcConfigFromEnv(env);
   const oidcPartial = hasPartialOidcConfig(env);
+  const anacondaApiKeyCredential = anacondaApiKeyCredentialFromRequest(request, {
+    allowJwtShapeFallback: !oidcConfig && !oidcPartial,
+  });
   const accessConfig = accessConfigFromEnv(env);
   const routeBearerToOidc = shouldRouteBearerToOidc(request, {
     accessConfig,
@@ -385,7 +389,7 @@ export async function authenticateOidcRequest(
 export async function authenticateAnacondaApiKeyRequest(
   request: Request,
   env: IdentityEnvironment,
-  credential = anacondaApiKeyCredentialFromRequest(request),
+  credential = anacondaApiKeyCredentialFromRequest(request, { allowJwtShapeFallback: true }),
 ): Promise<AuthenticatedConnection> {
   if (!credential) {
     throw new AuthError("missing Anaconda API key", 401);
@@ -1007,9 +1011,17 @@ function oidcCredentialFromRequest(
 
 function anacondaApiKeyCredentialFromRequest(
   request: Request,
+  options: { allowJwtShapeFallback?: boolean } = {},
 ): AnacondaApiKeyCredential | undefined {
   const bearerToken = bearerTokenFromAuthorization(request.headers.get("authorization"));
-  if (!bearerToken || !isAnacondaApiKeyToken(bearerToken)) {
+  if (!bearerToken) {
+    return undefined;
+  }
+
+  const explicitProvider =
+    request.headers.get(AUTH_PROVIDER_HEADER)?.trim().toLowerCase() ===
+    ANACONDA_API_KEY_AUTH_PROVIDER;
+  if (!explicitProvider && !(options.allowJwtShapeFallback && isAnacondaApiKeyToken(bearerToken))) {
     return undefined;
   }
   return { token: bearerToken, transport: "api-key-bearer" };
