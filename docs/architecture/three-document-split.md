@@ -14,7 +14,9 @@ A connecting peer subscribes through one of the typed-frame handshake channels. 
 
 The split is load-bearing for sync bandwidth, write-frequency isolation, fan-out scope, persistence, and trust. It is not written down in one place. This ADR records the decision so the boundaries become visible to anyone changing them.
 
-This ADR describes the real desktop application. The hosted prototype at `apps/notebook-cloud/` is parked and outside scope. A closing section sketches what changes when the same split runs in a multi-user deployment.
+This ADR is desktop-first, but the hosted publish/cloud viewer now consumes the
+same `NotebookDoc` + `RuntimeStateDoc` snapshot pair. A closing section sketches
+what changes when the split runs in a multi-user deployment.
 
 Neighbors:
 
@@ -164,6 +166,7 @@ This is three different ingress shapes for what looks like one protocol. `PoolDo
 2. Daemon sets `RuntimeStateDoc.last_saved` to the ISO timestamp.
 3. User quits. Room evicts. Both notebook docs are dropped. `.automerge` for untitled paths is not used here because the doc is file-backed.
 4. User reopens the notebook. Daemon loads `.ipynb` into a fresh `NotebookDoc`. `RuntimeStateDoc` is rebuilt from schema seed, then the loader walks cells that carry legacy `execution_count` or outputs and creates **one synthetic execution entry per such cell** so the new `RuntimeStateDoc` can route them through the same `executions/*/outputs` shape (`crates/runtimed/src/notebook_sync_server/load.rs:709-741`). The cell's `execution_id` is set to the synthetic entry's id at the same time.
+5. If the `.ipynb` carries `metadata.widgets["application/vnd.jupyter.widget-state+json"]`, the loader also imports those widget models into `RuntimeStateDoc.comms`. Large widget buffers are externalized through the blob store before the comm state is written. That means a publish snapshot can carry widget models even when no live kernel has reopened those comms.
 
 ### Kernel crash and relaunch
 

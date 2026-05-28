@@ -184,7 +184,7 @@ The committer therefore holds a `HashMap<String, PendingDisplayUpdate>` keyed by
 
 ### The flush before `ExecutionDone`
 
-When `status: idle` arrives from the kernel, `jupyter_kernel.rs:1419` calls:
+When `status: idle` arrives from the kernel, `jupyter_kernel.rs:1458-1479` calls:
 
 ```rust
 display_update_committer.flush_for_ordering().await;

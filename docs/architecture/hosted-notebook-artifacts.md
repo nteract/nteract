@@ -34,7 +34,11 @@ A published revision is durable when these artifacts exist:
 
 - Notebook snapshot: saved `NotebookDoc` bytes.
 - Runtime snapshot: saved `RuntimeStateDoc` bytes.
-- Blob objects: content-addressed output bytes referenced by output manifests.
+- Blob objects: every content-addressed byte object reachable from the
+  snapshot pair. This includes `RuntimeStateDoc` execution output manifests,
+  widget comm state and comm outputs, `NotebookDoc.resolved_assets`,
+  `NotebookDoc.attachments`, and child refs named by inline manifests such as
+  Arrow/Sift chunks.
 - Catalog row: D1 metadata tying the above artifacts to a notebook id and heads.
 
 The revision row records:
@@ -50,8 +54,9 @@ truth and can be regenerated from the snapshot pair.
 
 The publish API may materialize that cache before recording the catalog row.
 This is a validation step, not a change in durability: if the `NotebookDoc` /
-`RuntimeStateDoc` pair cannot load, or if any rendered output manifest points at
-a missing blob object, the host rejects the publish and leaves no revision row.
+`RuntimeStateDoc` pair cannot load, or if any rendered cell, widget comm, or
+manifest child points at a missing blob object, the host rejects the publish and
+leaves no revision row.
 
 ## Decision 2: R2 layout is deterministic
 
@@ -88,6 +93,15 @@ stack as desktop: `ReadOnlyNotebook` → `ReadOnlyNotebookCell` → `OutputArea`
 `MediaRouter` / isolated iframe. The framework-agnostic
 `createNteractOutputEmbed()` surface remains the non-React embedding contract,
 but the cloud notebook viewer itself should not fork a separate DOM renderer.
+
+Widget comm state has one additional host-specific projection step. The Worker
+serializes `widget_comms` alongside rendered cells, resolving comm
+`ContentRef`s through the hosted `BlobResolver`. The viewer then seeds a
+read-only `WidgetStore`: `_esm` / `_css` stay URL strings for browser loading,
+text refs listed in `text_paths` are fetched and inlined by the viewer, and
+binary refs listed in `buffer_paths` are installed as `DataView`s. This keeps
+the rendered widget components shared while making the blob authority boundary
+explicit in the host.
 
 ## Decision 4: Blob refs stay host-neutral
 
