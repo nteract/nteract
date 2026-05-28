@@ -37,7 +37,7 @@ let mut state_peer_state = sync::State::new(); // RuntimeStateDoc
 let mut pool_peer_state = sync::State::new();  // PoolDoc
 ```
 
-Each ingress path is a separate handler (`handle_notebook_doc_frame`, `handle_runtime_state_frame`, `handle_pool_state_frame`) with its own validator. Each broadcast subscription is a separate stream (`changed_tx`, `state_changed_tx`, `pool_doc_changed`). Egress shares one queue: the peer's outbound writer is a single bounded mpsc in `PeerWriter` (`peer_writer.rs:14`), so a stdout flood on `0x05` can backpressure a cell-text save on `0x00` even though the docs are otherwise independent. That shared egress is the one place the split leaks; everywhere else, the three streams are decoupled.
+Each ingress path is a separate handler (`handle_notebook_doc_frame`, `handle_runtime_state_frame`, `handle_pool_state_frame`) with its own validator. Each broadcast subscription is a separate stream (`changed_tx`, `state_changed_tx`, `pool_doc_changed`). Egress shares one queue: the peer's outbound writer is a single bounded mpsc in `PeerWriter` (`peer_writer.rs:14`), so a stdout flood on `0x05` can backpressure a cell-text save on `0x00` even though the docs are otherwise independent. That shared egress is the one place the split leaks; everywhere else, the three streams are decoupled. See `peer-egress-lanes.md` for the lane-split investigation and staged recommendation.
 
 The reasons for keeping them separate, not just logically but physically on the wire:
 
