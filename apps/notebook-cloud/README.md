@@ -1,10 +1,10 @@
 # nteract notebook cloud prototype
 
-This app is a Cloudflare Worker prototype for hosted nteract notebook rooms. It is intentionally small: the Worker authenticates a dev, currently implemented Cloudflare Access, future direct OIDC, or anonymous viewer connection, authorizes that principal through the D1 room ACL, stamps a trusted `<principal>/<operator>` actor label, and routes `/n/:notebookId/sync` to a Durable Object keyed by notebook id.
+This app is a Cloudflare Worker prototype for hosted nteract notebook rooms. It is intentionally small: the Worker authenticates dev credentials, direct OIDC browser sessions, Anaconda API-key publishing requests, optional Cloudflare Access credentials, or anonymous viewer connections, authorizes the principal through the D1 room ACL, stamps a trusted `<principal>/<operator>` actor label, and routes `/n/:notebookId/sync` to a Durable Object keyed by notebook id.
 
 The current Durable Object does not host kernels. It owns a `runtimed-wasm` room host for the notebook's `NotebookDoc` + `RuntimeStateDoc`, syncs peers with typed-frame v4, rejects unauthorized Automerge changes before mutating the room, checkpoints the materialized document pair in Durable Object storage, rewrites canonical CBOR presence through the shared helper, and stores bounded frame metadata for sync frames that actually change a materialized document. Viewer-scope peers use the normal sync exchange so they can materialize live room updates, while the room host uses read-only peer state as a protocol hint and still rejects any viewer-authored changes explicitly. No-op read-only sync control frames are acknowledged and delivered as protocol traffic, but they are not persisted as room-event history. Editor-scope live `NotebookDoc` writes are deliberately limited to existing markdown-cell source edits in this prototype; code cells and structural document changes remain read-only unless the connection has owner scope. Runtime peers use a separate `RuntimeStatePeerHandle` authoring surface: they can sync kernel lifecycle, widget comm topology, output routing, and progress/output state for room-accepted executions into `RuntimeStateDoc`, but they cannot create execution intent, edit `NotebookDoc`, rewrite trust/environment/path/project metadata, or acquire the frontend notebook editing API.
 
-`/n/:notebookId` is now a public read-only notebook viewer. The durable source of truth is a persisted `NotebookDoc` + `RuntimeStateDoc` snapshot pair in R2; `/api/n/:id/render` materializes that pair with `NotebookHandle.load_snapshot()` when a render cache is absent. Snapshot-pair publishes also pre-materialize the render cache before recording the catalog revision, so missing runtime snapshots, corrupt snapshot bytes, or missing output blobs fail the publish request instead of advertising a broken revision. Output blob refs stay host-neutral and are mapped to `/api/n/:id/blobs/:hash` through the shared `BlobResolver` surface. The browser viewer bundle uses the shared notebook display components (`CellContainer`, `OutputArea`, `ReadOnlyCodeMirror`, `MediaProvider`) so published source, markdown, stdout/stderr, rich display data, and blob-backed renderer manifests go through the same isolated output renderer path as the desktop notebook.
+`/n/:notebookId` is a hosted notebook page. `/api/n/:id/render` can warm-start the page from a persisted `NotebookDoc` + `RuntimeStateDoc` snapshot pair in R2, but connected browsers join `/n/:id/sync` and render from the live materialized room once sync is ready. Snapshot-pair publishes also pre-materialize the render cache before recording the catalog revision, so missing runtime snapshots, corrupt snapshot bytes, or missing output blobs fail the publish request instead of advertising a broken revision. Output blob refs stay host-neutral and are mapped to `/api/n/:id/blobs/:hash` through the shared `BlobResolver` surface. The browser viewer bundle uses the shared notebook display components (`CellContainer`, `OutputArea`, `ReadOnlyCodeMirror`, `MediaProvider`) so published source, markdown, stdout/stderr, rich display data, and blob-backed renderer manifests go through the same isolated output renderer path as the desktop notebook.
 
 ## Local dev
 
@@ -214,13 +214,37 @@ browser to anonymous viewer mode. If the stored token is still a placeholder
 such as `<NOTEBOOK_CLOUD_DEV_TOKEN>`, the viewer refuses to use it, connects as
 an anonymous viewer instead, and shows a visible diagnostic with a reset button.
 
-## Cloudflare Access auth
+## Direct OIDC auth
 
-This is the currently implemented deployed-auth prototype path, but it is no
-longer the intended default production path. The architecture now points
-notebook-cloud at direct OIDC on `preview.runt.run`, reusing the retired
-`runtimed/intheloop` Anaconda stage OIDC lane. See
-`docs/architecture/hosted-direct-oidc-demo-runbook.md`.
+`preview.runt.run` uses direct OIDC against Anaconda stage. The Worker injects
+the issuer, client id, and redirect URI into the first-party viewer shell, and
+the browser completes an Authorization Code + PKCE flow through `/oidc`.
+Authenticated browser HTTP requests use `Authorization: Bearer`; browser
+WebSockets send the token through a non-echoed bearer subprotocol. The Worker
+validates the JWT issuer, audience/client id, signature, time claims, and
+principal namespace before consulting the D1 room ACL.
+
+Signed-in users can still read public notebooks when they do not have explicit
+collaborator rows. Viewer-scope HTTP reads authorize through the public
+`notebook_acl` row, and same-origin browser live-room connections may fall back
+from a stale `editor` request to stamped `viewer` scope for public notebooks.
+Mutation routes do not use that downgrade.
+
+Non-browser publishing uses Anaconda API keys with:
+
+```text
+Authorization: Bearer <ANACONDA_API_KEY>
+X-Notebook-Cloud-Auth-Provider: anaconda-api-key
+```
+
+See `docs/architecture/hosted-direct-oidc-demo-runbook.md`.
+
+## Optional Cloudflare Access auth
+
+This is an implemented prototype path, but it is not the intended default
+production path. The architecture points notebook-cloud at direct OIDC on
+`preview.runt.run`, reusing the retired `runtimed/intheloop` Anaconda stage
+OIDC lane.
 
 When `NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN` and `NOTEBOOK_CLOUD_ACCESS_AUD`
 are configured, the Worker can authenticate Cloudflare Access/OIDC-style JWTs
@@ -570,13 +594,16 @@ curl "http://127.0.0.1:8787/api/n/demo/render"
 
 ## Next integration steps
 
-1. Verify the deployed Alice/Bob/anonymous viewer trial against the current
-   Worker after each live-sync change.
-2. Implement direct OIDC and take over `preview.runt.run` from the retired
-   `runtimed/intheloop` preview app.
-3. Replace flat ACL rows with the relationship model chosen for hosted
+1. Verify `preview.runt.run` topic-viz, lets-edit, and hosted smoke paths after
+   each live-sync or auth change.
+2. Keep the notebook page viewer-first: sign-in should not request edit by
+   default, and public-read fallback should keep signed-in users out of
+   anonymous-reset loops.
+3. Move the cloud viewer/editor toward shared desktop notebook controller and
+   cell/editor components instead of expanding cloud-only forks.
+4. Replace flat ACL rows with the relationship model chosen for hosted
    notebooks.
-4. Decide the runtime-peer upload flow for presigned blob writes and remote
+5. Decide the runtime-peer upload flow for presigned blob writes and remote
    runtime agents.
-5. Move notebook-specific output blobs to signed URLs or a dedicated private
+6. Move notebook-specific output blobs to signed URLs or a dedicated private
    output origin before hosting private notebooks at scale.

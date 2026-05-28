@@ -78,7 +78,7 @@ The room ACL still derives final connection scope. A provider claim or group may
 cap what the credential can do globally, but it does not grant per-notebook
 editor or owner access by itself.
 
-## Decision 2: Direct OIDC is the first hosted browser path
+## Decision 2: Direct OIDC is the hosted browser path for preview
 
 For the Anaconda-friendly hosted demo, the notebook application owns the OIDC
 browser flow directly:
@@ -117,10 +117,10 @@ we should reuse:
 | Staging takeover | `preview.runt.run` | `https://auth.stage.anaconda.com/api/auth` | `cec4781f-853c-4267-bf09-4bc59a2a3750` | `https://preview.runt.run/oidc` | `https://preview.runtusercontent.com` |
 | Production precedent | `app.runt.run` | `https://auth.anaconda.com/api/auth` | `74a51ff4-5814-48fa-9ae7-6d3ef0aca3e2` | `https://app.runt.run/oidc` | `https://runtusercontent.com` |
 
-Notebook-cloud should take over `preview.runt.run` first. The route transfer
-requires removing or replacing the old `runtimed/intheloop` preview Worker route
-and deploying notebook-cloud with the same OIDC redirect URI. The production
-`app.runt.run` lane is precedent, not the first target for notebook-cloud.
+Notebook-cloud uses `preview.runt.run` as the staging route. The route transfer
+from the old `runtimed/intheloop` preview Worker is historical context; current
+work should keep the same OIDC redirect URI and deployment variables. The
+production `app.runt.run` lane is precedent, not the notebook-cloud target.
 
 ### Principal namespace for direct OIDC login
 
@@ -133,16 +133,10 @@ Anaconda-scoped:
 user:anaconda:<encoded-anaconda-sub>
 ```
 
-If we deploy a first-party WorkOS app for a public `runtimed.com` viewer before
-Anaconda direct OIDC is available, the principal is WorkOS-scoped:
-
-```text
-user:workos:<encoded-workos-sub>
-```
-
 Email is display metadata and invite UX material; it is not the stable
-principal key. If a later migration links WorkOS users to Anaconda subjects, it
-must include an explicit subject mapping or ACL-row backfill plan.
+principal key. If a later deployment validates another OIDC provider, it must
+use a provider-specific namespace and include an explicit subject mapping or
+ACL-row backfill plan before linking those users to Anaconda subjects.
 
 ## Decision 3: Browser WebSocket bearer tokens use subprotocols
 
@@ -284,9 +278,19 @@ allowed if capabilities(requested_role)
   and subset_of acl_capabilities_for_principal
 ```
 
-If the check fails, reject the upgrade or HTTP request. Do not silently
-downgrade authenticated clients to viewer, because a downgraded editor fails
+If the check fails, reject mutation routes and non-browser system clients. Do
+not silently downgrade write APIs to viewer, because a downgraded editor fails
 later in harder-to-debug ways.
+
+The browser notebook page has one narrow exception for public notebooks:
+same-origin live-room WebSocket requests may fall back from a stale or eager
+`editor` request to `viewer` when the notebook has an explicit public-read ACL
+row and the authenticated principal lacks editor ACL rows. This keeps signed-in
+users able to read public notebooks without logging out. The connected scope is
+still stamped as `viewer`, viewer-authored document/runtime mutations are still
+rejected by the room host, and HTTP mutation routes do not use this downgrade.
+The intended UI is to connect as `viewer` by default and reconnect with
+`editor` only after the user requests editing.
 
 Anonymous requests have provider maximum capabilities of exactly viewer and are
 accepted only if the room has a public-read ACL row.
@@ -366,9 +370,9 @@ namespace, and optional perimeter configuration.
    `runtimed/intheloop` PKCE/localStorage shape initially. Before private
    notebooks become broad production surface, decide whether tokens should move
    behind a same-site BFF/session-cookie layer.
-2. **WorkOS fallback.** If we run a public `runtimed.com` viewer through WorkOS
-   before Anaconda direct OIDC is fully available, define the principal
-   namespace and future subject-linking story up front.
+2. **Additional OIDC providers.** If a public `runtimed.com` viewer validates a
+   different OIDC provider, define the principal namespace and future
+   subject-linking story up front.
 3. **Invite-by-email.** D1 ACLs key by principal, but people share by email.
    `docs/architecture/hosted-sharing-invites.md` sketches the pending-invite
    table, first-login resolution, display metadata, and public viewer UX.
@@ -380,8 +384,8 @@ namespace, and optional perimeter configuration.
    Admin revocation and provider sign-out need the future `SESSION_CONTROL`
    close path.
 6. **Service-token runtime peers.** Runtime sidecars need a clean credential
-   story, likely Anaconda scoped credentials, WorkOS machine credentials, or a
-   notebook-host-issued runtime ticket.
+   story, likely Anaconda scoped credentials, another configured OIDC machine
+   credential, or a notebook-host-issued runtime ticket.
 
 ## References
 
