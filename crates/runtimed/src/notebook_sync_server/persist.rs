@@ -1,4 +1,10 @@
 use super::*;
+use base64::Engine as _;
+
+pub(crate) const JUPYTER_WIDGET_TARGET: &str = "jupyter.widget";
+pub(crate) const WIDGET_STATE_MIME: &str = "application/vnd.jupyter.widget-state+json";
+const WIDGET_STATE_VERSION_MAJOR: i64 = 2;
+const WIDGET_STATE_VERSION_MINOR: i64 = 0;
 
 #[derive(Debug)]
 pub(crate) enum SaveError {
@@ -194,10 +200,23 @@ pub(crate) async fn save_notebook_to_disk(
 
     // Metadata comes entirely from the doc. No disk rescue; the
     // snapshot carries unknown keys as extras.
-    let metadata = metadata_snapshot
+    let mut metadata = metadata_snapshot
         .as_ref()
         .map(|s| serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({})))
         .unwrap_or_else(|| serde_json::json!({}));
+    let comms = room.state.read(|sd| sd.get_comms()).unwrap_or_default();
+    match widget_state_metadata_from_comms(&comms, &room.blob_store).await {
+        Ok(Some(widget_state)) => {
+            insert_widget_state_metadata(&mut metadata, widget_state);
+        }
+        Ok(None) => {}
+        Err(err) => {
+            warn!(
+                "[notebook-sync] Failed to materialize widget state metadata; \
+                 preserving existing notebook metadata: {err}"
+            );
+        }
+    }
 
     // We always write cell IDs, so nbformat_minor is at least 5.
     let existing_minor = existing_raw
@@ -459,6 +478,323 @@ async fn resolve_cell_output(
         },
         Err(_) => output.clone(),
     }
+}
+
+async fn widget_state_metadata_from_comms(
+    comms: &HashMap<String, runtime_doc::CommDocEntry>,
+    blob_store: &BlobStore,
+) -> Result<Option<serde_json::Value>, String> {
+    let mut entries: Vec<_> = comms
+        .iter()
+        .filter(|(_, entry)| entry.target_name == JUPYTER_WIDGET_TARGET)
+        .collect();
+    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+    let mut state = serde_json::Map::new();
+    for (comm_id, entry) in entries {
+        let Some(model_name) = widget_model_field(&entry.model_name, &entry.state, "_model_name")
+        else {
+            warn!(
+                "[notebook-sync] Skipping widget comm {} with missing model_name",
+                comm_id
+            );
+            continue;
+        };
+        let Some(model_module) =
+            widget_model_field(&entry.model_module, &entry.state, "_model_module")
+        else {
+            warn!(
+                "[notebook-sync] Skipping widget comm {} with missing model_module",
+                comm_id
+            );
+            continue;
+        };
+
+        let (resolved_state, buffers) = match resolve_widget_state_content_refs(
+            entry.state.clone(),
+            blob_store,
+        )
+        .await
+        {
+            Ok(resolved) => resolved,
+            Err(err) => {
+                warn!(
+                        "[notebook-sync] Skipping widget comm {} while materializing widget state metadata: {err}",
+                        comm_id
+                    );
+                continue;
+            }
+        };
+        let mut model = serde_json::Map::new();
+        model.insert(
+            "model_name".to_string(),
+            serde_json::Value::String(model_name),
+        );
+        model.insert(
+            "model_module".to_string(),
+            serde_json::Value::String(model_module),
+        );
+        if let Some(model_module_version) =
+            widget_model_field("", &entry.state, "_model_module_version")
+        {
+            model.insert(
+                "model_module_version".to_string(),
+                serde_json::Value::String(model_module_version),
+            );
+        }
+        model.insert("state".to_string(), resolved_state);
+        if !buffers.is_empty() {
+            model.insert("buffers".to_string(), serde_json::Value::Array(buffers));
+        }
+        state.insert(comm_id.clone(), serde_json::Value::Object(model));
+    }
+
+    if state.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(serde_json::json!({
+        "version_major": WIDGET_STATE_VERSION_MAJOR,
+        "version_minor": WIDGET_STATE_VERSION_MINOR,
+        "state": state,
+    })))
+}
+
+fn widget_model_field(
+    entry_value: &str,
+    state: &serde_json::Value,
+    state_key: &str,
+) -> Option<String> {
+    if !entry_value.is_empty() {
+        return Some(entry_value.to_string());
+    }
+    state
+        .get(state_key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn insert_widget_state_metadata(metadata: &mut serde_json::Value, widget_state: serde_json::Value) {
+    if !metadata.is_object() {
+        *metadata = serde_json::json!({});
+    }
+    let Some(metadata_obj) = metadata.as_object_mut() else {
+        return;
+    };
+    let widgets = metadata_obj
+        .entry("widgets".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !widgets.is_object() {
+        *widgets = serde_json::json!({});
+    }
+    if let Some(widgets_obj) = widgets.as_object_mut() {
+        widgets_obj.insert(WIDGET_STATE_MIME.to_string(), widget_state);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum WidgetStatePathSegment {
+    Key(String),
+    Index(usize),
+}
+
+impl WidgetStatePathSegment {
+    fn to_widget_path_value(&self) -> serde_json::Value {
+        match self {
+            Self::Key(key) => serde_json::Value::String(key.clone()),
+            Self::Index(index) => serde_json::json!(*index),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct WidgetStateContentRef {
+    path: Vec<WidgetStatePathSegment>,
+    blob: String,
+    media_type: Option<String>,
+}
+
+async fn resolve_widget_state_content_refs(
+    mut state: serde_json::Value,
+    blob_store: &BlobStore,
+) -> Result<(serde_json::Value, Vec<serde_json::Value>), String> {
+    let mut refs = Vec::new();
+    collect_widget_state_content_refs(&state, &mut Vec::new(), &mut refs);
+
+    let mut buffers = Vec::new();
+    for content_ref in refs {
+        let bytes = blob_store
+            .get(&content_ref.blob)
+            .await
+            .map_err(|err| {
+                format!(
+                    "failed to read widget state blob {}: {err}",
+                    content_ref.blob
+                )
+            })?
+            .ok_or_else(|| format!("widget state blob {} not found", content_ref.blob))?;
+
+        if widget_state_ref_is_binary(content_ref.media_type.as_deref()) {
+            remove_widget_state_value_for_buffer(&mut state, &content_ref.path)?;
+            buffers.push(serde_json::json!({
+                "encoding": "base64",
+                "path": content_ref
+                    .path
+                    .iter()
+                    .map(WidgetStatePathSegment::to_widget_path_value)
+                    .collect::<Vec<_>>(),
+                "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+            }));
+        } else {
+            let replacement =
+                widget_state_blob_to_json_value(&bytes, content_ref.media_type.as_deref())?;
+            set_widget_state_value_at_path(&mut state, &content_ref.path, replacement)?;
+        }
+    }
+
+    Ok((state, buffers))
+}
+
+fn collect_widget_state_content_refs(
+    value: &serde_json::Value,
+    path: &mut Vec<WidgetStatePathSegment>,
+    refs: &mut Vec<WidgetStateContentRef>,
+) {
+    if let Some((blob, media_type)) = widget_state_content_ref(value) {
+        refs.push(WidgetStateContentRef {
+            path: path.clone(),
+            blob,
+            media_type,
+        });
+        return;
+    }
+
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                path.push(WidgetStatePathSegment::Key(key.clone()));
+                collect_widget_state_content_refs(child, path, refs);
+                path.pop();
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                path.push(WidgetStatePathSegment::Index(index));
+                collect_widget_state_content_refs(child, path, refs);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
+fn widget_state_content_ref(value: &serde_json::Value) -> Option<(String, Option<String>)> {
+    let object = value.as_object()?;
+    let blob = object.get("blob")?.as_str()?.to_string();
+    let has_size = object.get("size").is_some_and(serde_json::Value::is_number);
+    if !has_size {
+        return None;
+    }
+    let media_type = object
+        .get("media_type")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    Some((blob, media_type))
+}
+
+fn widget_state_ref_is_binary(media_type: Option<&str>) -> bool {
+    match media_type {
+        Some(media_type) => notebook_doc::mime::is_binary_mime(media_type),
+        None => true,
+    }
+}
+
+fn widget_state_blob_to_json_value(
+    bytes: &[u8],
+    media_type: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|err| format!("widget state text blob is not valid UTF-8: {err}"))?;
+    if media_type.is_some_and(|mime| mime == "application/json" || mime.ends_with("+json")) {
+        serde_json::from_str(text)
+            .map_err(|err| format!("widget state JSON blob is invalid: {err}"))
+    } else {
+        Ok(serde_json::Value::String(text.to_string()))
+    }
+}
+
+fn set_widget_state_value_at_path(
+    state: &mut serde_json::Value,
+    path: &[WidgetStatePathSegment],
+    replacement: serde_json::Value,
+) -> Result<(), String> {
+    let Some((last, parent_path)) = path.split_last() else {
+        *state = replacement;
+        return Ok(());
+    };
+    let parent = widget_state_value_mut_at_path(state, parent_path)?;
+    match (parent, last) {
+        (serde_json::Value::Object(map), WidgetStatePathSegment::Key(key)) => {
+            map.insert(key.clone(), replacement);
+            Ok(())
+        }
+        (serde_json::Value::Array(items), WidgetStatePathSegment::Index(index)) => {
+            let Some(item) = items.get_mut(*index) else {
+                return Err(format!("widget state array index {index} out of bounds"));
+            };
+            *item = replacement;
+            Ok(())
+        }
+        _ => Err("widget state content ref path shape changed while resolving".to_string()),
+    }
+}
+
+fn remove_widget_state_value_for_buffer(
+    state: &mut serde_json::Value,
+    path: &[WidgetStatePathSegment],
+) -> Result<(), String> {
+    let Some((last, parent_path)) = path.split_last() else {
+        *state = serde_json::Value::Null;
+        return Ok(());
+    };
+    let parent = widget_state_value_mut_at_path(state, parent_path)?;
+    match (parent, last) {
+        (serde_json::Value::Object(map), WidgetStatePathSegment::Key(key)) => {
+            map.remove(key);
+            Ok(())
+        }
+        (serde_json::Value::Array(items), WidgetStatePathSegment::Index(index)) => {
+            let Some(item) = items.get_mut(*index) else {
+                return Err(format!("widget state array index {index} out of bounds"));
+            };
+            *item = serde_json::Value::Null;
+            Ok(())
+        }
+        _ => Err("widget state buffer path shape changed while resolving".to_string()),
+    }
+}
+
+fn widget_state_value_mut_at_path<'a>(
+    mut value: &'a mut serde_json::Value,
+    path: &[WidgetStatePathSegment],
+) -> Result<&'a mut serde_json::Value, String> {
+    for segment in path {
+        value = match (value, segment) {
+            (serde_json::Value::Object(map), WidgetStatePathSegment::Key(key)) => map
+                .get_mut(key)
+                .ok_or_else(|| format!("widget state object key {key:?} missing"))?,
+            (serde_json::Value::Array(items), WidgetStatePathSegment::Index(index)) => items
+                .get_mut(*index)
+                .ok_or_else(|| format!("widget state array index {index} out of bounds"))?,
+            _ => {
+                return Err(
+                    "widget state content ref path shape changed while resolving".to_string(),
+                )
+            }
+        };
+    }
+    Ok(value)
 }
 
 /// Configuration for the persist debouncer timing.
