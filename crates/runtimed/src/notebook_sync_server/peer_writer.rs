@@ -17,8 +17,30 @@ const SLOW_PEER_REQUEST: std::time::Duration = std::time::Duration::from_secs(30
 const REQUIRED_HEADS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 struct OutboundFrame {
+    lane: PeerEgressLane,
     frame_type: NotebookFrameType,
     payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PeerEgressLane {
+    Reliable,
+    Ephemeral,
+}
+
+impl PeerEgressLane {
+    pub(super) fn classify(frame_type: NotebookFrameType) -> Self {
+        match frame_type {
+            NotebookFrameType::Broadcast | NotebookFrameType::Presence => Self::Ephemeral,
+            NotebookFrameType::AutomergeSync
+            | NotebookFrameType::Request
+            | NotebookFrameType::Response
+            | NotebookFrameType::RuntimeStateSync
+            | NotebookFrameType::PoolStateSync
+            | NotebookFrameType::SessionControl
+            | NotebookFrameType::PutBlob => Self::Reliable,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -59,20 +81,38 @@ impl PeerWriter {
         frame_type: NotebookFrameType,
         payload: Vec<u8>,
     ) -> anyhow::Result<()> {
+        let lane = PeerEgressLane::classify(frame_type);
         self.tx
             .try_send(OutboundFrame {
+                lane,
                 frame_type,
                 payload,
             })
             .map_err(|e| match e {
-                mpsc::error::TrySendError::Full(frame) => anyhow::anyhow!(
-                    "peer outbound queue full while sending {:?} frame",
-                    frame.frame_type
-                ),
-                mpsc::error::TrySendError::Closed(frame) => anyhow::anyhow!(
-                    "peer writer stopped before sending {:?} frame",
-                    frame.frame_type
-                ),
+                mpsc::error::TrySendError::Full(frame) => {
+                    warn!(
+                        frame_type = ?frame.frame_type,
+                        lane = ?frame.lane,
+                        "[notebook-sync] Peer outbound queue full"
+                    );
+                    anyhow::anyhow!(
+                        "peer outbound queue full while sending {:?} frame on {:?} lane",
+                        frame.frame_type,
+                        frame.lane
+                    )
+                }
+                mpsc::error::TrySendError::Closed(frame) => {
+                    warn!(
+                        frame_type = ?frame.frame_type,
+                        lane = ?frame.lane,
+                        "[notebook-sync] Peer writer stopped"
+                    );
+                    anyhow::anyhow!(
+                        "peer writer stopped before sending {:?} frame on {:?} lane",
+                        frame.frame_type,
+                        frame.lane
+                    )
+                }
             })
     }
 
@@ -129,8 +169,9 @@ where
                 .await
                 .map_err(|e| {
                     anyhow::anyhow!(
-                        "failed to write {:?} frame to peer {} for {}: {}",
+                        "failed to write {:?} frame on {:?} lane to peer {} for {}: {}",
                         frame.frame_type,
+                        frame.lane,
                         peer_id,
                         notebook_id,
                         e
@@ -514,6 +555,92 @@ mod tests {
             doc.get_execution_id("cell-1")
         };
         assert_eq!(cell_execution_id.as_deref(), Some(execution_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn peer_egress_lane_classifies_reliable_and_ephemeral_frames() {
+        assert_eq!(
+            PeerEgressLane::classify(NotebookFrameType::AutomergeSync),
+            PeerEgressLane::Reliable
+        );
+        assert_eq!(
+            PeerEgressLane::classify(NotebookFrameType::Request),
+            PeerEgressLane::Reliable
+        );
+        assert_eq!(
+            PeerEgressLane::classify(NotebookFrameType::Response),
+            PeerEgressLane::Reliable
+        );
+        assert_eq!(
+            PeerEgressLane::classify(NotebookFrameType::RuntimeStateSync),
+            PeerEgressLane::Reliable
+        );
+        assert_eq!(
+            PeerEgressLane::classify(NotebookFrameType::PoolStateSync),
+            PeerEgressLane::Reliable
+        );
+        assert_eq!(
+            PeerEgressLane::classify(NotebookFrameType::SessionControl),
+            PeerEgressLane::Reliable
+        );
+        assert_eq!(
+            PeerEgressLane::classify(NotebookFrameType::Presence),
+            PeerEgressLane::Ephemeral
+        );
+        assert_eq!(
+            PeerEgressLane::classify(NotebookFrameType::Broadcast),
+            PeerEgressLane::Ephemeral
+        );
+        assert_eq!(
+            PeerEgressLane::classify(NotebookFrameType::PutBlob),
+            PeerEgressLane::Reliable
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_writer_preserves_sync_before_session_status_barrier() {
+        let (writer_tx, mut writer_rx) = mpsc::channel::<OutboundFrame>(2);
+        let writer = PeerWriter { tx: writer_tx };
+
+        writer
+            .send_frame(NotebookFrameType::RuntimeStateSync, vec![1])
+            .expect("runtime sync should enqueue");
+        queue_session_status(
+            &writer,
+            notebook_protocol::protocol::NotebookDocPhaseWire::Interactive,
+            notebook_protocol::protocol::RuntimeStatePhaseWire::Ready,
+            notebook_protocol::protocol::InitialLoadPhaseWire::Ready,
+        )
+        .expect("session status should enqueue after runtime sync");
+
+        let sync_frame = writer_rx
+            .try_recv()
+            .expect("runtime sync should remain first in FIFO");
+        assert_eq!(sync_frame.frame_type, NotebookFrameType::RuntimeStateSync);
+        assert_eq!(sync_frame.lane, PeerEgressLane::Reliable);
+
+        let status_frame = writer_rx
+            .try_recv()
+            .expect("session status should remain behind the sync frame");
+        assert_eq!(status_frame.frame_type, NotebookFrameType::SessionControl);
+        assert_eq!(status_frame.lane, PeerEgressLane::Reliable);
+    }
+
+    #[tokio::test]
+    async fn peer_writer_full_error_reports_frame_lane() {
+        let (writer_tx, _writer_rx) = mpsc::channel::<OutboundFrame>(1);
+        let writer = PeerWriter { tx: writer_tx };
+
+        writer
+            .send_frame(NotebookFrameType::Presence, vec![1])
+            .expect("first ephemeral frame should fill the queue");
+
+        let err = writer
+            .send_frame(NotebookFrameType::Broadcast, vec![2])
+            .expect_err("full queue should reject immediately");
+        let message = err.to_string();
+        assert!(message.contains("Broadcast frame"));
+        assert!(message.contains("Ephemeral lane"));
     }
 
     #[tokio::test]
