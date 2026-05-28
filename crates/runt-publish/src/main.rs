@@ -477,7 +477,7 @@ fn collect_content_ref_or_manifest(value: &Value, refs: &mut BTreeMap<String, Bl
     if let Some(inline) = value.get("inline").and_then(Value::as_str) {
         if let Ok(manifest) = serde_json::from_str::<Value>(inline) {
             for dep in collect_blob_manifest_dependencies(&manifest) {
-                refs.entry(dep.hash.clone()).or_insert(dep);
+                insert_blob_ref(refs, &dep.hash, dep.size, dep.media_type);
             }
         }
         return;
@@ -674,6 +674,7 @@ mod tests {
             }
         });
         let mut refs = BTreeMap::new();
+        insert_blob_ref(&mut refs, "chunk-a", None, None);
         collect_blob_refs(&output, &mut refs);
 
         assert!(refs.contains_key("chunk-a"));
