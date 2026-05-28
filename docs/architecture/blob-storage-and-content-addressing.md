@@ -121,10 +121,14 @@ Why this split:
 2. **Binary as bytes, not base64.** Storing PNGs as base64 inside Automerge
    text fields would 1.33x the size, defeat OS-level filesystem caching, and
    misclassify the data for HTTP serving.
-3. **One classification source.** MIME classification lives in
-   `notebook_doc::mime` (`is_binary_mime`, `mime_kind`). No per-crate copies.
-   The frontend does not classify; WASM resolves `ContentRef`s into one of
-   `Inline | Url | Blob` via `notebook-doc::mime::ResolvedContentRef`.
+3. **One classification source for output manifests.** MIME classification
+   lives in `notebook_doc::mime` (`is_binary_mime`, `mime_kind`). Rust output
+   paths and WASM output resolution use that source to resolve `ContentRef`s
+   into one of `Inline | Url | Blob` via
+   `notebook-doc::mime::ResolvedContentRef`. The hosted widget-comm bridge
+   currently mirrors the same binary/text split in TypeScript when projecting
+   `RuntimeStateDoc.comms`; that is a host adapter for read-only widget state,
+   not a second durable output-manifest policy.
 
 The threshold is a constant rather than a runtime-configurable knob today.
 Anything load-bearing on its value (test fixtures, the comm-state externalizer
@@ -384,11 +388,13 @@ blob reachable.
    maps to `/api/n/:id/blobs/:hash` or a future signed origin. The desktop
    resolver maps to `http://127.0.0.1:<port>/blob/<hash>`.
 3. **Snapshot pairing.** `NotebookHandle.load_snapshot(notebookBytes,
-   runtimeStateBytes)` (the `25e14bf3` change) materializes a snapshot pair
-   into a single handle. Outputs decode to `ContentRef`s; the host plugs in a
-   `BlobResolver` against whichever origin owns the bytes (local daemon for a
-   desktop viewer, cloud origin for a hosted viewer). The snapshot pair plus
-   the resolver is enough to render; no intermediate JSON projection.
+   runtimeStateBytes)` materializes a snapshot pair into a single handle.
+   Outputs decode to `ContentRef`s; the host plugs in a `BlobResolver` against
+   whichever origin owns the bytes (local daemon for a desktop viewer, cloud
+   origin for a hosted viewer). The snapshot pair plus the resolver is the
+   durable source of truth. Hosts may still build derived JSON render caches at
+   publish/request time, but those caches are regenerable validation artifacts,
+   not a second notebook format.
 
 The snapshot pair invariant: a saved `RuntimeStateDoc` is only renderable if
 every `ContentRef::Blob` it carries is reachable through the resolver. Publish
@@ -491,17 +497,14 @@ elsewhere, some are surfaced here for the first time.
    pandas reprs) that a value-aware threshold (e.g., higher for
    `text/plain` traceback, lower for `application/json`) might cut sync
    bandwidth materially. No data captured to drive that choice.
-6. **Snapshot publish does not check blob reachability.** The snapshot pair
-   load path assumes the host supplies a resolver that can reach every ref.
-   No tool today walks a saved `RuntimeStateDoc`, enumerates its
-   `ContentRef::Blob` entries, and verifies they exist in the destination
-   blob store before declaring a publish complete. A publisher that forgets
-   a blob produces a snapshot that loads but renders with broken outputs.
-   The natural home for the fix is the hosted-artifacts publish flow
-   (`hosted-notebook-artifacts.md`): `latest_revision_id` should not advance
-   until every reachable `ContentRef::Blob` exists in the destination store.
-   The desktop ADR keeps this as an open question because desktop save does
-   not have a publish boundary; the room either has the blobs or it doesn't.
+6. **Publish ref collectors must stay schema-complete.** The publish boundary
+   now walks saved snapshot documents and rejects hosted revisions when
+   materialized render refs are missing from the destination blob store. The
+   remaining risk is schema drift: every new ref shape in `RuntimeStateDoc`
+   outputs/comms, `NotebookDoc` assets/attachments, or inline manifest children
+   must be added to the publisher, hosted validator, and GC inventory together.
+   Desktop save still does not have a separate publish boundary; the room either
+   has the blobs or it does not.
 7. **MIME mutation on re-put.** A repeat put with the same bytes but a
    different `media_type` overwrites the sidecar (`put_disk` fast path).
    That is intentional for the `application/json` -> `text/javascript`
