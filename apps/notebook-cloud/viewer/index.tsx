@@ -5,10 +5,16 @@ import {
   Copy,
   Eye,
   EyeOff,
+  Globe2,
   KeyRound,
+  Link2,
   LogIn,
   LogOut,
+  Mail,
   RotateCcw,
+  Share2,
+  Trash2,
+  UserRound,
   UsersRound,
 } from "lucide-react";
 import {
@@ -69,6 +75,15 @@ import {
   reduceCloudViewerPresenceMessage,
 } from "./presence";
 import { resolveCell, type RenderCell, type ResolvedCell } from "./render-resolution";
+import {
+  buildCloudShareAccessRows,
+  hasPublicViewerAccess,
+  normalizeShareInviteEmail,
+  type CloudNotebookAclRow,
+  type CloudNotebookInvite,
+  type CloudShareAccessRow,
+  type CloudShareInviteScope,
+} from "./sharing-client";
 import { preloadSiftWasmForCells } from "./sift-preload";
 import { cloudSourceLanguage } from "./source-language";
 import {
@@ -87,6 +102,8 @@ interface CloudViewerConfig {
   notebookId: string;
   headsHash: string | null;
   renderEndpoint: string;
+  aclEndpoint: string;
+  invitesEndpoint: string;
   syncEndpoint: string;
   blobBasePath: string;
   rendererAssetsBasePath: string;
@@ -139,6 +156,8 @@ function loadConfig(): CloudViewerConfig {
   if (
     !parsed.notebookId ||
     !parsed.renderEndpoint ||
+    !parsed.aclEndpoint ||
+    !parsed.invitesEndpoint ||
     !parsed.syncEndpoint ||
     !parsed.blobBasePath ||
     !parsed.rendererAssetsBasePath ||
@@ -151,6 +170,8 @@ function loadConfig(): CloudViewerConfig {
     notebookId: parsed.notebookId,
     headsHash: parsed.headsHash ?? null,
     renderEndpoint: parsed.renderEndpoint,
+    aclEndpoint: parsed.aclEndpoint,
+    invitesEndpoint: parsed.invitesEndpoint,
     syncEndpoint: parsed.syncEndpoint,
     blobBasePath: parsed.blobBasePath,
     rendererAssetsBasePath: parsed.rendererAssetsBasePath,
@@ -776,6 +797,14 @@ function NotebookViewer({
         <div className="cloud-toolbar-actions">
           <ThemeToggle theme={theme} onThemeChange={setTheme} className="cloud-theme-toggle" />
 
+          {connectionScope === "owner" ? (
+            <CloudSharingControls
+              aclEndpoint={config.aclEndpoint}
+              invitesEndpoint={config.invitesEndpoint}
+              authState={authState}
+            />
+          ) : null}
+
           <CloudAuthControls
             authConfig={authConfig}
             authState={authState}
@@ -866,6 +895,350 @@ function NotebookViewer({
       )}
     </main>
   );
+}
+
+function CloudSharingControls({
+  aclEndpoint,
+  invitesEndpoint,
+  authState,
+}: {
+  aclEndpoint: string;
+  invitesEndpoint: string;
+  authState: CloudPrototypeAuthState;
+}) {
+  const [open, setOpen] = useState(false);
+  const [acl, setAcl] = useState<CloudNotebookAclRow[]>([]);
+  const [invites, setInvites] = useState<CloudNotebookInvite[]>([]);
+  const [loadState, setLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [message, setMessage] = useState<string | null>(null);
+  const [messageKind, setMessageKind] = useState<"info" | "error">("info");
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteScope, setInviteScope] = useState<CloudShareInviteScope>("viewer");
+  const [formError, setFormError] = useState<string | null>(null);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const inviteSubmitLockRef = useRef(false);
+  const publicLink = new URL(window.location.pathname, window.location.origin).href;
+  const accessRows = useMemo(() => buildCloudShareAccessRows({ acl, invites }), [acl, invites]);
+  const publicEnabled = useMemo(() => hasPublicViewerAccess(acl), [acl]);
+  const inviteReady = normalizeShareInviteEmail(inviteEmail) !== null;
+
+  const loadSharingState = useCallback(
+    async (options?: { preserveMessage?: boolean; signal?: AbortSignal }) => {
+      setLoadState("loading");
+      if (!options?.preserveMessage) {
+        setMessage(null);
+      }
+      try {
+        const [aclResponse, invitesResponse] = await Promise.all([
+          fetchWithCloudPrototypeAuth(
+            aclEndpoint,
+            { headers: { Accept: "application/json" }, signal: options?.signal },
+            authState,
+          ),
+          fetchWithCloudPrototypeAuth(
+            invitesEndpoint,
+            { headers: { Accept: "application/json" }, signal: options?.signal },
+            authState,
+          ),
+        ]);
+        if (options?.signal?.aborted) {
+          return;
+        }
+        if (!aclResponse.ok) {
+          throw await cloudResponseError(aclResponse, "Unable to load access list");
+        }
+        if (!invitesResponse.ok) {
+          throw await cloudResponseError(invitesResponse, "Unable to load invites");
+        }
+        const aclBody = (await aclResponse.json()) as { acl?: CloudNotebookAclRow[] };
+        const invitesBody = (await invitesResponse.json()) as { invites?: CloudNotebookInvite[] };
+        setAcl(Array.isArray(aclBody.acl) ? aclBody.acl : []);
+        setInvites(Array.isArray(invitesBody.invites) ? invitesBody.invites : []);
+        setLoadState("ready");
+      } catch (error) {
+        if (options?.signal?.aborted) {
+          return;
+        }
+        setLoadState("error");
+        setMessageKind("error");
+        setMessage(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [aclEndpoint, authState, invitesEndpoint],
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    const controller = new AbortController();
+    void loadSharingState({ signal: controller.signal });
+    return () => controller.abort();
+  }, [loadSharingState, open]);
+
+  const copyPublicLink = async () => {
+    try {
+      await navigator.clipboard.writeText(publicLink);
+      setCopyState("copied");
+      setMessageKind("info");
+      setMessage("Link copied.");
+    } catch {
+      setCopyState("failed");
+      setMessageKind("error");
+      setMessage("Unable to copy the link.");
+    }
+  };
+
+  const submitInvite = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (inviteSubmitLockRef.current) {
+      return;
+    }
+    const email = normalizeShareInviteEmail(inviteEmail);
+    if (!email) {
+      setFormError("Enter a valid email address.");
+      return;
+    }
+
+    inviteSubmitLockRef.current = true;
+    setBusyAction("invite");
+    setFormError(null);
+    setMessage(null);
+    try {
+      const response = await fetchWithCloudPrototypeAuth(
+        invitesEndpoint,
+        {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ email, scope: inviteScope }),
+        },
+        authState,
+      );
+      if (!response.ok) {
+        throw await cloudResponseError(response, "Unable to create invite");
+      }
+      setInviteEmail("");
+      setMessageKind("info");
+      setMessage(`Invite created for ${email}.`);
+      await loadSharingState({ preserveMessage: true });
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : String(error));
+    } finally {
+      inviteSubmitLockRef.current = false;
+      setBusyAction(null);
+    }
+  };
+
+  const togglePublicAccess = async () => {
+    setBusyAction("public");
+    setMessage(null);
+    try {
+      const response = await fetchWithCloudPrototypeAuth(
+        aclEndpoint,
+        {
+          method: publicEnabled ? "DELETE" : "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            subject_kind: "public",
+            subject: "anonymous",
+            scope: "viewer",
+          }),
+        },
+        authState,
+      );
+      if (!response.ok) {
+        throw await cloudResponseError(
+          response,
+          publicEnabled ? "Unable to disable public link" : "Unable to enable public link",
+        );
+      }
+      setMessageKind("info");
+      setMessage(publicEnabled ? "Public link disabled." : "Public link enabled.");
+      await loadSharingState({ preserveMessage: true });
+    } catch (error) {
+      setMessageKind("error");
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const removeAccessRow = async (row: CloudShareAccessRow) => {
+    if (!row.removable) return;
+
+    setBusyAction(row.id);
+    setMessage(null);
+    try {
+      const response =
+        row.kind === "invite"
+          ? await fetchWithCloudPrototypeAuth(
+              appendEndpointPathSegment(invitesEndpoint, row.invite.id),
+              {
+                method: "DELETE",
+                headers: { Accept: "application/json" },
+              },
+              authState,
+            )
+          : await fetchWithCloudPrototypeAuth(
+              aclEndpoint,
+              {
+                method: "DELETE",
+                headers: {
+                  Accept: "application/json",
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  subject_kind: row.acl.subject_kind,
+                  subject: row.acl.subject,
+                  scope: row.acl.scope,
+                }),
+              },
+              authState,
+            );
+      if (!response.ok) {
+        throw await cloudResponseError(response, "Unable to remove access");
+      }
+      setMessageKind("info");
+      setMessage(`${row.label} removed.`);
+      await loadSharingState({ preserveMessage: true });
+    } catch (error) {
+      setMessageKind("error");
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  return (
+    <details
+      className="cloud-share-menu"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary title="Share notebook">
+        <Share2 aria-hidden="true" />
+        <span>Share</span>
+      </summary>
+      <div className="cloud-share-panel">
+        <header>
+          <div>
+            <h2>Share notebook</h2>
+            <p>Manage public read access and collaborator invites for this cloud notebook.</p>
+          </div>
+          <button type="button" onClick={() => void copyPublicLink()}>
+            <Link2 aria-hidden="true" />
+            {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy"}
+          </button>
+        </header>
+
+        <section className="cloud-share-public" aria-label="Public link access">
+          <div>
+            <Globe2 aria-hidden="true" />
+            <div>
+              <strong>Anyone with the link</strong>
+              <span>{publicEnabled ? "Can view this notebook" : "No anonymous access"}</span>
+            </div>
+          </div>
+          <button
+            type="button"
+            disabled={busyAction === "public" || loadState === "loading"}
+            onClick={() => void togglePublicAccess()}
+          >
+            {publicEnabled ? "Disable" : "Enable"}
+          </button>
+        </section>
+
+        <form className="cloud-share-invite" onSubmit={submitInvite}>
+          <label>
+            <span>Invite by email</span>
+            <input
+              type="email"
+              value={inviteEmail}
+              placeholder="name@example.com"
+              autoComplete="email"
+              onChange={(event) => {
+                setInviteEmail(event.target.value);
+                setFormError(null);
+              }}
+            />
+          </label>
+          <label>
+            <span>Access</span>
+            <select
+              value={inviteScope}
+              onChange={(event) => setInviteScope(event.target.value as CloudShareInviteScope)}
+            >
+              <option value="viewer">Can view</option>
+              <option value="editor">Can edit</option>
+            </select>
+          </label>
+          <button type="submit" disabled={!inviteReady || busyAction === "invite"}>
+            <Mail aria-hidden="true" />
+            Invite
+          </button>
+          {formError ? (
+            <div className="cloud-auth-form-error" role="alert">
+              {formError}
+            </div>
+          ) : null}
+        </form>
+
+        <section className="cloud-share-current" aria-label="Current notebook access">
+          <h3>Current access</h3>
+          {loadState === "loading" && accessRows.length === 0 ? (
+            <div className="cloud-share-empty">Loading access...</div>
+          ) : accessRows.length === 0 ? (
+            <div className="cloud-share-empty">Only the owner can access this notebook.</div>
+          ) : (
+            <ul>
+              {accessRows.map((row) => (
+                <li key={row.id}>
+                  <CloudShareRowIcon row={row} />
+                  <div>
+                    <strong>{row.label}</strong>
+                    <span>{row.detail}</span>
+                  </div>
+                  <span className="cloud-share-badge">{row.badge}</span>
+                  {row.removable ? (
+                    <button
+                      type="button"
+                      aria-label={`Remove ${row.label}`}
+                      title={`Remove ${row.label}`}
+                      disabled={busyAction === row.id}
+                      onClick={() => void removeAccessRow(row)}
+                    >
+                      <Trash2 aria-hidden="true" />
+                    </button>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        {message ? (
+          <div className="cloud-share-message" data-kind={messageKind}>
+            {message}
+          </div>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
+function CloudShareRowIcon({ row }: { row: CloudShareAccessRow }) {
+  if (row.kind === "invite") {
+    return <Mail aria-hidden="true" />;
+  }
+  if (row.acl.subject_kind === "public") {
+    return <Globe2 aria-hidden="true" />;
+  }
+  return <UserRound aria-hidden="true" />;
 }
 
 function CloudAuthControls({
@@ -1206,6 +1579,23 @@ const EMPTY_REMOTE_CELL_PRESENCE: RemoteCellPresence = {
 
 function canEditLiveNotebook(connectionScope: string | null): boolean {
   return connectionScope === "editor" || connectionScope === "owner";
+}
+
+function appendEndpointPathSegment(endpoint: string, segment: string): string {
+  const base = endpoint.endsWith("/") ? endpoint.slice(0, -1) : endpoint;
+  return `${base}/${encodeURIComponent(segment)}`;
+}
+
+async function cloudResponseError(response: Response, fallback: string): Promise<Error> {
+  try {
+    const body = (await response.json()) as { error?: unknown };
+    if (typeof body.error === "string" && body.error) {
+      return new Error(`${fallback}: ${body.error}`);
+    }
+  } catch {
+    // Ignore malformed error responses and fall back to the HTTP status.
+  }
+  return new Error(`${fallback}: ${response.status}`);
 }
 
 function ViewerStartupError({ message }: { message: string }) {

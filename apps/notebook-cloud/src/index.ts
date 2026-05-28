@@ -49,14 +49,21 @@ import { collectBlobRefs } from "./blob-refs.ts";
 import { cloudLog, durationMs } from "./observability.ts";
 import {
   createPendingNotebookInvite,
+  getPrincipalProfiles,
   getPendingNotebookInvitesForLogin,
   listNotebookInvites,
   resolveNotebookInvitesForLogin,
   revokePendingNotebookInvite,
   type ListedPendingNotebookInviteRow,
   type PendingNotebookInviteRow,
+  type PrincipalProfileRow,
 } from "./sharing-storage.ts";
-import { normalizeInviteEmail, normalizeProviderHint } from "./sharing.ts";
+import {
+  normalizeInviteEmail,
+  normalizeProviderHint,
+  shareTargetDisplay,
+  type PrincipalProfile,
+} from "./sharing.ts";
 import {
   viewerThemeBootstrapScript,
   viewerThemeFirstPaintStyle,
@@ -908,6 +915,54 @@ function inviteResponse(
   };
 }
 
+async function aclResponseRows(
+  env: Env,
+  rows: NotebookAclRow[],
+): Promise<Array<NotebookAclRow & { display: ReturnType<typeof shareTargetDisplay> }>> {
+  const principals = rows
+    .filter((row) => row.subject_kind === "principal")
+    .map((row) => row.subject);
+  const profilesByPrincipal = new Map(
+    (await getPrincipalProfiles(env, principals)).map((profile) => [profile.principal, profile]),
+  );
+  return rows.map((row) => aclRowResponse(row, profilesByPrincipal.get(row.subject)));
+}
+
+function aclRowResponse(
+  row: NotebookAclRow,
+  profile?: PrincipalProfileRow,
+): NotebookAclRow & { display: ReturnType<typeof shareTargetDisplay> } {
+  if (row.subject_kind === "public") {
+    return {
+      ...row,
+      display: shareTargetDisplay({ publicViewer: true }),
+    };
+  }
+
+  return {
+    ...row,
+    display: profile
+      ? shareTargetDisplay({ profile: principalProfileFromRow(profile) })
+      : {
+          kind: "principal",
+          label: row.subject,
+          principal: row.subject,
+          email: null,
+        },
+  };
+}
+
+function principalProfileFromRow(row: PrincipalProfileRow): PrincipalProfile {
+  return {
+    principal: row.principal,
+    provider: row.provider,
+    email: row.email_normalized,
+    displayName: row.display_name,
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
+  };
+}
+
 async function routeNotebookAcl(request: Request, env: Env, notebookId: string): Promise<Response> {
   if (!env.DB) {
     return json({ error: "D1 binding DB is not configured" }, 503);
@@ -926,9 +981,10 @@ async function routeNotebookAcl(request: Request, env: Env, notebookId: string):
   }
 
   if (request.method === "GET") {
+    const acl = await getNotebookAclRows(env, notebookId);
     return json({
       notebook_id: notebookId,
-      acl: await getNotebookAclRows(env, notebookId),
+      acl: await aclResponseRows(env, acl),
     });
   }
 
@@ -969,7 +1025,7 @@ async function routeNotebookAcl(request: Request, env: Env, notebookId: string):
     return json({
       ok: true,
       notebook_id: notebookId,
-      acl,
+      acl: await aclResponseRows(env, acl),
     });
   }
 
@@ -994,7 +1050,7 @@ async function routeNotebookAcl(request: Request, env: Env, notebookId: string):
     {
       ok: true,
       notebook_id: notebookId,
-      acl: await getNotebookAclRows(env, notebookId),
+      acl: await aclResponseRows(env, await getNotebookAclRows(env, notebookId)),
     },
     201,
   );
@@ -1840,13 +1896,16 @@ function normalizedRuntimeHeadsHash(value: string | null): string | null {
 function viewer(notebookId: string, request: Request, env: Env, headsHash?: string): Response {
   const escaped = escapeHtml(notebookId);
   const title = headsHash ? `${escaped} @ ${escapeHtml(headsHash)}` : escaped;
+  const notebookApiBasePath = `/api/n/${encodeURIComponent(notebookId)}`;
   const renderEndpoint = headsHash
-    ? `/api/n/${encodeURIComponent(notebookId)}/renders/${encodeURIComponent(headsHash)}`
-    : `/api/n/${encodeURIComponent(notebookId)}/render`;
+    ? `${notebookApiBasePath}/renders/${encodeURIComponent(headsHash)}`
+    : `${notebookApiBasePath}/render`;
   const config = {
     notebookId,
     headsHash: headsHash ?? null,
     renderEndpoint,
+    aclEndpoint: `${notebookApiBasePath}/acl`,
+    invitesEndpoint: `${notebookApiBasePath}/invites`,
     syncEndpoint: `/n/${encodeURIComponent(notebookId)}/sync`,
     blobBasePath: notebookCloudBlobBasePath(notebookId),
     rendererAssetsBasePath: rendererAssetsBasePath(env),

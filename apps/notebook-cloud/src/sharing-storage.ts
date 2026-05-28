@@ -9,6 +9,8 @@ import {
   type PendingNotebookInvite,
 } from "./sharing.ts";
 
+const PRINCIPAL_PROFILE_LOOKUP_BATCH_SIZE = 50;
+
 export interface PrincipalProfileRow {
   principal: string;
   provider: string;
@@ -143,6 +145,49 @@ export async function getPrincipalProfile(
   )
     .bind(principal)
     .first<PrincipalProfileRow>();
+}
+
+export async function getPrincipalProfiles(
+  env: Env,
+  principals: string[],
+): Promise<PrincipalProfileRow[]> {
+  if (!env.DB) {
+    return [];
+  }
+
+  const uniquePrincipals = Array.from(new Set(principals.filter((principal) => principal)));
+  if (uniquePrincipals.length === 0) {
+    return [];
+  }
+
+  await ensureCatalogSchema(env);
+  const profiles: PrincipalProfileRow[] = [];
+  for (
+    let index = 0;
+    index < uniquePrincipals.length;
+    index += PRINCIPAL_PROFILE_LOOKUP_BATCH_SIZE
+  ) {
+    const batch = uniquePrincipals.slice(index, index + PRINCIPAL_PROFILE_LOOKUP_BATCH_SIZE);
+    const placeholders = batch.map(() => "?").join(", ");
+    const rows = await env.DB.prepare(
+      `SELECT principal,
+              provider,
+              provider_subject,
+              email_normalized,
+              email_verified,
+              display_name,
+              avatar_url,
+              first_seen_at,
+              last_seen_at,
+              raw_claims_json
+         FROM principal_profiles
+         WHERE principal IN (${placeholders})`,
+    )
+      .bind(...batch)
+      .all<PrincipalProfileRow>();
+    profiles.push(...(rows.results ?? []));
+  }
+  return profiles;
 }
 
 export async function createPendingNotebookInvite(
