@@ -7,19 +7,78 @@ export interface AccessTokenFixture {
   token: string;
 }
 
-export async function accessTokenFixture(options: {
-  audience?: string;
+export interface OidcTokenFixture {
+  env: {
+    NOTEBOOK_CLOUD_OIDC_CLIENT_ID: string;
+    NOTEBOOK_CLOUD_OIDC_ISSUER: string;
+    NOTEBOOK_CLOUD_OIDC_JWKS_JSON: string;
+    NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE: string;
+  };
+  token: string;
+}
+
+interface TokenFixtureOptions {
+  algorithm?: string;
+  audience?: string | string[];
+  authorizedParty?: string;
   email?: string;
+  excludeMatchingKey?: boolean;
+  expiresInSeconds?: number;
   includeKid?: boolean;
   includeMalformedKey?: boolean;
   includeUnmatchedKey?: boolean;
   matchingKeyOps?: JsonWebKey["key_ops"];
   matchingKeyUse?: JsonWebKey["use"] | null;
   name?: string;
-  subject: string;
-}): Promise<AccessTokenFixture> {
+  notBeforeSecondsFromNow?: number;
+  subject?: string | null;
+  tokenIssuer?: string | null;
+}
+
+export async function accessTokenFixture(
+  options: TokenFixtureOptions,
+): Promise<AccessTokenFixture> {
   const issuer = "https://team.cloudflareaccess.com";
   const audience = "notebook-cloud-aud";
+  const { jwksJson, token } = await signedTokenFixture({
+    ...options,
+    audience: options.audience ?? audience,
+    issuer,
+  });
+
+  return {
+    env: {
+      NOTEBOOK_CLOUD_ACCESS_AUD: audience,
+      NOTEBOOK_CLOUD_ACCESS_JWKS_JSON: jwksJson,
+      NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN: issuer,
+    },
+    token,
+  };
+}
+
+export async function oidcTokenFixture(options: TokenFixtureOptions): Promise<OidcTokenFixture> {
+  const issuer = "https://auth.stage.anaconda.com/api/auth";
+  const clientId = "notebook-cloud-oidc-client";
+  const { jwksJson, token } = await signedTokenFixture({
+    ...options,
+    audience: options.audience ?? clientId,
+    issuer,
+  });
+
+  return {
+    env: {
+      NOTEBOOK_CLOUD_OIDC_CLIENT_ID: clientId,
+      NOTEBOOK_CLOUD_OIDC_ISSUER: issuer,
+      NOTEBOOK_CLOUD_OIDC_JWKS_JSON: jwksJson,
+      NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE: "user:anaconda",
+    },
+    token,
+  };
+}
+
+async function signedTokenFixture(
+  options: TokenFixtureOptions & { audience: string | string[]; issuer: string },
+): Promise<{ jwksJson: string; token: string }> {
   const kid = "test-key";
   const keyPair = await crypto.subtle.generateKey(
     {
@@ -51,17 +110,21 @@ export async function accessTokenFixture(options: {
     : null;
   const now = Math.floor(Date.now() / 1000);
   const header = {
-    alg: "RS256",
+    alg: options.algorithm ?? "RS256",
     ...(options.includeKid === false ? {} : { kid }),
     typ: "JWT",
   };
   const payload = {
-    aud: options.audience ?? audience,
+    aud: options.audience,
+    ...(options.authorizedParty ? { azp: options.authorizedParty } : {}),
     ...(options.email ? { email: options.email } : {}),
-    exp: now + 300,
-    iss: issuer,
+    exp: now + (options.expiresInSeconds ?? 300),
+    ...(options.tokenIssuer === null ? {} : { iss: options.tokenIssuer ?? options.issuer }),
     ...(options.name ? { name: options.name } : {}),
-    sub: options.subject,
+    ...(typeof options.notBeforeSecondsFromNow === "number"
+      ? { nbf: now + options.notBeforeSecondsFromNow }
+      : {}),
+    ...(options.subject ? { sub: options.subject } : {}),
   };
   const signingInput = `${base64Url(JSON.stringify(header))}.${base64Url(JSON.stringify(payload))}`;
   const signature = await crypto.subtle.sign(
@@ -71,25 +134,27 @@ export async function accessTokenFixture(options: {
   );
 
   return {
-    env: {
-      NOTEBOOK_CLOUD_ACCESS_AUD: audience,
-      NOTEBOOK_CLOUD_ACCESS_JWKS_JSON: JSON.stringify({
-        keys: [
-          ...(options.includeMalformedKey ? [{ alg: "RS256", kty: "RSA", use: "sig" }] : []),
-          ...(unmatchedPublicJwk
-            ? [{ ...unmatchedPublicJwk, alg: "RS256", kid: "unmatched", use: "sig" }]
-            : []),
-          {
-            ...publicJwk,
-            alg: "RS256",
-            kid,
-            ...(options.matchingKeyUse === null ? {} : { use: options.matchingKeyUse ?? "sig" }),
-            ...(options.matchingKeyOps ? { key_ops: options.matchingKeyOps } : {}),
-          },
-        ],
-      }),
-      NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN: issuer,
-    },
+    jwksJson: JSON.stringify({
+      keys: [
+        ...(options.includeMalformedKey ? [{ alg: "RS256", kty: "RSA", use: "sig" }] : []),
+        ...(unmatchedPublicJwk
+          ? [{ ...unmatchedPublicJwk, alg: "RS256", kid: "unmatched", use: "sig" }]
+          : []),
+        ...(options.excludeMatchingKey
+          ? []
+          : [
+              {
+                ...publicJwk,
+                alg: "RS256",
+                kid,
+                ...(options.matchingKeyUse === null
+                  ? {}
+                  : { use: options.matchingKeyUse ?? "sig" }),
+                ...(options.matchingKeyOps ? { key_ops: options.matchingKeyOps } : {}),
+              },
+            ]),
+      ],
+    }),
     token: `${signingInput}.${base64UrlBytes(new Uint8Array(signature))}`,
   };
 }

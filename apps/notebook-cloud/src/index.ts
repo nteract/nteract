@@ -3,6 +3,7 @@ import { NotebookRoom } from "./notebook-room.ts";
 import {
   ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
   AuthError,
+  BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
   CLOUDFLARE_ACCESS_JWT_HEADER,
   allowsBlobUpload,
   allowsPublish,
@@ -106,6 +107,7 @@ const worker: ExportedHandler<Env> = {
         deployment_env: env.DEPLOYMENT_ENV ?? "development",
         auth: {
           cloudflare_access: cloudflareAccessHealth(env),
+          oidc: oidcHealth(env),
         },
       });
     }
@@ -427,9 +429,11 @@ function hasCredentialWebSocketSubprotocol(request: Request): boolean {
   return protocol
     .split(",")
     .some((part) =>
-      [ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX, DEV_AUTH_TOKEN_PROTOCOL_PREFIX].some((prefix) =>
-        part.trim().startsWith(prefix),
-      ),
+      [
+        ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
+        BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
+        DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
+      ].some((prefix) => part.trim().startsWith(prefix)),
     );
 }
 
@@ -450,6 +454,32 @@ function cloudflareAccessHealth(env: Env): {
   return {
     status,
     jwks: hasPinnedJwks ? "pinned" : status === "configured" ? "remote" : "none",
+  };
+}
+
+function oidcHealth(env: Env): {
+  status: "configured" | "partial" | "disabled";
+  jwks: "remote" | "pinned" | "none";
+  audience: "client_id" | "explicit" | "none";
+  principal_namespace: "configured" | "default";
+} {
+  const hasIssuer = Boolean(env.NOTEBOOK_CLOUD_OIDC_ISSUER?.trim());
+  const hasClientId = Boolean(env.NOTEBOOK_CLOUD_OIDC_CLIENT_ID?.trim());
+  const hasAudience = Boolean(env.NOTEBOOK_CLOUD_OIDC_AUDIENCE?.trim());
+  const hasPinnedJwks = Boolean(env.NOTEBOOK_CLOUD_OIDC_JWKS_JSON?.trim());
+  const hasPrincipalNamespace = Boolean(env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE?.trim());
+  const status =
+    hasIssuer && hasClientId
+      ? "configured"
+      : hasIssuer || hasClientId || hasAudience || hasPinnedJwks
+        ? "partial"
+        : "disabled";
+
+  return {
+    status,
+    jwks: hasPinnedJwks ? "pinned" : status === "configured" ? "remote" : "none",
+    audience: hasAudience ? "explicit" : hasClientId ? "client_id" : "none",
+    principal_namespace: hasPrincipalNamespace ? "configured" : "default",
   };
 }
 

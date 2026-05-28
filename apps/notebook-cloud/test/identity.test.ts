@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
+  BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
   AuthError,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
   NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
@@ -21,7 +22,7 @@ import {
   validateOperator,
   validatePrincipal,
 } from "../src/identity.ts";
-import { accessTokenFixture, base64Url } from "./access-jwt-fixture.ts";
+import { accessTokenFixture, base64Url, oidcTokenFixture } from "./access-jwt-fixture.ts";
 
 describe("dev identity", () => {
   it("uses explicit anonymous viewer auth when no dev credential is presented", () => {
@@ -749,5 +750,450 @@ describe("Cloudflare Access identity", () => {
 
     assert.equal(identity.principal.startsWith("anonymous:"), true);
     assert.equal(identity.scope, "viewer");
+  });
+});
+
+describe("OIDC identity", () => {
+  it("validates direct OIDC bearer tokens and maps sub to a namespaced principal", async () => {
+    const { env, token } = await oidcTokenFixture({
+      subject: "user/123",
+      email: "alice@example.com",
+      name: "Alice Demo",
+    });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?operator=desktop:a&scope=editor", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      env,
+    );
+
+    assert.deepEqual(identity, {
+      principal: "user:anaconda:user%2F123",
+      operator: "desktop:a",
+      actorLabel: "user:anaconda:user%2F123/desktop:a",
+      scope: "editor",
+      metadata: {
+        provider: "oidc",
+        transport: "oidc-bearer",
+        principalNamespace: "user:anaconda",
+        displayName: "Alice Demo",
+        email: "alice@example.com",
+      },
+    });
+  });
+
+  it("accepts browser OIDC tokens through bearer subprotocols without echoing credentials", async () => {
+    const { env, token } = await oidcTokenFixture({ subject: "alice" });
+    const protocol = `${BEARER_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url(token)}`;
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?operator=browser:tab&scope=viewer", {
+        headers: {
+          "Sec-WebSocket-Protocol": `other-proto, ${protocol}, ${NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL}`,
+        },
+      }),
+      env,
+    );
+
+    assert.equal(identity.actorLabel, "user:anaconda:alice/browser:tab");
+    assert.equal(identity.metadata.provider, "oidc");
+    assert.equal(identity.metadata.transport, "oidc-subprotocol");
+    assert.equal(identity.webSocketProtocol, NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL);
+  });
+
+  it("rejects mixed OIDC and Access credentials", async () => {
+    const { env: oidcEnv, token: oidcToken } = await oidcTokenFixture({ subject: "alice" });
+    const { token: accessToken } = await accessTokenFixture({ subject: "alice" });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              Authorization: `Bearer ${oidcToken}`,
+              "Cf-Access-Jwt-Assertion": accessToken,
+            },
+          }),
+          oidcEnv,
+        ),
+      (error) =>
+        error instanceof AuthError &&
+        error.status === 400 &&
+        /multiple identity credentials/.test(error.message),
+    );
+  });
+
+  it("rejects OIDC credentials when OIDC env is partially configured", async () => {
+    const { env, token } = await oidcTokenFixture({ subject: "alice" });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          { NOTEBOOK_CLOUD_OIDC_ISSUER: env.NOTEBOOK_CLOUD_OIDC_ISSUER },
+        ),
+      (error) =>
+        error instanceof AuthError &&
+        error.status === 503 &&
+        /not fully configured/.test(error.message),
+    );
+  });
+
+  it("rejects OIDC tokens with the wrong audience", async () => {
+    const { env, token } = await oidcTokenFixture({
+      audience: "wrong-audience",
+      subject: "alice",
+    });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          env,
+        ),
+      (error) =>
+        error instanceof AuthError && error.status === 401 && /audience/.test(error.message),
+    );
+  });
+
+  it("keeps Access bearer auth working when OIDC config is only partially set", async () => {
+    const { env: accessEnv, token } = await accessTokenFixture({ subject: "alice" });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?operator=cli:smoke&scope=owner", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      {
+        ...accessEnv,
+        NOTEBOOK_CLOUD_OIDC_ISSUER: "https://auth.stage.anaconda.com/api/auth",
+      },
+    );
+
+    assert.equal(identity.actorLabel, "user:cloudflare-access:alice/cli:smoke");
+    assert.equal(identity.metadata.transport, "access-bearer");
+  });
+
+  it("routes bearer tokens by issuer when Access and OIDC are both configured", async () => {
+    const { env: accessEnv, token: accessToken } = await accessTokenFixture({ subject: "alice" });
+    const { env: oidcEnv, token: oidcToken } = await oidcTokenFixture({ subject: "bob" });
+    const env = { ...accessEnv, ...oidcEnv };
+
+    const accessIdentity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?operator=cli:access&scope=owner", {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      }),
+      env,
+    );
+    const oidcIdentity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?operator=browser:oidc&scope=editor", {
+        headers: {
+          Authorization: `Bearer ${oidcToken}`,
+        },
+      }),
+      env,
+    );
+
+    assert.equal(accessIdentity.actorLabel, "user:cloudflare-access:alice/cli:access");
+    assert.equal(accessIdentity.metadata.transport, "access-bearer");
+    assert.equal(oidcIdentity.actorLabel, "user:anaconda:bob/browser:oidc");
+    assert.equal(oidcIdentity.metadata.transport, "oidc-bearer");
+  });
+
+  it("rejects non-JWT bearer tokens when Access and OIDC are both configured", async () => {
+    const { env: accessEnv } = await accessTokenFixture({ subject: "alice" });
+    const { env: oidcEnv } = await oidcTokenFixture({ subject: "bob" });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              Authorization: "Bearer not-a-jwt",
+            },
+          }),
+          { ...accessEnv, ...oidcEnv },
+        ),
+      (error) =>
+        error instanceof AuthError && error.status === 401 && /JWT with issuer/.test(error.message),
+    );
+  });
+
+  it("rejects bearer JWTs without issuer when Access and OIDC are both configured", async () => {
+    const { env: accessEnv } = await accessTokenFixture({ subject: "alice" });
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "bob",
+      tokenIssuer: null,
+    });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          { ...accessEnv, ...oidcEnv },
+        ),
+      (error) =>
+        error instanceof AuthError && error.status === 401 && /JWT with issuer/.test(error.message),
+    );
+  });
+
+  it("rejects bearer JWTs from neither provider when Access and OIDC are both configured", async () => {
+    const { env: accessEnv } = await accessTokenFixture({ subject: "alice" });
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "bob",
+      tokenIssuer: "https://neither-provider.example.test",
+    });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          { ...accessEnv, ...oidcEnv },
+        ),
+      (error) => error instanceof AuthError && error.status === 401 && /issuer/.test(error.message),
+    );
+  });
+
+  it("rejects OIDC tokens with the wrong issuer", async () => {
+    const { env, token } = await oidcTokenFixture({
+      subject: "alice",
+      tokenIssuer: "https://evil.example.test",
+    });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          env,
+        ),
+      (error) => error instanceof AuthError && error.status === 401 && /issuer/.test(error.message),
+    );
+  });
+
+  it("rejects expired OIDC tokens", async () => {
+    const { env, token } = await oidcTokenFixture({
+      expiresInSeconds: -300,
+      subject: "alice",
+    });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          env,
+        ),
+      (error) =>
+        error instanceof AuthError && error.status === 401 && /expired/.test(error.message),
+    );
+  });
+
+  it("rejects not-yet-valid OIDC tokens", async () => {
+    const { env, token } = await oidcTokenFixture({
+      notBeforeSecondsFromNow: 300,
+      subject: "alice",
+    });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          env,
+        ),
+      (error) =>
+        error instanceof AuthError && error.status === 401 && /not valid yet/.test(error.message),
+    );
+  });
+
+  it("rejects OIDC tokens without a subject", async () => {
+    const { env, token } = await oidcTokenFixture({ subject: null });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          env,
+        ),
+      (error) =>
+        error instanceof AuthError && error.status === 401 && /missing sub/.test(error.message),
+    );
+  });
+
+  it("rejects OIDC tokens with oversized subjects", async () => {
+    const { env, token } = await oidcTokenFixture({
+      subject: "a".repeat(257),
+    });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          env,
+        ),
+      (error) =>
+        error instanceof AuthError && error.status === 401 && /sub is too long/.test(error.message),
+    );
+  });
+
+  it("rejects OIDC tokens with invalid signatures", async () => {
+    const { env, token } = await oidcTokenFixture({ subject: "alice" });
+    const tamperedToken = `${token.slice(0, -1)}${token.endsWith("A") ? "B" : "A"}`;
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              Authorization: `Bearer ${tamperedToken}`,
+            },
+          }),
+          env,
+        ),
+      (error) =>
+        error instanceof AuthError && error.status === 401 && /signature/.test(error.message),
+    );
+  });
+
+  it("rejects OIDC tokens signed by unpublished keys", async () => {
+    const { env, token } = await oidcTokenFixture({
+      excludeMatchingKey: true,
+      includeUnmatchedKey: true,
+      subject: "alice",
+    });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          env,
+        ),
+      (error) =>
+        error instanceof AuthError && error.status === 401 && /signing key/.test(error.message),
+    );
+  });
+
+  it("rejects non-RS256 OIDC tokens before signature validation", async () => {
+    const { env, token } = await oidcTokenFixture({
+      algorithm: "HS256",
+      subject: "alice",
+    });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          env,
+        ),
+      (error) => error instanceof AuthError && error.status === 401 && /RS256/.test(error.message),
+    );
+  });
+
+  it("rejects multi-audience OIDC tokens without a matching authorized party", async () => {
+    const { env, token } = await oidcTokenFixture({
+      audience: ["notebook-cloud-oidc-client", "other-client"],
+      subject: "alice",
+    });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          env,
+        ),
+      (error) =>
+        error instanceof AuthError &&
+        error.status === 401 &&
+        /authorized party/.test(error.message),
+    );
+  });
+
+  it("accepts multi-audience OIDC tokens with a matching authorized party", async () => {
+    const { env, token } = await oidcTokenFixture({
+      audience: ["notebook-cloud-oidc-client", "other-client"],
+      authorizedParty: "notebook-cloud-oidc-client",
+      subject: "alice",
+    });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?operator=browser:tab", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      env,
+    );
+
+    assert.equal(identity.actorLabel, "user:anaconda:alice/browser:tab");
+  });
+
+  it("rejects OIDC tokens with extra JWT segments", async () => {
+    const { env, token } = await oidcTokenFixture({ subject: "alice" });
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/demo/sync", {
+            headers: {
+              Authorization: `Bearer ${token}.extra`,
+            },
+          }),
+          env,
+        ),
+      (error) =>
+        error instanceof AuthError && error.status === 401 && /must be a JWT/.test(error.message),
+    );
   });
 });

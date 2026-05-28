@@ -1,5 +1,6 @@
 import {
   ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
+  BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
   NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
   isConnectionScope,
@@ -8,6 +9,7 @@ import {
 
 export {
   ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
+  BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
   NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
   type ConnectionScope,
@@ -34,10 +36,15 @@ export interface IdentityEnvironment {
   NOTEBOOK_CLOUD_ACCESS_AUD?: string;
   NOTEBOOK_CLOUD_ACCESS_JWKS_JSON?: string;
   NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN?: string;
+  NOTEBOOK_CLOUD_OIDC_AUDIENCE?: string;
+  NOTEBOOK_CLOUD_OIDC_CLIENT_ID?: string;
+  NOTEBOOK_CLOUD_OIDC_ISSUER?: string;
+  NOTEBOOK_CLOUD_OIDC_JWKS_JSON?: string;
+  NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE?: string;
 }
 
 export interface AuthenticatedConnectionMetadata {
-  provider: "anonymous" | "dev" | "cloudflare-access";
+  provider: "anonymous" | "dev" | "cloudflare-access" | "oidc";
   transport:
     | "anonymous"
     | "loopback-dev"
@@ -48,7 +55,9 @@ export interface AuthenticatedConnectionMetadata {
     | "access-bearer"
     | "access-cookie"
     | "access-cookie-assertion"
-    | "access-subprotocol";
+    | "access-subprotocol"
+    | "oidc-bearer"
+    | "oidc-subprotocol";
   principalNamespace: string;
   displayName?: string;
   email?: string;
@@ -74,10 +83,27 @@ interface AccessCredential {
   webSocketProtocol?: string;
 }
 
+interface OidcCredential {
+  token: string;
+  transport: Extract<
+    AuthenticatedConnectionMetadata["transport"],
+    "oidc-bearer" | "oidc-subprotocol"
+  >;
+  webSocketProtocol?: string;
+}
+
 interface AccessConfig {
   audience: string;
   issuer: string;
   jwksJson?: string;
+}
+
+interface OidcConfig {
+  audience: string;
+  clientId: string;
+  issuer: string;
+  jwksJson?: string;
+  principalNamespace: string;
 }
 
 interface JsonWebKeySet {
@@ -90,8 +116,9 @@ interface JwtHeader {
   typ?: string;
 }
 
-interface AccessJwtPayload {
+interface JwtPayload {
   aud?: string | string[];
+  azp?: string;
   email?: string;
   exp?: number;
   iss?: string;
@@ -100,9 +127,10 @@ interface AccessJwtPayload {
   sub?: string;
 }
 
-const ACCESS_CLOCK_TOLERANCE_SECONDS = 60;
-const ACCESS_JWKS_CACHE_TTL_MS = 5 * 60 * 1000;
-const accessJwksCache = new Map<
+const JWT_CLOCK_TOLERANCE_SECONDS = 60;
+const JWKS_CACHE_TTL_MS = 5 * 60 * 1000;
+const OIDC_SUBJECT_MAX_LENGTH = 256;
+const jwksCache = new Map<
   string,
   {
     expiresAt: number;
@@ -153,10 +181,38 @@ export async function authenticateRequestWithProviders(
   request: Request,
   env: IdentityEnvironment = {},
 ): Promise<AuthenticatedConnection> {
-  const accessCredential = accessCredentialFromRequest(request);
+  const oidcConfig = oidcConfigFromEnv(env);
+  const oidcPartial = hasPartialOidcConfig(env);
   const accessConfig = accessConfigFromEnv(env);
+  const routeBearerToOidc = shouldRouteBearerToOidc(request, {
+    accessConfig,
+    oidcConfig,
+    oidcPartial,
+  });
+  const oidcCredential =
+    oidcConfig || oidcPartial || hasOidcCredentialTransport(request)
+      ? oidcCredentialFromRequest(request, { includeBearer: routeBearerToOidc })
+      : undefined;
+  const accessCredential = accessCredentialFromRequest(request, {
+    includeBearer: !routeBearerToOidc,
+  });
+  if (oidcCredential && accessCredential) {
+    throw new AuthError("multiple identity credentials presented", 400);
+  }
+  if (oidcCredential && !oidcConfig) {
+    throw new AuthError(
+      oidcPartial ? "OIDC auth is not fully configured" : "OIDC auth is not configured",
+      503,
+    );
+  }
   if (accessCredential && !accessConfig && hasPartialAccessConfig(env)) {
     throw new AuthError("Cloudflare Access auth is not fully configured", 503);
+  }
+  if (oidcCredential && oidcConfig) {
+    if (hasDevIdentityCredential(request) || hasDevCredentialTransport(request)) {
+      throw new AuthError("multiple identity credentials presented", 400);
+    }
+    return authenticateOidcRequest(request, env, oidcCredential);
   }
   if (accessCredential && accessConfig) {
     if (hasDevIdentityCredential(request) || hasDevCredentialTransport(request)) {
@@ -205,6 +261,57 @@ export async function authenticateCloudflareAccessRequest(
       provider: "cloudflare-access" as const,
       transport: credential.transport,
       principalNamespace: "user:cloudflare-access",
+      ...(payload.name?.trim() || payload.email?.trim()
+        ? { displayName: payload.name?.trim() || payload.email?.trim() || undefined }
+        : {}),
+      ...(payload.email?.trim() ? { email: payload.email.trim() } : {}),
+    },
+  };
+  return credential.webSocketProtocol
+    ? { ...identity, webSocketProtocol: credential.webSocketProtocol }
+    : identity;
+}
+
+export async function authenticateOidcRequest(
+  request: Request,
+  env: IdentityEnvironment,
+  credential = oidcCredentialFromRequest(request),
+): Promise<AuthenticatedConnection> {
+  if (!credential) {
+    throw new AuthError("missing OIDC token", 401);
+  }
+
+  const config = oidcConfigFromEnv(env);
+  if (!config) {
+    throw new AuthError("OIDC auth is not configured", 503);
+  }
+
+  const payload = await verifyOidcJwt(credential.token, config);
+  const subject = payload.sub?.trim();
+  if (!subject) {
+    throw new AuthError("OIDC token is missing sub", 401);
+  }
+  if (subject.length > OIDC_SUBJECT_MAX_LENGTH) {
+    throw new AuthError("OIDC token sub is too long", 401);
+  }
+
+  const url = new URL(request.url);
+  const principal = `${config.principalNamespace}:${encodePrincipalComponent(subject)}`;
+  const operator = headerOrQuery(request, url, "x-operator", "operator") ?? defaultOperator();
+  const scope = parseScope(headerOrQuery(request, url, "x-scope", "scope") ?? "viewer");
+
+  validatePrincipal(principal);
+  validateOperator(operator);
+
+  const identity = {
+    principal,
+    operator,
+    actorLabel: `${principal}/${operator}`,
+    scope,
+    metadata: {
+      provider: "oidc" as const,
+      transport: credential.transport,
+      principalNamespace: config.principalNamespace,
       ...(payload.name?.trim() || payload.email?.trim()
         ? { displayName: payload.name?.trim() || payload.email?.trim() || undefined }
         : {}),
@@ -489,7 +596,9 @@ function parseTrustedMetadata(
 }
 
 function isMetadataProvider(value: string): value is AuthenticatedConnectionMetadata["provider"] {
-  return value === "anonymous" || value === "dev" || value === "cloudflare-access";
+  return (
+    value === "anonymous" || value === "dev" || value === "cloudflare-access" || value === "oidc"
+  );
 }
 
 function isMetadataTransport(value: string): value is AuthenticatedConnectionMetadata["transport"] {
@@ -503,7 +612,9 @@ function isMetadataTransport(value: string): value is AuthenticatedConnectionMet
     value === "access-bearer" ||
     value === "access-cookie" ||
     value === "access-cookie-assertion" ||
-    value === "access-subprotocol"
+    value === "access-subprotocol" ||
+    value === "oidc-bearer" ||
+    value === "oidc-subprotocol"
   );
 }
 
@@ -602,7 +713,11 @@ function validDevTokenCredential(
   return undefined;
 }
 
-function accessCredentialFromRequest(request: Request): AccessCredential | undefined {
+function accessCredentialFromRequest(
+  request: Request,
+  options: { includeBearer?: boolean } = {},
+): AccessCredential | undefined {
+  const includeBearer = options.includeBearer ?? true;
   const candidates: AccessCredential[] = [];
   const cookieToken = cookieValue(request.headers.get("cookie"), "CF_Authorization");
   const assertionToken = request.headers.get(CLOUDFLARE_ACCESS_JWT_HEADER)?.trim() || undefined;
@@ -617,9 +732,11 @@ function accessCredentialFromRequest(request: Request): AccessCredential | undef
       candidates.push({ token: accessToken, transport: "access-token-header" });
     }
 
-    const bearerToken = bearerTokenFromAuthorization(request.headers.get("authorization"));
-    if (bearerToken) {
-      candidates.push({ token: bearerToken, transport: "access-bearer" });
+    if (includeBearer) {
+      const bearerToken = bearerTokenFromAuthorization(request.headers.get("authorization"));
+      if (bearerToken) {
+        candidates.push({ token: bearerToken, transport: "access-bearer" });
+      }
     }
 
     if (cookieToken && candidates.length === 0) {
@@ -644,6 +761,74 @@ function accessCredentialFromRequest(request: Request): AccessCredential | undef
   }
 
   return candidates[0];
+}
+
+function oidcCredentialFromRequest(
+  request: Request,
+  options: { includeBearer?: boolean } = {},
+): OidcCredential | undefined {
+  const includeBearer = options.includeBearer ?? true;
+  const candidates: OidcCredential[] = [];
+  if (includeBearer) {
+    const bearerToken = bearerTokenFromAuthorization(request.headers.get("authorization"));
+    if (bearerToken) {
+      candidates.push({ token: bearerToken, transport: "oidc-bearer" });
+    }
+  }
+
+  const webSocketProtocol = tokenFromWebSocketProtocol(
+    request.headers.get("sec-websocket-protocol"),
+    BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
+  );
+  if (webSocketProtocol) {
+    candidates.push({
+      token: webSocketProtocol.token,
+      transport: "oidc-subprotocol",
+      webSocketProtocol: webSocketProtocol.webSocketProtocol,
+    });
+  }
+
+  if (candidates.length > 1) {
+    throw new AuthError("multiple identity credentials presented", 400);
+  }
+
+  return candidates[0];
+}
+
+function hasOidcCredentialTransport(request: Request): boolean {
+  return hasWebSocketCredentialProtocol(
+    request.headers.get("sec-websocket-protocol"),
+    BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
+  );
+}
+
+function shouldRouteBearerToOidc(
+  request: Request,
+  config: {
+    accessConfig: AccessConfig | undefined;
+    oidcConfig: OidcConfig | undefined;
+    oidcPartial: boolean;
+  },
+): boolean {
+  const bearerToken = bearerTokenFromAuthorization(request.headers.get("authorization"));
+  if (!bearerToken) {
+    return false;
+  }
+  if (!config.oidcConfig) {
+    return config.oidcPartial && !config.accessConfig;
+  }
+  if (!config.accessConfig) {
+    return true;
+  }
+
+  const issuer = unverifiedJwtIssuer(bearerToken);
+  if (!issuer) {
+    throw new AuthError(
+      "bearer token must be a JWT with issuer when Access and OIDC are both configured",
+      401,
+    );
+  }
+  return issuer !== config.accessConfig.issuer;
 }
 
 function hasPartialAccessConfig(env: IdentityEnvironment): boolean {
@@ -678,16 +863,61 @@ function normalizeAccessIssuer(value: string): string {
   return `https://${host}`;
 }
 
-async function verifyCloudflareAccessJwt(
-  token: string,
-  config: AccessConfig,
-): Promise<AccessJwtPayload> {
-  const { header, payload, signingInput, signature } = decodeJwt(token);
+function hasPartialOidcConfig(env: IdentityEnvironment): boolean {
+  const issuer = env.NOTEBOOK_CLOUD_OIDC_ISSUER?.trim();
+  const clientId = env.NOTEBOOK_CLOUD_OIDC_CLIENT_ID?.trim();
+  const audience = env.NOTEBOOK_CLOUD_OIDC_AUDIENCE?.trim();
+  const jwksJson = env.NOTEBOOK_CLOUD_OIDC_JWKS_JSON?.trim();
+  if (!issuer && !clientId && !audience && !jwksJson) {
+    return false;
+  }
+  return !issuer || !clientId;
+}
+
+function oidcConfigFromEnv(env: IdentityEnvironment): OidcConfig | undefined {
+  const rawIssuer = env.NOTEBOOK_CLOUD_OIDC_ISSUER?.trim();
+  const clientId = env.NOTEBOOK_CLOUD_OIDC_CLIENT_ID?.trim();
+  if (!rawIssuer || !clientId) {
+    return undefined;
+  }
+
+  return {
+    audience: env.NOTEBOOK_CLOUD_OIDC_AUDIENCE?.trim() || clientId,
+    clientId,
+    issuer: normalizeOidcIssuer(rawIssuer),
+    jwksJson: env.NOTEBOOK_CLOUD_OIDC_JWKS_JSON,
+    principalNamespace: normalizePrincipalNamespace(env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE),
+  };
+}
+
+function normalizeOidcIssuer(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new AuthError("OIDC issuer must be a valid URL", 503);
+  }
+  if (url.protocol !== "https:") {
+    throw new AuthError("OIDC issuer must use https", 503);
+  }
+  url.hash = "";
+  url.search = "";
+  return url.href.replace(/\/+$/, "");
+}
+
+function normalizePrincipalNamespace(value: string | undefined): string {
+  const namespace = value?.trim().replace(/:+$/, "") || "user:oidc";
+  validatePrincipal(`${namespace}:subject`);
+  return namespace;
+}
+
+async function verifyCloudflareAccessJwt(token: string, config: AccessConfig): Promise<JwtPayload> {
+  const { header, payload, signingInput, signature } = decodeJwt(token, "Cloudflare Access");
   if (header.alg !== "RS256") {
     throw new AuthError("Cloudflare Access token must use RS256", 401);
   }
 
-  const keys = selectAccessJwks(await loadAccessJwks(config), header);
+  const keys = selectJwks(await loadAccessJwks(config), header, "Cloudflare Access");
   const verified = await verifyWithAnyAccessKey(keys, signingInput, signature);
   if (!verified) {
     throw new AuthError("Cloudflare Access token signature is invalid", 401);
@@ -697,20 +927,44 @@ async function verifyCloudflareAccessJwt(
   return payload;
 }
 
-function decodeJwt(token: string): {
+async function verifyOidcJwt(token: string, config: OidcConfig): Promise<JwtPayload> {
+  const { header, payload, signingInput, signature } = decodeJwt(token, "OIDC");
+  if (header.alg !== "RS256") {
+    throw new AuthError("OIDC token must use RS256", 401);
+  }
+
+  const keys = selectJwks(await loadOidcJwks(config), header, "OIDC");
+  const verified = await verifyWithAnyAccessKey(keys, signingInput, signature);
+  if (!verified) {
+    throw new AuthError("OIDC token signature is invalid", 401);
+  }
+
+  validateOidcJwtClaims(payload, config);
+  return payload;
+}
+
+function decodeJwt(
+  token: string,
+  label: "Cloudflare Access" | "OIDC",
+): {
   header: JwtHeader;
-  payload: AccessJwtPayload;
+  payload: JwtPayload;
   signingInput: string;
   signature: Uint8Array;
 } {
-  const [encodedHeader, encodedPayload, encodedSignature] = token.split(".");
+  const parts = token.split(".");
+  if (parts.length !== 3) {
+    throw new AuthError(`${label} token must be a JWT`, 401);
+  }
+
+  const [encodedHeader, encodedPayload, encodedSignature] = parts;
   if (!encodedHeader || !encodedPayload || !encodedSignature) {
-    throw new AuthError("Cloudflare Access token must be a JWT", 401);
+    throw new AuthError(`${label} token must be a JWT`, 401);
   }
 
   return {
-    header: decodeBase64UrlJson<JwtHeader>(encodedHeader),
-    payload: decodeBase64UrlJson<AccessJwtPayload>(encodedPayload),
+    header: decodeBase64UrlJson<JwtHeader>(encodedHeader, label),
+    payload: decodeBase64UrlJson<JwtPayload>(encodedPayload, label),
     signingInput: `${encodedHeader}.${encodedPayload}`,
     signature: decodeBase64UrlBytes(encodedSignature),
   };
@@ -718,11 +972,25 @@ function decodeJwt(token: string): {
 
 async function loadAccessJwks(config: AccessConfig): Promise<JsonWebKeySet> {
   if (config.jwksJson?.trim()) {
-    return parseJwks(config.jwksJson);
+    return parseJwks(config.jwksJson, "Cloudflare Access");
   }
 
-  const url = `${config.issuer}/cdn-cgi/access/certs`;
-  const cached = accessJwksCache.get(url);
+  return loadRemoteJwks(`${config.issuer}/cdn-cgi/access/certs`, "Cloudflare Access");
+}
+
+async function loadOidcJwks(config: OidcConfig): Promise<JsonWebKeySet> {
+  if (config.jwksJson?.trim()) {
+    return parseJwks(config.jwksJson, "OIDC");
+  }
+
+  return loadRemoteJwks(`${config.issuer}/.well-known/jwks.json`, "OIDC");
+}
+
+async function loadRemoteJwks(
+  url: string,
+  label: "Cloudflare Access" | "OIDC",
+): Promise<JsonWebKeySet> {
+  const cached = jwksCache.get(url);
   if (cached && cached.expiresAt > Date.now()) {
     return cached.ready;
   }
@@ -730,22 +998,22 @@ async function loadAccessJwks(config: AccessConfig): Promise<JsonWebKeySet> {
   const ready = fetch(url)
     .then(async (response) => {
       if (!response.ok) {
-        throw new AuthError(`Cloudflare Access JWKS fetch failed: ${response.status}`, 503);
+        throw new AuthError(`${label} JWKS fetch failed: ${response.status}`, 503);
       }
-      return parseJwks(await response.text());
+      return parseJwks(await response.text(), label);
     })
     .catch((error: unknown) => {
-      accessJwksCache.delete(url);
+      jwksCache.delete(url);
       throw error;
     });
-  accessJwksCache.set(url, {
-    expiresAt: Date.now() + ACCESS_JWKS_CACHE_TTL_MS,
+  jwksCache.set(url, {
+    expiresAt: Date.now() + JWKS_CACHE_TTL_MS,
     ready,
   });
   return ready;
 }
 
-function parseJwks(value: string): JsonWebKeySet {
+function parseJwks(value: string, label: "Cloudflare Access" | "OIDC"): JsonWebKeySet {
   try {
     const parsed = JSON.parse(value) as JsonWebKeySet;
     if (!Array.isArray(parsed.keys)) {
@@ -753,11 +1021,15 @@ function parseJwks(value: string): JsonWebKeySet {
     }
     return parsed;
   } catch (error) {
-    throw new AuthError(`Cloudflare Access JWKS is invalid: ${String(error)}`, 503);
+    throw new AuthError(`${label} JWKS is invalid: ${String(error)}`, 503);
   }
 }
 
-function selectAccessJwks(jwks: JsonWebKeySet, header: JwtHeader): JsonWebKey[] {
+function selectJwks(
+  jwks: JsonWebKeySet,
+  header: JwtHeader,
+  label: "Cloudflare Access" | "OIDC",
+): JsonWebKey[] {
   const keys = jwks.keys ?? [];
   const candidates = keys.filter((key) => {
     if (key.kty !== "RSA") return false;
@@ -769,7 +1041,7 @@ function selectAccessJwks(jwks: JsonWebKeySet, header: JwtHeader): JsonWebKey[] 
   });
 
   if (candidates.length === 0) {
-    throw new AuthError("Cloudflare Access signing key was not found", 401);
+    throw new AuthError(`${label} signing key was not found`, 401);
   }
   return candidates;
 }
@@ -805,7 +1077,7 @@ async function verifyWithAnyAccessKey(
   return false;
 }
 
-function validateAccessJwtClaims(payload: AccessJwtPayload, config: AccessConfig): void {
+function validateAccessJwtClaims(payload: JwtPayload, config: AccessConfig): void {
   if (payload.iss !== config.issuer) {
     throw new AuthError("Cloudflare Access token issuer is invalid", 401);
   }
@@ -816,11 +1088,33 @@ function validateAccessJwtClaims(payload: AccessJwtPayload, config: AccessConfig
   }
 
   const now = Math.floor(Date.now() / 1000);
-  if (typeof payload.exp !== "number" || payload.exp <= now - ACCESS_CLOCK_TOLERANCE_SECONDS) {
+  if (typeof payload.exp !== "number" || payload.exp <= now - JWT_CLOCK_TOLERANCE_SECONDS) {
     throw new AuthError("Cloudflare Access token is expired", 401);
   }
-  if (typeof payload.nbf === "number" && payload.nbf > now + ACCESS_CLOCK_TOLERANCE_SECONDS) {
+  if (typeof payload.nbf === "number" && payload.nbf > now + JWT_CLOCK_TOLERANCE_SECONDS) {
     throw new AuthError("Cloudflare Access token is not valid yet", 401);
+  }
+}
+
+function validateOidcJwtClaims(payload: JwtPayload, config: OidcConfig): void {
+  if (payload.iss !== config.issuer) {
+    throw new AuthError("OIDC token issuer is invalid", 401);
+  }
+
+  const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+  if (!audiences.includes(config.audience)) {
+    throw new AuthError("OIDC token audience is invalid", 401);
+  }
+  if (audiences.length > 1 && payload.azp !== config.clientId) {
+    throw new AuthError("OIDC token authorized party is invalid", 401);
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  if (typeof payload.exp !== "number" || payload.exp <= now - JWT_CLOCK_TOLERANCE_SECONDS) {
+    throw new AuthError("OIDC token is expired", 401);
+  }
+  if (typeof payload.nbf === "number" && payload.nbf > now + JWT_CLOCK_TOLERANCE_SECONDS) {
+    throw new AuthError("OIDC token is not valid yet", 401);
   }
 }
 
@@ -828,6 +1122,24 @@ function bearerTokenFromAuthorization(value: string | null): string | undefined 
   if (!value) return undefined;
   const match = value.match(/^Bearer\s+(.+)$/i);
   return match?.[1]?.trim() || undefined;
+}
+
+function unverifiedJwtIssuer(token: string): string | undefined {
+  const parts = token.split(".");
+  if (parts.length !== 3 || !parts[1]) {
+    return undefined;
+  }
+
+  try {
+    const decoded = decodeBase64Url(parts[1]);
+    if (!decoded) {
+      return undefined;
+    }
+    const payload = JSON.parse(decoded) as Pick<JwtPayload, "iss">;
+    return typeof payload.iss === "string" ? payload.iss : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function cookieValue(value: string | null, name: string): string | undefined {
@@ -885,15 +1197,15 @@ function decodeBase64Url(value: string): string | undefined {
   }
 }
 
-function decodeBase64UrlJson<T>(value: string): T {
+function decodeBase64UrlJson<T>(value: string, label: "Cloudflare Access" | "OIDC"): T {
   const decoded = decodeBase64Url(value);
   if (!decoded) {
-    throw new AuthError("Cloudflare Access token contains invalid base64url JSON", 401);
+    throw new AuthError(`${label} token contains invalid base64url JSON`, 401);
   }
   try {
     return JSON.parse(decoded) as T;
   } catch (error) {
-    throw new AuthError(`Cloudflare Access token contains invalid JSON: ${String(error)}`, 401);
+    throw new AuthError(`${label} token contains invalid JSON: ${String(error)}`, 401);
   }
 }
 

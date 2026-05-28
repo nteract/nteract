@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import worker from "../src/index.ts";
 import {
   ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
+  BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
   NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
   TRUSTED_WEBSOCKET_PROTOCOL_HEADER,
@@ -32,7 +33,7 @@ import {
   snapshotKey,
 } from "../src/storage.ts";
 import type { PendingNotebookInviteRow, PrincipalProfileRow } from "../src/sharing-storage.ts";
-import { accessTokenFixture } from "./access-jwt-fixture.ts";
+import { accessTokenFixture, oidcTokenFixture } from "./access-jwt-fixture.ts";
 
 const wasmBytes = await readFile(
   new URL("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm", import.meta.url),
@@ -106,6 +107,67 @@ describe("Worker artifact routes", () => {
     assert.deepEqual(body.auth.cloudflare_access, {
       status: "partial",
       jwks: "pinned",
+    });
+  });
+
+  it("reports direct OIDC readiness without exposing configured values", async () => {
+    const env = fakeEnv({
+      NOTEBOOK_CLOUD_OIDC_AUDIENCE: "aud-secret-ish-value",
+      NOTEBOOK_CLOUD_OIDC_CLIENT_ID: "client-secret-ish-value",
+      NOTEBOOK_CLOUD_OIDC_ISSUER: "https://auth.stage.anaconda.com/api/auth",
+      NOTEBOOK_CLOUD_OIDC_JWKS_JSON: '{"keys":[]}',
+      NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE: "user:anaconda",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/health"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      auth: {
+        oidc: {
+          audience: string;
+          jwks: string;
+          principal_namespace: string;
+          status: string;
+        };
+      };
+    };
+    assert.deepEqual(body.auth.oidc, {
+      status: "configured",
+      jwks: "pinned",
+      audience: "explicit",
+      principal_namespace: "configured",
+    });
+    assert.doesNotMatch(
+      JSON.stringify(body),
+      /auth\.stage\.anaconda\.com|client-secret-ish-value|aud-secret-ish-value|user:anaconda/,
+    );
+  });
+
+  it("reports partial direct OIDC readiness for incomplete deployments", async () => {
+    const env = fakeEnv({
+      NOTEBOOK_CLOUD_OIDC_ISSUER: "https://auth.stage.anaconda.com/api/auth",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/health"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      auth: { oidc: { audience: string; jwks: string; status: string } };
+    };
+    assert.deepEqual(body.auth.oidc, {
+      status: "partial",
+      jwks: "none",
+      audience: "none",
+      principal_namespace: "default",
     });
   });
 
@@ -2098,6 +2160,89 @@ describe("Worker artifact routes", () => {
       assert.equal(response.status, 200, label);
       assert.equal(roomFetches, 1, label);
     }
+  });
+
+  it("allows same-origin OIDC bearer subprotocol WebSocket upgrades", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "alice" });
+    let forwardedRequest: Request | undefined;
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            forwardedRequest = request;
+            return new Response("room ok");
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedNotebook(env, "same-origin-oidc-demo");
+    seedAcl(env, {
+      notebookId: "same-origin-oidc-demo",
+      subject: "user:anaconda:alice",
+      scope: "owner",
+    });
+
+    const response = await worker.fetch(
+      new Request(
+        "https://cloud.test/n/same-origin-oidc-demo/sync?operator=browser:tab&scope=owner",
+        {
+          headers: {
+            Origin: "https://cloud.test",
+            "Sec-WebSocket-Protocol": `${BEARER_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url(
+              token,
+            )}, ${NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL}`,
+            Upgrade: "websocket",
+          },
+        },
+      ),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.ok(forwardedRequest);
+    assert.equal(
+      forwardedRequest.headers.get("Sec-WebSocket-Protocol"),
+      NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+    );
+    assert.equal(
+      forwardedRequest.headers.get(TRUSTED_WEBSOCKET_PROTOCOL_HEADER),
+      NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+    );
+  });
+
+  it("requires Origin for OIDC bearer subprotocol WebSocket credentials", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "alice" });
+    let roomFetches = 0;
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async () => {
+            roomFetches += 1;
+            return new Response("unexpected room fetch", { status: 500 });
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/oidc-origin-demo/sync?operator=browser:tab&scope=owner", {
+        headers: {
+          "Sec-WebSocket-Protocol": `${BEARER_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url(token)}`,
+          Upgrade: "websocket",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { error: "websocket origin is required" });
+    assert.equal(roomFetches, 0);
   });
 
   it("does not create notebook rows from unauthorized WebSocket opens", async () => {
