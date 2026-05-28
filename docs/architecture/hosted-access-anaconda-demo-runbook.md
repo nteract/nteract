@@ -1,9 +1,14 @@
 # Hosted Cloudflare Access + Anaconda Demo Runbook
 
-**Status:** Runbook, 2026-05-24.
+**Status:** Superseded runbook, 2026-05-27.
+**Superseded by:** `docs/architecture/hosted-direct-oidc-demo-runbook.md`.
 **Last verified:** Provider metadata on 2026-05-24.
 **Review trigger:** Re-check before any Anaconda-backed hosted demo or Access
 configuration change.
+
+This runbook is retained as historical context for the Cloudflare Access
+prototype. It is not the default production path. Notebook-cloud should use
+direct OIDC on `preview.runt.run` first.
 
 This is the operational path for the Anaconda-hosted notebook-cloud demo:
 Cloudflare Access owns the browser login session, Anaconda is the Access OIDC
