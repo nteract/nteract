@@ -32,6 +32,7 @@ describe("output document Worker", () => {
     assert.match(response.headers.get("Content-Security-Policy") ?? "", /script-src/);
     assert.match(response.headers.get("Content-Security-Policy") ?? "", /frame-src 'none'/);
     assert.match(response.headers.get("Permissions-Policy") ?? "", /camera=\(\)/);
+    assert.match(response.headers.get("Cache-Control") ?? "", /\bno-transform\b/);
     assert.equal(response.headers.get("Set-Cookie"), null);
     assert.equal(response.headers.get("Access-Control-Allow-Credentials"), null);
     assert.match(await response.text(), /<!doctype html>/i);

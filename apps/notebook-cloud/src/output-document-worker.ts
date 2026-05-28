@@ -101,7 +101,7 @@ function withOutputDocumentHeaders(response: Response): Response {
   response.headers.delete("Set-Cookie");
   response.headers.delete("Access-Control-Allow-Credentials");
   if (response.ok && response.headers.get("Content-Type")?.includes("text/html")) {
-    response.headers.set("Cache-Control", "public, max-age=300, must-revalidate");
+    response.headers.set("Cache-Control", "public, max-age=300, must-revalidate, no-transform");
   } else if (!response.headers.has("Cache-Control")) {
     response.headers.set("Cache-Control", "no-store");
   }
