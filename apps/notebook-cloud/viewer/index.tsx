@@ -58,6 +58,8 @@ import {
   clearCloudOidcAuth,
   completeOidcRedirect,
   normalizeOidcAuthConfig,
+  refreshStoredOidcToken,
+  storedOidcTokenNeedsRefresh,
   type CloudOidcAuthConfig,
 } from "./oidc-auth";
 import type { ConnectionScope } from "../src/auth-shared";
@@ -115,6 +117,11 @@ interface CloudViewerConfig {
 interface CloudViewerAuthConfig {
   oidc: CloudOidcAuthConfig | null;
 }
+
+type CloudAuthRenewalState =
+  | { kind: "idle"; message: null }
+  | { kind: "refreshing"; message: string }
+  | { kind: "failed"; message: string };
 
 interface SnapshotRender {
   heads_hash?: string;
@@ -220,6 +227,90 @@ function isHomePath(): boolean {
   return pathname === "" || pathname === "/index.html";
 }
 
+function useCloudPrototypeAuth(authConfig: CloudViewerAuthConfig): {
+  authState: CloudPrototypeAuthState;
+  authRenewal: CloudAuthRenewalState;
+  refreshAuthState: () => void;
+} {
+  const [authState, setAuthState] = useState<CloudPrototypeAuthState>(() =>
+    cloudPrototypeAuthFromWindow(),
+  );
+  const [authRenewal, setAuthRenewal] = useState<CloudAuthRenewalState>(() =>
+    shouldRefreshStoredOidcToken()
+      ? { kind: "refreshing", message: "Refreshing sign-in..." }
+      : { kind: "idle", message: null },
+  );
+  const refreshPromiseRef = useRef<Promise<void> | null>(null);
+  const refreshAuthState = useCallback(() => {
+    setAuthState(cloudPrototypeAuthFromWindow());
+    if (!shouldRefreshStoredOidcToken()) {
+      setAuthRenewal({ kind: "idle", message: null });
+    }
+  }, []);
+
+  const refreshOidcIfNeeded = useCallback(async () => {
+    const oidc = authConfig.oidc;
+    if (!oidc || !shouldRefreshStoredOidcToken()) {
+      return;
+    }
+    if (refreshPromiseRef.current) {
+      return refreshPromiseRef.current;
+    }
+
+    const refreshPromise = (async () => {
+      setAuthRenewal({ kind: "refreshing", message: "Refreshing sign-in..." });
+      try {
+        await refreshStoredOidcToken(oidc, { storage: window.localStorage });
+        refreshAuthState();
+        setAuthRenewal({ kind: "idle", message: null });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn("[notebook-cloud] OIDC session refresh failed", error);
+        refreshAuthState();
+        setAuthRenewal({ kind: "failed", message: `Unable to refresh sign-in: ${message}` });
+      } finally {
+        refreshPromiseRef.current = null;
+      }
+    })();
+    refreshPromiseRef.current = refreshPromise;
+    return refreshPromise;
+  }, [authConfig.oidc, refreshAuthState]);
+
+  useEffect(() => {
+    void refreshOidcIfNeeded();
+
+    const interval = window.setInterval(() => {
+      void refreshOidcIfNeeded();
+    }, 60_000);
+    const refreshOnFocus = () => {
+      void refreshOidcIfNeeded();
+    };
+    const refreshOnVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void refreshOidcIfNeeded();
+      }
+    };
+    window.addEventListener("focus", refreshOnFocus);
+    document.addEventListener("visibilitychange", refreshOnVisibility);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshOnFocus);
+      document.removeEventListener("visibilitychange", refreshOnVisibility);
+    };
+  }, [refreshOidcIfNeeded]);
+
+  return { authState, authRenewal, refreshAuthState };
+}
+
+function shouldRefreshStoredOidcToken(): boolean {
+  try {
+    return Boolean(window.localStorage && storedOidcTokenNeedsRefresh(window.localStorage));
+  } catch {
+    return false;
+  }
+}
+
 function App() {
   const [authConfig] = useState<CloudViewerAuthConfig>(() => loadAuthConfig());
   const [runtimeState] = useState<ViewerRuntimeState | null>(() =>
@@ -246,9 +337,7 @@ function App() {
 
 function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const { theme, setTheme, resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
-  const [authState, setAuthState] = useState<CloudPrototypeAuthState>(() =>
-    cloudPrototypeAuthFromWindow(),
-  );
+  const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig);
   const [scope, setScope] = useState<ConnectionScope>(
     authState.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
   );
@@ -281,7 +370,7 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const resetAuth = () => {
     clearCloudPrototypeDevAuth(window.localStorage);
     setFormError(null);
-    setAuthState(cloudPrototypeAuthFromWindow());
+    refreshAuthState();
   };
 
   const signedIn = authState.mode === "oidc";
@@ -320,6 +409,15 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
             {formError}
           </div>
         ) : null}
+        {authRenewal.kind !== "idle" ? (
+          <div
+            className="cloud-auth-form-error"
+            data-kind={authRenewal.kind === "failed" ? "error" : "info"}
+            role={authRenewal.kind === "failed" ? "alert" : "status"}
+          >
+            {authRenewal.message}
+          </div>
+        ) : null}
 
         <div className="cloud-home-actions">
           {signedIn ? (
@@ -327,7 +425,7 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
               type="button"
               onClick={() => {
                 clearCloudOidcAuth(window.localStorage);
-                setAuthState(cloudPrototypeAuthFromWindow());
+                refreshAuthState();
               }}
             >
               <LogOut aria-hidden="true" />
@@ -443,9 +541,7 @@ function NotebookViewer({
     () => ({ batches: [] }),
   );
   const [connectAttempt, setConnectAttempt] = useState(0);
-  const [authState, setAuthState] = useState<CloudPrototypeAuthState>(() =>
-    cloudPrototypeAuthFromWindow(),
-  );
+  const { authState, authRenewal, refreshAuthState } = useCloudPrototypeAuth(authConfig);
   const textAttributionSequenceRef = useRef(0);
   const blobResolver = useMemo(
     () =>
@@ -477,6 +573,10 @@ function NotebookViewer({
   }, [cells]);
 
   useEffect(() => {
+    if (authRenewal.kind === "refreshing") {
+      return;
+    }
+
     let cancelled = false;
 
     void (async () => {
@@ -542,9 +642,13 @@ function NotebookViewer({
     return () => {
       cancelled = true;
     };
-  }, [authState, blobResolver, config.renderEndpoint, widgetStore]);
+  }, [authRenewal.kind, authState, blobResolver, config.renderEndpoint, widgetStore]);
 
   useEffect(() => {
+    if (authRenewal.kind === "refreshing") {
+      return;
+    }
+
     let disposed = false;
     let subscriptions: Array<{ unsubscribe: () => void }> = [];
     let materializeSequence = 0;
@@ -708,7 +812,7 @@ function NotebookViewer({
       setPresence((state) => reduceCloudViewerConnection(state, "disconnected"));
       setLivePresence(emptyCloudLivePresenceSnapshot());
     };
-  }, [authState, blobResolver, config.syncEndpoint, connectAttempt, widgetStore]);
+  }, [authRenewal.kind, authState, blobResolver, config.syncEndpoint, connectAttempt, widgetStore]);
 
   const readOnlyCells = useMemo(
     () =>
@@ -784,8 +888,8 @@ function NotebookViewer({
   );
   const resetPrototypeAuth = useCallback(() => {
     clearCloudPrototypeDevAuth(window.localStorage);
-    setAuthState(cloudPrototypeAuthFromWindow());
-  }, []);
+    refreshAuthState();
+  }, [refreshAuthState]);
 
   return (
     <main className="flex min-h-screen w-full flex-col py-6">
@@ -811,7 +915,7 @@ function NotebookViewer({
             connectionActorLabel={connectionActorLabel}
             connectionError={connectionError}
             connectionScope={connectionScope}
-            onAuthStateChange={() => setAuthState(cloudPrototypeAuthFromWindow())}
+            onAuthStateChange={refreshAuthState}
           />
 
           {status.kind === "ready" && codeCellCount > 0 ? (
@@ -837,6 +941,21 @@ function NotebookViewer({
             <RotateCcw aria-hidden="true" />
             Reset to anonymous
           </button>
+        </div>
+      ) : null}
+
+      {authRenewal.kind !== "idle" ? (
+        <div
+          className="cloud-state cloud-auth-state mx-8 mr-4"
+          data-kind={authRenewal.kind === "failed" ? "error" : "loading"}
+        >
+          <span>{authRenewal.message}</span>
+          {authRenewal.kind === "failed" ? (
+            <button type="button" onClick={resetPrototypeAuth}>
+              <RotateCcw aria-hidden="true" />
+              Reset to anonymous
+            </button>
+          ) : null}
         </div>
       ) : null}
 

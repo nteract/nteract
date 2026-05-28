@@ -72,6 +72,63 @@ export function readStoredOidcToken(
   storage: Pick<CloudOidcStorage, "getItem">,
   nowSeconds = currentEpochSeconds(),
 ): { token: CloudOidcTokenState | null; problem: string | null } {
+  const parsed = readStoredOidcTokenState(storage);
+  if (!parsed.token) {
+    return parsed;
+  }
+  const { token } = parsed;
+  if (token.expiresAt <= nowSeconds + EXPIRY_SKEW_SECONDS) {
+    return { token: null, problem: "Stored OIDC session is expired." };
+  }
+
+  return { token, problem: null };
+}
+
+export function storedOidcTokenNeedsRefresh(
+  storage: Pick<CloudOidcStorage, "getItem">,
+  nowSeconds = currentEpochSeconds(),
+): boolean {
+  const parsed = readStoredOidcTokenState(storage);
+  return Boolean(
+    parsed.token?.refreshToken && parsed.token.expiresAt <= nowSeconds + EXPIRY_SKEW_SECONDS,
+  );
+}
+
+export async function refreshStoredOidcToken(
+  config: CloudOidcAuthConfig,
+  input: {
+    storage: CloudOidcStorage;
+    fetchImpl?: typeof fetch;
+    nowSeconds?: number;
+  },
+): Promise<CloudOidcTokenState> {
+  const current = readStoredOidcTokenState(input.storage);
+  if (!current.token) {
+    throw new Error(current.problem ?? "Stored OIDC session is missing.");
+  }
+  if (!current.token.refreshToken) {
+    throw new Error("Stored OIDC session cannot be refreshed.");
+  }
+
+  const endpoints = await discoverOidcEndpoints(config, input.fetchImpl);
+  const response = await exchangeRefreshToken(
+    config,
+    endpoints,
+    current.token.refreshToken,
+    input.fetchImpl,
+  );
+  return storeOidcTokenResponse(
+    input.storage,
+    response,
+    input.nowSeconds ?? currentEpochSeconds(),
+    current.token,
+  );
+}
+
+function readStoredOidcTokenState(storage: Pick<CloudOidcStorage, "getItem">): {
+  token: CloudOidcTokenState | null;
+  problem: string | null;
+} {
   const raw = storage.getItem(NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY);
   if (!raw) {
     return { token: null, problem: null };
@@ -89,10 +146,6 @@ export function readStoredOidcToken(
   if (!accessToken || !claims || !Number.isFinite(expiresAt)) {
     return { token: null, problem: "Stored OIDC session is invalid." };
   }
-  if (expiresAt <= nowSeconds + EXPIRY_SKEW_SECONDS) {
-    return { token: null, problem: "Stored OIDC session is expired." };
-  }
-
   return {
     token: {
       accessToken,
@@ -108,19 +161,24 @@ export function storeOidcTokenResponse(
   storage: CloudOidcStorage,
   response: CloudOidcTokenResponse,
   nowSeconds = currentEpochSeconds(),
+  previousToken: CloudOidcTokenState | null = null,
 ): CloudOidcTokenState {
   const accessToken = typeof response.access_token === "string" ? response.access_token : "";
   if (!accessToken) {
     throw new Error("OIDC token response did not include an access token");
   }
-  const claims = claimsFromTokenResponse(response, accessToken);
+  const claims = claimsFromTokenResponse(response, accessToken, previousToken);
   const expiresIn =
     typeof response.expires_in === "number" && Number.isFinite(response.expires_in)
       ? response.expires_in
       : 3600;
+  const responseRefreshToken =
+    typeof response.refresh_token === "string" && response.refresh_token.trim()
+      ? response.refresh_token.trim()
+      : null;
   const token: CloudOidcTokenState = {
     accessToken,
-    refreshToken: null,
+    refreshToken: responseRefreshToken ?? previousToken?.refreshToken ?? null,
     expiresAt: nowSeconds + expiresIn,
     claims,
   };
@@ -272,6 +330,34 @@ async function exchangeAuthorizationCode(
   return (await response.json()) as CloudOidcTokenResponse;
 }
 
+async function exchangeRefreshToken(
+  config: CloudOidcAuthConfig,
+  endpoints: CloudOidcEndpoints,
+  refreshToken: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<CloudOidcTokenResponse> {
+  const form = new URLSearchParams();
+  form.set("client_id", config.clientId);
+  form.set("grant_type", "refresh_token");
+  form.set("refresh_token", refreshToken);
+  if (config.scope) {
+    form.set("scope", config.scope);
+  }
+
+  const response = await fetchImpl(endpoints.tokenEndpoint, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: form,
+  });
+  if (!response.ok) {
+    throw new Error(`OIDC token refresh failed: ${response.status}`);
+  }
+  return (await response.json()) as CloudOidcTokenResponse;
+}
+
 function readOidcRequestState(
   storage: Pick<CloudOidcStorage, "getItem">,
 ): CloudOidcRequestState | null {
@@ -327,12 +413,23 @@ function base64UrlEncodeBytes(bytes: Uint8Array): string {
 function claimsFromTokenResponse(
   response: CloudOidcTokenResponse,
   accessToken: string,
+  previousToken: CloudOidcTokenState | null = null,
 ): CloudOidcClaims {
   const claimsSource =
     typeof response.id_token === "string" && response.id_token ? response.id_token : accessToken;
   const claims = normalizeClaims(decodeJwtPayload(claimsSource));
   if (!claims) {
     throw new Error("OIDC token response did not include a usable subject claim");
+  }
+  if (previousToken && claims.sub !== previousToken.claims.sub) {
+    throw new Error("OIDC token refresh returned a different subject");
+  }
+  if (previousToken && claimsSource === accessToken) {
+    return {
+      ...previousToken.claims,
+      ...claims,
+      sub: claims.sub,
+    };
   }
   return claims;
 }
