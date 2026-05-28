@@ -18,6 +18,7 @@ members = [
     "crates/nteract-telemetry",
     "crates/xtask",
     "crates/runtimed",
+    "crates/runt-publish",
     "crates/runtimed-client",
     "crates/runtimed-outputs",
     "crates/runtimed-service",
