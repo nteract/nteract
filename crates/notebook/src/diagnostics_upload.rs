@@ -168,6 +168,14 @@ fn prepare_archive(app: &tauri::AppHandle, archive_id: &str) -> Result<PreparedA
         )
     })?;
 
+    let result = prepare_archive_in_dir(&runt_path, &output_dir);
+    if result.is_err() {
+        cleanup_prepared_archive_dir(&output_dir);
+    }
+    result
+}
+
+fn prepare_archive_in_dir(runt_path: &Path, output_dir: &Path) -> Result<PreparedArchive, String> {
     let output = Command::new(&runt_path)
         .arg("diagnostics")
         .arg("--output")
@@ -182,7 +190,6 @@ fn prepare_archive(app: &tauri::AppHandle, archive_id: &str) -> Result<PreparedA
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        cleanup_prepared_archive_dir(&output_dir);
         return Err(format!(
             "Diagnostics command failed with status {}: {}",
             output.status,
