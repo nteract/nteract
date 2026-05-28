@@ -155,7 +155,8 @@ The authorization algorithm is deliberately rejection-oriented:
    capabilities and ACL capabilities. Anonymous public reads have provider
    capabilities of exactly `viewer`.
 6. If the check passes, the connection scope is exactly the requested role.
-   If it fails, reject the connection instead of silently downgrading.
+   If it fails, reject the connection instead of silently downgrading, except
+   for the browser live-room public-read case below.
 
 This keeps a WebSocket connection's scope scalar (`viewer`, `editor`,
 `runtime_peer`, or `owner`) while still allowing one principal to open multiple
@@ -169,6 +170,14 @@ maximum of `owner` when the request is local-loopback or carries the deployed de
 token. Real OIDC/JupyterHub providers should map credential claims to provider
 maximum capabilities before the ACL lookup.
 
+Browser notebook pages get one public-read compatibility path: if an
+authenticated user asks the live room for `editor` but has no editor ACL row,
+and the notebook has an explicit public `viewer` ACL row, the Worker may stamp
+the connection as `viewer`. This is allowed only for the same-origin live-room
+WebSocket path so stale tabs and over-eager UI defaults do not block signed-in
+users from reading public notebooks. HTTP mutation routes, publish routes, blob
+uploads, and system/native clients still fail rather than downgrade.
+
 ## Decision 4: Public viewers are authorized, not fallback guests
 
 Requests with no authenticated credential become anonymous principals only
@@ -179,9 +188,11 @@ anonymous:<session>/browser:<session>
 ```
 
 If a room has no public ACL row, an unauthenticated WebSocket upgrade or render
-API read gets `401`/`403`, not an implicit viewer session. Local Wrangler demo
-routes may seed a public-read ACL for the demo notebook, but deployed behavior
-must be explicit.
+API read gets `401`/`403`, not an implicit viewer session. A signed-in user who
+lacks a principal ACL row can still read through that public row when they
+request `viewer`, and browser live-room connections may use the public-read
+downgrade described above. Local Wrangler demo routes may seed a public-read
+ACL for the demo notebook, but deployed behavior must be explicit.
 
 Anonymous viewers are always read-only. They may receive room state and send
 presence. They may not send non-empty `NotebookDoc` or `RuntimeStateDoc` sync,
@@ -241,6 +252,13 @@ the request path that creates execution intent.
 Durable Object storage is not the source of truth for notebook content. It may
 hold hibernation metadata and a small amount of transient room state. R2
 snapshot pairs and D1 catalog/ACL rows are durable.
+
+For a connected browser page, the materialized live room is the active source
+of truth. A render cache or `/api/n/:id/render` response may warm-start first
+paint, but it must not become a separate read lane once the live room
+materializes. Read-only viewers and editors consume the same live
+`NotebookDoc`/`RuntimeStateDoc`; scope only limits what each connection may
+author.
 
 ## Decision 7: Markdown-only collaboration needs a semantic gate
 

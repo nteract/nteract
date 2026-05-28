@@ -73,6 +73,12 @@ The render path is derived. The first three paths are the durable publish
 artifact set, but hosts can precompute the render path at publish time to prove
 the snapshot pair and blob set are complete.
 
+For connected notebook pages, the live room supersedes the render path. `/render`
+is a warm-start cache and static/export read model, not a separate state lane.
+After the WebSocket materializes, viewers and editors render the same live
+`NotebookDoc` + `RuntimeStateDoc`; permission differences only change which
+frames the client may author.
+
 ## Decision 3: Materialization uses runtimed-wasm
 
 Hosted viewers and room hosts materialize published revisions by calling:
@@ -154,8 +160,9 @@ The bundle imports the shared isolated output embed API and the existing
 renderer plugin virtual modules. It receives notebook-specific configuration
 from the Worker HTML shell as JSON:
 
-- render endpoint (`/api/n/:id/render` or pinned `/renders/:headsHash`);
-- sync endpoint for anonymous viewer-scope presence;
+- render endpoint (`/api/n/:id/render` or pinned `/renders/:headsHash`) for
+  warm start;
+- sync endpoint for the live notebook room;
 - blob base path (`/api/n/:id/blobs/`);
 - renderer asset base URL;
 - runtimed WASM base URL;

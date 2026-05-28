@@ -341,12 +341,12 @@ we choose the final share API names.
 ## Open Questions
 
 1. **Provider subject source.** For the first direct-OIDC demo, the principal is
-   `user:anaconda:<sub>`. If a WorkOS public viewer ships first, decide the
-   subject-linking migration before granting cross-provider ACL rows.
+   `user:anaconda:<sub>`. If another OIDC-backed public viewer ships first,
+   decide the subject-linking migration before granting cross-provider ACL rows.
 2. **Invite delivery.** Email delivery, invite-token links, and resend behavior
    are product work. ACL resolution does not depend on delivery mechanism.
 3. **Organization policy.** Some deployments may restrict invites to an
-   Anaconda org, email domain, or WorkOS/IdP group. That should be a share API
+   Anaconda org, email domain, or IdP group. That should be a share API
    validation rule, not a different ACL subject type.
 4. **Owner transfer.** Owner transfer needs confirmation and orphan protection.
    It should not be hidden inside invite-by-email.

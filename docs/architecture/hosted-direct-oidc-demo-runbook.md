@@ -1,8 +1,8 @@
 # Hosted Direct OIDC Anaconda Demo Runbook
 
-**Status:** Runbook, 2026-05-27.
-**Review trigger:** Re-check before any `preview.runt.run` route takeover,
-direct-OIDC Worker deployment, or Anaconda-backed hosted demo.
+**Status:** Runbook, updated 2026-05-28.
+**Review trigger:** Re-check before changing the `preview.runt.run` route,
+direct-OIDC Worker variables, or Anaconda-backed hosted demo.
 
 This is the operational path for the notebook-cloud direct OIDC demo:
 Cloudflare hosts the Worker, Durable Object, D1, R2, and custom domain, while
@@ -36,9 +36,9 @@ name = "anode-docworker-preview"
 routes = [{ pattern = "preview.runt.run", custom_domain = true }]
 ```
 
-Notebook-cloud should own that route after the direct-OIDC Worker path lands.
-Do not move the production `app.runt.run` route for this demo; it remains a
-production precedent and existing OIDC lane.
+Notebook-cloud now owns the staging lane for the hosted demo. Do not move the
+production `app.runt.run` route for this demo; it remains a production
+precedent and existing OIDC lane.
 
 ## Worker Runtime Variables
 
@@ -62,9 +62,9 @@ be replaced gradually. Use
 `NOTEBOOK_CLOUD_OIDC_JWKS_JSON` only for pinned/offline tests or an emergency
 where fetching the provider JWKS is intentionally disabled.
 
-`NOTEBOOK_CLOUD_DEV_TOKEN` may remain for scripted demo publishing and smoke
-tests until publish tooling has a first-class OIDC/API-key credential path. It
-is not the browser auth path.
+`NOTEBOOK_CLOUD_DEV_TOKEN` may remain for local-only smoke tests and emergency
+prototype diagnostics. It is not the browser auth path and it is not the
+publishing credential path.
 
 ## API-key Publishing
 
@@ -121,22 +121,19 @@ user:anaconda:<encoded-sub>
 Email, name, and avatar are display/audit metadata. They must not become
 `notebook_acl.subject` values.
 
-If a public `runtimed.com` viewer uses WorkOS first, that deployment should use
-`user:workos:<encoded-sub>` until a deliberate account-linking migration maps
-those users to Anaconda principals.
+If a future public `runtimed.com` viewer uses a different OIDC provider, that
+deployment must use a provider-specific principal namespace until a deliberate
+account-linking migration maps those users to Anaconda principals. Do not reuse
+email addresses as ACL subjects across providers.
 
-## Route Takeover Sequence
+## Deployment Validation Sequence
 
-1. Land and deploy the direct-OIDC Worker support behind the existing
-   `workers.dev` hostname.
+1. Deploy notebook-cloud's main Worker to `preview.runt.run`.
 2. Verify token validation and ACL behavior with a scripted bearer token or
-   local callback flow.
-3. Add notebook-cloud preview deployment config for `preview.runt.run`.
-4. Remove or replace the retired `runtimed/intheloop` `preview.runt.run` route.
-5. Deploy notebook-cloud's main Worker to `preview.runt.run`.
-6. Deploy/verify renderer asset and output-document Workers. Do not put the
+   browser callback flow.
+3. Deploy/verify renderer asset and output-document Workers. Do not put the
    renderer or output origins behind notebook app credentials.
-7. Run hosted smoke against:
+4. Run hosted smoke against:
    - anonymous public viewer;
    - authenticated viewer;
    - authenticated editor markdown edit;
@@ -145,8 +142,8 @@ those users to Anaconda principals.
 
 ## Expected Health Shape
 
-After direct OIDC is configured, `/api/health` should expose a non-secret OIDC
-readiness field, for example:
+With direct OIDC configured, `/api/health` exposes a non-secret OIDC readiness
+field:
 
 ```json
 {

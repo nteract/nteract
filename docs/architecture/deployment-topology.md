@@ -113,12 +113,12 @@ whether a user or token can access a service or single-user server. Those Hub
 scopes authorize access to Hub compute. They do not grant nteract room roles;
 the nteract room ACL still grants `runtime_peer`, `editor`, or `owner`.
 
-Anaconda auth fits the hosted room side as an OIDC identity source. For the
-first Anaconda-friendly deployment, the notebook app should use direct OIDC
-against Anaconda stage on `preview.runt.run`, and the Worker should validate
-Anaconda-issued bearer JWTs before consulting the room ACL. Cloudflare Access
-can remain an optional outer perimeter for deployments that deliberately want
-it, but it is not the default notebook-cloud login path.
+Anaconda auth fits the hosted room side as an OIDC identity source. The
+Anaconda-friendly deployment uses direct OIDC against Anaconda stage on
+`preview.runt.run`, and the Worker validates Anaconda-issued bearer JWTs before
+consulting the room ACL. Cloudflare Access can remain an optional outer
+perimeter for deployments that deliberately want it, but it is not the default
+notebook-cloud login path.
 
 References:
 
