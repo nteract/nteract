@@ -27,7 +27,11 @@ async function inlineTextBlobUrls(
     textPaths.map(async (path) => {
       const response = await fetchPath(state, path, options);
       if (!response) return;
-      writePath(state, path, await response.text());
+      try {
+        writePath(state, path, await response.text());
+      } catch {
+        return;
+      }
     }),
   );
 }
@@ -42,7 +46,11 @@ async function inlineBufferBlobUrls(
     bufferPaths.map(async (path) => {
       const response = await fetchPath(state, path, options);
       if (!response) return;
-      writePath(state, path, new DataView(await response.arrayBuffer()));
+      try {
+        writePath(state, path, new DataView(await response.arrayBuffer()));
+      } catch {
+        return;
+      }
     }),
   );
 }

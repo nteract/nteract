@@ -103,9 +103,9 @@ function resolveCommStateValue(
 
   const record = value as Record<string, unknown>;
   // Runtime ContentRef inline wrappers are exclusive: `{ inline: value }`.
-  // Treating this key as structural keeps cloud projection aligned with the
-  // WASM comm-state resolver used by desktop.
-  if ("inline" in record) {
+  // Require the exact wrapper shape so ordinary widget state objects that use
+  // an `inline` property are preserved.
+  if (isInlineContentRef(record)) {
     return record.inline;
   }
 
@@ -136,13 +136,31 @@ function resolveCommStateValue(
   return resolved;
 }
 
+function isInlineContentRef(value: Record<string, unknown>): boolean {
+  return hasOwn(value, "inline") && Object.keys(value).length === 1;
+}
+
 function blobRefFromRecord(value: Record<string, unknown>): BlobRef | null {
-  if (typeof value.blob !== "string") return null;
+  if (!isBlobContentRef(value)) return null;
   return {
     blob: value.blob,
-    size: typeof value.size === "number" ? value.size : undefined,
+    size: value.size,
     media_type: typeof value.media_type === "string" ? value.media_type : undefined,
   };
+}
+
+function isBlobContentRef(
+  value: Record<string, unknown>,
+): value is { blob: string; size: number; media_type?: unknown } {
+  if (!hasOwn(value, "blob") || !hasOwn(value, "size")) return false;
+  if (typeof value.blob !== "string" || typeof value.size !== "number") return false;
+  return Object.keys(value).every(
+    (key) => key === "blob" || key === "size" || key === "media_type",
+  );
+}
+
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }
 
 function isTextMediaType(mediaType: unknown): boolean {

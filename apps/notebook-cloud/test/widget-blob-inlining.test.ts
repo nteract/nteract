@@ -58,4 +58,38 @@ describe("cloud widget blob inlining", () => {
     assert.equal(state.rejected, "https://example.invalid/track");
     assert.equal(state.missingParent, "unchanged");
   });
+
+  it("leaves paths unchanged when response body reads fail", async () => {
+    const state: Record<string, unknown> & { nested: Record<string, unknown> } = {
+      text: "https://cloud.test/api/n/demo/blobs/text",
+      nested: {
+        binary: "https://cloud.test/api/n/demo/blobs/binary",
+      },
+    };
+
+    await inlineWidgetBlobUrls(
+      state,
+      { textPaths: [["text"]], bufferPaths: [["nested", "binary"]] },
+      {
+        isAllowedBlobUrl: () => true,
+        fetchImpl: async (url) =>
+          String(url).endsWith("text")
+            ? failingBodyResponse("text body failed")
+            : failingBodyResponse("binary body failed"),
+      },
+    );
+
+    assert.equal(state.text, "https://cloud.test/api/n/demo/blobs/text");
+    assert.equal(state.nested.binary, "https://cloud.test/api/n/demo/blobs/binary");
+  });
 });
+
+function failingBodyResponse(message: string): Response {
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.error(new Error(message));
+      },
+    }),
+  );
+}

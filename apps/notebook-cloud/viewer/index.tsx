@@ -352,6 +352,13 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
       );
     };
 
+    const materializeLiveCellsSafely = (liveRuntime: CloudSyncRuntime) => {
+      void materializeLiveCells(liveRuntime).catch((error: unknown) => {
+        if (disposed) return;
+        console.warn("[notebook-cloud] live room materialization failed", error);
+      });
+    };
+
     setPresence(initialCloudViewerPresence());
     setLivePresence(emptyCloudLivePresenceSnapshot());
     setConnectionError(null);
@@ -411,13 +418,13 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
             }
           }),
           liveRuntime.engine.cellChanges$.subscribe(() => {
-            void materializeLiveCells(liveRuntime);
+            materializeLiveCellsSafely(liveRuntime);
           }),
           liveRuntime.engine.runtimeState$.subscribe(() => {
-            void materializeLiveCells(liveRuntime);
+            materializeLiveCellsSafely(liveRuntime);
           }),
         ];
-        void materializeLiveCells(liveRuntime);
+        materializeLiveCellsSafely(liveRuntime);
       })
       .catch((error: unknown) => {
         if (disposed) return;
