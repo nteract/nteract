@@ -17,6 +17,7 @@ import {
   waitForCellOutput,
   waitForKernelReady,
   waitForNotebookSynced,
+  waitForSessionReady,
 } from "../helpers.js";
 
 describe("E2E Smoke Test", () => {
@@ -43,6 +44,7 @@ describe("E2E Smoke Test", () => {
 
     // Set cell source via CodeMirror dispatch API (reliable with any WebDriver)
     await setCellSource(codeCell, "print('hello from e2e')");
+    await waitForSessionReady();
 
     // Execute via the execute button (more reliable than Shift+Enter with synthetic events)
     const executeButton = await codeCell.$('[data-testid="execute-button"]');
@@ -57,7 +59,7 @@ describe("E2E Smoke Test", () => {
       await browser.keys(["Shift", "Enter"]);
     }
 
-    // Wait for output to appear (uses global fallback for WRY compatibility)
+    // Wait for output to appear in the executed cell.
     const outputText = await waitForCellOutput(codeCell, 30000);
 
     // Verify output contains expected text

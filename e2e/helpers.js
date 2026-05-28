@@ -11,6 +11,46 @@ import { browser } from "@wdio/globals";
 // macOS uses Cmd (Meta) for shortcuts, Linux uses Ctrl
 const MOD_KEY = os.platform() === "darwin" ? "Meta" : "Control";
 
+function cellSelectorForId(cellId) {
+  return `[data-cell-id="${cellId.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"]`;
+}
+
+async function resolveCellElement(cell, cellId) {
+  try {
+    if (await cell.isExisting()) {
+      return cell;
+    }
+  } catch {
+    // The original element can go stale when the cell re-renders.
+  }
+
+  if (!cellId) {
+    return null;
+  }
+
+  const freshCell = await $(cellSelectorForId(cellId));
+  if (await freshCell.isExisting()) {
+    return freshCell;
+  }
+  return null;
+}
+
+async function findCellOutputElement(cell, cellId, outputSelectors) {
+  const currentCell = await resolveCellElement(cell, cellId);
+  if (!currentCell) {
+    return null;
+  }
+
+  for (const selector of outputSelectors) {
+    const output = await currentCell.$(selector);
+    if (await output.isExisting()) {
+      return output;
+    }
+  }
+
+  return null;
+}
+
 /**
  * Wait for the app to be fully loaded (toolbar visible).
  * Uses browser.execute() (executeScript) which goes through the JS bridge
@@ -64,14 +104,11 @@ export async function waitForNotebookSynced(timeout = 15000) {
  * fail-closed until SessionControl reports runtime_state=ready.
  */
 export async function waitForSessionReady(timeout = 30000) {
-  await waitForNotebookSynced(timeout);
+  await waitForAppReady();
   try {
     await browser.waitUntil(
       async () => {
-        return await browser.execute(() => {
-          const el = document.querySelector("[data-session-ready]");
-          return el?.getAttribute("data-session-ready") === "true";
-        });
+        return (await getSessionRuntimeState()) === "ready";
       },
       {
         timeout,
@@ -80,10 +117,7 @@ export async function waitForSessionReady(timeout = 30000) {
       },
     );
   } catch (error) {
-    const state = await browser.execute(() => {
-      const el = document.querySelector("[data-session-runtime-state]");
-      return el?.getAttribute("data-session-runtime-state") ?? "missing";
-    });
+    const state = await getSessionRuntimeState();
     throw new Error(
       error instanceof Error
         ? `${error.message} (state=${state})`
@@ -114,19 +148,36 @@ export async function waitForCodeCells(expectedCount, timeout = 15000) {
 }
 
 /**
- * Wait for the kernel to reach idle or busy state.
- * Use this in specs that execute code — replaces both the 5000ms before()
- * pause AND the first kernel startup wait.
+ * Wait for the kernel to reach idle or busy state and for the session-control
+ * runtime gate to allow ExecuteCell.
  */
 export async function waitForKernelReady(timeout = 60000) {
   await waitForAppReady();
-  await browser.waitUntil(
-    async () => {
-      const text = await getKernelStatus();
-      return text === "idle" || text === "busy";
-    },
-    { timeout, interval: 200, timeoutMsg: "Kernel not ready" },
-  );
+  try {
+    await browser.waitUntil(
+      async () => {
+        const status = await getKernelStatus();
+        const sessionState = await getSessionRuntimeState();
+        return (
+          (status === "idle" || status === "busy") &&
+          sessionState === "ready"
+        );
+      },
+      {
+        timeout,
+        interval: 200,
+        timeoutMsg: "Kernel/session runtime not ready",
+      },
+    );
+  } catch (error) {
+    const status = await getKernelStatus();
+    const sessionState = await getSessionRuntimeState();
+    throw new Error(
+      error instanceof Error
+        ? `${error.message} (kernel=${status}, session=${sessionState})`
+        : `Kernel/session runtime not ready (kernel=${status}, session=${sessionState})`,
+    );
+  }
 }
 
 /**
@@ -135,8 +186,7 @@ export async function waitForKernelReady(timeout = 60000) {
  * Returns the cell element for further assertions.
  */
 export async function executeFirstCell() {
-  // Wait for the notebook to finish Automerge sync and render cells.
-  await waitForNotebookSynced();
+  await waitForSessionReady();
 
   const codeCell = await $('[data-cell-type="code"]');
   await codeCell.waitForExist({ timeout: 5000 });
@@ -166,8 +216,9 @@ export async function executeFirstCell() {
  * Wait for stream output to appear in a cell.
  * Returns the output text.
  *
- * Note: In daemon mode, the DOM may re-render after trust approval,
- * so we use a global selector if the cell-scoped one fails.
+ * The DOM may re-render after trust approval, so stale cell references are
+ * refreshed by `data-cell-id`. We deliberately do not accept any page output:
+ * a global output fallback can pass the wrong execution.
  */
 export async function waitForCellOutput(cell, timeout = 120000) {
   const outputSelectors = [
@@ -175,30 +226,12 @@ export async function waitForCellOutput(cell, timeout = 120000) {
     '[data-slot="ansi-error-output"]',
     '[data-slot="output-item"]',
   ];
+  const cellId = await cell.getAttribute("data-cell-id").catch(() => null);
 
   await browser.waitUntil(
     async () => {
-      // Try cell-scoped selectors first.
-      for (const selector of outputSelectors) {
-        try {
-          const output = await cell.$(selector);
-          if (await output.isExisting()) {
-            return true;
-          }
-        } catch {
-          // Cell reference may be stale, continue to global check.
-        }
-      }
-
-      // Fall back to global selectors (any output on page).
-      for (const selector of outputSelectors) {
-        const globalOutput = await $(selector);
-        if (await globalOutput.isExisting()) {
-          return true;
-        }
-      }
-
-      return false;
+      const output = await findCellOutputElement(cell, cellId, outputSelectors);
+      return output !== null;
     },
     {
       timeout,
@@ -207,23 +240,9 @@ export async function waitForCellOutput(cell, timeout = 120000) {
     },
   );
 
-  // Try cell-scoped first, then fall back to global.
-  for (const selector of outputSelectors) {
-    try {
-      const cellOutput = await cell.$(selector);
-      if (await cellOutput.isExisting()) {
-        return await cellOutput.getText();
-      }
-    } catch {
-      // Cell reference stale, use global check below.
-    }
-  }
-
-  for (const selector of outputSelectors) {
-    const globalOutput = await $(selector);
-    if (await globalOutput.isExisting()) {
-      return await globalOutput.getText();
-    }
+  const output = await findCellOutputElement(cell, cellId, outputSelectors);
+  if (output) {
+    return await output.getText();
   }
 
   return "";
@@ -384,6 +403,7 @@ export async function waitForKernelReadyWithTrust(timeout = 300000) {
 
   // Check if kernel is already ready (trusted notebook, or daemon auto-trust)
   if (initialStatus === "idle" || initialStatus === "busy") {
+    await waitForSessionReady(timeout);
     console.log("[trust] Kernel already ready, no trust needed");
     return false;
   }
@@ -468,10 +488,21 @@ export async function waitForKernelReadyWithTrust(timeout = 300000) {
   );
 
   const finalStatus = await getKernelStatus();
+  await waitForSessionReady(timeout);
   console.log(
     `[trust] Kernel ready: status=${finalStatus}, trustApproved=${trustApproved}`,
   );
   return trustApproved;
+}
+
+/**
+ * Get the current session-control runtime state.
+ */
+export async function getSessionRuntimeState() {
+  return await browser.execute(() => {
+    const el = document.querySelector("[data-session-runtime-state]");
+    return el?.getAttribute("data-session-runtime-state") ?? "missing";
+  });
 }
 
 /**
