@@ -7,6 +7,7 @@ import {
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
   NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+  TRUSTED_SCOPE_HEADER,
   TRUSTED_WEBSOCKET_PROTOCOL_HEADER,
   authenticateDevRequest,
 } from "../src/identity.ts";
@@ -808,7 +809,7 @@ describe("Worker artifact routes", () => {
     assert.deepEqual(await response.json(), { error: "notebook not found" });
   });
 
-  it("does not let authenticated principals fall back to public ACL rows", async () => {
+  it("lets authenticated principals read through public viewer ACL rows", async () => {
     const env = fakeEnv();
     seedNotebook(env, "public-demo");
     seedAcl(env, {
@@ -830,10 +831,14 @@ describe("Worker artifact routes", () => {
       env,
       fakeContext(),
     );
-    assert.equal(authenticated.status, 403);
-    assert.deepEqual(await authenticated.json(), {
-      error: "user:dev:bob cannot access public-demo",
-    });
+    assert.equal(authenticated.status, 200);
+
+    const ownerRoute = await worker.fetch(
+      new Request("http://localhost/api/n/public-demo/acl?user=bob&operator=desktop:b&scope=owner"),
+      env,
+      fakeContext(),
+    );
+    assert.equal(ownerRoute.status, 403);
   });
 
   it("authorizes Cloudflare Access principals through notebook ACL rows", async () => {
@@ -2290,6 +2295,52 @@ describe("Worker artifact routes", () => {
       forwardedRequest.headers.get("Sec-WebSocket-Protocol"),
       NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
     );
+    assert.equal(
+      forwardedRequest.headers.get(TRUSTED_WEBSOCKET_PROTOCOL_HEADER),
+      NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+    );
+  });
+
+  it("downgrades OIDC editor WebSocket requests to public viewer access", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "anil" });
+    let forwardedRequest: Request | undefined;
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            forwardedRequest = request;
+            return new Response("room ok");
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedNotebook(env, "public-oidc-demo");
+    seedAcl(env, {
+      notebookId: "public-oidc-demo",
+      subjectKind: "public",
+      subject: "anonymous",
+      scope: "viewer",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/public-oidc-demo/sync?operator=browser:tab&scope=editor", {
+        headers: {
+          Origin: "https://cloud.test",
+          "Sec-WebSocket-Protocol": `${BEARER_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url(
+            token,
+          )}, ${NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL}`,
+          Upgrade: "websocket",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.ok(forwardedRequest);
+    assert.equal(forwardedRequest.headers.get(TRUSTED_SCOPE_HEADER), "viewer");
     assert.equal(
       forwardedRequest.headers.get(TRUSTED_WEBSOCKET_PROTOCOL_HEADER),
       NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,

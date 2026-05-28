@@ -18,6 +18,7 @@ import {
 export const NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY = "nteract:notebook-cloud:dev-token";
 export const NOTEBOOK_CLOUD_USER_STORAGE_KEY = "nteract:notebook-cloud:user";
 export const NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY = "nteract:notebook-cloud:scope";
+export const NOTEBOOK_CLOUD_DEFAULT_SCOPE: ConnectionScope = "viewer";
 export { NOTEBOOK_CLOUD_OIDC_REQUEST_STORAGE_KEY, NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY };
 
 export interface CloudSyncAuth {
@@ -93,7 +94,7 @@ export function readCloudPrototypeAuth(
         token: oidcSession.token.accessToken,
         user: oidcDisplayName(oidcSession.token.claims),
         oidcClaims: oidcSession.token.claims,
-        requestedScope: requestedScope ?? "editor",
+        requestedScope: requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
         problem: null,
       };
     }
@@ -103,7 +104,7 @@ export function readCloudPrototypeAuth(
         token: null,
         user: null,
         oidcClaims: null,
-        requestedScope: requestedScope ?? "editor",
+        requestedScope: requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
         problem: oidcSession.problem,
       };
     }
@@ -128,7 +129,7 @@ export function readCloudPrototypeAuth(
       token,
       user,
       oidcClaims: null,
-      requestedScope: requestedScope ?? "editor",
+      requestedScope: requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
       problem,
     };
   }
@@ -138,7 +139,7 @@ export function readCloudPrototypeAuth(
     token,
     user,
     oidcClaims: null,
-    requestedScope: requestedScope ?? "editor",
+    requestedScope: requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
     problem: null,
   };
 }
@@ -150,7 +151,7 @@ export function cloudSyncAuthFromPrototypeAuthState(state: CloudPrototypeAuthSta
       protocols: [],
       user: null,
       operator: null,
-      requestedScope: state.requestedScope ?? "editor",
+      requestedScope: state.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
     };
   }
   if (state.mode === "oidc" && state.token) {
@@ -162,7 +163,7 @@ export function cloudSyncAuthFromPrototypeAuthState(state: CloudPrototypeAuthSta
       ],
       user: null,
       operator: null,
-      requestedScope: state.requestedScope ?? "editor",
+      requestedScope: state.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
     };
   }
   if (state.mode !== "dev" || !state.token) {
@@ -177,7 +178,7 @@ export function cloudSyncAuthFromPrototypeAuthState(state: CloudPrototypeAuthSta
     ],
     user: state.user ?? "browser-editor",
     operator: null,
-    requestedScope: state.requestedScope ?? "editor",
+    requestedScope: state.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
   };
 }
 
@@ -260,13 +261,17 @@ export function validatePrototypeToken(token: string): string | null {
 
 export function prototypeAuthSummary(state: CloudPrototypeAuthState): string {
   if (state.mode === "dev") {
-    return `${state.user ?? "browser-editor"} requesting ${state.requestedScope ?? "editor"}`;
+    return `${state.user ?? "browser-editor"} requesting ${
+      state.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE
+    }`;
   }
   if (state.mode === "oidc") {
-    return `${state.user ?? "OIDC session"} requesting ${state.requestedScope ?? "editor"}`;
+    return `${state.user ?? "OIDC session"} requesting ${
+      state.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE
+    }`;
   }
   if (state.mode === "access") {
-    return `Browser session requesting ${state.requestedScope ?? "editor"}`;
+    return `Browser session requesting ${state.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE}`;
   }
   if (state.mode === "invalid") {
     return `${state.problem ?? "Stored collaborator token is invalid"} Connected anonymously.`;
@@ -287,7 +292,7 @@ export function prototypeAuthDiagnostics(
       },
       {
         label: "Requested scope",
-        value: state.requestedScope ?? "editor",
+        value: state.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
       },
       {
         label: "Dev token",
@@ -302,7 +307,7 @@ export function prototypeAuthDiagnostics(
       },
       {
         label: "Requested scope",
-        value: state.requestedScope ?? "editor",
+        value: state.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
       },
       {
         label: "Credential",
@@ -324,7 +329,7 @@ export function prototypeAuthDiagnostics(
       },
       {
         label: "Requested scope",
-        value: state.requestedScope ?? "editor",
+        value: state.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
       },
       {
         label: "Credential",
@@ -336,7 +341,7 @@ export function prototypeAuthDiagnostics(
       {
         label: "Stored identity",
         value: `${devPrincipalLabel(state.user ?? "browser-editor")} requesting ${
-          state.requestedScope ?? "editor"
+          state.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE
         }`,
         tone: "warning",
       },

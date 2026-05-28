@@ -28,11 +28,22 @@ export class AuthorizationError extends Error {
   }
 }
 
+export interface AuthorizeNotebookAccessOptions {
+  /**
+   * Browser viewers can arrive with a stale or over-eager requested scope while
+   * still only being allowed to use the notebook's public read grant. Use this
+   * only on the live room connection path so mutation routes do not continue
+   * after a silent scope downgrade.
+   */
+  allowPublicViewerDowngrade?: boolean;
+}
+
 export async function authorizeNotebookAccess(
   env: Env,
   notebookId: string,
   identity: AuthenticatedConnection,
   requestedScope: ConnectionScope = identity.scope,
+  options: AuthorizeNotebookAccessOptions = {},
 ): Promise<AuthenticatedConnection> {
   if (!env.DB) {
     throw new AuthorizationError("D1 binding DB is not configured", 503);
@@ -58,11 +69,21 @@ export async function authorizeNotebookAccess(
   }
 
   const principalRows = await getNotebookAclRowsForPrincipal(env, notebookId, identity.principal);
-  if (!aclRowsCoverScope(principalRows, requestedScope)) {
-    throw new AuthorizationError(`${identity.principal} cannot access ${notebookId}`, 403);
+  if (aclRowsCoverScope(principalRows, requestedScope)) {
+    return { ...identity, scope: requestedScope };
   }
 
-  return { ...identity, scope: requestedScope };
+  const publicRows = await getPublicNotebookAclRows(env, notebookId);
+  if (aclRowsCoverScope(publicRows, "viewer")) {
+    if (requestedScope === "viewer") {
+      return { ...identity, scope: "viewer" };
+    }
+    if (options.allowPublicViewerDowngrade && requestedScope === "editor") {
+      return { ...identity, scope: "viewer" };
+    }
+  }
+
+  throw new AuthorizationError(`${identity.principal} cannot access ${notebookId}`, 403);
 }
 
 export function aclRowsCoverScope(

@@ -17,7 +17,11 @@ import {
   type ConnectionScope,
   validatePrincipal,
 } from "./identity.ts";
-import { AuthorizationError, authorizeNotebookAccess } from "./authorization.ts";
+import {
+  AuthorizationError,
+  authorizeNotebookAccess,
+  type AuthorizeNotebookAccessOptions,
+} from "./authorization.ts";
 import {
   blobKey,
   createNotebookWithOwnerAcl,
@@ -319,7 +323,15 @@ async function routeRoomSync(request: Request, env: Env): Promise<Response> {
   if (!notebookId) {
     return json({ error: "notebook id is required" }, 400);
   }
-  const authorizedIdentity = await authorizeIdentityOrResponse(env, notebookId, identity);
+  const authorizedIdentity = await authorizeIdentityOrResponse(
+    env,
+    notebookId,
+    identity,
+    identity.scope,
+    {
+      allowPublicViewerDowngrade: true,
+    },
+  );
   if (authorizedIdentity instanceof Response) {
     return authorizedIdentity;
   }
@@ -1651,9 +1663,10 @@ async function authorizeIdentityOrResponse(
   notebookId: string,
   identity: AuthenticatedConnection,
   requestedScope: ConnectionScope = identity.scope,
+  options?: AuthorizeNotebookAccessOptions,
 ): Promise<AuthenticatedConnection | Response> {
   try {
-    return await authorizeNotebookAccess(env, notebookId, identity, requestedScope);
+    return await authorizeNotebookAccess(env, notebookId, identity, requestedScope, options);
   } catch (error) {
     if (error instanceof AuthorizationError) {
       cloudLog(error.status >= 500 ? "warn" : "info", "authz.denied", {

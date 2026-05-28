@@ -37,6 +37,7 @@ import {
   cloudPrototypeAuthFromWindow,
   cloudSyncAuthFromPrototypeAuthState,
   fetchWithCloudPrototypeAuth,
+  NOTEBOOK_CLOUD_DEFAULT_SCOPE,
   NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY,
   prototypeAuthDiagnostics,
   prototypeAuthSummary,
@@ -227,7 +228,9 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   const [authState, setAuthState] = useState<CloudPrototypeAuthState>(() =>
     cloudPrototypeAuthFromWindow(),
   );
-  const [scope, setScope] = useState<ConnectionScope>(authState.requestedScope ?? "editor");
+  const [scope, setScope] = useState<ConnectionScope>(
+    authState.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
+  );
   const [authAction, setAuthAction] = useState<"idle" | "starting">("idle");
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -882,7 +885,9 @@ function CloudAuthControls({
 }) {
   const [token, setToken] = useState("");
   const [user, setUser] = useState(authState.user ?? "alice");
-  const [scope, setScope] = useState<ConnectionScope>(authState.requestedScope ?? "editor");
+  const [scope, setScope] = useState<ConnectionScope>(
+    authState.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE,
+  );
   const [formError, setFormError] = useState<string | null>(null);
   const [authAction, setAuthAction] = useState<"idle" | "starting">("idle");
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");

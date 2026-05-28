@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY,
+  NOTEBOOK_CLOUD_DEFAULT_SCOPE,
   NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
   NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY,
   NOTEBOOK_CLOUD_USER_STORAGE_KEY,
@@ -85,6 +86,38 @@ describe("cloud collaborator auth", () => {
     assert.deepEqual(cloudHttpHeadersFromPrototypeAuthState(state), {
       Authorization: `Bearer ${accessToken}`,
     });
+  });
+
+  it("defaults OIDC browser sessions to viewer scope", () => {
+    const storage = new MemoryStorage();
+    const accessToken = jwt({
+      sub: "anaconda-user-456",
+      email: "anil@example.com",
+      email_verified: true,
+      name: "Anil",
+    });
+    storage.setItem(
+      NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
+      JSON.stringify({
+        accessToken,
+        refreshToken: null,
+        expiresAt: Math.floor(Date.now() / 1000) + 3600,
+        claims: {
+          sub: "anaconda-user-456",
+          email: "anil@example.com",
+          email_verified: true,
+          name: "Anil",
+        },
+      }),
+    );
+
+    const state = readCloudPrototypeAuth(storage);
+    const auth = cloudSyncAuthFromPrototypeAuthState(state);
+
+    assert.equal(state.mode, "oidc");
+    assert.equal(state.requestedScope, NOTEBOOK_CLOUD_DEFAULT_SCOPE);
+    assert.equal(auth.requestedScope, NOTEBOOK_CLOUD_DEFAULT_SCOPE);
+    assert.match(prototypeAuthSummary(state), /Anil requesting viewer/);
   });
 
   it("can request an editor role from a browser Access session without JS token material", () => {
