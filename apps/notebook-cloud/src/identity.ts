@@ -66,6 +66,7 @@ export interface AuthenticatedConnectionMetadata {
   principalNamespace: string;
   displayName?: string;
   email?: string;
+  emailVerified?: boolean;
 }
 
 const ANONYMOUS_PRINCIPAL_PREFIX = "anonymous:";
@@ -156,6 +157,7 @@ interface JwtPayload {
   aud?: string | string[];
   azp?: string;
   email?: string;
+  email_verified?: boolean;
   exp?: number;
   iss?: string;
   name?: string;
@@ -328,6 +330,7 @@ export async function authenticateCloudflareAccessRequest(
         ? { displayName: payload.name?.trim() || payload.email?.trim() || undefined }
         : {}),
       ...(payload.email?.trim() ? { email: payload.email.trim() } : {}),
+      ...(payload.email?.trim() ? { emailVerified: true } : {}),
     },
   };
   return credential.webSocketProtocol
@@ -379,6 +382,7 @@ export async function authenticateOidcRequest(
         ? { displayName: payload.name?.trim() || payload.email?.trim() || undefined }
         : {}),
       ...(payload.email?.trim() ? { email: payload.email.trim() } : {}),
+      ...(payload.email?.trim() ? { emailVerified: payload.email_verified === true } : {}),
     },
   };
   return credential.webSocketProtocol
@@ -424,6 +428,7 @@ export async function authenticateAnacondaApiKeyRequest(
       principalNamespace: config.principalNamespace,
       ...(userInfo.displayName ? { displayName: userInfo.displayName } : {}),
       ...(userInfo.email ? { email: userInfo.email } : {}),
+      ...(userInfo.email ? { emailVerified: true } : {}),
     },
   };
 }

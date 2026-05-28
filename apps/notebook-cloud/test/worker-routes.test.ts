@@ -2395,6 +2395,109 @@ describe("Worker artifact routes", () => {
     );
   });
 
+  it("resolves pending email invites for OIDC editor WebSocket requests", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "fe0f6c3a-f7c7-4c04-9b8d-77e596da1375",
+      email: "kkelley@anaconda.com",
+      extraPayload: { email_verified: true },
+      name: "Kyle Kelley",
+    });
+    let forwardedRequest: Request | undefined;
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async (request: Request) => {
+            forwardedRequest = request;
+            return new Response("room ok");
+          },
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedNotebook(env, "oidc-invite-demo");
+    seedPendingInvite(env, {
+      id: "invite-oidc-editor",
+      notebookId: "oidc-invite-demo",
+      email: "kkelley@anaconda.com",
+      providerHint: null,
+      scope: "editor",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/oidc-invite-demo/sync?operator=browser:tab&scope=editor", {
+        headers: {
+          Origin: "https://cloud.test",
+          "Sec-WebSocket-Protocol": `${BEARER_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url(
+            token,
+          )}, ${NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL}`,
+          Upgrade: "websocket",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.ok(forwardedRequest);
+    assert.equal(forwardedRequest.headers.get(TRUSTED_SCOPE_HEADER), "editor");
+    assert.ok(
+      env.DB.acl.some(
+        (row) =>
+          row.notebook_id === "oidc-invite-demo" &&
+          row.subject_kind === "principal" &&
+          row.subject === "user:anaconda:fe0f6c3a-f7c7-4c04-9b8d-77e596da1375" &&
+          row.scope === "editor",
+      ),
+    );
+    assert.equal(env.DB.invites.get("invite-oidc-editor")?.status, "accepted");
+  });
+
+  it("does not resolve pending OIDC invites for unverified emails", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "unverified-oidc-user",
+      email: "unverified@anaconda.com",
+      extraPayload: { email_verified: false },
+    });
+    const env = fakeEnv(oidcEnv);
+    seedNotebook(env, "oidc-unverified-invite-demo");
+    seedPendingInvite(env, {
+      id: "invite-unverified-oidc-editor",
+      notebookId: "oidc-unverified-invite-demo",
+      email: "unverified@anaconda.com",
+      providerHint: null,
+      scope: "editor",
+    });
+
+    const response = await worker.fetch(
+      new Request(
+        "https://cloud.test/n/oidc-unverified-invite-demo/sync?operator=browser:tab&scope=editor",
+        {
+          headers: {
+            Origin: "https://cloud.test",
+            "Sec-WebSocket-Protocol": `${BEARER_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url(
+              token,
+            )}, ${NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL}`,
+            Upgrade: "websocket",
+          },
+        },
+      ),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 403);
+    assert.equal(env.DB.invites.get("invite-unverified-oidc-editor")?.status, "pending");
+    assert.equal(
+      env.DB.acl.some(
+        (row) =>
+          row.notebook_id === "oidc-unverified-invite-demo" &&
+          row.subject === "user:anaconda:unverified-oidc-user",
+      ),
+      false,
+    );
+  });
+
   it("requires Origin for OIDC bearer subprotocol WebSocket credentials", async () => {
     const { env: oidcEnv, token } = await oidcTokenFixture({ subject: "alice" });
     let roomFetches = 0;

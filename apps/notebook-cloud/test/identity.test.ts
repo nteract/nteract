@@ -362,6 +362,7 @@ describe("Cloudflare Access identity", () => {
         principalNamespace: "user:cloudflare-access",
         displayName: "Alice Demo",
         email: "alice@example.com",
+        emailVerified: true,
       },
     });
   });
@@ -796,6 +797,7 @@ describe("Anaconda API key identity", () => {
         principalNamespace: "user:anaconda",
         displayName: "Kyle Kelley",
         email: "rgbkrk@gmail.com",
+        emailVerified: true,
       },
     });
     assert.deepEqual(calls, [
@@ -1101,6 +1103,7 @@ describe("OIDC identity", () => {
     const { env, token } = await oidcTokenFixture({
       subject: "user/123",
       email: "alice@example.com",
+      extraPayload: { email_verified: true },
       name: "Alice Demo",
     });
 
@@ -1124,6 +1127,7 @@ describe("OIDC identity", () => {
         principalNamespace: "user:anaconda",
         displayName: "Alice Demo",
         email: "alice@example.com",
+        emailVerified: true,
       },
     });
   });

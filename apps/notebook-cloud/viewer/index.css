@@ -230,7 +230,9 @@ body {
 }
 
 .cloud-share-menu summary,
-.cloud-auth-menu summary {
+.cloud-auth-menu summary,
+.cloud-scope-toggle-button,
+.cloud-sign-in-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -258,19 +260,23 @@ body {
 }
 
 .cloud-share-menu summary:hover,
-.cloud-auth-menu summary:hover {
+.cloud-auth-menu summary:hover,
+.cloud-scope-toggle-button:hover {
   color: var(--foreground);
   background: color-mix(in srgb, var(--background) 82%, var(--foreground) 8%);
 }
 
 .cloud-share-menu summary:focus-visible,
-.cloud-auth-menu summary:focus-visible {
+.cloud-auth-menu summary:focus-visible,
+.cloud-scope-toggle-button:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--ring) 70%, transparent);
   outline-offset: 2px;
 }
 
 .cloud-share-menu svg,
 .cloud-auth-menu svg,
+.cloud-scope-toggle-button svg,
+.cloud-sign-in-button svg,
 .cloud-auth-state svg {
   width: 1rem;
   height: 1rem;
@@ -278,13 +284,48 @@ body {
 }
 
 .cloud-share-menu summary span,
-.cloud-auth-menu summary span {
+.cloud-auth-menu summary span,
+.cloud-scope-toggle-button span,
+.cloud-sign-in-button span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 0.8125rem;
   line-height: 1;
+}
+
+.cloud-sign-in-button {
+  cursor: pointer;
+}
+
+.cloud-scope-toggle-button[data-state="editing"] {
+  border-color: color-mix(in srgb, #16a34a 52%, transparent);
+  color: color-mix(in srgb, #16a34a 80%, var(--foreground) 20%);
+}
+
+.cloud-scope-toggle-button[data-state="requested"] {
+  border-color: color-mix(in srgb, var(--ring) 48%, transparent);
+}
+
+.cloud-sign-in-button:hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--background) 82%, var(--foreground) 8%);
+}
+
+.cloud-sign-in-button:disabled {
+  cursor: progress;
+  opacity: 0.72;
+}
+
+.cloud-sign-in-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ring) 70%, transparent);
+  outline-offset: 2px;
+}
+
+.cloud-sign-in-button[data-state="error"] {
+  border-color: color-mix(in srgb, #dc2626 48%, transparent);
+  color: #dc2626;
 }
 
 .cloud-share-panel {

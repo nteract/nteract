@@ -1660,18 +1660,19 @@ async function authenticateRequestOrResponse(
 }
 
 async function resolveLoginInvites(env: Env, identity: AuthenticatedConnection): Promise<void> {
-  if (identity.metadata.provider !== "cloudflare-access") {
+  if (identity.metadata.provider !== "cloudflare-access" && identity.metadata.provider !== "oidc") {
     return;
   }
 
   try {
-    // Access has already authenticated this email claim; use it only to resolve
-    // pending invite rows into principal ACL rows before authorization.
+    // The identity provider has already authenticated this email claim; use it
+    // only to resolve pending invite rows into principal ACL rows before
+    // authorization.
     const login = {
       principal: identity.principal,
       provider: identity.metadata.provider,
       email: identity.metadata.email ?? null,
-      emailVerified: Boolean(identity.metadata.email),
+      emailVerified: identity.metadata.emailVerified === true,
       displayName: identity.metadata.displayName ?? null,
     };
     const pendingInvites = await getPendingNotebookInvitesForLogin(env, login);
