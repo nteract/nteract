@@ -50,12 +50,15 @@ NOTEBOOK_CLOUD_OIDC_ISSUER = "https://auth.stage.anaconda.com/api/auth"
 NOTEBOOK_CLOUD_OIDC_CLIENT_ID = "cec4781f-853c-4267-bf09-4bc59a2a3750"
 NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE = "user:anaconda"
 NOTEBOOK_CLOUD_OIDC_REDIRECT_URI = "https://preview.runt.run/oidc"
-NOTEBOOK_CLOUD_OIDC_AUDIENCE = "anaconda"
+NOTEBOOK_CLOUD_OIDC_AUDIENCE = "anaconda,cec4781f-853c-4267-bf09-4bc59a2a3750"
 NOTEBOOK_CLOUD_ALLOWED_ORIGINS = "https://preview.runt.run"
 ```
 
 If the token `aud` claim differs from the client id, use
-`NOTEBOOK_CLOUD_OIDC_AUDIENCE` explicitly. Use
+`NOTEBOOK_CLOUD_OIDC_AUDIENCE` explicitly. The value may be a comma-separated
+list during provider migrations; preview accepts both the Anaconda resource
+audience and the historical client-id audience so existing browser sessions can
+be replaced gradually. Use
 `NOTEBOOK_CLOUD_OIDC_JWKS_JSON` only for pinned/offline tests or an emergency
 where fetching the provider JWKS is intentionally disabled.
 

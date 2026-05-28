@@ -110,7 +110,7 @@ interface AccessConfig {
 }
 
 interface OidcConfig {
-  audience: string;
+  audiences: string[];
   clientId: string;
   issuer: string;
   jwksJson?: string;
@@ -389,8 +389,9 @@ export async function authenticateOidcRequest(
 export async function authenticateAnacondaApiKeyRequest(
   request: Request,
   env: IdentityEnvironment,
-  credential = anacondaApiKeyCredentialFromRequest(request, { allowJwtShapeFallback: true }),
+  credential?: AnacondaApiKeyCredential,
 ): Promise<AuthenticatedConnection> {
+  credential ??= anacondaApiKeyCredentialFromRequest(request);
   if (!credential) {
     throw new AuthError("missing Anaconda API key", 401);
   }
@@ -432,7 +433,7 @@ async function loadAnacondaApiKeyUserInfo(
   config: AnacondaApiKeyConfig,
 ): Promise<AnacondaApiKeyUserInfo> {
   const now = Date.now();
-  const cacheKey = `${config.userinfoUrl}:${await sha256Hex(token)}`;
+  const cacheKey = `${config.userinfoUrl}:${token}`;
   const cached = anacondaApiKeyUserInfoCache.get(cacheKey);
   if (cached && cached.expiresAt > now) {
     anacondaApiKeyUserInfoCache.delete(cacheKey);
@@ -1133,12 +1134,21 @@ function oidcConfigFromEnv(env: IdentityEnvironment): OidcConfig | undefined {
   }
 
   return {
-    audience: env.NOTEBOOK_CLOUD_OIDC_AUDIENCE?.trim() || clientId,
+    audiences: oidcAudiencesFromEnv(env.NOTEBOOK_CLOUD_OIDC_AUDIENCE, clientId),
     clientId,
     issuer: normalizeOidcIssuer(rawIssuer),
     jwksJson: env.NOTEBOOK_CLOUD_OIDC_JWKS_JSON,
     principalNamespace: normalizePrincipalNamespace(env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE),
   };
+}
+
+function oidcAudiencesFromEnv(value: string | undefined, clientId: string): string[] {
+  const audiences =
+    value
+      ?.split(",")
+      .map((audience) => audience.trim())
+      .filter(Boolean) ?? [];
+  return audiences.length > 0 ? [...new Set(audiences)] : [clientId];
 }
 
 function normalizeOidcIssuer(value: string): string {
@@ -1362,7 +1372,7 @@ function validateOidcJwtClaims(payload: JwtPayload, config: OidcConfig): void {
   }
 
   const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
-  if (!audiences.includes(config.audience)) {
+  if (!config.audiences.some((audience) => audiences.includes(audience))) {
     throw new AuthError("OIDC token audience is invalid", 401);
   }
   if (audiences.length > 1 && payload.azp !== config.clientId) {
@@ -1499,11 +1509,6 @@ function decodeBase64UrlBytes(value: string): Uint8Array {
   const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
   const binary = atob(padded);
   return Uint8Array.from(binary, (char) => char.charCodeAt(0));
-}
-
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function defaultOperator(): string {
