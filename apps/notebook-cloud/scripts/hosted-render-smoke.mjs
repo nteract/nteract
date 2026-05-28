@@ -149,10 +149,8 @@ async function main() {
   });
 
   try {
-    if (expectedRenderSource) {
-      renderApiCheck = await checkHostedRenderApi(targetUrl, expectedRenderSource);
-    }
     if (
+      expectedRenderSource ||
       expectedCatalogOwnerPrincipal ||
       expectedLatestRevisionActorLabel ||
       expectedLatestRevisionNotebookHeadsHash ||
@@ -164,6 +162,13 @@ async function main() {
         expectedLatestRevisionNotebookHeadsHash,
         expectedLatestRevisionRuntimeHeadsHash,
       });
+    }
+    if (expectedRenderSource) {
+      renderApiCheck = await checkHostedRenderApi(
+        targetUrl,
+        expectedRenderSource,
+        catalogApiCheck?.latestRevisionNotebookHeadsHash ?? null,
+      );
     }
     if (hasPreflightFailures(failures)) {
       throw new SmokeFailure(failures);
@@ -670,12 +675,12 @@ function isRelevantRequestUrl(value) {
   }
 }
 
-async function checkHostedRenderApi(viewerUrl, expectedSource) {
-  const renderUrl = renderApiUrlForViewer(viewerUrl);
+async function checkHostedRenderApi(viewerUrl, expectedSource, headsHash) {
+  const renderUrl = renderApiUrlForViewer(viewerUrl, headsHash);
   if (!renderUrl) {
     failures.push({
       kind: "render-api",
-      text: `Could not derive /api/n/:id/render URL from ${viewerUrl}`,
+      text: `Could not derive pinned render URL from ${viewerUrl}`,
     });
     return null;
   }

@@ -79,6 +79,21 @@ describe("HTML script serialization", () => {
     assert.doesNotMatch(html, /id="notebook"/);
   });
 
+  it("serves latest notebook viewers as live-sync shells without a latest render endpoint", async () => {
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n/demo"),
+      fakeEnv(),
+      fakeContext(),
+    );
+    const html = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(html, /id="nteract-cloud-viewer-config"/);
+    assert.match(html, /"headsHash":null/);
+    assert.match(html, /"renderEndpoint":null/);
+    assert.match(html, /"syncEndpoint":"\/n\/demo\/sync"/);
+  });
+
   it("serves the root path as the notebook-cloud sign-in shell", async () => {
     const response = await worker.fetch(
       new Request("https://preview.runt.run/"),

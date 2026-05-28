@@ -58,8 +58,10 @@ try {
     },
   );
 
-  const rendered = await fetchJson(`/api/n/${encodeURIComponent(notebookId)}/render`);
-  assert(rendered.source === "snapshot-pair", "latest render was not materialized from snapshots");
+  const rendered = await fetchJson(
+    `/api/n/${encodeURIComponent(notebookId)}/renders/${encodeURIComponent(headsHash)}`,
+  );
+  assert(rendered.source === "snapshot-pair", "pinned render was not materialized from snapshots");
 
   console.log(
     JSON.stringify(
@@ -79,7 +81,7 @@ try {
           "live_session_snapshot_pair",
           "runtime_state_output_manifests",
           "local_blob_uploads",
-          "latest_snapshot_materialization",
+          "pinned_snapshot_materialization",
         ],
       },
       null,
