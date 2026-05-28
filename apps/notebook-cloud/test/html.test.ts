@@ -39,6 +39,7 @@ describe("HTML script serialization", () => {
     const html = await response.text();
 
     assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
     assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
     assert.equal(response.headers.get("Referrer-Policy"), "no-referrer");
     assert.match(response.headers.get("Permissions-Policy") ?? "", /camera=\(\)/);
@@ -74,6 +75,39 @@ describe("HTML script serialization", () => {
     assert.match(html, /"runtimedWasmPath":"\/assets\/runtimed_wasm_bg\.wasm"/);
     assert.doesNotMatch(html, /function renderNotebook/);
     assert.doesNotMatch(html, /id="notebook"/);
+  });
+
+  it("serves the root path as the notebook-cloud sign-in shell", async () => {
+    const response = await worker.fetch(
+      new Request("https://preview.runt.run/"),
+      fakeEnv({
+        NOTEBOOK_CLOUD_OIDC_CLIENT_ID: "client-id",
+        NOTEBOOK_CLOUD_OIDC_ISSUER: "https://auth.stage.anaconda.com/api/auth",
+        NOTEBOOK_CLOUD_OIDC_REDIRECT_URI: "https://preview.runt.run/oidc",
+      }),
+      fakeContext(),
+    );
+    const html = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+    assert.match(html, /nteract cloud notebooks/);
+    assert.match(html, /id="nteract-cloud-auth-config"/);
+    assert.doesNotMatch(html, /id="nteract-cloud-viewer-config"/);
+    assert.doesNotMatch(html, /In the Loop - Collaborative Notebooks/);
+  });
+
+  it("serves stale preview index requests as the notebook-cloud sign-in shell", async () => {
+    const response = await worker.fetch(
+      new Request("https://preview.runt.run/index.html"),
+      fakeEnv(),
+      fakeContext(),
+    );
+    const html = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(html, /nteract cloud notebooks/);
+    assert.doesNotMatch(html, /In the Loop - Collaborative Notebooks/);
   });
 
   it("injects OIDC runtime config without exposing it through health", async () => {

@@ -60,7 +60,6 @@ import {
 
 export { NotebookRoom };
 
-const DEMO_NOTEBOOK_ID = "nteract-cloud-demo";
 // `/plugins/*` is a raw static asset path in deployed Workers. Use a
 // Worker-owned route by default so sandboxed srcdoc iframes can fetch sidecar
 // assets with explicit CORS, and let hosts replace it with a dedicated origin.
@@ -107,21 +106,15 @@ const worker: ExportedHandler<Env> = {
         service: "nteract-notebook-cloud",
         deployment_env: env.DEPLOYMENT_ENV ?? "development",
         auth: {
+          anaconda_api_key: anacondaApiKeyHealth(env),
           cloudflare_access: cloudflareAccessHealth(env),
           oidc: oidcHealth(env),
         },
       });
     }
 
-    if (url.pathname === "/" && request.method === "GET") {
-      return withCors(
-        new Response(null, {
-          status: 302,
-          headers: {
-            Location: new URL(`/n/${encodeURIComponent(DEMO_NOTEBOOK_ID)}`, request.url).href,
-          },
-        }),
-      );
+    if ((url.pathname === "/" || url.pathname === "/index.html") && request.method === "GET") {
+      return homeViewer(request, env);
     }
 
     if (url.pathname === "/oidc" && request.method === "GET") {
@@ -460,6 +453,22 @@ function cloudflareAccessHealth(env: Env): {
   return {
     status,
     jwks: hasPinnedJwks ? "pinned" : status === "configured" ? "remote" : "none",
+  };
+}
+
+function anacondaApiKeyHealth(env: Env): {
+  status: "configured" | "partial" | "disabled";
+  principal_namespace: "configured" | "default";
+} {
+  const hasUserinfoUrl = Boolean(env.NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL?.trim());
+  const hasPrincipalNamespace = Boolean(
+    env.NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE?.trim(),
+  );
+  const status = hasUserinfoUrl ? "configured" : hasPrincipalNamespace ? "partial" : "disabled";
+
+  return {
+    status,
+    principal_namespace: hasPrincipalNamespace ? "configured" : "default",
   };
 }
 
@@ -1840,6 +1849,10 @@ function viewer(notebookId: string, request: Request, env: Env, headsHash?: stri
   );
 }
 
+function homeViewer(request: Request, env: Env): Response {
+  return viewerShell("nteract cloud notebooks", env, authConfigForRequest(request, env), null);
+}
+
 function oidcCallbackViewer(request: Request, env: Env): Response {
   return viewerShell(
     "nteract cloud notebook sign-in",
@@ -1882,7 +1895,10 @@ function viewerShell(
   return withCors(
     withBrowserSecurityHeaders(
       new Response(html, {
-        headers: { "Content-Type": "text/html; charset=utf-8" },
+        headers: {
+          "Cache-Control": "no-store",
+          "Content-Type": "text/html; charset=utf-8",
+        },
       }),
       viewerContentSecurityPolicy(env),
     ),

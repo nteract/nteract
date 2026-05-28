@@ -35,6 +35,8 @@ export interface AuthenticatedConnection {
 export interface IdentityEnvironment {
   DEPLOYMENT_ENV?: string;
   NOTEBOOK_CLOUD_DEV_TOKEN?: string;
+  NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE?: string;
+  NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL?: string;
   NOTEBOOK_CLOUD_ACCESS_AUD?: string;
   NOTEBOOK_CLOUD_ACCESS_JWKS_JSON?: string;
   NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN?: string;
@@ -46,12 +48,13 @@ export interface IdentityEnvironment {
 }
 
 export interface AuthenticatedConnectionMetadata {
-  provider: "anonymous" | "dev" | "cloudflare-access" | "oidc";
+  provider: "anonymous" | "dev" | "cloudflare-access" | "oidc" | "anaconda-api-key";
   transport:
     | "anonymous"
     | "loopback-dev"
     | "dev-token-header"
     | "dev-token-subprotocol"
+    | "api-key-bearer"
     | "access-assertion"
     | "access-token-header"
     | "access-bearer"
@@ -93,6 +96,11 @@ interface OidcCredential {
   webSocketProtocol?: string;
 }
 
+interface AnacondaApiKeyCredential {
+  token: string;
+  transport: Extract<AuthenticatedConnectionMetadata["transport"], "api-key-bearer">;
+}
+
 interface AccessConfig {
   audience: string;
   issuer: string;
@@ -105,6 +113,24 @@ interface OidcConfig {
   issuer: string;
   jwksJson?: string;
   principalNamespace: string;
+}
+
+interface AnacondaApiKeyConfig {
+  userinfoUrl: string;
+  principalNamespace: string;
+}
+
+interface AnacondaWhoamiResponse {
+  passport?: {
+    user_id?: string;
+    profile?: {
+      email?: string;
+      first_name?: string;
+      last_name?: string;
+    };
+    scopes?: unknown;
+    source?: string;
+  };
 }
 
 interface JsonWebKeySet {
@@ -126,6 +152,7 @@ interface JwtPayload {
   name?: string;
   nbf?: number;
   sub?: string;
+  ver?: string;
 }
 
 const JWT_CLOCK_TOLERANCE_SECONDS = 60;
@@ -182,23 +209,32 @@ export async function authenticateRequestWithProviders(
   request: Request,
   env: IdentityEnvironment = {},
 ): Promise<AuthenticatedConnection> {
+  const anacondaApiKeyConfig = anacondaApiKeyConfigFromEnv(env);
+  const anacondaApiKeyCredential = anacondaApiKeyCredentialFromRequest(request);
   const oidcConfig = oidcConfigFromEnv(env);
   const oidcPartial = hasPartialOidcConfig(env);
   const accessConfig = accessConfigFromEnv(env);
   const routeBearerToOidc = shouldRouteBearerToOidc(request, {
     accessConfig,
+    anacondaApiKeyCredential,
     oidcConfig,
     oidcPartial,
   });
-  const oidcCredential =
-    oidcConfig || oidcPartial || hasOidcCredentialTransport(request)
+  const oidcCredential = anacondaApiKeyCredential
+    ? undefined
+    : oidcConfig || oidcPartial || hasOidcCredentialTransport(request)
       ? oidcCredentialFromRequest(request, { includeBearer: routeBearerToOidc })
       : undefined;
-  const accessCredential = accessCredentialFromRequest(request, {
-    includeBearer: !routeBearerToOidc,
-  });
-  if (oidcCredential && accessCredential) {
+  const accessCredential = anacondaApiKeyCredential
+    ? undefined
+    : accessCredentialFromRequest(request, {
+        includeBearer: !routeBearerToOidc,
+      });
+  if ([anacondaApiKeyCredential, oidcCredential, accessCredential].filter(Boolean).length > 1) {
     throw new AuthError("multiple identity credentials presented", 400);
+  }
+  if (anacondaApiKeyCredential && !anacondaApiKeyConfig) {
+    throw new AuthError("Anaconda API key auth is not configured", 503);
   }
   if (oidcCredential && !oidcConfig) {
     throw new AuthError(
@@ -214,6 +250,12 @@ export async function authenticateRequestWithProviders(
       throw new AuthError("multiple identity credentials presented", 400);
     }
     return authenticateOidcRequest(request, env, oidcCredential);
+  }
+  if (anacondaApiKeyCredential && anacondaApiKeyConfig) {
+    if (hasDevIdentityCredential(request) || hasDevCredentialTransport(request)) {
+      throw new AuthError("multiple identity credentials presented", 400);
+    }
+    return authenticateAnacondaApiKeyRequest(request, env, anacondaApiKeyCredential);
   }
   if (accessCredential && accessConfig) {
     if (hasDevIdentityCredential(request) || hasDevCredentialTransport(request)) {
@@ -322,6 +364,87 @@ export async function authenticateOidcRequest(
   return credential.webSocketProtocol
     ? { ...identity, webSocketProtocol: credential.webSocketProtocol }
     : identity;
+}
+
+export async function authenticateAnacondaApiKeyRequest(
+  request: Request,
+  env: IdentityEnvironment,
+  credential = anacondaApiKeyCredentialFromRequest(request),
+): Promise<AuthenticatedConnection> {
+  if (!credential) {
+    throw new AuthError("missing Anaconda API key", 401);
+  }
+
+  const config = anacondaApiKeyConfigFromEnv(env);
+  if (!config) {
+    throw new AuthError("Anaconda API key auth is not configured", 503);
+  }
+
+  const response = await fetch(config.userinfoUrl, {
+    headers: {
+      Authorization: `Bearer ${credential.token}`,
+      "User-Agent": "nteract-notebook-cloud/1.0",
+    },
+  });
+  if (!response.ok) {
+    throw new AuthError("Anaconda API key validation failed", response.status === 403 ? 403 : 401);
+  }
+
+  let whoami: AnacondaWhoamiResponse;
+  try {
+    whoami = (await response.json()) as AnacondaWhoamiResponse;
+  } catch {
+    throw new AuthError("Anaconda API key userinfo response is invalid", 401);
+  }
+
+  const passport = whoami.passport;
+  if (passport?.source !== "api_key") {
+    throw new AuthError("Anaconda bearer token is not an API key", 401);
+  }
+
+  const subject = passport.user_id?.trim();
+  if (!subject) {
+    throw new AuthError("Anaconda API key userinfo is missing user_id", 401);
+  }
+  if (subject.length > OIDC_SUBJECT_MAX_LENGTH) {
+    throw new AuthError("Anaconda API key user_id is too long", 401);
+  }
+
+  const scopes = anacondaApiKeyScopes(passport.scopes);
+  const url = new URL(request.url);
+  const operator = headerOrQuery(request, url, "x-operator", "operator") ?? defaultOperator();
+  const scope = parseScope(headerOrQuery(request, url, "x-scope", "scope") ?? "viewer");
+  if (!anacondaApiKeyAllowsScope(scopes, scope)) {
+    throw new AuthError("Anaconda API key scopes do not allow requested scope", 403);
+  }
+
+  const principal = `${config.principalNamespace}:${encodePrincipalComponent(subject)}`;
+  validatePrincipal(principal);
+  validateOperator(operator);
+
+  const profile = passport.profile ?? {};
+  const displayName =
+    [profile.first_name, profile.last_name]
+      .map((part) => part?.trim())
+      .filter((part): part is string => Boolean(part))
+      .join(" ") ||
+    profile.email?.trim() ||
+    undefined;
+  const email = profile.email?.trim() || undefined;
+
+  return {
+    principal,
+    operator,
+    actorLabel: `${principal}/${operator}`,
+    scope,
+    metadata: {
+      provider: "anaconda-api-key",
+      transport: credential.transport,
+      principalNamespace: config.principalNamespace,
+      ...(displayName ? { displayName } : {}),
+      ...(email ? { email } : {}),
+    },
+  };
 }
 
 export function authenticateDevRequest(request: Request): AuthenticatedConnection {
@@ -598,7 +721,11 @@ function parseTrustedMetadata(
 
 function isMetadataProvider(value: string): value is AuthenticatedConnectionMetadata["provider"] {
   return (
-    value === "anonymous" || value === "dev" || value === "cloudflare-access" || value === "oidc"
+    value === "anonymous" ||
+    value === "dev" ||
+    value === "cloudflare-access" ||
+    value === "oidc" ||
+    value === "anaconda-api-key"
   );
 }
 
@@ -608,6 +735,7 @@ function isMetadataTransport(value: string): value is AuthenticatedConnectionMet
     value === "loopback-dev" ||
     value === "dev-token-header" ||
     value === "dev-token-subprotocol" ||
+    value === "api-key-bearer" ||
     value === "access-assertion" ||
     value === "access-token-header" ||
     value === "access-bearer" ||
@@ -796,6 +924,16 @@ function oidcCredentialFromRequest(
   return candidates[0];
 }
 
+function anacondaApiKeyCredentialFromRequest(
+  request: Request,
+): AnacondaApiKeyCredential | undefined {
+  const bearerToken = bearerTokenFromAuthorization(request.headers.get("authorization"));
+  if (!bearerToken || !isAnacondaApiKeyToken(bearerToken)) {
+    return undefined;
+  }
+  return { token: bearerToken, transport: "api-key-bearer" };
+}
+
 function hasOidcCredentialTransport(request: Request): boolean {
   return hasWebSocketCredentialProtocol(
     request.headers.get("sec-websocket-protocol"),
@@ -807,12 +945,16 @@ function shouldRouteBearerToOidc(
   request: Request,
   config: {
     accessConfig: AccessConfig | undefined;
+    anacondaApiKeyCredential: AnacondaApiKeyCredential | undefined;
     oidcConfig: OidcConfig | undefined;
     oidcPartial: boolean;
   },
 ): boolean {
   const bearerToken = bearerTokenFromAuthorization(request.headers.get("authorization"));
   if (!bearerToken) {
+    return false;
+  }
+  if (config.anacondaApiKeyCredential) {
     return false;
   }
   if (!config.oidcConfig) {
@@ -830,6 +972,21 @@ function shouldRouteBearerToOidc(
     );
   }
   return issuer !== config.accessConfig.issuer;
+}
+
+function anacondaApiKeyConfigFromEnv(env: IdentityEnvironment): AnacondaApiKeyConfig | undefined {
+  const rawUserinfoUrl = env.NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL?.trim();
+  if (!rawUserinfoUrl) {
+    return undefined;
+  }
+  return {
+    userinfoUrl: normalizeHttpsUrl(rawUserinfoUrl, "Anaconda API key userinfo URL"),
+    principalNamespace: normalizePrincipalNamespace(
+      env.NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE ??
+        env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE ??
+        "user:anaconda",
+    ),
+  };
 }
 
 function hasPartialAccessConfig(env: IdentityEnvironment): boolean {
@@ -892,14 +1049,18 @@ function oidcConfigFromEnv(env: IdentityEnvironment): OidcConfig | undefined {
 }
 
 function normalizeOidcIssuer(value: string): string {
+  return normalizeHttpsUrl(value, "OIDC issuer");
+}
+
+function normalizeHttpsUrl(value: string, label: string): string {
   let url: URL;
   try {
     url = new URL(value);
   } catch {
-    throw new AuthError("OIDC issuer must be a valid URL", 503);
+    throw new AuthError(`${label} must be a valid URL`, 503);
   }
   if (url.protocol !== "https:") {
-    throw new AuthError("OIDC issuer must use https", 503);
+    throw new AuthError(`${label} must use https`, 503);
   }
   url.hash = "";
   url.search = "";
@@ -1119,6 +1280,39 @@ function validateOidcJwtClaims(payload: JwtPayload, config: OidcConfig): void {
   }
 }
 
+function isAnacondaApiKeyToken(token: string): boolean {
+  return unverifiedJwtPayload(token)?.ver === "api:1";
+}
+
+function unverifiedJwtPayload(token: string): JwtPayload | undefined {
+  const parts = token.split(".");
+  if (parts.length !== 3 || !parts[1]) {
+    return undefined;
+  }
+  try {
+    const decoded = decodeBase64Url(parts[1]);
+    if (!decoded) {
+      return undefined;
+    }
+    return JSON.parse(decoded) as JwtPayload;
+  } catch {
+    return undefined;
+  }
+}
+
+function anacondaApiKeyScopes(value: unknown): Set<string> {
+  return new Set(
+    Array.isArray(value) ? value.filter((scope): scope is string => typeof scope === "string") : [],
+  );
+}
+
+function anacondaApiKeyAllowsScope(scopes: Set<string>, scope: ConnectionScope): boolean {
+  if (scope === "viewer") {
+    return scopes.has("cloud:read") || scopes.has("cloud:write");
+  }
+  return scopes.has("cloud:write");
+}
+
 function bearerTokenFromAuthorization(value: string | null): string | undefined {
   if (!value) return undefined;
   const match = value.match(/^Bearer\s+(.+)$/i);
@@ -1126,21 +1320,8 @@ function bearerTokenFromAuthorization(value: string | null): string | undefined 
 }
 
 function unverifiedJwtIssuer(token: string): string | undefined {
-  const parts = token.split(".");
-  if (parts.length !== 3 || !parts[1]) {
-    return undefined;
-  }
-
-  try {
-    const decoded = decodeBase64Url(parts[1]);
-    if (!decoded) {
-      return undefined;
-    }
-    const payload = JSON.parse(decoded) as Pick<JwtPayload, "iss">;
-    return typeof payload.iss === "string" ? payload.iss : undefined;
-  } catch {
-    return undefined;
-  }
+  const payload = unverifiedJwtPayload(token);
+  return typeof payload?.iss === "string" ? payload.iss : undefined;
 }
 
 function cookieValue(value: string | null, name: string): string | undefined {

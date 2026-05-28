@@ -27,10 +27,13 @@ bucket_name = "nteract-notebook-cloud-prototype"
 [assets]
 directory = "./dist"
 binding = "ASSETS"
+run_worker_first = true
 
 [vars]
 DEPLOYMENT_ENV = "prototype"
 NOTEBOOK_CLOUD_ALLOWED_ORIGINS = "https://preview.runt.run"
+NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE = "user:anaconda"
+NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL = "https://anaconda.com/api/auth/sessions/whoami"
 NOTEBOOK_CLOUD_OIDC_CLIENT_ID = "cec4781f-853c-4267-bf09-4bc59a2a3750"
 NOTEBOOK_CLOUD_OIDC_ISSUER = "https://auth.stage.anaconda.com/api/auth"
 NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE = "user:anaconda"

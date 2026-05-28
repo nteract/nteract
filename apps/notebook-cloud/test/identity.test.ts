@@ -753,6 +753,212 @@ describe("Cloudflare Access identity", () => {
   });
 });
 
+describe("Anaconda API key identity", () => {
+  it("validates Anaconda API key bearer tokens through whoami", async (t) => {
+    const token = anacondaApiKeyToken();
+    const calls: Array<{ url: string; authorization: string | null; userAgent: string | null }> =
+      [];
+    t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      calls.push({
+        url: request.url,
+        authorization: request.headers.get("authorization"),
+        userAgent: request.headers.get("user-agent"),
+      });
+      return jsonResponse(
+        anacondaWhoami({
+          userId: "fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0",
+          email: "rgbkrk@gmail.com",
+          firstName: "Kyle",
+          lastName: "Kelley",
+          scopes: ["cloud:read", "cloud:write"],
+        }),
+      );
+    });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/topic-viz/sync?operator=agent:runt-publish&scope=owner", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      anacondaApiKeyEnv(),
+    );
+
+    assert.deepEqual(identity, {
+      principal: "user:anaconda:fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0",
+      operator: "agent:runt-publish",
+      actorLabel: "user:anaconda:fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0/agent:runt-publish",
+      scope: "owner",
+      metadata: {
+        provider: "anaconda-api-key",
+        transport: "api-key-bearer",
+        principalNamespace: "user:anaconda",
+        displayName: "Kyle Kelley",
+        email: "rgbkrk@gmail.com",
+      },
+    });
+    assert.deepEqual(calls, [
+      {
+        url: "https://anaconda.com/api/auth/sessions/whoami",
+        authorization: `Bearer ${token}`,
+        userAgent: "nteract-notebook-cloud/1.0",
+      },
+    ]);
+  });
+
+  it("routes API-key-shaped bearer tokens ahead of OIDC bearer handling", async (t) => {
+    const token = anacondaApiKeyToken();
+    const { env: oidcEnv } = await oidcTokenFixture({ subject: "browser-user" });
+    t.mock.method(globalThis, "fetch", async () =>
+      jsonResponse(
+        anacondaWhoami({
+          userId: "api-key-user",
+          scopes: ["cloud:write"],
+        }),
+      ),
+    );
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/topic-viz/sync?operator=agent:runt-publish&scope=owner", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      {
+        ...oidcEnv,
+        ...anacondaApiKeyEnv(),
+      },
+    );
+
+    assert.equal(identity.actorLabel, "user:anaconda:api-key-user/agent:runt-publish");
+    assert.equal(identity.metadata.provider, "anaconda-api-key");
+  });
+
+  it("rejects API keys without write scope for owner requests", async (t) => {
+    const token = anacondaApiKeyToken();
+    t.mock.method(globalThis, "fetch", async () =>
+      jsonResponse(
+        anacondaWhoami({
+          userId: "read-only-user",
+          scopes: ["cloud:read"],
+        }),
+      ),
+    );
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request(
+            "https://cloud.test/n/topic-viz/sync?operator=agent:runt-publish&scope=owner",
+            {
+              headers: {
+                Authorization: `Bearer ${token}`,
+              },
+            },
+          ),
+          anacondaApiKeyEnv(),
+        ),
+      (error) =>
+        error instanceof AuthError &&
+        error.status === 403 &&
+        /scopes do not allow/.test(error.message),
+    );
+  });
+
+  it("accepts read-scoped API keys for viewer requests", async (t) => {
+    const token = anacondaApiKeyToken();
+    t.mock.method(globalThis, "fetch", async () =>
+      jsonResponse(
+        anacondaWhoami({
+          userId: "read-only-user",
+          scopes: ["cloud:read"],
+        }),
+      ),
+    );
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/topic-viz/sync?operator=browser:viewer&scope=viewer", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      anacondaApiKeyEnv(),
+    );
+
+    assert.equal(identity.actorLabel, "user:anaconda:read-only-user/browser:viewer");
+    assert.equal(identity.scope, "viewer");
+  });
+
+  it("rejects API-key-shaped bearer tokens when API key auth is not configured", async () => {
+    const token = anacondaApiKeyToken();
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/topic-viz/sync", {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          {},
+        ),
+      (error) =>
+        error instanceof AuthError &&
+        error.status === 503 &&
+        /API key auth is not configured/.test(error.message),
+    );
+  });
+
+  it("rejects non-API-key Anaconda whoami responses", async (t) => {
+    const token = anacondaApiKeyToken();
+    t.mock.method(globalThis, "fetch", async () =>
+      jsonResponse(
+        anacondaWhoami({
+          source: "oauth",
+          userId: "oauth-user",
+          scopes: ["cloud:write"],
+        }),
+      ),
+    );
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/topic-viz/sync", {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          anacondaApiKeyEnv(),
+        ),
+      (error) =>
+        error instanceof AuthError && error.status === 401 && /not an API key/.test(error.message),
+    );
+  });
+
+  it("maps upstream Anaconda validation failures to auth failures", async (t) => {
+    const token = anacondaApiKeyToken();
+    t.mock.method(globalThis, "fetch", async () => new Response("invalid", { status: 401 }));
+
+    await assert.rejects(
+      () =>
+        authenticateRequestWithProviders(
+          new Request("https://cloud.test/n/topic-viz/sync", {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          anacondaApiKeyEnv(),
+        ),
+      (error) =>
+        error instanceof AuthError &&
+        error.status === 401 &&
+        /validation failed/.test(error.message),
+    );
+  });
+});
+
 describe("OIDC identity", () => {
   it("validates direct OIDC bearer tokens and maps sub to a namespaced principal", async () => {
     const { env, token } = await oidcTokenFixture({
@@ -1201,3 +1407,51 @@ describe("OIDC identity", () => {
     );
   });
 });
+
+function anacondaApiKeyEnv(): {
+  NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE: string;
+  NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL: string;
+} {
+  return {
+    NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE: "user:anaconda",
+    NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL: "https://anaconda.com/api/auth/sessions/whoami",
+  };
+}
+
+function anacondaApiKeyToken(payload: Record<string, unknown> = {}): string {
+  return [
+    base64Url(JSON.stringify({ alg: "RS256", kid: "api-key-test", typ: "JWT" })),
+    base64Url(JSON.stringify({ kid: "api-key-test", ver: "api:1", ...payload })),
+    "signature",
+  ].join(".");
+}
+
+function anacondaWhoami(options: {
+  email?: string;
+  firstName?: string;
+  lastName?: string;
+  scopes: string[];
+  source?: string;
+  userId: string;
+}): unknown {
+  return {
+    passport: {
+      user_id: options.userId,
+      profile: {
+        email: options.email ?? "user@example.com",
+        first_name: options.firstName ?? "",
+        last_name: options.lastName ?? "",
+      },
+      scopes: options.scopes,
+      source: options.source ?? "api_key",
+    },
+  };
+}
+
+function jsonResponse(value: unknown): Response {
+  return new Response(JSON.stringify(value), {
+    headers: {
+      "Content-Type": "application/json",
+    },
+  });
+}

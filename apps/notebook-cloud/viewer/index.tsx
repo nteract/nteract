@@ -40,7 +40,6 @@ import {
   NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY,
   prototypeAuthDiagnostics,
   prototypeAuthSummary,
-  storeCloudAccessAuth,
   storeCloudPrototypeDevAuth,
   validatePrototypeToken,
   withCloudPrototypeAuthHeaders,
@@ -194,11 +193,20 @@ function isOidcCallbackPath(): boolean {
   return window.location.pathname.replace(/\/+$/, "") === "/oidc";
 }
 
+function isHomePath(): boolean {
+  const pathname = window.location.pathname.replace(/\/+$/, "");
+  return pathname === "" || pathname === "/index.html";
+}
+
 function App() {
   const [authConfig] = useState<CloudViewerAuthConfig>(() => loadAuthConfig());
   const [runtimeState] = useState<ViewerRuntimeState | null>(() =>
-    isOidcCallbackPath() ? null : loadViewerRuntime(),
+    isOidcCallbackPath() || isHomePath() ? null : loadViewerRuntime(),
   );
+
+  if (isHomePath()) {
+    return <CloudHomeView authConfig={authConfig} />;
+  }
 
   if (isOidcCallbackPath()) {
     return <OidcCallbackView authConfig={authConfig} />;
@@ -212,6 +220,112 @@ function App() {
   }
 
   return <NotebookViewer runtime={runtimeState.runtime} authConfig={authConfig} />;
+}
+
+function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
+  const { theme, setTheme, resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
+  const [authState, setAuthState] = useState<CloudPrototypeAuthState>(() =>
+    cloudPrototypeAuthFromWindow(),
+  );
+  const [scope, setScope] = useState<ConnectionScope>(authState.requestedScope ?? "editor");
+  const [authAction, setAuthAction] = useState<"idle" | "starting">("idle");
+  const [formError, setFormError] = useState<string | null>(null);
+
+  useEffect(() => {
+    applyDocumentTheme(resolvedTheme);
+  }, [resolvedTheme]);
+
+  const beginOidcAuth = async () => {
+    if (!authConfig.oidc) {
+      setFormError("OIDC sign-in is not configured for this host.");
+      return;
+    }
+    try {
+      setAuthAction("starting");
+      window.localStorage.setItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY, scope);
+      const url = await beginOidcLogin(authConfig.oidc, {
+        currentUrl: window.location.href,
+        storage: window.localStorage,
+      });
+      window.location.assign(url.href);
+    } catch (error) {
+      setAuthAction("idle");
+      setFormError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const resetAuth = () => {
+    clearCloudPrototypeDevAuth(window.localStorage);
+    setFormError(null);
+    setAuthState(cloudPrototypeAuthFromWindow());
+  };
+
+  const signedIn = authState.mode === "oidc";
+
+  return (
+    <main className="cloud-home">
+      <div className="cloud-report-toolbar" aria-label="Notebook cloud entry controls">
+        <h1>nteract cloud notebooks</h1>
+        <ThemeToggle theme={theme} onThemeChange={setTheme} className="cloud-theme-toggle" />
+      </div>
+
+      <section className="cloud-home-panel" aria-label="Notebook cloud sign-in">
+        <div className="cloud-home-status" data-mode={authState.mode}>
+          <KeyRound aria-hidden="true" />
+          <div>
+            <h2>{signedIn ? (authState.user ?? "Signed in") : "Sign in"}</h2>
+            <p>{prototypeAuthSummary(authState)}</p>
+          </div>
+        </div>
+
+        <label className="cloud-home-scope">
+          <span>Scope</span>
+          <select
+            value={scope}
+            onChange={(event) => setScope(event.target.value as ConnectionScope)}
+          >
+            <option value="editor">editor</option>
+            <option value="owner">owner</option>
+            <option value="runtime_peer">runtime_peer</option>
+            <option value="viewer">viewer</option>
+          </select>
+        </label>
+
+        {formError ? (
+          <div className="cloud-auth-form-error" role="alert">
+            {formError}
+          </div>
+        ) : null}
+
+        <div className="cloud-home-actions">
+          {signedIn ? (
+            <button
+              type="button"
+              onClick={() => {
+                clearCloudOidcAuth(window.localStorage);
+                setAuthState(cloudPrototypeAuthFromWindow());
+              }}
+            >
+              <LogOut aria-hidden="true" />
+              Sign out
+            </button>
+          ) : (
+            <button type="button" disabled={authAction === "starting"} onClick={beginOidcAuth}>
+              <LogIn aria-hidden="true" />
+              {authAction === "starting" ? "Starting sign-in" : "Sign in with Anaconda"}
+            </button>
+          )}
+          <a href="/n/topic-viz">Open topic-viz</a>
+          {authState.mode === "invalid" || authState.mode === "access" ? (
+            <button type="button" onClick={resetAuth}>
+              <RotateCcw aria-hidden="true" />
+              Reset
+            </button>
+          ) : null}
+        </div>
+      </section>
+    </main>
+  );
 }
 
 function OidcCallbackView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
@@ -830,13 +944,6 @@ function CloudAuthControls({
     onAuthStateChange();
   };
 
-  const applyAccessAuth = () => {
-    storeCloudAccessAuth(window.localStorage, { scope });
-    setToken("");
-    setFormError(null);
-    onAuthStateChange();
-  };
-
   const copyDiagnostics = async () => {
     try {
       await navigator.clipboard.writeText(diagnostics.copyText);
@@ -919,10 +1026,6 @@ function CloudAuthControls({
           <button type="submit">
             <KeyRound aria-hidden="true" />
             Use dev identity
-          </button>
-          <button type="button" onClick={applyAccessAuth}>
-            <KeyRound aria-hidden="true" />
-            Use browser session
           </button>
           <button type="button" onClick={() => void copyDiagnostics()}>
             <Copy aria-hidden="true" />
