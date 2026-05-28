@@ -1,6 +1,7 @@
 import {
   ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
+  DEV_AUTH_TOKEN_HEADER,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
   NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
   isConnectionScope,
@@ -10,6 +11,7 @@ import {
 export {
   ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
+  DEV_AUTH_TOKEN_HEADER,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
   NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
   type ConnectionScope,
@@ -75,7 +77,6 @@ export const TRUSTED_PRINCIPAL_NAMESPACE_HEADER = "x-nteract-principal-namespace
 export const TRUSTED_DISPLAY_NAME_HEADER = "x-nteract-display-name";
 export const TRUSTED_EMAIL_HEADER = "x-nteract-email";
 export const CLOUDFLARE_ACCESS_JWT_HEADER = "cf-access-jwt-assertion";
-export const DEV_AUTH_TOKEN_HEADER = "x-notebook-cloud-dev-token";
 
 interface AccessCredential {
   token: string;

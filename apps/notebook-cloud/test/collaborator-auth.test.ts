@@ -2,8 +2,10 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY,
+  NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
   NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY,
   NOTEBOOK_CLOUD_USER_STORAGE_KEY,
+  cloudHttpHeadersFromPrototypeAuthState,
   clearCloudPrototypeDevAuth,
   cloudSyncAuthFromPrototypeAuthState,
   prototypeAuthDiagnostics,
@@ -21,6 +23,7 @@ describe("cloud collaborator auth", () => {
 
     assert.equal(state.mode, "anonymous");
     assert.deepEqual(cloudSyncAuthFromPrototypeAuthState(state), {
+      headers: {},
       protocols: [],
       user: null,
       operator: null,
@@ -42,7 +45,46 @@ describe("cloud collaborator auth", () => {
     assert.equal(state.mode, "dev");
     assert.equal(auth.user, "alice");
     assert.equal(auth.requestedScope, "editor");
+    assert.deepEqual(auth.headers, { "x-notebook-cloud-dev-token": "secret" });
     assert.deepEqual(auth.protocols, ["nteract-dev-token.c2VjcmV0", "nteract.v4"]);
+  });
+
+  it("builds OIDC bearer auth for HTTP and WebSocket without putting tokens in the URL", () => {
+    const storage = new MemoryStorage();
+    const accessToken = jwt({
+      sub: "anaconda-user-123",
+      email: "alice@example.com",
+      email_verified: true,
+      name: "Alice",
+    });
+    storage.setItem(
+      NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
+      JSON.stringify({
+        accessToken,
+        refreshToken: null,
+        expiresAt: Math.floor(Date.now() / 1000) + 3600,
+        claims: {
+          sub: "anaconda-user-123",
+          email: "alice@example.com",
+          email_verified: true,
+          name: "Alice",
+        },
+      }),
+    );
+    storage.setItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY, "editor");
+
+    const state = readCloudPrototypeAuth(storage);
+    const auth = cloudSyncAuthFromPrototypeAuthState(state);
+
+    assert.equal(state.mode, "oidc");
+    assert.equal(state.user, "Alice");
+    assert.equal(auth.user, null);
+    assert.equal(auth.requestedScope, "editor");
+    assert.deepEqual(auth.headers, { Authorization: `Bearer ${accessToken}` });
+    assert.deepEqual(auth.protocols, [`nteract-bearer.${base64Url(accessToken)}`, "nteract.v4"]);
+    assert.deepEqual(cloudHttpHeadersFromPrototypeAuthState(state), {
+      Authorization: `Bearer ${accessToken}`,
+    });
   });
 
   it("can request an editor role from a browser Access session without JS token material", () => {
@@ -56,6 +98,7 @@ describe("cloud collaborator auth", () => {
     assert.equal(state.token, null);
     assert.equal(state.user, null);
     assert.equal(auth.requestedScope, "editor");
+    assert.deepEqual(auth.headers, {});
     assert.deepEqual(auth.protocols, []);
     assert.match(prototypeAuthSummary(state), /Browser session requesting editor/);
     assert.equal(storage.getItem(NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY), null);
@@ -88,6 +131,7 @@ describe("cloud collaborator auth", () => {
     assert.equal(state.mode, "invalid");
     assert.match(prototypeAuthSummary(state), /placeholder/);
     assert.deepEqual(cloudSyncAuthFromPrototypeAuthState(state), {
+      headers: {},
       protocols: [],
       user: null,
       operator: null,
@@ -170,4 +214,16 @@ class MemoryStorage implements CloudPrototypeAuthStorage {
   setItem(key: string, value: string): void {
     this.values.set(key, value);
   }
+}
+
+function jwt(payload: Record<string, unknown>): string {
+  return `${base64UrlJson({ alg: "none" })}.${base64UrlJson(payload)}.signature`;
+}
+
+function base64UrlJson(value: Record<string, unknown>): string {
+  return Buffer.from(JSON.stringify(value)).toString("base64url");
+}
+
+function base64Url(value: string): string {
+  return Buffer.from(value).toString("base64url");
 }

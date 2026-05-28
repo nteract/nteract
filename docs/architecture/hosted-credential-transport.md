@@ -339,10 +339,10 @@ shape live in `docs/architecture/hosted-direct-oidc-demo-runbook.md`.
    - `NOTEBOOK_CLOUD_OIDC_AUDIENCE` or `NOTEBOOK_CLOUD_OIDC_CLIENT_ID`
    - optional pinned `NOTEBOOK_CLOUD_OIDC_JWKS_JSON`
    - `NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE=user:anaconda`
-4. Configure viewer build-time OIDC:
-   - `VITE_AUTH_URI`
-   - `VITE_AUTH_CLIENT_ID`
-   - `VITE_AUTH_REDIRECT_URI`
+4. Configure viewer OIDC in the Worker runtime shell:
+   - `NOTEBOOK_CLOUD_OIDC_ISSUER`
+   - `NOTEBOOK_CLOUD_OIDC_CLIENT_ID`
+   - `NOTEBOOK_CLOUD_OIDC_REDIRECT_URI`
 5. Keep credential subprotocol stripping covered by tests. The listener must
    return only a non-sensitive application protocol such as `nteract.v4`, never
    `nteract-access-token.*`, `nteract-dev-token.*`, or `nteract-bearer.*`.

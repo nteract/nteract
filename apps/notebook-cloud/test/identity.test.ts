@@ -1078,7 +1078,11 @@ describe("OIDC identity", () => {
 
   it("rejects OIDC tokens with invalid signatures", async () => {
     const { env, token } = await oidcTokenFixture({ subject: "alice" });
-    const tamperedToken = `${token.slice(0, -1)}${token.endsWith("A") ? "B" : "A"}`;
+    const parts = token.split(".");
+    const signature = parts[2];
+    assert.ok(signature);
+    const tamperedSignature = `${signature[0] === "A" ? "B" : "A"}${signature.slice(1)}`;
+    const tamperedToken = `${parts[0]}.${parts[1]}.${tamperedSignature}`;
 
     await assert.rejects(
       () =>
