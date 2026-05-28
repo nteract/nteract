@@ -13,24 +13,27 @@ import {
 import { hasPreflightFailures } from "./hosted-render-smoke-preflight.mjs";
 import { catalogApiUrlForViewer, renderApiUrlForViewer } from "./hosted-render-smoke-routes.mjs";
 
-const DEFAULT_URL =
-  "https://nteract-notebook-cloud.rgbkrk.workers.dev/n/nteract-cloud-live-mathnet";
+const DEFAULT_URL = "https://preview.runt.run/n/topic-viz";
 const DEFAULT_RENDERER_ASSET_ORIGIN = "https://nteract-notebook-cloud-assets.rgbkrk.workers.dev";
-const DEFAULT_OUTPUT_DOCUMENT_ORIGIN = "https://nteract-notebook-cloud-outputs.rgbkrk.workers.dev";
-const DEFAULT_CATALOG_OWNER_PRINCIPAL = "user:dev:live-publish";
-const DEFAULT_LATEST_REVISION_ACTOR_LABEL = "user:dev:live-publish/agent:publish-live";
+const DEFAULT_OUTPUT_DOCUMENT_ORIGIN = "https://preview.runtusercontent.com";
+const DEFAULT_CATALOG_OWNER_PRINCIPAL = "user:anaconda:fe0f6c3a-f7c7-4c04-9b8d-77e596da1375";
+const DEFAULT_LATEST_REVISION_ACTOR_LABEL =
+  "user:anaconda:fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0/agent:runt-publish";
 
 const targetUrl = process.argv[2] ?? process.env.NOTEBOOK_CLOUD_HOSTED_URL ?? DEFAULT_URL;
 const expectedRendererAssetOrigin =
   process.env.NOTEBOOK_CLOUD_EXPECTED_RENDERER_ASSET_ORIGIN ?? DEFAULT_RENDERER_ASSET_ORIGIN;
 const expectedOutputDocumentOrigin =
   process.env.NOTEBOOK_CLOUD_EXPECTED_OUTPUT_DOCUMENT_ORIGIN ?? DEFAULT_OUTPUT_DOCUMENT_ORIGIN;
-const expectedSourceText = process.env.NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT ?? "import polars as pl";
+const expectedSourceText =
+  process.env.NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT ?? "from datasets import load_dataset";
 const expectedExecutionCount = process.env.NOTEBOOK_CLOUD_EXPECTED_EXECUTION_COUNT ?? null;
 const requireRenderedCellMarker = process.env.NOTEBOOK_CLOUD_REQUIRE_RENDERED_CELL_MARKER !== "0";
 const expectedPresenceText = process.env.NOTEBOOK_CLOUD_EXPECTED_PRESENCE_TEXT ?? "viewing";
 const expectedPageTexts = parseExpectedTexts("NOTEBOOK_CLOUD_EXPECTED_PAGE_TEXTS", [
-  "Loaded 25 rows",
+  "MathNet topic visualization",
+  "Loading the slice",
+  "Schema at a glance",
 ]);
 const expectedFrameTexts = parseExpectedTexts("NOTEBOOK_CLOUD_EXPECTED_FRAME_TEXTS", [
   "PROBLEM_MARKDOWN",

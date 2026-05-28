@@ -81,11 +81,11 @@ http://127.0.0.1:8787/n/nteract-cloud-fixture-output_streaming
 Set `NOTEBOOK_CLOUD_FIXTURE=<fixture-dir>` and
 `NOTEBOOK_CLOUD_NOTEBOOK_ID=<id>` to publish another fixture pair.
 
-`smoke:hosted` runs a headless Chromium check against the deployed canonical
-MathNet notebook by default:
+`smoke:hosted` runs a headless Chromium check against the deployed
+`preview.runt.run` topic-viz notebook by default:
 
 ```text
-https://nteract-notebook-cloud.rgbkrk.workers.dev/n/nteract-cloud-live-mathnet
+https://preview.runt.run/n/topic-viz
 ```
 
 Install the Chromium browser once before running the hosted smoke from a fresh
@@ -131,10 +131,9 @@ to publish an already-open live notebook room instead.
 `smoke:hosted:live` composes the two live checks: it runs `publish:live`, reads
 the returned viewer URL and exported notebook/runtime heads, then runs
 `smoke:hosted` against that exact notebook while asserting the catalog latest
-revision still points at those heads. Use
-`NOTEBOOK_CLOUD_URL=https://nteract-notebook-cloud.rgbkrk.workers.dev` and
-`NOTEBOOK_CLOUD_DEV_TOKEN=...` to target the deployed prototype, or leave the
-defaults to target local Wrangler.
+revision still points at those heads. Use `NOTEBOOK_CLOUD_URL=https://preview.runt.run`
+and `NOTEBOOK_CLOUD_DEV_TOKEN=...` to target the deployed prototype, or leave
+the defaults to target local Wrangler.
 
 `smoke:hosted:source-room` covers the already-open room path. It creates and
 executes the same live MathNet notebook first, then calls `smoke:hosted:live`
@@ -409,9 +408,9 @@ Disposable Cloudflare resources currently wired in `wrangler.toml`:
 - Worker: `nteract-notebook-cloud`
 - Renderer asset Worker: `nteract-notebook-cloud-assets`
 - Output document Worker: `nteract-notebook-cloud-outputs`
-- URL: `https://nteract-notebook-cloud.rgbkrk.workers.dev`
+- URL: `https://preview.runt.run`
 - Renderer assets URL: `https://nteract-notebook-cloud-assets.rgbkrk.workers.dev/renderer-assets/`
-- Output document URL: `https://nteract-notebook-cloud-outputs.rgbkrk.workers.dev/frame/`
+- Output document URL: `https://preview.runtusercontent.com/frame/`
 - D1: `nteract-notebook-cloud-prototype-db`
 - R2: `nteract-notebook-cloud-prototype`
 
@@ -481,19 +480,19 @@ Useful events while debugging collaboration:
 Quick deployed runbook:
 
 ```bash
-NOTEBOOK_CLOUD_URL=https://nteract-notebook-cloud.rgbkrk.workers.dev \
+NOTEBOOK_CLOUD_URL=https://preview.runt.run \
 NOTEBOOK_CLOUD_DEV_TOKEN=... \
 pnpm --dir apps/notebook-cloud smoke
 
-NOTEBOOK_CLOUD_URL=https://nteract-notebook-cloud.rgbkrk.workers.dev \
+NOTEBOOK_CLOUD_URL=https://preview.runt.run \
 NOTEBOOK_CLOUD_DEV_TOKEN=... \
 pnpm --dir apps/notebook-cloud wasm:roundtrip
 
-NOTEBOOK_CLOUD_URL=https://nteract-notebook-cloud.rgbkrk.workers.dev \
+NOTEBOOK_CLOUD_URL=https://preview.runt.run \
 NOTEBOOK_CLOUD_DEV_TOKEN=... \
 pnpm --dir apps/notebook-cloud smoke:hosted:live
 
-NOTEBOOK_CLOUD_URL=https://nteract-notebook-cloud.rgbkrk.workers.dev \
+NOTEBOOK_CLOUD_URL=https://preview.runt.run \
 NOTEBOOK_CLOUD_DEV_TOKEN=... \
 pnpm --dir apps/notebook-cloud smoke:hosted:collab
 
@@ -502,7 +501,7 @@ NOTEBOOK_CLOUD_ACCESS_ORIGIN=https://<access-protected-notebook-host> \
 NOTEBOOK_CLOUD_ACCESS_JWT="$(cloudflared access token -app=https://<access-protected-notebook-host>)" \
 pnpm --dir apps/notebook-cloud smoke:hosted:access
 
-NOTEBOOK_CLOUD_HOSTED_URL=https://nteract-notebook-cloud.rgbkrk.workers.dev/n/<id> \
+NOTEBOOK_CLOUD_HOSTED_URL=https://preview.runt.run/n/<id>/<vanity-name> \
 NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM=0 \
 pnpm --dir apps/notebook-cloud smoke:hosted
 ```
