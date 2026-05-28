@@ -199,6 +199,38 @@ export const cloudOutputParityRenderCells: readonly RenderCell[] = [
     ],
   },
   {
+    id: "widget-progress-output",
+    cell_type: "code",
+    source: [
+      "from tqdm.auto import tqdm",
+      "for _ in tqdm(range(56), desc='Resolving data files:'):",
+      "    pass",
+      "for _ in tqdm(range(8), desc='Loading shard:'):",
+      "    pass",
+    ].join("\n"),
+    execution_count: 8,
+    outputs: [
+      {
+        output_id: "widget-progress-int",
+        output_type: "display_data",
+        data: {
+          "application/vnd.jupyter.widget-view+json": { model_id: "cloud-topic-progress-int" },
+          "text/plain": "Cloud IntProgress fallback marker",
+        },
+        metadata: {},
+      },
+      {
+        output_id: "widget-progress-float",
+        output_type: "display_data",
+        data: {
+          "application/vnd.jupyter.widget-view+json": { model_id: "cloud-topic-progress-float" },
+          "text/plain": "Cloud FloatProgress fallback marker",
+        },
+        metadata: {},
+      },
+    ],
+  },
+  {
     id: "mixed-interactive-sift-output",
     cell_type: "code",
     source: [
@@ -206,7 +238,7 @@ export const cloudOutputParityRenderCells: readonly RenderCell[] = [
       "display(df)",
       "# Plotly and Sift should not share one isolated frame.",
     ].join("\n"),
-    execution_count: 8,
+    execution_count: 9,
     outputs: [
       {
         output_id: "mixed-output-stream",
@@ -267,7 +299,7 @@ export const cloudOutputParityRenderCells: readonly RenderCell[] = [
       "display(HTML('<strong>Cloud boundary HTML marker</strong>'))",
       "display(df)",
     ].join("\n"),
-    execution_count: 9,
+    execution_count: 10,
     outputs: [
       {
         output_id: "boundary-output-stream",
@@ -323,6 +355,53 @@ export const cloudOutputParityWidgetComms: readonly SnapshotWidgetComm[] = [
     },
     seq: 1,
   },
+  {
+    comm_id: "cloud-topic-progress-int",
+    target_name: "jupyter.widget",
+    model_module: "@jupyter-widgets/controls",
+    model_name: "IntProgressModel",
+    state: {
+      _model_module: "@jupyter-widgets/controls",
+      _model_name: "IntProgressModel",
+      description: "Resolving data files:",
+      value: 56,
+      min: 0,
+      max: 56,
+      bar_style: "success",
+      orientation: "horizontal",
+    },
+    seq: 2,
+  },
+  {
+    comm_id: "cloud-topic-progress-float",
+    target_name: "jupyter.widget",
+    model_module: "@jupyter-widgets/controls",
+    model_name: "FloatProgressModel",
+    state: {
+      _model_module: "@jupyter-widgets/controls",
+      _model_name: "FloatProgressModel",
+      description: "Loading shard:",
+      value: 0.625,
+      min: 0,
+      max: 1,
+      bar_style: "",
+      style: "IPY_MODEL_cloud-topic-progress-style",
+      orientation: "horizontal",
+    },
+    seq: 3,
+  },
+  {
+    comm_id: "cloud-topic-progress-style",
+    target_name: "jupyter.widget",
+    model_module: "@jupyter-widgets/controls",
+    model_name: "ProgressStyleModel",
+    state: {
+      _model_module: "@jupyter-widgets/controls",
+      _model_name: "ProgressStyleModel",
+      bar_color: "#f97316",
+    },
+    seq: 4,
+  },
 ];
 
 export const cloudOutputParityExpectedMarkers = {
@@ -336,6 +415,8 @@ export const cloudOutputParityExpectedMarkers = {
   fallback: "Plain text fallback marker",
   siftStream: "Preparing Cloud Sift Arrow fixture",
   siftColumn: "score",
+  intProgress: "Resolving data files:",
+  floatProgress: "Loading shard:",
   mixedStream: "Cloud mixed stream marker",
   boundaryStream: "Cloud boundary stream marker",
   boundaryHtml: "Cloud boundary HTML marker",

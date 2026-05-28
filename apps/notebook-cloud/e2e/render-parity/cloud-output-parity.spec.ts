@@ -25,7 +25,7 @@ test.describe("cloud renderer parity harness", () => {
 
     await expect(page.locator('[data-slot="read-only-notebook"]')).toHaveAttribute(
       "data-cell-count",
-      "10",
+      "11",
     );
     await expect(page.locator('[data-cell-id="code-streams"]')).toContainText(
       cloudOutputParityExpectedMarkers.stdout,
@@ -150,6 +150,41 @@ test.describe("cloud renderer parity harness", () => {
         .frameLocator('[data-cell-id="sift-arrow-output"] [data-sift-output="true"] iframe')
         .locator("body"),
     ).toContainText(cloudOutputParityExpectedMarkers.siftColumn, { timeout: 90_000 });
+  });
+
+  test("renders multiple progress widget views without falling back to plain text", async ({
+    page,
+  }) => {
+    await openParityHarness(page);
+
+    const progressCell = page.locator('[data-cell-id="widget-progress-output"]');
+    await expect(progressCell).not.toContainText("Cloud IntProgress fallback marker");
+    await expect(progressCell).not.toContainText("Cloud FloatProgress fallback marker");
+    await expect(progressCell.locator('iframe[data-slot="isolated-frame"]')).toHaveCount(1, {
+      timeout: 30_000,
+    });
+
+    const frame = await findFrameContaining(
+      page,
+      progressCell,
+      'iframe[data-slot="isolated-frame"]',
+      '[data-widget-type="FloatProgress"]',
+    );
+    await expect(frame.locator('[data-widget-type="IntProgress"]')).toContainText(
+      cloudOutputParityExpectedMarkers.intProgress,
+    );
+    await expect(frame.locator('[data-widget-type="FloatProgress"]')).toContainText(
+      cloudOutputParityExpectedMarkers.floatProgress,
+    );
+    await expect(
+      frame.locator('[data-widget-type="IntProgress"] [role="progressbar"]'),
+    ).toHaveAttribute("aria-valuenow", "100");
+    await expect(
+      frame.locator('[data-widget-type="FloatProgress"] [role="progressbar"]'),
+    ).toHaveAttribute("aria-valuenow", "62.5");
+    await expect(
+      frame.locator('[data-widget-type="FloatProgress"] [role="progressbar"]'),
+    ).toHaveAttribute("style", /--progress-bar-color:\s*#f97316/);
   });
 
   test("segments DOM output, interactive plugins, and Sift into separate lanes", async ({
