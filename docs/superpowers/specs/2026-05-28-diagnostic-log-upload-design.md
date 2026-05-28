@@ -2,11 +2,11 @@
 
 ## Summary
 
-Add an opt-in diagnostic upload path to the existing `Help > Send Feedback...`
-flow. The desktop app will create an expanded diagnostics archive locally, ask a
-Cloudflare Worker on a `runtimed.com` subdomain for an anonymous upload slot,
-upload the archive to a private R2 bucket, and include the returned diagnostic
-token in the GitHub issue body.
+Add an opt-in diagnostic upload path behind a new
+`Help > Send Logs to Developer...` menu item. The desktop app will create an
+expanded diagnostics archive locally, ask a Cloudflare Worker on a
+`runtimed.com` subdomain for an anonymous upload slot, upload the archive to a
+private R2 bucket, and show the returned diagnostic token to the user.
 
 The v1 goal is faster support triage for sparse reports like "Something went
 wrong" while keeping the upload capability narrow enough for a small team to
@@ -19,8 +19,8 @@ operate safely.
 - Keep uploads anonymous and low friction.
 - Store diagnostics privately with short retention.
 - Apply abuse controls before accepting archive data.
-- Preserve the existing GitHub issue workflow instead of building a separate
-  ticketing system.
+- Avoid requiring a full feedback or GitHub issue flow before the user can send
+  logs.
 
 ## Non-Goals
 
@@ -29,12 +29,22 @@ operate safely.
 - No automatic upload on crash or error boundary entry.
 - No full cache dump without filtering.
 - No cloud-side log parsing or redaction pipeline in v1.
+- No requirement that the user opens a GitHub issue.
+- No GitHub issue creation from the log upload flow in v1.
 
 ## Current Context
 
-The feedback window already exists at `apps/notebook/feedback/` and is opened
-from `Help > Send Feedback...`. It currently collects a message, app/system
-metadata from `get_feedback_system_info`, and opens a prefilled GitHub issue.
+The app already has a Help menu with `Send Feedback...`, backed by
+`apps/notebook/feedback/`. That flow collects a message, app/system metadata
+from `get_feedback_system_info`, and opens a prefilled GitHub issue.
+
+The log-upload v1 should be a separate Help menu action so a user can send logs
+without first writing a report:
+
+- `Help > Send Feedback...` keeps the current GitHub issue flow.
+- `Help > Send Logs to Developer...` opens the diagnostics upload flow.
+- A later iteration can connect the two by offering to paste a diagnostic token
+  into a GitHub issue.
 
 The CLI already has `runt diagnostics`, which creates a `.tar.gz` containing:
 
@@ -60,26 +70,37 @@ for much noisier user sessions while staying below Cloudflare's documented
 
 ## User Experience
 
-The feedback window adds:
+The Help menu adds:
 
-- A checkbox: `Include diagnostic logs`
+- `Send Logs to Developer...`
+
+The menu item opens a small upload window or modal with:
+
+- A short explanation of what will be collected.
 - A short disclosure explaining that logs may contain local paths, environment
   names, package names, and error messages.
 - A "View archive contents" affordance after the archive is prepared.
 - Upload progress and a retryable failure state.
+- A final success state that shows the diagnostic token and a copy button.
 
 Default state:
 
-- The checkbox is off.
-- The user must explicitly opt in before any archive is created or uploaded.
-- If the upload succeeds, the GitHub issue body includes:
+- No archive is created until the user confirms the upload.
+- If the upload succeeds, the window shows:
   `Diagnostic upload: diag_YYYYMMDD_<shortid>`
-- If the upload fails, feedback still opens in GitHub without logs and shows a
-  concise failure message in the feedback window.
+- The user can copy the token and paste it into GitHub, Discord, email, or any
+  existing support conversation.
+- If the upload fails, the window shows a concise failure message and offers
+  retry when appropriate.
+
+Follow-up integration:
+
+- The existing feedback window may later offer `Attach uploaded diagnostics...`
+  or `Include new diagnostic upload`, but that is not required for v1.
 
 ## Desktop Responsibilities
 
-Add a Tauri command for feedback diagnostics:
+Add a Tauri command for diagnostics upload:
 
 1. Build an expanded diagnostics archive in a temporary location.
 2. Estimate compressed size before upload.
@@ -87,7 +108,14 @@ Add a Tauri command for feedback diagnostics:
 4. Ask the Worker for an upload slot.
 5. Upload the archive.
 6. Delete the temporary archive after success, cancellation, or failure.
-7. Return the diagnostic token to the feedback UI.
+7. Return the diagnostic token to the upload UI.
+
+Add native menu wiring:
+
+- New menu item ID: `send_logs_to_developer`.
+- Label: `Send Logs to Developer...`.
+- Location: Help menu, near `Send Feedback...`.
+- Behavior: open/focus a singleton diagnostics upload window.
 
 The archive should include the existing `runt diagnostics` contents plus recent
 channel logs from the same cache root:
@@ -109,8 +137,8 @@ Deploy a Worker at:
 Endpoints:
 
 - `POST /v1/uploads`
-  - Input: app version, commit, platform, archive size, optional issue draft
-    title, and a random client nonce.
+  - Input: app version, commit, platform, archive size, source flow, and a
+    random client nonce.
   - Output: upload ID, diagnostic token, upload URL, accepted size limit, and
     expiry.
 
@@ -196,8 +224,7 @@ No automatic upload is permitted in v1.
 
 Desktop:
 
-- Archive creation failure: show local error and allow GitHub feedback without
-  logs.
+- Archive creation failure: show local error and do not contact the Worker.
 - Upload slot rejected by rate limit: show a calm "try again later" message.
 - Upload body rejected by size: show the size and the server limit.
 - Network failure: allow retry while the slot remains valid; otherwise request
@@ -218,8 +245,11 @@ Desktop tests:
 - Archive builder includes expected current diagnostics files.
 - Archive builder includes recent channel logs without absolute home paths.
 - Archive builder respects age and file-count caps.
-- Feedback issue body includes the diagnostic token after a successful upload.
-- Feedback still opens without logs when upload fails.
+- Help menu contains `Send Logs to Developer...`.
+- The diagnostics upload window displays the diagnostic token after a successful
+  upload.
+- The diagnostics upload window handles archive and upload failures without
+  opening GitHub or losing the user's ability to retry.
 
 Worker tests:
 
@@ -231,9 +261,10 @@ Worker tests:
 
 Manual verification:
 
-- Create feedback with diagnostics on stable and nightly.
+- Upload diagnostics from stable and nightly through
+  `Help > Send Logs to Developer...`.
 - Confirm R2 object is private.
-- Confirm token appears in the GitHub issue draft.
+- Confirm token appears in the upload success state and can be copied.
 - Confirm archive can be retrieved by an internal operator path.
 - Confirm old uploads are deleted after retention.
 
