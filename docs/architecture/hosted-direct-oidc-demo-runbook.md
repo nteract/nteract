@@ -49,6 +49,7 @@ The direct-OIDC Worker implementation should use provider-neutral names:
 NOTEBOOK_CLOUD_OIDC_ISSUER = "https://auth.stage.anaconda.com/api/auth"
 NOTEBOOK_CLOUD_OIDC_CLIENT_ID = "cec4781f-853c-4267-bf09-4bc59a2a3750"
 NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE = "user:anaconda"
+NOTEBOOK_CLOUD_OIDC_REDIRECT_URI = "https://preview.runt.run/oidc"
 NOTEBOOK_CLOUD_ALLOWED_ORIGINS = "https://preview.runt.run"
 ```
 
@@ -61,15 +62,17 @@ where fetching the provider JWKS is intentionally disabled.
 tests until publish tooling has a first-class OIDC/API-key credential path. It
 is not the browser auth path.
 
-## Viewer Build-Time Variables
+## Viewer Runtime OIDC Config
 
-The viewer/editor shell should use the same PKCE browser shape as the retired
-prototype:
+The Worker injects the viewer/editor OIDC configuration into the first-party
+HTML shell from runtime variables. That keeps a single viewer bundle usable
+across the workers.dev host and the `preview.runt.run` custom domain while the
+Cloudflare Worker deployment owns the active redirect URI:
 
 ```toml
-VITE_AUTH_URI = "https://auth.stage.anaconda.com/api/auth"
-VITE_AUTH_CLIENT_ID = "cec4781f-853c-4267-bf09-4bc59a2a3750"
-VITE_AUTH_REDIRECT_URI = "https://preview.runt.run/oidc"
+NOTEBOOK_CLOUD_OIDC_ISSUER = "https://auth.stage.anaconda.com/api/auth"
+NOTEBOOK_CLOUD_OIDC_CLIENT_ID = "cec4781f-853c-4267-bf09-4bc59a2a3750"
+NOTEBOOK_CLOUD_OIDC_REDIRECT_URI = "https://preview.runt.run/oidc"
 ```
 
 The browser stores short-lived OIDC access material only in the notebook

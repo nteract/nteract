@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { Code2, Copy, Eye, EyeOff, KeyRound, RotateCcw, UsersRound } from "lucide-react";
+import {
+  Code2,
+  Copy,
+  Eye,
+  EyeOff,
+  KeyRound,
+  LogIn,
+  LogOut,
+  RotateCcw,
+  UsersRound,
+} from "lucide-react";
 import {
   ReadOnlyNotebook,
   type ReadOnlyNotebookCellData,
@@ -26,14 +36,24 @@ import {
   clearCloudPrototypeDevAuth,
   cloudPrototypeAuthFromWindow,
   cloudSyncAuthFromPrototypeAuthState,
+  fetchWithCloudPrototypeAuth,
+  NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY,
   prototypeAuthDiagnostics,
   prototypeAuthSummary,
   storeCloudAccessAuth,
   storeCloudPrototypeDevAuth,
   validatePrototypeToken,
+  withCloudPrototypeAuthHeaders,
   type CloudPrototypeAuthState,
 } from "./collaborator-auth";
 import { connectCloudSyncRuntime, type CloudSyncRuntime } from "./live-sync";
+import {
+  beginOidcLogin,
+  clearCloudOidcAuth,
+  completeOidcRedirect,
+  normalizeOidcAuthConfig,
+  type CloudOidcAuthConfig,
+} from "./oidc-auth";
 import type { ConnectionScope } from "../src/auth-shared";
 import {
   CloudLivePresenceStore,
@@ -75,6 +95,10 @@ interface CloudViewerConfig {
   runtimedWasmPath: string;
 }
 
+interface CloudViewerAuthConfig {
+  oidc: CloudOidcAuthConfig | null;
+}
+
 interface SnapshotRender {
   heads_hash?: string;
   metadata?: unknown;
@@ -91,7 +115,6 @@ type ViewerStatus =
 
 interface ViewerRuntime {
   config: CloudViewerConfig;
-  blobResolver: ReturnType<typeof createNotebookCloudBlobResolver>;
 }
 
 type ViewerRuntimeState =
@@ -142,13 +165,7 @@ function loadViewerRuntime(): ViewerRuntimeState {
     const config = loadConfig();
     return {
       kind: "ready",
-      runtime: {
-        config,
-        blobResolver: createNotebookCloudBlobResolver({
-          baseUrl: location.href,
-          blobBasePath: config.blobBasePath,
-        }),
-      },
+      runtime: { config },
     };
   } catch (error) {
     return {
@@ -158,18 +175,113 @@ function loadViewerRuntime(): ViewerRuntimeState {
   }
 }
 
-function App() {
-  const [runtimeState] = useState<ViewerRuntimeState>(() => loadViewerRuntime());
+function loadAuthConfig(): CloudViewerAuthConfig {
+  const element = document.querySelector<HTMLScriptElement>("#nteract-cloud-auth-config");
+  if (!element) {
+    return { oidc: null };
+  }
+  try {
+    const parsed = JSON.parse(element.textContent ?? "{}") as {
+      oidc?: Partial<CloudOidcAuthConfig> | null;
+    };
+    return { oidc: normalizeOidcAuthConfig(parsed.oidc) };
+  } catch {
+    return { oidc: null };
+  }
+}
 
+function isOidcCallbackPath(): boolean {
+  return window.location.pathname.replace(/\/+$/, "") === "/oidc";
+}
+
+function App() {
+  const [authConfig] = useState<CloudViewerAuthConfig>(() => loadAuthConfig());
+  const [runtimeState] = useState<ViewerRuntimeState | null>(() =>
+    isOidcCallbackPath() ? null : loadViewerRuntime(),
+  );
+
+  if (isOidcCallbackPath()) {
+    return <OidcCallbackView authConfig={authConfig} />;
+  }
+
+  if (!runtimeState) {
+    return <ViewerStartupError message="Unable to start cloud viewer: missing runtime state" />;
+  }
   if (runtimeState.kind === "error") {
     return <ViewerStartupError message={`Unable to start cloud viewer: ${runtimeState.message}`} />;
   }
 
-  return <NotebookViewer runtime={runtimeState.runtime} />;
+  return <NotebookViewer runtime={runtimeState.runtime} authConfig={authConfig} />;
 }
 
-function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
-  const { config, blobResolver } = runtime;
+function OidcCallbackView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
+  const { theme, setTheme, resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
+  const [status, setStatus] = useState<ViewerStatus>({
+    kind: "loading",
+    message: "Completing sign-in...",
+  });
+
+  useEffect(() => {
+    applyDocumentTheme(resolvedTheme);
+  }, [resolvedTheme]);
+
+  useEffect(() => {
+    const oidc = authConfig.oidc;
+    if (!oidc) {
+      setStatus({ kind: "error", message: "OIDC sign-in is not configured for this host." });
+      return;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has("code") || !params.has("state")) {
+      setStatus({ kind: "empty", message: "No sign-in callback is pending." });
+      return;
+    }
+
+    let cancelled = false;
+    void completeOidcRedirect(oidc, {
+      callbackUrl: window.location.href,
+      storage: window.localStorage,
+    })
+      .then(({ returnUrl }) => {
+        if (cancelled) return;
+        setStatus({ kind: "ready", message: "Signed in. Returning to the notebook..." });
+        window.location.replace(returnUrl);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setStatus({
+          kind: "error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authConfig.oidc]);
+
+  return (
+    <main className="flex min-h-screen w-full flex-col px-8 py-4 pr-4">
+      <div className="cloud-report-toolbar" aria-label="Sign-in status and controls">
+        <h1 className="text-xl font-semibold tracking-normal">nteract cloud notebook</h1>
+        <ThemeToggle theme={theme} onThemeChange={setTheme} className="cloud-theme-toggle" />
+      </div>
+      <div className="cloud-state" data-kind={status.kind}>
+        {status.message}
+      </div>
+    </main>
+  );
+}
+
+function NotebookViewer({
+  runtime,
+  authConfig,
+}: {
+  runtime: ViewerRuntime;
+  authConfig: CloudViewerAuthConfig;
+}) {
+  const { config } = runtime;
   const { theme, setTheme, resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const { store: widgetStore } = useWidgetStoreRequired();
   const [status, setStatus] = useState<ViewerStatus>({
@@ -197,6 +309,15 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
     cloudPrototypeAuthFromWindow(),
   );
   const textAttributionSequenceRef = useRef(0);
+  const blobResolver = useMemo(
+    () =>
+      createNotebookCloudBlobResolver({
+        baseUrl: location.href,
+        blobBasePath: config.blobBasePath,
+        fetchImpl: (input, init) => fetchWithCloudPrototypeAuth(input, init, authState),
+      }),
+    [authState, config.blobBasePath],
+  );
   const outputHostContext = useMemo<NteractEmbedHostContextPatch>(
     () => ({
       nteract: {
@@ -222,9 +343,10 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
 
     void (async () => {
       try {
-        const response = await fetch(config.renderEndpoint, {
-          headers: { Accept: "application/json" },
-        });
+        const response = await fetch(
+          config.renderEndpoint,
+          withCloudPrototypeAuthHeaders({ headers: { Accept: "application/json" } }, authState),
+        );
         if (!response.ok) {
           if (!cancelled) {
             snapshotResolvedRef.current = true;
@@ -278,7 +400,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
     return () => {
       cancelled = true;
     };
-  }, [blobResolver, config.renderEndpoint, widgetStore]);
+  }, [authState, blobResolver, config.renderEndpoint, widgetStore]);
 
   useEffect(() => {
     let disposed = false;
@@ -522,6 +644,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
           <ThemeToggle theme={theme} onThemeChange={setTheme} className="cloud-theme-toggle" />
 
           <CloudAuthControls
+            authConfig={authConfig}
             authState={authState}
             connectionActorLabel={connectionActorLabel}
             connectionError={connectionError}
@@ -613,12 +736,14 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
 }
 
 function CloudAuthControls({
+  authConfig,
   authState,
   connectionActorLabel,
   connectionError,
   connectionScope,
   onAuthStateChange,
 }: {
+  authConfig: CloudViewerAuthConfig;
   authState: CloudPrototypeAuthState;
   connectionActorLabel: string | null;
   connectionError: string | null;
@@ -629,15 +754,18 @@ function CloudAuthControls({
   const [user, setUser] = useState(authState.user ?? "alice");
   const [scope, setScope] = useState<ConnectionScope>(authState.requestedScope ?? "editor");
   const [formError, setFormError] = useState<string | null>(null);
+  const [authAction, setAuthAction] = useState<"idle" | "starting">("idle");
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const summary =
     authState.mode === "dev"
       ? `Dev ${authState.user ?? "browser-editor"}`
-      : authState.mode === "access"
-        ? "Browser session"
-        : authState.mode === "invalid"
-          ? "Auth needs attention"
-          : "Anonymous";
+      : authState.mode === "oidc"
+        ? (authState.user ?? "Signed in")
+        : authState.mode === "access"
+          ? "Browser session"
+          : authState.mode === "invalid"
+            ? "Auth needs attention"
+            : "Anonymous";
   const diagnostics = prototypeAuthDiagnostics(authState, {
     actorLabel: connectionActorLabel,
     connectionError,
@@ -658,6 +786,25 @@ function CloudAuthControls({
     setToken("");
     setFormError(null);
     onAuthStateChange();
+  };
+
+  const beginOidcAuth = async () => {
+    if (!authConfig.oidc) {
+      setFormError("OIDC sign-in is not configured for this host.");
+      return;
+    }
+    try {
+      setAuthAction("starting");
+      window.localStorage.setItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY, scope);
+      const url = await beginOidcLogin(authConfig.oidc, {
+        currentUrl: window.location.href,
+        storage: window.localStorage,
+      });
+      window.location.assign(url.href);
+    } catch (error) {
+      setAuthAction("idle");
+      setFormError(error instanceof Error ? error.message : String(error));
+    }
   };
 
   const resetAuth = () => {
@@ -736,6 +883,23 @@ function CloudAuthControls({
           </div>
         ) : null}
         <div className="cloud-auth-actions">
+          {authState.mode === "oidc" ? (
+            <button
+              type="button"
+              onClick={() => {
+                clearCloudOidcAuth(window.localStorage);
+                onAuthStateChange();
+              }}
+            >
+              <LogOut aria-hidden="true" />
+              Sign out
+            </button>
+          ) : authConfig.oidc ? (
+            <button type="button" disabled={authAction === "starting"} onClick={beginOidcAuth}>
+              <LogIn aria-hidden="true" />
+              {authAction === "starting" ? "Starting sign-in" : "Sign in"}
+            </button>
+          ) : null}
           <button type="submit">
             <KeyRound aria-hidden="true" />
             Use dev identity

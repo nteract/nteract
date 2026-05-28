@@ -1,15 +1,27 @@
 import {
+  BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
+  DEV_AUTH_TOKEN_HEADER,
   DEV_AUTH_TOKEN_PROTOCOL_PREFIX,
   NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
   isConnectionScope,
   type ConnectionScope,
 } from "../src/auth-shared";
+import {
+  NOTEBOOK_CLOUD_OIDC_REQUEST_STORAGE_KEY,
+  NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
+  clearCloudOidcAuth,
+  oidcDisplayName,
+  readStoredOidcToken,
+  type CloudOidcClaims,
+} from "./oidc-auth";
 
 export const NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY = "nteract:notebook-cloud:dev-token";
 export const NOTEBOOK_CLOUD_USER_STORAGE_KEY = "nteract:notebook-cloud:user";
 export const NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY = "nteract:notebook-cloud:scope";
+export { NOTEBOOK_CLOUD_OIDC_REQUEST_STORAGE_KEY, NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY };
 
 export interface CloudSyncAuth {
+  headers: Record<string, string>;
   protocols: string[];
   user: string | null;
   operator: string | null;
@@ -17,9 +29,10 @@ export interface CloudSyncAuth {
 }
 
 export interface CloudPrototypeAuthState {
-  mode: "anonymous" | "access" | "dev" | "invalid";
+  mode: "anonymous" | "access" | "dev" | "invalid" | "oidc";
   token: string | null;
   user: string | null;
+  oidcClaims: CloudOidcClaims | null;
   requestedScope: ConnectionScope | null;
   problem: string | null;
 }
@@ -72,12 +85,34 @@ export function readCloudPrototypeAuth(
 ): CloudPrototypeAuthState {
   const token = storage.getItem(NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY)?.trim() ?? "";
   const requestedScope = parseStoredScope(storage.getItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY));
+  const oidcSession = readStoredOidcToken(storage);
   if (!token) {
+    if (oidcSession.token) {
+      return {
+        mode: "oidc",
+        token: oidcSession.token.accessToken,
+        user: oidcDisplayName(oidcSession.token.claims),
+        oidcClaims: oidcSession.token.claims,
+        requestedScope: requestedScope ?? "editor",
+        problem: null,
+      };
+    }
+    if (oidcSession.problem) {
+      return {
+        mode: "invalid",
+        token: null,
+        user: null,
+        oidcClaims: null,
+        requestedScope: requestedScope ?? "editor",
+        problem: oidcSession.problem,
+      };
+    }
     if (requestedScope) {
       return {
         mode: "access",
         token: null,
         user: null,
+        oidcClaims: null,
         requestedScope,
         problem: null,
       };
@@ -92,6 +127,7 @@ export function readCloudPrototypeAuth(
       mode: "invalid",
       token,
       user,
+      oidcClaims: null,
       requestedScope: requestedScope ?? "editor",
       problem,
     };
@@ -101,6 +137,7 @@ export function readCloudPrototypeAuth(
     mode: "dev",
     token,
     user,
+    oidcClaims: null,
     requestedScope: requestedScope ?? "editor",
     problem: null,
   };
@@ -109,17 +146,31 @@ export function readCloudPrototypeAuth(
 export function cloudSyncAuthFromPrototypeAuthState(state: CloudPrototypeAuthState): CloudSyncAuth {
   if (state.mode === "access") {
     return {
+      headers: {},
       protocols: [],
       user: null,
       operator: null,
       requestedScope: state.requestedScope ?? "editor",
     };
   }
+  if (state.mode === "oidc" && state.token) {
+    return {
+      headers: cloudHttpHeadersFromPrototypeAuthState(state),
+      protocols: [
+        `${BEARER_AUTH_TOKEN_PROTOCOL_PREFIX}${base64UrlEncode(state.token)}`,
+        NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+      ],
+      user: null,
+      operator: null,
+      requestedScope: state.requestedScope ?? "editor",
+    };
+  }
   if (state.mode !== "dev" || !state.token) {
-    return { protocols: [], user: null, operator: null, requestedScope: null };
+    return { headers: {}, protocols: [], user: null, operator: null, requestedScope: null };
   }
 
   return {
+    headers: cloudHttpHeadersFromPrototypeAuthState(state),
     protocols: [
       `${DEV_AUTH_TOKEN_PROTOCOL_PREFIX}${base64UrlEncode(state.token)}`,
       NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
@@ -130,10 +181,45 @@ export function cloudSyncAuthFromPrototypeAuthState(state: CloudPrototypeAuthSta
   };
 }
 
+export function cloudHttpHeadersFromPrototypeAuthState(
+  state: CloudPrototypeAuthState,
+): Record<string, string> {
+  if (state.mode === "dev" && state.token) {
+    return { [DEV_AUTH_TOKEN_HEADER]: state.token };
+  }
+  if (state.mode === "oidc" && state.token) {
+    return { Authorization: `Bearer ${state.token}` };
+  }
+  return {};
+}
+
+export function fetchWithCloudPrototypeAuth(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  state: CloudPrototypeAuthState,
+): Promise<Response> {
+  return fetch(input, withCloudPrototypeAuthHeaders(init, state));
+}
+
+export function withCloudPrototypeAuthHeaders(
+  init: RequestInit | undefined,
+  state: CloudPrototypeAuthState,
+): RequestInit {
+  const headers = new Headers(init?.headers);
+  for (const [name, value] of Object.entries(cloudHttpHeadersFromPrototypeAuthState(state))) {
+    headers.set(name, value);
+  }
+  return {
+    ...init,
+    headers,
+  };
+}
+
 export function storeCloudPrototypeDevAuth(
   storage: CloudPrototypeAuthStorage,
   input: CloudPrototypeAuthInput,
 ): void {
+  clearCloudOidcAuth(storage);
   storage.setItem(NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY, input.token.trim());
   storage.setItem(NOTEBOOK_CLOUD_USER_STORAGE_KEY, input.user.trim() || "browser-editor");
   storage.setItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY, input.scope);
@@ -143,6 +229,7 @@ export function storeCloudAccessAuth(
   storage: Pick<CloudPrototypeAuthStorage, "removeItem" | "setItem">,
   input: { scope: ConnectionScope },
 ): void {
+  clearCloudOidcAuth(storage);
   storage.removeItem(NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY);
   storage.removeItem(NOTEBOOK_CLOUD_USER_STORAGE_KEY);
   storage.setItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY, input.scope);
@@ -154,6 +241,7 @@ export function clearCloudPrototypeDevAuth(
   storage.removeItem(NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY);
   storage.removeItem(NOTEBOOK_CLOUD_USER_STORAGE_KEY);
   storage.removeItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY);
+  clearCloudOidcAuth(storage);
 }
 
 export function validatePrototypeToken(token: string): string | null {
@@ -173,6 +261,9 @@ export function validatePrototypeToken(token: string): string | null {
 export function prototypeAuthSummary(state: CloudPrototypeAuthState): string {
   if (state.mode === "dev") {
     return `${state.user ?? "browser-editor"} requesting ${state.requestedScope ?? "editor"}`;
+  }
+  if (state.mode === "oidc") {
+    return `${state.user ?? "OIDC session"} requesting ${state.requestedScope ?? "editor"}`;
   }
   if (state.mode === "access") {
     return `Browser session requesting ${state.requestedScope ?? "editor"}`;
@@ -203,6 +294,28 @@ export function prototypeAuthDiagnostics(
         value: "Stored locally; sent as a WebSocket subprotocol, never in the URL.",
       },
     );
+  } else if (state.mode === "oidc") {
+    rows.push(
+      {
+        label: "Requested identity",
+        value: state.user ?? "OIDC session",
+      },
+      {
+        label: "Requested scope",
+        value: state.requestedScope ?? "editor",
+      },
+      {
+        label: "Credential",
+        value:
+          "OIDC bearer token stored locally; sent as an HTTP header and WebSocket subprotocol.",
+      },
+    );
+    if (state.oidcClaims?.sub) {
+      rows.push({
+        label: "Provider subject",
+        value: state.oidcClaims.sub,
+      });
+    }
   } else if (state.mode === "access") {
     rows.push(
       {
@@ -297,6 +410,7 @@ function anonymousAuthState(): CloudPrototypeAuthState {
     mode: "anonymous",
     token: null,
     user: null,
+    oidcClaims: null,
     requestedScope: null,
     problem: null,
   };

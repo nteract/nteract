@@ -2,6 +2,7 @@ name = "nteract-notebook-cloud"
 main = "./src/index.ts"
 compatibility_date = "2024-11-06"
 compatibility_flags = ["nodejs_compat"]
+routes = [{ pattern = "preview.runt.run", custom_domain = true }]
 
 [dev]
 port = 8787
@@ -29,6 +30,11 @@ binding = "ASSETS"
 
 [vars]
 DEPLOYMENT_ENV = "prototype"
+NOTEBOOK_CLOUD_ALLOWED_ORIGINS = "https://preview.runt.run"
+NOTEBOOK_CLOUD_OIDC_CLIENT_ID = "cec4781f-853c-4267-bf09-4bc59a2a3750"
+NOTEBOOK_CLOUD_OIDC_ISSUER = "https://auth.stage.anaconda.com/api/auth"
+NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE = "user:anaconda"
+NOTEBOOK_CLOUD_OIDC_REDIRECT_URI = "https://preview.runt.run/oidc"
 RENDERER_ASSETS_BASE_URL = "https://nteract-notebook-cloud-assets.rgbkrk.workers.dev/renderer-assets/"
 RUNTIMED_WASM_BASE_URL = "https://nteract-notebook-cloud-assets.rgbkrk.workers.dev/renderer-assets/"
-OUTPUT_DOCUMENT_BASE_URL = "https://nteract-notebook-cloud-outputs.rgbkrk.workers.dev/frame/"
+OUTPUT_DOCUMENT_BASE_URL = "https://preview.runtusercontent.com/frame/"

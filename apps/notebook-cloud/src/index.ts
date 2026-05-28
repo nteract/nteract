@@ -123,6 +123,10 @@ const worker: ExportedHandler<Env> = {
       );
     }
 
+    if (url.pathname === "/oidc" && request.method === "GET") {
+      return oidcCallbackViewer(request, env);
+    }
+
     const syncMatch = url.pathname.match(/^\/n\/([^/]+)\/sync\/?$/);
     if (syncMatch) {
       return routeRoomSync(request, env);
@@ -137,6 +141,7 @@ const worker: ExportedHandler<Env> = {
     if (pinnedViewerMatch && request.method === "GET") {
       return viewer(
         decodeURIComponent(pinnedViewerMatch[1]),
+        request,
         env,
         decodeURIComponent(pinnedViewerMatch[2]),
       );
@@ -144,12 +149,12 @@ const worker: ExportedHandler<Env> = {
 
     const viewerMatch = url.pathname.match(/^\/n\/([^/]+)\/?$/);
     if (viewerMatch && request.method === "GET") {
-      return viewer(decodeURIComponent(viewerMatch[1]), env);
+      return viewer(decodeURIComponent(viewerMatch[1]), request, env);
     }
 
     const vanityViewerMatch = url.pathname.match(/^\/n\/([^/]+)\/([^/]+)\/?$/);
     if (vanityViewerMatch && request.method === "GET") {
-      return viewer(decodeURIComponent(vanityViewerMatch[1]), env);
+      return viewer(decodeURIComponent(vanityViewerMatch[1]), request, env);
     }
 
     const catalogMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/?$/);
@@ -1744,6 +1749,10 @@ function withBrowserSecurityHeaders(response: Response, contentSecurityPolicy?: 
 
 function viewerContentSecurityPolicy(env: Env): string {
   const connectSources = new Set(["'self'", "ws:", "wss:"]);
+  const oidcIssuerOrigin = absoluteOrigin(env.NOTEBOOK_CLOUD_OIDC_ISSUER?.trim() ?? "");
+  if (oidcIssuerOrigin) {
+    connectSources.add(oidcIssuerOrigin);
+  }
   const rendererAssetOrigin = absoluteOrigin(rendererAssetsBasePath(env));
   if (rendererAssetOrigin) {
     connectSources.add(rendererAssetOrigin);
@@ -1790,7 +1799,7 @@ function normalizedRuntimeHeadsHash(value: string | null): string | null {
   return trimmed && trimmed !== "none" ? trimmed : null;
 }
 
-function viewer(notebookId: string, env: Env, headsHash?: string): Response {
+function viewer(notebookId: string, request: Request, env: Env, headsHash?: string): Response {
   const escaped = escapeHtml(notebookId);
   const title = headsHash ? `${escaped} @ ${escapeHtml(headsHash)}` : escaped;
   const renderEndpoint = headsHash
@@ -1807,19 +1816,49 @@ function viewer(notebookId: string, env: Env, headsHash?: string): Response {
     runtimedWasmModulePath: runtimedWasmAssetPath(env, VIEWER_RUNTIMED_WASM_MODULE_NAME),
     runtimedWasmPath: runtimedWasmAssetPath(env, VIEWER_RUNTIMED_WASM_NAME),
   };
+  return viewerShell(
+    `nteract cloud notebook ${title}`,
+    env,
+    authConfigForRequest(request, env),
+    config,
+  );
+}
+
+function oidcCallbackViewer(request: Request, env: Env): Response {
+  return viewerShell(
+    "nteract cloud notebook sign-in",
+    env,
+    authConfigForRequest(request, env),
+    null,
+  );
+}
+
+function viewerShell(
+  title: string,
+  env: Env,
+  authConfig: unknown,
+  config: Record<string, unknown> | null,
+): Response {
   const html = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>nteract cloud notebook ${title}</title>
+  <title>${title}</title>
   <style id="nteract-cloud-viewer-theme-surface">${viewerThemeFirstPaintStyle()}</style>
   <script>${viewerThemeBootstrapScript()}</script>
   <link rel="stylesheet" href="/assets/notebook-cloud-viewer.css" />
 </head>
 <body>
   <div id="root"></div>
-  <script id="nteract-cloud-viewer-config" type="application/json">${scriptJsonForHtml(config)}</script>
+  <script id="nteract-cloud-auth-config" type="application/json">${scriptJsonForHtml(authConfig)}</script>
+  ${
+    config
+      ? `<script id="nteract-cloud-viewer-config" type="application/json">${scriptJsonForHtml(
+          config,
+        )}</script>`
+      : ""
+  }
   <script type="module" src="/assets/notebook-cloud-viewer.js"></script>
 </body>
 </html>`;
@@ -1832,6 +1871,22 @@ function viewer(notebookId: string, env: Env, headsHash?: string): Response {
       viewerContentSecurityPolicy(env),
     ),
   );
+}
+
+function authConfigForRequest(request: Request, env: Env): { oidc: Record<string, string> | null } {
+  const issuer = env.NOTEBOOK_CLOUD_OIDC_ISSUER?.trim();
+  const clientId = env.NOTEBOOK_CLOUD_OIDC_CLIENT_ID?.trim();
+  if (!issuer || !clientId) {
+    return { oidc: null };
+  }
+  return {
+    oidc: {
+      issuer,
+      clientId,
+      redirectUri:
+        env.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI?.trim() || new URL("/oidc", request.url).href,
+    },
+  };
 }
 
 function rendererAssetsBasePath(env: Env): string {

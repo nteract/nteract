@@ -52,7 +52,9 @@ describe("HTML script serialization", () => {
       /connect-src 'self' ws: wss:/,
     );
     assert.match(html, /id="root"/);
+    assert.match(html, /id="nteract-cloud-auth-config"/);
     assert.match(html, /id="nteract-cloud-viewer-config"/);
+    assert.match(html, /"oidc":null/);
     assert.match(html, /id="nteract-cloud-viewer-config" type="application\/json"/);
     assert.match(html, /href="\/assets\/notebook-cloud-viewer\.css"/);
     assert.match(html, /src="\/assets\/notebook-cloud-viewer\.js"/);
@@ -72,6 +74,47 @@ describe("HTML script serialization", () => {
     assert.match(html, /"runtimedWasmPath":"\/assets\/runtimed_wasm_bg\.wasm"/);
     assert.doesNotMatch(html, /function renderNotebook/);
     assert.doesNotMatch(html, /id="notebook"/);
+  });
+
+  it("injects OIDC runtime config without exposing it through health", async () => {
+    const response = await worker.fetch(
+      new Request("https://preview.runt.run/n/demo"),
+      fakeEnv({
+        NOTEBOOK_CLOUD_OIDC_CLIENT_ID: "client-id",
+        NOTEBOOK_CLOUD_OIDC_ISSUER: "https://auth.stage.anaconda.com/api/auth",
+        NOTEBOOK_CLOUD_OIDC_REDIRECT_URI: "https://preview.runt.run/oidc",
+      }),
+      fakeContext(),
+    );
+    const html = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(html, /"issuer":"https:\/\/auth\.stage\.anaconda\.com\/api\/auth"/);
+    assert.match(html, /"clientId":"client-id"/);
+    assert.match(html, /"redirectUri":"https:\/\/preview\.runt\.run\/oidc"/);
+    assert.match(
+      response.headers.get("Content-Security-Policy") ?? "",
+      /connect-src 'self' ws: wss: https:\/\/auth\.stage\.anaconda\.com/,
+    );
+  });
+
+  it("serves the OIDC callback shell without a notebook runtime config", async () => {
+    const response = await worker.fetch(
+      new Request("https://preview.runt.run/oidc?code=abc&state=def"),
+      fakeEnv({
+        NOTEBOOK_CLOUD_OIDC_CLIENT_ID: "client-id",
+        NOTEBOOK_CLOUD_OIDC_ISSUER: "https://auth.stage.anaconda.com/api/auth",
+        NOTEBOOK_CLOUD_OIDC_REDIRECT_URI: "https://preview.runt.run/oidc",
+      }),
+      fakeContext(),
+    );
+    const html = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(html, /nteract cloud notebook sign-in/);
+    assert.match(html, /id="nteract-cloud-auth-config"/);
+    assert.doesNotMatch(html, /id="nteract-cloud-viewer-config"/);
+    assert.match(html, /src="\/assets\/notebook-cloud-viewer\.js"/);
   });
 
   it("allows the host to place renderer assets on a separate origin", async () => {
