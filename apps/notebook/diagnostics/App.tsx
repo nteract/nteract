@@ -91,6 +91,7 @@ export default function App() {
       setResult(uploadResult);
       setPrepared(null);
     } catch (err) {
+      setPrepared(null);
       setError(errorMessage(err));
     } finally {
       setBusy(null);

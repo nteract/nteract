@@ -5,10 +5,12 @@ use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime};
 use uuid::Uuid;
 
 pub const DIAGNOSTICS_UPLOAD_ENDPOINT: &str =
@@ -28,7 +30,22 @@ struct PreparedArchive {
     name: String,
     size: u64,
     files: Vec<String>,
-    uploading: bool,
+}
+
+struct PreparedArchiveCleanup {
+    path: PathBuf,
+}
+
+impl PreparedArchiveCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for PreparedArchiveCleanup {
+    fn drop(&mut self) {
+        cleanup_prepared_archive_files(&self.path);
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -110,9 +127,7 @@ pub async fn prepare_diagnostics_archive(
 
     let mut archives = state.archives.lock().map_err(|e| e.to_string())?;
     if let Some(previous) = archives.insert(archive_id, prepared) {
-        if !previous.uploading {
-            cleanup_prepared_archive_files(&previous.path);
-        }
+        cleanup_prepared_archive_files(&previous.path);
     }
 
     Ok(response)
@@ -125,31 +140,14 @@ pub async fn upload_prepared_diagnostics(
 ) -> Result<DiagnosticsUploadResult, String> {
     let prepared = {
         let mut archives = state.archives.lock().map_err(|e| e.to_string())?;
-        let archive = archives
-            .get_mut(&archive_id)
-            .ok_or_else(|| "Diagnostics archive is no longer available.".to_string())?;
-        if archive.uploading {
-            return Err("Diagnostics archive upload is already in progress.".to_string());
-        }
-        archive.uploading = true;
-        archive.clone()
+        archives
+            .remove(&archive_id)
+            .ok_or_else(|| "Diagnostics archive is no longer available.".to_string())?
     };
 
-    let result = upload_archive(&prepared).await;
+    let _cleanup = PreparedArchiveCleanup::new(prepared.path.clone());
 
-    let mut archives = state.archives.lock().map_err(|e| e.to_string())?;
-    if result.is_ok() {
-        if let Some(archive) = archives.remove(&archive_id) {
-            cleanup_prepared_archive_files(&archive.path);
-        }
-    } else if let Some(archive) = archives.get_mut(&archive_id) {
-        archive.uploading = false;
-        if !archive.path.exists() {
-            archives.remove(&archive_id);
-        }
-    }
-
-    result
+    upload_archive(&prepared).await
 }
 
 #[tauri::command]
@@ -159,14 +157,7 @@ pub async fn cleanup_prepared_diagnostics(
 ) -> Result<(), String> {
     let archive = {
         let mut archives = state.archives.lock().map_err(|e| e.to_string())?;
-        if archives
-            .get(&archive_id)
-            .is_some_and(|archive| archive.uploading)
-        {
-            None
-        } else {
-            archives.remove(&archive_id)
-        }
+        archives.remove(&archive_id)
     };
 
     if let Some(archive) = archive {
@@ -196,17 +187,7 @@ fn prepare_archive(app: &tauri::AppHandle, archive_id: &str) -> Result<PreparedA
 }
 
 fn prepare_archive_in_dir(runt_path: &Path, output_dir: &Path) -> Result<PreparedArchive, String> {
-    let output = Command::new(&runt_path)
-        .arg("diagnostics")
-        .arg("--output")
-        .arg(&output_dir)
-        .output()
-        .map_err(|e| {
-            format!(
-                "Failed to run diagnostics command {}: {e}",
-                runt_path.display()
-            )
-        })?;
+    let output = run_diagnostics_command(runt_path, output_dir, Duration::from_secs(60))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -236,8 +217,59 @@ fn prepare_archive_in_dir(runt_path: &Path, output_dir: &Path) -> Result<Prepare
         name,
         size: metadata.len(),
         files,
-        uploading: false,
     })
+}
+
+fn run_diagnostics_command(
+    runt_path: &Path,
+    output_dir: &Path,
+    timeout: Duration,
+) -> Result<Output, String> {
+    let mut child = Command::new(runt_path)
+        .arg("diagnostics")
+        .arg("--output")
+        .arg(output_dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            format!(
+                "Failed to run diagnostics command {}: {e}",
+                runt_path.display()
+            )
+        })?;
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        if let Some(status) = child.try_wait().map_err(|e| {
+            format!(
+                "Failed to wait for diagnostics command {}: {e}",
+                runt_path.display()
+            )
+        })? {
+            let mut stderr = Vec::new();
+            if let Some(mut pipe) = child.stderr.take() {
+                let _ = pipe.read_to_end(&mut stderr);
+            }
+            return Ok(Output {
+                status,
+                stdout: Vec::new(),
+                stderr,
+            });
+        }
+
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "Diagnostics command {} timed out after {} seconds",
+                runt_path.display(),
+                timeout.as_secs()
+            ));
+        }
+
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 async fn upload_archive(prepared: &PreparedArchive) -> Result<DiagnosticsUploadResult, String> {
