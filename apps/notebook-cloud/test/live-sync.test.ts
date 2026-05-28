@@ -4,6 +4,7 @@ import {
   CloudWebSocketTransport,
   normalizeConnectionScope,
   startCloudBootstrapSync,
+  syncUrl,
   syncableCloudHandle,
   withReadyTimeout,
 } from "../viewer/live-sync.ts";
@@ -79,6 +80,34 @@ describe("cloud live sync", () => {
     });
 
     assert.deepEqual(calls, ["start", "resetForBootstrap", "flush"]);
+  });
+
+  it("labels authenticated browser sync connections as browser operators", () => {
+    const url = syncUrl("https://cloud.test/n/demo/sync", "session/one", {
+      headers: { Authorization: "Bearer token" },
+      protocols: ["nteract-bearer.dG9rZW4", "nteract.v4"],
+      user: null,
+      operator: null,
+      requestedScope: "editor",
+    });
+
+    assert.equal(
+      url.href,
+      "wss://cloud.test/n/demo/sync?viewer_session=session%2Fone&operator=browser%3Asession%252Fone&scope=editor",
+    );
+  });
+
+  it("does not present an operator for anonymous viewer sync", () => {
+    const url = syncUrl("https://cloud.test/n/demo/sync", "anon-one", {
+      headers: {},
+      protocols: [],
+      user: null,
+      operator: null,
+      requestedScope: null,
+    });
+
+    assert.equal(url.searchParams.get("viewer_session"), "anon-one");
+    assert.equal(url.searchParams.has("operator"), false);
   });
 
   it("does not expose PoolDoc sync from the cloud viewer adapter", () => {

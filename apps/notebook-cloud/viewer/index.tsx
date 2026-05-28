@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  BookOpen,
   Code2,
   Copy,
   Eye,
@@ -11,6 +12,7 @@ import {
   LogIn,
   LogOut,
   Mail,
+  Pencil,
   RotateCcw,
   Share2,
   Trash2,
@@ -48,6 +50,7 @@ import {
   prototypeAuthDiagnostics,
   prototypeAuthSummary,
   storeCloudPrototypeDevAuth,
+  storeCloudRequestedScope,
   validatePrototypeToken,
   withCloudPrototypeAuthHeaders,
   type CloudPrototypeAuthState,
@@ -75,6 +78,7 @@ import {
   reduceCloudViewerConnection,
   reduceCloudViewerPresenceMessage,
 } from "./presence";
+import { shouldShowPrototypeDevControls } from "./prototype-dev-controls";
 import { resolveCell, type RenderCell, type ResolvedCell } from "./render-resolution";
 import {
   buildCloudShareAccessRows,
@@ -342,6 +346,11 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
   );
   const [authAction, setAuthAction] = useState<"idle" | "starting">("idle");
   const [formError, setFormError] = useState<string | null>(null);
+  const showPrototypeDevControls = shouldShowPrototypeDevControls({
+    oidcConfigured: Boolean(authConfig.oidc),
+    hostname: window.location.hostname,
+    search: window.location.search,
+  });
 
   useEffect(() => {
     applyDocumentTheme(resolvedTheme);
@@ -391,18 +400,20 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
           </div>
         </div>
 
-        <label className="cloud-home-scope">
-          <span>Scope</span>
-          <select
-            value={scope}
-            onChange={(event) => setScope(event.target.value as ConnectionScope)}
-          >
-            <option value="editor">editor</option>
-            <option value="owner">owner</option>
-            <option value="runtime_peer">runtime_peer</option>
-            <option value="viewer">viewer</option>
-          </select>
-        </label>
+        {showPrototypeDevControls ? (
+          <label className="cloud-home-scope">
+            <span>Scope</span>
+            <select
+              value={scope}
+              onChange={(event) => setScope(event.target.value as ConnectionScope)}
+            >
+              <option value="editor">editor</option>
+              <option value="owner">owner</option>
+              <option value="runtime_peer">runtime_peer</option>
+              <option value="viewer">viewer</option>
+            </select>
+          </label>
+        ) : null}
 
         {formError ? (
           <div className="cloud-auth-form-error" role="alert">
@@ -909,6 +920,14 @@ function NotebookViewer({
             />
           ) : null}
 
+          <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
+
+          <CloudNotebookEditModeButton
+            authState={authState}
+            connectionScope={connectionScope}
+            onAuthStateChange={refreshAuthState}
+          />
+
           <CloudAuthControls
             authConfig={authConfig}
             authState={authState}
@@ -1350,6 +1369,96 @@ function CloudSharingControls({
   );
 }
 
+function CloudNotebookEditModeButton({
+  authState,
+  connectionScope,
+  onAuthStateChange,
+}: {
+  authState: CloudPrototypeAuthState;
+  connectionScope: string | null;
+  onAuthStateChange: () => void;
+}) {
+  if (authState.mode !== "oidc") {
+    return null;
+  }
+
+  const requestedScope = authState.requestedScope ?? NOTEBOOK_CLOUD_DEFAULT_SCOPE;
+  const requestingEdit = requestedScope === "editor" || requestedScope === "owner";
+  const editing = connectionScope === "editor" || connectionScope === "owner";
+  const label = requestingEdit ? "View" : "Edit";
+  const title = requestingEdit
+    ? editing
+      ? "Return to read-only viewing"
+      : "Stop requesting edit access"
+    : "Request edit access";
+
+  return (
+    <button
+      type="button"
+      className="cloud-scope-toggle-button"
+      aria-pressed={requestingEdit}
+      data-state={editing ? "editing" : requestingEdit ? "requested" : "viewing"}
+      title={title}
+      onClick={() => {
+        storeCloudRequestedScope(
+          window.localStorage,
+          requestingEdit ? NOTEBOOK_CLOUD_DEFAULT_SCOPE : "editor",
+        );
+        onAuthStateChange();
+      }}
+    >
+      {requestingEdit ? <BookOpen aria-hidden="true" /> : <Pencil aria-hidden="true" />}
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function CloudNotebookSignInButton({
+  authConfig,
+  authState,
+}: {
+  authConfig: CloudViewerAuthConfig;
+  authState: CloudPrototypeAuthState;
+}) {
+  const [authAction, setAuthAction] = useState<"idle" | "starting">("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  if (!authConfig.oidc || authState.mode === "oidc") {
+    return null;
+  }
+
+  const beginOidcAuth = async () => {
+    if (!authConfig.oidc) return;
+    try {
+      setAuthAction("starting");
+      setError(null);
+      prepareCloudOidcViewerLogin(window.localStorage);
+      const url = await beginOidcLogin(authConfig.oidc, {
+        currentUrl: window.location.href,
+        storage: window.localStorage,
+      });
+      window.location.assign(url.href);
+    } catch (caught) {
+      setAuthAction("idle");
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      className="cloud-sign-in-button"
+      data-state={error ? "error" : authAction}
+      disabled={authAction === "starting"}
+      title={error ?? "Sign in with Anaconda"}
+      onClick={beginOidcAuth}
+    >
+      <LogIn aria-hidden="true" />
+      <span>{error ? "Sign-in failed" : authAction === "starting" ? "Signing in" : "Sign in"}</span>
+    </button>
+  );
+}
+
 function CloudShareRowIcon({ row }: { row: CloudShareAccessRow }) {
   if (row.kind === "invite") {
     return <Mail aria-hidden="true" />;
@@ -1383,6 +1492,11 @@ function CloudAuthControls({
   const [formError, setFormError] = useState<string | null>(null);
   const [authAction, setAuthAction] = useState<"idle" | "starting">("idle");
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const showPrototypeDevControls = shouldShowPrototypeDevControls({
+    oidcConfigured: Boolean(authConfig.oidc),
+    hostname: window.location.hostname,
+    search: window.location.search,
+  });
   const summary =
     authState.mode === "dev"
       ? `Dev ${authState.user ?? "browser-editor"}`
@@ -1467,37 +1581,41 @@ function CloudAuthControls({
             </div>
           ))}
         </dl>
-        <label>
-          <span>Dev token</span>
-          <input
-            type="password"
-            value={token}
-            placeholder="Worker dev token"
-            autoComplete="off"
-            onChange={(event) => setToken(event.target.value)}
-          />
-        </label>
-        <label>
-          <span>User</span>
-          <input
-            type="text"
-            value={user}
-            autoComplete="off"
-            onChange={(event) => setUser(event.target.value)}
-          />
-        </label>
-        <label>
-          <span>Scope</span>
-          <select
-            value={scope}
-            onChange={(event) => setScope(event.target.value as ConnectionScope)}
-          >
-            <option value="editor">editor</option>
-            <option value="owner">owner</option>
-            <option value="runtime_peer">runtime_peer</option>
-            <option value="viewer">viewer</option>
-          </select>
-        </label>
+        {showPrototypeDevControls ? (
+          <>
+            <label>
+              <span>Dev token</span>
+              <input
+                type="password"
+                value={token}
+                placeholder="Worker dev token"
+                autoComplete="off"
+                onChange={(event) => setToken(event.target.value)}
+              />
+            </label>
+            <label>
+              <span>User</span>
+              <input
+                type="text"
+                value={user}
+                autoComplete="off"
+                onChange={(event) => setUser(event.target.value)}
+              />
+            </label>
+            <label>
+              <span>Scope</span>
+              <select
+                value={scope}
+                onChange={(event) => setScope(event.target.value as ConnectionScope)}
+              >
+                <option value="editor">editor</option>
+                <option value="owner">owner</option>
+                <option value="runtime_peer">runtime_peer</option>
+                <option value="viewer">viewer</option>
+              </select>
+            </label>
+          </>
+        ) : null}
         {formError ? (
           <div className="cloud-auth-form-error" role="alert">
             {formError}
@@ -1521,10 +1639,12 @@ function CloudAuthControls({
               {authAction === "starting" ? "Starting sign-in" : "Sign in"}
             </button>
           ) : null}
-          <button type="submit">
-            <KeyRound aria-hidden="true" />
-            Use dev identity
-          </button>
+          {showPrototypeDevControls ? (
+            <button type="submit">
+              <KeyRound aria-hidden="true" />
+              Use dev identity
+            </button>
+          ) : null}
           <button type="button" onClick={() => void copyDiagnostics()}>
             <Copy aria-hidden="true" />
             {copyState === "copied"

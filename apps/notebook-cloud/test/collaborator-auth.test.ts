@@ -15,6 +15,7 @@ import {
   readCloudPrototypeAuth,
   storeCloudAccessAuth,
   storeCloudPrototypeDevAuth,
+  storeCloudRequestedScope,
   validatePrototypeToken,
   type CloudPrototypeAuthStorage,
 } from "../viewer/collaborator-auth.ts";
@@ -137,6 +138,40 @@ describe("cloud collaborator auth", () => {
     assert.match(prototypeAuthSummary(state), /Browser session requesting editor/);
     assert.equal(storage.getItem(NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY), null);
     assert.equal(storage.getItem(NOTEBOOK_CLOUD_USER_STORAGE_KEY), null);
+  });
+
+  it("switches requested scope without replacing stored OIDC token material", () => {
+    const storage = new MemoryStorage();
+    const accessToken = jwt({
+      sub: "anaconda-user-789",
+      email: "kyle@example.com",
+      email_verified: true,
+      name: "Kyle",
+    });
+    storage.setItem(
+      NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
+      JSON.stringify({
+        accessToken,
+        refreshToken: "refresh-token",
+        expiresAt: Math.floor(Date.now() / 1000) + 3600,
+        claims: {
+          sub: "anaconda-user-789",
+          email: "kyle@example.com",
+          email_verified: true,
+          name: "Kyle",
+        },
+      }),
+    );
+
+    storeCloudRequestedScope(storage, "editor");
+    assert.equal(readCloudPrototypeAuth(storage).requestedScope, "editor");
+
+    storeCloudRequestedScope(storage, NOTEBOOK_CLOUD_DEFAULT_SCOPE);
+    const state = readCloudPrototypeAuth(storage);
+    assert.equal(state.mode, "oidc");
+    assert.equal(state.requestedScope, NOTEBOOK_CLOUD_DEFAULT_SCOPE);
+    assert.equal(state.token, accessToken);
+    assert.equal(storage.getItem(NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY), null);
   });
 
   it("starts OIDC sign-in as a viewer without stale prototype identity", () => {

@@ -363,8 +363,8 @@ export class CloudWebSocketTransport implements NotebookTransport {
   }
 }
 
-function syncUrl(syncEndpoint: string, sessionId: string, auth: CloudSyncAuth): URL {
-  const url = new URL(syncEndpoint, location.href);
+export function syncUrl(syncEndpoint: string, sessionId: string, auth: CloudSyncAuth): URL {
+  const url = new URL(syncEndpoint, pageHref());
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   if (auth.user) {
     url.searchParams.set("user", auth.user);
@@ -373,11 +373,21 @@ function syncUrl(syncEndpoint: string, sessionId: string, auth: CloudSyncAuth): 
   }
   if (auth.operator) {
     url.searchParams.set("operator", auth.operator);
+  } else if (hasAuthenticatedBrowserCredential(auth)) {
+    url.searchParams.set("operator", `browser:${encodeURIComponent(sessionId)}`);
   }
   if (auth.requestedScope) {
     url.searchParams.set("scope", auth.requestedScope);
   }
   return url;
+}
+
+function pageHref(): string {
+  return typeof location === "undefined" ? "http://localhost/" : location.href;
+}
+
+function hasAuthenticatedBrowserCredential(auth: CloudSyncAuth): boolean {
+  return Boolean(auth.user || auth.protocols.length > 0 || auth.headers.Authorization);
 }
 
 async function bytesFromWebSocketMessage(data: unknown): Promise<Uint8Array> {
