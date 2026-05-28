@@ -10,6 +10,7 @@ import {
   isFatalIsolatedDiagnostic,
   parseIsolatedDiagnosticText,
 } from "./hosted-render-smoke-diagnostics.mjs";
+import { hasPreflightFailures } from "./hosted-render-smoke-preflight.mjs";
 import { catalogApiUrlForViewer, renderApiUrlForViewer } from "./hosted-render-smoke-routes.mjs";
 
 const DEFAULT_URL =
@@ -161,6 +162,9 @@ async function main() {
         expectedLatestRevisionNotebookHeadsHash,
         expectedLatestRevisionRuntimeHeadsHash,
       });
+    }
+    if (hasPreflightFailures(failures)) {
+      throw new SmokeFailure(failures);
     }
 
     await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
