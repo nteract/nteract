@@ -79,6 +79,110 @@ export function peerColor(peerId: string): string {
 const setCursorsEffect = StateEffect.define<RemoteCursorState[]>();
 const setSelectionsEffect = StateEffect.define<RemoteSelectionState[]>();
 
+// ── Flag collision detection ────────────────────────────────────────
+
+interface RectLike {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+const FLAG_LEFT_OFFSET_PX = -1;
+const FLAG_PADDING_X_PX = 6;
+const FLAG_PADDING_Y_PX = 2;
+const FLAG_FONT_SIZE_PX = 11;
+const FLAG_LINE_HEIGHT = 1.2;
+const FLAG_MARGIN_BOTTOM_PX = 1;
+const FLAG_COLLISION_PADDING_PX = 2;
+const FLAG_AVERAGE_CHAR_WIDTH_PX = 6.4;
+
+function flagWidth(label: string): number {
+  return Math.ceil(label.length * FLAG_AVERAGE_CHAR_WIDTH_PX + FLAG_PADDING_X_PX * 2);
+}
+
+function flagHeight(): number {
+  return Math.ceil(FLAG_FONT_SIZE_PX * FLAG_LINE_HEIGHT + FLAG_PADDING_Y_PX * 2);
+}
+
+export function _remoteCursorRectsIntersect(a: RectLike, b: RectLike, padding = 0): boolean {
+  return (
+    a.left - padding < b.right &&
+    a.right + padding > b.left &&
+    a.top - padding < b.bottom &&
+    a.bottom + padding > b.top
+  );
+}
+
+export function _remoteCursorFlagRect(
+  label: string,
+  cursorViewportLeft: number,
+  cursorViewportTop: number,
+): RectLike | null {
+  if (!label) return null;
+
+  const left = cursorViewportLeft + FLAG_LEFT_OFFSET_PX;
+  const bottom = cursorViewportTop - FLAG_MARGIN_BOTTOM_PX;
+  const width = flagWidth(label);
+  const height = flagHeight();
+
+  return {
+    left,
+    right: left + width,
+    top: bottom - height,
+    bottom,
+  };
+}
+
+export function _remoteCursorFlagOverlapsText(
+  label: string,
+  cursorViewportLeft: number,
+  cursorViewportTop: number,
+  textRects: readonly RectLike[],
+): boolean {
+  const flagRect = _remoteCursorFlagRect(label, cursorViewportLeft, cursorViewportTop);
+  if (!flagRect) return false;
+
+  return textRects.some((textRect) =>
+    _remoteCursorRectsIntersect(flagRect, textRect, FLAG_COLLISION_PADDING_PX),
+  );
+}
+
+function visibleTextRects(view: EditorView): RectLike[] {
+  const rects: RectLike[] = [];
+
+  for (const { from, to } of view.visibleRanges) {
+    if (from >= to) continue;
+
+    const range = document.createRange();
+
+    try {
+      const start = view.domAtPos(from);
+      const end = view.domAtPos(to);
+
+      range.setStart(start.node, start.offset);
+      range.setEnd(end.node, end.offset);
+
+      for (const rect of Array.from(range.getClientRects())) {
+        if (rect.right <= rect.left || rect.bottom <= rect.top) continue;
+        rects.push({
+          left: rect.left,
+          right: rect.right,
+          top: rect.top,
+          bottom: rect.bottom,
+        });
+      }
+    } catch {
+      // CM's DOM mapping can briefly be unavailable while the view is
+      // reconciling. In that case, fall back to showing the label.
+    } finally {
+      range.detach?.();
+    }
+  }
+
+  return rects;
+}
+
 // ── State fields (raw data) ──────────────────────────────────────────
 
 const cursorsField = StateField.define<RemoteCursorState[]>({
@@ -131,6 +235,7 @@ class CursorMarker implements LayerMarker {
     readonly color: string,
     readonly label: string,
     readonly peerId: string,
+    readonly showLabel: boolean,
   ) {}
 
   eq(other: LayerMarker): boolean {
@@ -141,7 +246,8 @@ class CursorMarker implements LayerMarker {
       this.height === other.height &&
       this.color === other.color &&
       this.label === other.label &&
-      this.peerId === other.peerId
+      this.peerId === other.peerId &&
+      this.showLabel === other.showLabel
     );
   }
 
@@ -158,7 +264,7 @@ class CursorMarker implements LayerMarker {
     bar.style.backgroundColor = this.color;
     el.appendChild(bar);
 
-    if (this.label) {
+    if (this.label && this.showLabel) {
       const flag = document.createElement("div");
       flag.className = "cm-remote-cursor-flag";
       flag.style.backgroundColor = this.color;
@@ -172,7 +278,13 @@ class CursorMarker implements LayerMarker {
   update(dom: HTMLElement, prev: LayerMarker): boolean {
     if (!(prev instanceof CursorMarker)) return false;
     // Color or label changed → recreate DOM
-    if (this.color !== prev.color || this.label !== prev.label) return false;
+    if (
+      this.color !== prev.color ||
+      this.label !== prev.label ||
+      this.showLabel !== prev.showLabel
+    ) {
+      return false;
+    }
     // Reposition in-place (fast path for cursor movement)
     dom.style.left = `${this.left}px`;
     dom.style.top = `${this.top}px`;
@@ -198,6 +310,7 @@ const remoteCursorLayer = layer({
 
     const markers: CursorMarker[] = [];
     const scrollRect = view.scrollDOM.getBoundingClientRect();
+    const textRects = cursors.some((cursor) => cursor.peerLabel) ? visibleTextRects(view) : [];
 
     for (const cursor of cursors) {
       const pos = resolvePos(view.state.doc, cursor);
@@ -209,9 +322,23 @@ const remoteCursorLayer = layer({
       const left = coords.left - scrollRect.left + view.scrollDOM.scrollLeft;
       const top = coords.top - scrollRect.top + view.scrollDOM.scrollTop;
       const height = coords.bottom - coords.top;
+      const showLabel = !_remoteCursorFlagOverlapsText(
+        cursor.peerLabel,
+        coords.left,
+        coords.top,
+        textRects,
+      );
 
       markers.push(
-        new CursorMarker(left, top, height, cursor.color, cursor.peerLabel, cursor.peerId),
+        new CursorMarker(
+          left,
+          top,
+          height,
+          cursor.color,
+          cursor.peerLabel,
+          cursor.peerId,
+          showLabel,
+        ),
       );
     }
 
