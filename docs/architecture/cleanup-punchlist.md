@@ -39,6 +39,7 @@ Severity legend:
 | 3D-5 | No cross-doc heads correlation is produced or stored. Snapshot/audit/replay flows need a `(notebook_heads, runtime_heads)` pair; nothing writes one. | Design | snapshot publishing path |
 | 3D-6 | `PoolDoc` does not participate in the clone-preview validator. Mitigation is `strip_changes`, not `validate`. Future write-bearing pool features would need the validator path wired back in. | Design | `crates/runtimed/src/notebook_sync_server/` |
 | 3D-7 | Hosted runtime execution needs a request-routing contract that targets the active `runtime_peer` through the room host or `RuntimeStateDoc`, not the local `RuntimeAgent` socket. The audit in `runtime-peer-and-blob-authority-audit.md` narrows this to contract work before code. | Design | hosted runtime request dispatch |
+| 3D-8 | The three document streams have independent sync state and validators but still share one bounded peer-egress FIFO. RuntimeStateDoc output churn can consume capacity needed by request responses, session-control readiness, and NotebookDoc sync. See `peer-egress-lanes.md` for staged lane-split recommendations. | Design | `crates/runtimed/src/notebook_sync_server/peer_writer.rs` |
 
 ## Execution pipeline
 
@@ -110,7 +111,7 @@ Severity legend:
 - **Done:** WP-1, WP-2, WP-3, WP-5, WP-9, EP-2, EP-7, EP-12, BS-1, BS-8, BS-11. Eleven landed across #2813, cleanup/inline-pass, and targeted cleanup stacks.
 - **Refuted:** EP-4 (log levels are correct per `.claude/rules/logging.md`), EP-13 (warn/debug asymmetry matches the actual severity of `Full` vs `Closed`).
 - **Targeted PRs (one per smell):** WP-6, WP-7, WP-11, WP-12, 3D-1, 3D-2, EP-1, EP-8, EP-10, EP-11, BS-3, BS-7, TMD-1, TMD-2, MSL-1, MSL-3, FSB-1, FSB-2, HCA-1. Nineteen open.
-- **Design (resolve in ADR or memo first):** WP-4, WP-8, WP-10, 3D-3, 3D-4, 3D-5, 3D-6, 3D-7, EP-3, EP-5, EP-6, EP-9, BS-2, BS-4, BS-5, BS-6, BS-9, BS-10, BS-12, BS-13, MSL-2, MSL-4, HCA-2, HCA-3, HCA-4, HCA-5, HCA-6, KE-1, CEL-1. Twenty-nine open.
+- **Design (resolve in ADR or memo first):** WP-4, WP-8, WP-10, 3D-3, 3D-5, 3D-6, 3D-7, 3D-8, EP-3, EP-5, EP-6, EP-9, BS-2, BS-4, BS-5, BS-6, BS-9, BS-10, BS-12, BS-13, MSL-2, MSL-4, HCA-2, HCA-3, HCA-4, HCA-5, HCA-6, KE-1, CEL-1. Twenty-nine open.
 
 ## Next steps
 
