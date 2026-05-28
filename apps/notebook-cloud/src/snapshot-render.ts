@@ -1,7 +1,11 @@
 import type { BlobResolver } from "runtimed";
 import { collectBlobUrls } from "./blob-refs.ts";
 import { loadSnapshotPair } from "./runtimed-wasm.ts";
-import { snapshotWidgetCommsFromRuntimeState, type SnapshotWidgetComm } from "./widget-comms.ts";
+import {
+  resolveSnapshotWidgetComms,
+  snapshotWidgetCommsFromRuntimeState,
+  type SnapshotWidgetComm,
+} from "./widget-comms.ts";
 
 export interface SnapshotRender {
   schema_version: 1;
@@ -31,6 +35,10 @@ export async function materializeSnapshotPairRender(input: {
     const cells = JSON.parse(handle.get_cells_json()) as unknown;
     const runtimeState = handle.get_runtime_state();
     const metadata = parseJsonOrNull(handle.get_metadata_snapshot_json());
+    const rawWidgetComms = snapshotWidgetCommsFromRuntimeState(runtimeState);
+    const widgetComms = input.blobResolver
+      ? resolveSnapshotWidgetComms(rawWidgetComms, input.blobResolver)
+      : rawWidgetComms;
     return {
       schema_version: 1,
       generated_from: "runtimed-wasm:load_snapshot",
@@ -41,8 +49,10 @@ export async function materializeSnapshotPairRender(input: {
       metadata,
       source: "snapshot-pair",
       cells,
-      blob_urls: input.blobResolver ? collectBlobUrls(cells, input.blobResolver) : {},
-      widget_comms: snapshotWidgetCommsFromRuntimeState(runtimeState),
+      blob_urls: input.blobResolver
+        ? collectBlobUrls({ cells, widget_comms: rawWidgetComms }, input.blobResolver)
+        : {},
+      widget_comms: widgetComms,
     };
   } finally {
     handle.free();

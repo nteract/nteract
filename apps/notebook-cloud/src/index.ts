@@ -1182,7 +1182,7 @@ async function materializeSnapshotRenderCache(options: {
     };
   }
 
-  const missingBlobs = await findMissingRenderBlobs(bucket, options.notebookId, render.cells);
+  const missingBlobs = await findMissingRenderBlobs(bucket, options.notebookId, render);
   if (missingBlobs.length > 0) {
     cloudLog("warn", "render.materialization.missing_blobs", {
       notebook_id: options.notebookId,
@@ -1236,9 +1236,9 @@ async function materializeSnapshotRenderCache(options: {
 async function findMissingRenderBlobs(
   bucket: NonNullable<Env["NOTEBOOK_SNAPSHOTS"]>,
   notebookId: string,
-  cells: unknown,
+  render: unknown,
 ): Promise<MissingRenderBlob[]> {
-  const refs = Object.values(collectBlobRefs(cells));
+  const refs = Object.values(collectBlobRefs(render));
   const missing: Array<MissingRenderBlob | null> = [];
 
   for (let index = 0; index < refs.length; index += RENDER_BLOB_HEAD_CONCURRENCY) {

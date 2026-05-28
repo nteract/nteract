@@ -28,8 +28,8 @@ import {
 } from "@/components/isolated/rpc-methods";
 import { createWidgetStore, type WidgetStore } from "@/components/widgets/widget-store";
 
-/** Blob URL pattern: http://127.0.0.1:{port}/blob/{hash} */
-const BLOB_URL_RE = /^https?:\/\/127\.0\.0\.1:\d+\/blob\/[a-f0-9]+$/;
+/** Blob URL pattern for host-provided ContentRef URLs. */
+const BLOB_URL_RE = /^https?:\/\/.+/;
 
 /**
  * Fetch the blob URL at each `bufferPaths` position in `state` and replace

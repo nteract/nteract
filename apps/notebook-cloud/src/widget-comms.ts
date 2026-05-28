@@ -1,3 +1,5 @@
+import type { BlobRef, BlobResolver } from "runtimed";
+
 export interface SnapshotWidgetComm {
   comm_id: string;
   target_name: string;
@@ -5,17 +7,39 @@ export interface SnapshotWidgetComm {
   model_name: string;
   state: Record<string, unknown>;
   buffer_paths?: string[][];
+  text_paths?: string[][];
   seq: number;
 }
 
-export function snapshotWidgetCommsFromRuntimeState(runtimeState: unknown): SnapshotWidgetComm[] {
+export function snapshotWidgetCommsFromRuntimeState(
+  runtimeState: unknown,
+  blobResolver?: BlobResolver,
+): SnapshotWidgetComm[] {
   const comms = asRecord(asRecord(runtimeState).comms);
-  return normalizeSnapshotWidgetComms(
+  const normalized = normalizeSnapshotWidgetComms(
     Object.entries(comms).map(([commId, entry]) => ({
       ...asRecord(entry),
       comm_id: commId,
     })),
   );
+  return blobResolver ? resolveSnapshotWidgetComms(normalized, blobResolver) : normalized;
+}
+
+export function resolveSnapshotWidgetComms(
+  comms: readonly SnapshotWidgetComm[],
+  blobResolver: BlobResolver,
+): SnapshotWidgetComm[] {
+  return comms.map((comm) => {
+    const bufferPaths: string[][] = [];
+    const textPaths: string[][] = [];
+    const state = resolveCommStateValue(comm.state, blobResolver, [], bufferPaths, textPaths);
+    return {
+      ...comm,
+      state: asRecord(state),
+      ...(bufferPaths.length > 0 ? { buffer_paths: bufferPaths } : {}),
+      ...(textPaths.length > 0 ? { text_paths: textPaths } : {}),
+    };
+  });
 }
 
 export function normalizeSnapshotWidgetComms(value: unknown): SnapshotWidgetComm[] {
@@ -44,6 +68,7 @@ function normalizeSnapshotWidgetComm(value: unknown): SnapshotWidgetComm | null 
   const state = asRecord(entry.state);
 
   const bufferPaths = normalizeBufferPaths(entry.buffer_paths ?? entry.bufferPaths);
+  const textPaths = normalizeBufferPaths(entry.text_paths ?? entry.textPaths);
 
   return {
     comm_id: commId,
@@ -53,8 +78,86 @@ function normalizeSnapshotWidgetComm(value: unknown): SnapshotWidgetComm | null 
     model_name: modelName,
     state,
     ...(bufferPaths ? { buffer_paths: bufferPaths } : {}),
+    ...(textPaths ? { text_paths: textPaths } : {}),
     seq: numberValue(entry.seq) ?? 0,
   };
+}
+
+function resolveCommStateValue(
+  value: unknown,
+  blobResolver: BlobResolver,
+  path: string[],
+  bufferPaths: string[][],
+  textPaths: string[][],
+): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item, index) =>
+      resolveCommStateValue(item, blobResolver, [...path, String(index)], bufferPaths, textPaths),
+    );
+  }
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+
+  const record = value as Record<string, unknown>;
+  if ("inline" in record) {
+    return record.inline;
+  }
+
+  const blobRef = blobRefFromRecord(record);
+  if (blobRef) {
+    const lastKey = path[path.length - 1];
+    const url = blobResolver.url(blobRef);
+    if (lastKey !== "_esm" && lastKey !== "_css") {
+      if (isTextMediaType(blobRef.media_type)) {
+        textPaths.push(path);
+      } else {
+        bufferPaths.push(path);
+      }
+    }
+    return url;
+  }
+
+  const resolved: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(record)) {
+    resolved[key] = resolveCommStateValue(
+      child,
+      blobResolver,
+      [...path, key],
+      bufferPaths,
+      textPaths,
+    );
+  }
+  return resolved;
+}
+
+function blobRefFromRecord(value: Record<string, unknown>): BlobRef | null {
+  if (typeof value.blob !== "string") return null;
+  return {
+    blob: value.blob,
+    size: typeof value.size === "number" ? value.size : undefined,
+    media_type: typeof value.media_type === "string" ? value.media_type : undefined,
+  };
+}
+
+function isTextMediaType(mediaType: unknown): boolean {
+  return typeof mediaType === "string" && !isBinaryMimeType(mediaType);
+}
+
+function isBinaryMimeType(mediaType: string): boolean {
+  const normalized = mediaType.split(";")[0]?.trim().toLowerCase() ?? "";
+  return (
+    normalized === "application/octet-stream" ||
+    normalized.startsWith("image/") ||
+    normalized.startsWith("audio/") ||
+    normalized.startsWith("video/") ||
+    normalized === "application/pdf" ||
+    normalized === "application/zip" ||
+    normalized === "application/gzip" ||
+    normalized === "application/x-gzip" ||
+    normalized === "application/vnd.apache.arrow.file" ||
+    normalized === "application/vnd.apache.arrow.stream"
+  );
 }
 
 function normalizeBufferPaths(value: unknown): string[][] | undefined {

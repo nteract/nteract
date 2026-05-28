@@ -320,6 +320,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
       }
       const widgetComms = snapshotWidgetCommsFromRuntimeState(
         liveRuntime.handle.get_runtime_state(),
+        blobResolver,
       );
       const metadata = parseJsonOrNull(liveRuntime.handle.get_metadata_snapshot_json?.());
       const notebookLanguage =
