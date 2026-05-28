@@ -10,6 +10,7 @@ import type {
 } from "../src/cloudflare-types.ts";
 import {
   createPendingNotebookInvite,
+  getPrincipalProfiles,
   resolveNotebookInvitesForLogin,
   upsertPrincipalProfile,
   type PendingNotebookInviteRow,
@@ -47,6 +48,64 @@ describe("hosted sharing storage", () => {
     assert.equal(profile?.display_name, "Alice Updated");
     assert.equal(profile?.first_seen_at, "2026-05-24T12:00:00.000Z");
     assert.equal(profile?.last_seen_at, "2026-05-24T12:05:00.000Z");
+  });
+
+  it("loads multiple principal profiles in one batch", async () => {
+    const env = fakeEnv();
+    await upsertPrincipalProfile(env, {
+      principal: "user:cloudflare-access:access-sub-1",
+      provider: "cloudflare-access",
+      providerSubject: "access-sub-1",
+      email: "alice@example.com",
+      emailVerified: true,
+      displayName: "Alice Example",
+      timestamp: "2026-05-24T12:00:00.000Z",
+    });
+    await upsertPrincipalProfile(env, {
+      principal: "user:cloudflare-access:access-sub-2",
+      provider: "cloudflare-access",
+      providerSubject: "access-sub-2",
+      email: "bob@example.com",
+      emailVerified: true,
+      displayName: "Bob Example",
+      timestamp: "2026-05-24T12:01:00.000Z",
+    });
+
+    const profiles = await getPrincipalProfiles(env, [
+      "user:cloudflare-access:access-sub-1",
+      "user:cloudflare-access:access-sub-1",
+      "missing",
+      "user:cloudflare-access:access-sub-2",
+    ]);
+
+    assert.deepEqual(profiles.map((profile) => profile.principal).sort(), [
+      "user:cloudflare-access:access-sub-1",
+      "user:cloudflare-access:access-sub-2",
+    ]);
+  });
+
+  it("loads principal profiles in chunks below D1 bind limits", async () => {
+    const env = fakeEnv();
+    const principals = Array.from(
+      { length: 125 },
+      (_, index) => `user:cloudflare-access:access-sub-${index}`,
+    );
+    for (const [index, principal] of principals.entries()) {
+      await upsertPrincipalProfile(env, {
+        principal,
+        provider: "cloudflare-access",
+        providerSubject: `access-sub-${index}`,
+        email: `user-${index}@example.com`,
+        emailVerified: true,
+        displayName: `User ${index}`,
+        timestamp: "2026-05-24T12:00:00.000Z",
+      });
+    }
+
+    const profiles = await getPrincipalProfiles(env, principals);
+
+    assert.equal(profiles.length, 125);
+    assert.equal(env.DB.maxPrincipalProfileLookupBindCount, 50);
   });
 
   it("backfills provider subject when a profile was first seen without one", async () => {
@@ -576,6 +635,7 @@ class FakeD1 implements D1Database {
   readonly invites = new Map<string, PendingNotebookInviteRow>();
   readonly acl: NotebookAclRow[] = [];
   readonly deletedNotebookIds = new Set<string>();
+  maxPrincipalProfileLookupBindCount = 0;
   beforeInviteInsert?: (input: {
     notebookId: string;
     emailNormalized: string;
@@ -810,6 +870,21 @@ class FakeD1Statement implements D1PreparedStatement {
   async all<T = unknown>(): Promise<D1Result<T>> {
     if (this.query.startsWith("PRAGMA table_info")) {
       return okResult([{ name: "runtime_snapshot_key" }] as T[]);
+    }
+    if (this.query.includes("FROM principal_profiles")) {
+      const principals = new Set(this.values as string[]);
+      this.db.maxPrincipalProfileLookupBindCount = Math.max(
+        this.db.maxPrincipalProfileLookupBindCount,
+        this.values.length,
+      );
+      if (this.values.length > 100) {
+        throw new Error("D1_ERROR: too many SQL variables");
+      }
+      return okResult(
+        [...this.db.profiles.values()].filter((profile) =>
+          principals.has(profile.principal),
+        ) as T[],
+      );
     }
     if (this.query.includes("FROM notebook_invites")) {
       const [email, provider, now] = this.values as [string, string, string];

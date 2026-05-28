@@ -69,6 +69,8 @@ describe("HTML script serialization", () => {
       "theme bootstrap must run before the stylesheet to avoid dark-to-light first paint",
     );
     assert.match(html, /"renderEndpoint":"\/api\/n\/demo\/renders\/heads-123"/);
+    assert.match(html, /"aclEndpoint":"\/api\/n\/demo\/acl"/);
+    assert.match(html, /"invitesEndpoint":"\/api\/n\/demo\/invites"/);
     assert.match(html, /"blobBasePath":"\/api\/n\/demo\/blobs\/"/);
     assert.match(html, /"rendererAssetsBasePath":"\/renderer-assets\/"/);
     assert.match(html, /"runtimedWasmModulePath":"\/assets\/runtimed_wasm\.js"/);

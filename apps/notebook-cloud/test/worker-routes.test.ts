@@ -1366,6 +1366,54 @@ describe("Worker artifact routes", () => {
     assert.equal(hiddenAgain.status, 404);
   });
 
+  it("returns display metadata for ACL sharing rows", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "acl-display-demo");
+    seedAcl(env, {
+      notebookId: "acl-display-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    seedAcl(env, {
+      notebookId: "acl-display-demo",
+      subjectKind: "public",
+      subject: "anonymous",
+      scope: "viewer",
+    });
+    env.DB.profiles.set("user:dev:alice", {
+      principal: "user:dev:alice",
+      provider: "dev",
+      provider_subject: "alice",
+      email_normalized: "alice@example.com",
+      email_verified: 1,
+      display_name: "Alice Example",
+      avatar_url: null,
+      first_seen_at: "2026-05-28T00:00:00.000Z",
+      last_seen_at: "2026-05-28T00:00:00.000Z",
+      raw_claims_json: null,
+    });
+
+    const response = await aclRequest(env, "GET", undefined, "acl-display-demo");
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { acl: Array<Record<string, unknown>> };
+    assert.deepEqual(
+      body.acl.map((row) => row.display),
+      [
+        {
+          kind: "principal",
+          label: "Alice Example",
+          principal: "user:dev:alice",
+          email: "alice@example.com",
+        },
+        {
+          kind: "public_viewer",
+          label: "Anyone with the link",
+        },
+      ],
+    );
+  });
+
   it("keeps ACL management owner-only and public grants viewer-only", async () => {
     const env = fakeEnv();
     seedNotebook(env, "acl-private-demo");
@@ -3423,6 +3471,17 @@ class FakeD1Statement implements D1PreparedStatement {
   }
 
   async all<T = unknown>(): Promise<D1Result<T>> {
+    if (this.query.includes("FROM principal_profiles")) {
+      const principals = new Set(this.values as string[]);
+      if (this.values.length > 100) {
+        throw new Error("D1_ERROR: too many SQL variables");
+      }
+      return okResult(
+        [...this.db.profiles.values()].filter((profile) =>
+          principals.has(profile.principal),
+        ) as T[],
+      );
+    }
     if (
       this.query.includes("FROM notebook_invites") &&
       this.query.includes("WHERE notebook_id = ?")
