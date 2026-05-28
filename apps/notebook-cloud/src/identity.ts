@@ -1340,7 +1340,7 @@ function isAnacondaApiKeyToken(token: string): boolean {
     return false;
   }
 
-  return !("iss" in payload || "sub" in payload || "aud" in payload || "azp" in payload);
+  return !("iss" in payload || "aud" in payload || "azp" in payload);
 }
 
 function unverifiedJwtPayload(token: string): JwtPayload | undefined {

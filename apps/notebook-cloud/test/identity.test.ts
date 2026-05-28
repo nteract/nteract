@@ -808,7 +808,7 @@ describe("Anaconda API key identity", () => {
   });
 
   it("routes API-key-shaped bearer tokens ahead of OIDC bearer handling", async (t) => {
-    const token = anacondaApiKeyToken();
+    const token = anacondaApiKeyToken({ sub: "api-key-token-subject" });
     const { env: oidcEnv } = await oidcTokenFixture({ subject: "browser-user" });
     t.mock.method(globalThis, "fetch", async () =>
       jsonResponse(
