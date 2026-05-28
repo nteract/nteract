@@ -30,6 +30,7 @@ import {
   getNotebookAclRows,
   getNotebookAclRowsForPrincipal,
   renderKey,
+  runtimeSnapshotKey,
   snapshotKey,
 } from "../src/storage.ts";
 import type { PendingNotebookInviteRow, PrincipalProfileRow } from "../src/sharing-storage.ts";
@@ -146,6 +147,34 @@ describe("Worker artifact routes", () => {
       JSON.stringify(body),
       /auth\.stage\.anaconda\.com|client-secret-ish-value|aud-secret-ish-value|user:anaconda/,
     );
+  });
+
+  it("reports Anaconda API key readiness without exposing configured values", async () => {
+    const env = fakeEnv({
+      NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE: "user:anaconda",
+      NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL: "https://anaconda.com/api/auth/sessions/whoami",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/health"),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      auth: {
+        anaconda_api_key: {
+          principal_namespace: string;
+          status: string;
+        };
+      };
+    };
+    assert.deepEqual(body.auth.anaconda_api_key, {
+      status: "configured",
+      principal_namespace: "configured",
+    });
+    assert.doesNotMatch(JSON.stringify(body), /anaconda\.com|user:anaconda/);
   });
 
   it("reports partial direct OIDC readiness for incomplete deployments", async () => {
@@ -645,6 +674,60 @@ describe("Worker artifact routes", () => {
       fakeContext(),
     );
     assert.equal(cliPut.status, 201);
+  });
+
+  it("allows no-Origin CLI Anaconda API key artifact mutations", async (t) => {
+    const token = anacondaApiKeyToken();
+    const env = fakeEnv(anacondaApiKeyEnv());
+    const body = new Uint8Array([1, 2, 3, 4]);
+    const seenAuthorizations: string[] = [];
+
+    t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      seenAuthorizations.push(request.headers.get("authorization") ?? "");
+      return jsonResponse(
+        anacondaWhoami({
+          userId: "fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0",
+          scopes: ["cloud:write"],
+        }),
+      );
+    });
+
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/n/api-key-artifact-demo/runtime-snapshots/api-key", {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/octet-stream",
+          "X-Operator": "agent:runt-publish",
+          "X-Scope": "owner",
+        },
+        body,
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 201);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      key: runtimeSnapshotKey("api-key-artifact-demo", "api-key"),
+      size: body.byteLength,
+    });
+    assert.deepEqual(seenAuthorizations, [`Bearer ${token}`]);
+    assert.equal(
+      env.DB.notebooks.get("api-key-artifact-demo")?.owner_principal,
+      "user:anaconda:fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0",
+    );
+    assert.equal(
+      env.DB.acl.some(
+        (row) =>
+          row.notebook_id === "api-key-artifact-demo" &&
+          row.subject === "user:anaconda:fdb3dc7d-c369-4a39-bf7d-e35b77a0bdd0" &&
+          row.scope === "owner",
+      ),
+      true,
+    );
   });
 
   it("allows runtime peers to upload content-addressed output blobs", async () => {
@@ -2761,6 +2844,54 @@ function fakeContext(): ExecutionContext {
     waitUntil: () => undefined,
     passThroughOnException: () => undefined,
   };
+}
+
+function anacondaApiKeyEnv(): {
+  NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE: string;
+  NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL: string;
+} {
+  return {
+    NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE: "user:anaconda",
+    NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL: "https://anaconda.com/api/auth/sessions/whoami",
+  };
+}
+
+function anacondaApiKeyToken(payload: Record<string, unknown> = {}): string {
+  return [
+    base64Url(JSON.stringify({ alg: "RS256", kid: "api-key-test", typ: "JWT" })),
+    base64Url(JSON.stringify({ kid: "api-key-test", ver: "api:1", ...payload })),
+    "signature",
+  ].join(".");
+}
+
+function anacondaWhoami(options: {
+  email?: string;
+  firstName?: string;
+  lastName?: string;
+  scopes: string[];
+  source?: string;
+  userId: string;
+}): unknown {
+  return {
+    passport: {
+      user_id: options.userId,
+      profile: {
+        email: options.email ?? "user@example.com",
+        first_name: options.firstName ?? "",
+        last_name: options.lastName ?? "",
+      },
+      scopes: options.scopes,
+      source: options.source ?? "api_key",
+    },
+  };
+}
+
+function jsonResponse(value: unknown): Response {
+  return new Response(JSON.stringify(value), {
+    headers: {
+      "Content-Type": "application/json",
+    },
+  });
 }
 
 function base64Url(value: string): string {
