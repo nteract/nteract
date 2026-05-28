@@ -11,12 +11,11 @@ export interface CloudViewerLoadingPolicy {
 
 export function cloudViewerLoadingPolicy({
   headsHash,
-  renderEndpoint,
 }: CloudViewerLoadingPolicyConfig): CloudViewerLoadingPolicy {
   if (headsHash) {
     return {
       shouldConnectLiveRoom: false,
-      shouldFetchSnapshotRender: Boolean(renderEndpoint),
+      shouldFetchSnapshotRender: true,
       initialStatusMessage: "Loading pinned notebook snapshot...",
     };
   }

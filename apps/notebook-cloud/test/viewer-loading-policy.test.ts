@@ -31,4 +31,18 @@ describe("cloud viewer loading policy", () => {
       },
     );
   });
+
+  it("routes malformed pinned configs into the snapshot branch so the viewer can show an error", () => {
+    assert.deepEqual(
+      cloudViewerLoadingPolicy({
+        headsHash: "heads-123",
+        renderEndpoint: null,
+      }),
+      {
+        shouldConnectLiveRoom: false,
+        shouldFetchSnapshotRender: true,
+        initialStatusMessage: "Loading pinned notebook snapshot...",
+      },
+    );
+  });
 });
