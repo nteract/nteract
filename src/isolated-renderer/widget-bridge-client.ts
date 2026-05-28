@@ -28,8 +28,14 @@ import {
 } from "@/components/isolated/rpc-methods";
 import { createWidgetStore, type WidgetStore } from "@/components/widgets/widget-store";
 
-/** Blob URL pattern for host-provided ContentRef URLs. */
-const BLOB_URL_RE = /^https?:\/\/.+/;
+function isHttpBlobUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Fetch the blob URL at each `bufferPaths` position in `state` and replace
@@ -53,7 +59,7 @@ async function resolveBlobUrlsInPlace(
         if (typeof current !== "object" || current === null) return;
         current = (current as Record<string, unknown>)[segment];
       }
-      if (typeof current !== "string" || !BLOB_URL_RE.test(current)) return;
+      if (typeof current !== "string" || !isHttpBlobUrl(current)) return;
       try {
         const resp = await fetch(current);
         if (!resp.ok) return;

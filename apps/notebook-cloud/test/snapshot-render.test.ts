@@ -223,6 +223,16 @@ describe("snapshot pair render materialization", () => {
           size: 24,
           media_type: "text/javascript",
         },
+        _css: {
+          blob: "css-hash",
+          size: 18,
+          media_type: "text/css",
+        },
+        label: {
+          blob: "label-hash",
+          size: 11,
+          media_type: "text/plain",
+        },
         value: {
           blob: "binary-hash",
           size: 12,
@@ -252,13 +262,30 @@ describe("snapshot pair render materialization", () => {
       "https://cloud.test/api/n/fixture-widget-anywidget/blobs/esm-hash",
     );
     assert.equal(
+      render.widget_comms[0]?.state._css,
+      "https://cloud.test/api/n/fixture-widget-anywidget/blobs/css-hash",
+    );
+    assert.equal(
+      render.widget_comms[0]?.state.label,
+      "https://cloud.test/api/n/fixture-widget-anywidget/blobs/label-hash",
+    );
+    assert.equal(
       render.widget_comms[0]?.state.value,
       "https://cloud.test/api/n/fixture-widget-anywidget/blobs/binary-hash",
     );
     assert.deepEqual(render.widget_comms[0]?.buffer_paths, [["value"]]);
+    assert.deepEqual(render.widget_comms[0]?.text_paths, [["label"]]);
     assert.equal(
       render.blob_urls["esm-hash"],
       "https://cloud.test/api/n/fixture-widget-anywidget/blobs/esm-hash",
+    );
+    assert.equal(
+      render.blob_urls["css-hash"],
+      "https://cloud.test/api/n/fixture-widget-anywidget/blobs/css-hash",
+    );
+    assert.equal(
+      render.blob_urls["label-hash"],
+      "https://cloud.test/api/n/fixture-widget-anywidget/blobs/label-hash",
     );
     assert.equal(
       render.blob_urls["binary-hash"],
