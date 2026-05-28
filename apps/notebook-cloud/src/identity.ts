@@ -1206,7 +1206,12 @@ async function loadRemoteJwks(
     return cached.ready;
   }
 
-  const ready = fetch(url)
+  const ready = fetch(url, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "nteract-notebook-cloud/1.0",
+    },
+  })
     .then(async (response) => {
       if (!response.ok) {
         throw new AuthError(`${label} JWKS fetch failed: ${response.status}`, 503);

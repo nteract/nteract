@@ -1052,6 +1052,43 @@ describe("OIDC identity", () => {
     });
   });
 
+  it("fetches remote OIDC JWKS with Anaconda-compatible headers", async (t) => {
+    const { env, token } = await oidcTokenFixture({ subject: "remote-jwks-user" });
+    const calls: Array<{ accept: string | null; url: string; userAgent: string | null }> = [];
+    t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      calls.push({
+        accept: request.headers.get("accept"),
+        url: request.url,
+        userAgent: request.headers.get("user-agent"),
+      });
+      return new Response(env.NOTEBOOK_CLOUD_OIDC_JWKS_JSON, {
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?operator=browser:tab", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      {
+        ...env,
+        NOTEBOOK_CLOUD_OIDC_JWKS_JSON: undefined,
+      },
+    );
+
+    assert.equal(identity.actorLabel, "user:anaconda:remote-jwks-user/browser:tab");
+    assert.deepEqual(calls, [
+      {
+        accept: "application/json",
+        url: "https://auth.stage.anaconda.com/api/auth/.well-known/jwks.json",
+        userAgent: "nteract-notebook-cloud/1.0",
+      },
+    ]);
+  });
+
   it("accepts browser OIDC tokens through bearer subprotocols without echoing credentials", async () => {
     const { env, token } = await oidcTokenFixture({ subject: "alice" });
     const protocol = `${BEARER_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url(token)}`;
