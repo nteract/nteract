@@ -1,5 +1,5 @@
 export interface WidgetBlobInliningOptions {
-  isAllowedBlobUrl?: (url: string) => boolean;
+  isAllowedBlobUrl: (url: string) => boolean;
   fetchImpl?: typeof fetch;
 }
 
@@ -9,7 +9,7 @@ export async function inlineWidgetBlobUrls(
     textPaths?: string[][];
     bufferPaths?: string[][];
   },
-  options: WidgetBlobInliningOptions = {},
+  options: WidgetBlobInliningOptions,
 ): Promise<void> {
   await Promise.all([
     inlineTextBlobUrls(state, paths.textPaths, options),
@@ -54,7 +54,7 @@ async function fetchPath(
 ): Promise<Response | null> {
   const url = readPath(state, path);
   if (typeof url !== "string") return null;
-  if (!options.isAllowedBlobUrl?.(url)) return null;
+  if (!options.isAllowedBlobUrl(url)) return null;
   try {
     const response = await (options.fetchImpl ?? fetch)(url);
     return response.ok ? response : null;

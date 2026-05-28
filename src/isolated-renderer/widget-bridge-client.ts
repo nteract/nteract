@@ -35,6 +35,8 @@ function isLocalDaemonBlobUrl(value: string): boolean {
       (url.protocol === "http:" || url.protocol === "https:") &&
       url.hostname === "127.0.0.1" &&
       url.port.length > 0 &&
+      url.search === "" &&
+      url.hash === "" &&
       /^\/blob\/[a-f0-9]+$/.test(url.pathname)
     );
   } catch {

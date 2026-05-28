@@ -51,28 +51,32 @@ export async function projectCloudWidgetComms(
   projectedCommIdsRef: { current: Set<string> },
   options: ProjectCloudWidgetCommsOptions = {},
 ): Promise<void> {
-  const projectedCommIds = new Set<string>();
+  if (options.shouldContinue && !options.shouldContinue()) return;
 
-  for (const comm of comms) {
-    if (options.shouldContinue && !options.shouldContinue()) {
-      reconcileProjectedWidgetComms(store, projectedCommIdsRef, projectedCommIds);
-      return;
-    }
-    const commId = comm.comm_id;
-    const state = widgetCommStoreState(comm);
-    await inlineWidgetBlobUrls(
-      state,
-      { textPaths: comm.text_paths, bufferPaths: comm.buffer_paths },
-      { isAllowedBlobUrl: options.isAllowedBlobUrl },
-    );
-    if (options.shouldContinue && !options.shouldContinue()) {
-      reconcileProjectedWidgetComms(store, projectedCommIdsRef, projectedCommIds);
-      return;
-    }
+  const projected = await Promise.all(
+    comms.map(async (comm) => {
+      const state = widgetCommStoreState(comm);
+      await inlineWidgetBlobUrls(
+        state,
+        { textPaths: comm.text_paths, bufferPaths: comm.buffer_paths },
+        { isAllowedBlobUrl: options.isAllowedBlobUrl ?? (() => false) },
+      );
+      return {
+        bufferPaths: comm.buffer_paths,
+        commId: comm.comm_id,
+        state,
+      };
+    }),
+  );
+
+  if (options.shouldContinue && !options.shouldContinue()) return;
+
+  const projectedCommIds = new Set<string>();
+  for (const { bufferPaths, commId, state } of projected) {
     if (store.getModel(commId)) {
-      store.updateModel(commId, state, comm.buffer_paths);
+      store.updateModel(commId, state, bufferPaths);
     } else {
-      store.createModel(commId, state, comm.buffer_paths);
+      store.createModel(commId, state, bufferPaths);
     }
     projectedCommIds.add(commId);
   }
