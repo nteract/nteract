@@ -1,6 +1,6 @@
 [package]
 name = "build-metadata"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 description = "Shared build-script metadata helpers for nteract desktop"
 repository.workspace = true
