@@ -45,7 +45,8 @@ impl PeerEgressLane {
 
 #[derive(Clone)]
 pub(super) struct PeerWriter {
-    tx: mpsc::Sender<OutboundFrame>,
+    reliable_tx: mpsc::Sender<OutboundFrame>,
+    ephemeral_tx: mpsc::Sender<OutboundFrame>,
 }
 
 pub(super) struct PeerWriterTask {
@@ -76,13 +77,20 @@ impl Drop for PeerRequestWorker {
 }
 
 impl PeerWriter {
+    fn tx_for_lane(&self, lane: PeerEgressLane) -> &mpsc::Sender<OutboundFrame> {
+        match lane {
+            PeerEgressLane::Reliable => &self.reliable_tx,
+            PeerEgressLane::Ephemeral => &self.ephemeral_tx,
+        }
+    }
+
     pub(super) fn send_frame(
         &self,
         frame_type: NotebookFrameType,
         payload: Vec<u8>,
     ) -> anyhow::Result<()> {
         let lane = PeerEgressLane::classify(frame_type);
-        self.tx
+        self.tx_for_lane(lane)
             .try_send(OutboundFrame {
                 lane,
                 frame_type,
@@ -128,13 +136,13 @@ impl PeerWriter {
         self.send_frame(frame_type, payload)
     }
 
-    /// Number of free slots in the outbound channel.
+    /// Number of free slots in the reliable outbound lane.
     ///
-    /// `PEER_OUTBOUND_QUEUE_CAPACITY - capacity()` gives the number of
-    /// in-flight frames waiting to be flushed to the socket — useful as a
-    /// backpressure signal in telemetry.
-    pub(super) fn capacity(&self) -> usize {
-        self.tx.capacity()
+    /// `PEER_OUTBOUND_QUEUE_CAPACITY - reliable_capacity()` gives the number
+    /// of reliable frames waiting to be flushed to the socket — useful as a
+    /// backpressure signal before request responses are enqueued.
+    pub(super) fn reliable_capacity(&self) -> usize {
+        self.reliable_tx.capacity()
     }
 }
 
@@ -162,9 +170,21 @@ pub(super) fn spawn_peer_writer<W>(
 where
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let (tx, mut rx) = mpsc::channel::<OutboundFrame>(PEER_OUTBOUND_QUEUE_CAPACITY);
+    let (reliable_tx, mut reliable_rx) =
+        mpsc::channel::<OutboundFrame>(PEER_OUTBOUND_QUEUE_CAPACITY);
+    let (ephemeral_tx, mut ephemeral_rx) =
+        mpsc::channel::<OutboundFrame>(PEER_OUTBOUND_QUEUE_CAPACITY);
     let handle = tokio::spawn(async move {
-        while let Some(frame) = rx.recv().await {
+        let mut reliable_open = true;
+        let mut ephemeral_open = true;
+        while let Some(frame) = recv_next_outbound_frame(
+            &mut reliable_rx,
+            &mut ephemeral_rx,
+            &mut reliable_open,
+            &mut ephemeral_open,
+        )
+        .await
+        {
             connection::send_typed_frame(&mut writer, frame.frame_type, &frame.payload)
                 .await
                 .map_err(|e| {
@@ -180,7 +200,51 @@ where
         }
         Ok(())
     });
-    (PeerWriter { tx }, PeerWriterTask { handle })
+    (
+        PeerWriter {
+            reliable_tx,
+            ephemeral_tx,
+        },
+        PeerWriterTask { handle },
+    )
+}
+
+async fn recv_next_outbound_frame(
+    reliable_rx: &mut mpsc::Receiver<OutboundFrame>,
+    ephemeral_rx: &mut mpsc::Receiver<OutboundFrame>,
+    reliable_open: &mut bool,
+    ephemeral_open: &mut bool,
+) -> Option<OutboundFrame> {
+    loop {
+        if *reliable_open {
+            match reliable_rx.try_recv() {
+                Ok(frame) => return Some(frame),
+                Err(mpsc::error::TryRecvError::Empty) => {}
+                Err(mpsc::error::TryRecvError::Disconnected) => *reliable_open = false,
+            }
+        }
+        if !*reliable_open && !*ephemeral_open {
+            return None;
+        }
+
+        tokio::select! {
+            biased;
+
+            frame = reliable_rx.recv(), if *reliable_open => {
+                match frame {
+                    Some(frame) => return Some(frame),
+                    None => *reliable_open = false,
+                }
+            }
+
+            frame = ephemeral_rx.recv(), if *ephemeral_open => {
+                match frame {
+                    Some(frame) => return Some(frame),
+                    None => *ephemeral_open = false,
+                }
+            }
+        }
+    }
 }
 
 pub(super) fn spawn_peer_request_worker(
@@ -199,10 +263,11 @@ pub(super) fn spawn_peer_request_worker(
         while let Some(envelope) = rx.recv().await {
             let label = request_label(&envelope.request);
             let req_id = envelope.id.as_deref().unwrap_or("-");
-            let writer_queue_depth = PEER_OUTBOUND_QUEUE_CAPACITY - writer.capacity();
+            let writer_reliable_queue_depth =
+                PEER_OUTBOUND_QUEUE_CAPACITY - writer.reliable_capacity();
             debug!(
-                "[notebook-sync] Request {} id={} peer={} notebook={} writer_queue={}",
-                label, req_id, peer_id, notebook_id, writer_queue_depth,
+                "[notebook-sync] Request {} id={} peer={} notebook={} writer_reliable_queue={}",
+                label, req_id, peer_id, notebook_id, writer_reliable_queue_depth,
             );
 
             let start = std::time::Instant::now();
@@ -237,7 +302,7 @@ pub(super) fn spawn_peer_request_worker(
                     peer = %peer_id,
                     notebook = %notebook_id,
                     elapsed_ms = elapsed.as_millis(),
-                    writer_queue_depth,
+                    writer_reliable_queue_depth,
                     ?response_kind,
                     "Slow notebook peer request"
                 );
@@ -395,6 +460,26 @@ mod tests {
     use runtime_doc::RuntimeLifecycle;
     use tokio::sync::oneshot;
     use uuid::Uuid;
+
+    fn test_peer_writer_with_capacities(
+        reliable_capacity: usize,
+        ephemeral_capacity: usize,
+    ) -> (
+        PeerWriter,
+        mpsc::Receiver<OutboundFrame>,
+        mpsc::Receiver<OutboundFrame>,
+    ) {
+        let (reliable_tx, reliable_rx) = mpsc::channel::<OutboundFrame>(reliable_capacity);
+        let (ephemeral_tx, ephemeral_rx) = mpsc::channel::<OutboundFrame>(ephemeral_capacity);
+        (
+            PeerWriter {
+                reliable_tx,
+                ephemeral_tx,
+            },
+            reliable_rx,
+            ephemeral_rx,
+        )
+    }
 
     fn test_room() -> Arc<NotebookRoom> {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -599,8 +684,7 @@ mod tests {
 
     #[tokio::test]
     async fn peer_writer_preserves_sync_before_session_status_barrier() {
-        let (writer_tx, mut writer_rx) = mpsc::channel::<OutboundFrame>(2);
-        let writer = PeerWriter { tx: writer_tx };
+        let (writer, mut reliable_rx, _ephemeral_rx) = test_peer_writer_with_capacities(2, 2);
 
         writer
             .send_frame(NotebookFrameType::RuntimeStateSync, vec![1])
@@ -613,13 +697,13 @@ mod tests {
         )
         .expect("session status should enqueue after runtime sync");
 
-        let sync_frame = writer_rx
+        let sync_frame = reliable_rx
             .try_recv()
             .expect("runtime sync should remain first in FIFO");
         assert_eq!(sync_frame.frame_type, NotebookFrameType::RuntimeStateSync);
         assert_eq!(sync_frame.lane, PeerEgressLane::Reliable);
 
-        let status_frame = writer_rx
+        let status_frame = reliable_rx
             .try_recv()
             .expect("session status should remain behind the sync frame");
         assert_eq!(status_frame.frame_type, NotebookFrameType::SessionControl);
@@ -628,8 +712,7 @@ mod tests {
 
     #[tokio::test]
     async fn peer_writer_full_error_reports_frame_lane() {
-        let (writer_tx, _writer_rx) = mpsc::channel::<OutboundFrame>(1);
-        let writer = PeerWriter { tx: writer_tx };
+        let (writer, _reliable_rx, _ephemeral_rx) = test_peer_writer_with_capacities(1, 1);
 
         writer
             .send_frame(NotebookFrameType::Presence, vec![1])
@@ -641,6 +724,62 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("Broadcast frame"));
         assert!(message.contains("Ephemeral lane"));
+    }
+
+    #[tokio::test]
+    async fn ephemeral_queue_pressure_does_not_reject_reliable_frames() {
+        let (writer, mut reliable_rx, _ephemeral_rx) = test_peer_writer_with_capacities(1, 1);
+
+        writer
+            .send_frame(NotebookFrameType::Presence, vec![1])
+            .expect("first ephemeral frame should fill the ephemeral lane");
+        let err = writer
+            .send_frame(NotebookFrameType::Broadcast, vec![2])
+            .expect_err("full ephemeral lane should reject another ephemeral frame");
+        assert!(err.to_string().contains("Ephemeral lane"));
+
+        writer
+            .send_frame(NotebookFrameType::Response, vec![3])
+            .expect("reliable frame should still enqueue");
+        let frame = reliable_rx
+            .try_recv()
+            .expect("reliable lane should receive the response");
+        assert_eq!(frame.frame_type, NotebookFrameType::Response);
+        assert_eq!(frame.lane, PeerEgressLane::Reliable);
+    }
+
+    #[tokio::test]
+    async fn peer_writer_scheduler_prefers_reliable_frames() {
+        let (writer, mut reliable_rx, mut ephemeral_rx) = test_peer_writer_with_capacities(2, 2);
+
+        writer
+            .send_frame(NotebookFrameType::Presence, vec![1])
+            .expect("ephemeral frame should enqueue");
+        writer
+            .send_frame(NotebookFrameType::Response, vec![2])
+            .expect("reliable frame should enqueue");
+
+        let mut reliable_open = true;
+        let mut ephemeral_open = true;
+        let first = recv_next_outbound_frame(
+            &mut reliable_rx,
+            &mut ephemeral_rx,
+            &mut reliable_open,
+            &mut ephemeral_open,
+        )
+        .await
+        .expect("scheduler should return a frame");
+        assert_eq!(first.frame_type, NotebookFrameType::Response);
+
+        let second = recv_next_outbound_frame(
+            &mut reliable_rx,
+            &mut ephemeral_rx,
+            &mut reliable_open,
+            &mut ephemeral_open,
+        )
+        .await
+        .expect("scheduler should return the remaining frame");
+        assert_eq!(second.frame_type, NotebookFrameType::Presence);
     }
 
     #[tokio::test]
@@ -727,15 +866,14 @@ mod tests {
             tx: request_tx,
             handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
         };
-        let (writer_tx, mut writer_rx) = mpsc::channel::<OutboundFrame>(1);
-        let writer = PeerWriter { tx: writer_tx };
+        let (writer, mut reliable_rx, _ephemeral_rx) = test_peer_writer_with_capacities(1, 1);
 
         let err =
             enqueue_notebook_request(&request_worker, &writer, b"not json", "notebook", "peer")
                 .expect_err("malformed request payload should fail");
         assert!(err.to_string().contains("expected ident"));
         assert!(
-            writer_rx.try_recv().is_err(),
+            reliable_rx.try_recv().is_err(),
             "malformed envelopes have no request id to echo"
         );
     }
@@ -755,8 +893,7 @@ mod tests {
             tx: request_tx,
             handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
         };
-        let (writer_tx, mut writer_rx) = mpsc::channel::<OutboundFrame>(1);
-        let writer = PeerWriter { tx: writer_tx };
+        let (writer, mut reliable_rx, _ephemeral_rx) = test_peer_writer_with_capacities(1, 1);
 
         let payload = serde_json::to_vec(&notebook_protocol::protocol::NotebookRequestEnvelope {
             id: Some("second".to_string()),
@@ -767,7 +904,7 @@ mod tests {
         enqueue_notebook_request(&request_worker, &writer, &payload, "notebook", "peer")
             .expect("full queue should be reported to the peer without failing the loop");
 
-        let frame = writer_rx
+        let frame = reliable_rx
             .try_recv()
             .expect("full queue should enqueue an error response");
         assert_eq!(frame.frame_type, NotebookFrameType::Response);
@@ -790,8 +927,7 @@ mod tests {
             tx: request_tx,
             handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
         };
-        let (writer_tx, mut writer_rx) = mpsc::channel::<OutboundFrame>(1);
-        let writer = PeerWriter { tx: writer_tx };
+        let (writer, mut reliable_rx, _ephemeral_rx) = test_peer_writer_with_capacities(1, 1);
 
         let payload = serde_json::to_vec(&notebook_protocol::protocol::NotebookRequestEnvelope {
             id: Some("closed".to_string()),
@@ -803,7 +939,7 @@ mod tests {
             .expect_err("closed worker should stop the peer loop");
         assert_eq!(err.to_string(), "peer request worker stopped for notebook");
 
-        let frame = writer_rx
+        let frame = reliable_rx
             .try_recv()
             .expect("closed worker should enqueue an error response before failing");
         assert_eq!(frame.frame_type, NotebookFrameType::Response);
