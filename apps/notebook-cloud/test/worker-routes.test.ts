@@ -2656,7 +2656,7 @@ describe("Worker artifact routes", () => {
     );
 
     const response = await worker.fetch(
-      new Request("http://localhost/api/n/route-demo/render"),
+      new Request("http://localhost/api/n/route-demo/renders/heads-fixture"),
       env,
       fakeContext(),
     );
@@ -2681,6 +2681,13 @@ describe("Worker artifact routes", () => {
       true,
       "materialized render should be cached back into R2",
     );
+
+    const latestRenderRoute = await worker.fetch(
+      new Request("http://localhost/api/n/route-demo/render"),
+      env,
+      fakeContext(),
+    );
+    assert.equal(latestRenderRoute.status, 404);
   });
 
   it("rejects snapshot publish when the referenced runtime snapshot is missing", async () => {

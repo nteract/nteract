@@ -8,19 +8,23 @@ import {
 } from "../scripts/hosted-render-smoke-routes.mjs";
 
 describe("hosted render smoke routes", () => {
-  it("derives the render API URL from a hosted notebook viewer URL", () => {
+  it("derives the pinned render API URL from a hosted notebook viewer URL", () => {
     assert.equal(
       renderApiUrlForViewer(
         "https://nteract-notebook-cloud.rgbkrk.workers.dev/n/nteract-cloud-live-mathnet",
+        "heads-latest",
       ),
-      "https://nteract-notebook-cloud.rgbkrk.workers.dev/api/n/nteract-cloud-live-mathnet/render",
+      "https://nteract-notebook-cloud.rgbkrk.workers.dev/api/n/nteract-cloud-live-mathnet/renders/heads-latest",
     );
   });
 
-  it("derives the render API URL from a hosted vanity notebook viewer URL", () => {
+  it("derives the pinned render API URL from a hosted vanity notebook viewer URL", () => {
     assert.equal(
-      renderApiUrlForViewer("https://preview.runt.run/n/01KSQKEPFJVHV4T4ZDYS9V7T80/lets-edit"),
-      "https://preview.runt.run/api/n/01KSQKEPFJVHV4T4ZDYS9V7T80/render",
+      renderApiUrlForViewer(
+        "https://preview.runt.run/n/01KSQKEPFJVHV4T4ZDYS9V7T80/lets-edit",
+        "heads-edit",
+      ),
+      "https://preview.runt.run/api/n/01KSQKEPFJVHV4T4ZDYS9V7T80/renders/heads-edit",
     );
   });
 
@@ -56,9 +60,10 @@ describe("hosted render smoke routes", () => {
 
   it("returns null for non-viewer URLs", () => {
     assert.equal(renderApiUrlForViewer("https://example.com/"), null);
-    assert.equal(renderApiUrlForViewer("https://example.com/n/foo/sync"), null);
-    assert.equal(renderApiUrlForViewer("https://example.com/n/foo/debug"), null);
-    assert.equal(renderApiUrlForViewer("https://example.com/n/foo/r/head123"), null);
+    assert.equal(renderApiUrlForViewer("https://example.com/n/foo", null), null);
+    assert.equal(renderApiUrlForViewer("https://example.com/n/foo/sync", "heads"), null);
+    assert.equal(renderApiUrlForViewer("https://example.com/n/foo/debug", "heads"), null);
+    assert.equal(renderApiUrlForViewer("https://example.com/n/foo/r/head123", "heads"), null);
     assert.equal(catalogApiUrlForViewer("https://example.com/"), null);
     assert.equal(catalogApiUrlForViewer("https://example.com/n/foo/sync"), null);
   });

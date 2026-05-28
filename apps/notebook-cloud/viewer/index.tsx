@@ -70,6 +70,7 @@ import {
   emptyCloudLivePresenceSnapshot,
   type CloudLivePresenceSnapshot,
 } from "./live-presence";
+import { cloudViewerLoadingPolicy } from "./loading-policy";
 import { CLOUD_VIEWER_PRIORITY } from "./mime-policy";
 import {
   cloudViewerPresenceDisplay,
@@ -106,7 +107,7 @@ import "./index.css";
 interface CloudViewerConfig {
   notebookId: string;
   headsHash: string | null;
-  renderEndpoint: string;
+  renderEndpoint: string | null;
   aclEndpoint: string;
   invitesEndpoint: string;
   syncEndpoint: string;
@@ -165,7 +166,6 @@ function loadConfig(): CloudViewerConfig {
   const parsed = JSON.parse(element.textContent ?? "{}") as Partial<CloudViewerConfig>;
   if (
     !parsed.notebookId ||
-    !parsed.renderEndpoint ||
     !parsed.aclEndpoint ||
     !parsed.invitesEndpoint ||
     !parsed.syncEndpoint ||
@@ -179,7 +179,10 @@ function loadConfig(): CloudViewerConfig {
   return {
     notebookId: parsed.notebookId,
     headsHash: parsed.headsHash ?? null,
-    renderEndpoint: parsed.renderEndpoint,
+    renderEndpoint:
+      typeof parsed.renderEndpoint === "string" && parsed.renderEndpoint.length > 0
+        ? parsed.renderEndpoint
+        : null,
     aclEndpoint: parsed.aclEndpoint,
     invitesEndpoint: parsed.invitesEndpoint,
     syncEndpoint: parsed.syncEndpoint,
@@ -529,11 +532,12 @@ function NotebookViewer({
   authConfig: CloudViewerAuthConfig;
 }) {
   const { config } = runtime;
+  const loadingPolicy = cloudViewerLoadingPolicy(config);
   const { theme, setTheme, resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
   const { store: widgetStore } = useWidgetStoreRequired();
   const [status, setStatus] = useState<ViewerStatus>({
     kind: "loading",
-    message: "Loading notebook snapshot...",
+    message: loadingPolicy.initialStatusMessage,
   });
   const [cells, setCells] = useState<ResolvedCell[]>([]);
   const [showCode, setShowCode] = useState(true);
@@ -587,13 +591,23 @@ function NotebookViewer({
     if (authRenewal.kind === "refreshing") {
       return;
     }
+    if (!loadingPolicy.shouldFetchSnapshotRender) {
+      snapshotResolvedRef.current = true;
+      return;
+    }
+    if (!config.renderEndpoint) {
+      snapshotResolvedRef.current = true;
+      setStatus({ kind: "error", message: "Pinned notebook render endpoint is not configured." });
+      return;
+    }
 
     let cancelled = false;
+    const renderEndpoint = config.renderEndpoint;
 
     void (async () => {
       try {
         const response = await fetch(
-          config.renderEndpoint,
+          renderEndpoint,
           withCloudPrototypeAuthHeaders({ headers: { Accept: "application/json" } }, authState),
         );
         if (!response.ok) {
@@ -653,10 +667,22 @@ function NotebookViewer({
     return () => {
       cancelled = true;
     };
-  }, [authRenewal.kind, authState, blobResolver, config.renderEndpoint, widgetStore]);
+  }, [
+    authRenewal.kind,
+    authState,
+    blobResolver,
+    config.blobBasePath,
+    config.renderEndpoint,
+    config.rendererAssetsBasePath,
+    loadingPolicy.shouldFetchSnapshotRender,
+    widgetStore,
+  ]);
 
   useEffect(() => {
     if (authRenewal.kind === "refreshing") {
+      return;
+    }
+    if (!loadingPolicy.shouldConnectLiveRoom) {
       return;
     }
 
@@ -803,6 +829,14 @@ function NotebookViewer({
       })
       .catch((error: unknown) => {
         if (disposed) return;
+        if (cellsRef.current.length === 0) {
+          setStatus({
+            kind: "error",
+            message: `Unable to load live notebook room: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          });
+        }
         setPresence((state) => reduceCloudViewerConnection(state, "disconnected"));
         setConnectionScope(null);
         setConnectionActorLabel(null);
@@ -823,7 +857,19 @@ function NotebookViewer({
       setPresence((state) => reduceCloudViewerConnection(state, "disconnected"));
       setLivePresence(emptyCloudLivePresenceSnapshot());
     };
-  }, [authRenewal.kind, authState, blobResolver, config.syncEndpoint, connectAttempt, widgetStore]);
+  }, [
+    authRenewal.kind,
+    authState,
+    blobResolver,
+    config.blobBasePath,
+    config.rendererAssetsBasePath,
+    config.runtimedWasmModulePath,
+    config.runtimedWasmPath,
+    config.syncEndpoint,
+    connectAttempt,
+    loadingPolicy.shouldConnectLiveRoom,
+    widgetStore,
+  ]);
 
   const readOnlyCells = useMemo(
     () =>

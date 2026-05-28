@@ -28,10 +28,10 @@ handle.update_source(
   [
     "# nteract cloud notebook",
     "",
-    "This public viewer is rendering a persisted NotebookDoc snapshot.",
+    "This public viewer is backed by the live notebook room.",
     "",
     "- The NotebookDoc and RuntimeStateDoc .am snapshots are stored in R2.",
-    "- The read-only render is materialized by runtimed-wasm from those snapshots.",
+    "- Pinned revisions can still be materialized by runtimed-wasm from those snapshots.",
   ].join("\n"),
 );
 handle.add_cell_after("hello", "code", "intro");
@@ -64,11 +64,13 @@ await putBytes(
   },
 );
 
-const rendered = await fetchJson(`/api/n/${encodeURIComponent(notebookId)}/render`);
-assert(rendered.source === "snapshot-pair", "latest render was not materialized from snapshots");
+const rendered = await fetchJson(
+  `/api/n/${encodeURIComponent(notebookId)}/renders/${encodeURIComponent(headsHash)}`,
+);
+assert(rendered.source === "snapshot-pair", "pinned render was not materialized from snapshots");
 assert(
   rendered.cells.some((cell) => cell.id === "hello" && cell.source.includes("nteract cloud")),
-  "latest snapshot render did not include the demo code cell",
+  "pinned snapshot render did not include the demo code cell",
 );
 
 console.log(
@@ -85,7 +87,7 @@ console.log(
         "runtimed_wasm_snapshot_pair",
         "r2_runtime_snapshot_publish",
         "r2_snapshot_publish",
-        "latest_snapshot_materialization",
+        "pinned_snapshot_materialization",
       ],
     },
     null,

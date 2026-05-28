@@ -1,9 +1,12 @@
-export function renderApiUrlForViewer(viewerUrl) {
+export function renderApiUrlForViewer(viewerUrl, headsHash) {
   const parsed = notebookViewerUrl(viewerUrl);
-  if (!parsed) {
+  if (!parsed || typeof headsHash !== "string" || headsHash.length === 0) {
     return null;
   }
-  return new URL(`/api/n/${parsed.notebookId}/render`, parsed.origin).href;
+  return new URL(
+    `/api/n/${parsed.notebookId}/renders/${encodeURIComponent(headsHash)}`,
+    parsed.origin,
+  ).href;
 }
 
 export function catalogApiUrlForViewer(viewerUrl) {

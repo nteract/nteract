@@ -167,11 +167,6 @@ const worker: ExportedHandler<Env> = {
       return routeCatalog(request, env, decodeURIComponent(catalogMatch[1]));
     }
 
-    const latestRenderMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/render$/);
-    if (latestRenderMatch && request.method === "GET") {
-      return routeLatestRender(request, env, decodeURIComponent(latestRenderMatch[1]));
-    }
-
     const aclMatch = url.pathname.match(/^\/api\/n\/([^/]+)\/acl\/?$/);
     if (aclMatch) {
       return routeNotebookAcl(request, env, decodeURIComponent(aclMatch[1]));
@@ -1073,34 +1068,6 @@ async function routeCatalog(request: Request, env: Env, notebookId: string): Pro
   return json(catalog);
 }
 
-async function routeLatestRender(
-  request: Request,
-  env: Env,
-  notebookId: string,
-): Promise<Response> {
-  if (!env.DB) {
-    return json({ error: "D1 binding DB is not configured" }, 503);
-  }
-  const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
-  if (identity instanceof Response) {
-    return identity;
-  }
-
-  const catalog = await getNotebookCatalog(env, notebookId);
-  if (!catalog) {
-    return json({ error: "notebook not found" }, 404);
-  }
-
-  const revision =
-    catalog.revisions.find((candidate) => candidate.id === catalog.notebook.latest_revision_id) ??
-    catalog.revisions[0];
-  if (!revision) {
-    return json({ error: "notebook has no published revisions" }, 404);
-  }
-
-  return getRenderObjectOrMaterialize(request, env, notebookId, revision, false);
-}
-
 async function routeRender(
   request: Request,
   env: Env,
@@ -1900,7 +1867,7 @@ function viewer(notebookId: string, request: Request, env: Env, headsHash?: stri
   const notebookApiBasePath = `/api/n/${encodeURIComponent(notebookId)}`;
   const renderEndpoint = headsHash
     ? `${notebookApiBasePath}/renders/${encodeURIComponent(headsHash)}`
-    : `${notebookApiBasePath}/render`;
+    : null;
   const config = {
     notebookId,
     headsHash: headsHash ?? null,

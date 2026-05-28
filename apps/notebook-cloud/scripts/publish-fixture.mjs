@@ -59,8 +59,10 @@ await putBytes(
   },
 );
 
-const rendered = await fetchJson(`/api/n/${encodeURIComponent(notebookId)}/render`);
-assert(rendered.source === "snapshot-pair", "latest render was not materialized from snapshots");
+const rendered = await fetchJson(
+  `/api/n/${encodeURIComponent(notebookId)}/renders/${encodeURIComponent(headsHash)}`,
+);
+assert(rendered.source === "snapshot-pair", "pinned render was not materialized from snapshots");
 for (const blob of fixtureBlobs) {
   assert(
     rendered.blob_urls?.[blob.hash],
@@ -87,7 +89,7 @@ console.log(
       checks: [
         "fixture_snapshot_pair_publish",
         "runtime_state_output_manifests",
-        "latest_snapshot_materialization",
+        "pinned_snapshot_materialization",
         ...(fixtureBlobs.length > 0 ? ["fixture_blob_uploads", "blob_resolver_urls"] : []),
       ],
     },

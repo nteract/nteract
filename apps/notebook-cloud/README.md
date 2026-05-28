@@ -4,7 +4,7 @@ This app is a Cloudflare Worker prototype for hosted nteract notebook rooms. It 
 
 The current Durable Object does not host kernels. It owns a `runtimed-wasm` room host for the notebook's `NotebookDoc` + `RuntimeStateDoc`, syncs peers with typed-frame v4, rejects unauthorized Automerge changes before mutating the room, checkpoints the materialized document pair in Durable Object storage, rewrites canonical CBOR presence through the shared helper, and stores bounded frame metadata for sync frames that actually change a materialized document. Viewer-scope peers use the normal sync exchange so they can materialize live room updates, while the room host uses read-only peer state as a protocol hint and still rejects any viewer-authored changes explicitly. No-op read-only sync control frames are acknowledged and delivered as protocol traffic, but they are not persisted as room-event history. Editor-scope live `NotebookDoc` writes are deliberately limited to existing markdown-cell source edits in this prototype; code cells and structural document changes remain read-only unless the connection has owner scope. Runtime peers use a separate `RuntimeStatePeerHandle` authoring surface: they can sync kernel lifecycle, widget comm topology, output routing, and progress/output state for room-accepted executions into `RuntimeStateDoc`, but they cannot create execution intent, edit `NotebookDoc`, rewrite trust/environment/path/project metadata, or acquire the frontend notebook editing API.
 
-`/n/:notebookId` is a hosted notebook page. `/api/n/:id/render` can warm-start the page from a persisted `NotebookDoc` + `RuntimeStateDoc` snapshot pair in R2, but connected browsers join `/n/:id/sync` and render from the live materialized room once sync is ready. Snapshot-pair publishes also pre-materialize the render cache before recording the catalog revision, so missing runtime snapshots, corrupt snapshot bytes, or missing output blobs fail the publish request instead of advertising a broken revision. Output blob refs stay host-neutral and are mapped to `/api/n/:id/blobs/:hash` through the shared `BlobResolver` surface. The browser viewer bundle uses the shared notebook display components (`CellContainer`, `OutputArea`, `ReadOnlyCodeMirror`, `MediaProvider`) so published source, markdown, stdout/stderr, rich display data, and blob-backed renderer manifests go through the same isolated output renderer path as the desktop notebook.
+`/n/:notebookId` is a hosted notebook page backed by `/n/:id/sync`. Latest notebook views do not fetch a separate materialized render document; viewers join the live Automerge room as read-only peers and editor+ connections use the same synced document for permitted edits. `/n/:id/r/:headsHash` and `/api/n/:id/renders/:headsHash` remain pinned snapshot surfaces for immutable revisions, publish validation, export/debug readback, and cache regeneration. Snapshot-pair publishes also pre-materialize the pinned render cache before recording the catalog revision, so missing runtime snapshots, corrupt snapshot bytes, or missing output blobs fail the publish request instead of advertising a broken revision. Output blob refs stay host-neutral and are mapped to `/api/n/:id/blobs/:hash` through the shared `BlobResolver` surface. The browser viewer bundle uses the shared notebook display components (`CellContainer`, `OutputArea`, `ReadOnlyCodeMirror`, `MediaProvider`) so published source, markdown, stdout/stderr, rich display data, and blob-backed renderer manifests go through the same isolated output renderer path as the desktop notebook.
 
 ## Local dev
 
@@ -98,10 +98,10 @@ pnpm --dir apps/notebook-cloud smoke:hosted:install
 It verifies that the hosted viewer renders the live-published code cell with a
 runtime-derived execution count, that sandboxed output iframes expose expected
 markdown and Sift notebook content, and that Sift's WASM sidecar loads from the configured
-renderer asset origin with CORS. It also checks the backing `/api/n/:id/render`
-document reports `source: "snapshot-pair"` so the smoke proves the page is using
-a materialized NotebookDoc + RuntimeStateDoc snapshot pair, and checks the
-catalog owner/latest revision actor match the live publish path. Override the
+renderer asset origin with CORS. It also checks the latest catalog revision and
+its pinned `/api/n/:id/renders/:headsHash` document report `source: "snapshot-pair"`
+so publish validation still proves the persisted NotebookDoc + RuntimeStateDoc
+pair is complete. Override the
 target with `NOTEBOOK_CLOUD_HOSTED_URL` or a positional URL argument. Set
 `NOTEBOOK_CLOUD_SMOKE_SCREENSHOT=/tmp/notebook-cloud.png` to save a
 visual artifact.
@@ -585,11 +585,11 @@ curl -X PUT "http://127.0.0.1:8787/api/n/demo/blobs/sha256abc" \
   --data-binary @output.bin
 ```
 
-Catalog and render readback:
+Catalog and pinned render readback:
 
 ```bash
 curl "http://127.0.0.1:8787/api/n/demo"
-curl "http://127.0.0.1:8787/api/n/demo/render"
+curl "http://127.0.0.1:8787/api/n/demo/renders/{notebookHeadsHash}"
 ```
 
 ## Next integration steps
