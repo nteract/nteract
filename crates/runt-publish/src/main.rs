@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 use automerge::AutoCommit;
 use clap::Parser;
+use notebook_doc::NotebookDoc;
 use notebook_sync::connect;
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use runtime_doc::RuntimeStateDoc;
@@ -127,7 +128,8 @@ async fn main() -> Result<()> {
     let snapshot = open.handle.save_snapshot_pair()?;
     let (blob_base_url, blob_store_path) =
         runtimed_client::daemon_paths::get_blob_paths_async(&socket_path).await;
-    let mut refs = collect_snapshot_blob_refs(&snapshot.runtime_state_bytes)?;
+    let mut refs =
+        collect_snapshot_blob_refs(&snapshot.notebook_bytes, &snapshot.runtime_state_bytes)?;
     let initial_ref_count = refs.len();
 
     let publisher = Publisher::new(args, notebook_id, blob_base_url, blob_store_path)?;
@@ -382,26 +384,64 @@ impl Publisher {
     }
 }
 
-fn collect_snapshot_blob_refs(runtime_state_bytes: &[u8]) -> Result<BTreeMap<String, BlobRef>> {
+fn collect_snapshot_blob_refs(
+    notebook_bytes: &[u8],
+    runtime_state_bytes: &[u8],
+) -> Result<BTreeMap<String, BlobRef>> {
+    let mut refs = BTreeMap::new();
+    collect_runtime_snapshot_blob_refs(runtime_state_bytes, &mut refs)?;
+    collect_notebook_snapshot_blob_refs(notebook_bytes, &mut refs)?;
+    Ok(refs)
+}
+
+fn collect_runtime_snapshot_blob_refs(
+    runtime_state_bytes: &[u8],
+    refs: &mut BTreeMap<String, BlobRef>,
+) -> Result<()> {
     let runtime_doc = AutoCommit::load(runtime_state_bytes)
         .context("load RuntimeStateDoc from exported snapshot bytes")?;
     let state_doc = RuntimeStateDoc::from_doc(runtime_doc);
     let state = state_doc.read_state();
-    let mut refs = BTreeMap::new();
 
     for execution in state.executions.values() {
         for output in &execution.outputs {
-            collect_blob_refs(output, &mut refs);
+            collect_blob_refs(output, refs);
         }
     }
     for comm in state.comms.values() {
-        collect_blob_refs(&comm.state, &mut refs);
+        collect_blob_refs(&comm.state, refs);
         for output in &comm.outputs {
-            collect_blob_refs(output, &mut refs);
+            collect_blob_refs(output, refs);
         }
     }
 
-    Ok(refs)
+    Ok(())
+}
+
+fn collect_notebook_snapshot_blob_refs(
+    notebook_bytes: &[u8],
+    refs: &mut BTreeMap<String, BlobRef>,
+) -> Result<()> {
+    let notebook_doc = NotebookDoc::load(notebook_bytes)
+        .context("load NotebookDoc from exported snapshot bytes")?;
+
+    for cell in notebook_doc.get_cells() {
+        for hash in cell.resolved_assets.values() {
+            insert_blob_ref(refs, hash, None, None);
+        }
+        for bundle in cell.attachments.values() {
+            for (media_type, attachment_ref) in bundle {
+                insert_blob_ref(
+                    refs,
+                    &attachment_ref.blob_hash,
+                    None,
+                    Some(media_type.clone()),
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn collect_blob_refs(value: &Value, refs: &mut BTreeMap<String, BlobRef>) {
@@ -502,11 +542,20 @@ fn insert_blob_ref(
     size: Option<u64>,
     media_type: Option<String>,
 ) {
-    refs.entry(hash.to_string()).or_insert_with(|| BlobRef {
-        hash: hash.to_string(),
-        size,
-        media_type,
-    });
+    refs.entry(hash.to_string())
+        .and_modify(|existing| {
+            if existing.size.is_none() {
+                existing.size = size;
+            }
+            if existing.media_type.is_none() {
+                existing.media_type = media_type.clone();
+            }
+        })
+        .or_insert_with(|| BlobRef {
+            hash: hash.to_string(),
+            size,
+            media_type,
+        });
 }
 
 fn size_from_value(value: &Value) -> Option<u64> {
@@ -605,6 +654,8 @@ fn with_trailing_slash(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use notebook_doc::{AttachmentEncoding, AttachmentRef};
+    use std::collections::HashMap;
 
     #[test]
     fn collects_nested_arrow_chunks_from_inline_manifest() {
@@ -681,7 +732,8 @@ mod tests {
             .unwrap();
 
         let runtime_state_bytes = state_doc.doc_mut().save();
-        let refs = collect_snapshot_blob_refs(&runtime_state_bytes).unwrap();
+        let mut refs = BTreeMap::new();
+        collect_runtime_snapshot_blob_refs(&runtime_state_bytes, &mut refs).unwrap();
 
         assert_eq!(
             refs["esm-hash"].media_type.as_deref(),
@@ -693,6 +745,70 @@ mod tests {
             Some("application/octet-stream")
         );
         assert_eq!(refs["binary-hash"].size, Some(12));
+    }
+
+    #[test]
+    fn collects_notebook_doc_assets_and_attachment_blobs_from_snapshot() {
+        let mut notebook_doc = NotebookDoc::new("publish-assets");
+        notebook_doc
+            .add_cell(0, "markdown-cell", "markdown")
+            .unwrap();
+        notebook_doc
+            .update_source("markdown-cell", "![plot](attachment:plot.png)")
+            .unwrap();
+        notebook_doc
+            .set_cell_resolved_assets(
+                "markdown-cell",
+                &HashMap::from([(
+                    "attachment:plot.png".to_string(),
+                    "resolved-asset-hash".to_string(),
+                )]),
+            )
+            .unwrap();
+        notebook_doc
+            .set_cell_attachments(
+                "markdown-cell",
+                &HashMap::from([(
+                    "plot.png".to_string(),
+                    HashMap::from([(
+                        "image/png".to_string(),
+                        AttachmentRef {
+                            blob_hash: "attachment-hash".to_string(),
+                            encoding: AttachmentEncoding::Base64,
+                        },
+                    )]),
+                )]),
+            )
+            .unwrap();
+
+        let notebook_bytes = notebook_doc.save();
+        let mut refs = BTreeMap::new();
+        collect_notebook_snapshot_blob_refs(&notebook_bytes, &mut refs).unwrap();
+
+        assert!(refs.contains_key("resolved-asset-hash"));
+        assert_eq!(
+            refs["attachment-hash"].media_type.as_deref(),
+            Some("image/png")
+        );
+    }
+
+    #[test]
+    fn insert_blob_ref_keeps_first_hash_but_fills_missing_metadata() {
+        let mut refs = BTreeMap::new();
+
+        insert_blob_ref(&mut refs, "shared-hash", None, None);
+        insert_blob_ref(
+            &mut refs,
+            "shared-hash",
+            Some(42),
+            Some("text/plain".to_string()),
+        );
+
+        assert_eq!(refs["shared-hash"].size, Some(42));
+        assert_eq!(
+            refs["shared-hash"].media_type.as_deref(),
+            Some("text/plain")
+        );
     }
 
     #[test]

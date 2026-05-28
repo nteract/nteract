@@ -15,6 +15,7 @@ anyhow = { workspace = true }
 automerge = { workspace = true }
 clap = { version = "4.5.1", features = ["derive", "env"] }
 hex = "0.4"
+notebook-doc = { path = "../notebook-doc" }
 notebook-sync = { path = "../notebook-sync" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 runt-workspace = { path = "../runt-workspace" }

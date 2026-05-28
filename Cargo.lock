@@ -7449,6 +7449,7 @@ dependencies = [
  "automerge",
  "clap",
  "hex",
+ "notebook-doc",
  "notebook-sync",
  "reqwest 0.12.28",
  "runt-workspace",
