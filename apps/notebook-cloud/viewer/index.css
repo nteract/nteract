@@ -366,6 +366,12 @@ body {
   line-height: 1.35;
 }
 
+.cloud-auth-form-error[data-kind="info"] {
+  border-color: color-mix(in srgb, var(--foreground) 16%, transparent);
+  color: color-mix(in srgb, var(--foreground) 72%, transparent);
+  background: color-mix(in srgb, var(--background) 94%, var(--foreground) 6%);
+}
+
 .cloud-auth-actions {
   display: flex;
   flex-wrap: wrap;

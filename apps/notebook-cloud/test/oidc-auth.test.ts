@@ -8,6 +8,8 @@ import {
   normalizeOidcAuthConfig,
   oidcDiscoveryUrl,
   readStoredOidcToken,
+  refreshStoredOidcToken,
+  storedOidcTokenNeedsRefresh,
   type CloudOidcAuthConfig,
   type CloudOidcRequestState,
   type CloudOidcStorage,
@@ -121,12 +123,158 @@ describe("cloud OIDC browser auth", () => {
     ]);
     assert.equal(result.returnUrl, "/n/private-demo");
     assert.equal(result.token.claims.sub, "anaconda-user-123");
+    assert.equal(result.token.refreshToken, "refresh-secret");
     assert.equal(storage.getItem(NOTEBOOK_CLOUD_OIDC_REQUEST_STORAGE_KEY), null);
     assert.equal(readStoredOidcToken(storage).token?.accessToken, accessToken);
-    assert.doesNotMatch(
-      storage.getItem(NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY) ?? "",
-      /refresh-secret/,
+  });
+
+  it("refreshes stored OIDC tokens before falling back to anonymous auth", async () => {
+    const storage = new MemoryStorage();
+    const oldAccessToken = jwt({
+      sub: "anaconda-user-123",
+      email: "alice@example.com",
+      email_verified: true,
+      name: "Alice",
+    });
+    const refreshedAccessToken = jwt({
+      sub: "anaconda-user-123",
+      email: "alice@example.com",
+      email_verified: true,
+      name: "Alice Updated",
+    });
+    storage.setItem(
+      NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
+      JSON.stringify({
+        accessToken: oldAccessToken,
+        refreshToken: "refresh-secret",
+        expiresAt: 100,
+        claims: {
+          sub: "anaconda-user-123",
+          email: "alice@example.com",
+          email_verified: true,
+          name: "Alice",
+        },
+      }),
     );
+    const seenRequests: string[] = [];
+
+    assert.equal(storedOidcTokenNeedsRefresh(storage, 100), true);
+
+    const token = await refreshStoredOidcToken(authConfig, {
+      storage,
+      nowSeconds: 200,
+      fetchImpl: async (input, init) => {
+        const url = String(input);
+        seenRequests.push(url);
+        if (url.endsWith("/.well-known/openid-configuration")) {
+          return Response.json({
+            authorization_endpoint: "https://auth.stage.anaconda.com/api/auth/authorize",
+            token_endpoint: "https://auth.stage.anaconda.com/api/auth/token",
+          });
+        }
+        assert.equal(url, "https://auth.stage.anaconda.com/api/auth/token");
+        assert.equal(init?.method, "POST");
+        const body = new URLSearchParams(String(init?.body));
+        assert.equal(body.get("client_id"), "client-id");
+        assert.equal(body.get("grant_type"), "refresh_token");
+        assert.equal(body.get("refresh_token"), "refresh-secret");
+        assert.equal(body.get("scope"), "openid email profile offline_access");
+        return Response.json({
+          access_token: refreshedAccessToken,
+          expires_in: 300,
+          refresh_token: "rotated-refresh-secret",
+        });
+      },
+    });
+
+    assert.deepEqual(seenRequests, [
+      "https://auth.stage.anaconda.com/api/auth/.well-known/openid-configuration",
+      "https://auth.stage.anaconda.com/api/auth/token",
+    ]);
+    assert.equal(token.accessToken, refreshedAccessToken);
+    assert.equal(token.refreshToken, "rotated-refresh-secret");
+    assert.equal(token.expiresAt, 500);
+    assert.equal(token.claims.name, "Alice Updated");
+    assert.equal(storedOidcTokenNeedsRefresh(storage, 450), true);
+    assert.equal(storedOidcTokenNeedsRefresh(storage, 100), false);
+    assert.equal(readStoredOidcToken(storage, 100).token?.accessToken, refreshedAccessToken);
+  });
+
+  it("preserves refresh token and profile claims when refresh responses omit them", async () => {
+    const storage = new MemoryStorage();
+    storage.setItem(
+      NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
+      JSON.stringify({
+        accessToken: jwt({ sub: "anaconda-user-123", email: "alice@example.com", name: "Alice" }),
+        refreshToken: "refresh-secret",
+        expiresAt: 100,
+        claims: {
+          sub: "anaconda-user-123",
+          email: "alice@example.com",
+          email_verified: true,
+          name: "Alice",
+        },
+      }),
+    );
+
+    const token = await refreshStoredOidcToken(authConfig, {
+      storage,
+      nowSeconds: 200,
+      fetchImpl: async (input) => {
+        const url = String(input);
+        if (url.endsWith("/.well-known/openid-configuration")) {
+          return Response.json({
+            authorization_endpoint: "https://auth.stage.anaconda.com/api/auth/authorize",
+            token_endpoint: "https://auth.stage.anaconda.com/api/auth/token",
+          });
+        }
+        return Response.json({
+          access_token: jwt({ sub: "anaconda-user-123" }),
+          expires_in: 300,
+        });
+      },
+    });
+
+    assert.equal(token.refreshToken, "refresh-secret");
+    assert.equal(token.claims.email, "alice@example.com");
+    assert.equal(token.claims.name, "Alice");
+  });
+
+  it("rejects refresh responses for a different subject without replacing stored tokens", async () => {
+    const storage = new MemoryStorage();
+    const oldAccessToken = jwt({ sub: "anaconda-user-123", name: "Alice" });
+    storage.setItem(
+      NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
+      JSON.stringify({
+        accessToken: oldAccessToken,
+        refreshToken: "refresh-secret",
+        expiresAt: 100,
+        claims: { sub: "anaconda-user-123", name: "Alice" },
+      }),
+    );
+
+    await assert.rejects(
+      () =>
+        refreshStoredOidcToken(authConfig, {
+          storage,
+          fetchImpl: async (input) => {
+            const url = String(input);
+            if (url.endsWith("/.well-known/openid-configuration")) {
+              return Response.json({
+                authorization_endpoint: "https://auth.stage.anaconda.com/api/auth/authorize",
+                token_endpoint: "https://auth.stage.anaconda.com/api/auth/token",
+              });
+            }
+            return Response.json({
+              access_token: jwt({ sub: "anaconda-user-456" }),
+              expires_in: 300,
+            });
+          },
+        }),
+      /different subject/,
+    );
+
+    assert.equal(readStoredOidcToken(storage, 0).token?.accessToken, oldAccessToken);
   });
 
   it("rejects callback state mismatches without storing token material", async () => {
