@@ -102,6 +102,9 @@ function resolveCommStateValue(
   }
 
   const record = value as Record<string, unknown>;
+  // Runtime ContentRef inline wrappers are exclusive: `{ inline: value }`.
+  // Treating this key as structural keeps cloud projection aligned with the
+  // WASM comm-state resolver used by desktop.
   if ("inline" in record) {
     return record.inline;
   }

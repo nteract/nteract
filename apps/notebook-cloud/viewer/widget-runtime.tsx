@@ -51,26 +51,40 @@ export async function projectCloudWidgetComms(
   projectedCommIdsRef: { current: Set<string> },
   options: ProjectCloudWidgetCommsOptions = {},
 ): Promise<void> {
-  const nextCommIds = new Set<string>();
+  const projectedCommIds = new Set<string>();
 
   for (const comm of comms) {
-    if (options.shouldContinue && !options.shouldContinue()) return;
+    if (options.shouldContinue && !options.shouldContinue()) {
+      reconcileProjectedWidgetComms(store, projectedCommIdsRef, projectedCommIds);
+      return;
+    }
     const commId = comm.comm_id;
-    nextCommIds.add(commId);
     const state = widgetCommStoreState(comm);
     await inlineWidgetBlobUrls(
       state,
       { textPaths: comm.text_paths, bufferPaths: comm.buffer_paths },
       { isAllowedBlobUrl: options.isAllowedBlobUrl },
     );
-    if (options.shouldContinue && !options.shouldContinue()) return;
+    if (options.shouldContinue && !options.shouldContinue()) {
+      reconcileProjectedWidgetComms(store, projectedCommIdsRef, projectedCommIds);
+      return;
+    }
     if (store.getModel(commId)) {
       store.updateModel(commId, state, comm.buffer_paths);
     } else {
       store.createModel(commId, state, comm.buffer_paths);
     }
+    projectedCommIds.add(commId);
   }
 
+  reconcileProjectedWidgetComms(store, projectedCommIdsRef, projectedCommIds);
+}
+
+function reconcileProjectedWidgetComms(
+  store: WidgetStore,
+  projectedCommIdsRef: { current: Set<string> },
+  nextCommIds: Set<string>,
+): void {
   for (const commId of projectedCommIdsRef.current) {
     if (!nextCommIds.has(commId)) {
       store.deleteModel(commId);
