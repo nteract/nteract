@@ -97,7 +97,7 @@ pnpm --dir apps/notebook-cloud smoke:hosted:install
 
 It verifies that the hosted viewer renders the live-published code cell with a
 runtime-derived execution count, that sandboxed output iframes expose expected
-notebook content, and that Sift's WASM sidecar loads from the configured
+markdown and Sift notebook content, and that Sift's WASM sidecar loads from the configured
 renderer asset origin with CORS. It also checks the backing `/api/n/:id/render`
 document reports `source: "snapshot-pair"` so the smoke proves the page is using
 a materialized NotebookDoc + RuntimeStateDoc snapshot pair, and checks the
@@ -109,8 +109,11 @@ visual artifact.
 For non-MathNet published notebooks, customize the hosted smoke expectations
 with `NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT`,
 `NOTEBOOK_CLOUD_EXPECTED_EXECUTION_COUNT`, and
-`NOTEBOOK_CLOUD_EXPECTED_FRAME_TEXTS`. Frame texts can be a JSON string array or
-a `|`-delimited list. Set `NOTEBOOK_CLOUD_EXPECTED_RENDER_SOURCE=` to skip the
+`NOTEBOOK_CLOUD_EXPECTED_FRAME_TEXTS`. Markdown cells and isolated output
+renderers are checked as frame text because they render inside sandboxed output
+documents. Frame texts can be a JSON string array or a `|`-delimited list. Set
+`NOTEBOOK_CLOUD_EXPECTED_PAGE_TEXTS` only for text that should appear in the
+parent viewer document. Set `NOTEBOOK_CLOUD_EXPECTED_RENDER_SOURCE=` to skip the
 render API source check. Set
 `NOTEBOOK_CLOUD_EXPECTED_CATALOG_OWNER_PRINCIPAL=` and
 `NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_ACTOR_LABEL=` to skip the live-publish
