@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   CloudWebSocketTransport,
+  cloudRoomReadyPeerLabel,
   normalizeConnectionScope,
   startCloudBootstrapSync,
   syncUrl,
@@ -108,6 +109,25 @@ describe("cloud live sync", () => {
 
     assert.equal(url.searchParams.get("viewer_session"), "anon-one");
     assert.equal(url.searchParams.has("operator"), false);
+  });
+
+  it("uses display name, email, then actor label for the local cloud room peer label", () => {
+    const ready = {
+      actor_label: "user:anaconda:uuid-123/browser:session-1",
+      display_name: "Alice Example",
+      email: "alice@example.com",
+    };
+
+    assert.equal(cloudRoomReadyPeerLabel(ready), "Alice Example");
+    assert.equal(
+      cloudRoomReadyPeerLabel({ ...ready, display_name: " ", email: "alice@example.com" }),
+      "alice@example.com",
+    );
+    const { display_name: _displayName, email: _email, ...actorOnlyReady } = ready;
+    assert.equal(
+      cloudRoomReadyPeerLabel(actorOnlyReady),
+      "user:anaconda:uuid-123/browser:session-1",
+    );
   });
 
   it("does not expose PoolDoc sync from the cloud viewer adapter", () => {

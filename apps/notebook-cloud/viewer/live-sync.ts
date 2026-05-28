@@ -80,7 +80,7 @@ export async function connectCloudSyncRuntime({
       new URL(runtimedWasmPath, location.href),
     );
     const syncHandle = syncableCloudHandle(handle);
-    const peerLabel = actorPeerLabel(ready.actor_label);
+    const peerLabel = cloudRoomReadyPeerLabel(ready);
     const heartbeatPeerId = ready.peer_id;
     const connectionScope = normalizeConnectionScope(ready.connection_scope);
     const engine = new SyncEngine({
@@ -403,9 +403,13 @@ async function bytesFromWebSocketMessage(data: unknown): Promise<Uint8Array> {
   throw new Error(`unsupported WebSocket message ${Object.prototype.toString.call(data)}`);
 }
 
-function actorPeerLabel(actorLabel: string): string {
-  const [principal, operator] = actorLabel.split("/", 2);
-  return operator ? `${principal} (${operator})` : actorLabel;
+export function cloudRoomReadyPeerLabel(
+  ready: Pick<
+    Extract<SessionControlMessage, { type: "cloud_room_ready" }>,
+    "actor_label" | "display_name" | "email"
+  >,
+): string {
+  return ready.display_name?.trim() || ready.email?.trim() || ready.actor_label;
 }
 
 const consoleSyncLogger = {

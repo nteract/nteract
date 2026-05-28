@@ -108,6 +108,9 @@ export function readCloudPrototypeAuth(
         problem: oidcSession.problem,
       };
     }
+    if (oidcSession.expired) {
+      return anonymousAuthState();
+    }
     if (requestedScope) {
       return {
         mode: "access",
