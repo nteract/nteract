@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Frame, type Locator, type Page } from "@playwright/test";
 import { cloudOutputParityExpectedMarkers } from "../../test/fixtures/cloud-output-parity";
 
 test.describe("cloud renderer parity harness", () => {
@@ -123,9 +123,20 @@ test.describe("cloud renderer parity harness", () => {
 
     const siftCell = page.locator('[data-cell-id="sift-arrow-output"]');
     await expect(siftCell).toContainText(cloudOutputParityExpectedMarkers.siftStream);
-    await expect(siftCell).toContainText("Cloud Sift widget progress marker");
+    await expect(siftCell).not.toContainText("Cloud Sift widget progress marker");
+    await expect(siftCell.locator('iframe[data-slot="isolated-frame"]')).toHaveCount(2, {
+      timeout: 60_000,
+    });
+    const widgetFrame = await findFrameContaining(
+      page,
+      siftCell,
+      'iframe[data-slot="isolated-frame"]',
+      '[data-widget-type="IntProgress"]',
+    );
+    await expect(widgetFrame.locator('[data-widget-type="IntProgress"]')).toBeVisible({
+      timeout: 30_000,
+    });
     await expect(siftCell.locator('[data-sift-output="true"]')).toBeVisible({ timeout: 60_000 });
-    await expect(siftCell.locator('iframe[data-slot="isolated-frame"]')).toHaveCount(1);
     await expect(siftCell.locator('[data-sift-output="true"] iframe')).toHaveCSS(
       "pointer-events",
       "none",
@@ -135,7 +146,9 @@ test.describe("cloud renderer parity harness", () => {
       /\/output-document\/frame\.html\?nteract_theme=light$/,
     );
     await expect(
-      page.frameLocator('[data-cell-id="sift-arrow-output"] iframe').locator("body"),
+      page
+        .frameLocator('[data-cell-id="sift-arrow-output"] [data-sift-output="true"] iframe')
+        .locator("body"),
     ).toContainText(cloudOutputParityExpectedMarkers.siftColumn, { timeout: 90_000 });
   });
 
@@ -220,7 +233,9 @@ test.describe("cloud renderer parity harness", () => {
 
     const siftCell = page.locator('[data-cell-id="sift-arrow-output"]');
     await expect(
-      page.frameLocator('[data-cell-id="sift-arrow-output"] iframe').locator("body"),
+      page
+        .frameLocator('[data-cell-id="sift-arrow-output"] [data-sift-output="true"] iframe')
+        .locator("body"),
     ).toContainText(cloudOutputParityExpectedMarkers.siftColumn, { timeout: 90_000 });
 
     await page.evaluate(() => {
@@ -240,7 +255,7 @@ test.describe("cloud renderer parity harness", () => {
     );
 
     const viewport = page
-      .frameLocator('[data-cell-id="sift-arrow-output"] iframe')
+      .frameLocator('[data-cell-id="sift-arrow-output"] [data-sift-output="true"] iframe')
       .locator(".sift-viewport");
     await viewport.waitFor({ timeout: 30_000 });
     await expect(viewport).toHaveCSS("overscroll-behavior-y", "auto");
@@ -260,4 +275,30 @@ async function openParityHarness(page: Page) {
   await expect(page.getByTestId("cloud-render-parity")).toHaveAttribute("data-ready", "true", {
     timeout: 60_000,
   });
+}
+
+async function findFrameContaining(
+  page: Page,
+  root: Locator,
+  frameSelector: string,
+  innerSelector: string,
+  timeoutMs = 30_000,
+): Promise<Frame> {
+  const deadline = Date.now() + timeoutMs;
+  let frameCount = 0;
+
+  while (Date.now() < deadline) {
+    const frameHandles = await root.locator(frameSelector).elementHandles();
+    frameCount = frameHandles.length;
+    for (const handle of frameHandles) {
+      const frame = await handle.contentFrame();
+      if (!frame) continue;
+      if ((await frame.locator(innerSelector).count()) > 0) {
+        return frame;
+      }
+    }
+    await page.waitForTimeout(100);
+  }
+
+  throw new Error(`No iframe containing ${innerSelector} found among ${frameCount} frames`);
 }

@@ -1,16 +1,23 @@
-import { StrictMode, useEffect, useMemo, useState } from "react";
+import { StrictMode, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { OutputArea } from "../../../../../src/components/cell/OutputArea";
 import { ReadOnlyNotebook } from "../../../../../src/components/cell/ReadOnlyNotebook";
 import { IsolatedRendererProvider } from "../../../../../src/components/isolated/isolated-renderer-context";
 import { MediaProvider } from "../../../../../src/components/outputs/media-provider";
 import { ThemeToggle } from "../../../../../src/components/ui/theme-toggle";
+import { useWidgetStoreRequired } from "../../../../../src/components/widgets/widget-store-context";
 import { useTheme } from "../../../../../src/hooks/useTheme";
 import { CLOUD_VIEWER_PRIORITY } from "../../../viewer/mime-policy";
 import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "../../../viewer/theme";
 import {
+  CLOUD_WIDGET_RENDERERS,
+  CloudWidgetStoreProvider,
+  projectCloudWidgetComms,
+} from "../../../viewer/widget-runtime";
+import {
   cloudOutputParityExpectedMarkers,
   cloudOutputParityHostContext,
+  cloudOutputParityWidgetComms,
   resolveCloudOutputParityCells,
 } from "../../fixtures/cloud-output-parity";
 import "../../../viewer/index.css";
@@ -20,6 +27,8 @@ const rendererBundle = () => import("virtual:isolated-renderer");
 
 function CloudRendererParityHarness() {
   const { theme, setTheme, resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
+  const { store: widgetStore } = useWidgetStoreRequired();
+  const projectedWidgetCommIdsRef = useRef(new Set<string>());
   const [cells, setCells] = useState<Awaited<ReturnType<typeof resolveCloudOutputParityCells>>>([]);
   const [boundaryCollapsed, setBoundaryCollapsed] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,6 +41,10 @@ function CloudRendererParityHarness() {
   useEffect(() => {
     applyDocumentTheme(resolvedTheme);
   }, [resolvedTheme]);
+
+  useEffect(() => {
+    projectCloudWidgetComms(widgetStore, cloudOutputParityWidgetComms, projectedWidgetCommIdsRef);
+  }, [widgetStore]);
 
   useEffect(() => {
     let cancelled = false;
@@ -76,7 +89,7 @@ function CloudRendererParityHarness() {
         {Object.values(cloudOutputParityExpectedMarkers).join("\n")}
       </div>
       <IsolatedRendererProvider loader={rendererBundle}>
-        <MediaProvider priority={CLOUD_VIEWER_PRIORITY}>
+        <MediaProvider priority={CLOUD_VIEWER_PRIORITY} renderers={CLOUD_WIDGET_RENDERERS}>
           <ReadOnlyNotebook
             cells={cells}
             priority={CLOUD_VIEWER_PRIORITY}
@@ -122,6 +135,8 @@ if (!root) {
 
 createRoot(root).render(
   <StrictMode>
-    <CloudRendererParityHarness />
+    <CloudWidgetStoreProvider>
+      <CloudRendererParityHarness />
+    </CloudWidgetStoreProvider>
   </StrictMode>,
 );

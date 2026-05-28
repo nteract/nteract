@@ -8,14 +8,14 @@ const WIDGET_VIEW_MIME = "application/vnd.jupyter.widget-view+json";
 const ARROW_STREAM_MANIFEST_MIME = "application/vnd.nteract.arrow-stream-manifest+json";
 
 describe("cloud viewer MIME policy", () => {
-  it("prefers text fallbacks over unhydrated widget views", () => {
+  it("keeps widget views aligned with the shared notebook priority", () => {
     const data = {
       [WIDGET_VIEW_MIME]: { version_major: 2, version_minor: 0, model_id: "progress" },
       "text/plain": "Resolving data files: 100%",
     };
 
     assert.equal(selectMimeType(data, DEFAULT_PRIORITY), WIDGET_VIEW_MIME);
-    assert.equal(selectMimeType(data, CLOUD_VIEWER_PRIORITY), "text/plain");
+    assert.equal(selectMimeType(data, CLOUD_VIEWER_PRIORITY), WIDGET_VIEW_MIME);
 
     const payload = jupyterOutputToRenderPayload(
       {
@@ -28,8 +28,12 @@ describe("cloud viewer MIME policy", () => {
       { priority: CLOUD_VIEWER_PRIORITY },
     );
 
-    assert.equal(payload?.mimeType, "text/plain");
-    assert.equal(payload?.data, "Resolving data files: 100%");
+    assert.equal(payload?.mimeType, WIDGET_VIEW_MIME);
+    assert.deepEqual(payload?.data, {
+      version_major: 2,
+      version_minor: 0,
+      model_id: "progress",
+    });
   });
 
   it("keeps Arrow stream manifests ahead of table text and HTML fallbacks", () => {

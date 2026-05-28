@@ -4,7 +4,7 @@ import type { BlobResolver } from "runtimed";
 import { resolveCell, resolveOutputs } from "../viewer/render-resolution.ts";
 
 describe("cloud viewer render resolution", () => {
-  it("turns static widget views into text fallbacks", async () => {
+  it("preserves widget views so RuntimeStateDoc models can hydrate them", async () => {
     const outputs = await resolveOutputs(
       [
         {
@@ -25,13 +25,14 @@ describe("cloud viewer render resolution", () => {
     assert.equal(outputs.length, 1);
     assert.equal(outputs[0].output_type, "display_data");
     if (outputs[0].output_type === "display_data") {
-      assert.equal(outputs[0].data["application/vnd.jupyter.widget-view+json"], undefined);
-      assert.equal(outputs[0].data["text/plain"], "IntSlider slider: 7 (0-10)");
+      assert.deepEqual(outputs[0].data["application/vnd.jupyter.widget-view+json"], {
+        model_id: "slider-1",
+      });
       assert.equal(outputs[0].data["text/llm+plain"], "IntSlider slider: 7 (0-10)");
     }
   });
 
-  it("does not leave widget-only outputs on a loading state", async () => {
+  it("keeps widget-only outputs instead of inventing static fallbacks", async () => {
     const outputs = await resolveOutputs(
       [
         {
@@ -51,8 +52,10 @@ describe("cloud viewer render resolution", () => {
     assert.equal(outputs.length, 1);
     assert.equal(outputs[0].output_type, "display_data");
     if (outputs[0].output_type === "display_data") {
-      assert.equal(outputs[0].data["application/vnd.jupyter.widget-view+json"], undefined);
-      assert.equal(outputs[0].data["text/plain"], "Widget state unavailable");
+      assert.deepEqual(outputs[0].data["application/vnd.jupyter.widget-view+json"], {
+        model_id: "slider-1",
+      });
+      assert.equal(outputs[0].data["text/plain"], undefined);
     }
   });
 

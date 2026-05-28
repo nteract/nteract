@@ -1,6 +1,7 @@
 import type { BlobResolver } from "runtimed";
 import { collectBlobUrls } from "./blob-refs.ts";
 import { loadSnapshotPair } from "./runtimed-wasm.ts";
+import { snapshotWidgetCommsFromRuntimeState, type SnapshotWidgetComm } from "./widget-comms.ts";
 
 export interface SnapshotRender {
   schema_version: 1;
@@ -13,6 +14,7 @@ export interface SnapshotRender {
   source: "snapshot-pair";
   cells: unknown;
   blob_urls: Record<string, string>;
+  widget_comms: SnapshotWidgetComm[];
 }
 
 export async function materializeSnapshotPairRender(input: {
@@ -27,6 +29,7 @@ export async function materializeSnapshotPairRender(input: {
   const handle = await loadSnapshotPair(input.notebookBytes, input.runtimeStateBytes);
   try {
     const cells = JSON.parse(handle.get_cells_json()) as unknown;
+    const runtimeState = handle.get_runtime_state();
     const metadata = parseJsonOrNull(handle.get_metadata_snapshot_json());
     return {
       schema_version: 1,
@@ -39,6 +42,7 @@ export async function materializeSnapshotPairRender(input: {
       source: "snapshot-pair",
       cells,
       blob_urls: input.blobResolver ? collectBlobUrls(cells, input.blobResolver) : {},
+      widget_comms: snapshotWidgetCommsFromRuntimeState(runtimeState),
     };
   } finally {
     handle.free();
