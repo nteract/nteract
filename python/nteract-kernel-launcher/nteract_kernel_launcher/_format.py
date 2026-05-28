@@ -11,13 +11,16 @@ from __future__ import annotations
 import datetime as _dt
 import hashlib
 import sys
+from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
 ARROW_STREAM_MIME = "application/vnd.apache.arrow.stream"
 ARROW_STREAM_MANIFEST_MIME = "application/vnd.nteract.arrow-stream-manifest+json"
+TABLE_PREVIEW_MIME = "application/vnd.nteract.table-preview+json"
 DEFAULT_ARROW_CHUNK_BYTES = 8 * 1024 * 1024
+DEFAULT_TABLE_PREVIEW_ROWS = 30
 
 
 @dataclass(frozen=True)
@@ -349,6 +352,167 @@ def build_arrow_stream_manifest_from_chunks(
         "summary": summary or {},
     }
     return manifest
+
+
+def build_arrow_table_preview_from_chunks(
+    chunks: list[ArrowStreamChunk],
+    *,
+    max_rows: int = DEFAULT_TABLE_PREVIEW_ROWS,
+) -> dict[str, Any]:
+    """Build a compact row/profile preview from Arrow stream chunks."""
+    import pyarrow as pa
+
+    rows: list[list[str]] = []
+    profilers: list[_ColumnPreviewProfile] | None = None
+
+    for chunk in chunks:
+        table = pa.ipc.open_stream(pa.BufferReader(chunk.data)).read_all()
+        if profilers is None:
+            profilers = [_ColumnPreviewProfile(field.type) for field in table.schema]
+
+        for row_index in range(table.num_rows):
+            row: list[str] = []
+            for column_index, column in enumerate(table.columns):
+                value = column[row_index].as_py()
+                if profilers is not None:
+                    profilers[column_index].add(value)
+                row.append(_compact_preview_cell(value))
+            if len(rows) < max_rows:
+                rows.append(row)
+
+    return {
+        "rows": rows,
+        "profiles": [profiler.finish() for profiler in profilers or []],
+    }
+
+
+class _ColumnPreviewProfile:
+    def __init__(self, data_type: Any) -> None:
+        import pyarrow as pa
+
+        if pa.types.is_boolean(data_type):
+            self.kind = "boolean"
+            self.true_count = 0
+            self.false_count = 0
+        elif (
+            pa.types.is_integer(data_type)
+            or pa.types.is_floating(data_type)
+            or pa.types.is_decimal(data_type)
+        ):
+            self.kind = "numeric"
+            self.values: list[float] = []
+            self.unique_values: set[str] = set()
+        else:
+            self.kind = "categorical"
+            self.counts: Counter[str] = Counter()
+        self.null_count = 0
+
+    def add(self, value: Any) -> None:
+        if value is None:
+            self.null_count += 1
+            return
+        if self.kind == "boolean":
+            if value is True:
+                self.true_count += 1
+            elif value is False:
+                self.false_count += 1
+            else:
+                self.null_count += 1
+            return
+        if self.kind == "numeric":
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                self.null_count += 1
+                return
+            if parsed != parsed or parsed in (float("inf"), float("-inf")):
+                self.null_count += 1
+                return
+            self.values.append(parsed)
+            if len(self.unique_values) <= 20:
+                self.unique_values.add(_compact_preview_cell(value))
+            return
+        self.counts[_compact_preview_cell(value)] += 1
+
+    def finish(self) -> dict[str, Any]:
+        if self.kind == "boolean":
+            return {
+                "kind": "boolean",
+                "detail": _profile_detail(
+                    [f"{self.true_count} true", f"{self.false_count} false"],
+                    self.null_count,
+                ),
+                "bars": [self.true_count, self.false_count],
+            }
+        if self.kind == "numeric":
+            return _finish_numeric_profile(self.values, self.unique_values, self.null_count)
+
+        sorted_counts = sorted(self.counts.items(), key=lambda item: (-item[1], item[0]))
+        return {
+            "kind": "categorical",
+            "detail": _profile_detail([f"{len(self.counts)} distinct"], self.null_count),
+            "bars": [count for _label, count in sorted_counts[:8]],
+        }
+
+
+def _finish_numeric_profile(
+    values: list[float],
+    unique_values: set[str],
+    null_count: int,
+) -> dict[str, Any]:
+    if not values:
+        return {
+            "kind": "numeric",
+            "detail": _profile_detail(["no values"], null_count),
+            "bars": [],
+        }
+
+    minimum = min(values)
+    maximum = max(values)
+    bin_count = 8
+    width = (maximum - minimum) / bin_count if maximum > minimum else 1.0
+    bars = [0] * bin_count
+    for value in values:
+        index = int((value - minimum) // width) if width > 0 else 0
+        if index >= bin_count:
+            index = bin_count - 1
+        bars[index] += 1
+
+    detail_parts = [f"{_compact_number(minimum)}-{_compact_number(maximum)}"]
+    if len(unique_values) <= 20:
+        detail_parts.append(f"{len(unique_values)} distinct")
+    return {
+        "kind": "numeric",
+        "detail": _profile_detail(detail_parts, null_count),
+        "bars": bars,
+    }
+
+
+def _profile_detail(parts: list[str], null_count: int) -> str:
+    if null_count:
+        parts = [*parts, f"{null_count} null"]
+    return " ".join(parts)
+
+
+def _compact_number(value: float) -> str:
+    if value.is_integer():
+        return str(int(value))
+    return f"{value:.3f}".rstrip("0").rstrip(".")
+
+
+def _compact_preview_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        text = f"<bytes {len(value)}>"
+    elif hasattr(value, "isoformat"):
+        text = value.isoformat()
+    else:
+        text = str(value)
+    compact = " ".join(text.split())
+    if len(compact) <= 96:
+        return compact
+    return compact[:93] + "..."
 
 
 def serialize_arrow_stream(source: Any, *, max_bytes: int) -> tuple[bytes, str, int, int]:

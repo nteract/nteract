@@ -402,6 +402,36 @@ def test_iter_arrow_stream_chunks_yields_decodable_mini_streams():
     ]
 
 
+def test_build_arrow_table_preview_from_chunks_is_compact():
+    pa = pytest.importorskip("pyarrow")
+    from nteract_kernel_launcher._format import (
+        build_arrow_table_preview_from_chunks,
+        iter_arrow_stream_chunks,
+    )
+
+    table = pa.table(
+        {
+            "name": ["Ada", "Grace", "Ada"],
+            "score": [9.5, 8.25, 10.0],
+            "rank": [2, None, 1],
+        }
+    )
+    reader = pa.RecordBatchReader.from_batches(table.schema, table.to_batches(max_chunksize=2))
+    chunks = list(iter_arrow_stream_chunks(reader))
+
+    preview = build_arrow_table_preview_from_chunks(chunks, max_rows=2)
+
+    assert preview["rows"] == [["Ada", "9.5", "2"], ["Grace", "8.25", ""]]
+    assert preview["profiles"][0]["kind"] == "categorical"
+    assert preview["profiles"][0]["detail"] == "2 distinct"
+    assert preview["profiles"][0]["bars"] == [2, 1]
+    assert preview["profiles"][1]["kind"] == "numeric"
+    assert "8.25-10" in preview["profiles"][1]["detail"]
+    assert sum(preview["profiles"][1]["bars"]) == 3
+    assert preview["profiles"][2]["kind"] == "numeric"
+    assert "1 null" in preview["profiles"][2]["detail"]
+
+
 def test_iter_arrow_stream_chunks_preserves_schema_metadata():
     pa = pytest.importorskip("pyarrow")
     from nteract_kernel_launcher._format import iter_arrow_stream_chunks

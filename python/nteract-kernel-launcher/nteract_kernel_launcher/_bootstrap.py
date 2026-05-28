@@ -54,9 +54,12 @@ from nteract_kernel_launcher._format import (
     ARROW_STREAM_MANIFEST_MIME,
     ARROW_STREAM_MIME,
     DEFAULT_ARROW_CHUNK_BYTES,
+    TABLE_PREVIEW_MIME,
+    ArrowStreamChunk,
     arrow_stream_row_count,
     build_arrow_stream_manifest,
     build_arrow_stream_manifest_from_chunks,
+    build_arrow_table_preview_from_chunks,
     has_arrow_stream_protocol,
     iter_arrow_stream_chunks,
 )
@@ -138,6 +141,25 @@ class ArrowStreamManifestFormatter(BaseFormatter):
         return printer(obj)
 
 
+class ArrowTablePreviewFormatter(BaseFormatter):
+    """Per-MIME formatter that emits compact table preview JSON."""
+
+    format_type = Unicode(TABLE_PREVIEW_MIME)
+
+    def __init__(self, *args, arrow_state: _ArrowFormatterState, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._arrow_state = arrow_state
+
+    def __call__(self, obj: Any) -> Any:
+        if not self.enabled:
+            return None
+        try:
+            printer = self.lookup(obj)
+        except KeyError:
+            return self._arrow_state.value_for(obj, TABLE_PREVIEW_MIME)
+        return printer(obj)
+
+
 class _ArrowFormatterState:
     """Share one serialized Arrow bundle across per-MIME formatter calls."""
 
@@ -157,7 +179,12 @@ class _ArrowFormatterState:
             "bundle": bundle,
             "remaining": {
                 mime
-                for mime in (BLOB_REF_MIME, ARROW_STREAM_MANIFEST_MIME, "text/llm+plain")
+                for mime in (
+                    BLOB_REF_MIME,
+                    ARROW_STREAM_MANIFEST_MIME,
+                    TABLE_PREVIEW_MIME,
+                    "text/llm+plain",
+                )
                 if mime in bundle
             },
         }
@@ -319,6 +346,7 @@ def _emit_arrow_stream_chunks(
             complete=True,
             summary=summary_hints,
         ),
+        TABLE_PREVIEW_MIME: build_arrow_table_preview_from_chunks(chunks),
     }
     if llm_text is not None:
         bundle["text/llm+plain"] = llm_text
@@ -446,6 +474,18 @@ def _emit_table_bytes(
                 record_batch_count=record_batch_count,
                 summary=summary_hints,
             )
+            bundle[TABLE_PREVIEW_MIME] = build_arrow_table_preview_from_chunks(
+                [
+                    ArrowStreamChunk(
+                        index=0,
+                        data=data,
+                        content_hash=h,
+                        size=len(data),
+                        row_count=included_rows,
+                        record_batch_count=record_batch_count or 0,
+                    ),
+                ]
+            )
         except Exception as exc:  # noqa: BLE001
             log.debug("arrow manifest build failed: %s", exc)
     if llm_text is not None:
@@ -493,6 +533,11 @@ def _install_dataframe_formatters(ip: Any) -> None:
             ArrowStreamManifestFormatter,
         ):
             formatters[ARROW_STREAM_MANIFEST_MIME] = ArrowStreamManifestFormatter(
+                parent=display_formatter,
+                arrow_state=arrow_state,
+            )
+        if not isinstance(formatters.get(TABLE_PREVIEW_MIME), ArrowTablePreviewFormatter):
+            formatters[TABLE_PREVIEW_MIME] = ArrowTablePreviewFormatter(
                 parent=display_formatter,
                 arrow_state=arrow_state,
             )

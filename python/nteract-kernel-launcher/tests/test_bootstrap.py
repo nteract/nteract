@@ -640,7 +640,7 @@ def test_arrow_stream_formatter_stashes_bytes_and_returns_bundle():
     pytest.importorskip("pyarrow")
 
     from nteract_kernel_launcher import _bootstrap, _buffer_hook
-    from nteract_kernel_launcher._format import ARROW_STREAM_MANIFEST_MIME
+    from nteract_kernel_launcher._format import ARROW_STREAM_MANIFEST_MIME, TABLE_PREVIEW_MIME
     from nteract_kernel_launcher._refs import BLOB_REF_MIME
 
     _buffer_hook.pending_buffers().clear()
@@ -659,6 +659,11 @@ def test_arrow_stream_formatter_stashes_bytes_and_returns_bundle():
     assert bundle[ARROW_STREAM_MANIFEST_MIME]["schema"]["columns"] == [
         {"name": "a", "type": "int64", "nullable": True},
         {"name": "b", "type": "large_string", "nullable": True},
+    ]
+    assert bundle[TABLE_PREVIEW_MIME]["rows"] == [["1", "x"], ["2", "y"], ["3", "z"]]
+    assert [profile["kind"] for profile in bundle[TABLE_PREVIEW_MIME]["profiles"]] == [
+        "numeric",
+        "categorical",
     ]
 
 
