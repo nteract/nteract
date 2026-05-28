@@ -4081,6 +4081,69 @@ mod tests {
     }
 
     #[test]
+    fn dropped_runtime_sync_message_requires_peer_state_reset_before_recovery() {
+        let mut daemon_doc = RuntimeStateDoc::new();
+        daemon_doc
+            .set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Busy))
+            .unwrap();
+
+        let mut client_doc = RuntimeStateDoc::new_empty();
+        let mut daemon_sync = sync::State::new();
+        let mut client_sync = sync::State::new();
+
+        let dropped = daemon_doc
+            .generate_sync_message(&mut daemon_sync)
+            .expect("daemon should generate initial runtime sync");
+        drop(dropped);
+
+        // This models a reliable peer-egress lane dropping an already-generated
+        // RuntimeStateSync frame. The sync::State was advanced before transport
+        // delivery, so the old state cannot be reused as though nothing happened.
+        daemon_doc
+            .set_kernel_info("python3", "python", "uv:project")
+            .unwrap();
+
+        if let Some(stale_message) = daemon_doc.generate_sync_message(&mut daemon_sync) {
+            let _ = client_doc
+                .doc_mut()
+                .sync()
+                .receive_sync_message(&mut client_sync, stale_message);
+        }
+        assert_ne!(
+            client_doc.read_state(),
+            daemon_doc.read_state(),
+            "a peer stream with a dropped generated message must not be treated as converged"
+        );
+
+        daemon_sync = sync::State::new();
+        client_sync = sync::State::new();
+        for _ in 0..10 {
+            if let Some(message) = daemon_doc.generate_sync_message(&mut daemon_sync) {
+                client_doc
+                    .doc_mut()
+                    .sync()
+                    .receive_sync_message(&mut client_sync, message)
+                    .expect("client should receive regenerated runtime sync");
+            }
+            if let Some(reply) = client_doc
+                .doc_mut()
+                .sync()
+                .generate_sync_message(&mut client_sync)
+            {
+                daemon_doc
+                    .receive_sync_message(&mut daemon_sync, reply)
+                    .expect("daemon should receive client ack");
+            }
+        }
+
+        assert_eq!(
+            client_doc.read_state(),
+            daemon_doc.read_state(),
+            "resetting sync::State must allow the reliable runtime stream to regenerate"
+        );
+    }
+
+    #[test]
     fn test_generate_sync_message_bounded_encoded_compacts_on_oversized() {
         let mut doc = RuntimeStateDoc::new();
         doc.create_execution("exec-1").unwrap();
