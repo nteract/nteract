@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type MouseEvent,
 } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { OutputArea } from "@/components/cell/OutputArea";
@@ -78,6 +79,7 @@ export function EditableMarkdownCell({
 }: EditableMarkdownCellProps) {
   const [editing, setEditing] = useState(cell.source.trim().length === 0);
   const editorRef = useRef<CodeMirrorEditorRef>(null);
+  const suppressNextToggleClickRef = useRef(false);
   const getHandleRef = useRef(getHandle);
   const onSourceChangeRef = useRef(onSourceChange);
   const onSyncNeededRef = useRef(onSyncNeeded);
@@ -129,10 +131,37 @@ export function EditableMarkdownCell({
   }, []);
 
   const exitEditing = useCallback(() => {
-    if (cell.source.trim().length > 0) {
+    const currentSource = editorRef.current?.getEditor()?.state.doc.toString() ?? cell.source;
+    if (currentSource.trim().length > 0) {
       setEditing(false);
     }
   }, [cell.source]);
+
+  const handleActionMouseDown = useCallback(
+    (event: MouseEvent<HTMLButtonElement>) => {
+      if (!editing) return;
+      event.preventDefault();
+      suppressNextToggleClickRef.current = true;
+      exitEditing();
+    },
+    [editing, exitEditing],
+  );
+
+  const handleActionClick = useCallback(
+    (event: MouseEvent<HTMLButtonElement>) => {
+      if (suppressNextToggleClickRef.current) {
+        suppressNextToggleClickRef.current = false;
+        event.preventDefault();
+        return;
+      }
+      if (editing) {
+        exitEditing();
+      } else {
+        enterEditing();
+      }
+    },
+    [editing, enterEditing, exitEditing],
+  );
 
   const handlePreviewKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
@@ -191,7 +220,8 @@ export function EditableMarkdownCell({
           className="cloud-markdown-cell-action"
           aria-label={editing ? "Render markdown" : "Edit markdown"}
           title={editing ? "Render markdown" : "Edit markdown"}
-          onClick={editing ? exitEditing : enterEditing}
+          onMouseDown={handleActionMouseDown}
+          onClick={handleActionClick}
         >
           {editing ? <Check aria-hidden="true" /> : <Pencil aria-hidden="true" />}
         </button>
