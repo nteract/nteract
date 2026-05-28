@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
 pub const DIAGNOSTICS_UPLOAD_ENDPOINT: &str =
@@ -28,6 +28,7 @@ struct PreparedArchive {
     name: String,
     size: u64,
     files: Vec<String>,
+    uploading: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -109,7 +110,9 @@ pub async fn prepare_diagnostics_archive(
 
     let mut archives = state.archives.lock().map_err(|e| e.to_string())?;
     if let Some(previous) = archives.insert(archive_id, prepared) {
-        cleanup_prepared_archive_files(&previous.path);
+        if !previous.uploading {
+            cleanup_prepared_archive_files(&previous.path);
+        }
     }
 
     Ok(response)
@@ -121,19 +124,28 @@ pub async fn upload_prepared_diagnostics(
     archive_id: String,
 ) -> Result<DiagnosticsUploadResult, String> {
     let prepared = {
-        let archives = state.archives.lock().map_err(|e| e.to_string())?;
-        archives
-            .get(&archive_id)
-            .cloned()
-            .ok_or_else(|| "Diagnostics archive is no longer available.".to_string())?
+        let mut archives = state.archives.lock().map_err(|e| e.to_string())?;
+        let archive = archives
+            .get_mut(&archive_id)
+            .ok_or_else(|| "Diagnostics archive is no longer available.".to_string())?;
+        if archive.uploading {
+            return Err("Diagnostics archive upload is already in progress.".to_string());
+        }
+        archive.uploading = true;
+        archive.clone()
     };
 
     let result = upload_archive(&prepared).await;
 
+    let mut archives = state.archives.lock().map_err(|e| e.to_string())?;
     if result.is_ok() {
-        let mut archives = state.archives.lock().map_err(|e| e.to_string())?;
         if let Some(archive) = archives.remove(&archive_id) {
             cleanup_prepared_archive_files(&archive.path);
+        }
+    } else if let Some(archive) = archives.get_mut(&archive_id) {
+        archive.uploading = false;
+        if !archive.path.exists() {
+            archives.remove(&archive_id);
         }
     }
 
@@ -147,7 +159,14 @@ pub async fn cleanup_prepared_diagnostics(
 ) -> Result<(), String> {
     let archive = {
         let mut archives = state.archives.lock().map_err(|e| e.to_string())?;
-        archives.remove(&archive_id)
+        if archives
+            .get(&archive_id)
+            .is_some_and(|archive| archive.uploading)
+        {
+            None
+        } else {
+            archives.remove(&archive_id)
+        }
     };
 
     if let Some(archive) = archive {
@@ -160,6 +179,7 @@ pub async fn cleanup_prepared_diagnostics(
 fn prepare_archive(app: &tauri::AppHandle, archive_id: &str) -> Result<PreparedArchive, String> {
     let runt_path =
         get_bundled_runt_path(app).ok_or_else(|| "Could not find bundled runt CLI.".to_string())?;
+    cleanup_stale_diagnostics_dirs(Duration::from_secs(60 * 60));
     let output_dir = diagnostics_temp_root().join(archive_id);
     fs::create_dir_all(&output_dir).map_err(|e| {
         format!(
@@ -216,6 +236,7 @@ fn prepare_archive_in_dir(runt_path: &Path, output_dir: &Path) -> Result<Prepare
         name,
         size: metadata.len(),
         files,
+        uploading: false,
     })
 }
 
@@ -401,6 +422,33 @@ fn cleanup_prepared_archive_dir(path: &Path) {
             path.display(),
             err
         );
+    }
+}
+
+fn cleanup_stale_diagnostics_dirs(max_age: Duration) {
+    let root = diagnostics_temp_root();
+    let now = SystemTime::now();
+    let Ok(entries) = fs::read_dir(&root) else {
+        return;
+    };
+
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        let Ok(age) = now.duration_since(modified) else {
+            continue;
+        };
+        if age > max_age {
+            cleanup_prepared_archive_dir(&path);
+        }
     }
 }
 
