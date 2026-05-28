@@ -1171,6 +1171,28 @@ describe("OIDC identity", () => {
     );
   });
 
+  it("accepts OIDC tokens with a configured resource audience", async () => {
+    const { env, token } = await oidcTokenFixture({
+      audience: "anaconda",
+      subject: "alice",
+    });
+
+    const identity = await authenticateRequestWithProviders(
+      new Request("https://cloud.test/n/demo/sync?operator=browser:tab", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }),
+      {
+        ...env,
+        NOTEBOOK_CLOUD_OIDC_AUDIENCE: "anaconda",
+      },
+    );
+
+    assert.equal(identity.actorLabel, "user:anaconda:alice/browser:tab");
+    assert.equal(identity.metadata.transport, "oidc-bearer");
+  });
+
   it("keeps Access bearer auth working when OIDC config is only partially set", async () => {
     const { env: accessEnv, token } = await accessTokenFixture({ subject: "alice" });
 
