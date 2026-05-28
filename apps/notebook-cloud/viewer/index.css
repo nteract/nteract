@@ -729,6 +729,64 @@ body {
   padding-block: 0.25rem 1rem;
 }
 
+.cloud-editable-markdown-cell[data-slot="cell-container"] {
+  padding-block: 0.25rem 1rem;
+}
+
+.cloud-markdown-preview {
+  min-width: 0;
+  cursor: text;
+  outline: none;
+}
+
+.cloud-markdown-preview:focus-visible {
+  border-radius: 6px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ring) 60%, transparent);
+}
+
+.cloud-markdown-preview-output {
+  padding-inline: 0 !important;
+}
+
+.cloud-markdown-cell-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 0;
+  border-radius: 6px;
+  color: color-mix(in srgb, var(--foreground) 54%, transparent);
+  background: transparent;
+}
+
+.cloud-markdown-cell-action:hover,
+.cloud-markdown-cell-action:focus-visible {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 8%, transparent);
+  outline: none;
+}
+
+.cloud-markdown-cell-action svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.cloud-markdown-presence {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  align-items: center;
+  padding-top: 0.25rem;
+}
+
+.cloud-markdown-presence span {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--background) 80%, transparent);
+}
+
 .cloud-editable-markdown-cell .cm-editor {
   border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
   border-radius: 6px;
