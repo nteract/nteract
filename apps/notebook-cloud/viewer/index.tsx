@@ -44,7 +44,7 @@ import {
   cloudSyncAuthFromPrototypeAuthState,
   fetchWithCloudPrototypeAuth,
   NOTEBOOK_CLOUD_DEFAULT_SCOPE,
-  NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY,
+  prepareCloudOidcViewerLogin,
   prototypeAuthDiagnostics,
   prototypeAuthSummary,
   storeCloudPrototypeDevAuth,
@@ -55,7 +55,6 @@ import {
 import { connectCloudSyncRuntime, type CloudSyncRuntime } from "./live-sync";
 import {
   beginOidcLogin,
-  clearCloudOidcAuth,
   completeOidcRedirect,
   normalizeOidcAuthConfig,
   refreshStoredOidcToken,
@@ -355,7 +354,8 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
     }
     try {
       setAuthAction("starting");
-      window.localStorage.setItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY, scope);
+      prepareCloudOidcViewerLogin(window.localStorage);
+      setScope(NOTEBOOK_CLOUD_DEFAULT_SCOPE);
       const url = await beginOidcLogin(authConfig.oidc, {
         currentUrl: window.location.href,
         storage: window.localStorage,
@@ -424,7 +424,7 @@ function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
             <button
               type="button"
               onClick={() => {
-                clearCloudOidcAuth(window.localStorage);
+                clearCloudPrototypeDevAuth(window.localStorage);
                 refreshAuthState();
               }}
             >
@@ -1422,7 +1422,8 @@ function CloudAuthControls({
     }
     try {
       setAuthAction("starting");
-      window.localStorage.setItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY, scope);
+      prepareCloudOidcViewerLogin(window.localStorage);
+      setScope(NOTEBOOK_CLOUD_DEFAULT_SCOPE);
       const url = await beginOidcLogin(authConfig.oidc, {
         currentUrl: window.location.href,
         storage: window.localStorage,
@@ -1507,7 +1508,7 @@ function CloudAuthControls({
             <button
               type="button"
               onClick={() => {
-                clearCloudOidcAuth(window.localStorage);
+                clearCloudPrototypeDevAuth(window.localStorage);
                 onAuthStateChange();
               }}
             >

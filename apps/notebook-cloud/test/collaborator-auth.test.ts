@@ -9,6 +9,7 @@ import {
   cloudHttpHeadersFromPrototypeAuthState,
   clearCloudPrototypeDevAuth,
   cloudSyncAuthFromPrototypeAuthState,
+  prepareCloudOidcViewerLogin,
   prototypeAuthDiagnostics,
   prototypeAuthSummary,
   readCloudPrototypeAuth,
@@ -136,6 +137,21 @@ describe("cloud collaborator auth", () => {
     assert.match(prototypeAuthSummary(state), /Browser session requesting editor/);
     assert.equal(storage.getItem(NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY), null);
     assert.equal(storage.getItem(NOTEBOOK_CLOUD_USER_STORAGE_KEY), null);
+  });
+
+  it("starts OIDC sign-in as a viewer without stale prototype identity", () => {
+    const storage = new MemoryStorage();
+    storage.setItem(NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY, "secret");
+    storage.setItem(NOTEBOOK_CLOUD_USER_STORAGE_KEY, "browser-editor");
+    storage.setItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY, "editor");
+    storage.setItem(NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY, "stale");
+
+    prepareCloudOidcViewerLogin(storage);
+
+    assert.equal(storage.getItem(NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY), null);
+    assert.equal(storage.getItem(NOTEBOOK_CLOUD_USER_STORAGE_KEY), null);
+    assert.equal(storage.getItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY), NOTEBOOK_CLOUD_DEFAULT_SCOPE);
+    assert.equal(storage.getItem(NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY), null);
   });
 
   it("preserves every explicit connection scope supported by the protocol", () => {

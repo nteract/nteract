@@ -236,6 +236,15 @@ export function storeCloudAccessAuth(
   storage.setItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY, input.scope);
 }
 
+export function prepareCloudOidcViewerLogin(
+  storage: Pick<CloudPrototypeAuthStorage, "removeItem" | "setItem">,
+): void {
+  clearCloudOidcAuth(storage);
+  storage.removeItem(NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY);
+  storage.removeItem(NOTEBOOK_CLOUD_USER_STORAGE_KEY);
+  storage.setItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY, NOTEBOOK_CLOUD_DEFAULT_SCOPE);
+}
+
 export function clearCloudPrototypeDevAuth(
   storage: Pick<CloudPrototypeAuthStorage, "removeItem">,
 ): void {
