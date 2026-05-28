@@ -1,6 +1,5 @@
 export interface CloudViewerLoadingPolicyConfig {
   headsHash: string | null;
-  renderEndpoint: string | null;
 }
 
 export interface CloudViewerLoadingPolicy {

@@ -8,7 +8,6 @@ describe("cloud viewer loading policy", () => {
     assert.deepEqual(
       cloudViewerLoadingPolicy({
         headsHash: null,
-        renderEndpoint: null,
       }),
       {
         shouldConnectLiveRoom: true,
@@ -22,21 +21,6 @@ describe("cloud viewer loading policy", () => {
     assert.deepEqual(
       cloudViewerLoadingPolicy({
         headsHash: "heads-123",
-        renderEndpoint: "/api/n/demo/renders/heads-123",
-      }),
-      {
-        shouldConnectLiveRoom: false,
-        shouldFetchSnapshotRender: true,
-        initialStatusMessage: "Loading pinned notebook snapshot...",
-      },
-    );
-  });
-
-  it("routes malformed pinned configs into the snapshot branch so the viewer can show an error", () => {
-    assert.deepEqual(
-      cloudViewerLoadingPolicy({
-        headsHash: "heads-123",
-        renderEndpoint: null,
       }),
       {
         shouldConnectLiveRoom: false,

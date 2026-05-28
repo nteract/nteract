@@ -68,7 +68,8 @@ describe("HTML script serialization", () => {
         html.indexOf("/assets/notebook-cloud-viewer.css"),
       "theme bootstrap must run before the stylesheet to avoid dark-to-light first paint",
     );
-    assert.match(html, /"renderEndpoint":"\/api\/n\/demo\/renders\/heads-123"/);
+    assert.doesNotMatch(html, /"renderEndpoint"/);
+    assert.match(html, /"pinnedRenderBasePath":"\/api\/n\/demo\/renders\/"/);
     assert.match(html, /"aclEndpoint":"\/api\/n\/demo\/acl"/);
     assert.match(html, /"invitesEndpoint":"\/api\/n\/demo\/invites"/);
     assert.match(html, /"blobBasePath":"\/api\/n\/demo\/blobs\/"/);
@@ -90,7 +91,8 @@ describe("HTML script serialization", () => {
     assert.equal(response.status, 200);
     assert.match(html, /id="nteract-cloud-viewer-config"/);
     assert.match(html, /"headsHash":null/);
-    assert.match(html, /"renderEndpoint":null/);
+    assert.doesNotMatch(html, /"renderEndpoint"/);
+    assert.match(html, /"pinnedRenderBasePath":"\/api\/n\/demo\/renders\/"/);
     assert.match(html, /"syncEndpoint":"\/n\/demo\/sync"/);
   });
 

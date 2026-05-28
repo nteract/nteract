@@ -1865,13 +1865,10 @@ function viewer(notebookId: string, request: Request, env: Env, headsHash?: stri
   const escaped = escapeHtml(notebookId);
   const title = headsHash ? `${escaped} @ ${escapeHtml(headsHash)}` : escaped;
   const notebookApiBasePath = `/api/n/${encodeURIComponent(notebookId)}`;
-  const renderEndpoint = headsHash
-    ? `${notebookApiBasePath}/renders/${encodeURIComponent(headsHash)}`
-    : null;
   const config = {
     notebookId,
     headsHash: headsHash ?? null,
-    renderEndpoint,
+    pinnedRenderBasePath: `${notebookApiBasePath}/renders/`,
     aclEndpoint: `${notebookApiBasePath}/acl`,
     invitesEndpoint: `${notebookApiBasePath}/invites`,
     syncEndpoint: `/n/${encodeURIComponent(notebookId)}/sync`,
