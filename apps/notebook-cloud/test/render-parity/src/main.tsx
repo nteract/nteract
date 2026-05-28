@@ -43,7 +43,13 @@ function CloudRendererParityHarness() {
   }, [resolvedTheme]);
 
   useEffect(() => {
-    projectCloudWidgetComms(widgetStore, cloudOutputParityWidgetComms, projectedWidgetCommIdsRef);
+    void projectCloudWidgetComms(
+      widgetStore,
+      cloudOutputParityWidgetComms,
+      projectedWidgetCommIdsRef,
+    ).catch((err: unknown) => {
+      setError(err instanceof Error ? err.message : String(err));
+    });
   }, [widgetStore]);
 
   useEffect(() => {

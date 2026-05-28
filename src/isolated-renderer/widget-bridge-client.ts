@@ -28,8 +28,21 @@ import {
 } from "@/components/isolated/rpc-methods";
 import { createWidgetStore, type WidgetStore } from "@/components/widgets/widget-store";
 
-/** Blob URL pattern: http://127.0.0.1:{port}/blob/{hash} */
-const BLOB_URL_RE = /^https?:\/\/127\.0\.0\.1:\d+\/blob\/[a-f0-9]+$/;
+function isLocalDaemonBlobUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      url.hostname === "127.0.0.1" &&
+      url.port.length > 0 &&
+      url.search === "" &&
+      url.hash === "" &&
+      /^\/blob\/[a-f0-9]+$/.test(url.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Fetch the blob URL at each `bufferPaths` position in `state` and replace
@@ -53,7 +66,7 @@ async function resolveBlobUrlsInPlace(
         if (typeof current !== "object" || current === null) return;
         current = (current as Record<string, unknown>)[segment];
       }
-      if (typeof current !== "string" || !BLOB_URL_RE.test(current)) return;
+      if (typeof current !== "string" || !isLocalDaemonBlobUrl(current)) return;
       try {
         const resp = await fetch(current);
         if (!resp.ok) return;

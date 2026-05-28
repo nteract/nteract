@@ -1,3 +1,5 @@
+import type { BlobRef, BlobResolver } from "runtimed";
+
 export interface SnapshotWidgetComm {
   comm_id: string;
   target_name: string;
@@ -5,17 +7,41 @@ export interface SnapshotWidgetComm {
   model_name: string;
   state: Record<string, unknown>;
   buffer_paths?: string[][];
+  text_paths?: string[][];
   seq: number;
 }
 
-export function snapshotWidgetCommsFromRuntimeState(runtimeState: unknown): SnapshotWidgetComm[] {
+export function snapshotWidgetCommsFromRuntimeState(
+  runtimeState: unknown,
+  blobResolver?: BlobResolver,
+): SnapshotWidgetComm[] {
   const comms = asRecord(asRecord(runtimeState).comms);
-  return normalizeSnapshotWidgetComms(
+  const normalized = normalizeSnapshotWidgetComms(
     Object.entries(comms).map(([commId, entry]) => ({
       ...asRecord(entry),
       comm_id: commId,
     })),
   );
+  return blobResolver ? resolveSnapshotWidgetComms(normalized, blobResolver) : normalized;
+}
+
+export function resolveSnapshotWidgetComms(
+  comms: readonly SnapshotWidgetComm[],
+  blobResolver: BlobResolver,
+): SnapshotWidgetComm[] {
+  return comms.map((comm) => {
+    const bufferPaths: string[][] = [];
+    const textPaths: string[][] = [];
+    const state = resolveCommStateValue(comm.state, blobResolver, [], bufferPaths, textPaths);
+    const mergedBufferPaths = [...(comm.buffer_paths ?? []), ...bufferPaths];
+    const mergedTextPaths = [...(comm.text_paths ?? []), ...textPaths];
+    return {
+      ...comm,
+      state: asRecord(state),
+      ...(mergedBufferPaths.length > 0 ? { buffer_paths: mergedBufferPaths } : {}),
+      ...(mergedTextPaths.length > 0 ? { text_paths: mergedTextPaths } : {}),
+    };
+  });
 }
 
 export function normalizeSnapshotWidgetComms(value: unknown): SnapshotWidgetComm[] {
@@ -44,6 +70,7 @@ function normalizeSnapshotWidgetComm(value: unknown): SnapshotWidgetComm | null 
   const state = asRecord(entry.state);
 
   const bufferPaths = normalizeBufferPaths(entry.buffer_paths ?? entry.bufferPaths);
+  const textPaths = normalizeBufferPaths(entry.text_paths ?? entry.textPaths);
 
   return {
     comm_id: commId,
@@ -53,8 +80,109 @@ function normalizeSnapshotWidgetComm(value: unknown): SnapshotWidgetComm | null 
     model_name: modelName,
     state,
     ...(bufferPaths ? { buffer_paths: bufferPaths } : {}),
+    ...(textPaths ? { text_paths: textPaths } : {}),
     seq: numberValue(entry.seq) ?? 0,
   };
+}
+
+function resolveCommStateValue(
+  value: unknown,
+  blobResolver: BlobResolver,
+  path: string[],
+  bufferPaths: string[][],
+  textPaths: string[][],
+): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item, index) =>
+      resolveCommStateValue(item, blobResolver, [...path, String(index)], bufferPaths, textPaths),
+    );
+  }
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+
+  const record = value as Record<string, unknown>;
+  // Runtime ContentRef inline wrappers are exclusive: `{ inline: value }`.
+  // Require the exact wrapper shape so ordinary widget state objects that use
+  // an `inline` property are preserved.
+  if (isInlineContentRef(record)) {
+    return record.inline;
+  }
+
+  const blobRef = blobRefFromRecord(record);
+  if (blobRef) {
+    const lastKey = path[path.length - 1];
+    const url = blobResolver.url(blobRef);
+    if (lastKey !== "_esm" && lastKey !== "_css") {
+      if (isTextMediaType(blobRef.media_type)) {
+        textPaths.push(path);
+      } else {
+        bufferPaths.push(path);
+      }
+    }
+    return url;
+  }
+
+  const resolved: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(record)) {
+    resolved[key] = resolveCommStateValue(
+      child,
+      blobResolver,
+      [...path, key],
+      bufferPaths,
+      textPaths,
+    );
+  }
+  return resolved;
+}
+
+function isInlineContentRef(value: Record<string, unknown>): boolean {
+  return hasOwn(value, "inline") && Object.keys(value).length === 1;
+}
+
+function blobRefFromRecord(value: Record<string, unknown>): BlobRef | null {
+  if (!isBlobContentRef(value)) return null;
+  return {
+    blob: value.blob,
+    size: value.size,
+    media_type: typeof value.media_type === "string" ? value.media_type : undefined,
+  };
+}
+
+function isBlobContentRef(
+  value: Record<string, unknown>,
+): value is { blob: string; size: number; media_type?: unknown } {
+  if (!hasOwn(value, "blob") || !hasOwn(value, "size")) return false;
+  if (typeof value.blob !== "string" || typeof value.size !== "number") return false;
+  return Object.keys(value).every(
+    (key) => key === "blob" || key === "size" || key === "media_type",
+  );
+}
+
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function isTextMediaType(mediaType: unknown): boolean {
+  // Match runtimed-wasm's resolver: missing or unknown media_type stays on the
+  // binary path so legacy refs remain URL/DataView-compatible.
+  return typeof mediaType === "string" && !isBinaryMimeType(mediaType);
+}
+
+function isBinaryMimeType(mediaType: string): boolean {
+  const normalized = mediaType.split(";")[0]?.trim().toLowerCase() ?? "";
+  return (
+    normalized === "application/octet-stream" ||
+    normalized.startsWith("image/") ||
+    normalized.startsWith("audio/") ||
+    normalized.startsWith("video/") ||
+    normalized === "application/pdf" ||
+    normalized === "application/zip" ||
+    normalized === "application/gzip" ||
+    normalized === "application/x-gzip" ||
+    normalized === "application/vnd.apache.arrow.file" ||
+    normalized === "application/vnd.apache.arrow.stream"
+  );
 }
 
 function normalizeBufferPaths(value: unknown): string[][] | undefined {

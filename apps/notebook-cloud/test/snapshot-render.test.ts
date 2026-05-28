@@ -201,6 +201,97 @@ describe("snapshot pair render materialization", () => {
       },
     ]);
   });
+
+  it("resolves widget comm ContentRefs through hosted blob URLs", async () => {
+    const notebookBytes = await readFile(
+      new URL(
+        "../../../packages/runtimed/tests/fixtures/output_streaming/doc.bin",
+        import.meta.url,
+      ),
+    );
+    const peer = new RuntimeStatePeerHandle("runtime");
+    peer.put_comm_json(
+      "anywidget-model",
+      "jupyter.widget",
+      "anywidget",
+      "AnyModel",
+      JSON.stringify({
+        _model_module: "anywidget",
+        _model_name: "AnyModel",
+        _esm: {
+          blob: "esm-hash",
+          size: 24,
+          media_type: "text/javascript",
+        },
+        _css: {
+          blob: "css-hash",
+          size: 18,
+          media_type: "text/css",
+        },
+        label: {
+          blob: "label-hash",
+          size: 11,
+          media_type: "text/plain",
+        },
+        value: {
+          blob: "binary-hash",
+          size: 12,
+          media_type: "application/octet-stream",
+        },
+      }),
+      7,
+    );
+    const runtimeStateBytes = peer.save();
+    peer.free();
+
+    const render = await materializeSnapshotPairRender({
+      notebookId: "fixture-widget-anywidget",
+      notebookHeadsHash: "heads-fixture",
+      runtimeHeadsHash: "runtime-fixture",
+      notebookBytes,
+      runtimeStateBytes,
+      generatedAt: "2026-05-22T00:00:00.000Z",
+      blobResolver: createNotebookCloudBlobResolver({
+        baseUrl: "https://cloud.test/n/fixture-widget-anywidget",
+        blobBasePath: notebookCloudBlobBasePath("fixture-widget-anywidget"),
+      }),
+    });
+
+    assert.equal(
+      render.widget_comms[0]?.state._esm,
+      "https://cloud.test/api/n/fixture-widget-anywidget/blobs/esm-hash",
+    );
+    assert.equal(
+      render.widget_comms[0]?.state._css,
+      "https://cloud.test/api/n/fixture-widget-anywidget/blobs/css-hash",
+    );
+    assert.equal(
+      render.widget_comms[0]?.state.label,
+      "https://cloud.test/api/n/fixture-widget-anywidget/blobs/label-hash",
+    );
+    assert.equal(
+      render.widget_comms[0]?.state.value,
+      "https://cloud.test/api/n/fixture-widget-anywidget/blobs/binary-hash",
+    );
+    assert.deepEqual(render.widget_comms[0]?.buffer_paths, [["value"]]);
+    assert.deepEqual(render.widget_comms[0]?.text_paths, [["label"]]);
+    assert.equal(
+      render.blob_urls["esm-hash"],
+      "https://cloud.test/api/n/fixture-widget-anywidget/blobs/esm-hash",
+    );
+    assert.equal(
+      render.blob_urls["css-hash"],
+      "https://cloud.test/api/n/fixture-widget-anywidget/blobs/css-hash",
+    );
+    assert.equal(
+      render.blob_urls["label-hash"],
+      "https://cloud.test/api/n/fixture-widget-anywidget/blobs/label-hash",
+    );
+    assert.equal(
+      render.blob_urls["binary-hash"],
+      "https://cloud.test/api/n/fixture-widget-anywidget/blobs/binary-hash",
+    );
+  });
 });
 
 async function readJson(url: URL): Promise<Record<string, unknown>> {

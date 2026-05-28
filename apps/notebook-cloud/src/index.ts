@@ -1,4 +1,5 @@
 import type { Env, ExecutionContext, ExportedHandler } from "./cloudflare-types.ts";
+import type { BlobRef } from "runtimed";
 import { NotebookRoom } from "./notebook-room.ts";
 import {
   ACCESS_AUTH_TOKEN_PROTOCOL_PREFIX,
@@ -1187,7 +1188,7 @@ async function materializeSnapshotRenderCache(options: {
     };
   }
 
-  const missingBlobs = await findMissingRenderBlobs(bucket, options.notebookId, render.cells);
+  const missingBlobs = await findMissingRenderBlobs(bucket, options.notebookId, render);
   if (missingBlobs.length > 0) {
     cloudLog("warn", "render.materialization.missing_blobs", {
       notebook_id: options.notebookId,
@@ -1241,9 +1242,9 @@ async function materializeSnapshotRenderCache(options: {
 async function findMissingRenderBlobs(
   bucket: NonNullable<Env["NOTEBOOK_SNAPSHOTS"]>,
   notebookId: string,
-  cells: unknown,
+  render: unknown,
 ): Promise<MissingRenderBlob[]> {
-  const refs = Object.values(collectBlobRefs(cells));
+  const refs = collectRenderBlobRefs(render);
   const missing: Array<MissingRenderBlob | null> = [];
 
   for (let index = 0; index < refs.length; index += RENDER_BLOB_HEAD_CONCURRENCY) {
@@ -1267,6 +1268,21 @@ async function findMissingRenderBlobs(
   return missing
     .filter((entry): entry is MissingRenderBlob => entry !== null)
     .sort((left, right) => left.hash.localeCompare(right.hash));
+}
+
+function collectRenderBlobRefs(render: unknown): BlobRef[] {
+  const refs = collectBlobRefs(render);
+  const blobUrls = isRecord(render) ? render.blob_urls : undefined;
+  if (isRecord(blobUrls)) {
+    for (const hash of Object.keys(blobUrls)) {
+      refs[hash] ??= { blob: hash };
+    }
+  }
+  return Object.values(refs);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function routeBlob(

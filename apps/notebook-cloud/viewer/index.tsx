@@ -372,7 +372,11 @@ function NotebookViewer({
         if (cancelled || liveMaterializedRef.current) return;
 
         snapshotResolvedRef.current = true;
-        projectCloudWidgetComms(widgetStore, widgetComms, projectedWidgetCommIdsRef);
+        await projectCloudWidgetComms(widgetStore, widgetComms, projectedWidgetCommIdsRef, {
+          isAllowedBlobUrl: (url) => isConfiguredBlobUrl(url, config.blobBasePath),
+          shouldContinue: () => !cancelled && !liveMaterializedRef.current,
+        });
+        if (cancelled || liveMaterializedRef.current) return;
         preloadSiftWasmForCells(resolvedCells, {
           blobBasePath: config.blobBasePath,
           rendererAssetsBasePath: config.rendererAssetsBasePath,
@@ -442,6 +446,7 @@ function NotebookViewer({
       }
       const widgetComms = snapshotWidgetCommsFromRuntimeState(
         liveRuntime.handle.get_runtime_state(),
+        blobResolver,
       );
       const metadata = parseJsonOrNull(liveRuntime.handle.get_metadata_snapshot_json?.());
       const notebookLanguage =
@@ -452,8 +457,12 @@ function NotebookViewer({
       );
       if (disposed || sequence !== materializeSequence) return;
 
+      await projectCloudWidgetComms(widgetStore, widgetComms, projectedWidgetCommIdsRef, {
+        isAllowedBlobUrl: (url) => isConfiguredBlobUrl(url, config.blobBasePath),
+        shouldContinue: () => !disposed && sequence === materializeSequence,
+      });
+      if (disposed || sequence !== materializeSequence) return;
       liveMaterializedRef.current = true;
-      projectCloudWidgetComms(widgetStore, widgetComms, projectedWidgetCommIdsRef);
       setCells(resolvedCells);
       setStatus(
         resolvedCells.length === 0
@@ -463,6 +472,13 @@ function NotebookViewer({
               message: `Rendering ${resolvedCells.length} cells from the live notebook room.`,
             },
       );
+    };
+
+    const materializeLiveCellsSafely = (liveRuntime: CloudSyncRuntime) => {
+      void materializeLiveCells(liveRuntime).catch((error: unknown) => {
+        if (disposed) return;
+        console.warn("[notebook-cloud] live room materialization failed", error);
+      });
     };
 
     setPresence(initialCloudViewerPresence());
@@ -524,13 +540,13 @@ function NotebookViewer({
             }
           }),
           liveRuntime.engine.cellChanges$.subscribe(() => {
-            void materializeLiveCells(liveRuntime);
+            materializeLiveCellsSafely(liveRuntime);
           }),
           liveRuntime.engine.runtimeState$.subscribe(() => {
-            void materializeLiveCells(liveRuntime);
+            materializeLiveCellsSafely(liveRuntime);
           }),
         ];
-        void materializeLiveCells(liveRuntime);
+        materializeLiveCellsSafely(liveRuntime);
       })
       .catch((error: unknown) => {
         if (disposed) return;
@@ -1111,6 +1127,17 @@ function parseJsonOrNull(value: string | undefined): unknown {
     return JSON.parse(value) as unknown;
   } catch {
     return null;
+  }
+}
+
+function isConfiguredBlobUrl(value: string, blobBasePath: string): boolean {
+  try {
+    const url = new URL(value, location.href);
+    const base = new URL(blobBasePath, location.href);
+    const basePath = base.pathname.endsWith("/") ? base.pathname : `${base.pathname}/`;
+    return url.origin === base.origin && url.pathname.startsWith(basePath);
+  } catch {
+    return false;
   }
 }
 
