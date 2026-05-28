@@ -2922,6 +2922,140 @@ async fn test_load_notebook_from_disk_routes_outputs_through_blob_store() {
 }
 
 #[tokio::test]
+async fn test_load_notebook_from_disk_hydrates_widget_metadata_into_runtime_comms() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let widget_bytes = b"widget-bytes";
+    let widget_data = base64::engine::general_purpose::STANDARD.encode(widget_bytes);
+
+    let notebook_json = serde_json::json!({
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {
+            "widgets": {
+                WIDGET_STATE_MIME: {
+                    "version_major": 2,
+                    "version_minor": 0,
+                    "state": {
+                        "slider-model": {
+                            "model_name": "IntSliderModel",
+                            "model_module": "@jupyter-widgets/controls",
+                            "model_module_version": "2.0.0",
+                            "state": {
+                                "_view_name": "IntSliderView",
+                                "_view_module": "@jupyter-widgets/controls",
+                                "_view_module_version": "2.0.0",
+                                "description": "Answer",
+                                "value": 42
+                            },
+                            "buffers": [
+                                {
+                                    "encoding": "base64",
+                                    "path": ["binary_value"],
+                                    "data": widget_data
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "cells": [
+            {
+                "id": "cell-widget",
+                "cell_type": "code",
+                "source": "slider",
+                "execution_count": 1,
+                "metadata": {},
+                "outputs": [
+                    {
+                        "output_type": "display_data",
+                        "data": {
+                            "application/vnd.jupyter.widget-view+json": {
+                                "version_major": 2,
+                                "version_minor": 0,
+                                "model_id": "slider-model"
+                            },
+                            "text/plain": "IntSlider(value=42)"
+                        },
+                        "metadata": {}
+                    }
+                ]
+            }
+        ]
+    });
+
+    let ipynb_path = tmp.path().join("widget-load.ipynb");
+    std::fs::write(
+        &ipynb_path,
+        serde_json::to_string_pretty(&notebook_json).unwrap(),
+    )
+    .unwrap();
+
+    let notebook_id = ipynb_path.to_string_lossy().to_string();
+    let mut doc = notebook_doc::NotebookDoc::new(&notebook_id);
+    let mut state_doc = RuntimeStateDoc::new();
+
+    load_notebook_from_disk_with_state_doc(
+        &mut doc,
+        Some(&mut state_doc),
+        &ipynb_path,
+        &blob_store,
+    )
+    .await
+    .unwrap();
+
+    let comm = state_doc
+        .get_comm("slider-model")
+        .expect("widget metadata should hydrate RuntimeStateDoc comm");
+    assert_eq!(comm.target_name, JUPYTER_WIDGET_TARGET);
+    assert_eq!(comm.model_name, "IntSliderModel");
+    assert_eq!(comm.model_module, "@jupyter-widgets/controls");
+    assert_eq!(
+        comm.state["_model_name"],
+        serde_json::json!("IntSliderModel")
+    );
+    assert_eq!(
+        comm.state["_model_module"],
+        serde_json::json!("@jupyter-widgets/controls")
+    );
+    assert_eq!(
+        comm.state["_model_module_version"],
+        serde_json::json!("2.0.0")
+    );
+    assert_eq!(comm.state["_view_name"], serde_json::json!("IntSliderView"));
+    assert_eq!(comm.state["value"], serde_json::json!(42));
+
+    let binary_ref = &comm.state["binary_value"];
+    let binary_hash = binary_ref
+        .get("blob")
+        .and_then(serde_json::Value::as_str)
+        .expect("widget buffer should be stored as a blob ref");
+    assert_eq!(
+        binary_ref["media_type"],
+        serde_json::json!("application/octet-stream")
+    );
+    assert_eq!(
+        blob_store.get(binary_hash).await.unwrap().as_deref(),
+        Some(widget_bytes.as_slice())
+    );
+
+    let eid = doc
+        .get_execution_id("cell-widget")
+        .expect("widget output should still link through RuntimeStateDoc");
+    let outputs = state_doc.get_outputs(&eid);
+    let parsed_manifest: crate::output_store::OutputManifest =
+        serde_json::from_value(outputs[0].clone()).unwrap();
+    let resolved = crate::output_store::resolve_manifest(&parsed_manifest, &blob_store)
+        .await
+        .unwrap();
+    assert_eq!(
+        resolved["data"]["application/vnd.jupyter.widget-view+json"]["model_id"],
+        serde_json::json!("slider-model")
+    );
+}
+
+#[tokio::test]
 async fn test_load_notebook_reuses_matching_durable_execution_id() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);

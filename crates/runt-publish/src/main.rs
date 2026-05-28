@@ -654,6 +654,48 @@ mod tests {
     }
 
     #[test]
+    fn collects_widget_comm_state_blobs_from_runtime_snapshot() {
+        let mut state_doc = RuntimeStateDoc::new();
+        state_doc
+            .put_comm(
+                "widget-model",
+                "jupyter.widget",
+                "anywidget",
+                "AnyModel",
+                &json!({
+                    "_model_module": "anywidget",
+                    "_model_name": "AnyModel",
+                    "_esm": {
+                        "blob": "esm-hash",
+                        "size": 24,
+                        "media_type": "text/javascript"
+                    },
+                    "binary_value": {
+                        "blob": "binary-hash",
+                        "size": 12,
+                        "media_type": "application/octet-stream"
+                    }
+                }),
+                0,
+            )
+            .unwrap();
+
+        let runtime_state_bytes = state_doc.doc_mut().save();
+        let refs = collect_snapshot_blob_refs(&runtime_state_bytes).unwrap();
+
+        assert_eq!(
+            refs["esm-hash"].media_type.as_deref(),
+            Some("text/javascript")
+        );
+        assert_eq!(refs["esm-hash"].size, Some(24));
+        assert_eq!(
+            refs["binary-hash"].media_type.as_deref(),
+            Some("application/octet-stream")
+        );
+        assert_eq!(refs["binary-hash"].size, Some(12));
+    }
+
+    #[test]
     fn default_id_is_file_stem_slug() {
         assert_eq!(
             default_notebook_id(Path::new("/tmp/Topic Viz!.ipynb")),

@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use super::*;
+use base64::Engine as _;
 
 pub(crate) struct ParsedIpynbCells {
     pub cells: Vec<CellSnapshot>,
@@ -162,6 +163,7 @@ type ResolvedAssets = HashMap<String, String>;
 pub(crate) struct ParsedStreamingNotebook {
     pub cells: Vec<StreamingCell>,
     pub metadata: Option<NotebookMetadataSnapshot>,
+    pub metadata_value: Option<serde_json::Value>,
     pub attachments: NbformatAttachmentMap,
 }
 type StreamingLoadBatchEntry = (
@@ -246,10 +248,10 @@ pub(crate) fn parse_notebook_jiter(bytes: &[u8]) -> Result<ParsedStreamingNotebo
     };
 
     // Parse metadata by converting to serde_json (metadata is small)
-    let metadata = jobj_get(obj, "metadata").map(|m| {
-        let serde_meta = jiter_to_serde(m);
-        NotebookMetadataSnapshot::from_metadata_value(&serde_meta)
-    });
+    let metadata_value = jobj_get(obj, "metadata").map(jiter_to_serde);
+    let metadata = metadata_value
+        .as_ref()
+        .map(NotebookMetadataSnapshot::from_metadata_value);
 
     let cells_arr = match jobj_get(obj, "cells") {
         Some(jiter::JsonValue::Array(arr)) => arr,
@@ -258,6 +260,7 @@ pub(crate) fn parse_notebook_jiter(bytes: &[u8]) -> Result<ParsedStreamingNotebo
             return Ok(ParsedStreamingNotebook {
                 cells: vec![],
                 metadata,
+                metadata_value,
                 attachments: HashMap::new(),
             })
         }
@@ -350,8 +353,189 @@ pub(crate) fn parse_notebook_jiter(bytes: &[u8]) -> Result<ParsedStreamingNotebo
     Ok(ParsedStreamingNotebook {
         cells,
         metadata,
+        metadata_value,
         attachments,
     })
+}
+
+#[derive(Debug)]
+struct LoadedWidgetComm {
+    comm_id: String,
+    model_module: String,
+    model_name: String,
+    state: serde_json::Value,
+    seq: u64,
+}
+
+async fn widget_comms_from_notebook_metadata(
+    metadata: Option<&serde_json::Value>,
+    blob_store: &BlobStore,
+) -> Vec<LoadedWidgetComm> {
+    let Some(models) = metadata
+        .and_then(|metadata| metadata.get("widgets"))
+        .and_then(|widgets| widgets.get(WIDGET_STATE_MIME))
+        .and_then(|widget_state| widget_state.get("state"))
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Vec::new();
+    };
+
+    let mut entries: Vec<_> = models.iter().collect();
+    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+    let mut comms = Vec::new();
+    for (seq, (comm_id, model)) in entries.into_iter().enumerate() {
+        let Some(model_name) = widget_model_metadata_field(model, "model_name") else {
+            warn!(
+                "[notebook-sync] Skipping widget metadata model {} with missing model_name",
+                comm_id
+            );
+            continue;
+        };
+        let Some(model_module) = widget_model_metadata_field(model, "model_module") else {
+            warn!(
+                "[notebook-sync] Skipping widget metadata model {} with missing model_module",
+                comm_id
+            );
+            continue;
+        };
+
+        let mut state = model
+            .get("state")
+            .filter(|value| value.is_object())
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        ensure_widget_state_model_field(&mut state, "_model_name", &model_name);
+        ensure_widget_state_model_field(&mut state, "_model_module", &model_module);
+        if let Some(version) = widget_model_metadata_field(model, "model_module_version") {
+            ensure_widget_state_model_field(&mut state, "_model_module_version", &version);
+        }
+
+        let (buffer_paths, buffers) = widget_metadata_buffers(model);
+        let (state, _) =
+            crate::output_prep::store_widget_buffers(&state, &buffer_paths, &buffers, blob_store)
+                .await;
+
+        comms.push(LoadedWidgetComm {
+            comm_id: comm_id.clone(),
+            model_module,
+            model_name,
+            state,
+            seq: seq as u64,
+        });
+    }
+
+    comms
+}
+
+fn widget_model_metadata_field(model: &serde_json::Value, key: &str) -> Option<String> {
+    let state_key = format!("_{key}");
+    model
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            model
+                .get("state")
+                .and_then(|state| state.get(&state_key))
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+}
+
+fn ensure_widget_state_model_field(state: &mut serde_json::Value, key: &str, value: &str) {
+    let Some(obj) = state.as_object_mut() else {
+        return;
+    };
+    if obj
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|existing| !existing.is_empty())
+        .is_none()
+    {
+        obj.insert(
+            key.to_string(),
+            serde_json::Value::String(value.to_string()),
+        );
+    }
+}
+
+fn widget_metadata_buffers(model: &serde_json::Value) -> (Vec<Vec<String>>, Vec<Vec<u8>>) {
+    let Some(buffers) = model.get("buffers").and_then(serde_json::Value::as_array) else {
+        return (Vec::new(), Vec::new());
+    };
+
+    let mut paths = Vec::new();
+    let mut bytes = Vec::new();
+    for buffer in buffers {
+        let encoding = buffer
+            .get("encoding")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("base64");
+        if encoding != "base64" {
+            warn!(
+                "[notebook-sync] Skipping widget metadata buffer with unsupported encoding {}",
+                encoding
+            );
+            continue;
+        }
+
+        let Some(path) = widget_metadata_buffer_path(buffer.get("path")) else {
+            warn!("[notebook-sync] Skipping widget metadata buffer with invalid path");
+            continue;
+        };
+        let Some(data) = buffer.get("data").and_then(serde_json::Value::as_str) else {
+            warn!("[notebook-sync] Skipping widget metadata buffer with missing data");
+            continue;
+        };
+        let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(data) else {
+            warn!("[notebook-sync] Skipping widget metadata buffer with invalid base64 data");
+            continue;
+        };
+
+        paths.push(path);
+        bytes.push(decoded);
+    }
+
+    (paths, bytes)
+}
+
+fn widget_metadata_buffer_path(value: Option<&serde_json::Value>) -> Option<Vec<String>> {
+    let path = value?.as_array()?;
+    let segments = path
+        .iter()
+        .filter_map(|segment| {
+            segment
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| segment.as_u64().map(|value| value.to_string()))
+                .or_else(|| segment.as_i64().map(|value| value.to_string()))
+        })
+        .collect::<Vec<_>>();
+    if segments.len() == path.len() {
+        Some(segments)
+    } else {
+        None
+    }
+}
+
+fn write_widget_comms_to_state_doc(
+    state_doc: &mut RuntimeStateDoc,
+    comms: &[LoadedWidgetComm],
+) -> Result<(), runtime_doc::RuntimeStateError> {
+    for comm in comms {
+        state_doc.put_comm(
+            &comm.comm_id,
+            JUPYTER_WIDGET_TARGET,
+            &comm.model_module,
+            &comm.model_name,
+            &comm.state,
+            comm.seq,
+        )?;
+    }
+    Ok(())
 }
 
 /// Convert a single output `serde_json::Value` to a blob store manifest hash.
@@ -455,6 +639,8 @@ where
     let parsed = parse_notebook_jiter(&bytes)?;
     let cells = parsed.cells;
     let metadata = parsed.metadata;
+    let widget_comms =
+        widget_comms_from_notebook_metadata(parsed.metadata_value.as_ref(), &room.blob_store).await;
     let nbformat_attachments = parsed.attachments;
 
     let total_cells = cells.len();
@@ -471,6 +657,12 @@ where
         .map(|p| p.to_string_lossy().to_string());
     let context_id = super::notebook_execution_context_id(room, notebook_path.as_deref());
     let durable_records = durable_execution_records(execution_store, &context_id).await;
+
+    if !widget_comms.is_empty() {
+        room.state
+            .with_doc(|sd| write_widget_comms_to_state_doc(sd, &widget_comms))
+            .map_err(|e| format!("Failed to load widget metadata into runtime state: {e}"))?;
+    }
 
     // 2. Stream cells in batches
     let mut cell_iter = cells.into_iter().enumerate().peekable();
@@ -684,9 +876,15 @@ pub(crate) async fn load_notebook_from_disk_with_state_doc_and_execution_store(
         attachments: nbformat_attachments,
     } = parse_cells_from_ipynb(&json)
         .ok_or_else(|| "Failed to parse cells from notebook".to_string())?;
+    let widget_comms = widget_comms_from_notebook_metadata(json.get("metadata"), blob_store).await;
     let context_id = path.to_string_lossy().to_string();
     let durable_records = durable_execution_records(execution_store, &context_id).await;
     let mut claimed_execution_ids = HashSet::new();
+
+    if let Some(ref mut sd) = state_doc {
+        write_widget_comms_to_state_doc(sd, &widget_comms)
+            .map_err(|e| format!("Failed to load widget metadata into state doc: {}", e))?;
+    }
 
     // Populate cells in the doc
     for (i, cell) in cells.iter().enumerate() {
