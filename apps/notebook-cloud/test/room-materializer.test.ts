@@ -1,7 +1,18 @@
 import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import type { DurableObjectState, Env } from "../src/cloudflare-types.ts";
+import type {
+  D1Database,
+  D1PreparedStatement,
+  D1Result,
+  D1Value,
+  DurableObjectState,
+  Env,
+  R2Bucket,
+  R2Object,
+  R2ObjectBody,
+  R2PutOptions,
+} from "../src/cloudflare-types.ts";
 import { authenticateDevRequest } from "../src/identity.ts";
 import { FrameType, encodeTypedFrame, type FrameTypeValue } from "../src/protocol.ts";
 import { RoomMaterializer } from "../src/room-materializer.ts";
@@ -495,6 +506,457 @@ describe("RoomMaterializer", () => {
     assert.deepEqual(JSON.parse(viewer.get_cells_json()), []);
   });
 
+  it("keeps legacy versioned checkpoints when no published snapshot is available", async () => {
+    const state = fakeState();
+    const checkpointSnapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "legacy-cell",
+      "Legacy versioned checkpoint\n",
+    );
+    await Promise.all([
+      state.storage.put(
+        "room-host:notebook-doc",
+        arrayBufferFromBytes(checkpointSnapshot.notebookBytes),
+      ),
+      state.storage.put(
+        "room-host:runtime-state-doc",
+        arrayBufferFromBytes(checkpointSnapshot.runtimeStateBytes),
+      ),
+      state.storage.put("room-host:checkpoint", {
+        version: 2,
+        notebook_heads: ["legacy"],
+        runtime_state_heads: ["legacy-runtime"],
+        saved_at: "2026-05-27T00:00:00.000Z",
+      }),
+    ]);
+
+    const reloaded = new RoomMaterializer("demo", state, {} as Env);
+    const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
+    await syncMaterializerWithClient(
+      reloaded,
+      {
+        id: "peer-viewer",
+        identity: authenticateDevRequest(
+          new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
+        ),
+      },
+      viewer,
+    );
+
+    const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
+    assert.deepEqual(
+      cells.map((cell) => [cell.id, cell.source]),
+      [["legacy-cell", "Legacy versioned checkpoint\n"]],
+    );
+  });
+
+  it("uses the latest published snapshot instead of legacy versioned checkpoints", async () => {
+    const state = fakeState();
+    const legacySnapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "legacy-cell",
+      "Legacy checkpoint edit\n",
+    );
+    await Promise.all([
+      state.storage.put(
+        "room-host:notebook-doc",
+        arrayBufferFromBytes(legacySnapshot.notebookBytes),
+      ),
+      state.storage.put(
+        "room-host:runtime-state-doc",
+        arrayBufferFromBytes(legacySnapshot.runtimeStateBytes),
+      ),
+      state.storage.put("room-host:checkpoint", {
+        version: 2,
+        notebook_heads: ["legacy"],
+        runtime_state_heads: ["legacy-runtime"],
+        saved_at: "2026-05-27T00:00:00.000Z",
+      }),
+    ]);
+
+    const publishedSnapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "published-cell",
+      "Published snapshot markdown\n",
+    );
+    const env = fakePublishedSnapshotEnv({
+      notebookId: "demo",
+      revisionId: "revision-current",
+      actorLabel: "user:dev:publisher/agent:runt-publish",
+      notebookBytes: publishedSnapshot.notebookBytes,
+      runtimeStateBytes: publishedSnapshot.runtimeStateBytes,
+    });
+
+    const reloaded = new RoomMaterializer("demo", state, env);
+    const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
+    await syncMaterializerWithClient(
+      reloaded,
+      {
+        id: "peer-viewer",
+        identity: authenticateDevRequest(
+          new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
+        ),
+      },
+      viewer,
+    );
+
+    const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
+    assert.deepEqual(
+      cells.map((cell) => [cell.id, cell.source]),
+      [["published-cell", "Published snapshot markdown\n"]],
+    );
+  });
+
+  it("keeps legacy versioned checkpoints saved after the latest published snapshot", async () => {
+    const state = fakeState();
+    const legacySnapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "legacy-cell",
+      "Legacy checkpoint edit after publish\n",
+    );
+    await Promise.all([
+      state.storage.put(
+        "room-host:notebook-doc",
+        arrayBufferFromBytes(legacySnapshot.notebookBytes),
+      ),
+      state.storage.put(
+        "room-host:runtime-state-doc",
+        arrayBufferFromBytes(legacySnapshot.runtimeStateBytes),
+      ),
+      state.storage.put("room-host:checkpoint", {
+        version: 2,
+        notebook_heads: legacySnapshot.notebookHeads,
+        runtime_state_heads: legacySnapshot.runtimeStateHeads,
+        saved_at: "2026-05-29T00:00:00.000Z",
+      }),
+    ]);
+
+    const publishedSnapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "published-cell",
+      "Published snapshot markdown\n",
+    );
+    const env = fakePublishedSnapshotEnv({
+      notebookId: "demo",
+      revisionId: "revision-current",
+      actorLabel: "user:dev:publisher/agent:runt-publish",
+      notebookBytes: publishedSnapshot.notebookBytes,
+      runtimeStateBytes: publishedSnapshot.runtimeStateBytes,
+    });
+
+    const reloaded = new RoomMaterializer("demo", state, env);
+    const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
+    await syncMaterializerWithClient(
+      reloaded,
+      {
+        id: "peer-viewer",
+        identity: authenticateDevRequest(
+          new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
+        ),
+      },
+      viewer,
+    );
+
+    const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
+    assert.deepEqual(
+      cells.map((cell) => [cell.id, cell.source]),
+      [["legacy-cell", "Legacy checkpoint edit after publish\n"]],
+    );
+  });
+
+  it("keeps current checkpoints with no published baseline when a snapshot appears later", async () => {
+    const state = fakeState();
+    const checkpointSnapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "local-cell",
+      "Local room edit before first publish\n",
+    );
+    await Promise.all([
+      state.storage.put(
+        "room-host:notebook-doc",
+        arrayBufferFromBytes(checkpointSnapshot.notebookBytes),
+      ),
+      state.storage.put(
+        "room-host:runtime-state-doc",
+        arrayBufferFromBytes(checkpointSnapshot.runtimeStateBytes),
+      ),
+      state.storage.put("room-host:checkpoint", {
+        version: 4,
+        notebook_heads: checkpointSnapshot.notebookHeads,
+        runtime_state_heads: checkpointSnapshot.runtimeStateHeads,
+        saved_at: "2026-05-28T00:00:00.000Z",
+        published_revision_id: null,
+        published_notebook_heads: null,
+        published_runtime_state_heads: null,
+      }),
+    ]);
+
+    const publishedSnapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "published-cell",
+      "Later published snapshot\n",
+    );
+    const env = fakePublishedSnapshotEnv({
+      notebookId: "demo",
+      revisionId: "revision-current",
+      actorLabel: "user:dev:publisher/agent:runt-publish",
+      notebookBytes: publishedSnapshot.notebookBytes,
+      runtimeStateBytes: publishedSnapshot.runtimeStateBytes,
+    });
+
+    const reloaded = new RoomMaterializer("demo", state, env);
+    const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
+    await syncMaterializerWithClient(
+      reloaded,
+      {
+        id: "peer-viewer",
+        identity: authenticateDevRequest(
+          new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
+        ),
+      },
+      viewer,
+    );
+
+    const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
+    assert.deepEqual(
+      cells.map((cell) => [cell.id, cell.source]),
+      [["local-cell", "Local room edit before first publish\n"]],
+    );
+  });
+
+  it("uses the latest published snapshot instead of stale revision checkpoints", async () => {
+    const state = fakeState();
+    const staleSnapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "stale-cell",
+      "Stale room checkpoint\n",
+    );
+    await Promise.all([
+      state.storage.put(
+        "room-host:notebook-doc",
+        arrayBufferFromBytes(staleSnapshot.notebookBytes),
+      ),
+      state.storage.put(
+        "room-host:runtime-state-doc",
+        arrayBufferFromBytes(staleSnapshot.runtimeStateBytes),
+      ),
+      state.storage.put("room-host:checkpoint", {
+        version: 4,
+        notebook_heads: staleSnapshot.notebookHeads,
+        runtime_state_heads: staleSnapshot.runtimeStateHeads,
+        saved_at: "2026-05-27T00:00:00.000Z",
+        published_revision_id: "revision-old",
+        published_notebook_heads: staleSnapshot.notebookHeads,
+        published_runtime_state_heads: staleSnapshot.runtimeStateHeads,
+      }),
+    ]);
+
+    const publishedSnapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "published-cell",
+      "Published snapshot markdown\n",
+    );
+    const env = fakePublishedSnapshotEnv({
+      notebookId: "demo",
+      revisionId: "revision-new",
+      actorLabel: "user:dev:publisher/agent:runt-publish",
+      notebookBytes: publishedSnapshot.notebookBytes,
+      runtimeStateBytes: publishedSnapshot.runtimeStateBytes,
+    });
+
+    const reloaded = new RoomMaterializer("demo", state, env);
+    const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
+    await syncMaterializerWithClient(
+      reloaded,
+      {
+        id: "peer-viewer",
+        identity: authenticateDevRequest(
+          new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
+        ),
+      },
+      viewer,
+    );
+
+    const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
+    assert.deepEqual(
+      cells.map((cell) => [cell.id, cell.source]),
+      [["published-cell", "Published snapshot markdown\n"]],
+    );
+  });
+
+  it("keeps checkpoints with unpublished changes when a newer revision exists", async () => {
+    const state = fakeState();
+    const seedSnapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "edited-cell",
+      "Original checkpoint seed\n",
+    );
+    const editedSnapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "edited-cell",
+      "Unpublished live edit\n",
+    );
+    await Promise.all([
+      state.storage.put(
+        "room-host:notebook-doc",
+        arrayBufferFromBytes(editedSnapshot.notebookBytes),
+      ),
+      state.storage.put(
+        "room-host:runtime-state-doc",
+        arrayBufferFromBytes(editedSnapshot.runtimeStateBytes),
+      ),
+      state.storage.put("room-host:checkpoint", {
+        version: 4,
+        notebook_heads: editedSnapshot.notebookHeads,
+        runtime_state_heads: editedSnapshot.runtimeStateHeads,
+        saved_at: "2026-05-28T00:00:00.000Z",
+        published_revision_id: "revision-old",
+        published_notebook_heads: seedSnapshot.notebookHeads,
+        published_runtime_state_heads: seedSnapshot.runtimeStateHeads,
+      }),
+    ]);
+
+    const publishedSnapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "published-cell",
+      "Newer published snapshot\n",
+    );
+    const env = fakePublishedSnapshotEnv({
+      notebookId: "demo",
+      revisionId: "revision-new",
+      actorLabel: "user:dev:publisher/agent:runt-publish",
+      notebookBytes: publishedSnapshot.notebookBytes,
+      runtimeStateBytes: publishedSnapshot.runtimeStateBytes,
+    });
+
+    const reloaded = new RoomMaterializer("demo", state, env);
+    const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
+    await syncMaterializerWithClient(
+      reloaded,
+      {
+        id: "peer-viewer",
+        identity: authenticateDevRequest(
+          new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
+        ),
+      },
+      viewer,
+    );
+
+    const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
+    assert.deepEqual(
+      cells.map((cell) => [cell.id, cell.source]),
+      [["edited-cell", "Unpublished live edit\n"]],
+    );
+  });
+
+  it("falls back to a valid checkpoint when published snapshot lookup fails", async () => {
+    const state = fakeState();
+    const checkpointSnapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "checkpoint-cell",
+      "Checkpoint survives catalog outage\n",
+    );
+    await Promise.all([
+      state.storage.put(
+        "room-host:notebook-doc",
+        arrayBufferFromBytes(checkpointSnapshot.notebookBytes),
+      ),
+      state.storage.put(
+        "room-host:runtime-state-doc",
+        arrayBufferFromBytes(checkpointSnapshot.runtimeStateBytes),
+      ),
+      state.storage.put("room-host:checkpoint", {
+        version: 4,
+        notebook_heads: checkpointSnapshot.notebookHeads,
+        runtime_state_heads: checkpointSnapshot.runtimeStateHeads,
+        saved_at: "2026-05-28T00:00:00.000Z",
+        published_revision_id: "revision-current",
+        published_notebook_heads: checkpointSnapshot.notebookHeads,
+        published_runtime_state_heads: checkpointSnapshot.runtimeStateHeads,
+      }),
+    ]);
+
+    const env = failingPublishedSnapshotEnv();
+    const reloaded = new RoomMaterializer("demo", state, env);
+    const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
+    await syncMaterializerWithClient(
+      reloaded,
+      {
+        id: "peer-viewer",
+        identity: authenticateDevRequest(
+          new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
+        ),
+      },
+      viewer,
+    );
+
+    const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
+    assert.deepEqual(
+      cells.map((cell) => [cell.id, cell.source]),
+      [["checkpoint-cell", "Checkpoint survives catalog outage\n"]],
+    );
+  });
+
+  it("keeps a checkpoint seeded from the current published revision", async () => {
+    const state = fakeState();
+    const checkpointSnapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "edited-cell",
+      "Live edited checkpoint\n",
+    );
+    const publishedSnapshot = await createNotebookRoomSnapshot(
+      "demo",
+      "published-cell",
+      "Original published snapshot\n",
+    );
+    await Promise.all([
+      state.storage.put(
+        "room-host:notebook-doc",
+        arrayBufferFromBytes(checkpointSnapshot.notebookBytes),
+      ),
+      state.storage.put(
+        "room-host:runtime-state-doc",
+        arrayBufferFromBytes(checkpointSnapshot.runtimeStateBytes),
+      ),
+      state.storage.put("room-host:checkpoint", {
+        version: 4,
+        notebook_heads: checkpointSnapshot.notebookHeads,
+        runtime_state_heads: checkpointSnapshot.runtimeStateHeads,
+        saved_at: "2026-05-28T00:00:00.000Z",
+        published_revision_id: "revision-current",
+        published_notebook_heads: publishedSnapshot.notebookHeads,
+        published_runtime_state_heads: publishedSnapshot.runtimeStateHeads,
+      }),
+    ]);
+
+    const env = fakePublishedSnapshotEnv({
+      notebookId: "demo",
+      revisionId: "revision-current",
+      actorLabel: "user:dev:publisher/agent:runt-publish",
+      notebookBytes: publishedSnapshot.notebookBytes,
+      runtimeStateBytes: publishedSnapshot.runtimeStateBytes,
+    });
+
+    const reloaded = new RoomMaterializer("demo", state, env);
+    const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
+    await syncMaterializerWithClient(
+      reloaded,
+      {
+        id: "peer-viewer",
+        identity: authenticateDevRequest(
+          new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
+        ),
+      },
+      viewer,
+    );
+
+    const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
+    assert.deepEqual(
+      cells.map((cell) => [cell.id, cell.source]),
+      [["edited-cell", "Live edited checkpoint\n"]],
+    );
+  });
+
   it("rejects runtime peer and editor execution creation over runtime-state sync", async () => {
     const state = fakeState();
     const materializer = new RoomMaterializer("demo", state, {} as Env);
@@ -792,6 +1254,30 @@ async function createRoomHostWithAcceptedExecution(
   return loadRoomHostSnapshot(seedHost.save_notebook(), runtimeSeed.save());
 }
 
+async function createNotebookRoomSnapshot(
+  notebookId: string,
+  cellId: string,
+  source: string,
+): Promise<{
+  notebookBytes: Uint8Array;
+  runtimeStateBytes: Uint8Array;
+  notebookHeads: string[];
+  runtimeStateHeads: string[];
+}> {
+  const host = await createEmptyRoomHost(notebookId, "system/schema:notebook-cloud-room");
+  const owner = NotebookHandle.create_bootstrap("user:dev:publisher/agent:runt-publish");
+  syncHostWithClient(host, "peer-owner", "user:dev:publisher", true, true, owner);
+  owner.add_cell(0, cellId, "markdown");
+  owner.update_source(cellId, source);
+  applyClientChangesToHost(host, "peer-owner", "user:dev:publisher", true, true, owner);
+  return {
+    notebookBytes: host.save_notebook(),
+    runtimeStateBytes: host.save_runtime_state_doc(),
+    notebookHeads: Array.from(host.get_heads_hex()),
+    runtimeStateHeads: Array.from(host.get_runtime_state_heads_hex()),
+  };
+}
+
 async function syncMaterializerWithRuntimePeer(
   materializer: RoomMaterializer,
   peer: { id: string; identity: ReturnType<typeof authenticateDevRequest> },
@@ -1054,4 +1540,212 @@ function fakeState(): DurableObjectState {
     },
     waitUntil: () => undefined,
   };
+}
+
+function fakePublishedSnapshotEnv(input: {
+  notebookId: string;
+  revisionId: string;
+  actorLabel: string;
+  notebookBytes: Uint8Array;
+  runtimeStateBytes: Uint8Array;
+}): Env {
+  const snapshotKey = "test:notebook-snapshot";
+  const runtimeSnapshotKey = "test:runtime-state-snapshot";
+  const bucket = new FakeR2Bucket();
+  bucket.objects.set(snapshotKey, arrayBufferFromBytes(input.notebookBytes));
+  bucket.objects.set(runtimeSnapshotKey, arrayBufferFromBytes(input.runtimeStateBytes));
+  return {
+    DB: new FakeCatalogD1({
+      notebook: {
+        id: input.notebookId,
+        owner_principal: "user:dev:publisher",
+        title: null,
+        created_at: "2026-05-28T00:00:00.000Z",
+        updated_at: "2026-05-28T00:00:00.000Z",
+        latest_revision_id: input.revisionId,
+      },
+      revision: {
+        id: input.revisionId,
+        notebook_id: input.notebookId,
+        notebook_heads_hash: "heads-published",
+        runtime_heads_hash: "runtime-published",
+        snapshot_key: snapshotKey,
+        runtime_snapshot_key: runtimeSnapshotKey,
+        actor_label: input.actorLabel,
+        created_at: "2026-05-28T00:00:00.000Z",
+      },
+    }),
+    NOTEBOOK_SNAPSHOTS: bucket,
+  } as unknown as Env;
+}
+
+function failingPublishedSnapshotEnv(): Env {
+  const dbError = new Error("catalog unavailable");
+  return {
+    DB: {
+      prepare(): D1PreparedStatement {
+        throw dbError;
+      },
+      async exec(): Promise<D1Result> {
+        throw dbError;
+      },
+      async batch<T = unknown>(): Promise<D1Result<T>[]> {
+        throw dbError;
+      },
+    },
+    NOTEBOOK_SNAPSHOTS: new FakeR2Bucket(),
+  } as unknown as Env;
+}
+
+function arrayBufferFromBytes(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+}
+
+class FakeCatalogD1 implements D1Database {
+  constructor(
+    readonly catalog: {
+      notebook: {
+        id: string;
+        owner_principal: string;
+        title: string | null;
+        created_at: string;
+        updated_at: string;
+        latest_revision_id: string;
+      };
+      revision: {
+        id: string;
+        notebook_id: string;
+        notebook_heads_hash: string;
+        runtime_heads_hash: string;
+        snapshot_key: string;
+        runtime_snapshot_key: string;
+        actor_label: string;
+        created_at: string;
+      };
+    },
+  ) {}
+
+  prepare(query: string): D1PreparedStatement {
+    return new FakeCatalogStatement(this, query);
+  }
+
+  async exec(): Promise<D1Result> {
+    return okResult();
+  }
+
+  async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
+    return Promise.all(statements.map((statement) => statement.run<T>()));
+  }
+}
+
+class FakeCatalogStatement implements D1PreparedStatement {
+  private values: D1Value[] = [];
+
+  constructor(
+    private readonly db: FakeCatalogD1,
+    private readonly query: string,
+  ) {}
+
+  bind(...values: D1Value[]): D1PreparedStatement {
+    this.values = values;
+    return this;
+  }
+
+  async first<T = unknown>(): Promise<T | null> {
+    if (/FROM notebooks\s+WHERE id = \?/s.test(this.query)) {
+      const notebookId = this.values[0];
+      return notebookId === this.db.catalog.notebook.id ? (this.db.catalog.notebook as T) : null;
+    }
+    return null;
+  }
+
+  async run<T = unknown>(): Promise<D1Result<T>> {
+    return okResult<T>();
+  }
+
+  async all<T = unknown>(): Promise<D1Result<T>> {
+    if (/PRAGMA table_info\(notebook_revisions\)/.test(this.query)) {
+      return okResult([{ name: "runtime_snapshot_key" }] as T[]);
+    }
+    if (/FROM notebook_revisions/s.test(this.query)) {
+      const notebookId = this.values[0];
+      const results = notebookId === this.db.catalog.notebook.id ? [this.db.catalog.revision] : [];
+      return okResult(results as T[]);
+    }
+    if (/FROM notebook_blobs/s.test(this.query)) {
+      return okResult([]);
+    }
+    return okResult([]);
+  }
+}
+
+function okResult<T = unknown>(results: T[] = []): D1Result<T> {
+  return { results, success: true, meta: { changes: 0 } };
+}
+
+class FakeR2Bucket implements R2Bucket {
+  readonly objects = new Map<string, ArrayBuffer>();
+
+  async get(key: string): Promise<R2ObjectBody | null> {
+    const value = this.objects.get(key);
+    return value ? new FakeR2Object(key, value) : null;
+  }
+
+  async head(key: string): Promise<R2Object | null> {
+    const value = this.objects.get(key);
+    return value ? new FakeR2Object(key, value) : null;
+  }
+
+  async put(
+    key: string,
+    value: ReadableStream | ArrayBuffer | ArrayBufferView | string | null,
+    _options?: R2PutOptions,
+  ): Promise<R2Object> {
+    const bytes =
+      typeof value === "string"
+        ? new TextEncoder().encode(value).buffer
+        : value instanceof ArrayBuffer
+          ? value
+          : ArrayBuffer.isView(value)
+            ? value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength)
+            : new ArrayBuffer(0);
+    this.objects.set(key, bytes);
+    return new FakeR2Object(key, bytes);
+  }
+
+  async delete(key: string): Promise<void> {
+    this.objects.delete(key);
+  }
+}
+
+class FakeR2Object implements R2ObjectBody {
+  readonly version = "test";
+  readonly etag = "etag";
+  readonly httpEtag = "etag";
+  readonly uploaded = new Date("2026-05-28T00:00:00.000Z");
+  readonly httpMetadata = undefined;
+  readonly customMetadata = undefined;
+
+  constructor(
+    readonly key: string,
+    private readonly value: ArrayBuffer,
+  ) {}
+
+  get size(): number {
+    return this.value.byteLength;
+  }
+
+  get body(): ReadableStream {
+    return new Response(this.value).body!;
+  }
+
+  async arrayBuffer(): Promise<ArrayBuffer> {
+    return this.value.slice(0);
+  }
+
+  async text(): Promise<string> {
+    return new TextDecoder().decode(this.value);
+  }
+
+  writeHttpMetadata(_headers: Headers): void {}
 }
