@@ -221,12 +221,20 @@ async fn upload_archive(prepared: &PreparedArchive) -> Result<DiagnosticsUploadR
         ));
     }
 
-    let bytes = fs::read(&prepared.path).map_err(|e| {
+    let bytes = tokio::fs::read(&prepared.path).await.map_err(|e| {
         format!(
             "Failed to read diagnostics archive {}: {e}",
             prepared.path.display()
         )
     })?;
+    let uploaded_bytes = bytes.len() as u64;
+    if uploaded_bytes > DIAGNOSTICS_MAX_UPLOAD_BYTES {
+        return Err(format!(
+            "Diagnostics archive is {} but the upload limit is {}.",
+            format_bytes(uploaded_bytes),
+            format_bytes(DIAGNOSTICS_MAX_UPLOAD_BYTES)
+        ));
+    }
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
@@ -269,10 +277,12 @@ async fn upload_archive(prepared: &PreparedArchive) -> Result<DiagnosticsUploadR
         ));
     }
 
+    let upload_url = validate_upload_url(&create_response.upload_url)?;
+
     client
-        .put(&create_response.upload_url)
+        .put(upload_url)
         .header(reqwest::header::CONTENT_TYPE, UPLOAD_CONTENT_TYPE)
-        .header(reqwest::header::CONTENT_LENGTH, prepared.size)
+        .header(reqwest::header::CONTENT_LENGTH, uploaded_bytes)
         .body(bytes)
         .send()
         .await
@@ -284,8 +294,26 @@ async fn upload_archive(prepared: &PreparedArchive) -> Result<DiagnosticsUploadR
         id: create_response.id,
         token: create_response.token,
         expires_at: create_response.expires_at,
-        uploaded_bytes: prepared.size,
+        uploaded_bytes,
     })
+}
+
+fn validate_upload_url(upload_url: &str) -> Result<reqwest::Url, String> {
+    let parsed = reqwest::Url::parse(upload_url)
+        .map_err(|e| format!("Diagnostics service returned an invalid upload URL: {e}"))?;
+    if parsed.scheme() != "https" {
+        return Err("Diagnostics service returned a non-HTTPS upload URL.".to_string());
+    }
+    if parsed.host_str() != Some("diagnostics.runtimed.com") {
+        return Err("Diagnostics service returned an unexpected upload URL host.".to_string());
+    }
+    let Some(upload_id) = parsed.path().strip_prefix("/v1/diagnostics/uploads/") else {
+        return Err("Diagnostics service returned an unexpected upload URL path.".to_string());
+    };
+    if upload_id.is_empty() || upload_id.contains('/') {
+        return Err("Diagnostics service returned an unexpected upload URL path.".to_string());
+    }
+    Ok(parsed)
 }
 
 fn diagnostics_temp_root() -> PathBuf {
@@ -343,8 +371,14 @@ fn list_archive_entries(path: &Path) -> Result<Vec<String>, String> {
 
 fn cleanup_prepared_archive_files(path: &Path) {
     if let Some(parent) = path.parent() {
-        cleanup_prepared_archive_dir(parent);
-    } else if let Err(err) = fs::remove_file(path) {
+        let root = diagnostics_temp_root();
+        if parent.parent() == Some(root.as_path()) {
+            cleanup_prepared_archive_dir(parent);
+            return;
+        }
+    }
+
+    if let Err(err) = fs::remove_file(path) {
         log::debug!(
             "[diagnostics] Failed to remove diagnostics archive {}: {}",
             path.display(),
@@ -403,6 +437,35 @@ mod tests {
     fn limits_match_deployed_service_contract() {
         assert_eq!(DIAGNOSTICS_WARNING_BYTES, 26_214_400);
         assert_eq!(DIAGNOSTICS_MAX_UPLOAD_BYTES, 52_428_800);
+    }
+
+    #[test]
+    fn upload_url_validation_accepts_deployed_worker_upload_path() {
+        let url = validate_upload_url(
+            "https://diagnostics.runtimed.com/v1/diagnostics/uploads/abc?token=diag_123",
+        )
+        .expect("valid upload URL");
+
+        assert_eq!(url.host_str(), Some("diagnostics.runtimed.com"));
+    }
+
+    #[test]
+    fn upload_url_validation_rejects_unexpected_hosts() {
+        let err =
+            validate_upload_url("https://example.com/v1/diagnostics/uploads/abc?token=diag_123")
+                .expect_err("unexpected host should be rejected");
+
+        assert!(err.contains("unexpected upload URL host"));
+    }
+
+    #[test]
+    fn upload_url_validation_rejects_unexpected_paths() {
+        let err = validate_upload_url(
+            "https://diagnostics.runtimed.com/v1/diagnostics/uploads/abc/status?token=diag_123",
+        )
+        .expect_err("unexpected path should be rejected");
+
+        assert!(err.contains("unexpected upload URL path"));
     }
 
     #[test]
