@@ -3,6 +3,7 @@ import type { ReadOnlyNotebookCellData } from "../../../../src/components/cell/R
 import type { SupportedLanguage } from "../../../../src/components/editor/languages";
 import type { NteractEmbedHostContextPatch } from "../../../../src/components/isolated/host-context";
 import { resolveCell, type RenderCell, type ResolvedCell } from "../../viewer/render-resolution.ts";
+import type { SnapshotWidgetComm } from "../../src/widget-comms.ts";
 
 const ARROW_BLOB_HASH = "sha256:10bda18795f19e46bee92a2bb34606f89f089868c6b121b7f0526761c913b77f";
 
@@ -301,6 +302,26 @@ export const cloudOutputParityRenderCells: readonly RenderCell[] = [
         metadata: {},
       },
     ],
+  },
+];
+
+export const cloudOutputParityWidgetComms: readonly SnapshotWidgetComm[] = [
+  {
+    comm_id: "cloud-sift-progress",
+    target_name: "jupyter.widget",
+    model_module: "@jupyter-widgets/controls",
+    model_name: "IntProgressModel",
+    state: {
+      _model_module: "@jupyter-widgets/controls",
+      _model_name: "IntProgressModel",
+      description: "Resolving data files:",
+      value: 56,
+      min: 0,
+      max: 56,
+      bar_style: "success",
+      orientation: "horizontal",
+    },
+    seq: 1,
   },
 ];
 

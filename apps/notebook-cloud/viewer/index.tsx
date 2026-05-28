@@ -11,10 +11,15 @@ import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-co
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import type { TracebackCellTarget } from "@/components/outputs/traceback-output";
+import { useWidgetStoreRequired } from "@/components/widgets/widget-store-context";
 import { useTheme } from "@/hooks/useTheme";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { isTextAttributionEvent } from "runtimed";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
+import {
+  normalizeSnapshotWidgetComms,
+  snapshotWidgetCommsFromRuntimeState,
+} from "../src/widget-comms";
 import { EditableMarkdownCell, type CloudTextAttributionQueue } from "./editable-markdown-cell";
 import type { RemoteCellPresence } from "@/components/editor/presence-state";
 import {
@@ -51,6 +56,11 @@ import {
   CLOUD_VIEWER_THEME_STORAGE_KEY,
   installDocumentThemeSync,
 } from "./theme";
+import {
+  CLOUD_WIDGET_RENDERERS,
+  CloudWidgetStoreProvider,
+  projectCloudWidgetComms,
+} from "./widget-runtime";
 import "./index.css";
 
 interface CloudViewerConfig {
@@ -70,6 +80,7 @@ interface SnapshotRender {
   metadata?: unknown;
   source?: string;
   cells?: unknown;
+  widget_comms?: unknown;
 }
 
 type ViewerStatus =
@@ -160,6 +171,7 @@ function App() {
 function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
   const { config, blobResolver } = runtime;
   const { theme, setTheme, resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
+  const { store: widgetStore } = useWidgetStoreRequired();
   const [status, setStatus] = useState<ViewerStatus>({
     kind: "loading",
     message: "Loading notebook snapshot...",
@@ -171,6 +183,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
   const liveRuntimeRef = useRef<CloudSyncRuntime | null>(null);
   const liveMaterializedRef = useRef(false);
   const snapshotResolvedRef = useRef(false);
+  const projectedWidgetCommIdsRef = useRef(new Set<string>());
   const [presence, setPresence] = useState(initialCloudViewerPresence);
   const [livePresence, setLivePresence] = useState(emptyCloudLivePresenceSnapshot);
   const [connectionScope, setConnectionScope] = useState<string | null>(null);
@@ -228,6 +241,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
 
         const render = (await response.json()) as SnapshotRender;
         const rawCells = Array.isArray(render.cells) ? (render.cells as RenderCell[]) : [];
+        const widgetComms = normalizeSnapshotWidgetComms(render.widget_comms);
         const notebookLanguage = languageFromNotebookMetadata(render.metadata) ?? "python";
         notebookLanguageRef.current = notebookLanguage;
         const resolvedCells = await Promise.all(
@@ -236,6 +250,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
         if (cancelled || liveMaterializedRef.current) return;
 
         snapshotResolvedRef.current = true;
+        projectCloudWidgetComms(widgetStore, widgetComms, projectedWidgetCommIdsRef);
         preloadSiftWasmForCells(resolvedCells, {
           blobBasePath: config.blobBasePath,
           rendererAssetsBasePath: config.rendererAssetsBasePath,
@@ -263,7 +278,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
     return () => {
       cancelled = true;
     };
-  }, [blobResolver, config.renderEndpoint]);
+  }, [blobResolver, config.renderEndpoint, widgetStore]);
 
   useEffect(() => {
     let disposed = false;
@@ -303,6 +318,9 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
           return;
         }
       }
+      const widgetComms = snapshotWidgetCommsFromRuntimeState(
+        liveRuntime.handle.get_runtime_state(),
+      );
       const metadata = parseJsonOrNull(liveRuntime.handle.get_metadata_snapshot_json?.());
       const notebookLanguage =
         languageFromNotebookMetadata(metadata) ?? notebookLanguageRef.current ?? "python";
@@ -313,6 +331,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
       if (disposed || sequence !== materializeSequence) return;
 
       liveMaterializedRef.current = true;
+      projectCloudWidgetComms(widgetStore, widgetComms, projectedWidgetCommIdsRef);
       setCells(resolvedCells);
       setStatus(
         resolvedCells.length === 0
@@ -413,7 +432,7 @@ function NotebookViewer({ runtime }: { runtime: ViewerRuntime }) {
       setPresence((state) => reduceCloudViewerConnection(state, "disconnected"));
       setLivePresence(emptyCloudLivePresenceSnapshot());
     };
-  }, [authState, blobResolver, config.syncEndpoint, connectAttempt]);
+  }, [authState, blobResolver, config.syncEndpoint, connectAttempt, widgetStore]);
 
   const readOnlyCells = useMemo(
     () =>
@@ -936,9 +955,11 @@ createRoot(requireElement("#root")).render(
     fallback={(error) => <ViewerStartupError message={`Cloud viewer crashed: ${error.message}`} />}
   >
     <IsolatedRendererProvider loader={rendererBundle}>
-      <MediaProvider priority={CLOUD_VIEWER_PRIORITY}>
-        <App />
-      </MediaProvider>
+      <CloudWidgetStoreProvider>
+        <MediaProvider priority={CLOUD_VIEWER_PRIORITY} renderers={CLOUD_WIDGET_RENDERERS}>
+          <App />
+        </MediaProvider>
+      </CloudWidgetStoreProvider>
     </IsolatedRendererProvider>
   </ErrorBoundary>,
 );

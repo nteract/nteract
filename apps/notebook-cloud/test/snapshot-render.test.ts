@@ -1,7 +1,7 @@
 import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { initializeRuntimedWasm } from "../src/runtimed-wasm.ts";
+import { initializeRuntimedWasm, RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
 import { materializeSnapshotPairRender } from "../src/snapshot-render.ts";
 import {
   createNotebookCloudBlobResolver,
@@ -146,6 +146,60 @@ describe("snapshot pair render materialization", () => {
       render.blob_urls[blobHash],
       `https://cloud.test/api/n/fixture-sift-arrow/blobs/${encodeURIComponent(blobHash)}`,
     );
+  });
+
+  it("materializes RuntimeStateDoc widget comms for hosted widget views", async () => {
+    const notebookBytes = await readFile(
+      new URL(
+        "../../../packages/runtimed/tests/fixtures/output_streaming/doc.bin",
+        import.meta.url,
+      ),
+    );
+    const peer = new RuntimeStatePeerHandle("runtime");
+    peer.put_comm_json(
+      "progress-widget",
+      "jupyter.widget",
+      "@jupyter-widgets/controls",
+      "IntProgressModel",
+      JSON.stringify({
+        description: "Resolving data files:",
+        value: 56,
+        min: 0,
+        max: 56,
+        bar_style: "success",
+        orientation: "horizontal",
+      }),
+      4,
+    );
+    const runtimeStateBytes = peer.save();
+    peer.free();
+
+    const render = await materializeSnapshotPairRender({
+      notebookId: "fixture-widget-progress",
+      notebookHeadsHash: "heads-fixture",
+      runtimeHeadsHash: "runtime-fixture",
+      notebookBytes,
+      runtimeStateBytes,
+      generatedAt: "2026-05-22T00:00:00.000Z",
+    });
+
+    assert.deepEqual(render.widget_comms, [
+      {
+        comm_id: "progress-widget",
+        target_name: "jupyter.widget",
+        model_module: "@jupyter-widgets/controls",
+        model_name: "IntProgressModel",
+        state: {
+          description: "Resolving data files:",
+          value: 56,
+          min: 0,
+          max: 56,
+          bar_style: "success",
+          orientation: "horizontal",
+        },
+        seq: 4,
+      },
+    ]);
   });
 });
 

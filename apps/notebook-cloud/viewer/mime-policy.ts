@@ -1,12 +1,8 @@
 import { DEFAULT_PRIORITY } from "@/components/outputs/mime-priority";
 
-const WIDGET_VIEW_MIME = "application/vnd.jupyter.widget-view+json";
-
 /**
- * The published cloud viewer does not hydrate RuntimeStateDoc widget models
- * yet. Prefer a widget output's text/plain fallback when it exists, while
- * keeping every other shared nteract MIME priority unchanged.
+ * Keep cloud output selection aligned with the shared notebook renderer.
+ * Cloud hydrates RuntimeStateDoc widget models before rendering, so widget
+ * views should win over stale text fallbacks just like desktop.
  */
-export const CLOUD_VIEWER_PRIORITY = DEFAULT_PRIORITY.filter(
-  (mimeType) => mimeType !== WIDGET_VIEW_MIME,
-);
+export const CLOUD_VIEWER_PRIORITY = DEFAULT_PRIORITY;
