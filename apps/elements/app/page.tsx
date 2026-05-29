@@ -1,5 +1,13 @@
 import Link from "next/link";
-import { ArrowRight, Boxes, FileCode2, ListChecks, Palette, PanelLeft } from "lucide-react";
+import {
+  ArrowRight,
+  Boxes,
+  FileCode2,
+  ListChecks,
+  Palette,
+  PanelLeft,
+  ShieldCheck,
+} from "lucide-react";
 import { RailOutlineExample } from "@/components/rail-outline-example";
 
 const entries = [
@@ -22,10 +30,16 @@ const entries = [
     icon: FileCode2,
   },
   {
-    title: "Rendering catalog",
-    description: "Future home for markdown, output, and widget examples.",
-    href: "/docs",
+    title: "Output renderers",
+    description: "Runtime-free fixtures for current nteract output components.",
+    href: "/docs/output-renderers",
     icon: Boxes,
+  },
+  {
+    title: "Runtime surfaces",
+    description: "Trust and environment decisions with fixture state.",
+    href: "/docs/runtime-surfaces",
+    icon: ShieldCheck,
   },
   {
     title: "Theme surfaces",
@@ -68,7 +82,7 @@ export default function Home() {
       </section>
 
       <section className="border-t border-fd-border bg-fd-muted/20">
-        <div className="mx-auto grid max-w-6xl gap-4 px-6 py-8 md:grid-cols-2 lg:grid-cols-5">
+        <div className="mx-auto grid max-w-6xl gap-4 px-6 py-8 md:grid-cols-2 lg:grid-cols-3">
           {entries.map((entry) => (
             <Link
               key={entry.title}

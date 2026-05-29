@@ -15,7 +15,11 @@ const stats = [
   { label: "shadcn primitives", value: "24", detail: "current generic UI floor" },
   { label: "notebook domains", value: "7", detail: "first catalog targets" },
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
-  { label: "current imports", value: "6", detail: "used shell and runtime surfaces" },
+  {
+    label: "current imports",
+    value: "10",
+    detail: "used shell, runtime, theme, and renderer surfaces",
+  },
 ];
 
 const phases = [
@@ -33,9 +37,9 @@ const phases = [
   },
   {
     title: "Separate renderers",
-    state: "next",
+    state: "active",
     icon: FileCode2,
-    summary: "Output frames, MIME routing, isolated renderers, and display metadata.",
+    summary: "ANSI, JSON, image, traceback, MIME priority, and isolated-renderer blockers.",
   },
   {
     title: "Expose notebook themes",
@@ -93,9 +97,9 @@ const families = [
     family: "Outputs",
     source: "src/components/outputs/**",
     target: "nteract renderers",
-    status: "planned",
+    status: "active",
     intent:
-      "Catalog MIME routing, media frames, text output, errors, and isolated renderer affordances.",
+      "AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, TracebackOutput, and MIME priority now render from fixtures.",
   },
   {
     family: "Widgets",
@@ -134,7 +138,7 @@ const rules = [
   {
     title: "Use current components first",
     icon: ShieldCheck,
-    body: "Catalog pages render existing components through fixtures as soon as isolation allows. The cell anatomy page now stays limited to pieces the notebook app imports.",
+    body: "Catalog pages render existing components through fixtures as soon as isolation allows. Cell, runtime, theme, and output pages now start with real notebook pieces.",
   },
   {
     title: "Audit before cataloging",
