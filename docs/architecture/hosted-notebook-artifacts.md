@@ -27,6 +27,9 @@ The shared runtime work now gives us a cleaner path:
   separate origin boundaries; see `hosted-output-origin-isolation.md`.
 - Mixed output lists are segmented by the shared output renderer, not by the
   cloud viewer; see `output-rendering-segmentation.md`.
+- `runtime-state-document-identity.md` makes the `RuntimeStateDoc` a
+  first-class document identified from `NotebookDoc`, rather than only an
+  object nested under a notebook artifact path.
 
 ## Decision 1: Durable publish artifacts are snapshot pairs
 
@@ -44,6 +47,7 @@ A published revision is durable when these artifacts exist:
 The revision row records:
 
 - `notebook_heads_hash`
+- `runtime_state_doc_id`
 - `runtime_heads_hash`
 - `snapshot_key`
 - `runtime_snapshot_key`
@@ -60,7 +64,7 @@ leaves no revision row.
 
 ## Decision 2: R2 layout is deterministic
 
-For a notebook `n/:id`:
+The current compatibility layout for a notebook `n/:id` is:
 
 ```text
 n/{id}/snapshots/{notebookHeadsHash}.am
@@ -69,9 +73,20 @@ n/{id}/blobs/{sha256}
 n/{id}/renders/{notebookHeadsHash}.json
 ```
 
-The render path is derived. The first three paths are the durable publish
-artifact set, but hosts can precompute the render path at publish time to prove
-the snapshot pair and blob set are complete.
+New storage work should move toward the first-class document namespace in
+`runtime-state-document-identity.md`:
+
+```text
+docs/{docId}/snapshot/{headsHash}
+docs/{docId}/incremental/{chunkHash}
+blobs/{sha256}
+```
+
+The render path is derived. Snapshot paths and blob paths are the durable
+publish artifact set; incremental paths are an optional future optimization that
+should follow Automerge Repo's logical storage shape rather than introduce a
+new file-extension convention. Hosts can precompute the render path at publish
+time to prove the snapshot pair and blob set are complete.
 
 For connected notebook pages, the live room supersedes the render path. `/render`
 is a warm-start cache and static/export read model, not a separate state lane.
