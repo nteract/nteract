@@ -288,6 +288,7 @@ function expandHome(userPath: string): string {
 }
 
 const SPARK_CHARS = "▁▂▃▄▅▆▇█";
+const RATIO_PARTIAL_CHARS = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
 
 function sparkline(values: number[], width: number): string {
   if (values.length === 0 || width <= 0) return "";
@@ -311,6 +312,55 @@ function sparkline(values: number[], width: number): string {
     .join("");
 }
 
+function ratioBar(numerator: number, denominator: number, width: number): string {
+  if (denominator <= 0 || width <= 0) return "";
+  const ratio = Math.max(0, Math.min(1, numerator / denominator));
+  if (width < 3) {
+    const glyphIndex = Math.round(ratio * (RATIO_PARTIAL_CHARS.length - 1));
+    return RATIO_PARTIAL_CHARS[glyphIndex] || "█";
+  }
+
+  const innerWidth = Math.max(1, width - 2);
+  const filledWidth = ratio * innerWidth;
+  let fullCells = Math.floor(filledWidth);
+  let partialIndex = Math.round((filledWidth - fullCells) * 8);
+  if (partialIndex === 8) {
+    fullCells += 1;
+    partialIndex = 0;
+  }
+  if (fullCells >= innerWidth) {
+    fullCells = innerWidth;
+    partialIndex = 0;
+  }
+
+  const partial = partialIndex > 0 ? RATIO_PARTIAL_CHARS[partialIndex] : "";
+  const usedCells = fullCells + (partial ? 1 : 0);
+  const emptyCells = Math.max(0, innerWidth - usedCells);
+  return `│${"█".repeat(fullCells)}${partial}${" ".repeat(emptyCells)}│`;
+}
+
+function rankedFrequencyStrip(stats: ColumnStats, width: number): string {
+  if (width <= 0 || !stats.top?.length) return "";
+  const top = stats.top.filter(([, count]) => Number.isFinite(count) && count > 0);
+  if (!top.length) return "";
+
+  const hasOther = (stats.distinct_count ?? top.length) > top.length;
+  const maxWidth = Math.min(width, top.length + (hasOther ? 1 : 0));
+  if (maxWidth <= 0) return "";
+
+  const topWidth = hasOther && maxWidth > 1 ? maxWidth - 1 : maxWidth;
+  const visibleTop = top.slice(0, topWidth);
+  const maxCount = Math.max(...visibleTop.map(([, count]) => count));
+  const glyphs = visibleTop
+    .map(([, count]) => {
+      const index = Math.max(0, Math.ceil((count / maxCount) * SPARK_CHARS.length) - 1);
+      return SPARK_CHARS[index];
+    })
+    .join("");
+
+  return hasOther && maxWidth > visibleTop.length ? `${glyphs}·` : glyphs;
+}
+
 function sparklineForColumn(
   rows: string[][],
   ci: number,
@@ -323,11 +373,7 @@ function sparklineForColumn(
     const f = stats.false_count ?? 0;
     const total = t + f;
     if (total === 0) return "";
-    const barW = Math.min(width, 8);
-    const filled = Math.round((t / total) * barW);
-    return (
-      SPARK_CHARS[SPARK_CHARS.length - 1].repeat(filled) + SPARK_CHARS[0].repeat(barW - filled)
-    );
+    return ratioBar(t, total, width);
   }
   if (stats?.kind === "numeric" || /int|float|decimal|uint/.test(colType)) {
     const nums: number[] = [];
@@ -338,8 +384,7 @@ function sparklineForColumn(
     return sparkline(nums, width);
   }
   if (stats?.kind === "string" && stats.top && stats.top.length > 0) {
-    const counts = stats.top.map(([, c]) => c);
-    return sparkline(counts, Math.min(width, counts.length));
+    return rankedFrequencyStrip(stats, width);
   }
   return "";
 }
