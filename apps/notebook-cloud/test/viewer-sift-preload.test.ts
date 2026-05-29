@@ -95,6 +95,33 @@ describe("cloud viewer Sift WASM preload", () => {
     assert.equal(targetDocument.links[0]?.crossOrigin, "anonymous");
     assert.equal(targetDocument.links[0]?.dataset.nteractPreload, "sift-wasm");
   });
+
+  it("keeps repeated live materialization preloads idempotent", () => {
+    const targetDocument = fakeDocument();
+    const cells = [
+      cell([
+        {
+          output_type: "display_data",
+          data: {
+            "application/vnd.nteract.arrow-stream-manifest+json": {
+              chunks: [{ url: "https://cloud.test/api/n/demo/blobs/sha256-table" }],
+            },
+          },
+          metadata: {},
+        },
+      ]),
+    ];
+
+    assert.equal(
+      preloadSiftWasmForCells(cells, preloadOptions(), targetDocument as unknown as Document),
+      "https://cloud.test/renderer-assets/sift_wasm.wasm?v=dev",
+    );
+    assert.equal(
+      preloadSiftWasmForCells(cells, preloadOptions(), targetDocument as unknown as Document),
+      "https://cloud.test/renderer-assets/sift_wasm.wasm?v=dev",
+    );
+    assert.equal(targetDocument.links.length, 1);
+  });
 });
 
 function cell(outputs: JupyterOutput[]): ResolvedCell {

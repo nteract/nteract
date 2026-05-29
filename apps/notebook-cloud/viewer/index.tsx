@@ -621,6 +621,16 @@ function NotebookViewer({
       }),
     [authState, config.blobBasePath],
   );
+  const preloadSiftWasm = useCallback(
+    (nextCells: readonly ResolvedCell[]) => {
+      preloadSiftWasmForCells(nextCells, {
+        blobBasePath: config.blobBasePath,
+        rendererAssetsBasePath: config.rendererAssetsBasePath,
+        pageUrl: location.href,
+      });
+    },
+    [config.blobBasePath, config.rendererAssetsBasePath],
+  );
   const outputHostContext = useMemo<NteractEmbedHostContextPatch>(
     () => ({
       nteract: {
@@ -707,11 +717,7 @@ function NotebookViewer({
           shouldContinue: () => !cancelled && !liveMaterializedRef.current,
         });
         if (cancelled || liveMaterializedRef.current) return;
-        preloadSiftWasmForCells(resolvedCells, {
-          blobBasePath: config.blobBasePath,
-          rendererAssetsBasePath: config.rendererAssetsBasePath,
-          pageUrl: location.href,
-        });
+        preloadSiftWasm(resolvedCells);
         setCells(resolvedCells);
         if (resolvedCells.length === 0) {
           setStatus({ kind: "empty", message: "This published notebook has no cells." });
@@ -741,8 +747,8 @@ function NotebookViewer({
     config.blobBasePath,
     config.headsHash,
     config.pinnedRenderBasePath,
-    config.rendererAssetsBasePath,
     loadingPolicy.shouldFetchSnapshotRender,
+    preloadSiftWasm,
     widgetStore,
   ]);
 
@@ -806,6 +812,7 @@ function NotebookViewer({
       if (disposed || sequence !== materializeSequence) return;
       if (syncCells.length > 0) {
         liveMaterializedRef.current = true;
+        preloadSiftWasm(syncCells);
         setCells(syncCells);
         setStatus({
           kind: "loading",
@@ -825,6 +832,7 @@ function NotebookViewer({
       });
       if (disposed || sequence !== materializeSequence) return;
       liveMaterializedRef.current = true;
+      preloadSiftWasm(resolvedCells);
       setCells(resolvedCells);
       setStatus(
         resolvedCells.length === 0
@@ -945,12 +953,12 @@ function NotebookViewer({
     authState,
     blobResolver,
     config.blobBasePath,
-    config.rendererAssetsBasePath,
     config.runtimedWasmModulePath,
     config.runtimedWasmPath,
     config.syncEndpoint,
     connectAttempt,
     loadingPolicy.shouldConnectLiveRoom,
+    preloadSiftWasm,
     widgetStore,
   ]);
 
