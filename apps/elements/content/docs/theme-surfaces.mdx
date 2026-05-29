@@ -1,0 +1,26 @@
+---
+title: Theme surfaces
+description: Shared notebook theme tokens in the elements catalog.
+---
+
+import { ThemeSurfacesExample } from "@/components/theme-surfaces-example";
+
+The catalog defaults to the classic notebook palette while keeping the cream
+palette available for component previews. This is separate from Fumadocs'
+light/dark mode switch: light/dark controls contrast, and the notebook palette
+controls the color system used by nteract-owned UI.
+
+<ThemeSurfacesExample />
+
+## Runtime boundary
+
+The palette switch is docs-local and writes the same `data-color-theme` contract
+that notebook components already read. It does not import synced settings,
+Tauri state, runtime hooks, generated WASM, or renderer iframe state.
+
+## Catalog rule
+
+Notebook components should render correctly in classic and cream before they
+are considered catalog-ready. If a component needs iframe, renderer, or runtime
+state to respond to the palette, document that adapter boundary on the page
+that introduces it.

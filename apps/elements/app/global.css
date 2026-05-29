@@ -1,7 +1,7 @@
 @import "tailwindcss";
 @import "fumadocs-ui/css/neutral.css";
 @import "fumadocs-ui/css/preset.css";
-@import "../../../src/styles/notebook-tokens.css";
+@import "../../../src/styles/notebook-base.css";
 @import "../../../src/styles/cream-theme.css";
 
 @source "../**/*.{ts,tsx,mdx}";
@@ -11,9 +11,4 @@
 
 :root {
   --fd-layout-width: 1320px;
-}
-
-body {
-  font-family:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
 }
