@@ -9,7 +9,7 @@
 //! copy in a "room"; each connected notebook window holds a local replica
 //! that syncs via the Automerge sync protocol.
 //!
-//! ## Document schema (v4)
+//! ## Document schema (v5)
 //!
 //! Outputs live in `RuntimeStateDoc` (keyed by `execution_id` and then
 //! `output_id`) with per-output UUIDs on their manifests — they are not
@@ -17,8 +17,9 @@
 //!
 //! ```text
 //! ROOT/
-//!   schema_version: u64           ← Document schema version (currently 4)
+//!   schema_version: u64           ← Document schema version (currently 5)
 //!   notebook_id: Str
+//!   runtime_state_doc_id: Str     ← RuntimeStateDoc identity associated with this notebook
 //!   cells/                        ← Map keyed by cell ID (O(1) lookup)
 //!     {cell_id}/
 //!       id: Str                   ← cell UUID (redundant but convenient)
@@ -64,11 +65,13 @@ use std::collections::HashMap;
 /// - **3** — Outputs moved to RuntimeStateDoc: cell outputs are no longer stored in the notebook doc.
 /// - **4** — Addressable outputs: `OutputManifest` carries a required `output_id` (UUIDv4).
 ///   Outputs live in RuntimeStateDoc keyed by `execution_id` and then `output_id`.
+/// - **5** — NotebookDoc carries `runtime_state_doc_id`, the durable identity of the
+///   associated RuntimeStateDoc. Runtime-state heads remain checkpoint/publish metadata.
 ///
 /// v1–v2 predate the nteract 2.0 pre-release series and are no longer
 /// supported. `load_or_create_inner` discards pre-v3 documents on load.
-/// v3 documents are migrated in-place (version bump only).
-pub const SCHEMA_VERSION: u64 = 4;
+/// v3 and v4 documents are migrated in-place.
+pub const SCHEMA_VERSION: u64 = 5;
 
 /// Reserved actor for the canonical schema seed change.
 ///
@@ -76,11 +79,11 @@ pub const SCHEMA_VERSION: u64 = 4;
 /// history and then switch to their real actor before writing notebook-specific
 /// content. Do not reuse this actor for live peer edits.
 #[cfg(test)]
-const SCHEMA_SEED_ACTOR: &str = "nteract:notebook-schema:v4";
-// Frozen Automerge genesis document for notebook schema v4.
+const SCHEMA_SEED_ACTOR: &str = "nteract:notebook-schema:v5";
+// Frozen Automerge genesis document for notebook schema v5.
 // This shared root skeleton lets fresh clients create cells immediately while
 // still agreeing on the `cells` and `metadata` object IDs before sync.
-const NOTEBOOK_GENESIS_V4_BYTES: &[u8] = include_bytes!("../assets/notebook_genesis_v4.am");
+const NOTEBOOK_GENESIS_V5_BYTES: &[u8] = include_bytes!("../assets/notebook_genesis_v5.am");
 
 use automerge::sync;
 use automerge::sync::SyncDoc;
@@ -104,6 +107,18 @@ use serde::{Deserialize, Serialize};
 use log::{info, warn};
 #[cfg(feature = "persistence")]
 use std::path::Path;
+
+/// Identifier of the RuntimeStateDoc associated with a NotebookDoc.
+pub type RuntimeStateDocId = String;
+
+/// Derive the default RuntimeStateDoc id for a notebook id.
+///
+/// This keeps older notebooks migratable without adding a random-id source at
+/// the document layer. Future storage adapters may choose a different id format
+/// for new documents, but this stable derivation is the compatibility default.
+pub fn default_runtime_state_doc_id(notebook_id: &str) -> RuntimeStateDocId {
+    format!("runtime:{notebook_id}")
+}
 
 /// Snapshot of a single cell's state, suitable for serialization.
 ///
@@ -974,16 +989,21 @@ impl NotebookDoc {
         }
 
         let _ = doc.put(automerge::ROOT, "notebook_id", notebook_id);
+        let _ = doc.put(
+            automerge::ROOT,
+            "runtime_state_doc_id",
+            default_runtime_state_doc_id(notebook_id),
+        );
 
         Self { doc }
     }
 
     fn schema_seed_doc(encoding: TextEncoding) -> AutoCommit {
         AutoCommit::load_with_options(
-            NOTEBOOK_GENESIS_V4_BYTES,
+            NOTEBOOK_GENESIS_V5_BYTES,
             LoadOptions::new().text_encoding(encoding),
         )
-        .unwrap_or_else(|err| panic!("load notebook genesis v4: {err}"))
+        .unwrap_or_else(|err| panic!("load notebook genesis v5: {err}"))
     }
 
     #[cfg(test)]
@@ -1119,24 +1139,30 @@ impl NotebookDoc {
                             if let Some(label) = actor_label {
                                 loaded.set_actor(label);
                             }
+                            if loaded.runtime_state_doc_id().is_none() {
+                                let _ = loaded.ensure_runtime_state_doc_id(notebook_id);
+                            }
                             return loaded;
                         }
 
-                        // v3 → v4: output_id was added to OutputManifest, but
-                        // it's minted at capture time (#[serde(default)]), so
-                        // the migration is a version-bump no-op.
-                        if version == 3 {
+                        // v3 → v5: output_id was added to OutputManifest in
+                        // v4, but it's minted at capture time
+                        // (#[serde(default)]), so that part remains a
+                        // version-bump no-op. v5 adds the notebook-level
+                        // RuntimeStateDoc identity pointer.
+                        if version == 3 || version == 4 {
                             info!(
-                                "[notebook-doc] Migrating schema v3 → v{} for {} at {:?}",
-                                SCHEMA_VERSION, notebook_id, path
+                                "[notebook-doc] Migrating schema v{} → v{} for {} at {:?}",
+                                version, SCHEMA_VERSION, notebook_id, path
                             );
+                            if let Some(label) = actor_label {
+                                loaded.set_actor(label);
+                            }
+                            let _ = loaded.ensure_runtime_state_doc_id(notebook_id);
                             let _ =
                                 loaded
                                     .doc
                                     .put(automerge::ROOT, "schema_version", SCHEMA_VERSION);
-                            if let Some(label) = actor_label {
-                                loaded.set_actor(label);
-                            }
                             return loaded;
                         }
 
@@ -1257,6 +1283,40 @@ impl NotebookDoc {
     /// Read the notebook ID from the document.
     pub fn notebook_id(&self) -> Option<String> {
         read_str(&self.doc, automerge::ROOT, "notebook_id")
+    }
+
+    /// Read the associated RuntimeStateDoc ID from the document.
+    pub fn runtime_state_doc_id(&self) -> Option<RuntimeStateDocId> {
+        read_str(&self.doc, automerge::ROOT, "runtime_state_doc_id")
+    }
+
+    /// Set the associated RuntimeStateDoc ID.
+    pub fn set_runtime_state_doc_id(
+        &mut self,
+        runtime_state_doc_id: &str,
+    ) -> Result<(), AutomergeError> {
+        self.doc.put(
+            automerge::ROOT,
+            "runtime_state_doc_id",
+            runtime_state_doc_id,
+        )?;
+        Ok(())
+    }
+
+    /// Ensure the document has an associated RuntimeStateDoc ID.
+    ///
+    /// Returns the existing value when present; otherwise writes the stable
+    /// default derived from the notebook id and returns it.
+    pub fn ensure_runtime_state_doc_id(
+        &mut self,
+        notebook_id: &str,
+    ) -> Result<RuntimeStateDocId, AutomergeError> {
+        if let Some(id) = self.runtime_state_doc_id() {
+            return Ok(id);
+        }
+        let id = default_runtime_state_doc_id(notebook_id);
+        self.set_runtime_state_doc_id(&id)?;
+        Ok(id)
     }
 
     // ── Cell CRUD ───────────────────────────────────────────────────
@@ -2939,6 +2999,7 @@ mod tests {
         // no notebook_id yet, but shared cells/metadata maps already exist.
         let doc = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "test");
         assert_eq!(doc.notebook_id(), None);
+        assert_eq!(doc.runtime_state_doc_id(), None);
         assert_eq!(doc.cell_count(), 0);
         assert!(doc.has_cells_map());
         assert_eq!(doc.get_cells(), vec![]);
@@ -2968,6 +3029,18 @@ mod tests {
             generated.get_metadata_snapshot(),
             frozen.get_metadata_snapshot()
         );
+    }
+
+    #[test]
+    #[ignore]
+    fn write_notebook_genesis_artifact() {
+        let Some(path) = std::env::var_os("NOTEBOOK_GENESIS_OUT") else {
+            return;
+        };
+        let mut generated = NotebookDoc {
+            doc: NotebookDoc::generated_schema_seed_doc(TextEncoding::UnicodeCodePoint),
+        };
+        std::fs::write(path, generated.save()).unwrap();
     }
 
     #[test]
@@ -3121,6 +3194,12 @@ mod tests {
         let mut daemon = NotebookDoc::new_with_actor("test-notebook", "runtimed");
         let mut frontend = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "human:tab-1");
 
+        assert_eq!(
+            daemon.runtime_state_doc_id(),
+            Some(default_runtime_state_doc_id("test-notebook"))
+        );
+        assert_eq!(frontend.runtime_state_doc_id(), None);
+
         assert_eq!(daemon.root_map_conflict_count("cells"), 1);
         assert_eq!(daemon.root_map_conflict_count("metadata"), 1);
         assert_eq!(frontend.root_map_conflict_count("cells"), 1);
@@ -3157,7 +3236,7 @@ mod tests {
         // daemon actor created the structural root maps directly.
         let mut legacy = AutoCommit::new_with_encoding(TextEncoding::UnicodeCodePoint);
         legacy.set_actor(ActorId::from("runtimed".as_bytes()));
-        let _ = legacy.put(automerge::ROOT, "schema_version", SCHEMA_VERSION);
+        let _ = legacy.put(automerge::ROOT, "schema_version", 4u64);
         let _ = legacy.put(automerge::ROOT, "notebook_id", "legacy-notebook");
         let _ = legacy.put_object(automerge::ROOT, "cells", ObjType::Map);
         if let Ok(meta_id) = legacy.put_object(automerge::ROOT, "metadata", ObjType::Map) {
@@ -3670,7 +3749,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "persistence")]
-    fn test_load_v3_doc_migrates_to_v4() {
+    fn test_load_v3_doc_migrates_to_current_schema() {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("notebook.automerge");
 
@@ -3686,6 +3765,10 @@ mod tests {
         // load_or_create should migrate, not discard
         let loaded = NotebookDoc::load_or_create(&path, "migrate-test");
         assert_eq!(loaded.schema_version(), Some(SCHEMA_VERSION));
+        assert_eq!(
+            loaded.runtime_state_doc_id(),
+            Some(default_runtime_state_doc_id("migrate-test"))
+        );
         assert_eq!(loaded.cell_count(), 1);
         let cells = loaded.get_cells();
         assert_eq!(cells[0].source, "import numpy");
@@ -3705,6 +3788,31 @@ mod tests {
             !corrupt_path.exists(),
             "v3 migration should not create .corrupt"
         );
+    }
+
+    #[test]
+    #[cfg(feature = "persistence")]
+    fn test_load_v4_doc_migrates_runtime_state_doc_id() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("notebook.automerge");
+
+        let mut doc = NotebookDoc::new("v4-migrate-test");
+        doc.add_cell(0, "c1", "markdown").unwrap();
+        doc.update_source("c1", "hello").unwrap();
+        let _ = doc.doc.delete(automerge::ROOT, "runtime_state_doc_id");
+        let _ = doc.doc.put(automerge::ROOT, "schema_version", 4u64);
+        assert_eq!(doc.schema_version(), Some(4));
+        assert_eq!(doc.runtime_state_doc_id(), None);
+        doc.save_to_file(&path).unwrap();
+
+        let loaded = NotebookDoc::load_or_create(&path, "v4-migrate-test");
+        assert_eq!(loaded.schema_version(), Some(SCHEMA_VERSION));
+        assert_eq!(
+            loaded.runtime_state_doc_id(),
+            Some(default_runtime_state_doc_id("v4-migrate-test"))
+        );
+        assert_eq!(loaded.cell_count(), 1);
+        assert_eq!(loaded.get_cells()[0].source, "hello");
     }
 
     #[test]

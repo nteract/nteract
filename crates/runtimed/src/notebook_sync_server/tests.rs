@@ -4,7 +4,7 @@ use base64::Engine;
 use runtime_doc::{KernelActivity, KernelErrorReason, RuntimeLifecycle};
 use uuid::Uuid;
 
-const SCHEMA_SEED_ACTOR_LABEL: &str = "nteract:notebook-schema:v4";
+const SCHEMA_SEED_ACTOR_LABEL: &str = "nteract:notebook-schema:v5";
 
 #[test]
 fn fallback_output_stamps_id_when_missing() {
