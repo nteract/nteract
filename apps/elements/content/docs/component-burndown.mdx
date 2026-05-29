@@ -1,0 +1,20 @@
+---
+title: Component burn-down
+description: A working inventory for replacing generic primitives with nteract-owned notebook components.
+---
+
+import { ComponentBurndown } from "@/components/component-burndown";
+
+This page tracks the component work as a burn-down rather than a vague rewrite.
+The goal is not to hide shadcn. The goal is to make notebook concepts the
+public components and keep shadcn as the low-level implementation layer.
+
+<ComponentBurndown />
+
+## Current rule
+
+If a component has notebook semantics, it should eventually have an nteract
+component name, fixture, and docs page here. If it is only an interaction
+primitive, keep it generic until the notebook contract is clear.
+
+The first concrete family is [cell anatomy](/docs/cell-anatomy).

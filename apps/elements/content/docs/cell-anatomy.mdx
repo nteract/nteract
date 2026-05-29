@@ -1,0 +1,18 @@
+---
+title: Cell anatomy
+description: A fixture-backed target shape for nteract-owned cell components.
+---
+
+import { CellAnatomyExample } from "@/components/cell-anatomy-example";
+
+The first component family to promote is the cell frame. It is where generic
+buttons, editor wrappers, gutters, presence, outputs, and runtime state become
+notebook semantics.
+
+<CellAnatomyExample />
+
+## Why this comes first
+
+The sidebar outline should scroll to cells and reflect heading state, but it
+should not own cell rendering. A clean cell anatomy gives the sidebar a stable
+target while preserving the existing `NotebookView` DOM-order invariant.
