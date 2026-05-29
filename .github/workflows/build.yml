@@ -209,6 +209,7 @@ jobs:
       - name: Build UIs
         run: |
           pnpm --dir apps/notebook build
+          pnpm --dir apps/elements build
 
       - name: Upload UI build artifacts
         uses: actions/upload-artifact@v7

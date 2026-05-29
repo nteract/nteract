@@ -16,7 +16,7 @@ import {
   TerminalSquare,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 
 type VariantKey = "A" | "B" | "C";
@@ -715,11 +715,9 @@ function PrototypeSwitcher({
 export function SidebarTocPrototype() {
   const [variant, setVariant] = useUrlVariant();
   const state = usePrototypeState();
-  const content = useMemo(() => {
-    if (variant === "B") return <VariantB {...state} />;
-    if (variant === "C") return <VariantC {...state} />;
-    return <VariantA {...state} />;
-  }, [state, variant]);
+  let content = <VariantA {...state} />;
+  if (variant === "B") content = <VariantB {...state} />;
+  if (variant === "C") content = <VariantC {...state} />;
 
   return (
     <div className="h-full overflow-hidden bg-background">
