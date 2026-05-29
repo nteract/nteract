@@ -21,6 +21,7 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     assetsInlineLimit: 0,
+    cssCodeSplit: true,
     sourcemap: false,
     lib: {
       entry: path.join(appDir, "viewer/index.tsx"),
@@ -32,10 +33,13 @@ export default defineConfig({
       output: {
         entryFileNames: "assets/notebook-cloud-viewer.js",
         chunkFileNames: "assets/[name]-[hash].js",
-        assetFileNames: (assetInfo) =>
-          assetInfo.name?.endsWith(".css")
-            ? "assets/notebook-cloud-viewer.css"
-            : "assets/[name]-[hash].[ext]",
+        assetFileNames: (assetInfo) => {
+          if (!assetInfo.name?.endsWith(".css")) return "assets/[name]-[hash].[ext]";
+          if (assetInfo.name === "index.css" || assetInfo.name === "notebook-cloud-viewer.css") {
+            return "assets/notebook-cloud-viewer.css";
+          }
+          return "assets/[name]-[hash].[ext]";
+        },
       },
       onwarn(warning, warn) {
         if (
