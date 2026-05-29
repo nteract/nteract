@@ -108,6 +108,7 @@ import {
 } from "./sharing-client";
 import { preloadSiftWasmForCells } from "./sift-preload";
 import { cloudSourceLanguage } from "./source-language";
+import { loadSupplementalViewerCss } from "./supplemental-css";
 import {
   applyDocumentTheme,
   CLOUD_VIEWER_THEME_STORAGE_KEY,
@@ -119,6 +120,8 @@ import {
   projectCloudWidgetComms,
 } from "./widget-runtime";
 import "./index.css";
+
+loadSupplementalViewerCss();
 
 interface CloudViewerConfig {
   notebookId: string;

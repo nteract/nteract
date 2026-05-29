@@ -1,6 +1,7 @@
 import { copyFile, mkdir } from "node:fs/promises";
 import { access } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { writeViewerCssManifest } from "./viewer-css-assets.mjs";
 
 const siftWasmUrl = new URL("../../../crates/sift-wasm/pkg/sift_wasm_bg.wasm", import.meta.url);
 const outputUrl = new URL("../dist/plugins/sift_wasm.wasm", import.meta.url);
@@ -55,6 +56,9 @@ await copyFile(runtimedWasmUrl, runtimedPluginOutputUrl);
 await copyFile(isolatedRendererModuleUrl, isolatedRendererModuleOutputUrl);
 await copyFile(isolatedRendererCssUrl, isolatedRendererCssOutputUrl);
 await copyFile(outputDocumentFrameUrl, outputDocumentOutputUrl);
+const { manifest, manifestUrl } = await writeViewerCssManifest(
+  new URL("../dist/assets/", import.meta.url),
+);
 
 console.log(`copied ${fileURLToPath(siftWasmUrl)} -> ${fileURLToPath(outputUrl)}`);
 console.log(
@@ -76,6 +80,8 @@ console.log(
 console.log(
   `copied ${fileURLToPath(outputDocumentFrameUrl)} -> ${fileURLToPath(outputDocumentOutputUrl)}`,
 );
+console.log(`wrote viewer CSS manifest ${fileURLToPath(manifestUrl)}`);
+console.log(`viewer CSS assets: ${JSON.stringify(manifest)}`);
 
 async function assertExists(url) {
   try {
