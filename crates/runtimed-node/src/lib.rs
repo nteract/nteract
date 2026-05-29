@@ -22,18 +22,22 @@
 
 use napi_derive::napi;
 
+mod arrow_ipc;
 mod error;
 mod parquet;
 mod session;
 
+pub use arrow_ipc::{
+    read_arrow_chunks, read_arrow_file, summarize_arrow_chunks, summarize_arrow_file,
+};
 pub use error::NodeError;
 pub use parquet::{read_parquet_file, summarize_parquet_file};
 pub use session::{
-    create_notebook, get_execution_result, list_active_notebooks, open_notebook,
-    open_notebook_path, show_notebook, shutdown_notebook, ActiveNotebook, CellResult,
-    CondaDependencyStatus, CreateCellOptions, CreateNotebookEnvironmentMode, CreateNotebookOptions,
-    DependencyEditOptions, DependencyStatus, DependencyTrustStatus, EventSubscription,
-    ExecuteCellOptions, GetExecutionResultOptions, JsCellSnapshot, JsOutput,
+    blob_store_path, create_notebook, get_execution_result, list_active_notebooks, open_notebook,
+    open_notebook_path, resolve_blob_path, show_notebook, shutdown_notebook, ActiveNotebook,
+    CellResult, CondaDependencyStatus, CreateCellOptions, CreateNotebookEnvironmentMode,
+    CreateNotebookOptions, DependencyEditOptions, DependencyStatus, DependencyTrustStatus,
+    EventSubscription, ExecuteCellOptions, GetExecutionResultOptions, JsCellSnapshot, JsOutput,
     ListActiveNotebooksOptions, MoveCellOptions, OpenNotebookOptions, PackageManager,
     PixiDependencyStatus, QueueCellOptions, QueuedExecution, RunCellOptions, RuntimeStatus,
     Session, SetCellOptions, ShowNotebookOptions, ShowNotebookResult, ShutdownNotebookOptions,

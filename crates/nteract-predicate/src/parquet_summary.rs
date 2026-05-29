@@ -13,7 +13,8 @@ use arrow::array::{
     TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray, UInt16Array,
     UInt32Array, UInt64Array, UInt8Array,
 };
-use arrow::datatypes::{DataType, TimeUnit};
+use arrow::datatypes::{DataType, Schema, TimeUnit};
+use arrow::record_batch::RecordBatch;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -106,7 +107,26 @@ pub fn summarize_parquet(
         .collect();
     let column_hints = parse_parquet_column_hints(&column_names, footer_rows, &kv_metadata);
     let reader = builder.build()?;
+    let batches = reader.collect::<Result<Vec<_>, _>>()?;
 
+    Ok(summarize_record_batches(
+        schema.as_ref(),
+        &batches,
+        bytes.len() as u64,
+        column_hints,
+    ))
+}
+
+/// Summarize already-decoded Arrow record batches.
+///
+/// This is the format-neutral waist used by both Parquet and Arrow IPC table
+/// renderers. `schema` supplies column names/types even when `batches` is empty.
+pub fn summarize_record_batches(
+    schema: &Schema,
+    batches: &[RecordBatch],
+    num_bytes: u64,
+    column_hints: Vec<ParquetColumnHint>,
+) -> ParquetSummary {
     let num_cols = schema.fields().len();
     let mut null_counts: Vec<u64> = vec![0; num_cols];
     let mut numeric_accum: Vec<Option<(f64, f64)>> = vec![None; num_cols];
@@ -116,8 +136,7 @@ pub fn summarize_parquet(
     let mut temporal_accum: Vec<Option<(i64, i64, TimeUnit)>> = vec![None; num_cols];
     let mut total_rows: u64 = 0;
 
-    for batch in reader {
-        let batch = batch?;
+    for batch in batches {
         total_rows += batch.num_rows() as u64;
 
         for (col_idx, col) in batch.columns().iter().enumerate() {
@@ -155,12 +174,12 @@ pub fn summarize_parquet(
         })
         .collect();
 
-    Ok(ParquetSummary {
+    ParquetSummary {
         num_rows: total_rows,
-        num_bytes: bytes.len() as u64,
+        num_bytes,
         columns,
         column_hints,
-    })
+    }
 }
 
 /// Increment the count for a string value in a column's accumulator, bounded
@@ -560,7 +579,9 @@ fn format_data_type(dt: &DataType) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{BooleanArray, Float64Array, Int64Array, LargeStringArray, StringArray};
+    use arrow::array::{
+        BooleanArray, Float64Array, Int64Array, LargeStringArray, StringArray, StringViewArray,
+    };
     use arrow::datatypes::{Field, Schema};
     use arrow::record_batch::RecordBatch;
     use parquet::arrow::ArrowWriter;
@@ -659,6 +680,61 @@ mod tests {
                 assert_eq!(*false_count, 2);
             }
             _ => panic!("expected boolean stats"),
+        }
+    }
+
+    #[test]
+    fn summarize_record_batches_matches_parquet_scan() {
+        let batch = make_test_batch();
+        let bytes = batch_to_parquet_bytes(&batch);
+        let parquet_summary = summarize_parquet(&bytes).unwrap();
+        let batch_summary = summarize_record_batches(
+            batch.schema().as_ref(),
+            &[batch],
+            bytes.len() as u64,
+            parquet_summary.column_hints.clone(),
+        );
+
+        assert_eq!(batch_summary.num_rows, parquet_summary.num_rows);
+        assert_eq!(batch_summary.num_bytes, parquet_summary.num_bytes);
+        assert_eq!(
+            batch_summary
+                .columns
+                .iter()
+                .map(|column| (&column.name, &column.data_type, column.null_count))
+                .collect::<Vec<_>>(),
+            parquet_summary
+                .columns
+                .iter()
+                .map(|column| (&column.name, &column.data_type, column.null_count))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            serde_json::to_value(&batch_summary.columns).unwrap(),
+            serde_json::to_value(&parquet_summary.columns).unwrap()
+        );
+    }
+
+    #[test]
+    fn summarize_record_batches_counts_utf8_view_strings() {
+        let schema = Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8View, true)]));
+        let arr = StringViewArray::from(vec![Some("alpha"), None, Some("beta"), Some("alpha")]);
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(arr)]).unwrap();
+        let summary = summarize_record_batches(schema.as_ref(), &[batch], 128, vec![]);
+
+        assert_eq!(summary.num_rows, 4);
+        assert_eq!(summary.columns[0].data_type, "string");
+        assert_eq!(summary.columns[0].null_count, 1);
+        match &summary.columns[0].stats {
+            ColumnStats::String {
+                distinct_count,
+                top,
+                ..
+            } => {
+                assert_eq!(*distinct_count, 2);
+                assert_eq!(top[0], ("alpha".to_string(), 2));
+            }
+            _ => panic!("expected Utf8View string stats"),
         }
     }
 

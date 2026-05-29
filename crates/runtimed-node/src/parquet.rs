@@ -49,6 +49,12 @@ fn summarize_parquet_from_bytes(bytes: &[u8]) -> Result<ParquetSummaryResult, St
     let summary =
         parquet_summary::summarize_parquet(bytes).map_err(|e| format!("Parquet error: {e}"))?;
 
+    Ok(parquet_summary_to_result(&summary))
+}
+
+pub(crate) fn parquet_summary_to_result(
+    summary: &parquet_summary::ParquetSummary,
+) -> ParquetSummaryResult {
     let columns = summary
         .columns
         .iter()
@@ -60,11 +66,11 @@ fn summarize_parquet_from_bytes(bytes: &[u8]) -> Result<ParquetSummaryResult, St
         })
         .collect();
 
-    Ok(ParquetSummaryResult {
+    ParquetSummaryResult {
         num_rows: summary.num_rows as i64,
         num_bytes: summary.num_bytes as i64,
         columns,
-    })
+    }
 }
 
 /// Read a page of rows from a local blob/file path.
@@ -142,7 +148,7 @@ fn read_parquet_rows_from_bytes(
 }
 
 /// Convert an Arrow array value at a given index to a display string.
-fn array_value_to_string(array: &dyn Array, idx: usize) -> String {
+pub(crate) fn array_value_to_string(array: &dyn Array, idx: usize) -> String {
     if array.is_null(idx) {
         return "null".to_string();
     }
@@ -161,6 +167,9 @@ fn array_value_to_string(array: &dyn Array, idx: usize) -> String {
             .downcast_ref::<LargeStringArray>()
             .map(|a| a.value(idx).to_string())
             .unwrap_or_default(),
+        DataType::Utf8View => {
+            nteract_predicate::arrow_utils::string_at(array, idx).unwrap_or_else(|| "?".to_string())
+        }
         DataType::Int64 => array
             .as_any()
             .downcast_ref::<Int64Array>()

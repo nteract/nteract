@@ -27,6 +27,7 @@ export default defineConfig({
       "apps/notebook/src/**/__tests__/**/*.test.{ts,tsx}",
       "apps/mcp-app/src/**/__tests__/**/*.test.{js,ts,tsx}",
       "packages/**/tests/**/*.test.{ts,tsx}",
+      "plugins/nteract/pi/**/*.test.{ts,tsx}",
     ],
     globals: true,
     setupFiles: ["./src/test-setup.ts"],
