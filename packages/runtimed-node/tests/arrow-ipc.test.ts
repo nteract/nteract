@@ -7,54 +7,64 @@ import { describe, expect, it } from "vite-plus/test";
 
 const require = createRequire(import.meta.url);
 
-let binding:
-  | {
-      readArrowFile: (
-        filePath: string,
-        offset: number,
-        limit: number,
-      ) => {
-        columns: string[];
-        rows: string[][];
-        totalRows: number;
-        offset: number;
-      };
-      readArrowChunks: (
-        filePaths: string[],
-        offset: number,
-        limit: number,
-      ) => {
-        columns: string[];
-        rows: string[][];
-        totalRows: number;
-        offset: number;
-      };
-      summarizeArrowFile: (filePath: string) => {
-        numRows: number;
-        columns: Array<{ name: string; dataType: string }>;
-      };
-      summarizeArrowChunks: (filePaths: string[]) => { numRows: number };
-      resolveBlobPath: (hash: string, socketPath?: string | null) => string | null;
-    }
-  | undefined;
-let loadError: unknown;
+type NativeBinding = {
+  readArrowFile: (
+    filePath: string,
+    offset: number,
+    limit: number,
+  ) => {
+    columns: string[];
+    rows: string[][];
+    totalRows: number;
+    offset: number;
+  };
+  readArrowChunks: (
+    filePaths: string[],
+    offset: number,
+    limit: number,
+  ) => {
+    columns: string[];
+    rows: string[][];
+    totalRows: number;
+    offset: number;
+  };
+  summarizeArrowFile: (filePath: string) => {
+    numRows: number;
+    columns: Array<{ name: string; dataType: string }>;
+  };
+  summarizeArrowChunks: (filePaths: string[]) => { numRows: number };
+  resolveBlobPath: (hash: string, socketPath?: string | null) => string | null;
+};
 
-try {
-  binding = require("../src/index.cjs");
-} catch (error) {
-  loadError = error;
+function loadNativeBinding(): NativeBinding {
+  try {
+    const loaded = require("../src/index.cjs") as Partial<NativeBinding>;
+    if (
+      typeof loaded.readArrowFile !== "function" ||
+      typeof loaded.readArrowChunks !== "function" ||
+      typeof loaded.summarizeArrowFile !== "function" ||
+      typeof loaded.summarizeArrowChunks !== "function" ||
+      typeof loaded.resolveBlobPath !== "function"
+    ) {
+      throw new Error("rebuilt @runtimed/node binding is missing Arrow IPC exports");
+    }
+    return loaded as NativeBinding;
+  } catch (error) {
+    throw new Error(
+      "Failed to load @runtimed/node native binding. Run `pnpm --dir packages/runtimed-node build` before this integration test.",
+      { cause: error },
+    );
+  }
 }
 
-const describeNative = binding?.readArrowFile ? describe : describe.skip;
+const binding = loadNativeBinding();
 const fixture = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../sift/public/polars-utf8view.arrow",
 );
 
-describeNative("@runtimed/node Arrow IPC native integration", () => {
+describe("@runtimed/node Arrow IPC native integration", () => {
   it("reads and summarizes a real Utf8View Arrow stream fixture", () => {
-    if (!binding) throw loadError;
-
     const page = binding.readArrowFile(fixture, 0, 3);
     const summary = binding.summarizeArrowFile(fixture);
 
@@ -72,8 +82,6 @@ describeNative("@runtimed/node Arrow IPC native integration", () => {
   });
 
   it("paginates across multiple Arrow stream chunks", () => {
-    if (!binding) throw loadError;
-
     const page = binding.readArrowChunks([fixture, fixture], 98, 5);
     const summary = binding.summarizeArrowChunks([fixture, fixture]);
 
@@ -84,8 +92,6 @@ describeNative("@runtimed/node Arrow IPC native integration", () => {
   });
 
   it("resolves blob hashes through the daemon blob-store sharding layout", () => {
-    if (!binding) throw loadError;
-
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "runtimed-node-arrow-"));
     const socketPath = path.join(root, "daemon.sock");
     const hash = "abcdef0123456789";

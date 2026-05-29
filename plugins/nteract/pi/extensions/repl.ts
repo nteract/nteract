@@ -288,6 +288,7 @@ function expandHome(userPath: string): string {
 }
 
 const SPARK_CHARS = "▁▂▃▄▅▆▇█";
+const RATIO_PARTIAL_CHARS = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
 
 function sparkline(values: number[], width: number): string {
   if (values.length === 0 || width <= 0) return "";
@@ -311,6 +312,33 @@ function sparkline(values: number[], width: number): string {
     .join("");
 }
 
+function ratioBar(numerator: number, denominator: number, width: number): string {
+  if (denominator <= 0 || width <= 0) return "";
+  const ratio = Math.max(0, Math.min(1, numerator / denominator));
+  if (width < 3) {
+    const glyphIndex = Math.round(ratio * (RATIO_PARTIAL_CHARS.length - 1));
+    return RATIO_PARTIAL_CHARS[glyphIndex] || "█";
+  }
+
+  const innerWidth = Math.max(1, width - 2);
+  const filledWidth = ratio * innerWidth;
+  let fullCells = Math.floor(filledWidth);
+  let partialIndex = Math.round((filledWidth - fullCells) * 8);
+  if (partialIndex === 8) {
+    fullCells += 1;
+    partialIndex = 0;
+  }
+  if (fullCells >= innerWidth) {
+    fullCells = innerWidth;
+    partialIndex = 0;
+  }
+
+  const partial = partialIndex > 0 ? RATIO_PARTIAL_CHARS[partialIndex] : "";
+  const usedCells = fullCells + (partial ? 1 : 0);
+  const emptyCells = Math.max(0, innerWidth - usedCells);
+  return `│${"█".repeat(fullCells)}${partial}${" ".repeat(emptyCells)}│`;
+}
+
 function sparklineForColumn(
   rows: string[][],
   ci: number,
@@ -323,11 +351,7 @@ function sparklineForColumn(
     const f = stats.false_count ?? 0;
     const total = t + f;
     if (total === 0) return "";
-    const barW = Math.min(width, 8);
-    const filled = Math.round((t / total) * barW);
-    return (
-      SPARK_CHARS[SPARK_CHARS.length - 1].repeat(filled) + SPARK_CHARS[0].repeat(barW - filled)
-    );
+    return ratioBar(t, total, width);
   }
   if (stats?.kind === "numeric" || /int|float|decimal|uint/.test(colType)) {
     const nums: number[] = [];

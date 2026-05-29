@@ -51,10 +51,10 @@ describe("pi REPL Arrow table rendering", () => {
       {
         readParquetFile: vi.fn(),
         readArrowFile: vi.fn(() => ({
-          columns: ["id", "label", "score"],
+          columns: ["id", "label", "score", "passed"],
           rows: [
-            ["1", "alpha", "1.0000"],
-            ["2", "beta", "3.0000"],
+            ["1", "alpha", "1.0000", "true"],
+            ["2", "beta", "3.0000", "false"],
           ],
           totalRows: 2,
           offset: 0,
@@ -81,6 +81,12 @@ describe("pi REPL Arrow table rendering", () => {
               nullCount: 0,
               statsJson: '{"kind":"numeric","min":1,"max":3}',
             },
+            {
+              name: "passed",
+              dataType: "bool",
+              nullCount: 0,
+              statsJson: '{"kind":"boolean","true_count":73,"false_count":47}',
+            },
           ],
         })),
       } as any,
@@ -91,6 +97,8 @@ describe("pi REPL Arrow table rendering", () => {
     expect(text).toContain("label");
     expect(text).toContain("alpha");
     expect(text).toContain("1.0..3.0");
+    expect(text).toContain("│████▎  │");
+    expect(text).toContain("T:73 F:47");
   });
 
   it("renders streamed display-update manifests as cheap skeletons while incomplete", () => {
