@@ -3,12 +3,14 @@ import assert from "node:assert/strict";
 import {
   NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY,
   NOTEBOOK_CLOUD_DEFAULT_SCOPE,
+  NOTEBOOK_CLOUD_OIDC_REQUEST_STORAGE_KEY,
   NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
   NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY,
   NOTEBOOK_CLOUD_USER_STORAGE_KEY,
   cloudHttpHeadersFromPrototypeAuthState,
   clearCloudPrototypeDevAuth,
   cloudSyncAuthFromPrototypeAuthState,
+  isCloudPrototypeAuthStorageKey,
   prepareCloudOidcViewerLogin,
   prototypeAuthDiagnostics,
   prototypeAuthSummary,
@@ -32,6 +34,16 @@ describe("cloud collaborator auth", () => {
       operator: null,
       requestedScope: null,
     });
+  });
+
+  it("identifies auth storage keys that should refresh stale browser tabs", () => {
+    assert.equal(isCloudPrototypeAuthStorageKey(NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY), true);
+    assert.equal(isCloudPrototypeAuthStorageKey(NOTEBOOK_CLOUD_USER_STORAGE_KEY), true);
+    assert.equal(isCloudPrototypeAuthStorageKey(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY), true);
+    assert.equal(isCloudPrototypeAuthStorageKey(NOTEBOOK_CLOUD_OIDC_REQUEST_STORAGE_KEY), true);
+    assert.equal(isCloudPrototypeAuthStorageKey(NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY), true);
+    assert.equal(isCloudPrototypeAuthStorageKey(null), true);
+    assert.equal(isCloudPrototypeAuthStorageKey("nteract:notebook-cloud:theme"), false);
   });
 
   it("builds WebSocket subprotocol auth without putting the token in the URL", () => {

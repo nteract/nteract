@@ -45,6 +45,7 @@ import {
   cloudPrototypeAuthFromWindow,
   cloudSyncAuthFromPrototypeAuthState,
   fetchWithCloudPrototypeAuth,
+  isCloudPrototypeAuthStorageKey,
   NOTEBOOK_CLOUD_DEFAULT_SCOPE,
   prepareCloudOidcViewerLogin,
   prototypeAuthDiagnostics,
@@ -294,15 +295,27 @@ function useCloudPrototypeAuth(authConfig: CloudViewerAuthConfig): {
         void refreshOidcIfNeeded();
       }
     };
+    const refreshOnStorage = (event: StorageEvent) => {
+      if (event.storageArea && event.storageArea !== window.localStorage) {
+        return;
+      }
+      if (!isCloudPrototypeAuthStorageKey(event.key)) {
+        return;
+      }
+      refreshAuthState();
+      void refreshOidcIfNeeded();
+    };
     window.addEventListener("focus", refreshOnFocus);
+    window.addEventListener("storage", refreshOnStorage);
     document.addEventListener("visibilitychange", refreshOnVisibility);
 
     return () => {
       window.clearInterval(interval);
       window.removeEventListener("focus", refreshOnFocus);
+      window.removeEventListener("storage", refreshOnStorage);
       document.removeEventListener("visibilitychange", refreshOnVisibility);
     };
-  }, [refreshOidcIfNeeded]);
+  }, [refreshAuthState, refreshOidcIfNeeded]);
 
   return { authState, authRenewal, refreshAuthState };
 }
