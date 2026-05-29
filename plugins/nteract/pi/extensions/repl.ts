@@ -339,6 +339,28 @@ function ratioBar(numerator: number, denominator: number, width: number): string
   return `│${"█".repeat(fullCells)}${partial}${" ".repeat(emptyCells)}│`;
 }
 
+function rankedFrequencyStrip(stats: ColumnStats, width: number): string {
+  if (width <= 0 || !stats.top?.length) return "";
+  const top = stats.top.filter(([, count]) => Number.isFinite(count) && count > 0);
+  if (!top.length) return "";
+
+  const hasOther = (stats.distinct_count ?? top.length) > top.length;
+  const maxWidth = Math.min(width, top.length + (hasOther ? 1 : 0));
+  if (maxWidth <= 0) return "";
+
+  const topWidth = hasOther && maxWidth > 1 ? maxWidth - 1 : maxWidth;
+  const visibleTop = top.slice(0, topWidth);
+  const maxCount = Math.max(...visibleTop.map(([, count]) => count));
+  const glyphs = visibleTop
+    .map(([, count]) => {
+      const index = Math.max(0, Math.ceil((count / maxCount) * SPARK_CHARS.length) - 1);
+      return SPARK_CHARS[index];
+    })
+    .join("");
+
+  return hasOther && maxWidth > visibleTop.length ? `${glyphs}·` : glyphs;
+}
+
 function sparklineForColumn(
   rows: string[][],
   ci: number,
@@ -362,8 +384,7 @@ function sparklineForColumn(
     return sparkline(nums, width);
   }
   if (stats?.kind === "string" && stats.top && stats.top.length > 0) {
-    const counts = stats.top.map(([, c]) => c);
-    return sparkline(counts, Math.min(width, counts.length));
+    return rankedFrequencyStrip(stats, width);
   }
   return "";
 }

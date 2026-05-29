@@ -51,7 +51,7 @@ describe("pi REPL Arrow table rendering", () => {
       {
         readParquetFile: vi.fn(),
         readArrowFile: vi.fn(() => ({
-          columns: ["id", "label", "score", "passed"],
+          columns: ["id", "category", "score", "passed"],
           rows: [
             ["1", "alpha", "1.0000", "true"],
             ["2", "beta", "3.0000", "false"],
@@ -70,10 +70,11 @@ describe("pi REPL Arrow table rendering", () => {
               statsJson: '{"kind":"numeric","min":1,"max":2}',
             },
             {
-              name: "label",
+              name: "category",
               dataType: "string",
               nullCount: 0,
-              statsJson: '{"kind":"string","distinct_count":2,"top":[["alpha",1],["beta",1]]}',
+              statsJson:
+                '{"kind":"string","distinct_count":4,"top":[["alpha",60],["beta",30],["gamma",18],["delta",12]]}',
             },
             {
               name: "score",
@@ -94,11 +95,59 @@ describe("pi REPL Arrow table rendering", () => {
     );
 
     expect(text).toContain("Out[7]:");
-    expect(text).toContain("label");
+    expect(text).toContain("category");
     expect(text).toContain("alpha");
+    expect(text).toContain("█▄▃▂");
     expect(text).toContain("1.0..3.0");
     expect(text).toContain("│████▎  │");
     expect(text).toContain("T:73 F:47");
+  });
+
+  it("marks uncaptured string categories with an other bucket", () => {
+    const source = findTableSource({
+      cellId: "cell-1",
+      executionId: "exec-1",
+      status: "done",
+      success: true,
+      outputs: [
+        {
+          outputType: "execute_result",
+          blobPathsJson: JSON.stringify({ [ARROW_STREAM_MIME]: "/tmp/table.arrow" }),
+        },
+      ],
+    });
+
+    const text = renderTableTextForSource(
+      source,
+      8,
+      theme,
+      {
+        readParquetFile: vi.fn(),
+        readArrowFile: vi.fn(() => ({
+          columns: ["category"],
+          rows: [["alpha"]],
+          totalRows: 20,
+          offset: 0,
+        })),
+        summarizeArrowFile: vi.fn(() => ({
+          numRows: 20,
+          numBytes: 256,
+          columns: [
+            {
+              name: "category",
+              dataType: "string",
+              nullCount: 0,
+              statsJson:
+                '{"kind":"string","distinct_count":8,"top":[["alpha",10],["beta",5],["gamma",3],["delta",2],["epsilon",1]]}',
+            },
+          ],
+        })),
+      } as any,
+      80,
+    );
+
+    expect(text).toContain("█▄▃▂▁·");
+    expect(text).toContain("8d");
   });
 
   it("renders streamed display-update manifests as cheap skeletons while incomplete", () => {
