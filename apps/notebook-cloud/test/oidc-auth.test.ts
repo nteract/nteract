@@ -217,6 +217,7 @@ describe("cloud OIDC browser auth", () => {
     assert.equal(stored.token, null);
     assert.equal(stored.problem, null);
     assert.equal(stored.expired, true);
+    assert.equal(stored.expiredClaims?.name, "Expired User");
     assert.equal(storedOidcTokenNeedsRefresh(storage, 200), false);
   });
 
