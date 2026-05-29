@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 use automerge::AutoCommit;
 use clap::Parser;
-use notebook_doc::NotebookDoc;
+use notebook_doc::{default_runtime_state_doc_id, NotebookDoc};
 use notebook_sync::connect;
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use runtime_doc::RuntimeStateDoc;
@@ -145,12 +145,21 @@ async fn main() -> Result<()> {
     let mut refs =
         collect_snapshot_blob_refs(&snapshot.notebook_bytes, &snapshot.runtime_state_bytes)?;
     let initial_ref_count = refs.len();
+    let runtime_state_doc_id =
+        runtime_state_doc_id_from_notebook_snapshot(&snapshot.notebook_bytes, &notebook_id)?;
 
     let publisher = Publisher::new(args, notebook_id, blob_base_url, blob_store_path)?;
     let uploaded_blobs = publisher.upload_blob_closure(&mut refs).await?;
 
     let runtime_heads_hash = heads_digest(&snapshot.runtime_state_heads);
     let notebook_heads_hash = heads_digest(&snapshot.notebook_heads);
+    let runtime_state_doc_id_header = HeaderValue::from_str(&runtime_state_doc_id)
+        .context("runtime state document id is not a valid header value")?;
+    let mut runtime_snapshot_headers = HeaderMap::new();
+    runtime_snapshot_headers.insert(
+        "X-Runtime-State-Doc-Id",
+        runtime_state_doc_id_header.clone(),
+    );
     publisher
         .put_bytes(
             &[
@@ -162,7 +171,7 @@ async fn main() -> Result<()> {
             ],
             snapshot.runtime_state_bytes,
             DEFAULT_BLOB_CONTENT_TYPE,
-            HeaderMap::new(),
+            runtime_snapshot_headers,
         )
         .await?;
 
@@ -172,6 +181,7 @@ async fn main() -> Result<()> {
         HeaderValue::from_str(&runtime_heads_hash)
             .context("runtime heads hash is not a valid header value")?,
     );
+    snapshot_headers.insert("X-Runtime-State-Doc-Id", runtime_state_doc_id_header);
     publisher
         .put_bytes(
             &[
@@ -201,6 +211,7 @@ async fn main() -> Result<()> {
             "notebook_id": publisher.notebook_id,
             "source_notebook_id": open.info.notebook_id,
             "viewer_url": publisher.viewer_url(),
+            "runtime_state_doc_id": runtime_state_doc_id,
             "notebook_heads_hash": notebook_heads_hash,
             "runtime_heads_hash": runtime_heads_hash,
             "initial_blob_refs": initial_ref_count,
@@ -419,6 +430,17 @@ fn collect_snapshot_blob_refs(
     collect_runtime_snapshot_blob_refs(runtime_state_bytes, &mut refs)?;
     collect_notebook_snapshot_blob_refs(notebook_bytes, &mut refs)?;
     Ok(refs)
+}
+
+fn runtime_state_doc_id_from_notebook_snapshot(
+    notebook_bytes: &[u8],
+    fallback_notebook_id: &str,
+) -> Result<String> {
+    let notebook_doc = NotebookDoc::load(notebook_bytes)
+        .context("load NotebookDoc from exported snapshot bytes")?;
+    Ok(notebook_doc
+        .runtime_state_doc_id()
+        .unwrap_or_else(|| default_runtime_state_doc_id(fallback_notebook_id)))
 }
 
 fn collect_runtime_snapshot_blob_refs(

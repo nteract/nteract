@@ -869,7 +869,7 @@ class FakeD1Statement implements D1PreparedStatement {
 
   async all<T = unknown>(): Promise<D1Result<T>> {
     if (this.query.startsWith("PRAGMA table_info")) {
-      return okResult([{ name: "runtime_snapshot_key" }] as T[]);
+      return okResult([{ name: "runtime_snapshot_key" }, { name: "runtime_state_doc_id" }] as T[]);
     }
     if (this.query.includes("FROM principal_profiles")) {
       const principals = new Set(this.values as string[]);

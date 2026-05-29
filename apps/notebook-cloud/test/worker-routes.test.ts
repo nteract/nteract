@@ -651,6 +651,7 @@ describe("Worker artifact routes", () => {
           Cookie: `CF_Authorization=${token}`,
           Origin: "https://cloud.test",
           "X-Operator": "browser:tab",
+          "X-Runtime-State-Doc-Id": "runtime:access-artifact-demo",
           "X-Scope": "owner",
         },
         body,
@@ -667,6 +668,7 @@ describe("Worker artifact routes", () => {
           "Content-Type": "application/octet-stream",
           "CF-Access-Token": token,
           "X-Operator": "cli:smoke",
+          "X-Runtime-State-Doc-Id": "runtime:access-artifact-demo",
           "X-Scope": "owner",
         },
         body,
@@ -701,6 +703,7 @@ describe("Worker artifact routes", () => {
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/octet-stream",
           "X-Operator": "agent:runt-publish",
+          "X-Runtime-State-Doc-Id": "runtime:api-key-artifact-demo",
           "X-Scope": "owner",
         },
         body,
@@ -713,6 +716,7 @@ describe("Worker artifact routes", () => {
     assert.deepEqual(await response.json(), {
       ok: true,
       key: runtimeSnapshotKey("api-key-artifact-demo", "api-key"),
+      runtime_state_doc_id: "runtime:api-key-artifact-demo",
       size: body.byteLength,
     });
     assert.deepEqual(seenAuthorizations, [`Bearer ${token}`]);
@@ -729,6 +733,30 @@ describe("Worker artifact routes", () => {
       ),
       true,
     );
+  });
+
+  it("requires RuntimeStateDoc ids for snapshot publishes", async () => {
+    const env = fakeEnv();
+    const body = new Uint8Array([1, 2, 3, 4]);
+
+    const runtimePut = await ownerPut(
+      env,
+      "/api/n/runtime-id-required/runtime-snapshots/runtime-heads",
+      body,
+    );
+    assert.equal(runtimePut.status, 400);
+    assert.deepEqual(await runtimePut.json(), {
+      error: "X-Runtime-State-Doc-Id header is required",
+    });
+
+    const notebookPut = await ownerPut(env, "/api/n/runtime-id-required/snapshots/heads", body);
+    assert.equal(notebookPut.status, 400);
+    assert.deepEqual(await notebookPut.json(), {
+      error: "X-Runtime-State-Doc-Id header is required",
+    });
+
+    assert.equal(env.NOTEBOOK_SNAPSHOTS.objects.size, 0);
+    assert.equal(env.DB.revisions.length, 0);
   });
 
   it("allows runtime peers to upload content-addressed output blobs", async () => {
@@ -2626,6 +2654,9 @@ describe("Worker artifact routes", () => {
       env,
       "/api/n/route-demo/runtime-snapshots/runtime-fixture",
       runtimeStateBytes,
+      {
+        "X-Runtime-State-Doc-Id": "runtime:route-demo",
+      },
     );
     assert.equal(runtimePut.status, 201);
     assert.deepEqual(
@@ -2639,9 +2670,13 @@ describe("Worker artifact routes", () => {
       notebookBytes,
       {
         "X-Runtime-Heads-Hash": "runtime-fixture",
+        "X-Runtime-State-Doc-Id": "runtime:route-demo",
       },
     );
     assert.equal(notebookPut.status, 201);
+    const notebookPutBody = (await notebookPut.json()) as { runtime_state_doc_id: string };
+    assert.equal(notebookPutBody.runtime_state_doc_id, "runtime:route-demo");
+    assert.equal(env.DB.revisions[0]?.runtime_state_doc_id, "runtime:route-demo");
     assert.deepEqual(
       env.DB.acl.map((row) => [row.notebook_id, row.subject_kind, row.subject, row.scope]),
       [
@@ -2705,6 +2740,7 @@ describe("Worker artifact routes", () => {
       notebookBytes,
       {
         "X-Runtime-Heads-Hash": "runtime-missing",
+        "X-Runtime-State-Doc-Id": "runtime:missing-runtime-demo",
       },
     );
 
@@ -2728,6 +2764,9 @@ describe("Worker artifact routes", () => {
       env,
       "/api/n/corrupt-demo/runtime-snapshots/runtime-corrupt",
       corruptBytes,
+      {
+        "X-Runtime-State-Doc-Id": "runtime:corrupt-demo",
+      },
     );
     assert.equal(runtimePut.status, 201);
 
@@ -2740,6 +2779,7 @@ describe("Worker artifact routes", () => {
     try {
       response = await ownerPut(env, "/api/n/corrupt-demo/snapshots/heads-corrupt", corruptBytes, {
         "X-Runtime-Heads-Hash": "runtime-corrupt",
+        "X-Runtime-State-Doc-Id": "runtime:corrupt-demo",
       });
     } finally {
       console.warn = originalWarn;
@@ -2797,6 +2837,9 @@ describe("Worker artifact routes", () => {
       env,
       "/api/n/missing-blob-demo/runtime-snapshots/runtime-fixture",
       runtimeStateBytes,
+      {
+        "X-Runtime-State-Doc-Id": "runtime:missing-blob-demo",
+      },
     );
     assert.equal(runtimePut.status, 201);
 
@@ -2813,6 +2856,7 @@ describe("Worker artifact routes", () => {
         notebookBytes,
         {
           "X-Runtime-Heads-Hash": "runtime-fixture",
+          "X-Runtime-State-Doc-Id": "runtime:missing-blob-demo",
         },
       );
     } finally {
@@ -3129,6 +3173,7 @@ interface NotebookAclRow {
 interface RevisionRow {
   id: string;
   notebook_id: string;
+  runtime_state_doc_id: string | null;
   notebook_heads_hash: string;
   runtime_heads_hash: string | null;
   snapshot_key: string;
@@ -3420,15 +3465,26 @@ class FakeD1Statement implements D1PreparedStatement {
       const [
         id,
         notebookId,
+        runtimeStateDocId,
         notebookHeadsHash,
         runtimeHeadsHash,
         snapshotKey,
         runtimeSnapshotKey,
         actorLabel,
-      ] = this.values as [string, string, string, string | null, string, string | null, string];
+      ] = this.values as [
+        string,
+        string,
+        string | null,
+        string,
+        string | null,
+        string,
+        string | null,
+        string,
+      ];
       this.db.revisions.push({
         id,
         notebook_id: notebookId,
+        runtime_state_doc_id: runtimeStateDocId,
         notebook_heads_hash: notebookHeadsHash,
         runtime_heads_hash: runtimeHeadsHash,
         snapshot_key: snapshotKey,
