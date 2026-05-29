@@ -180,6 +180,20 @@ fn validate_runtime_peer_room_host_owned_delta(
             "room-host/daemon-owned",
         ));
     }
+    if before.state.runtime_state_doc_id != after.state.runtime_state_doc_id {
+        return Err(runtime_state_policy_error(
+            scope,
+            "runtime_state_doc_id",
+            "room-host/daemon-owned",
+        ));
+    }
+    if before.state.notebook_id != after.state.notebook_id {
+        return Err(runtime_state_policy_error(
+            scope,
+            "notebook_id",
+            "room-host/daemon-owned",
+        ));
+    }
     if before.state.last_saved != after.state.last_saved {
         return Err(runtime_state_policy_error(
             scope,
@@ -412,6 +426,20 @@ fn validate_comm_state_only_runtime_delta(
     if before.state.trust != after.state.trust {
         return Err(runtime_state_policy_error(scope, "trust", "daemon-owned"));
     }
+    if before.state.runtime_state_doc_id != after.state.runtime_state_doc_id {
+        return Err(runtime_state_policy_error(
+            scope,
+            "runtime_state_doc_id",
+            "daemon-owned",
+        ));
+    }
+    if before.state.notebook_id != after.state.notebook_id {
+        return Err(runtime_state_policy_error(
+            scope,
+            "notebook_id",
+            "daemon-owned",
+        ));
+    }
     if before.state.last_saved != after.state.last_saved {
         return Err(runtime_state_policy_error(
             scope,
@@ -597,6 +625,29 @@ mod tests {
         assert!(
             err.to_string().contains("display_index"),
             "error should identify display index writes: {err}"
+        );
+    }
+
+    #[test]
+    fn owner_runtime_state_policy_rejects_identity_rewrites() {
+        let mut before_doc = RuntimeStateDoc::new();
+        before_doc
+            .set_document_identity(Some("runtime:nb-1"), Some("nb-1"))
+            .unwrap();
+        let before = runtime_state_policy_snapshot(&before_doc);
+
+        let mut after_doc = RuntimeStateDoc::new();
+        after_doc
+            .set_document_identity(Some("runtime:nb-2"), Some("nb-1"))
+            .unwrap();
+        let after = runtime_state_policy_snapshot(&after_doc);
+
+        let err = validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::Owner)
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("runtime_state_doc_id"),
+            "error should identify identity writes: {err}"
         );
     }
 
