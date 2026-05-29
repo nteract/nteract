@@ -31,7 +31,7 @@ import {
   getNotebookAclRows,
   getNotebookAclRowsForPrincipal,
   renderKey,
-  runtimeSnapshotKey,
+  runtimeStateSnapshotKey,
   snapshotKey,
 } from "../src/storage.ts";
 import type { PendingNotebookInviteRow, PrincipalProfileRow } from "../src/sharing-storage.ts";
@@ -715,7 +715,7 @@ describe("Worker artifact routes", () => {
     assert.equal(response.status, 201);
     assert.deepEqual(await response.json(), {
       ok: true,
-      key: runtimeSnapshotKey("api-key-artifact-demo", "api-key"),
+      key: runtimeStateSnapshotKey("runtime:api-key-artifact-demo", "api-key"),
       runtime_state_doc_id: "runtime:api-key-artifact-demo",
       size: body.byteLength,
     });
@@ -757,6 +757,144 @@ describe("Worker artifact routes", () => {
 
     assert.equal(env.NOTEBOOK_SNAPSHOTS.objects.size, 0);
     assert.equal(env.DB.revisions.length, 0);
+  });
+
+  it("requires RuntimeStateDoc ids when reading runtime snapshots", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "runtime-read-demo");
+    seedAcl(env, {
+      notebookId: "runtime-read-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/n/runtime-read-demo/runtime-snapshots/runtime-heads", {
+        headers: {
+          "X-Operator": "desktop:test",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), {
+      error: "X-Runtime-State-Doc-Id header is required",
+    });
+  });
+
+  it("serves runtime snapshots from the RuntimeStateDoc namespace", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "runtime-read-demo");
+    seedAcl(env, {
+      notebookId: "runtime-read-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    const body = new Uint8Array([1, 2, 3, 4]);
+    const key = runtimeStateSnapshotKey("runtime:runtime-read-demo", "runtime-heads");
+    await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
+      httpMetadata: { contentType: "application/octet-stream" },
+      customMetadata: {
+        artifact: "runtime-state-snapshot",
+        notebook_id: "runtime-read-demo",
+        runtime_heads_hash: "runtime-heads",
+        runtime_state_doc_id: "runtime:runtime-read-demo",
+      },
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/n/runtime-read-demo/runtime-snapshots/runtime-heads", {
+        headers: {
+          "X-Operator": "desktop:test",
+          "X-Runtime-State-Doc-Id": "runtime:runtime-read-demo",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), body);
+  });
+
+  it("does not serve runtime snapshots owned by another notebook", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "runtime-read-demo");
+    seedAcl(env, {
+      notebookId: "runtime-read-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    await env.NOTEBOOK_SNAPSHOTS.put(
+      runtimeStateSnapshotKey("runtime:other-demo", "runtime-heads"),
+      new Uint8Array([1, 2, 3, 4]),
+      {
+        customMetadata: {
+          artifact: "runtime-state-snapshot",
+          notebook_id: "other-demo",
+          runtime_heads_hash: "runtime-heads",
+          runtime_state_doc_id: "runtime:other-demo",
+        },
+      },
+    );
+
+    const response = await worker.fetch(
+      new Request("http://localhost/api/n/runtime-read-demo/runtime-snapshots/runtime-heads", {
+        headers: {
+          "X-Operator": "desktop:test",
+          "X-Runtime-State-Doc-Id": "runtime:other-demo",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { error: "runtime snapshot not found" });
+  });
+
+  it("does not replace runtime snapshots owned by another notebook", async () => {
+    const env = fakeEnv();
+    seedNotebook(env, "runtime-write-demo");
+    seedAcl(env, {
+      notebookId: "runtime-write-demo",
+      subject: "user:dev:alice",
+      scope: "owner",
+    });
+    await env.NOTEBOOK_SNAPSHOTS.put(
+      runtimeStateSnapshotKey("runtime:other-demo", "runtime-heads"),
+      new Uint8Array([1, 2, 3, 4]),
+      {
+        customMetadata: {
+          artifact: "runtime-state-snapshot",
+          notebook_id: "other-demo",
+          runtime_heads_hash: "runtime-heads",
+          runtime_state_doc_id: "runtime:other-demo",
+        },
+      },
+    );
+
+    const response = await ownerPut(
+      env,
+      "/api/n/runtime-write-demo/runtime-snapshots/runtime-heads",
+      new Uint8Array([5, 6, 7, 8]),
+      {
+        "X-Runtime-State-Doc-Id": "runtime:other-demo",
+      },
+    );
+
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), {
+      error: "runtime snapshot belongs to another notebook",
+    });
   });
 
   it("allows runtime peers to upload content-addressed output blobs", async () => {
@@ -2677,6 +2815,10 @@ describe("Worker artifact routes", () => {
     const notebookPutBody = (await notebookPut.json()) as { runtime_state_doc_id: string };
     assert.equal(notebookPutBody.runtime_state_doc_id, "runtime:route-demo");
     assert.equal(env.DB.revisions[0]?.runtime_state_doc_id, "runtime:route-demo");
+    assert.equal(
+      env.DB.revisions[0]?.runtime_snapshot_key,
+      runtimeStateSnapshotKey("runtime:route-demo", "runtime-fixture"),
+    );
     assert.deepEqual(
       env.DB.acl.map((row) => [row.notebook_id, row.subject_kind, row.subject, row.scope]),
       [
@@ -3755,7 +3897,12 @@ class FakeR2Bucket implements R2Bucket {
     value: ReadableStream | ArrayBuffer | ArrayBufferView | string | null,
     options?: R2PutOptions,
   ): Promise<R2Object> {
-    const object = new FakeR2Object(key, await toBytes(value), options?.httpMetadata);
+    const object = new FakeR2Object(
+      key,
+      await toBytes(value),
+      options?.httpMetadata,
+      options?.customMetadata,
+    );
     this.objects.set(key, object);
     return object;
   }
@@ -3770,12 +3917,12 @@ class FakeR2Object implements R2ObjectBody {
   readonly etag = "fake-etag";
   readonly httpEtag = '"fake-etag"';
   readonly uploaded = new Date("2026-05-22T00:00:00.000Z");
-  readonly customMetadata = {};
 
   constructor(
     readonly key: string,
     private readonly bytes: Uint8Array,
     readonly httpMetadata?: R2HTTPMetadata,
+    readonly customMetadata?: Record<string, string>,
   ) {}
 
   get size(): number {

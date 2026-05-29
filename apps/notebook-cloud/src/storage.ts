@@ -165,6 +165,14 @@ export function snapshotKey(notebookId: string, headsHash: string): string {
   return `n/${encodePathComponent(notebookId)}/snapshots/${encodePathComponent(headsHash)}.am`;
 }
 
+export function documentSnapshotKey(documentId: string, headsHash: string): string {
+  return `docs/${encodePathComponent(documentId)}/snapshots/${encodePathComponent(headsHash)}.am`;
+}
+
+export function runtimeStateSnapshotKey(runtimeStateDocId: string, headsHash: string): string {
+  return documentSnapshotKey(runtimeStateDocId, headsHash);
+}
+
 export function runtimeSnapshotKey(notebookId: string, headsHash: string): string {
   return `n/${encodePathComponent(notebookId)}/snapshots/runtime-state/${encodePathComponent(headsHash)}.am`;
 }
