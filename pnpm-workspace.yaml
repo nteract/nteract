@@ -8,16 +8,16 @@ onlyBuiltDependencies:
   - '@fortawesome/fontawesome-free'
   - esbuild
 minimumReleaseAge: 1440
-# Temporary for bootstrapping the current Fumadocs scaffold against freshly
-# published pinned versions; remove once these exact lockfile entries age in.
+# TODO(2026-05-31): remove once these exact Fumadocs lockfile entries are older
+# than minimumReleaseAge and `pnpm install --frozen-lockfile` succeeds without it.
 minimumReleaseAgeExclude:
   - fumadocs-core
   - fumadocs-mdx
   - fumadocs-ui
 blockExoticSubdeps: true
 trustPolicy: no-downgrade
-# Temporary transitive exception from the current Fumadocs install; remove when
-# the lockfile no longer needs this package version.
+# TODO(2026-05-31): remove once the current lockfile accepts this transitive
+# package without a trust-policy downgrade exception.
 trustPolicyExclude:
   - tinyexec@1.2.2
 catalog:
