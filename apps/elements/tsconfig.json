@@ -6,6 +6,8 @@
     "incremental": true,
     "jsx": "preserve",
     "paths": {
+      "@/components/cell/*": ["../../src/components/cell/*"],
+      "@/lib/utils": ["../../src/lib/utils"],
       "@/*": ["./*"],
       "collections/*": ["./.source/*"]
     },

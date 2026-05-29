@@ -13,8 +13,8 @@ import {
 const stats = [
   { label: "shadcn primitives", value: "24", detail: "current generic UI floor" },
   { label: "notebook domains", value: "6", detail: "first catalog targets" },
-  { label: "component forks", value: "0", detail: "use current sources first" },
-  { label: "starter examples", value: "2", detail: "outline plus burn-down" },
+  { label: "component forks", value: "0", detail: "current sources stay canonical" },
+  { label: "current imports", value: "2", detail: "CellContainer plus execution button" },
 ];
 
 const phases = [
@@ -26,9 +26,9 @@ const phases = [
   },
   {
     title: "Document cell anatomy",
-    state: "next",
+    state: "active",
     icon: Rows3,
-    summary: "Map current code, markdown, raw cells, shared controls, presence, and status.",
+    summary: "Render current cell shell pieces, then add editor and output adapters.",
   },
   {
     title: "Separate renderers",
@@ -57,14 +57,15 @@ const families = [
     source: "apps/notebook/src/components/{CodeCell,MarkdownCell,RawCell}.tsx",
     target: "nteract cells",
     status: "next",
-    intent: "Document the current cell frame and action surface before extracting wrappers.",
+    intent: "Document code, markdown, and raw cells after their runtime hooks can be fixture-fed.",
   },
   {
     family: "Cell internals",
     source: "src/components/cell/**",
     target: "nteract cells",
-    status: "next",
-    intent: "Keep execution count, controls, status, and presence as notebook concepts.",
+    status: "active",
+    intent:
+      "CellContainer and CompactExecutionButton now render from current source in the catalog.",
   },
   {
     family: "Editors",
@@ -117,7 +118,7 @@ const rules = [
   {
     title: "Use current components first",
     icon: ShieldCheck,
-    body: "Catalog pages should render existing components through fixtures as soon as isolation allows. Schematic markup is temporary and must be labeled.",
+    body: "Catalog pages render existing components through fixtures as soon as isolation allows. The cell anatomy page now starts with the real cell shell.",
   },
   {
     title: "Own notebook semantics",
