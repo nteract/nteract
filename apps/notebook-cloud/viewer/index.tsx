@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { createRoot } from "react-dom/client";
 import {
   BookOpen,
@@ -88,6 +96,7 @@ import {
   type RenderCell,
   type ResolvedCell,
 } from "./render-resolution";
+import { rendererAssetBasePathForProvider } from "./renderer-assets";
 import {
   buildCloudShareAccessRows,
   hasPublicViewerAccess,
@@ -155,8 +164,6 @@ interface ViewerRuntime {
 type ViewerRuntimeState =
   | { kind: "ready"; runtime: ViewerRuntime }
   | { kind: "error"; message: string };
-
-const rendererBundle = () => import("virtual:isolated-renderer");
 
 installDocumentThemeSync();
 
@@ -355,7 +362,31 @@ function App() {
     return <ViewerStartupError message={`Unable to start cloud viewer: ${runtimeState.message}`} />;
   }
 
-  return <NotebookViewer runtime={runtimeState.runtime} authConfig={authConfig} />;
+  return (
+    <CloudNotebookProviders config={runtimeState.runtime.config}>
+      <NotebookViewer runtime={runtimeState.runtime} authConfig={authConfig} />
+    </CloudNotebookProviders>
+  );
+}
+
+function CloudNotebookProviders({
+  children,
+  config,
+}: {
+  children: ReactNode;
+  config: CloudViewerConfig;
+}) {
+  return (
+    <IsolatedRendererProvider
+      basePath={rendererAssetBasePathForProvider(config.rendererAssetsBasePath)}
+    >
+      <CloudWidgetStoreProvider>
+        <MediaProvider priority={CLOUD_VIEWER_PRIORITY} renderers={CLOUD_WIDGET_RENDERERS}>
+          {children}
+        </MediaProvider>
+      </CloudWidgetStoreProvider>
+    </IsolatedRendererProvider>
+  );
 }
 
 function CloudHomeView({ authConfig }: { authConfig: CloudViewerAuthConfig }) {
@@ -1990,12 +2021,6 @@ createRoot(requireElement("#root")).render(
   <ErrorBoundary
     fallback={(error) => <ViewerStartupError message={`Cloud viewer crashed: ${error.message}`} />}
   >
-    <IsolatedRendererProvider loader={rendererBundle}>
-      <CloudWidgetStoreProvider>
-        <MediaProvider priority={CLOUD_VIEWER_PRIORITY} renderers={CLOUD_WIDGET_RENDERERS}>
-          <App />
-        </MediaProvider>
-      </CloudWidgetStoreProvider>
-    </IsolatedRendererProvider>
+    <App />
   </ErrorBoundary>,
 );
