@@ -453,6 +453,11 @@ jobs:
       - name: Build runtimed-node N-API package
         run: pnpm --dir packages/runtimed-node build:debug
 
+      - name: Test runtimed-node Arrow IPC native integration
+        run: vp test run packages/runtimed-node/tests/arrow-ipc.test.ts
+        env:
+          RUNTIMED_NODE_NATIVE_INTEGRATION: "1"
+
       - name: Smoke test runtimed-node package
         run: pnpm --dir packages/runtimed-node smoke
 

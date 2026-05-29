@@ -6,6 +6,8 @@ import fs from "node:fs";
 import { describe, expect, it } from "vite-plus/test";
 
 const require = createRequire(import.meta.url);
+const runNativeIntegration = process.env.RUNTIMED_NODE_NATIVE_INTEGRATION === "1";
+const describeNative = runNativeIntegration ? describe : describe.skip;
 
 type NativeBinding = {
   readArrowFile: (
@@ -51,22 +53,30 @@ function loadNativeBinding(): NativeBinding {
     return loaded as NativeBinding;
   } catch (error) {
     throw new Error(
-      "Failed to load @runtimed/node native binding. Run `pnpm --dir packages/runtimed-node build` before this integration test.",
+      "Failed to load @runtimed/node native binding. Run `pnpm --dir packages/runtimed-node build:debug` before this integration test.",
       { cause: error },
     );
   }
 }
 
-const binding = loadNativeBinding();
+const binding = runNativeIntegration ? loadNativeBinding() : null;
 const fixture = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../sift/public/polars-utf8view.arrow",
 );
 
-describe("@runtimed/node Arrow IPC native integration", () => {
+function nativeBinding(): NativeBinding {
+  if (!binding) {
+    throw new Error("Set RUNTIMED_NODE_NATIVE_INTEGRATION=1 to run this native integration test.");
+  }
+  return binding;
+}
+
+describeNative("@runtimed/node Arrow IPC native integration", () => {
   it("reads and summarizes a real Utf8View Arrow stream fixture", () => {
-    const page = binding.readArrowFile(fixture, 0, 3);
-    const summary = binding.summarizeArrowFile(fixture);
+    const native = nativeBinding();
+    const page = native.readArrowFile(fixture, 0, 3);
+    const summary = native.summarizeArrowFile(fixture);
 
     expect(page.columns).toEqual(["id", "name", "note", "score", "event_ts"]);
     expect(page.rows).toHaveLength(3);
@@ -82,8 +92,9 @@ describe("@runtimed/node Arrow IPC native integration", () => {
   });
 
   it("paginates across multiple Arrow stream chunks", () => {
-    const page = binding.readArrowChunks([fixture, fixture], 98, 5);
-    const summary = binding.summarizeArrowChunks([fixture, fixture]);
+    const native = nativeBinding();
+    const page = native.readArrowChunks([fixture, fixture], 98, 5);
+    const summary = native.summarizeArrowChunks([fixture, fixture]);
 
     expect(page.totalRows).toBe(200);
     expect(page.offset).toBe(98);
@@ -100,8 +111,9 @@ describe("@runtimed/node Arrow IPC native integration", () => {
     fs.writeFileSync(blobPath, "arrow");
 
     try {
-      expect(binding.resolveBlobPath(hash, socketPath)).toBe(blobPath);
-      expect(binding.resolveBlobPath("not-a-hash", socketPath)).toBeNull();
+      const native = nativeBinding();
+      expect(native.resolveBlobPath(hash, socketPath)).toBe(blobPath);
+      expect(native.resolveBlobPath("not-a-hash", socketPath)).toBeNull();
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
