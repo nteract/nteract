@@ -17,7 +17,7 @@ const entries = [
   },
   {
     title: "Cell anatomy",
-    description: "Fixture-backed target shape for nteract cells.",
+    description: "Inventory map for current nteract cells.",
     href: "/docs/cell-anatomy",
     icon: FileCode2,
   },

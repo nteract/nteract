@@ -1,5 +1,4 @@
 import {
-  Boxes,
   CheckCircle2,
   CircleDotDashed,
   Code2,
@@ -14,7 +13,7 @@ import {
 const stats = [
   { label: "shadcn primitives", value: "24", detail: "current generic UI floor" },
   { label: "notebook domains", value: "6", detail: "first catalog targets" },
-  { label: "old elements imports", value: "0", detail: "inspiration only" },
+  { label: "component forks", value: "0", detail: "use current sources first" },
   { label: "starter examples", value: "2", detail: "outline plus burn-down" },
 ];
 
@@ -26,10 +25,10 @@ const phases = [
     summary: "Left rail, workspace chrome, toolbar, and notebook-level navigation.",
   },
   {
-    title: "Promote cell anatomy",
+    title: "Document cell anatomy",
     state: "next",
     icon: Rows3,
-    summary: "Markdown, code, raw cells, execution controls, presence, and cell status.",
+    summary: "Map current code, markdown, raw cells, shared controls, presence, and status.",
   },
   {
     title: "Separate renderers",
@@ -58,7 +57,7 @@ const families = [
     source: "apps/notebook/src/components/{CodeCell,MarkdownCell,RawCell}.tsx",
     target: "nteract cells",
     status: "next",
-    intent: "Extract the cell frame and action surface before changing cell rendering behavior.",
+    intent: "Document the current cell frame and action surface before extracting wrappers.",
   },
   {
     family: "Cell internals",
@@ -116,6 +115,11 @@ const statusClasses = {
 
 const rules = [
   {
+    title: "Use current components first",
+    icon: ShieldCheck,
+    body: "Catalog pages should render existing components through fixtures as soon as isolation allows. Schematic markup is temporary and must be labeled.",
+  },
+  {
     title: "Own notebook semantics",
     icon: ListChecks,
     body: "If a component knows about cells, outputs, kernels, trust, packages, variables, or notebook navigation, it belongs in the nteract catalog.",
@@ -124,11 +128,6 @@ const rules = [
     title: "Wrap generic interactions",
     icon: Layers3,
     body: "Use shadcn primitives as implementation details behind domain names such as CellAction, RuntimeDialog, or NotebookRailButton.",
-  },
-  {
-    title: "Leave primitives generic",
-    icon: Boxes,
-    body: "Button, Select, Sheet, Popover, and similar controls should stay low-level until the notebook use case gives them a real contract.",
   },
 ];
 
@@ -181,8 +180,9 @@ export function ComponentBurndown() {
             <h2 className="text-sm font-semibold">Component Burn-Down</h2>
           </div>
           <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-            The target is a catalog of nteract-owned notebook components. shadcn stays as the
-            interaction floor, not the public component identity.
+            The target is a catalog of existing nteract-owned notebook components. shadcn stays as
+            the interaction floor, not the public component identity, and this app should not fork
+            production UI while cataloging it.
           </p>
         </div>
         <div className="divide-y divide-fd-border">

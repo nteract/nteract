@@ -1,18 +1,22 @@
 ---
 title: Cell anatomy
-description: A fixture-backed target shape for nteract-owned cell components.
+description: A fixture-backed inventory map for existing nteract cell components.
 ---
 
 import { CellAnatomyExample } from "@/components/cell-anatomy-example";
 
-The first component family to promote is the cell frame. It is where generic
-buttons, editor wrappers, gutters, presence, outputs, and runtime state become
-notebook semantics.
+The first component family to document is the existing cell frame. It is where
+generic buttons, editor wrappers, gutters, presence, outputs, and runtime state
+already become notebook semantics.
 
 <CellAnatomyExample />
 
 ## Why this comes first
 
 The sidebar outline should scroll to cells and reflect heading state, but it
-should not own cell rendering. A clean cell anatomy gives the sidebar a stable
-target while preserving the existing `NotebookView` DOM-order invariant.
+should not own cell rendering. A clear cell anatomy gives the sidebar a stable
+contract while preserving the existing `NotebookView` DOM-order invariant.
+
+This docs site should converge toward rendering current components with fixture
+data. New schematic UI is only a temporary map when direct imports would drag in
+runtime hooks, generated WASM, or notebook sync state.

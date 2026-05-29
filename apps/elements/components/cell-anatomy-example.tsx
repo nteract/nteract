@@ -1,4 +1,13 @@
-import { Braces, CircleDot, FileText, GripVertical, Play, Rows3, Search } from "lucide-react";
+import {
+  Braces,
+  CircleDot,
+  FileText,
+  GripVertical,
+  Play,
+  Rows3,
+  Search,
+  ShieldCheck,
+} from "lucide-react";
 
 const layers = [
   {
@@ -24,6 +33,7 @@ const layers = [
 ];
 
 const contracts = [
+  "Catalog pages use existing components first; schematic markup is temporary and labeled.",
   "Cell identity and stable DOM order stay outside the visual component.",
   "Runtime state enters as explicit props or fixture data, never through hooks in catalog examples.",
   "Source, output, gutter, and presence areas should be independently documented.",
@@ -32,11 +42,26 @@ const contracts = [
 export function CellAnatomyExample() {
   return (
     <div className="not-prose space-y-6">
+      <section className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-4 text-sky-900 dark:text-sky-100">
+        <div className="flex items-start gap-3">
+          <ShieldCheck className="mt-0.5 size-4 flex-none" aria-hidden="true" />
+          <div>
+            <h2 className="text-sm font-semibold">Catalog fidelity rule</h2>
+            <p className="mt-1 text-xs leading-5">
+              This page documents the current notebook cell components. The visual below is a
+              labeled schematic until the docs app can render the real `CodeCell`, `MarkdownCell`,
+              `CellContainer`, editor, and output components from fixtures without pulling in the
+              runtime.
+            </p>
+          </div>
+        </div>
+      </section>
+
       <section className="overflow-hidden rounded-lg border border-fd-border bg-fd-card">
-        <div className="grid border-b border-fd-border bg-fd-muted/20 px-4 py-3 text-xs text-fd-muted-foreground sm:grid-cols-[96px_1fr_120px]">
+        <div className="grid border-b border-fd-border bg-fd-muted/20 px-4 py-3 text-xs text-fd-muted-foreground sm:grid-cols-[96px_1fr_160px]">
           <div>gutter</div>
           <div>source and output</div>
-          <div className="hidden text-right sm:block">cell chrome</div>
+          <div className="hidden text-right sm:block">schematic only</div>
         </div>
         <div className="grid min-h-[360px] grid-cols-[52px_1fr]">
           <aside className="flex flex-col items-center border-r border-fd-border bg-fd-muted/30 py-4">
