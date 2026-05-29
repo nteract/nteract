@@ -790,6 +790,7 @@ impl NotebookRoom {
         if ephemeral {
             let _ = doc.set_metadata("ephemeral", "true");
         }
+        let runtime_state_doc_id = doc.ensure_runtime_state_doc_id(&notebook_id_str)?;
 
         let (persist_tx, flush_request_tx) = if ephemeral {
             (None, None)
@@ -862,11 +863,10 @@ impl NotebookRoom {
         );
 
         let (state_changed_tx, _) = broadcast::channel(16);
-        let state = runtime_doc::RuntimeStateHandle::new(
-            RuntimeStateDoc::try_new()
-                .map_err(|e| anyhow::anyhow!("create runtime state doc: {e}"))?,
-            state_changed_tx,
-        );
+        let mut state_doc = RuntimeStateDoc::try_new()
+            .map_err(|e| anyhow::anyhow!("create runtime state doc: {e}"))?;
+        state_doc.set_runtime_state_doc_id(Some(&runtime_state_doc_id))?;
+        let state = runtime_doc::RuntimeStateHandle::new(state_doc, state_changed_tx);
 
         // Seed path on the runtime-state doc so connecting peers see it via sync.
         if let Some(p) = path.as_ref() {
@@ -914,7 +914,10 @@ impl NotebookRoom {
 
         let filename = notebook_doc_filename(notebook_id);
         let persist_path = docs_dir.join(filename);
-        let doc = NotebookDoc::load_or_create(&persist_path, notebook_id);
+        let mut doc = NotebookDoc::load_or_create(&persist_path, notebook_id);
+        let runtime_state_doc_id = doc
+            .ensure_runtime_state_doc_id(notebook_id)
+            .expect("seed runtime state document id");
         let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
         let (flush_request_tx, flush_rx) = mpsc::unbounded_channel::<FlushRequest>();
         spawn_persist_debouncer(persist_rx, flush_rx, persist_path.clone());
@@ -965,7 +968,11 @@ impl NotebookRoom {
             }
         };
         let (state_changed_tx, _) = broadcast::channel(16);
-        let state = runtime_doc::RuntimeStateHandle::new(RuntimeStateDoc::new(), state_changed_tx);
+        let mut state_doc = RuntimeStateDoc::new();
+        state_doc
+            .set_runtime_state_doc_id(Some(&runtime_state_doc_id))
+            .expect("seed runtime state document identity");
+        let state = runtime_doc::RuntimeStateHandle::new(state_doc, state_changed_tx);
         if let Some(p) = path.as_ref() {
             let path_str = p.to_string_lossy().into_owned();
             let _ = state.with_doc(|sd| sd.set_path(Some(&path_str)));
