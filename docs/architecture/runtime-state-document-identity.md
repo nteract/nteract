@@ -47,7 +47,6 @@ NotebookDoc/
 RuntimeStateDoc/
   schema_version
   runtime_state_doc_id
-  notebook_id
   kernel/
   queue/
   executions/
@@ -79,11 +78,10 @@ The canonical lookup direction is:
 NotebookDoc -> RuntimeStateDoc
 ```
 
-`RuntimeStateDoc` may carry `runtime_state_doc_id` as its self identity and an
-optional `notebook_id` backlink when it is attached to a notebook. The backlink
-is provenance and validation context, not a required part of runtime-state
-identity. Authorization for notebook-attached runtime state flows through the
-notebook and its ACL.
+`RuntimeStateDoc` carries `runtime_state_doc_id` as its self identity when
+known. The runtime-state document does not carry a notebook backlink.
+Authorization for notebook-attached runtime state flows through the notebook and
+its ACL because the notebook document owns the association.
 
 ## Consequences
 
@@ -101,16 +99,15 @@ daemon/system actor.
 
 ### RuntimeStateDoc schema changes
 
-`RuntimeStateDoc` should gain root identity fields:
+`RuntimeStateDoc` should gain a root identity field:
 
 - `runtime_state_doc_id`
-- `notebook_id` (optional backlink for notebook-attached runtime state)
 
-These fields make storage, diagnostics, and cloud bootstrap validation cheaper.
-The runtime-state id is the document's own identity. The notebook backlink is an
-advisory check against loading the wrong pair and must remain optional so the
-same document shape can support markdown-associated runtime state or standalone
-runtime state.
+This makes storage, diagnostics, and cloud bootstrap validation cheaper. The
+runtime-state id is the document's own identity. Notebook association remains a
+property of the `NotebookDoc.runtime_state_doc_id` pointer and catalog/checkpoint
+metadata so the same runtime-state document shape can support markdown-associated
+or standalone runtime state later.
 
 ### Desktop room construction changes
 
@@ -121,7 +118,7 @@ notebook document:
 2. Read `NotebookDoc.runtime_state_doc_id`.
 3. If missing, mint a runtime-state document id and write it into `NotebookDoc`.
 4. Load the matching `RuntimeStateDoc` if present; otherwise create one with the
-   same runtime-state id and the optional notebook backlink.
+   same runtime-state id.
 5. Continue syncing `NotebookDoc` on frame `0x00` and `RuntimeStateDoc` on frame
    `0x05`.
 
@@ -143,9 +140,8 @@ Bootstrap resolves the pair this way:
 3. Load the latest authorized `NotebookDoc` snapshot.
 4. Read `runtime_state_doc_id` from `NotebookDoc`.
 5. Load the checkpointed `RuntimeStateDoc` snapshot with that id and matching
-   recorded heads. If the runtime-state snapshot has a `notebook_id` backlink,
-   validate it against the loaded notebook; if it does not, treat the
-   `NotebookDoc.runtime_state_doc_id` pointer as the association.
+   recorded heads. Treat the `NotebookDoc.runtime_state_doc_id` pointer as the
+   association; do not require or write a runtime-state notebook backlink.
 6. Render from the two local Automerge documents.
 7. Open live sync for both documents.
 
@@ -229,7 +225,7 @@ The identity pointer fixes association without erasing the boundary.
 
 1. Add typed accessors for `NotebookDoc.runtime_state_doc_id` and bump the
    notebook schema.
-2. Add typed self-identifying fields to `RuntimeStateDoc`.
+2. Add a typed self-identifying field to `RuntimeStateDoc`.
 3. During room creation/load, mint and persist a runtime-state document id when
    opening an older notebook document.
 4. Keep the existing sync streams and room shape while changing how
