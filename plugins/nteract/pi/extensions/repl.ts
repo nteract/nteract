@@ -45,21 +45,13 @@ type RuntimedNode = {
     notebookId: string,
     opts?: { socketPath?: string; peerLabel?: string; description?: string },
   ): Promise<Session>;
-  readParquetFile(
-    filePath: string,
-    offset: number,
-    limit: number,
-  ): {
-    columns: string[];
-    rows: string[][];
-    totalRows: number;
-    offset: number;
-  };
-  summarizeParquetFile?(filePath: string): {
-    numRows: number;
-    numBytes: number;
-    columns: Array<{ name: string; dataType: string; nullCount: number; statsJson: string }>;
-  };
+  readParquetFile(filePath: string, offset: number, limit: number): TableRowPage;
+  readArrowFile?(filePath: string, offset: number, limit: number): TableRowPage;
+  readArrowChunks?(filePaths: string[], offset: number, limit: number): TableRowPage;
+  summarizeParquetFile?(filePath: string): TableSummaryResult;
+  summarizeArrowFile?(filePath: string): TableSummaryResult;
+  summarizeArrowChunks?(filePaths: string[]): TableSummaryResult;
+  resolveBlobPath?(hash: string, socketPath?: string): string | null | undefined;
 };
 
 type JsOutput = {
@@ -82,6 +74,19 @@ type CellResult = {
   status: string; // "done" | "error" | "timeout" | "kernel_error"
   success: boolean;
   outputs?: JsOutput[];
+};
+
+type TableRowPage = {
+  columns: string[];
+  rows: string[][];
+  totalRows: number;
+  offset: number;
+};
+
+type TableSummaryResult = {
+  numRows: number;
+  numBytes: number;
+  columns: Array<{ name: string; dataType: string; nullCount: number; statsJson: string }>;
 };
 
 type QueuedExecution = {
@@ -217,6 +222,44 @@ type ColumnStats = {
   false_count?: number;
 };
 
+const PARQUET_MIME = "application/vnd.apache.parquet";
+const ARROW_STREAM_MIME = "application/vnd.apache.arrow.stream";
+const ARROW_STREAM_MANIFEST_MIME = "application/vnd.nteract.arrow-stream-manifest+json";
+
+type ArrowManifestColumn = {
+  name: string;
+  type?: string;
+  nullable?: boolean;
+};
+
+type ArrowManifestChunk = {
+  index?: number;
+  hash?: string;
+  size?: number;
+  row_count?: number;
+  record_batch_count?: number;
+  encoding?: string;
+};
+
+type ArrowStreamManifest = {
+  schema?: {
+    columns?: ArrowManifestColumn[];
+  };
+  chunks?: ArrowManifestChunk[];
+  complete?: boolean;
+  summary?: {
+    total_rows?: number;
+    included_rows?: number;
+    sampled?: boolean;
+    sample_strategy?: string;
+  };
+};
+
+type TableSource =
+  | { kind: "parquet"; path: string }
+  | { kind: "arrow"; path: string }
+  | { kind: "arrow-manifest"; manifest: ArrowStreamManifest; chunkPaths: string[] };
+
 function formatStat(stats: ColumnStats | null): string {
   if (!stats) return "";
   switch (stats.kind) {
@@ -312,6 +355,7 @@ class DataTable {
   private cachedWidth?: number;
 
   private indent: number;
+  private footerText?: string;
 
   constructor(
     columns: string[],
@@ -321,6 +365,7 @@ class DataTable {
     colStats: (ColumnStats | null)[],
     theme: Theme,
     indent: number = 0,
+    footerText?: string,
   ) {
     this.columns = columns;
     this.rows = rows;
@@ -329,6 +374,7 @@ class DataTable {
     this.colStats = colStats;
     this.theme = theme;
     this.indent = indent;
+    this.footerText = footerText;
   }
 
   invalidate(): void {
@@ -461,10 +507,9 @@ class DataTable {
     // ── Footer info ──
     const showingRows = numRows < this.totalRows ? `showing ${numRows} of ` : "";
     const hiddenSuffix = hiddenCols > 0 ? ` (${hiddenCols} more columns)` : "";
-    const info = t.fg(
-      "dim",
-      `${showingRows}${this.totalRows} rows × ${totalCols} columns${hiddenSuffix}`,
-    );
+    const infoText =
+      this.footerText ?? `${showingRows}${this.totalRows} rows × ${totalCols} columns`;
+    const info = t.fg("dim", `${infoText}${hiddenSuffix}`);
     lines.push(info);
 
     // Indent all lines to align with Out[n]: prompt
@@ -569,16 +614,234 @@ function formatResult(result: CellResult): {
   return { content: parts, isError };
 }
 
-function findParquetBlobPath(result: CellResult): string | undefined {
-  for (const o of result.outputs ?? []) {
-    if (!o.blobPathsJson) continue;
+function parseJsonObject(raw: string | undefined): Record<string, any> | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseArrowManifestEntry(entry: any): ArrowStreamManifest | undefined {
+  if (!entry || typeof entry !== "object") return undefined;
+  let value = entry.value;
+  if (entry.type === "text" && typeof value === "string") {
     try {
-      const paths = JSON.parse(o.blobPathsJson);
-      const pqPath = paths["application/vnd.apache.parquet"];
-      if (typeof pqPath === "string") return pqPath;
-    } catch {}
+      value = JSON.parse(value);
+    } catch {
+      return undefined;
+    }
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return value as ArrowStreamManifest;
+}
+
+function parseTableManifest(dataJson: string | undefined): ArrowStreamManifest | undefined {
+  const data = parseJsonObject(dataJson);
+  return parseArrowManifestEntry(data?.[ARROW_STREAM_MANIFEST_MIME]);
+}
+
+function resolveManifestChunkPaths(
+  manifest: ArrowStreamManifest,
+  rn: Pick<RuntimedNode, "resolveBlobPath"> | undefined,
+): string[] {
+  const resolveBlobPath = rn?.resolveBlobPath;
+  if (!resolveBlobPath) return [];
+  const paths: string[] = [];
+  for (const chunk of manifest.chunks ?? []) {
+    if (typeof chunk.hash !== "string") continue;
+    const resolved = resolveBlobPath(chunk.hash);
+    if (typeof resolved === "string" && resolved.length > 0) {
+      paths.push(resolved);
+    }
+  }
+  return paths;
+}
+
+function findLegacyParquetBlobPath(result: CellResult): string | undefined {
+  const source = findTableSource(result, undefined);
+  return source?.kind === "parquet" ? source.path : undefined;
+}
+
+export function findTableSource(
+  result: CellResult,
+  rn?: Pick<RuntimedNode, "resolveBlobPath">,
+): TableSource | undefined {
+  for (const o of result.outputs ?? []) {
+    const paths = parseJsonObject(o.blobPathsJson);
+    const parquetPath = paths?.[PARQUET_MIME];
+    if (typeof parquetPath === "string") return { kind: "parquet", path: parquetPath };
+
+    const arrowPath = paths?.[ARROW_STREAM_MIME];
+    if (typeof arrowPath === "string") return { kind: "arrow", path: arrowPath };
+  }
+
+  for (const o of result.outputs ?? []) {
+    const manifest = parseTableManifest(o.dataJson);
+    if (manifest) {
+      return {
+        kind: "arrow-manifest",
+        manifest,
+        chunkPaths: resolveManifestChunkPaths(manifest, rn),
+      };
+    }
   }
   return undefined;
+}
+
+function parseSummaryStats(summary: TableSummaryResult | undefined): {
+  colTypes: string[];
+  colStats: (ColumnStats | null)[];
+} {
+  if (!summary) return { colTypes: [], colStats: [] };
+  return {
+    colTypes: summary.columns.map((c) => c.dataType),
+    colStats: summary.columns.map((c) => {
+      try {
+        return JSON.parse(c.statsJson) as ColumnStats;
+      } catch {
+        return null;
+      }
+    }),
+  };
+}
+
+function renderDataTableText(
+  page: TableRowPage,
+  count: number | undefined,
+  theme: Theme,
+  width: number,
+  colTypes: string[],
+  colStats: (ColumnStats | null)[],
+  footerText?: string,
+): string {
+  const prompt = count != null ? `Out[${count}]:` : "Out:";
+  const promptStr = theme.fg("muted", prompt);
+  const indent = prompt.length + 1;
+  const dt = new DataTable(
+    page.columns,
+    page.rows,
+    page.totalRows,
+    page.columns.map((_, i) => colTypes[i] ?? ""),
+    page.columns.map((_, i) => colStats[i] ?? null),
+    theme,
+    indent,
+    footerText,
+  );
+  const tableLines = dt.render(width - indent);
+  const indentStr = " ".repeat(indent);
+  if (tableLines.length > 0 && tableLines[0].startsWith(indentStr)) {
+    tableLines[0] = `${promptStr} ${tableLines[0].slice(indent)}`;
+  }
+  return tableLines.join("\n");
+}
+
+function manifestColumns(manifest: ArrowStreamManifest): ArrowManifestColumn[] {
+  return (manifest.schema?.columns ?? []).filter(
+    (column) => column && typeof column.name === "string",
+  );
+}
+
+function manifestIncludedRows(manifest: ArrowStreamManifest): number {
+  const included = manifest.summary?.included_rows;
+  if (typeof included === "number") return included;
+  return (manifest.chunks ?? []).reduce((sum, chunk) => sum + (chunk.row_count ?? 0), 0);
+}
+
+function manifestTotalRows(manifest: ArrowStreamManifest): number {
+  const total = manifest.summary?.total_rows;
+  if (typeof total === "number") return total;
+  return manifestIncludedRows(manifest);
+}
+
+function manifestFooterText(manifest: ArrowStreamManifest, columnCount: number): string {
+  const included = manifestIncludedRows(manifest);
+  const total = manifestTotalRows(manifest);
+  const sampled = Boolean(manifest.summary?.sampled);
+  const rowText = manifest.complete
+    ? sampled && total > included
+      ? `sampled ${included} of ${total}`
+      : `${total}`
+    : total > 0
+      ? `loading ${included}/${total}`
+      : `loading ${included}`;
+  return `${rowText} rows × ${columnCount} columns`;
+}
+
+function renderManifestSkeletonText(
+  source: Extract<TableSource, { kind: "arrow-manifest" }>,
+  count: number | undefined,
+  theme: Theme,
+  width: number,
+): string | undefined {
+  const columns = manifestColumns(source.manifest);
+  if (!columns.length) return undefined;
+  const page: TableRowPage = {
+    columns: columns.map((column) => column.name),
+    rows: [],
+    totalRows: manifestTotalRows(source.manifest),
+    offset: 0,
+  };
+  return renderDataTableText(
+    page,
+    count,
+    theme,
+    width,
+    columns.map((column) => column.type ?? ""),
+    columns.map(() => null),
+    manifestFooterText(source.manifest, columns.length),
+  );
+}
+
+export function renderTableTextForSource(
+  source: TableSource | undefined,
+  count: number | undefined,
+  theme: Theme,
+  rn: RuntimedNode,
+  width: number = process.stdout.columns || 120,
+): string | undefined {
+  if (!source) return undefined;
+
+  try {
+    if (source.kind === "parquet") {
+      const page = rn.readParquetFile(source.path, 0, 40);
+      if (!page?.columns?.length) return undefined;
+      const { colTypes, colStats } = parseSummaryStats(rn.summarizeParquetFile?.(source.path));
+      return renderDataTableText(page, count, theme, width, colTypes, colStats);
+    }
+
+    if (source.kind === "arrow") {
+      const page = rn.readArrowFile?.(source.path, 0, 40);
+      if (!page?.columns?.length) return undefined;
+      const { colTypes, colStats } = parseSummaryStats(rn.summarizeArrowFile?.(source.path));
+      return renderDataTableText(page, count, theme, width, colTypes, colStats);
+    }
+
+    const expectedChunkCount = (source.manifest.chunks ?? []).filter(
+      (chunk) => typeof chunk.hash === "string",
+    ).length;
+    const hasAllChunkPaths =
+      expectedChunkCount > 0 && source.chunkPaths.length === expectedChunkCount;
+    if (source.manifest.complete && hasAllChunkPaths && rn.readArrowChunks) {
+      try {
+        const page = rn.readArrowChunks(source.chunkPaths, 0, 40);
+        if (page?.columns?.length) {
+          const { colTypes, colStats } = parseSummaryStats(
+            rn.summarizeArrowChunks?.(source.chunkPaths),
+          );
+          return renderDataTableText(page, count, theme, width, colTypes, colStats);
+        }
+      } catch {
+        // Fall through to the manifest skeleton if chunk files are unavailable.
+      }
+    }
+
+    return renderManifestSkeletonText(source, count, theme, width);
+  } catch {
+    return undefined;
+  }
 }
 
 // --- extension ---------------------------------------------------------------
@@ -813,56 +1076,18 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
         nextExecCount = count + 1;
       }
 
-      // If we have a parquet blob path, read it via napi and render as DataTable
-      const pqPath = details.parquet_blob_path;
-      if (pqPath && rn?.readParquetFile) {
-        try {
-          const page = rn.readParquetFile(pqPath, 0, 40);
-          if (page && page.rows.length > 0) {
-            // Get column types and stats from summary
-            let colTypes: string[] = page.columns.map(() => "");
-            let colStats: (ColumnStats | null)[] = page.columns.map(() => null);
-            if (rn.summarizeParquetFile) {
-              try {
-                const summary = rn.summarizeParquetFile(pqPath);
-                colTypes = summary.columns.map((c: any) => c.dataType);
-                colStats = summary.columns.map((c: any) => {
-                  try {
-                    return JSON.parse(c.statsJson);
-                  } catch {
-                    return null;
-                  }
-                });
-              } catch {}
-            }
-
-            // Render table with Out[n]: prompt
-            const prompt = count != null ? `Out[${count}]:` : "Out:";
-            const promptStr = theme.fg("muted", prompt);
-            const indent = prompt.length + 1;
-            const dt = new DataTable(
-              page.columns,
-              page.rows,
-              page.totalRows,
-              colTypes,
-              colStats,
-              theme,
-              indent,
-            );
-            const text =
-              (_context.lastComponent instanceof Text ? _context.lastComponent : undefined) ??
-              new Text("", 0, 0);
-            const termWidth = process.stdout.columns || 120;
-            const tableLines = dt.render(termWidth - indent);
-            // Put first table line on the Out[n]: line instead of below it
-            const indentStr = " ".repeat(indent);
-            if (tableLines.length > 0 && tableLines[0].startsWith(indentStr)) {
-              tableLines[0] = `${promptStr} ${tableLines[0].slice(indent)}`;
-            }
-            text.setText(tableLines.join("\n"));
-            return text;
-          }
-        } catch {}
+      const tableSource =
+        (details.table_source as TableSource | undefined) ??
+        (typeof details.parquet_blob_path === "string"
+          ? ({ kind: "parquet", path: details.parquet_blob_path } as TableSource)
+          : undefined);
+      const tableText = renderTableTextForSource(tableSource, count, theme, rn);
+      if (tableText) {
+        const text =
+          (_context.lastComponent instanceof Text ? _context.lastComponent : undefined) ??
+          new Text("", 0, 0);
+        text.setText(tableText);
+        return text;
       }
 
       // Extract text output from content
@@ -912,14 +1137,14 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
               status: progress.status,
               execution_count: progress.executionCount,
               is_error: isError,
-              parquet_blob_path: findParquetBlobPath(progress),
+              table_source: findTableSource(progress, rn),
+              parquet_blob_path: findLegacyParquetBlobPath(progress),
               streaming: true,
             },
           });
         },
       });
-      // Extract parquet blob path for human-side table rendering
-      const parquetBlobPath = findParquetBlobPath(result);
+      const tableSource = findTableSource(result, rn);
 
       const { content, isError } = formatResult(result);
       return {
@@ -931,7 +1156,8 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
           status: result.status,
           execution_count: result.executionCount,
           is_error: isError,
-          parquet_blob_path: parquetBlobPath,
+          table_source: tableSource,
+          parquet_blob_path: tableSource?.kind === "parquet" ? tableSource.path : undefined,
           runtime: sess.getRuntimeStatus
             ? await sess.getRuntimeStatus().catch(() => undefined)
             : undefined,

@@ -270,19 +270,40 @@ export function getExecutionResult(
   options?: { socketPath?: string },
 ): Promise<CellResult>;
 
-export function readParquetFile(
-  filePath: string,
-  offset: number,
-  limit: number,
-): {
+export interface ParquetColumnInfo {
+  name: string;
+  dataType: string;
+  nullCount: number;
+  statsJson: string;
+}
+
+export interface ParquetRowPage {
   columns: string[];
   rows: string[][];
   totalRows: number;
   offset: number;
-};
+}
 
-export function summarizeParquetFile(filePath: string): {
+export interface ParquetSummaryResult {
   numRows: number;
   numBytes: number;
-  columns: Array<{ name: string; dataType: string; nullCount: number; statsJson: string }>;
-};
+  columns: ParquetColumnInfo[];
+}
+
+export type TableRowPage = ParquetRowPage;
+export type TableSummaryResult = ParquetSummaryResult;
+
+export function blobStorePath(socketPath?: string | null): string | null;
+export function resolveBlobPath(hash: string, socketPath?: string | null): string | null;
+
+export function readParquetFile(filePath: string, offset: number, limit: number): ParquetRowPage;
+
+export function readArrowFile(filePath: string, offset: number, limit: number): ParquetRowPage;
+
+export function readArrowChunks(filePaths: string[], offset: number, limit: number): ParquetRowPage;
+
+export function summarizeParquetFile(filePath: string): ParquetSummaryResult;
+
+export function summarizeArrowFile(filePath: string): ParquetSummaryResult;
+
+export function summarizeArrowChunks(filePaths: string[]): ParquetSummaryResult;

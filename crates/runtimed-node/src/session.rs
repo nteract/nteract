@@ -4,7 +4,7 @@
 //! Phase 2 will extract the shared logic into a `runtimed-session` crate
 //! and collapse both `-py` and `-node` onto it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -1455,6 +1455,24 @@ fn resolve_socket_path(override_path: Option<String>) -> PathBuf {
         .unwrap_or_else(runt_workspace::default_socket_path)
 }
 
+/// Resolve a blob hash to the local on-disk blob path for the selected daemon.
+#[napi]
+pub fn resolve_blob_path(hash: String, socket_path: Option<String>) -> Option<String> {
+    let socket_path = resolve_socket_path(socket_path);
+    let store_path = blob_store_path_for_socket_path(&socket_path)?;
+    let blob_path = blob_file_path_for_hash(&store_path, &hash)?;
+    blob_path
+        .exists()
+        .then(|| blob_path.to_string_lossy().to_string())
+}
+
+/// Return the local blob store root for the selected daemon, when present.
+#[napi]
+pub fn blob_store_path(socket_path: Option<String>) -> Option<String> {
+    blob_store_path_for_socket_path(&resolve_socket_path(socket_path))
+        .map(|path| path.to_string_lossy().to_string())
+}
+
 async fn resolve_blob_paths(socket_path: &std::path::Path) -> (Option<String>, Option<PathBuf>) {
     if let Some(parent) = socket_path.parent() {
         let daemon_json = parent.join("daemon.json");
@@ -1468,16 +1486,23 @@ async fn resolve_blob_paths(socket_path: &std::path::Path) -> (Option<String>, O
         } else {
             None
         };
-        let store_path = parent.join("blobs");
-        let store_path = if store_path.exists() {
-            Some(store_path)
-        } else {
-            None
-        };
+        let store_path = blob_store_path_for_socket_path(socket_path);
         (base_url, store_path)
     } else {
         (None, None)
     }
+}
+
+fn blob_store_path_for_socket_path(socket_path: &Path) -> Option<PathBuf> {
+    let store_path = socket_path.parent()?.join("blobs");
+    store_path.exists().then_some(store_path)
+}
+
+fn blob_file_path_for_hash(store_path: &Path, hash: &str) -> Option<PathBuf> {
+    if hash.len() < 2 || !hash.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(store_path.join(&hash[..2]).join(&hash[2..]))
 }
 
 async fn session_handle(state: &Arc<Mutex<SessionState>>) -> Result<DocHandle> {
@@ -2234,6 +2259,39 @@ mod tests {
     fn resolve_socket_path_prefers_explicit_override() {
         let path = resolve_socket_path(Some("/tmp/runtimed-node-test.sock".to_string()));
         assert_eq!(path, PathBuf::from("/tmp/runtimed-node-test.sock"));
+    }
+
+    #[test]
+    fn resolve_blob_path_uses_daemon_blob_store_sharding() {
+        let root =
+            std::env::temp_dir().join(format!("runtimed-node-blob-path-{}", uuid::Uuid::new_v4()));
+        let blob_root = root.join("blobs");
+        let socket_path = root.join("daemon.sock");
+        let hash = "abcdef0123456789";
+        let blob_path = blob_root.join("ab").join("cdef0123456789");
+        std::fs::create_dir_all(blob_path.parent().unwrap()).unwrap();
+        std::fs::write(&blob_path, b"arrow").unwrap();
+
+        assert_eq!(
+            blob_store_path(Some(socket_path.to_string_lossy().to_string())),
+            Some(blob_root.to_string_lossy().to_string())
+        );
+        assert_eq!(
+            resolve_blob_path(
+                hash.to_string(),
+                Some(socket_path.to_string_lossy().to_string())
+            ),
+            Some(blob_path.to_string_lossy().to_string())
+        );
+        assert_eq!(
+            resolve_blob_path(
+                "not-a-hex-hash".to_string(),
+                Some(socket_path.to_string_lossy().to_string())
+            ),
+            None
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
