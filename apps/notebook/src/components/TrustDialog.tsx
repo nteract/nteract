@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { useCallback } from "react";
 import { Button } from "@/components/ui/button";
-import type { TrustInfo, TyposquatWarning } from "../hooks/useTrust";
+import type { TrustInfo, TyposquatWarning } from "./runtime-surface-types";
 import { RuntimeDecisionDialog } from "./RuntimeDecisionDialog";
 
 interface TrustDialogProps {

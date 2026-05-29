@@ -1,0 +1,18 @@
+---
+title: Runtime surfaces
+description: Fixture-backed runtime decision components from the notebook app.
+---
+
+import { RuntimeSurfacesExample } from "@/components/runtime-surfaces-example";
+
+Runtime decisions are notebook UI, not generic dialogs. This page starts
+cataloging the existing dependency and launch decision surfaces with fixtures
+instead of host state.
+
+<RuntimeSurfacesExample />
+
+## Adapter notes
+
+The current fixtures keep side effects inert. Components that import runtime
+value constants, daemon state, or host-backed hooks should get a thin adapter
+before they are rendered here.

@@ -10,19 +10,13 @@ import {
   useUvDependencies,
 } from "../lib/notebook-metadata";
 import { useRuntimeState } from "../lib/runtime-state";
+export type { EnvSyncState } from "../components/runtime-surface-types";
 
 export interface NotebookDependencies {
   dependencies: string[];
   requires_python: string | null;
   prerelease: string | null;
 }
-
-/** Environment sync state from backend */
-export type EnvSyncState =
-  | { status: "not_running" }
-  | { status: "not_uv_managed" }
-  | { status: "synced" }
-  | { status: "dirty"; added: string[]; removed: string[] };
 
 export type { PyProjectDeps, PyProjectInfo } from "runtimed";
 
