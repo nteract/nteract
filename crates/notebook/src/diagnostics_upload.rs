@@ -198,7 +198,7 @@ fn prepare_archive_in_dir(runt_path: &Path, output_dir: &Path) -> Result<Prepare
         ));
     }
 
-    let archive_path = find_diagnostics_archive(&output_dir)?;
+    let archive_path = find_diagnostics_archive(output_dir)?;
     let metadata = fs::metadata(&archive_path).map_err(|e| {
         format!(
             "Failed to inspect diagnostics archive {}: {e}",
