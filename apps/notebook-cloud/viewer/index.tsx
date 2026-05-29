@@ -107,7 +107,7 @@ import "./index.css";
 interface CloudViewerConfig {
   notebookId: string;
   headsHash: string | null;
-  renderEndpoint: string | null;
+  pinnedRenderBasePath: string;
   aclEndpoint: string;
   invitesEndpoint: string;
   syncEndpoint: string;
@@ -166,6 +166,7 @@ function loadConfig(): CloudViewerConfig {
   const parsed = JSON.parse(element.textContent ?? "{}") as Partial<CloudViewerConfig>;
   if (
     !parsed.notebookId ||
+    !parsed.pinnedRenderBasePath ||
     !parsed.aclEndpoint ||
     !parsed.invitesEndpoint ||
     !parsed.syncEndpoint ||
@@ -179,10 +180,7 @@ function loadConfig(): CloudViewerConfig {
   return {
     notebookId: parsed.notebookId,
     headsHash: parsed.headsHash ?? null,
-    renderEndpoint:
-      typeof parsed.renderEndpoint === "string" && parsed.renderEndpoint.length > 0
-        ? parsed.renderEndpoint
-        : null,
+    pinnedRenderBasePath: parsed.pinnedRenderBasePath,
     aclEndpoint: parsed.aclEndpoint,
     invitesEndpoint: parsed.invitesEndpoint,
     syncEndpoint: parsed.syncEndpoint,
@@ -595,14 +593,14 @@ function NotebookViewer({
       snapshotResolvedRef.current = true;
       return;
     }
-    if (!config.renderEndpoint) {
+    const renderEndpoint = pinnedRenderEndpoint(config);
+    if (!renderEndpoint) {
       snapshotResolvedRef.current = true;
-      setStatus({ kind: "error", message: "Pinned notebook render endpoint is not configured." });
+      setStatus({ kind: "error", message: "Pinned notebook heads are not configured." });
       return;
     }
 
     let cancelled = false;
-    const renderEndpoint = config.renderEndpoint;
 
     void (async () => {
       try {
@@ -672,7 +670,8 @@ function NotebookViewer({
     authState,
     blobResolver,
     config.blobBasePath,
-    config.renderEndpoint,
+    config.headsHash,
+    config.pinnedRenderBasePath,
     config.rendererAssetsBasePath,
     loadingPolicy.shouldFetchSnapshotRender,
     widgetStore,
@@ -1925,6 +1924,16 @@ function isConfiguredBlobUrl(value: string, blobBasePath: string): boolean {
   } catch {
     return false;
   }
+}
+
+function pinnedRenderEndpoint(config: CloudViewerConfig): string | null {
+  if (!config.headsHash) {
+    return null;
+  }
+  const basePath = config.pinnedRenderBasePath.endsWith("/")
+    ? config.pinnedRenderBasePath
+    : `${config.pinnedRenderBasePath}/`;
+  return `${basePath}${encodeURIComponent(config.headsHash)}`;
 }
 
 createRoot(requireElement("#root")).render(
