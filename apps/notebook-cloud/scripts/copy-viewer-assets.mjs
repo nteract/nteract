@@ -16,6 +16,22 @@ const runtimedWasmUrl = new URL(
 );
 const runtimedOutputUrl = new URL("../dist/assets/runtimed_wasm_bg.wasm", import.meta.url);
 const runtimedPluginOutputUrl = new URL("../dist/plugins/runtimed_wasm_bg.wasm", import.meta.url);
+const isolatedRendererModuleUrl = new URL(
+  "../../notebook/src/renderer-plugins/isolated-renderer.js",
+  import.meta.url,
+);
+const isolatedRendererCssUrl = new URL(
+  "../../notebook/src/renderer-plugins/isolated-renderer.css",
+  import.meta.url,
+);
+const isolatedRendererModuleOutputUrl = new URL(
+  "../dist/plugins/isolated-renderer.js",
+  import.meta.url,
+);
+const isolatedRendererCssOutputUrl = new URL(
+  "../dist/plugins/isolated-renderer.css",
+  import.meta.url,
+);
 const outputDocumentFrameUrl = new URL(
   "../../../src/components/isolated/frame.html",
   import.meta.url,
@@ -25,6 +41,8 @@ const outputDocumentOutputUrl = new URL("../dist-output-document/index.html", im
 await assertExists(siftWasmUrl);
 await assertExists(runtimedWasmModuleUrl);
 await assertExists(runtimedWasmUrl);
+await assertExists(isolatedRendererModuleUrl);
+await assertExists(isolatedRendererCssUrl);
 await assertExists(outputDocumentFrameUrl);
 await mkdir(new URL("../dist/plugins/", import.meta.url), { recursive: true });
 await mkdir(new URL("../dist/assets/", import.meta.url), { recursive: true });
@@ -34,6 +52,8 @@ await copyFile(runtimedWasmModuleUrl, runtimedModuleOutputUrl);
 await copyFile(runtimedWasmUrl, runtimedOutputUrl);
 await copyFile(runtimedWasmModuleUrl, runtimedModulePluginOutputUrl);
 await copyFile(runtimedWasmUrl, runtimedPluginOutputUrl);
+await copyFile(isolatedRendererModuleUrl, isolatedRendererModuleOutputUrl);
+await copyFile(isolatedRendererCssUrl, isolatedRendererCssOutputUrl);
 await copyFile(outputDocumentFrameUrl, outputDocumentOutputUrl);
 
 console.log(`copied ${fileURLToPath(siftWasmUrl)} -> ${fileURLToPath(outputUrl)}`);
@@ -46,6 +66,12 @@ console.log(
 );
 console.log(
   `copied ${fileURLToPath(runtimedWasmUrl)} -> ${fileURLToPath(runtimedPluginOutputUrl)}`,
+);
+console.log(
+  `copied ${fileURLToPath(isolatedRendererModuleUrl)} -> ${fileURLToPath(isolatedRendererModuleOutputUrl)}`,
+);
+console.log(
+  `copied ${fileURLToPath(isolatedRendererCssUrl)} -> ${fileURLToPath(isolatedRendererCssOutputUrl)}`,
 );
 console.log(
   `copied ${fileURLToPath(outputDocumentFrameUrl)} -> ${fileURLToPath(outputDocumentOutputUrl)}`,
