@@ -31,7 +31,7 @@ import {
   getNotebookAclRows,
   getNotebookAclRowsForPrincipal,
   renderKey,
-  runtimeSnapshotKey,
+  runtimeStateSnapshotKey,
   snapshotKey,
 } from "../src/storage.ts";
 import type { PendingNotebookInviteRow, PrincipalProfileRow } from "../src/sharing-storage.ts";
@@ -715,7 +715,7 @@ describe("Worker artifact routes", () => {
     assert.equal(response.status, 201);
     assert.deepEqual(await response.json(), {
       ok: true,
-      key: runtimeSnapshotKey("api-key-artifact-demo", "api-key"),
+      key: runtimeStateSnapshotKey("runtime:api-key-artifact-demo", "api-key"),
       runtime_state_doc_id: "runtime:api-key-artifact-demo",
       size: body.byteLength,
     });
@@ -2677,6 +2677,10 @@ describe("Worker artifact routes", () => {
     const notebookPutBody = (await notebookPut.json()) as { runtime_state_doc_id: string };
     assert.equal(notebookPutBody.runtime_state_doc_id, "runtime:route-demo");
     assert.equal(env.DB.revisions[0]?.runtime_state_doc_id, "runtime:route-demo");
+    assert.equal(
+      env.DB.revisions[0]?.runtime_snapshot_key,
+      runtimeStateSnapshotKey("runtime:route-demo", "runtime-fixture"),
+    );
     assert.deepEqual(
       env.DB.acl.map((row) => [row.notebook_id, row.subject_kind, row.subject, row.scope]),
       [

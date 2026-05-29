@@ -34,7 +34,7 @@ import {
   recordRevision,
   renderKey,
   revokeNotebookAclRow,
-  runtimeSnapshotKey,
+  runtimeStateSnapshotKey,
   snapshotKey,
   type NotebookAclRow,
   type RevisionRow,
@@ -563,7 +563,9 @@ async function routeSnapshot(
   if (!runtimeStateDocId) {
     return json({ error: "X-Runtime-State-Doc-Id header is required" }, 400);
   }
-  const runtimeKey = runtimeHeadsHash ? runtimeSnapshotKey(notebookId, runtimeHeadsHash) : null;
+  const runtimeKey = runtimeHeadsHash
+    ? runtimeStateSnapshotKey(runtimeStateDocId, runtimeHeadsHash)
+    : null;
   const renderCacheKey = renderKey(notebookId, headsHash);
   let renderCacheWritten = false;
   await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
@@ -640,13 +642,18 @@ async function routeRuntimeSnapshot(
   notebookId: string,
   headsHash: string,
 ): Promise<Response> {
-  const key = runtimeSnapshotKey(notebookId, headsHash);
-
   if (request.method === "GET") {
     const identity = await authenticateAndAuthorizeOrResponse(request, env, notebookId, "viewer");
     if (identity instanceof Response) {
       return identity;
     }
+    const runtimeStateDocId = requiredRuntimeStateDocId(
+      request.headers.get("x-runtime-state-doc-id"),
+    );
+    if (!runtimeStateDocId) {
+      return json({ error: "X-Runtime-State-Doc-Id header is required" }, 400);
+    }
+    const key = runtimeStateSnapshotKey(runtimeStateDocId, headsHash);
     const object = await env.NOTEBOOK_SNAPSHOTS?.get(key);
     if (!object) {
       return json({ error: "runtime snapshot not found" }, 404);
@@ -689,6 +696,7 @@ async function routeRuntimeSnapshot(
   if (!runtimeStateDocId) {
     return json({ error: "X-Runtime-State-Doc-Id header is required" }, 400);
   }
+  const key = runtimeStateSnapshotKey(runtimeStateDocId, headsHash);
   await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
     httpMetadata: {
       contentType: request.headers.get("content-type") ?? "application/octet-stream",
