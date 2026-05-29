@@ -16,7 +16,11 @@ import {
   parsePositiveInteger,
 } from "./hosted-render-smoke-assets.mjs";
 import { hasPreflightFailures } from "./hosted-render-smoke-preflight.mjs";
-import { catalogApiUrlForViewer, renderApiUrlForViewer } from "./hosted-render-smoke-routes.mjs";
+import {
+  catalogApiUrlForViewer,
+  expectedRenderSourceForViewer,
+  renderApiUrlForViewer,
+} from "./hosted-render-smoke-routes.mjs";
 
 const DEFAULT_URL = "https://preview.runt.run/n/topic-viz";
 const DEFAULT_RENDERER_ASSET_ORIGIN = "https://nteract-notebook-cloud-assets.rgbkrk.workers.dev";
@@ -42,7 +46,10 @@ const expectedFrameTexts = parseExpectedTexts("NOTEBOOK_CLOUD_EXPECTED_FRAME_TEX
   "Schema at a glance",
   "PROBLEM_MARKDOWN",
 ]);
-const expectedRenderSource = process.env.NOTEBOOK_CLOUD_EXPECTED_RENDER_SOURCE ?? "snapshot-pair";
+const expectedRenderSource = expectedRenderSourceForViewer(
+  targetUrl,
+  process.env.NOTEBOOK_CLOUD_EXPECTED_RENDER_SOURCE,
+);
 const expectedCatalogOwnerPrincipal =
   process.env.NOTEBOOK_CLOUD_EXPECTED_CATALOG_OWNER_PRINCIPAL ?? DEFAULT_CATALOG_OWNER_PRINCIPAL;
 const expectedLatestRevisionActorLabel =
@@ -93,6 +100,8 @@ let viewerCssCheck = null;
 let screenshotSaved = false;
 let pageTextMatches = {};
 let themeModeChecks = [];
+const smokeStartedAt = performance.now();
+const timingsMs = {};
 
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
@@ -194,12 +203,17 @@ async function main() {
       });
       failures.push(...viewerCssCheck.failures);
     }
+    markTiming("preflight");
     if (hasPreflightFailures(failures)) {
       throw new SmokeFailure(failures);
     }
 
     await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
-    await page.waitForLoadState("networkidle", { timeout: timeoutMs }).catch(() => {});
+    markTiming("domcontentloaded");
+    const networkIdleTask = page
+      .waitForLoadState("networkidle", { timeout: timeoutMs })
+      .then(() => markTiming("networkidle"))
+      .catch(() => markTiming("networkidle_timeout"));
 
     if (expectedSourceText) {
       await page.waitForFunction(
@@ -209,9 +223,11 @@ async function main() {
           timeout: timeoutMs,
         },
       );
+      markTiming("source_text");
     }
     if (expectedPageTexts.length > 0) {
       pageTextMatches = await waitForPageText(page, expectedPageTexts);
+      markTiming("page_texts");
     }
     if (requireRenderedCellMarker || expectedExecutionCount) {
       await page.waitForFunction(
@@ -230,6 +246,7 @@ async function main() {
         expectedExecutionCount,
         { timeout: timeoutMs },
       );
+      markTiming("rendered_cell_marker");
     }
     if (expectedPresenceText) {
       await page.waitForFunction(
@@ -237,6 +254,7 @@ async function main() {
         expectedPresenceText,
         { timeout: timeoutMs },
       );
+      markTiming("presence");
     }
     if (expectedFrameTexts.length > 0) {
       await page.waitForFunction(
@@ -247,13 +265,19 @@ async function main() {
         undefined,
         { timeout: timeoutMs },
       );
+      markTiming("first_output_iframe");
     }
     const frameTextMatches =
       expectedFrameTexts.length > 0 ? await waitForFrameText(page, expectedFrameTexts) : {};
+    if (expectedFrameTexts.length > 0) {
+      markTiming("frame_texts");
+    }
 
     // Give async iframe plugin fetches a beat to surface late CORS or WASM failures.
     await page.waitForTimeout(750);
     await flushDiagnosticTasks();
+    await Promise.race([networkIdleTask, Promise.resolve()]);
+    markTiming("diagnostics_flushed");
 
     const executionCounts = await page
       .locator("[data-slot='execution-count']")
@@ -374,11 +398,13 @@ async function main() {
     }
     if (expectedThemeModes.length > 0) {
       themeModeChecks = await checkHostedThemeModes(browser, expectedThemeModes);
+      markTiming("theme_modes");
     }
 
     if (failures.length > 0) {
       throw new SmokeFailure(failures);
     }
+    markTiming("total");
 
     console.log(
       JSON.stringify(
@@ -397,6 +423,7 @@ async function main() {
           expectedLatestRevisionActorLabel,
           expectedLatestRevisionNotebookHeadsHash,
           expectedLatestRevisionRuntimeHeadsHash,
+          timings_ms: timingsMs,
           renderApiCheck,
           catalogApiCheck,
           viewerCssCheck,
@@ -453,6 +480,10 @@ function parseExpectedTexts(envName, fallback) {
     .split("|")
     .map((entry) => entry.trim())
     .filter(Boolean);
+}
+
+function markTiming(name) {
+  timingsMs[name] ??= Math.round(performance.now() - smokeStartedAt);
 }
 
 function themeModeSpec(value) {
@@ -512,6 +543,9 @@ async function checkHostedThemeModes(browser, modes) {
       if (!isRelevantRequestUrl(request.url())) {
         return;
       }
+      if (isThemeOutputFrameCloseAbort(request)) {
+        return;
+      }
       localFailures.push({
         kind: "theme-request-failed",
         mode,
@@ -537,7 +571,6 @@ async function checkHostedThemeModes(browser, modes) {
         { storedTheme: spec.storedTheme },
       );
       await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
-      await page.waitForLoadState("networkidle", { timeout: timeoutMs }).catch(() => {});
 
       if (expectedSourceText) {
         await page.waitForFunction(
@@ -698,6 +731,13 @@ function isRelevantRequestUrl(value) {
   } catch {
     return false;
   }
+}
+
+function isThemeOutputFrameCloseAbort(request) {
+  if (request.failure()?.errorText !== "net::ERR_ABORTED" || !outputDocumentOrigin) {
+    return false;
+  }
+  return new URL(request.url()).origin === outputDocumentOrigin;
 }
 
 async function checkHostedRenderApi(viewerUrl, expectedSource, headsHash) {

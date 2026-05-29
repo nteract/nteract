@@ -29,6 +29,11 @@ describe("hosted live smoke environment", () => {
       smokeEnv.NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_RUNTIME_HEADS_HASH,
       "heads-runtime",
     );
+    assert.equal(
+      Object.hasOwn(smokeEnv, "NOTEBOOK_CLOUD_EXPECTED_RENDER_SOURCE"),
+      false,
+      "live smoke should use the latest viewer path without requiring /render by default",
+    );
   });
 
   it("does not override explicit hosted smoke expectation env values", () => {
