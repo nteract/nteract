@@ -21,6 +21,14 @@ export const NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY = "nteract:notebook-cloud:scope";
 export const NOTEBOOK_CLOUD_DEFAULT_SCOPE: ConnectionScope = "viewer";
 export { NOTEBOOK_CLOUD_OIDC_REQUEST_STORAGE_KEY, NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY };
 
+const NOTEBOOK_CLOUD_AUTH_STORAGE_KEYS = new Set<string>([
+  NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY,
+  NOTEBOOK_CLOUD_USER_STORAGE_KEY,
+  NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY,
+  NOTEBOOK_CLOUD_OIDC_REQUEST_STORAGE_KEY,
+  NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
+]);
+
 export interface CloudSyncAuth {
   headers: Record<string, string>;
   protocols: string[];
@@ -79,6 +87,10 @@ export function cloudPrototypeAuthFromWindow(): CloudPrototypeAuthState {
   } catch {
     return anonymousAuthState();
   }
+}
+
+export function isCloudPrototypeAuthStorageKey(key: string | null): boolean {
+  return key === null || NOTEBOOK_CLOUD_AUTH_STORAGE_KEYS.has(key);
 }
 
 export function readCloudPrototypeAuth(
