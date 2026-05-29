@@ -48,8 +48,14 @@ $RECYCLE.BIN/
 # Node/JS artifacts
 node_modules/
 **/node_modules/
+.next/
+**/.next/
+.source/
+**/.source/
 dist/
 **/dist/
+out/
+**/out/
 **/dist-output-document/
 .wrangler/
 *.tsbuildinfo

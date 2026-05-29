@@ -1,0 +1,27 @@
+---
+title: Elements
+description: Notebook UI and rendering examples from nteract/nteract.
+---
+
+`nteract/nteract` is the canonical home for notebook UI and rendering work.
+This catalog is the in-repo successor direction for examples that used to live
+around `nteract/elements`.
+
+## What belongs here
+
+- Runtime-free notebook UI fixtures.
+- Rendering examples for markdown, rich output, and widgets.
+- Component documentation for reusable notebook presentation surfaces.
+- Migration notes for any old `nteract/elements` examples worth recreating.
+
+## What stays elsewhere
+
+This is not the general product docs site and it is not the architecture docs
+archive. Existing architecture and design documents should remain under the
+repo-level `docs/` tree.
+
+## First slice
+
+Start with the notebook outline rail. It exercises the same shape we want for
+future package, variable, renderer, and metadata panels without importing the
+desktop runtime, sync engine, or generated WASM bindings.

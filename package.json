@@ -12,7 +12,10 @@
     "test:e2e:browser": "pnpm --filter notebook-ui test:e2e:browser",
     "test:e2e:browser:portless": "pnpm --filter notebook-ui test:e2e:browser:portless",
     "test:e2e": "wdio run e2e/wdio.conf.js",
-    "test:e2e:native": "wdio run e2e/wdio.conf.js"
+    "test:e2e:native": "wdio run e2e/wdio.conf.js",
+    "elements:dev": "pnpm --dir apps/elements dev",
+    "elements:build": "pnpm --dir apps/elements build",
+    "prototype:sidebar-toc": "RUNTIMED_VITE_PORT=5175 RUNT_NOTEBOOK_PROTOTYPE_ROUTE=/prototypes/sidebar-toc/ pnpm --dir apps/notebook dev -- --host 127.0.0.1"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.0",
@@ -64,8 +67,8 @@
     "lucide-react": "^0.513.0",
     "plotly.js-dist-min": "^3.4.0",
     "radix-ui": "^1.4.3",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
     "react-markdown": "^10.1.0",
     "rehype-katex": "^7.0.1",
     "rehype-raw": "^7.0.0",
@@ -84,8 +87,8 @@
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
     "@types/node": "^20.10.0",
-    "@types/react": "^19.1.6",
-    "@types/react-dom": "^19.1.5",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
     "@wdio/cli": "^8.40.0",
     "@wdio/globals": "^8.40.0",
@@ -106,8 +109,8 @@
   },
   "pnpm": {
     "overrides": {
-      "react": "19.1.0",
-      "react-dom": "19.1.0"
+      "react": "19.2.6",
+      "react-dom": "19.2.6"
     }
   }
 }
