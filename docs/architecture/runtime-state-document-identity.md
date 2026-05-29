@@ -158,14 +158,20 @@ state is the pair of document ids plus their heads.
 Object storage should move toward document-id namespaces:
 
 ```text
-docs/{docId}/snapshot/{headsHash}.am
-docs/{docId}/incremental/{chunkHash}.amdelta
+docs/{docId}/snapshot/{headsHash}
+docs/{docId}/incremental/{chunkHash}
 blobs/{sha256}
 ```
 
-This mirrors the upstream `automerge-repo` storage shape: storage is organized
-by document id, snapshot chunks are loaded before incremental chunks, and
-`loadIncremental` can materialize the document from that byte stream.
+This mirrors the upstream `automerge-repo` logical storage shape: storage is
+organized by document id, snapshot chunks are loaded before incremental chunks,
+and Automerge can materialize the document from that byte stream. The path
+segments are the convention; this ADR does not define a new `.amdelta` file
+extension.
+
+The first hosted implementation can write only compact snapshots. Incremental
+object chunks are an optimization to evaluate after snapshot-pair bootstrap is
+measured; live deltas can remain in the room's sync protocol memory until then.
 
 The current cloud R2 layout remains a compatibility path:
 
@@ -231,7 +237,7 @@ The identity pointer fixes association without erasing the boundary.
 5. Add `runtime_state_doc_id` to cloud revision/catalog metadata.
 6. Teach cloud materialization to prefer the pointer and retain legacy nested
    runtime-state snapshot fallback.
-7. Move new object snapshots toward `docs/{docId}/snapshot/{headsHash}.am`.
+7. Move new object snapshots toward `docs/{docId}/snapshot/{headsHash}`.
 8. Evaluate incremental object chunks only after snapshot-pair bootstrap is
    measured.
 
@@ -249,9 +255,11 @@ and runtime-state doc over separate frame types.
 
 ## Open Questions
 
-1. Should document ids use the existing nteract UUID/ULID style or Automerge's
-   base58check document id format? The first implementation should choose one
-   typed `RuntimeStateDocId` wrapper and avoid exposing storage paths as ids.
+1. Should public notebook routes keep the existing nteract UUID/ULID style while
+   Automerge document references accept or normalize Automerge's base58check
+   `automerge:` URL format at API boundaries? The first implementation should
+   choose one typed `RuntimeStateDocId` wrapper and avoid exposing storage paths
+   as ids.
 2. Does "clear outputs/runtime state" clear the existing runtime-state document
    or rotate `runtime_state_doc_id`? Restarting a kernel should not rotate it.
 3. Should duplicate/fork notebook flows copy the runtime-state document for a

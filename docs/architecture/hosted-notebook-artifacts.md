@@ -77,14 +77,16 @@ New storage work should move toward the first-class document namespace in
 `runtime-state-document-identity.md`:
 
 ```text
-docs/{docId}/snapshot/{headsHash}.am
-docs/{docId}/incremental/{chunkHash}.amdelta
+docs/{docId}/snapshot/{headsHash}
+docs/{docId}/incremental/{chunkHash}
 blobs/{sha256}
 ```
 
-The render path is derived. The first three paths are the durable publish
-artifact set, but hosts can precompute the render path at publish time to prove
-the snapshot pair and blob set are complete.
+The render path is derived. Snapshot paths and blob paths are the durable
+publish artifact set; incremental paths are an optional future optimization that
+should follow Automerge Repo's logical storage shape rather than introduce a
+new file-extension convention. Hosts can precompute the render path at publish
+time to prove the snapshot pair and blob set are complete.
 
 For connected notebook pages, the live room supersedes the render path. `/render`
 is a warm-start cache and static/export read model, not a separate state lane.
