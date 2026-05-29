@@ -7,6 +7,7 @@ import {
   Palette,
   PanelLeft,
   ShieldCheck,
+  TextCursorInput,
 } from "lucide-react";
 import { RailOutlineExample } from "@/components/rail-outline-example";
 
@@ -28,6 +29,12 @@ const entries = [
     description: "Inventory map for current nteract cells.",
     href: "/docs/cell-anatomy",
     icon: FileCode2,
+  },
+  {
+    title: "Editor surfaces",
+    description: "CodeMirror fixtures for notebook source editing.",
+    href: "/docs/editor-surfaces",
+    icon: TextCursorInput,
   },
   {
     title: "Output renderers",
