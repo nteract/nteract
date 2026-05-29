@@ -1,6 +1,6 @@
 import { Check, Download, FileText, Info, Plus, RefreshCw, X } from "lucide-react";
 import { type KeyboardEvent, useCallback, useEffect, useState } from "react";
-import type { EnvSyncState, PyProjectDeps, PyProjectInfo } from "../hooks/useDependencies";
+import type { EnvSyncState, PyProjectDeps, PyProjectInfo } from "./runtime-surface-types";
 
 interface DependencyHeaderProps {
   dependencies: string[];

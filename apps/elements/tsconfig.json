@@ -9,6 +9,7 @@
       "@/components/cell/*": ["../../src/components/cell/*"],
       "@/components/ui/*": ["../../src/components/ui/*"],
       "@/lib/utils": ["../../src/lib/utils"],
+      "@/notebook-components/*": ["../../apps/notebook/src/components/*"],
       "@/*": ["./*"],
       "collections/*": ["./.source/*"]
     },

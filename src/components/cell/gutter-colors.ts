@@ -14,7 +14,7 @@ export interface GutterColorConfig {
 
 /**
  * Default gutter colors for built-in cell types.
- * Colors are designed to match the existing CellTypeButton color scheme.
+ * Colors are designed to keep cell-type ribbons visually consistent.
  */
 export const defaultGutterColors: Record<string, GutterColorConfig> = {
   code: {
