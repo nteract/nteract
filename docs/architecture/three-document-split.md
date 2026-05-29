@@ -7,7 +7,7 @@
 nteract syncs state through Automerge CRDTs. Three separate documents carry that state today, not one:
 
 - **`NotebookDoc`** (`crates/notebook-doc/src/lib.rs`) - one per notebook room. Carries cells, source text, notebook metadata, attachments. Schema version 4. Wire frame `0x00` (AutomergeSync).
-- **`RuntimeStateDoc`** (`crates/runtime-doc/src/doc.rs`) - one per notebook room. Carries kernel lifecycle, execution queue, executions and their outputs, env-sync state, trust state, project-file context, widget comm state. Schema version 2. Wire frame `0x05` (RuntimeStateSync).
+- **`RuntimeStateDoc`** (`crates/runtime-doc/src/doc.rs`) - one per runtime state surface; today each notebook room creates one. Carries kernel lifecycle, execution queue, executions and their outputs, env-sync state, trust state, project-file context, widget comm state. Schema version 2. Wire frame `0x05` (RuntimeStateSync).
 - **`PoolDoc`** (`crates/notebook-doc/src/pool_state.rs`) - one per daemon (not per room). Carries UV / Conda / Pixi prewarm pool counters, errors, retry timers. No schema version. Wire frame `0x06` (PoolStateSync).
 
 A connecting peer subscribes through one of the typed-frame handshake channels. `NotebookSync` (and the related `OpenNotebook` / `CreateNotebook` paths) brings up all three documents on one socket: `NotebookDoc` and `RuntimeStateDoc` per the joined room, plus `PoolDoc` fanned out to that peer because the peer loop subscribes to `pool_doc_changed` regardless of room. The `Pool` handshake is a JSON-IPC channel for pool status, env claims, and daemon admin; it does not carry typed-frame Automerge sync at all. Frame caps differ per type (see `crates/notebook-wire/src/lib.rs:59-102`).
@@ -92,10 +92,11 @@ This is currently the only structural link between the two documents. Everything
 The choice to store the pointer in `NotebookDoc` and the body in `RuntimeStateDoc` was driven by save semantics. The pointer is the part that survives a `.ipynb` export. The body is the part that gets thrown away.
 
 `runtime-state-document-identity.md` adds a second, document-level association:
-`NotebookDoc.runtime_state_doc_id`. That pointer identifies which
-`RuntimeStateDoc` belongs with the notebook. It does not replace
-`cell.execution_id`, and it does not store runtime-state heads in
-`NotebookDoc`.
+`NotebookDoc.runtime_state_doc_id`. For notebook rooms, that pointer identifies
+which `RuntimeStateDoc` belongs with the notebook. The association is optional
+from the runtime-state document's point of view so the same schema can support
+markdown-associated or standalone runtime state later. It does not replace
+`cell.execution_id`, and it does not store runtime-state heads in `NotebookDoc`.
 
 ## Decision 3: Write authority is per-document, and `RuntimeStateDoc` separates runtime authority from widget state
 
