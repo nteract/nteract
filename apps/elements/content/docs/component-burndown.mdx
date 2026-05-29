@@ -1,0 +1,25 @@
+---
+title: Component burn-down
+description: A working inventory for cataloging existing nteract-owned notebook components.
+---
+
+import { ComponentBurndown } from "@/components/component-burndown";
+
+This page tracks the component work as a burn-down rather than a vague rewrite.
+The goal is not to fork the current UI. The goal is to catalog existing notebook
+components, make notebook concepts the public surface, and keep shadcn as the
+low-level implementation layer.
+
+<ComponentBurndown />
+
+## Current rule
+
+If a component has notebook semantics, it should eventually have an nteract
+component name, fixture, and docs page here. If it is only an interaction
+primitive, keep it generic until the notebook contract is clear.
+
+Every page should prefer importing current components behind fixture adapters.
+Any schematic UI must be labeled as temporary and tied back to the source files
+it is mapping.
+
+The first concrete family is [cell anatomy](/docs/cell-anatomy).

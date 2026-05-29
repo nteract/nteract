@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowRight, BookOpen, Boxes, PanelLeft } from "lucide-react";
+import { ArrowRight, Boxes, FileCode2, ListChecks, PanelLeft } from "lucide-react";
 import { RailOutlineExample } from "@/components/rail-outline-example";
 
 const entries = [
@@ -10,16 +10,22 @@ const entries = [
     icon: PanelLeft,
   },
   {
+    title: "Component burn-down",
+    description: "Track notebook-specific components we should own.",
+    href: "/docs/component-burndown",
+    icon: ListChecks,
+  },
+  {
+    title: "Cell anatomy",
+    description: "Inventory map for current nteract cells.",
+    href: "/docs/cell-anatomy",
+    icon: FileCode2,
+  },
+  {
     title: "Rendering catalog",
     description: "Future home for markdown, output, and widget examples.",
     href: "/docs",
     icon: Boxes,
-  },
-  {
-    title: "Migration notes",
-    description: "Track what should move from the old elements repo.",
-    href: "/docs",
-    icon: BookOpen,
   },
 ];
 
@@ -56,7 +62,7 @@ export default function Home() {
       </section>
 
       <section className="border-t border-fd-border bg-fd-muted/20">
-        <div className="mx-auto grid max-w-6xl gap-4 px-6 py-8 md:grid-cols-3">
+        <div className="mx-auto grid max-w-6xl gap-4 px-6 py-8 md:grid-cols-2 lg:grid-cols-4">
           {entries.map((entry) => (
             <Link
               key={entry.title}

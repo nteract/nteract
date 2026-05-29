@@ -1,0 +1,22 @@
+---
+title: Cell anatomy
+description: A fixture-backed inventory map for existing nteract cell components.
+---
+
+import { CellAnatomyExample } from "@/components/cell-anatomy-example";
+
+The first component family to document is the existing cell frame. This page
+now renders current cell pieces with fixture content, so the catalog starts
+from production components instead of a new visual fork.
+
+<CellAnatomyExample />
+
+## Why this comes first
+
+The sidebar outline should scroll to cells and reflect heading state, but it
+should not own cell rendering. A clear cell anatomy gives the sidebar a stable
+contract while preserving the existing `NotebookView` DOM-order invariant.
+
+This docs site should keep moving component by component toward runtime-free
+fixtures. Editor and output examples still need adapters before they can safely
+render without generated WASM, iframe/plugin context, or notebook sync state.
