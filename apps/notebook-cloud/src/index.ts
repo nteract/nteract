@@ -658,6 +658,12 @@ async function routeRuntimeSnapshot(
     if (!object) {
       return json({ error: "runtime snapshot not found" }, 404);
     }
+    if (
+      object.customMetadata?.notebook_id !== notebookId ||
+      object.customMetadata?.runtime_state_doc_id !== runtimeStateDocId
+    ) {
+      return json({ error: "runtime snapshot not found" }, 404);
+    }
 
     const headers = new Headers({
       "Cache-Control": "public, max-age=31536000, immutable",
@@ -697,6 +703,14 @@ async function routeRuntimeSnapshot(
     return json({ error: "X-Runtime-State-Doc-Id header is required" }, 400);
   }
   const key = runtimeStateSnapshotKey(runtimeStateDocId, headsHash);
+  const existing = await env.NOTEBOOK_SNAPSHOTS.head(key);
+  if (
+    existing &&
+    (existing.customMetadata?.notebook_id !== notebookId ||
+      existing.customMetadata?.runtime_state_doc_id !== runtimeStateDocId)
+  ) {
+    return json({ error: "runtime snapshot belongs to another notebook" }, 403);
+  }
   await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
     httpMetadata: {
       contentType: request.headers.get("content-type") ?? "application/octet-stream",
