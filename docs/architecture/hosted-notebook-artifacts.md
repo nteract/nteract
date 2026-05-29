@@ -27,6 +27,9 @@ The shared runtime work now gives us a cleaner path:
   separate origin boundaries; see `hosted-output-origin-isolation.md`.
 - Mixed output lists are segmented by the shared output renderer, not by the
   cloud viewer; see `output-rendering-segmentation.md`.
+- `runtime-state-document-identity.md` makes the `RuntimeStateDoc` a
+  first-class document identified from `NotebookDoc`, rather than only an
+  object nested under a notebook artifact path.
 
 ## Decision 1: Durable publish artifacts are snapshot pairs
 
@@ -44,6 +47,7 @@ A published revision is durable when these artifacts exist:
 The revision row records:
 
 - `notebook_heads_hash`
+- `runtime_state_doc_id`
 - `runtime_heads_hash`
 - `snapshot_key`
 - `runtime_snapshot_key`
@@ -60,13 +64,22 @@ leaves no revision row.
 
 ## Decision 2: R2 layout is deterministic
 
-For a notebook `n/:id`:
+The current compatibility layout for a notebook `n/:id` is:
 
 ```text
 n/{id}/snapshots/{notebookHeadsHash}.am
 n/{id}/snapshots/runtime-state/{runtimeHeadsHash}.am
 n/{id}/blobs/{sha256}
 n/{id}/renders/{notebookHeadsHash}.json
+```
+
+New storage work should move toward the first-class document namespace in
+`runtime-state-document-identity.md`:
+
+```text
+docs/{docId}/snapshot/{headsHash}.am
+docs/{docId}/incremental/{chunkHash}.amdelta
+blobs/{sha256}
 ```
 
 The render path is derived. The first three paths are the durable publish

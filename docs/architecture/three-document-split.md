@@ -21,6 +21,9 @@ what changes when the split runs in a multi-user deployment.
 Neighbors:
 
 - `docs/architecture/typed-frame-v4-wire-protocol.md` — the byte protocol that carries each doc's sync stream.
+- `docs/architecture/runtime-state-document-identity.md` — the follow-on
+  identity decision that makes `NotebookDoc` point at its associated
+  `RuntimeStateDoc`.
 - `docs/architecture/execution-pipeline.md` — how `RuntimeStateDoc` is written during cell execution.
 - `docs/architecture/blob-storage-and-content-addressing.md` — how output payloads are stored separately from the doc itself.
 - `docs/architecture/identity-and-trust.md` — the trust scopes the three-doc split makes expressible.
@@ -80,13 +83,19 @@ The placement test: if executing a cell would have to wait on this field before 
 
 This matches nbformat semantics. `.ipynb` files carry cell source, cell type, metadata, and (legacy) static output snapshots. They do not carry queue state, kernel status, env-sync diff. The .ipynb load path imports legacy outputs into a single synthetic execution in `RuntimeStateDoc`; live outputs sit there from the start.
 
-### One pointer crosses the boundary: `cell.execution_id`
+### The cell-level pointer crosses the boundary: `cell.execution_id`
 
 A cell's "current outputs" are looked up by following the `cells/{cell_id}/execution_id` pointer in `NotebookDoc` into the `executions/{execution_id}/outputs` map in `RuntimeStateDoc`. The daemon stamps this pointer at queue time (`NotebookDoc::set_execution_id`, `lib.rs:1707`). `clear_outputs` sets the pointer to null and resets the legacy `execution_count` field; it never deletes the execution entry in `RuntimeStateDoc` (`lib.rs:1736`).
 
-This is the only structural link between the two documents. Everything else is keyed entirely within one or the other. Output history sits in `RuntimeStateDoc` indefinitely; the cell just looks at one of the entries.
+This is currently the only structural link between the two documents. Everything else is keyed entirely within one or the other. Output history sits in `RuntimeStateDoc` indefinitely; the cell just looks at one of the entries.
 
 The choice to store the pointer in `NotebookDoc` and the body in `RuntimeStateDoc` was driven by save semantics. The pointer is the part that survives a `.ipynb` export. The body is the part that gets thrown away.
+
+`runtime-state-document-identity.md` adds a second, document-level association:
+`NotebookDoc.runtime_state_doc_id`. That pointer identifies which
+`RuntimeStateDoc` belongs with the notebook. It does not replace
+`cell.execution_id`, and it does not store runtime-state heads in
+`NotebookDoc`.
 
 ## Decision 3: Write authority is per-document, and `RuntimeStateDoc` separates runtime authority from widget state
 
