@@ -9,12 +9,18 @@ The rail outline is the first production direction for a notebook table of
 contents. It keeps reading navigation available while leaving clear sibling
 slots for packages, variables, renderers, and future notebook tools.
 
+This fixture now renders the current notebook app toolbar directly. The rail
+itself stays catalog-owned until the notebook app has a production left-rail
+component to import.
+
 <RailOutlineExample />
 
 ## Implementation intent
 
 - The real app should wrap `NotebookView` in a workspace shell rather than
   moving cells into the sidebar.
+- `NotebookToolbar` is imported from `apps/notebook/src/components` with inert
+  fixture callbacks and runtime status props.
 - The outline should start from materialized markdown headings.
 - Keep the rail icon-led: outline, packages, variables, renderers, and future
   side panels should scan as compact tools before a panel opens.

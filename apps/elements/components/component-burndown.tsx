@@ -17,8 +17,8 @@ const stats = [
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
   {
     label: "current imports",
-    value: "21",
-    detail: "used shell, runtime, theme, renderer, editor, and widget surfaces",
+    value: "22",
+    detail: "used shell toolbar, runtime, theme, renderer, editor, and widget surfaces",
   },
 ];
 
@@ -58,10 +58,11 @@ const phases = [
 const families = [
   {
     family: "Notebook workspace",
-    source: "apps/notebook/src/components/NotebookView.tsx",
+    source: "apps/notebook/src/components/{NotebookView,NotebookToolbar}.tsx",
     target: "nteract shell",
     status: "active",
-    intent: "Own the reading frame, sidebar rail, scroll handles, and top-level notebook chrome.",
+    intent:
+      "NotebookToolbar now renders from current source; the sidebar rail remains a fixture-backed adapter until the app owns that component.",
   },
   {
     family: "Cells",
