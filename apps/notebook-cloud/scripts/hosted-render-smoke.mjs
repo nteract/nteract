@@ -10,6 +10,11 @@ import {
   isFatalIsolatedDiagnostic,
   parseIsolatedDiagnosticText,
 } from "./hosted-render-smoke-diagnostics.mjs";
+import {
+  DEFAULT_PRIMARY_VIEWER_CSS_MAX_BYTES,
+  checkViewerCssSplit,
+  parsePositiveInteger,
+} from "./hosted-render-smoke-assets.mjs";
 import { hasPreflightFailures } from "./hosted-render-smoke-preflight.mjs";
 import { catalogApiUrlForViewer, renderApiUrlForViewer } from "./hosted-render-smoke-routes.mjs";
 
@@ -49,6 +54,17 @@ const expectedLatestRevisionRuntimeHeadsHash =
   process.env.NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_RUNTIME_HEADS_HASH ?? "";
 const requireSiftWasm = process.env.NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM !== "0";
 const requireRuntimedWasm = process.env.NOTEBOOK_CLOUD_REQUIRE_RUNTIMED_WASM !== "0";
+const requireViewerCssSplit = process.env.NOTEBOOK_CLOUD_REQUIRE_VIEWER_CSS_SPLIT !== "0";
+const maxPrimaryViewerCssBytes = parsePositiveInteger(
+  process.env.NOTEBOOK_CLOUD_MAX_PRIMARY_VIEWER_CSS_BYTES,
+  DEFAULT_PRIMARY_VIEWER_CSS_MAX_BYTES,
+  "NOTEBOOK_CLOUD_MAX_PRIMARY_VIEWER_CSS_BYTES",
+);
+const minSupplementalViewerCssCount = parsePositiveInteger(
+  process.env.NOTEBOOK_CLOUD_MIN_SUPPLEMENTAL_VIEWER_CSS_COUNT,
+  1,
+  "NOTEBOOK_CLOUD_MIN_SUPPLEMENTAL_VIEWER_CSS_COUNT",
+);
 const expectedThemeModes = parseExpectedTexts("NOTEBOOK_CLOUD_SMOKE_THEME_MODES", [
   "light",
   "dark",
@@ -73,6 +89,7 @@ const fatalIsolatedDiagnostics = [];
 const diagnosticTasks = [];
 let renderApiCheck = null;
 let catalogApiCheck = null;
+let viewerCssCheck = null;
 let screenshotSaved = false;
 let pageTextMatches = {};
 let themeModeChecks = [];
@@ -169,6 +186,13 @@ async function main() {
         expectedRenderSource,
         catalogApiCheck?.latestRevisionNotebookHeadsHash ?? null,
       );
+    }
+    if (requireViewerCssSplit) {
+      viewerCssCheck = await checkViewerCssSplit(targetUrl, {
+        maxPrimaryBytes: maxPrimaryViewerCssBytes,
+        minSupplementalCount: minSupplementalViewerCssCount,
+      });
+      failures.push(...viewerCssCheck.failures);
     }
     if (hasPreflightFailures(failures)) {
       throw new SmokeFailure(failures);
@@ -375,6 +399,7 @@ async function main() {
           expectedLatestRevisionRuntimeHeadsHash,
           renderApiCheck,
           catalogApiCheck,
+          viewerCssCheck,
           executionCounts,
           reportCellCount,
           presenceText,
