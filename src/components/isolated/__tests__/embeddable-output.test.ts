@@ -102,6 +102,44 @@ describe("resolveEmbeddableOutputs", () => {
     expect(blobResolver.fetch).toHaveBeenCalledWith({ blob: "html", size: 26 });
   });
 
+  it("resolves Arrow stream manifest pointers for Sift", async () => {
+    const manifest: OutputManifest = {
+      output_id: "arrow-stream",
+      output_type: "execute_result",
+      execution_count: 1,
+      data: {
+        "application/vnd.nteract.arrow-stream-manifest+json": {
+          inline: JSON.stringify({
+            blob: "arrow-stream-hash",
+            size: 1615,
+            row_count: 200,
+          }),
+        },
+      },
+    };
+
+    const [payload] = await resolveEmbeddableOutputs(manifest, {
+      blobResolver: fakeBlobResolver({
+        "arrow-stream-hash": JSON.stringify({
+          chunks: [{ hash: "arrow-chunk-hash", row_count: 200 }],
+          complete: true,
+        }),
+      }),
+      cellId: "cell-arrow",
+    });
+
+    expect(payload?.mimeType).toBe("application/vnd.nteract.arrow-stream-manifest+json");
+    expect(payload?.data).toMatchObject({
+      complete: true,
+      chunks: [
+        {
+          url: "https://outputs.example.test/blob/arrow-chunk-hash",
+          row_count: 200,
+        },
+      ],
+    });
+  });
+
   it("requires a blob resolver for manifests", async () => {
     const manifest: OutputManifest = {
       output_id: "missing-blob-resolver",

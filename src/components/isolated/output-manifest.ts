@@ -157,20 +157,30 @@ function attachArrowManifestChunkUrls(
 ): unknown {
   if (typeof value !== "object" || value === null) return value;
   const manifest = value as Record<string, unknown>;
-  if (!Array.isArray(manifest.chunks)) return value;
-
   const blobResolver = normalizeBlobResolver(blobResolverInput);
+
+  if (!Array.isArray(manifest.chunks)) {
+    return value;
+  }
+
   let changed = false;
   const chunks = manifest.chunks.map((chunk) => {
     if (typeof chunk !== "object" || chunk === null) return chunk;
     const record = chunk as Record<string, unknown>;
     if (typeof record.url === "string") return chunk;
-    if (typeof record.hash !== "string") return chunk;
+    const hash = manifestBlobHash(record);
+    if (!hash) return chunk;
     changed = true;
-    return { ...record, url: blobResolver.url({ blob: record.hash }) };
+    return { ...record, url: blobResolver.url({ blob: hash }) };
   });
 
   return changed ? { ...manifest, chunks } : value;
+}
+
+function manifestBlobHash(record: Record<string, unknown>): string | null {
+  if (typeof record.blob === "string") return record.blob;
+  if (typeof record.hash === "string") return record.hash;
+  return null;
 }
 
 function parseMimeContent(mimeType: string, content: string, blobResolver: BlobResolverInput) {
@@ -185,6 +195,41 @@ function parseMimeContent(mimeType: string, content: string, blobResolver: BlobR
   }
 }
 
+async function parseMimeContentAsync(
+  mimeType: string,
+  content: string,
+  blobResolver: BlobResolverInput,
+) {
+  if (!mimeType.includes("json")) return content;
+  try {
+    const parsed = JSON.parse(content);
+    if (mimeType !== ARROW_STREAM_MANIFEST_MIME) return parsed;
+    if (isArrowManifestPointer(parsed)) {
+      const manifestContent = await resolveContentRef(parsed, blobResolver);
+      return parseMimeContent(mimeType, manifestContent, blobResolver);
+    }
+    return attachArrowManifestChunkUrls(parsed, blobResolver);
+  } catch {
+    return content;
+  }
+}
+
+function needsAsyncMimeResolution(mimeType: string, content: string): boolean {
+  if (mimeType !== ARROW_STREAM_MANIFEST_MIME) return false;
+  try {
+    return isArrowManifestPointer(JSON.parse(content));
+  } catch {
+    return false;
+  }
+}
+
+function isArrowManifestPointer(value: unknown): value is ContentRef {
+  if (!isContentRef(value)) return false;
+  if ("inline" in value) return false;
+  const record = value as Record<string, unknown>;
+  return !Array.isArray(record.chunks);
+}
+
 export async function resolveDataBundle(
   data: Record<string, ContentRef>,
   blobResolver: BlobResolverInput,
@@ -193,12 +238,13 @@ export async function resolveDataBundle(
   const contents = await Promise.all(
     entries.map(([mimeType, ref]) => resolveContentRef(ref, blobResolver, mimeType)),
   );
-  return Object.fromEntries(
-    entries.map(([mimeType], index) => [
+  const resolved = await Promise.all(
+    entries.map(async ([mimeType], index) => [
       mimeType,
-      parseMimeContent(mimeType, contents[index], blobResolver),
+      await parseMimeContentAsync(mimeType, contents[index], blobResolver),
     ]),
   );
+  return Object.fromEntries(resolved);
 }
 
 function resolveDataBundleSync(
@@ -209,6 +255,7 @@ function resolveDataBundleSync(
   for (const [mimeType, ref] of Object.entries(data)) {
     const content = resolveContentRefSync(ref, blobResolver, mimeType);
     if (content === null) return null;
+    if (needsAsyncMimeResolution(mimeType, content)) return null;
     resolved[mimeType] = parseMimeContent(mimeType, content, blobResolver);
   }
   return resolved;

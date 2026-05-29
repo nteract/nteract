@@ -14,6 +14,7 @@ use runtime_doc::RuntimeStateDoc;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use tokio::time::{sleep, Duration, Instant};
 use url::Url;
 
 const ARROW_STREAM_MANIFEST_MIME: &str = "application/vnd.nteract.arrow-stream-manifest+json";
@@ -71,7 +72,7 @@ struct Args {
     user: String,
 
     /// Operator label sent to notebook-cloud and used as the daemon peer label.
-    #[arg(long, default_value = "runt-publish")]
+    #[arg(long, default_value = "agent:runt-publish")]
     operator: String,
 }
 
@@ -138,8 +139,18 @@ async fn main() -> Result<()> {
     open.handle.await_session_ready().await?;
     open.handle.confirm_sync().await?;
     open.handle.confirm_state_sync().await?;
+    let expected_cell_count = expected_ipynb_cell_count(&notebook_path)?;
+    wait_for_imported_cells(&open.handle, expected_cell_count).await?;
+    open.handle.confirm_sync().await?;
+    open.handle.confirm_state_sync().await?;
 
     let snapshot = open.handle.save_snapshot_pair()?;
+    let exported_cell_count = notebook_snapshot_cell_count(&snapshot.notebook_bytes)?;
+    if expected_cell_count > 0 && exported_cell_count == 0 {
+        bail!(
+            "exported NotebookDoc snapshot has no cells after importing {expected_cell_count} .ipynb cells"
+        );
+    }
     let (blob_base_url, blob_store_path) =
         runtimed_client::daemon_paths::get_blob_paths_async(&socket_path).await;
     let mut refs =
@@ -197,9 +208,7 @@ async fn main() -> Result<()> {
         )
         .await?;
 
-    let render = publisher
-        .get_json(&["api", "n", &publisher.notebook_id, "render"])
-        .await?;
+    let render = publisher.get_render(&notebook_heads_hash).await?;
     if render.get("source").and_then(Value::as_str) != Some("snapshot-pair") {
         bail!("latest render was not materialized from the uploaded snapshot pair");
     }
@@ -214,6 +223,7 @@ async fn main() -> Result<()> {
             "runtime_state_doc_id": runtime_state_doc_id,
             "notebook_heads_hash": notebook_heads_hash,
             "runtime_heads_hash": runtime_heads_hash,
+            "cell_count": exported_cell_count,
             "initial_blob_refs": initial_ref_count,
             "total_blob_refs": refs.len(),
             "uploaded_blobs": uploaded_blobs,
@@ -266,6 +276,9 @@ impl Publisher {
                 .get(&hash)
                 .cloned()
                 .with_context(|| format!("missing queued blob ref {hash}"))?;
+            if self.remote_blob_exists(&blob_ref.hash).await? {
+                continue;
+            }
             let local_blob = self.read_local_blob(&blob_ref.hash).await?;
             let content_type = blob_ref
                 .media_type
@@ -293,6 +306,28 @@ impl Publisher {
         }
 
         Ok(uploaded)
+    }
+
+    async fn remote_blob_exists(&self, hash: &str) -> Result<bool> {
+        let url = self.endpoint(&["api", "n", &self.notebook_id, "blobs", hash])?;
+        let response = self
+            .add_identity_headers(self.client.head(url.clone()))
+            .send()
+            .await?;
+        if response.status().is_success() {
+            return Ok(true);
+        }
+        if response.status().as_u16() == 404 {
+            return Ok(false);
+        }
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        bail!(
+            "{} returned {} while checking blob existence: {}",
+            url,
+            status,
+            text
+        );
     }
 
     async fn read_local_blob(&self, hash: &str) -> Result<LocalBlob> {
@@ -373,6 +408,17 @@ impl Publisher {
         serde_json::from_str(&text).with_context(|| format!("decode JSON response from {url}"))
     }
 
+    async fn get_render(&self, notebook_heads_hash: &str) -> Result<Value> {
+        self.get_json(&[
+            "api",
+            "n",
+            &self.notebook_id,
+            "renders",
+            notebook_heads_hash,
+        ])
+        .await
+    }
+
     fn add_identity_headers(
         &self,
         mut request: reqwest::RequestBuilder,
@@ -430,6 +476,46 @@ fn collect_snapshot_blob_refs(
     collect_runtime_snapshot_blob_refs(runtime_state_bytes, &mut refs)?;
     collect_notebook_snapshot_blob_refs(notebook_bytes, &mut refs)?;
     Ok(refs)
+}
+
+fn notebook_snapshot_cell_count(notebook_bytes: &[u8]) -> Result<usize> {
+    let notebook_doc = NotebookDoc::load(notebook_bytes)
+        .context("load NotebookDoc from exported snapshot bytes")?;
+    Ok(notebook_doc.get_cells().len())
+}
+
+fn expected_ipynb_cell_count(path: &Path) -> Result<usize> {
+    let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let json: Value =
+        serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
+    Ok(json
+        .get("cells")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len))
+}
+
+async fn wait_for_imported_cells(
+    handle: &notebook_sync::handle::DocHandle,
+    expected_cell_count: usize,
+) -> Result<()> {
+    if expected_cell_count == 0 {
+        return Ok(());
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let observed = handle.get_cells().len();
+        if observed >= expected_cell_count {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "timed out waiting for notebook import: expected at least {expected_cell_count} cells, observed {observed}"
+            );
+        }
+        handle.confirm_sync().await?;
+        sleep(Duration::from_millis(250)).await;
+    }
 }
 
 fn runtime_state_doc_id_from_notebook_snapshot(
@@ -548,41 +634,53 @@ fn collect_blob_manifest_dependencies(value: &Value) -> Vec<BlobRef> {
         .and_then(Value::as_str)
         .map(ToOwned::to_owned);
 
+    collect_manifest_blob_ref(value, manifest_content_type.clone(), true, &mut refs);
+
     if let Some(chunks) = value.get("chunks").and_then(Value::as_array) {
         for chunk in chunks {
-            if let Some(hash) = chunk
-                .get("blob")
-                .or_else(|| chunk.get("hash"))
-                .and_then(Value::as_str)
-            {
-                refs.push(BlobRef {
-                    hash: hash.to_string(),
-                    size: size_from_value(chunk),
-                    media_type: media_type_from_value(chunk)
-                        .or_else(|| manifest_content_type.clone())
-                        .or_else(|| Some(ARROW_STREAM_CONTENT_TYPE.to_string())),
-                });
-            }
+            collect_manifest_blob_ref(chunk, manifest_content_type.clone(), true, &mut refs);
         }
     }
 
     if let Some(blobs) = value.get("blobs").and_then(Value::as_array) {
         for blob in blobs {
-            if let Some(hash) = blob
-                .get("blob")
-                .or_else(|| blob.get("hash"))
-                .and_then(Value::as_str)
-            {
-                refs.push(BlobRef {
-                    hash: hash.to_string(),
-                    size: size_from_value(blob),
-                    media_type: media_type_from_value(blob),
-                });
+            collect_manifest_blob_ref(blob, None, false, &mut refs);
+        }
+    }
+
+    if let Some(coalesced) = value.get("coalesced") {
+        collect_manifest_blob_ref(coalesced, manifest_content_type.clone(), true, &mut refs);
+        if let Some(segments) = coalesced.get("segments").and_then(Value::as_array) {
+            for segment in segments {
+                collect_manifest_blob_ref(segment, manifest_content_type.clone(), true, &mut refs);
             }
         }
     }
 
     refs
+}
+
+fn collect_manifest_blob_ref(
+    value: &Value,
+    fallback_media_type: Option<String>,
+    default_to_arrow_stream: bool,
+    refs: &mut Vec<BlobRef>,
+) {
+    let Some(hash) = value
+        .get("blob")
+        .or_else(|| value.get("hash"))
+        .and_then(Value::as_str)
+    else {
+        return;
+    };
+
+    refs.push(BlobRef {
+        hash: hash.to_string(),
+        size: size_from_value(value),
+        media_type: media_type_from_value(value)
+            .or(fallback_media_type)
+            .or_else(|| default_to_arrow_stream.then(|| ARROW_STREAM_CONTENT_TYPE.to_string())),
+    });
 }
 
 fn insert_blob_ref(
@@ -743,14 +841,33 @@ mod tests {
     #[test]
     fn expands_blob_manifest_dependencies() {
         let manifest = json!({
+            "blob": "single-stream",
+            "size": 99,
+            "content_type": ARROW_STREAM_CONTENT_TYPE,
             "chunks": [{"hash": "chunk-a", "size": 12}],
-            "blobs": [{"hash": "sidecar", "content_type": "text/plain"}]
+            "blobs": [{"hash": "sidecar", "content_type": "text/plain"}],
+            "coalesced": {
+                "hash": "coalesced-stream",
+                "segments": [{"hash": "coalesced-segment"}]
+            },
+            "schema": {"hash": "schema-fingerprint-only"}
         });
 
         let deps = collect_blob_manifest_dependencies(&manifest);
         assert_eq!(
             deps.iter().map(|dep| dep.hash.as_str()).collect::<Vec<_>>(),
-            vec!["chunk-a", "sidecar"]
+            vec![
+                "single-stream",
+                "chunk-a",
+                "sidecar",
+                "coalesced-stream",
+                "coalesced-segment"
+            ]
+        );
+        assert_eq!(deps[0].size, Some(99));
+        assert_eq!(
+            deps[0].media_type.as_deref(),
+            Some(ARROW_STREAM_CONTENT_TYPE)
         );
     }
 
@@ -875,6 +992,37 @@ mod tests {
         assert_eq!(
             sharded_blob_path(Path::new("/tmp/blobs"), "abcd"),
             Some(Path::new("/tmp/blobs").join("ab").join("cd"))
+        );
+    }
+
+    #[test]
+    fn publisher_verifies_materialized_render_by_heads_hash() {
+        let publisher = Publisher {
+            client: reqwest::Client::new(),
+            base_url: Url::parse("https://cloud.test/").unwrap(),
+            notebook_id: "topic-viz".to_string(),
+            vanity_name: None,
+            dev_token: None,
+            bearer_token: None,
+            auth_provider: None,
+            user: "runt-publish".to_string(),
+            operator: "agent:runt-publish".to_string(),
+            blob_base_url: None,
+            blob_store_path: None,
+        };
+
+        assert_eq!(
+            publisher
+                .endpoint(&[
+                    "api",
+                    "n",
+                    &publisher.notebook_id,
+                    "renders",
+                    "heads-fixture"
+                ])
+                .unwrap()
+                .as_str(),
+            "https://cloud.test/api/n/topic-viz/renders/heads-fixture"
         );
     }
 }

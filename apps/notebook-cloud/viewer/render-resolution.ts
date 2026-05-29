@@ -1,8 +1,10 @@
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import {
   isOutputManifest,
+  resolveContentRef,
   resolveManifest,
   resolveManifestSync,
+  type ContentRef,
   type OutputManifest,
 } from "@/components/isolated/output-manifest";
 import type { BlobResolver } from "runtimed";
@@ -207,6 +209,7 @@ function resolveOutputSync(
   }
 
   if (isJupyterOutput(output)) {
+    if (jupyterOutputNeedsAsyncResolution(output)) return ASYNC_OUTPUT_REQUIRED;
     const resolved = identifyJupyterOutput(output, syntheticOutputId);
     if (cacheKey) setOutputResolutionCacheEntry(cache, cacheKey, resolved);
     return resolved;
@@ -245,10 +248,50 @@ async function resolveOutputAsyncUncached(
   }
 
   if (isJupyterOutput(output)) {
-    return identifyJupyterOutput(output, syntheticOutputId);
+    return resolveJupyterOutput(output, blobResolver, syntheticOutputId);
   }
 
   return null;
+}
+
+async function resolveJupyterOutput(
+  output: JupyterOutput,
+  blobResolver: BlobResolver,
+  outputId: string,
+): Promise<JupyterOutput> {
+  const identified = identifyJupyterOutput(output, outputId);
+
+  if (identified.output_type === "display_data" || identified.output_type === "execute_result") {
+    const data = { ...identified.data };
+    let changed = false;
+    for (const [mimeType, value] of Object.entries(data)) {
+      if (!isContentRefLike(value, mimeType)) continue;
+      data[mimeType] = await resolveContentRef(value as ContentRef, blobResolver, mimeType);
+      changed = true;
+    }
+    return changed ? { ...identified, data } : identified;
+  }
+
+  if (identified.output_type === "stream" && isContentRefLike(identified.text)) {
+    return {
+      ...identified,
+      text: await resolveContentRef(identified.text as ContentRef, blobResolver),
+    };
+  }
+
+  return identified;
+}
+
+function jupyterOutputNeedsAsyncResolution(output: JupyterOutput): boolean {
+  if (output.output_type === "display_data" || output.output_type === "execute_result") {
+    return Object.entries(output.data).some(([mimeType, value]) =>
+      isContentRefLike(value, mimeType),
+    );
+  }
+  if (output.output_type === "stream") {
+    return isContentRefLike(output.text);
+  }
+  return false;
 }
 
 function outputResolutionCacheKey(output: unknown, syntheticOutputId: string): string | null {
