@@ -9,20 +9,8 @@ import {
   Search,
   ShieldCheck,
 } from "lucide-react";
-import { CellBetweener } from "@/components/cell/CellBetweener";
 import { CellContainer } from "@/components/cell/CellContainer";
-import { CellControls } from "@/components/cell/CellControls";
-import { CellHeader } from "@/components/cell/CellHeader";
-import { type CellType, CellTypeButton } from "@/components/cell/CellTypeButton";
-import { CellTypeSelector } from "@/components/cell/CellTypeSelector";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
-import { ExecutionCount } from "@/components/cell/ExecutionCount";
-import { ExecutionStatus } from "@/components/cell/ExecutionStatus";
-import { PlayButton } from "@/components/cell/PlayButton";
-import {
-  RuntimeHealthIndicator,
-  type RuntimeStatus,
-} from "@/components/cell/RuntimeHealthIndicator";
 
 const layers = [
   {
@@ -35,60 +23,6 @@ const layers = [
     name: "CompactExecutionButton",
     source: "src/components/cell/CompactExecutionButton.tsx",
     role: "Run/interrupt affordance that belongs to code cells, not a generic button variant.",
-    status: "rendered",
-  },
-  {
-    name: "CellHeader",
-    source: "src/components/cell/CellHeader.tsx",
-    role: "Header slot layout for cell controls without owning runtime state.",
-    status: "rendered",
-  },
-  {
-    name: "ExecutionCount",
-    source: "src/components/cell/ExecutionCount.tsx",
-    role: "Notebook execution prompt that preserves count and running-state display.",
-    status: "rendered",
-  },
-  {
-    name: "PlayButton",
-    source: "src/components/cell/PlayButton.tsx",
-    role: "Cell-specific execute/interrupt control for gutter and toolbar placements.",
-    status: "rendered",
-  },
-  {
-    name: "CellTypeButton",
-    source: "src/components/cell/CellTypeButton.tsx",
-    role: "Notebook-aware add-cell/type affordance for code, markdown, SQL, and AI cells.",
-    status: "rendered",
-  },
-  {
-    name: "CellTypeSelector",
-    source: "src/components/cell/CellTypeSelector.tsx",
-    role: "Type-switching dropdown backed by current cell-type labels, icons, and color rules.",
-    status: "rendered",
-  },
-  {
-    name: "ExecutionStatus",
-    source: "src/components/cell/ExecutionStatus.tsx",
-    role: "Queued, running, and error badges for explicit execution-state fixtures.",
-    status: "rendered",
-  },
-  {
-    name: "CellControls",
-    source: "src/components/cell/CellControls.tsx",
-    role: "Source visibility, AI context, movement, output clearing, and destructive cell actions.",
-    status: "rendered",
-  },
-  {
-    name: "CellBetweener",
-    source: "src/components/cell/CellBetweener.tsx",
-    role: "Gutter continuity spacer between cells, including add-cell insertion affordances.",
-    status: "rendered",
-  },
-  {
-    name: "RuntimeHealthIndicator",
-    source: "src/components/cell/RuntimeHealthIndicator.tsx",
-    role: "Kernel/status chip that can render idle, busy, connecting, and disconnected fixtures.",
     status: "rendered",
   },
   {
@@ -111,11 +45,6 @@ const contracts = [
   "Cell identity and stable DOM order stay outside the visual component.",
   "Runtime state enters as explicit props or fixture data, never through hooks in catalog examples.",
 ];
-
-const noop = () => {};
-const noopCellType = (_type: CellType) => {};
-
-const runtimeStatuses: RuntimeStatus[] = ["idle", "busy", "connecting", "disconnected"];
 
 function SourceFixture() {
   return (
@@ -175,133 +104,6 @@ function OutputFixture() {
   );
 }
 
-function CellTypeFixture() {
-  const cellTypes: CellType[] = ["code", "markdown", "sql", "ai"];
-
-  return (
-    <div className="space-y-4">
-      <div>
-        <div className="mb-2 text-xs font-medium text-fd-muted-foreground">CellTypeButton</div>
-        <div className="flex flex-wrap items-center gap-2 rounded border border-border bg-background p-3">
-          {cellTypes.map((cellType) => (
-            <CellTypeButton
-              key={cellType}
-              cellType={cellType}
-              size="sm"
-              showPlus={cellType === "ai"}
-            />
-          ))}
-        </div>
-      </div>
-      <div>
-        <div className="mb-2 text-xs font-medium text-fd-muted-foreground">CellTypeSelector</div>
-        <div className="rounded border border-border bg-background p-3">
-          <CellTypeSelector currentType="code" onTypeChange={noopCellType} />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function CellControlsFixture() {
-  return (
-    <div className="space-y-3">
-      <div className="text-xs font-medium text-fd-muted-foreground">CellControls</div>
-      <div className="flex flex-wrap items-center gap-3 rounded border border-border bg-background p-3">
-        <CellControls
-          sourceVisible
-          onDeleteCell={noop}
-          onClearOutputs={noop}
-          hasOutputs
-          toggleSourceVisibility={noop}
-          playButton={
-            <PlayButton
-              executionState="idle"
-              cellType="code"
-              isFocused
-              onExecute={noop}
-              onInterrupt={noop}
-              className="sm:hidden"
-            />
-          }
-          onMoveUp={noop}
-          onMoveDown={noop}
-          onMoveToTop={noop}
-          onMoveToBottom={noop}
-          canMoveUp
-          canMoveDown
-          onDeleteAllBelow={noop}
-          hasCellsBelow
-          contextSelectionMode
-          aiContextVisible
-          toggleAiContextVisibility={noop}
-          forceVisible
-          className="rounded border border-border bg-muted/30 p-1"
-        />
-        <div className="min-w-[11rem] text-xs leading-5 text-fd-muted-foreground">
-          Fixture handlers keep the menu and visibility controls inert while rendering the current
-          production component.
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function StatusFixture() {
-  return (
-    <div className="space-y-4">
-      <div>
-        <div className="mb-2 text-xs font-medium text-fd-muted-foreground">ExecutionStatus</div>
-        <div className="flex flex-wrap items-center gap-2 rounded border border-border bg-background p-3">
-          <ExecutionStatus executionState="queued" />
-          <ExecutionStatus executionState="running" />
-          <ExecutionStatus executionState="error" />
-        </div>
-      </div>
-      <div>
-        <div className="mb-2 text-xs font-medium text-fd-muted-foreground">
-          RuntimeHealthIndicator
-        </div>
-        <div className="flex flex-wrap items-center gap-2 rounded border border-border bg-background p-3">
-          {runtimeStatuses.map((status) => (
-            <RuntimeHealthIndicator
-              key={status}
-              status={status}
-              kernelName={status === "idle" ? "Python" : undefined}
-              showStatus
-              className="rounded border border-border px-2 py-1"
-            />
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function BetweenerFixture() {
-  return (
-    <div>
-      <div className="mb-2 text-xs font-medium text-fd-muted-foreground">CellBetweener</div>
-      <div className="overflow-hidden rounded border border-border bg-background">
-        <CellBetweener cellType="code" className="h-8">
-          <div className="flex h-full items-center px-3">
-            <span className="rounded-full border border-border bg-muted px-2 py-1 text-[11px] text-muted-foreground">
-              insert code cell
-            </span>
-          </div>
-        </CellBetweener>
-        <CellBetweener cellType="markdown" className="h-8">
-          <div className="flex h-full items-center px-3">
-            <span className="rounded-full border border-border bg-muted px-2 py-1 text-[11px] text-muted-foreground">
-              insert markdown cell
-            </span>
-          </div>
-        </CellBetweener>
-      </div>
-    </div>
-  );
-}
-
 export function CellAnatomyExample() {
   return (
     <div className="not-prose space-y-6">
@@ -311,9 +113,8 @@ export function CellAnatomyExample() {
           <div>
             <h2 className="text-sm font-semibold">Catalog fidelity rule</h2>
             <p className="mt-1 text-xs leading-5">
-              This page renders the current cell shell, controls, status, and insertion pieces
-              directly from notebook component sources. Editor and output regions remain
-              fixture-backed until their runtime-free adapters exist.
+              This page renders only the cell shell pieces the notebook app imports today. Editor
+              and output regions remain fixture-backed until their runtime-free adapters exist.
             </p>
           </div>
         </div>
@@ -353,85 +154,6 @@ export function CellAnatomyExample() {
             }
             dragHandleProps={{ "aria-label": "Fixture drag handle" }}
           />
-        </div>
-      </section>
-
-      <section className="rounded-lg border border-fd-border bg-fd-card p-4">
-        <div className="mb-4">
-          <h2 className="text-sm font-semibold">Runtime-Free Imports</h2>
-          <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
-            These are current cell components rendered with inert fixture handlers.
-          </p>
-        </div>
-        <div className="grid gap-3 md:grid-cols-3">
-          <div className="rounded-md border border-fd-border bg-fd-background p-3">
-            <div className="mb-2 text-xs font-medium text-fd-muted-foreground">CellHeader</div>
-            <CellHeader
-              className="rounded border border-border bg-background"
-              leftContent={
-                <>
-                  <ExecutionCount count={12} />
-                  <span className="text-xs font-medium text-muted-foreground">python</span>
-                </>
-              }
-              rightContent={
-                <span className="rounded-full bg-fd-muted px-2 py-1 text-[11px] text-fd-muted-foreground">
-                  focused
-                </span>
-              }
-            />
-          </div>
-
-          <div className="rounded-md border border-fd-border bg-fd-background p-3">
-            <div className="mb-2 text-xs font-medium text-fd-muted-foreground">ExecutionCount</div>
-            <div className="flex flex-wrap items-center gap-4 rounded border border-border bg-background p-3">
-              <ExecutionCount count={null} />
-              <ExecutionCount count={7} />
-              <ExecutionCount count={24} isExecuting />
-            </div>
-          </div>
-
-          <div className="rounded-md border border-fd-border bg-fd-background p-3">
-            <div className="mb-2 text-xs font-medium text-fd-muted-foreground">PlayButton</div>
-            <div className="flex flex-wrap items-center gap-3 rounded border border-border bg-background p-3">
-              <PlayButton
-                executionState="idle"
-                cellType="code"
-                isFocused
-                onExecute={noop}
-                onInterrupt={noop}
-              />
-              <PlayButton
-                executionState="running"
-                cellType="code"
-                isFocused
-                onExecute={noop}
-                onInterrupt={noop}
-              />
-              <PlayButton
-                executionState="queued"
-                cellType="code"
-                isFocused
-                gutterMode
-                onExecute={noop}
-                onInterrupt={noop}
-              />
-            </div>
-          </div>
-        </div>
-        <div className="mt-3 grid gap-3 lg:grid-cols-2">
-          <div className="rounded-md border border-fd-border bg-fd-background p-3">
-            <CellTypeFixture />
-          </div>
-          <div className="rounded-md border border-fd-border bg-fd-background p-3">
-            <CellControlsFixture />
-          </div>
-          <div className="rounded-md border border-fd-border bg-fd-background p-3">
-            <StatusFixture />
-          </div>
-          <div className="rounded-md border border-fd-border bg-fd-background p-3">
-            <BetweenerFixture />
-          </div>
         </div>
       </section>
 

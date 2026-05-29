@@ -1,6 +1,6 @@
 import { Check, FileText, Info, Package, Plus, RefreshCw, Terminal, X } from "lucide-react";
 import { type KeyboardEvent, useCallback, useState } from "react";
-import type { EnvSyncState } from "../hooks/useDependencies";
+import type { EnvSyncState } from "./runtime-surface-types";
 import { addPixiDependency, removePixiDependency, usePixiDeps } from "../lib/notebook-metadata";
 import type { PixiInfo } from "../hooks/usePixiDetection";
 import { PixiIcon } from "./icons";

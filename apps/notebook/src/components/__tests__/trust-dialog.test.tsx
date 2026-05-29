@@ -9,8 +9,8 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vite-plus/test";
-import type { TrustInfo, TyposquatWarning } from "../../hooks/useTrust";
 import { TrustDialog } from "../TrustDialog";
+import type { TrustInfo, TyposquatWarning } from "../runtime-surface-types";
 
 function makeTrustInfo(overrides: Partial<TrustInfo> = {}): TrustInfo {
   return {

@@ -6,9 +6,9 @@ description: A fixture-backed inventory map for existing nteract cell components
 import { CellAnatomyExample } from "@/components/cell-anatomy-example";
 
 The first component family to document is the existing cell frame. This page
-now renders current cell shell, controls, status, and insertion pieces with
-fixture content, so the catalog starts from production components instead of a
-new visual fork.
+now renders the production-used cell shell pieces with fixture content, so the
+catalog starts from current imports instead of a new visual fork or outdated
+helpers.
 
 <CellAnatomyExample />
 
@@ -22,3 +22,7 @@ This docs site should keep moving component by component toward runtime-free
 fixtures. Editor, output, and full cell examples still need adapters before
 they can safely render without generated WASM, iframe/plugin context, notebook
 sync state, or runtime hooks.
+
+Unused legacy cell helper components should be removed rather than cataloged.
+Catalog entries need to trace to notebook app usage, an active migration target,
+or a documented adapter blocker.

@@ -3,10 +3,10 @@ import {
   CircleDotDashed,
   Code2,
   FileCode2,
-  Layers3,
   ListChecks,
   PanelLeft,
   Rows3,
+  Search,
   ShieldCheck,
 } from "lucide-react";
 
@@ -14,7 +14,7 @@ const stats = [
   { label: "shadcn primitives", value: "24", detail: "current generic UI floor" },
   { label: "notebook domains", value: "6", detail: "first catalog targets" },
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
-  { label: "current imports", value: "11", detail: "cell shell, controls, and status internals" },
+  { label: "current imports", value: "6", detail: "used shell and runtime surfaces" },
 ];
 
 const phases = [
@@ -28,8 +28,7 @@ const phases = [
     title: "Document cell anatomy",
     state: "active",
     icon: Rows3,
-    summary:
-      "Render current cell shell, controls, status, and insertion pieces, then add adapters.",
+    summary: "Render production-used cell shell pieces, then add editor and output adapters.",
   },
   {
     title: "Separate renderers",
@@ -39,9 +38,9 @@ const phases = [
   },
   {
     title: "Document runtime surfaces",
-    state: "queued",
+    state: "active",
     icon: ShieldCheck,
-    summary: "Trust, dependency headers, kernel errors, and environment decisions.",
+    summary: "Trust, dependency headers, environment decisions, and runtime adapter blockers.",
   },
 ];
 
@@ -66,7 +65,7 @@ const families = [
     target: "nteract cells",
     status: "active",
     intent:
-      "CellContainer, execution controls, type controls, status badges, runtime health, and betweener pieces now render from current source.",
+      "CellContainer and CompactExecutionButton now render from current source; unused legacy helpers have been removed instead of cataloged.",
   },
   {
     family: "Editors",
@@ -94,8 +93,9 @@ const families = [
     family: "Runtime decisions",
     source: "apps/notebook/src/components/*Dialog.tsx",
     target: "nteract runtime",
-    status: "planned",
-    intent: "Make trust, environment, and launch decisions reusable catalog examples.",
+    status: "active",
+    intent:
+      "TrustDialog, RuntimeDecisionDialog, EnvBuildDecisionDialog, and DependencyHeader now render with fixture state; runtime-value banners still need adapters.",
   },
   {
     family: "Generic primitives",
@@ -119,17 +119,17 @@ const rules = [
   {
     title: "Use current components first",
     icon: ShieldCheck,
-    body: "Catalog pages render existing components through fixtures as soon as isolation allows. The cell anatomy page now covers real shell, control, status, and insertion pieces.",
+    body: "Catalog pages render existing components through fixtures as soon as isolation allows. The cell anatomy page now stays limited to pieces the notebook app imports.",
+  },
+  {
+    title: "Audit before cataloging",
+    icon: Search,
+    body: "A catalog entry should trace to production usage, a current migration target, or a clearly labeled adapter blocker. Dead helpers should be deleted, not preserved as examples.",
   },
   {
     title: "Own notebook semantics",
     icon: ListChecks,
     body: "If a component knows about cells, outputs, kernels, trust, packages, variables, or notebook navigation, it belongs in the nteract catalog.",
-  },
-  {
-    title: "Wrap generic interactions",
-    icon: Layers3,
-    body: "Use shadcn primitives as implementation details behind domain names such as CellAction, RuntimeDialog, or NotebookRailButton.",
   },
 ];
 
