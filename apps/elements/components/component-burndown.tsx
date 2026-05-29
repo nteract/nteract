@@ -4,6 +4,7 @@ import {
   Code2,
   FileCode2,
   ListChecks,
+  Palette,
   PanelLeft,
   Rows3,
   Search,
@@ -38,10 +39,9 @@ const phases = [
   },
   {
     title: "Expose notebook themes",
-    state: "next",
-    icon: ListChecks,
-    summary:
-      "Keep classic as the docs default, then add a deliberate classic/cream preview toggle.",
+    state: "active",
+    icon: Palette,
+    summary: "Classic and cream palette checks on top of the shared notebook base CSS.",
   },
   {
     title: "Document runtime surfaces",
@@ -83,11 +83,11 @@ const families = [
   },
   {
     family: "Theme surfaces",
-    source: "src/styles/{notebook-tokens,cream-theme}.css",
+    source: "src/styles/notebook-base.css + apps/elements/components/notebook-palette-toggle.tsx",
     target: "nteract shell",
-    status: "next",
+    status: "active",
     intent:
-      "The docs app defaults to classic while importing the shared theme tokens; add a catalog-level classic/cream switch once previews need side-by-side palette checks.",
+      "The docs app now imports the shared notebook base CSS and exposes a runtime-free classic/cream palette switch for previewing catalog components.",
   },
   {
     family: "Outputs",

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowRight, Boxes, FileCode2, ListChecks, PanelLeft } from "lucide-react";
+import { ArrowRight, Boxes, FileCode2, ListChecks, Palette, PanelLeft } from "lucide-react";
 import { RailOutlineExample } from "@/components/rail-outline-example";
 
 const entries = [
@@ -26,6 +26,12 @@ const entries = [
     description: "Future home for markdown, output, and widget examples.",
     href: "/docs",
     icon: Boxes,
+  },
+  {
+    title: "Theme surfaces",
+    description: "Classic and cream notebook palettes under shared tokens.",
+    href: "/docs/theme-surfaces",
+    icon: Palette,
   },
 ];
 
@@ -62,7 +68,7 @@ export default function Home() {
       </section>
 
       <section className="border-t border-fd-border bg-fd-muted/20">
-        <div className="mx-auto grid max-w-6xl gap-4 px-6 py-8 md:grid-cols-2 lg:grid-cols-4">
+        <div className="mx-auto grid max-w-6xl gap-4 px-6 py-8 md:grid-cols-2 lg:grid-cols-5">
           {entries.map((entry) => (
             <Link
               key={entry.title}

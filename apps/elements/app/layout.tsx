@@ -14,6 +14,20 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" data-color-theme="classic" suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(() => {
+  try {
+    const value = localStorage.getItem("notebook-color-theme");
+    document.documentElement.setAttribute("data-color-theme", value === "cream" ? "cream" : "classic");
+  } catch {
+    document.documentElement.setAttribute("data-color-theme", "classic");
+  }
+})();`,
+          }}
+        />
+      </head>
       <body className="min-h-dvh bg-fd-background text-fd-foreground">
         <RootProvider search={{ enabled: false }}>{children}</RootProvider>
       </body>
