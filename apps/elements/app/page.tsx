@@ -7,6 +7,7 @@ import {
   Palette,
   PanelLeft,
   ShieldCheck,
+  SlidersHorizontal,
   TextCursorInput,
 } from "lucide-react";
 import { RailOutlineExample } from "@/components/rail-outline-example";
@@ -53,6 +54,12 @@ const entries = [
     description: "Classic and cream notebook palettes under shared tokens.",
     href: "/docs/theme-surfaces",
     icon: Palette,
+  },
+  {
+    title: "Widget surfaces",
+    description: "Fixture-backed ipywidget controls and adapter notes.",
+    href: "/docs/widget-surfaces",
+    icon: SlidersHorizontal,
   },
 ];
 

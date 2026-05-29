@@ -10,6 +10,7 @@
 @source "../../../src/components/editor/**/*.{ts,tsx}";
 @source "../../../src/components/outputs/**/*.{ts,tsx}";
 @source "../../../src/components/ui/**/*.{ts,tsx}";
+@source "../../../src/components/widgets/**/*.{ts,tsx}";
 @source "../../../apps/notebook/src/components/**/*.{ts,tsx}";
 
 :root {
