@@ -28,6 +28,7 @@ const OUTPUT_HTML: &str = include_str!("../assets/_output.html");
 /// MCP Apps spec CSP fields (from ext-apps specification):
 /// - `resourceDomains` → `img-src`, `script-src`, `style-src`, `font-src`, `media-src`
 /// - `connectDomains`  → `connect-src` (fetch/XHR/WebSocket)
+/// - `frameDomains`    → `frame-src` (nested output iframe shell)
 ///
 /// `prefersBorder: false` asks hosts to avoid adding an extra host-provided
 /// border/background around the renderer. The output surface already owns its
@@ -39,6 +40,11 @@ const OUTPUT_HTML: &str = include_str!("../assets/_output.html");
 /// sidecars and host implementations that treat iframe resource loads
 /// conservatively.
 ///
+/// `frameDomains` declares that the same daemon origin is available if a host
+/// needs to grant the MCP app permission to create nested output iframes. The
+/// current MCP app still defaults to the inline isolated shell that works in
+/// Claude Desktop; advertising this metadata is only the host permission layer.
+///
 /// Claude Desktop requires `localhost` (not `127.0.0.1`) for domain allowlists.
 fn resource_ui_meta(blob_base_url: &Option<String>) -> Meta {
     let mut ui = serde_json::Map::new();
@@ -49,7 +55,8 @@ fn resource_ui_meta(blob_base_url: &Option<String>) -> Meta {
             "csp".to_string(),
             serde_json::json!({
                 "resourceDomains": [url],
-                "connectDomains": [url]
+                "connectDomains": [url],
+                "frameDomains": [url]
             }),
         );
     }
@@ -547,7 +554,12 @@ mod tests {
                 .expect("connect domains")[0],
             "https://outputs.example.test"
         );
-        assert!(csp.get("frameDomains").is_none());
+        assert_eq!(
+            csp.get("frameDomains")
+                .and_then(|value| value.as_array())
+                .expect("frame domains")[0],
+            "https://outputs.example.test"
+        );
     }
 
     #[test]
