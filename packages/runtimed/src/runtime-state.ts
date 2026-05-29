@@ -278,10 +278,6 @@ export interface RuntimeState {
    * pointer when known.
    */
   runtime_state_doc_id: string | null;
-  /**
-   * NotebookDoc identity this runtime state belongs to when known.
-   */
-  notebook_id: string | null;
   kernel: KernelState;
   queue: QueueState;
   env: EnvState;
@@ -305,7 +301,6 @@ export interface RuntimeState {
 
 export const DEFAULT_RUNTIME_STATE: RuntimeState = {
   runtime_state_doc_id: null,
-  notebook_id: null,
   kernel: {
     lifecycle: { lifecycle: "NotStarted" },
     error_reason: "",

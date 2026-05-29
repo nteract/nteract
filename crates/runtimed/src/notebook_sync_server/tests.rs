@@ -313,8 +313,19 @@ async fn test_room_load_or_create_new() {
 
     let doc = room.doc.try_read().unwrap();
     assert_eq!(doc.notebook_id(), Some("test-nb".to_string()));
+    assert_eq!(
+        doc.runtime_state_doc_id(),
+        Some(notebook_doc::default_runtime_state_doc_id("test-nb"))
+    );
     assert_eq!(doc.cell_count(), 0);
     assert_eq!(room.connections.active_peers.load(Ordering::Relaxed), 0);
+    drop(doc);
+
+    let runtime_state = room.state.read(|doc| doc.read_state()).unwrap();
+    assert_eq!(
+        runtime_state.runtime_state_doc_id.as_deref(),
+        Some(notebook_doc::default_runtime_state_doc_id("test-nb").as_str())
+    );
 }
 
 #[tokio::test]
@@ -451,8 +462,21 @@ async fn test_new_fresh_creates_empty_doc() {
     let room = NotebookRoom::new_fresh(uuid, None, tmp.path(), blob_store, false);
 
     let doc = room.doc.try_read().unwrap();
-    assert_eq!(doc.notebook_id(), Some(uuid.to_string()));
+    let notebook_id = uuid.to_string();
+    let runtime_state_doc_id = notebook_doc::default_runtime_state_doc_id(&notebook_id);
+    assert_eq!(doc.notebook_id(), Some(notebook_id.clone()));
+    assert_eq!(
+        doc.runtime_state_doc_id(),
+        Some(runtime_state_doc_id.clone())
+    );
     assert_eq!(doc.cell_count(), 0);
+    drop(doc);
+
+    let runtime_state = room.state.read(|doc| doc.read_state()).unwrap();
+    assert_eq!(
+        runtime_state.runtime_state_doc_id.as_deref(),
+        Some(runtime_state_doc_id.as_str())
+    );
 }
 
 #[tokio::test]

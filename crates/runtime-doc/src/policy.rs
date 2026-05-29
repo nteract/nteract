@@ -187,13 +187,6 @@ fn validate_runtime_peer_room_host_owned_delta(
             "room-host/daemon-owned",
         ));
     }
-    if before.state.notebook_id != after.state.notebook_id {
-        return Err(runtime_state_policy_error(
-            scope,
-            "notebook_id",
-            "room-host/daemon-owned",
-        ));
-    }
     if before.state.last_saved != after.state.last_saved {
         return Err(runtime_state_policy_error(
             scope,
@@ -433,13 +426,6 @@ fn validate_comm_state_only_runtime_delta(
             "daemon-owned",
         ));
     }
-    if before.state.notebook_id != after.state.notebook_id {
-        return Err(runtime_state_policy_error(
-            scope,
-            "notebook_id",
-            "daemon-owned",
-        ));
-    }
     if before.state.last_saved != after.state.last_saved {
         return Err(runtime_state_policy_error(
             scope,
@@ -632,13 +618,13 @@ mod tests {
     fn owner_runtime_state_policy_rejects_identity_rewrites() {
         let mut before_doc = RuntimeStateDoc::new();
         before_doc
-            .set_document_identity(Some("runtime:nb-1"), Some("nb-1"))
+            .set_runtime_state_doc_id(Some("runtime:nb-1"))
             .unwrap();
         let before = runtime_state_policy_snapshot(&before_doc);
 
         let mut after_doc = RuntimeStateDoc::new();
         after_doc
-            .set_document_identity(Some("runtime:nb-2"), Some("nb-1"))
+            .set_runtime_state_doc_id(Some("runtime:nb-2"))
             .unwrap();
         let after = runtime_state_policy_snapshot(&after_doc);
 
