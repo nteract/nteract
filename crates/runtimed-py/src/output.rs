@@ -1254,6 +1254,10 @@ impl PyCommDocEntry {
 #[pyclass(name = "RuntimeState", get_all, skip_from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyRuntimeState {
+    /// RuntimeStateDoc identity, if known.
+    pub runtime_state_doc_id: Option<String>,
+    /// NotebookDoc identity this runtime state belongs to, if known.
+    pub notebook_id: Option<String>,
     /// Kernel state (status, name, language, env_source).
     pub kernel: PyKernelState,
     /// Execution queue state.
@@ -1311,6 +1315,8 @@ impl From<runtime_doc::RuntimeState> for PyRuntimeState {
             _ => String::new(),
         };
         Self {
+            runtime_state_doc_id: rs.runtime_state_doc_id,
+            notebook_id: rs.notebook_id,
             kernel: PyKernelState {
                 status: legacy_status.to_string(),
                 starting_phase: legacy_phase.to_string(),
@@ -1497,6 +1503,8 @@ mod tests {
         );
 
         let runtime = RuntimeState {
+            runtime_state_doc_id: Some("runtime:notebook-a".to_string()),
+            notebook_id: Some("notebook-a".to_string()),
             kernel: KernelState {
                 name: "kernel-a".to_string(),
                 language: "python".to_string(),
@@ -1534,6 +1542,11 @@ mod tests {
 
         let py_state = PyRuntimeState::from(runtime);
 
+        assert_eq!(
+            py_state.runtime_state_doc_id.as_deref(),
+            Some("runtime:notebook-a")
+        );
+        assert_eq!(py_state.notebook_id.as_deref(), Some("notebook-a"));
         assert_eq!(py_state.kernel.status, "busy");
         assert_eq!(py_state.kernel.lifecycle, "Running");
         assert_eq!(py_state.kernel.activity, "Busy");

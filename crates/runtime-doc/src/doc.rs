@@ -69,6 +69,8 @@
 //!       outputs: List[Map] (inline manifests, OutputModel only)
 //!       seq: Int           (insertion order)
 //!       capture_msg_id: Str (Output widget capture routing, "" if not capturing)
+//!   runtime_state_doc_id: Str|null
+//!   notebook_id: Str|null
 //!   last_saved: Str|null   (ISO timestamp of last save)
 //! ```
 
@@ -301,6 +303,13 @@ fn default_empty_state() -> serde_json::Value {
 /// Full runtime state snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeState {
+    /// RuntimeStateDoc identity. Mirrors the NotebookDoc's
+    /// `runtime_state_doc_id` pointer when known.
+    #[serde(default)]
+    pub runtime_state_doc_id: Option<String>,
+    /// NotebookDoc identity this runtime state belongs to when known.
+    #[serde(default)]
+    pub notebook_id: Option<String>,
     pub kernel: KernelState,
     pub queue: QueueState,
     pub env: EnvState,
@@ -2257,6 +2266,40 @@ impl RuntimeStateDoc {
         self.set_optional_str("path", path)
     }
 
+    /// RuntimeStateDoc identity, if the daemon has written one.
+    pub fn runtime_state_doc_id(&self) -> Option<String> {
+        self.read_opt_str(&ROOT, "runtime_state_doc_id")
+    }
+
+    /// NotebookDoc identity this runtime state belongs to, if known.
+    pub fn notebook_id(&self) -> Option<String> {
+        self.read_opt_str(&ROOT, "notebook_id")
+    }
+
+    /// Set the RuntimeStateDoc identity.
+    pub fn set_runtime_state_doc_id(
+        &mut self,
+        runtime_state_doc_id: Option<&str>,
+    ) -> Result<(), RuntimeStateError> {
+        self.set_optional_str("runtime_state_doc_id", runtime_state_doc_id)
+    }
+
+    /// Set the NotebookDoc identity this runtime state belongs to.
+    pub fn set_notebook_id(&mut self, notebook_id: Option<&str>) -> Result<(), RuntimeStateError> {
+        self.set_optional_str("notebook_id", notebook_id)
+    }
+
+    /// Set both document identity fields together.
+    pub fn set_document_identity(
+        &mut self,
+        runtime_state_doc_id: Option<&str>,
+        notebook_id: Option<&str>,
+    ) -> Result<(), RuntimeStateError> {
+        self.set_runtime_state_doc_id(runtime_state_doc_id)?;
+        self.set_notebook_id(notebook_id)?;
+        Ok(())
+    }
+
     // ── Project context ─────────────────────────────────────────────
 
     /// Read the daemon-observed project context.
@@ -2817,6 +2860,8 @@ impl RuntimeStateDoc {
 
         let last_saved = self.read_opt_str(&ROOT, "last_saved");
         let path = self.read_opt_str(&ROOT, "path");
+        let runtime_state_doc_id = self.runtime_state_doc_id();
+        let notebook_id = self.notebook_id();
 
         let trust_state = trust
             .as_ref()
@@ -2836,6 +2881,8 @@ impl RuntimeStateDoc {
         let comms = self.get_comms();
 
         RuntimeState {
+            runtime_state_doc_id,
+            notebook_id,
             kernel: kernel_state,
             queue: queue_state,
             env: env_state,
@@ -3859,6 +3906,27 @@ mod tests {
 
         doc.set_last_saved(None).unwrap();
         assert_eq!(doc.read_state().last_saved, None);
+    }
+
+    #[test]
+    fn test_set_document_identity() {
+        let mut doc = RuntimeStateDoc::new();
+        assert_eq!(doc.runtime_state_doc_id(), None);
+        assert_eq!(doc.notebook_id(), None);
+
+        doc.set_document_identity(Some("runtime:nb-1"), Some("nb-1"))
+            .unwrap();
+        assert_eq!(doc.runtime_state_doc_id().as_deref(), Some("runtime:nb-1"));
+        assert_eq!(doc.notebook_id().as_deref(), Some("nb-1"));
+
+        let state = doc.read_state();
+        assert_eq!(state.runtime_state_doc_id.as_deref(), Some("runtime:nb-1"));
+        assert_eq!(state.notebook_id.as_deref(), Some("nb-1"));
+
+        doc.set_document_identity(None, None).unwrap();
+        let state = doc.read_state();
+        assert_eq!(state.runtime_state_doc_id, None);
+        assert_eq!(state.notebook_id, None);
     }
 
     #[test]
