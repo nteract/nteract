@@ -81,7 +81,13 @@ import {
   reduceCloudViewerPresenceMessage,
 } from "./presence";
 import { shouldShowPrototypeDevControls } from "./prototype-dev-controls";
-import { resolveCell, type RenderCell, type ResolvedCell } from "./render-resolution";
+import {
+  createOutputResolutionCache,
+  resolveCell,
+  resolveCellSync,
+  type RenderCell,
+  type ResolvedCell,
+} from "./render-resolution";
 import {
   buildCloudShareAccessRows,
   hasPublicViewerAccess,
@@ -560,6 +566,7 @@ function NotebookViewer({
   const liveMaterializedRef = useRef(false);
   const snapshotResolvedRef = useRef(false);
   const projectedWidgetCommIdsRef = useRef(new Set<string>());
+  const outputResolutionCacheRef = useRef(createOutputResolutionCache());
   const [presence, setPresence] = useState(initialCloudViewerPresence);
   const [livePresence, setLivePresence] = useState(emptyCloudLivePresenceSnapshot);
   const [connectionScope, setConnectionScope] = useState<string | null>(null);
@@ -642,8 +649,21 @@ function NotebookViewer({
         const widgetComms = normalizeSnapshotWidgetComms(render.widget_comms);
         const notebookLanguage = languageFromNotebookMetadata(render.metadata) ?? "python";
         notebookLanguageRef.current = notebookLanguage;
+        const outputResolutionCache = outputResolutionCacheRef.current;
+        const syncCells = rawCells.map((cell, index) =>
+          resolveCellSync(cell, blobResolver, index, notebookLanguage, outputResolutionCache),
+        );
+        if (!cancelled && !liveMaterializedRef.current && syncCells.length > 0) {
+          setCells(syncCells);
+          setStatus({
+            kind: "loading",
+            message: `Rendering ${syncCells.length} cells while resolving output payloads...`,
+          });
+        }
         const resolvedCells = await Promise.all(
-          rawCells.map((cell, index) => resolveCell(cell, blobResolver, index, notebookLanguage)),
+          rawCells.map((cell, index) =>
+            resolveCell(cell, blobResolver, index, notebookLanguage, outputResolutionCache),
+          ),
         );
         if (cancelled || liveMaterializedRef.current) return;
 
@@ -745,8 +765,23 @@ function NotebookViewer({
       const notebookLanguage =
         languageFromNotebookMetadata(metadata) ?? notebookLanguageRef.current ?? "python";
       notebookLanguageRef.current = notebookLanguage;
+      const outputResolutionCache = outputResolutionCacheRef.current;
+      const syncCells = rawCells.map((cell, index) =>
+        resolveCellSync(cell, blobResolver, index, notebookLanguage, outputResolutionCache),
+      );
+      if (disposed || sequence !== materializeSequence) return;
+      if (syncCells.length > 0) {
+        liveMaterializedRef.current = true;
+        setCells(syncCells);
+        setStatus({
+          kind: "loading",
+          message: `Rendering ${syncCells.length} live cells while resolving output payloads...`,
+        });
+      }
       const resolvedCells = await Promise.all(
-        rawCells.map((cell, index) => resolveCell(cell, blobResolver, index, notebookLanguage)),
+        rawCells.map((cell, index) =>
+          resolveCell(cell, blobResolver, index, notebookLanguage, outputResolutionCache),
+        ),
       );
       if (disposed || sequence !== materializeSequence) return;
 

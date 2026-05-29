@@ -1,7 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { BlobResolver } from "runtimed";
-import { resolveCell, resolveOutputs } from "../viewer/render-resolution.ts";
+import {
+  OUTPUT_RESOLUTION_CACHE_MAX_ENTRIES,
+  createOutputResolutionCache,
+  resolveCell,
+  resolveCellSync,
+  resolveOutputs,
+} from "../viewer/render-resolution.ts";
 
 describe("cloud viewer render resolution", () => {
   it("preserves widget views so RuntimeStateDoc models can hydrate them", async () => {
@@ -146,6 +152,125 @@ describe("cloud viewer render resolution", () => {
     assert.equal(healthyCell.outputs[0].output_type, "stream");
     assert.equal(brokenCell.outputs.length, 1);
     assert.equal(brokenCell.outputs[0].output_type, "error");
+  });
+
+  it("materializes source and sync-resolvable outputs before blob-backed outputs", async () => {
+    const cell = resolveCellSync(
+      {
+        id: "progressive-cell",
+        cell_type: "code",
+        source: "display(df)",
+        execution_count: 1,
+        outputs: [
+          {
+            output_id: "inline-stream",
+            output_type: "stream",
+            name: "stdout",
+            text: { inline: "loaded\n" },
+          },
+          {
+            output_id: "blob-text",
+            output_type: "display_data",
+            data: {
+              "text/plain": { blob: "sha256:text" },
+            },
+            metadata: {},
+          },
+        ],
+      },
+      textBlobResolver({ "sha256:text": "shape: (25, 8)" }),
+      0,
+      "python",
+    );
+
+    assert.equal(cell.source, "display(df)");
+    assert.equal(cell.outputs.length, 1);
+    assert.equal(cell.outputs[0].output_id, "inline-stream");
+  });
+
+  it("deduplicates concurrent blob-backed output resolution", async () => {
+    const cache = createOutputResolutionCache();
+    const resolver = textBlobResolver({ "sha256:text": "resolved once" });
+    const manifest = {
+      output_id: "blob-text",
+      output_type: "display_data",
+      data: {
+        "text/plain": { blob: "sha256:text" },
+      },
+      metadata: {},
+    };
+
+    const [first, second] = await Promise.all([
+      resolveOutputs([manifest], resolver, "cell", cache),
+      resolveOutputs([manifest], resolver, "cell", cache),
+    ]);
+
+    assert.equal(resolver.fetchCount(), 1);
+    assert.deepEqual(first, second);
+    assert.equal(first[0].output_type, "display_data");
+    if (first[0].output_type === "display_data") {
+      assert.equal(first[0].data["text/plain"], "resolved once");
+    }
+  });
+
+  it("keeps synthetic output ids unique when cached raw outputs omit output_id", async () => {
+    const cache = createOutputResolutionCache();
+    const output = {
+      output_type: "stream",
+      name: "stdout",
+      text: "same text\n",
+    };
+
+    const [first, second] = await Promise.all([
+      resolveOutputs([output], rejectingBlobResolver(), "cell-a", cache),
+      resolveOutputs([output], rejectingBlobResolver(), "cell-b", cache),
+    ]);
+
+    assert.equal(first[0].output_id, "cloud-output:cell-a:0");
+    assert.equal(second[0].output_id, "cloud-output:cell-b:0");
+  });
+
+  it("skips cache collisions for non-serializable raw outputs", async () => {
+    const cache = createOutputResolutionCache();
+    const firstOutput = {
+      output_type: "stream",
+      name: "stdout",
+      text: "first\n",
+      value: 1n,
+    };
+    const secondOutput = {
+      output_type: "stream",
+      name: "stdout",
+      text: "second\n",
+      value: 2n,
+    };
+
+    const first = await resolveOutputs([firstOutput], rejectingBlobResolver(), "cell-a", cache);
+    const second = await resolveOutputs([secondOutput], rejectingBlobResolver(), "cell-b", cache);
+
+    assert.equal(first[0].output_type, "stream");
+    assert.equal(second[0].output_type, "stream");
+    if (first[0].output_type === "stream" && second[0].output_type === "stream") {
+      assert.equal(first[0].text, "first\n");
+      assert.equal(second[0].text, "second\n");
+    }
+  });
+
+  it("bounds the output resolution cache across many distinct outputs", async () => {
+    const cache = createOutputResolutionCache();
+    const outputs = Array.from(
+      { length: OUTPUT_RESOLUTION_CACHE_MAX_ENTRIES + 10 },
+      (_, index) => ({
+        output_id: `output-${index}`,
+        output_type: "stream",
+        name: "stdout",
+        text: `output ${index}\n`,
+      }),
+    );
+
+    await resolveOutputs(outputs, rejectingBlobResolver(), "many-outputs", cache);
+
+    assert.equal(cache.size, OUTPUT_RESOLUTION_CACHE_MAX_ENTRIES);
   });
 
   it("derives code cell language from cell metadata before notebook metadata", async () => {
@@ -443,6 +568,23 @@ function rejectingBlobResolver(): BlobResolver {
     },
     async fetch() {
       return new Response("missing", { status: 404 });
+    },
+  };
+}
+
+function textBlobResolver(values: Record<string, string>): BlobResolver & { fetchCount(): number } {
+  let count = 0;
+  return {
+    url(ref) {
+      return `https://cloud.test/blobs/${encodeURIComponent(ref.blob)}`;
+    },
+    async fetch(ref) {
+      count += 1;
+      const value = values[ref.blob];
+      return value === undefined ? new Response("missing", { status: 404 }) : new Response(value);
+    },
+    fetchCount() {
+      return count;
     },
   };
 }

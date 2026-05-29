@@ -2,6 +2,7 @@ import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import {
   isOutputManifest,
   resolveManifest,
+  resolveManifestSync,
   type OutputManifest,
 } from "@/components/isolated/output-manifest";
 import type { BlobResolver } from "runtimed";
@@ -27,17 +28,59 @@ export interface ResolvedCell {
   metadata: Record<string, unknown>;
 }
 
+type OutputResolutionCacheEntry = JupyterOutput | Promise<JupyterOutput | null>;
+
+export type OutputResolutionCache = Map<string, OutputResolutionCacheEntry>;
+
+export const OUTPUT_RESOLUTION_CACHE_MAX_ENTRIES = 1024;
+
+const ASYNC_OUTPUT_REQUIRED = Symbol("async-output-required");
+
+type SyncOutputResolution = JupyterOutput | null | typeof ASYNC_OUTPUT_REQUIRED;
+
+export function createOutputResolutionCache(): OutputResolutionCache {
+  return new Map();
+}
+
 export async function resolveCell(
   cell: RenderCell,
   blobResolver: BlobResolver,
   index: number,
   defaultLanguage: string | null = null,
+  cache?: OutputResolutionCache,
 ): Promise<ResolvedCell> {
   const cellType = normalizeCellType(cell.cell_type);
   const metadata = normalizeMetadata(cell.metadata);
   const cellId = typeof cell.id === "string" ? cell.id : `cell-${index + 1}`;
   const outputs = Array.isArray(cell.outputs)
-    ? await resolveOutputs(cell.outputs, blobResolver, cellId)
+    ? await resolveOutputs(cell.outputs, blobResolver, cellId, cache)
+    : [];
+  const executionCount =
+    normalizeExecutionCount(cell.execution_count) ?? executionCountFromOutputs(outputs);
+  return {
+    id: cellId,
+    cellType,
+    source: typeof cell.source === "string" ? cell.source : "",
+    language: cellType === "code" ? (normalizeCellLanguage(metadata) ?? defaultLanguage) : null,
+    executionId: normalizeExecutionId(cell.execution_id),
+    executionCount,
+    outputs,
+    metadata,
+  };
+}
+
+export function resolveCellSync(
+  cell: RenderCell,
+  blobResolver: BlobResolver,
+  index: number,
+  defaultLanguage: string | null = null,
+  cache?: OutputResolutionCache,
+): ResolvedCell {
+  const cellType = normalizeCellType(cell.cell_type);
+  const metadata = normalizeMetadata(cell.metadata);
+  const cellId = typeof cell.id === "string" ? cell.id : `cell-${index + 1}`;
+  const outputs = Array.isArray(cell.outputs)
+    ? resolveOutputsSync(cell.outputs, blobResolver, cellId, cache)
     : [];
   const executionCount =
     normalizeExecutionCount(cell.execution_count) ?? executionCountFromOutputs(outputs);
@@ -57,12 +100,13 @@ export async function resolveOutputs(
   outputs: unknown[],
   blobResolver: BlobResolver,
   cellId: string = "output",
+  cache?: OutputResolutionCache,
 ): Promise<JupyterOutput[]> {
   const resolved = await Promise.all(
     outputs.map(async (output, index) => {
       const syntheticOutputId = `cloud-output:${cellId}:${index}`;
       try {
-        return await resolveOutput(output, blobResolver, syntheticOutputId);
+        return await resolveOutput(output, blobResolver, syntheticOutputId, cache);
       } catch (error) {
         return outputResolutionError(error, output, syntheticOutputId);
       }
@@ -71,14 +115,118 @@ export async function resolveOutputs(
   return resolved.filter((output): output is JupyterOutput => output !== null);
 }
 
+export function resolveOutputsSync(
+  outputs: unknown[],
+  blobResolver: BlobResolver,
+  cellId: string = "output",
+  cache?: OutputResolutionCache,
+): JupyterOutput[] {
+  return outputs
+    .map((output, index) => {
+      const syntheticOutputId = `cloud-output:${cellId}:${index}`;
+      try {
+        const resolved = resolveOutputSync(output, blobResolver, syntheticOutputId, cache);
+        return resolved === ASYNC_OUTPUT_REQUIRED ? null : resolved;
+      } catch {
+        return null;
+      }
+    })
+    .filter((output): output is JupyterOutput => output !== null);
+}
+
 async function resolveOutput(
+  output: unknown,
+  blobResolver: BlobResolver,
+  syntheticOutputId: string,
+  cache?: OutputResolutionCache,
+): Promise<JupyterOutput | null> {
+  const cacheKey = cache ? outputResolutionCacheKey(output, syntheticOutputId) : null;
+  const cached = cache && cacheKey ? cache.get(cacheKey) : undefined;
+  if (cached) {
+    return isPromiseLike(cached) ? await cached : cached;
+  }
+
+  const syncResolved = resolveOutputSync(output, blobResolver, syntheticOutputId, cache);
+  if (syncResolved !== ASYNC_OUTPUT_REQUIRED) {
+    return syncResolved;
+  }
+
+  const resolution = resolveOutputAsyncUncached(output, blobResolver, syntheticOutputId)
+    .then((resolved) => {
+      if (cacheKey) {
+        if (resolved) {
+          setOutputResolutionCacheEntry(cache, cacheKey, resolved);
+        } else {
+          cache?.delete(cacheKey);
+        }
+      }
+      return resolved;
+    })
+    .catch((error) => {
+      if (cacheKey) cache?.delete(cacheKey);
+      throw error;
+    });
+  if (cacheKey) setOutputResolutionCacheEntry(cache, cacheKey, resolution);
+  return resolution;
+}
+
+function resolveOutputSync(
+  output: unknown,
+  blobResolver: BlobResolver,
+  syntheticOutputId: string,
+  cache?: OutputResolutionCache,
+): SyncOutputResolution {
+  const cacheKey = cache ? outputResolutionCacheKey(output, syntheticOutputId) : null;
+  const cached = cache && cacheKey ? cache.get(cacheKey) : undefined;
+  if (cached) {
+    return isPromiseLike(cached) ? ASYNC_OUTPUT_REQUIRED : cached;
+  }
+
+  if (typeof output === "string") {
+    try {
+      return resolveOutputSync(
+        JSON.parse(output) as unknown,
+        blobResolver,
+        syntheticOutputId,
+        cache,
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  if (isOutputManifest(output)) {
+    const resolved = resolveManifestSync(output as OutputManifest, blobResolver) as JupyterOutput;
+    if (!resolved) return ASYNC_OUTPUT_REQUIRED;
+    if (cacheKey) setOutputResolutionCacheEntry(cache, cacheKey, resolved);
+    return resolved;
+  }
+
+  if (isManifestWithMissingOutputId(output)) {
+    throw new Error("Cannot resolve output manifest without output_id");
+  }
+
+  if (isJupyterOutput(output)) {
+    const resolved = identifyJupyterOutput(output, syntheticOutputId);
+    if (cacheKey) setOutputResolutionCacheEntry(cache, cacheKey, resolved);
+    return resolved;
+  }
+
+  return null;
+}
+
+async function resolveOutputAsyncUncached(
   output: unknown,
   blobResolver: BlobResolver,
   syntheticOutputId: string,
 ): Promise<JupyterOutput | null> {
   if (typeof output === "string") {
     try {
-      return resolveOutput(JSON.parse(output) as unknown, blobResolver, syntheticOutputId);
+      return resolveOutputAsyncUncached(
+        JSON.parse(output) as unknown,
+        blobResolver,
+        syntheticOutputId,
+      );
     } catch {
       return null;
     }
@@ -101,6 +249,54 @@ async function resolveOutput(
   }
 
   return null;
+}
+
+function outputResolutionCacheKey(output: unknown, syntheticOutputId: string): string | null {
+  const serialized = serializedOutputCacheKey(output);
+  if (serialized === null) return null;
+  return outputNeedsSyntheticOutputId(output) ? `${syntheticOutputId}:${serialized}` : serialized;
+}
+
+function serializedOutputCacheKey(output: unknown): string | null {
+  if (typeof output === "string") return output;
+  try {
+    return JSON.stringify(output);
+  } catch {
+    return null;
+  }
+}
+
+function outputNeedsSyntheticOutputId(output: unknown): boolean {
+  if (typeof output === "string") {
+    try {
+      return outputNeedsSyntheticOutputId(JSON.parse(output) as unknown);
+    } catch {
+      return false;
+    }
+  }
+  if (!isJupyterOutput(output)) {
+    return false;
+  }
+  return typeof output.output_id !== "string" || output.output_id.length === 0;
+}
+
+function isPromiseLike(value: OutputResolutionCacheEntry): value is Promise<JupyterOutput | null> {
+  return typeof (value as Promise<JupyterOutput | null>).then === "function";
+}
+
+function setOutputResolutionCacheEntry(
+  cache: OutputResolutionCache | undefined,
+  key: string,
+  value: OutputResolutionCacheEntry,
+): void {
+  if (!cache) return;
+  if (!cache.has(key) && cache.size >= OUTPUT_RESOLUTION_CACHE_MAX_ENTRIES) {
+    const oldestKey = cache.keys().next().value;
+    if (typeof oldestKey === "string") {
+      cache.delete(oldestKey);
+    }
+  }
+  cache.set(key, value);
 }
 
 function identifyJupyterOutput(output: JupyterOutput, outputId: string): JupyterOutput {
