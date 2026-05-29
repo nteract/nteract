@@ -97,14 +97,14 @@ pnpm --dir apps/notebook-cloud smoke:hosted:install
 
 It verifies that the hosted viewer renders the live-published code cell with a
 runtime-derived execution count, that sandboxed output iframes expose expected
-markdown and Sift notebook content, and that Sift's WASM sidecar loads from the configured
-renderer asset origin with CORS. It also checks the latest catalog revision and
-its pinned `/api/n/:id/renders/:headsHash` document report `source: "snapshot-pair"`
-so publish validation still proves the persisted NotebookDoc + RuntimeStateDoc
-pair is complete. Override the
-target with `NOTEBOOK_CLOUD_HOSTED_URL` or a positional URL argument. Set
-`NOTEBOOK_CLOUD_SMOKE_SCREENSHOT=/tmp/notebook-cloud.png` to save a
-visual artifact.
+markdown and Sift notebook content, and that Sift's WASM sidecar loads from the
+configured renderer asset origin with CORS. Latest notebook URLs are validated
+through the live viewer path and catalog metadata; pinned
+`/n/:id/r/:headsHash` URLs also check the corresponding
+`/api/n/:id/renders/:headsHash` report. Override the target with
+`NOTEBOOK_CLOUD_HOSTED_URL` or a positional URL argument. Set
+`NOTEBOOK_CLOUD_SMOKE_SCREENSHOT=/tmp/notebook-cloud.png` to save a visual
+artifact.
 
 For non-MathNet published notebooks, customize the hosted smoke expectations
 with `NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT`,
@@ -113,8 +113,10 @@ with `NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT`,
 renderers are checked as frame text because they render inside sandboxed output
 documents. Frame texts can be a JSON string array or a `|`-delimited list. Set
 `NOTEBOOK_CLOUD_EXPECTED_PAGE_TEXTS` only for text that should appear in the
-parent viewer document. Set `NOTEBOOK_CLOUD_EXPECTED_RENDER_SOURCE=` to skip the
-render API source check. Set
+parent viewer document. Set
+`NOTEBOOK_CLOUD_EXPECTED_RENDER_SOURCE=snapshot-pair` to require the render API
+source check for a latest live URL, or set
+`NOTEBOOK_CLOUD_EXPECTED_RENDER_SOURCE=` to skip that check for a pinned URL. Set
 `NOTEBOOK_CLOUD_EXPECTED_CATALOG_OWNER_PRINCIPAL=` and
 `NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_ACTOR_LABEL=` to skip the live-publish
 catalog provenance checks, or set them to the expected owner/actor for another
