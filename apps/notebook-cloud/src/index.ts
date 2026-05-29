@@ -557,6 +557,12 @@ async function routeSnapshot(
 
   const body = await request.arrayBuffer();
   const runtimeHeadsHash = normalizedRuntimeHeadsHash(request.headers.get("x-runtime-heads-hash"));
+  const runtimeStateDocId = requiredRuntimeStateDocId(
+    request.headers.get("x-runtime-state-doc-id"),
+  );
+  if (!runtimeStateDocId) {
+    return json({ error: "X-Runtime-State-Doc-Id header is required" }, 400);
+  }
   const runtimeKey = runtimeHeadsHash ? runtimeSnapshotKey(notebookId, runtimeHeadsHash) : null;
   const renderCacheKey = renderKey(notebookId, headsHash);
   let renderCacheWritten = false;
@@ -567,6 +573,7 @@ async function routeSnapshot(
     },
     customMetadata: {
       notebook_id: notebookId,
+      runtime_state_doc_id: runtimeStateDocId,
       notebook_heads_hash: headsHash,
     },
   });
@@ -605,6 +612,7 @@ async function routeSnapshot(
   try {
     revisionId = await recordRevision(env, {
       notebookId,
+      runtimeStateDocId,
       notebookHeadsHash: headsHash,
       runtimeHeadsHash,
       snapshotKey: key,
@@ -620,7 +628,10 @@ async function routeSnapshot(
     throw error;
   }
 
-  return json({ ok: true, revision_id: revisionId, key }, 201);
+  return json(
+    { ok: true, revision_id: revisionId, key, runtime_state_doc_id: runtimeStateDocId },
+    201,
+  );
 }
 
 async function routeRuntimeSnapshot(
@@ -672,6 +683,12 @@ async function routeRuntimeSnapshot(
   }
 
   const body = await request.arrayBuffer();
+  const runtimeStateDocId = requiredRuntimeStateDocId(
+    request.headers.get("x-runtime-state-doc-id"),
+  );
+  if (!runtimeStateDocId) {
+    return json({ error: "X-Runtime-State-Doc-Id header is required" }, 400);
+  }
   await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
     httpMetadata: {
       contentType: request.headers.get("content-type") ?? "application/octet-stream",
@@ -679,12 +696,16 @@ async function routeRuntimeSnapshot(
     },
     customMetadata: {
       notebook_id: notebookId,
+      runtime_state_doc_id: runtimeStateDocId,
       runtime_heads_hash: headsHash,
       artifact: "runtime-state-snapshot",
     },
   });
 
-  return json({ ok: true, key, size: body.byteLength }, 201);
+  return json(
+    { ok: true, key, size: body.byteLength, runtime_state_doc_id: runtimeStateDocId },
+    201,
+  );
 }
 
 interface PendingInvitePayload {
@@ -1857,6 +1878,11 @@ function absoluteOrigin(value: string): string | null {
 }
 
 function normalizedRuntimeHeadsHash(value: string | null): string | null {
+  const trimmed = value?.trim();
+  return trimmed && trimmed !== "none" ? trimmed : null;
+}
+
+function requiredRuntimeStateDocId(value: string | null): string | null {
   const trimmed = value?.trim();
   return trimmed && trimmed !== "none" ? trimmed : null;
 }

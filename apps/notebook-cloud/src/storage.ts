@@ -19,6 +19,7 @@ export interface NotebookRow {
 export interface RevisionRow {
   id: string;
   notebook_id: string;
+  runtime_state_doc_id: string | null;
   notebook_heads_hash: string;
   runtime_heads_hash: string | null;
   snapshot_key: string;
@@ -66,6 +67,7 @@ const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS notebook_revisions (
     id TEXT PRIMARY KEY,
     notebook_id TEXT NOT NULL,
+    runtime_state_doc_id TEXT,
     notebook_heads_hash TEXT NOT NULL,
     runtime_heads_hash TEXT,
     snapshot_key TEXT NOT NULL,
@@ -147,6 +149,11 @@ const SCHEMA_MIGRATIONS = [
     table: "notebook_revisions",
     column: "runtime_snapshot_key",
     statement: `ALTER TABLE notebook_revisions ADD COLUMN runtime_snapshot_key TEXT`,
+  },
+  {
+    table: "notebook_revisions",
+    column: "runtime_state_doc_id",
+    statement: `ALTER TABLE notebook_revisions ADD COLUMN runtime_state_doc_id TEXT`,
   },
 ];
 
@@ -503,6 +510,7 @@ export async function recordRevision(
   env: Env,
   revision: {
     notebookId: string;
+    runtimeStateDocId: string;
     notebookHeadsHash: string;
     runtimeHeadsHash: string | null;
     snapshotKey: string;
@@ -523,15 +531,17 @@ export async function recordRevision(
       `INSERT INTO notebook_revisions (
        id,
        notebook_id,
+       runtime_state_doc_id,
        notebook_heads_hash,
        runtime_heads_hash,
        snapshot_key,
        runtime_snapshot_key,
        actor_label
-     ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       revisionId,
       revision.notebookId,
+      revision.runtimeStateDocId,
       revision.notebookHeadsHash,
       revision.runtimeHeadsHash,
       revision.snapshotKey,
@@ -616,6 +626,7 @@ export async function getNotebookCatalog(
   const revisions = await env.DB.prepare(
     `SELECT id,
             notebook_id,
+            runtime_state_doc_id,
             notebook_heads_hash,
             runtime_heads_hash,
             snapshot_key,
