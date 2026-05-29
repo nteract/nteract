@@ -39,6 +39,27 @@ function subAppTrailingSlashRedirect(names: string[]): Plugin {
   };
 }
 
+function prototypeRootRedirect(route: string | undefined): Plugin {
+  return {
+    name: "prototype-root-redirect",
+    configureServer(server) {
+      if (!route) return;
+      server.middlewares.use((req, res, next) => {
+        const url = req.url ?? "";
+        const pathOnly = url.split(/[?#]/, 1)[0];
+        if (pathOnly === "/" || pathOnly === "/index.html") {
+          const suffix = url.slice(pathOnly.length);
+          res.statusCode = 302;
+          res.setHeader("Location", `${route}${suffix}`);
+          res.end();
+          return;
+        }
+        next();
+      });
+    },
+  };
+}
+
 export default defineConfig(() => {
   const debugBundleSourceMapsEnabled = process.env.RUNT_NOTEBOOK_DEBUG_BUILD === "1";
 
@@ -46,6 +67,7 @@ export default defineConfig(() => {
     plugins: [
       react(),
       tailwindcss(),
+      prototypeRootRedirect(process.env.RUNT_NOTEBOOK_PROTOTYPE_ROUTE),
       rawLibPlugin(path.resolve(__dirname, "../../node_modules")),
       isolatedRendererPlugin(),
       browserDevRelayPlugin({ repoRoot: path.resolve(__dirname, "../..") }),
@@ -56,6 +78,7 @@ export default defineConfig(() => {
         "diagnostics",
         "upgrade",
         "gallery",
+        "prototypes/sidebar-toc",
       ]),
       visualizer({
         filename: "dist/stats.html",

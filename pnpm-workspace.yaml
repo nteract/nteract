@@ -8,8 +8,18 @@ onlyBuiltDependencies:
   - '@fortawesome/fontawesome-free'
   - esbuild
 minimumReleaseAge: 1440
+# TODO(2026-05-31): remove once these exact Fumadocs lockfile entries are older
+# than minimumReleaseAge and `pnpm install --frozen-lockfile` succeeds without it.
+minimumReleaseAgeExclude:
+  - fumadocs-core
+  - fumadocs-mdx
+  - fumadocs-ui
 blockExoticSubdeps: true
 trustPolicy: no-downgrade
+# TODO(2026-05-31): remove once the current lockfile accepts this transitive
+# package without a trust-policy downgrade exception.
+trustPolicyExclude:
+  - tinyexec@1.2.2
 catalog:
   vite: npm:@voidzero-dev/vite-plus-core@0.1.16
   vitest: npm:@voidzero-dev/vite-plus-test@0.1.16
