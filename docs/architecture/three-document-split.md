@@ -93,10 +93,11 @@ The choice to store the pointer in `NotebookDoc` and the body in `RuntimeStateDo
 
 `runtime-state-document-identity.md` adds a second, document-level association:
 `NotebookDoc.runtime_state_doc_id`. For notebook rooms, that pointer identifies
-which `RuntimeStateDoc` belongs with the notebook. The association is optional
-from the runtime-state document's point of view so the same schema can support
-markdown-associated or standalone runtime state later. It does not replace
-`cell.execution_id`, and it does not store runtime-state heads in `NotebookDoc`.
+which `RuntimeStateDoc` belongs with the notebook. The runtime-state document
+itself remains document-agnostic: it carries its own `runtime_state_doc_id`, not
+a notebook backlink, so the same schema can support markdown-associated or
+standalone runtime state later. It does not replace `cell.execution_id`, and it
+does not store runtime-state heads in `NotebookDoc`.
 
 ## Decision 3: Write authority is per-document, and `RuntimeStateDoc` separates runtime authority from widget state
 
@@ -143,11 +144,11 @@ So the durable footprint of one notebook is: the `.ipynb` (or untitled `.automer
 
 | Document | Created when | Identity | GC'd when |
 |---|---|---|---|
-| `NotebookDoc` | On room load (either from `.ipynb` or fresh) | Per-notebook UUID; schema seed actor `nteract:notebook-schema:v4` | On room eviction; persisted file deleted on save-as transition |
-| `RuntimeStateDoc` | On room load (fresh from schema seed; load code populates synthetic executions when the `.ipynb` carries legacy outputs, `crates/runtimed/src/notebook_sync_server/load.rs:709, :731, :741`) | Per-notebook (lives next to its NotebookDoc); schema seed actor `nteract:runtime-state-schema:v2`; daemon writes under actor `runtimed:state`; runtime-agent peer writes under its own actor (`crates/runtimed/src/runtime_agent.rs:96`) | On room eviction |
+| `NotebookDoc` | On room load (either from `.ipynb` or fresh) | Per-notebook UUID; schema seed actor `nteract:notebook-schema:v5` | On room eviction; persisted file deleted on save-as transition |
+| `RuntimeStateDoc` | On room load (fresh from schema seed; load code populates synthetic executions when the `.ipynb` carries legacy outputs, `crates/runtimed/src/notebook_sync_server/load.rs:709, :731, :741`) | Runtime-state document id referenced by `NotebookDoc.runtime_state_doc_id`; schema seed actor `nteract:runtime-state-schema:v2`; daemon writes under actor `runtimed:state`; runtime-agent peer writes under its own actor (`crates/runtimed/src/runtime_agent.rs:96`) | On room eviction |
 | `PoolDoc` | On daemon startup | Singleton; daemon writes under actor `runtimed:pool` | On daemon shutdown |
 
-The schema seed actor is what makes initial sync correct. Every peer scaffolds from the same frozen genesis bytes (`assets/notebook_genesis_v4.am`, `assets/runtime_state_genesis_v2.am`) so the top-level object IDs (`cells`, `metadata`, `kernel`, `queue`, `executions`, ...) agree before the first sync round. The `notebook-doc/AGENTS.md` invariant "exactly one peer creates document structure" applies inside `NotebookDoc` for any non-genesis structure (so the daemon owns `cells` creation when scaffolding from empty); for `RuntimeStateDoc`, the daemon owns everything by convention because the genesis already scaffolds the runtime tree.
+The schema seed actor is what makes initial sync correct. Every peer scaffolds from the same frozen genesis bytes (`assets/notebook_genesis_v5.am`, `assets/runtime_state_genesis_v2.am`) so the top-level object IDs (`cells`, `metadata`, `kernel`, `queue`, `executions`, ...) agree before the first sync round. The `notebook-doc/AGENTS.md` invariant "exactly one peer creates document structure" applies inside `NotebookDoc` for any non-genesis structure (so the daemon owns `cells` creation when scaffolding from empty); for `RuntimeStateDoc`, the daemon owns everything by convention because the genesis already scaffolds the runtime tree.
 
 Room eviction is driven by "last peer disconnected." `peer_eviction.rs` runs the teardown: stop kernel, optionally clean up env, save `.ipynb` if file-backed and dirty, drop the room from the registry. Both notebook docs go out of scope. Re-opening the room recreates `RuntimeStateDoc` fresh from seed.
 
