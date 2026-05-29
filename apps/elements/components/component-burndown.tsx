@@ -14,7 +14,7 @@ const stats = [
   { label: "shadcn primitives", value: "24", detail: "current generic UI floor" },
   { label: "notebook domains", value: "6", detail: "first catalog targets" },
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
-  { label: "current imports", value: "2", detail: "CellContainer plus execution button" },
+  { label: "current imports", value: "5", detail: "cell shell and runtime-free internals" },
 ];
 
 const phases = [
@@ -28,7 +28,7 @@ const phases = [
     title: "Document cell anatomy",
     state: "active",
     icon: Rows3,
-    summary: "Render current cell shell pieces, then add editor and output adapters.",
+    summary: "Render current cell shell pieces and runtime-free internals, then add adapters.",
   },
   {
     title: "Separate renderers",
@@ -65,7 +65,7 @@ const families = [
     target: "nteract cells",
     status: "active",
     intent:
-      "CellContainer and CompactExecutionButton now render from current source in the catalog.",
+      "CellContainer, CompactExecutionButton, CellHeader, ExecutionCount, and PlayButton now render from current source.",
   },
   {
     family: "Editors",
@@ -118,7 +118,7 @@ const rules = [
   {
     title: "Use current components first",
     icon: ShieldCheck,
-    body: "Catalog pages render existing components through fixtures as soon as isolation allows. The cell anatomy page now starts with the real cell shell.",
+    body: "Catalog pages render existing components through fixtures as soon as isolation allows. The cell anatomy page now starts with real cell pieces.",
   },
   {
     title: "Own notebook semantics",

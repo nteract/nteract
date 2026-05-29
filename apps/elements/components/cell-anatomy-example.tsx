@@ -10,7 +10,10 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { CellContainer } from "@/components/cell/CellContainer";
+import { CellHeader } from "@/components/cell/CellHeader";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
+import { ExecutionCount } from "@/components/cell/ExecutionCount";
+import { PlayButton } from "@/components/cell/PlayButton";
 
 const layers = [
   {
@@ -23,6 +26,24 @@ const layers = [
     name: "CompactExecutionButton",
     source: "src/components/cell/CompactExecutionButton.tsx",
     role: "Run/interrupt affordance that belongs to code cells, not a generic button variant.",
+    status: "rendered",
+  },
+  {
+    name: "CellHeader",
+    source: "src/components/cell/CellHeader.tsx",
+    role: "Header slot layout for cell controls without owning runtime state.",
+    status: "rendered",
+  },
+  {
+    name: "ExecutionCount",
+    source: "src/components/cell/ExecutionCount.tsx",
+    role: "Notebook execution prompt that preserves count and running-state display.",
+    status: "rendered",
+  },
+  {
+    name: "PlayButton",
+    source: "src/components/cell/PlayButton.tsx",
+    role: "Cell-specific execute/interrupt control for gutter and toolbar placements.",
     status: "rendered",
   },
   {
@@ -45,6 +66,8 @@ const contracts = [
   "Cell identity and stable DOM order stay outside the visual component.",
   "Runtime state enters as explicit props or fixture data, never through hooks in catalog examples.",
 ];
+
+const noop = () => {};
 
 function SourceFixture() {
   return (
@@ -155,6 +178,71 @@ export function CellAnatomyExample() {
             }
             dragHandleProps={{ "aria-label": "Fixture drag handle" }}
           />
+        </div>
+      </section>
+
+      <section className="rounded-lg border border-fd-border bg-fd-card p-4">
+        <div className="mb-4">
+          <h2 className="text-sm font-semibold">Runtime-Free Imports</h2>
+          <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
+            These are current cell components rendered with inert fixture handlers.
+          </p>
+        </div>
+        <div className="grid gap-3 md:grid-cols-3">
+          <div className="rounded-md border border-fd-border bg-fd-background p-3">
+            <div className="mb-2 text-xs font-medium text-fd-muted-foreground">CellHeader</div>
+            <CellHeader
+              className="rounded border border-border bg-background"
+              leftContent={
+                <>
+                  <ExecutionCount count={12} />
+                  <span className="text-xs font-medium text-muted-foreground">python</span>
+                </>
+              }
+              rightContent={
+                <span className="rounded-full bg-fd-muted px-2 py-1 text-[11px] text-fd-muted-foreground">
+                  focused
+                </span>
+              }
+            />
+          </div>
+
+          <div className="rounded-md border border-fd-border bg-fd-background p-3">
+            <div className="mb-2 text-xs font-medium text-fd-muted-foreground">ExecutionCount</div>
+            <div className="flex flex-wrap items-center gap-4 rounded border border-border bg-background p-3">
+              <ExecutionCount count={null} />
+              <ExecutionCount count={7} />
+              <ExecutionCount count={24} isExecuting />
+            </div>
+          </div>
+
+          <div className="rounded-md border border-fd-border bg-fd-background p-3">
+            <div className="mb-2 text-xs font-medium text-fd-muted-foreground">PlayButton</div>
+            <div className="flex flex-wrap items-center gap-3 rounded border border-border bg-background p-3">
+              <PlayButton
+                executionState="idle"
+                cellType="code"
+                isFocused
+                onExecute={noop}
+                onInterrupt={noop}
+              />
+              <PlayButton
+                executionState="running"
+                cellType="code"
+                isFocused
+                onExecute={noop}
+                onInterrupt={noop}
+              />
+              <PlayButton
+                executionState="queued"
+                cellType="code"
+                isFocused
+                gutterMode
+                onExecute={noop}
+                onInterrupt={noop}
+              />
+            </div>
+          </div>
         </div>
       </section>
 
