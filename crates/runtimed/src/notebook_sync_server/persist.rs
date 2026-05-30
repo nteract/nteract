@@ -243,6 +243,42 @@ pub(crate) async fn save_notebook_to_disk(
     .map_err(|e| SaveError::Unrecoverable(format!("Failed to build v4 notebook: {e}")))?;
     let cell_count = v4_notebook.cells.len();
 
+    // Zeroing guard (automatic saves only). A failed/incomplete streaming load
+    // empties the room doc (peer_session clears all cells on load failure).
+    // Autosave and kernel-teardown both call this with `target_path = None`, so
+    // without this guard an empty room would overwrite a populated `.ipynb` and
+    // destroy the user's notebook. Skip the write when the in-memory doc has 0
+    // cells but a non-empty file already exists on disk, and return Ok so the
+    // autosave debouncer keeps running (Unrecoverable would disable it). An
+    // explicit user save (`target_path = Some`) is a deliberate action and
+    // bypasses this: emptying then saving on purpose still works. A genuinely
+    // empty doc over an empty/absent file still round-trips, and a brand-new
+    // untitled notebook has no existing file to protect.
+    //
+    // The trigger condition is "disk has bytes," not "disk parses to >=1 cell."
+    // The most common reason a streaming load fails is that the file is corrupt
+    // (load.rs: jiter parse error, "not a JSON object", "'cells' is not an
+    // array") — exactly the cases where a parse-and-count of the on-disk bytes
+    // returns 0 and would let the empty doc through. Protecting on raw
+    // non-whitespace content covers corrupt files, files whose `cells` key was
+    // clobbered by a crashed prior write, and well-formed populated notebooks
+    // alike. The only cost is that an unparseable file is never auto-overwritten
+    // by an empty doc, which is the safe direction for a data-loss guard.
+    if target_path.is_none() && cell_count == 0 {
+        let disk_has_content = existing_raw
+            .as_ref()
+            .is_some_and(|bytes| bytes.iter().any(|b| !b.is_ascii_whitespace()));
+        if disk_has_content {
+            warn!(
+                "[notebook-sync] Skipping autosave of empty doc over existing on-disk content for \
+                 {:?} (likely a failed initial load); preserving file. Explicit save still \
+                 permitted.",
+                notebook_path
+            );
+            return Ok(notebook_path.to_string_lossy().to_string());
+        }
+    }
+
     // Collect raw-cell attachments (markdown attachments are already on the
     // typed v4::Cell::Markdown variant; raw cells lose theirs in typed
     // conversion and get re-injected during serialize).

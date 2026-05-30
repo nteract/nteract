@@ -8893,3 +8893,237 @@ fn finalize_trust_status_unavailable_store_is_untrusted() {
     let status = super::metadata::finalize_trust_status(&info, &store);
     assert_eq!(status, runt_trust::TrustStatus::Untrusted);
 }
+
+// ── Autosave zeroing guard ─────────────────────────────────────────────
+//
+// A failed/incomplete streaming load empties the room doc (peer_session
+// clears all cells on load failure). Autosave and kernel-teardown then call
+// save_notebook_to_disk(.., None), which would overwrite a populated .ipynb
+// with zero cells. The guard skips that write.
+
+/// Write a populated two-cell .ipynb to disk.
+async fn write_two_cell_notebook(path: &Path) {
+    tokio::fs::write(
+        path,
+        r##"{
+            "nbformat": 4,
+            "nbformat_minor": 5,
+            "metadata": {},
+            "cells": [
+                {
+                    "id": "cell-a",
+                    "cell_type": "code",
+                    "metadata": {},
+                    "source": "a = 1",
+                    "execution_count": null,
+                    "outputs": []
+                },
+                {
+                    "id": "cell-b",
+                    "cell_type": "markdown",
+                    "metadata": {},
+                    "source": "# heading"
+                }
+            ]
+        }"##,
+    )
+    .await
+    .unwrap();
+}
+
+fn disk_cell_count(path: &Path) -> usize {
+    let content = std::fs::read_to_string(path).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&content).unwrap();
+    value
+        .get("cells")
+        .and_then(|cells| cells.as_array())
+        .map(|cells| cells.len())
+        .unwrap_or(0)
+}
+
+/// The production zeroing case: a streaming load fails, the room doc is
+/// emptied (clear_all_cells + finish_loading), and an autosave fires with
+/// target_path = None. The on-disk notebook must be left intact.
+#[tokio::test]
+async fn autosave_skips_zeroing_write_after_failed_load() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "failed_load.ipynb");
+    write_two_cell_notebook(&notebook_path).await;
+
+    // Reproduce the post-failed-load room state: doc emptied, loading done.
+    {
+        let mut doc = room.doc.write().await;
+        doc.clear_all_cells().unwrap();
+        assert_eq!(doc.cell_count(), 0);
+    }
+    room.finish_loading();
+
+    // Autosave / kernel-teardown path.
+    save_notebook_to_disk(&room, None)
+        .await
+        .expect("guard skips the write and returns Ok so autosave stays armed");
+
+    assert_eq!(
+        disk_cell_count(&notebook_path),
+        2,
+        "empty doc must not overwrite the populated .ipynb"
+    );
+}
+
+/// An explicit user save (target_path = Some) is a deliberate action and
+/// bypasses the guard: emptying then saving on purpose still writes.
+#[tokio::test]
+async fn explicit_save_of_empty_doc_still_writes() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "explicit.ipynb");
+    write_two_cell_notebook(&notebook_path).await;
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.clear_all_cells().unwrap();
+    }
+
+    let target = notebook_path.to_string_lossy().to_string();
+    save_notebook_to_disk(&room, Some(&target))
+        .await
+        .expect("explicit save must succeed");
+
+    assert_eq!(
+        disk_cell_count(&notebook_path),
+        0,
+        "explicit save of an emptied doc must write through the guard"
+    );
+}
+
+/// A genuinely empty doc over an empty/absent file still round-trips on the
+/// autosave path: the guard only fires when there are on-disk cells to lose.
+#[tokio::test]
+async fn autosave_writes_empty_doc_when_disk_has_no_cells() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "empty.ipynb");
+
+    // No file on disk yet; doc starts empty.
+    assert_eq!(room.doc.read().await.cell_count(), 0);
+
+    save_notebook_to_disk(&room, None)
+        .await
+        .expect("empty doc over absent file must write");
+
+    assert_eq!(
+        disk_cell_count(&notebook_path),
+        0,
+        "empty notebook should round-trip to an empty .ipynb"
+    );
+}
+
+/// A normal populated autosave is unaffected by the guard.
+#[tokio::test]
+async fn autosave_writes_populated_doc_normally() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "populated.ipynb");
+    write_two_cell_notebook(&notebook_path).await;
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "only-cell", "code").unwrap();
+        doc.update_source("only-cell", "print('hi')").unwrap();
+    }
+
+    save_notebook_to_disk(&room, None)
+        .await
+        .expect("populated autosave must write");
+
+    assert_eq!(
+        disk_cell_count(&notebook_path),
+        1,
+        "populated doc must overwrite the on-disk notebook as usual"
+    );
+}
+
+/// Corrupt/unparseable on-disk .ipynb is the single most common reason a
+/// streaming load fails (jiter parse error, "not a JSON object"). The empty
+/// post-failure doc must NOT overwrite those bytes on autosave, even though
+/// the file cannot be parsed into a cells array. A guard that counts on-disk
+/// cells by parsing would fall open here (count == 0) and destroy the
+/// corrupt-but-recoverable file.
+#[tokio::test]
+async fn autosave_skips_zeroing_write_over_corrupt_file() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "corrupt.ipynb");
+
+    let corrupt = b"{ \"nbformat\": 4, \"cells\": [ {\"id\": \"a\", trunc";
+    tokio::fs::write(&notebook_path, corrupt).await.unwrap();
+
+    // Post-failed-load room state: doc emptied, loading done.
+    {
+        let mut doc = room.doc.write().await;
+        doc.clear_all_cells().unwrap();
+        assert_eq!(doc.cell_count(), 0);
+    }
+    room.finish_loading();
+
+    save_notebook_to_disk(&room, None)
+        .await
+        .expect("guard skips the write and returns Ok");
+
+    let on_disk = std::fs::read(&notebook_path).unwrap();
+    assert_eq!(
+        on_disk, corrupt,
+        "empty doc must not overwrite the corrupt-but-recoverable file"
+    );
+}
+
+/// A file that parses as JSON but whose `cells` key is missing or not an
+/// array (e.g. clobbered by a crashed prior write) also fails the streaming
+/// load. The empty post-failure doc must not overwrite it. The old
+/// parse-and-count guard fell open here because `cells.as_array()` returned
+/// None -> count 0.
+#[tokio::test]
+async fn autosave_skips_zeroing_write_when_disk_cells_not_array() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "no_cells_array.ipynb");
+
+    let no_array = br#"{ "nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": {} }"#;
+    tokio::fs::write(&notebook_path, no_array).await.unwrap();
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.clear_all_cells().unwrap();
+        assert_eq!(doc.cell_count(), 0);
+    }
+    room.finish_loading();
+
+    save_notebook_to_disk(&room, None)
+        .await
+        .expect("guard skips the write and returns Ok");
+
+    let on_disk = std::fs::read(&notebook_path).unwrap();
+    assert_eq!(
+        on_disk.as_slice(),
+        no_array.as_slice(),
+        "empty doc must not overwrite a file whose cells key is non-array"
+    );
+}
+
+/// A file that is only whitespace carries no cells to lose, so the guard must
+/// not fire: an empty doc over a whitespace-only file still writes through.
+#[tokio::test]
+async fn autosave_writes_empty_doc_over_whitespace_only_file() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "whitespace.ipynb");
+
+    tokio::fs::write(&notebook_path, b"   \n\t  \n")
+        .await
+        .unwrap();
+    assert_eq!(room.doc.read().await.cell_count(), 0);
+
+    save_notebook_to_disk(&room, None)
+        .await
+        .expect("empty doc over whitespace-only file must write");
+
+    assert_eq!(
+        disk_cell_count(&notebook_path),
+        0,
+        "whitespace-only file has no cells to protect; empty doc writes through"
+    );
+}
