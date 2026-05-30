@@ -266,6 +266,64 @@ describe("SiftTable", () => {
     vi.useFakeTimers();
   });
 
+  it("starts Arrow stream chunk fetches without waiting for first chunk append", async () => {
+    vi.useRealTimers();
+    const fetchResolvers: ((response: {
+      ok: true;
+      arrayBuffer: () => Promise<ArrayBuffer>;
+    }) => void)[] = [];
+    const fetchMock = vi.fn(
+      () =>
+        new Promise<{ ok: true; arrayBuffer: () => Promise<ArrayBuffer> }>((resolve) => {
+          fetchResolvers.push(resolve);
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { unmount } = render(
+      <SiftTable
+        source={{
+          kind: "arrow-stream-manifest",
+          manifest: {
+            chunks: [
+              { url: "http://127.0.0.1:9000/blob/chunk-0" },
+              { url: "http://127.0.0.1:9000/blob/chunk-1" },
+              { url: "http://127.0.0.1:9000/blob/chunk-2" },
+            ],
+            complete: true,
+          },
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+    expect(predicateModule.append_arrow_stream_chunk).not.toHaveBeenCalled();
+
+    const responseFor = (bytes: number[]) => ({
+      ok: true as const,
+      arrayBuffer: async () => new Uint8Array(bytes).buffer,
+    });
+    fetchResolvers[0](responseFor([1, 2, 3]));
+
+    await waitFor(() => {
+      expect(predicateModule.append_arrow_stream_chunk).toHaveBeenCalledTimes(1);
+    });
+
+    fetchResolvers[1](responseFor([4, 5, 6]));
+    fetchResolvers[2](responseFor([7, 8, 9]));
+
+    await waitFor(() => {
+      expect(predicateModule.append_arrow_stream_chunk).toHaveBeenCalledTimes(3);
+      expect(predicateModule.finish_arrow_stream_store).toHaveBeenCalledWith(9);
+    });
+
+    unmount();
+    vi.unstubAllGlobals();
+    vi.useFakeTimers();
+  });
+
   it("does not reload a manifest source when only object identity changes", async () => {
     vi.useRealTimers();
     const chunkBytes = new Uint8Array([1, 2, 3, 4]);

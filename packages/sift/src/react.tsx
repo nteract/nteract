@@ -433,6 +433,8 @@ export function SiftTable({
       return new Uint8Array(await response.arrayBuffer());
     }
 
+    type ChunkFetchResult = { ok: true; bytes: Uint8Array } | { ok: false; error: unknown };
+
     async function loadFromManifest() {
       setStatus("loading");
       setError(null);
@@ -459,7 +461,19 @@ export function SiftTable({
       const handle = mod.create_arrow_stream_store();
       disposePendingStore = () => mod.free(handle);
 
-      const firstBytes = await fetchChunkBytes(chunks[0], 0);
+      const chunkFetches: Promise<ChunkFetchResult>[] = chunks.map((chunk, index) =>
+        fetchChunkBytes(chunk, index).then(
+          (bytes) => ({ ok: true, bytes }),
+          (error: unknown) => ({ ok: false, error }),
+        ),
+      );
+      const readChunkBytes = async (index: number) => {
+        const result = await chunkFetches[index];
+        if (!result.ok) throw result.error;
+        return result.bytes;
+      };
+
+      const firstBytes = await readChunkBytes(0);
       if (cancelled) return;
       emitLoadMilestone(startedAt, {
         source: "arrow-stream-manifest",
@@ -519,7 +533,7 @@ export function SiftTable({
         if (cancelled) return;
         await new Promise((r) => setTimeout(r, 0));
         if (cancelled) return;
-        const bytes = await fetchChunkBytes(chunks[i], i);
+        const bytes = await readChunkBytes(i);
         if (cancelled) return;
         emitLoadMilestone(startedAt, {
           source: "arrow-stream-manifest",
