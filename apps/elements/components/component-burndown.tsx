@@ -13,13 +13,13 @@ import {
 
 const stats = [
   { label: "shadcn primitives", value: "24", detail: "current generic UI floor" },
-  { label: "notebook domains", value: "7", detail: "first catalog targets" },
+  { label: "notebook domains", value: "8", detail: "first catalog targets" },
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
   {
     label: "current imports",
-    value: "31",
+    value: "33",
     detail:
-      "used shell toolbar, package header, full cells, cell gutter, runtime dialogs and banners, theme, renderer, editor, and widget surfaces",
+      "used shell toolbar, package header, search, full cells, cell gutter, runtime dialogs and banners, theme, renderer, editor, and widget surfaces",
   },
 ];
 
@@ -64,6 +64,14 @@ const families = [
     status: "active",
     intent:
       "NotebookToolbar renders from current source; the sidebar rail remains a fixture-backed adapter, and its package panel now hosts the current DependencyHeader instead of a catalog-only package list.",
+  },
+  {
+    family: "Notebook search",
+    source: "apps/notebook/src/components/{GlobalFindBar,HistorySearchDialog}.tsx",
+    target: "nteract shell",
+    status: "active",
+    intent:
+      "GlobalFindBar and HistorySearchDialog now render from fixture search state; the history dialog uses a docs-local NotebookHost transport that only serves get_history.",
   },
   {
     family: "Cells",
