@@ -104,7 +104,11 @@ through the live viewer path and catalog metadata; pinned
 materialized render API. Override the target with
 `NOTEBOOK_CLOUD_HOSTED_URL` or a positional URL argument. Set
 `NOTEBOOK_CLOUD_SMOKE_SCREENSHOT=/tmp/notebook-cloud.png` to save a visual
-artifact.
+artifact. The JSON report includes coarse `timings_ms` milestones plus
+`performanceDiagnostics.resources_by_kind` for viewer document, viewer JS/CSS,
+`runtimed-wasm`, output document frames, Sift WASM, and pinned snapshot fetches
+when a pinned URL is tested. Use these diagnostics to choose performance work
+before adding timing budgets.
 
 For non-MathNet published notebooks, customize the hosted smoke expectations
 with `NOTEBOOK_CLOUD_EXPECTED_SOURCE_TEXT`,

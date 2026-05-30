@@ -16,6 +16,11 @@ import {
   parsePositiveInteger,
 } from "./hosted-render-smoke-assets.mjs";
 import { hasPreflightFailures } from "./hosted-render-smoke-preflight.mjs";
+import {
+  classifyPerformanceResource,
+  summarizePerformanceResources,
+  withTiming,
+} from "./hosted-render-smoke-performance.mjs";
 import { catalogApiUrlForViewer } from "./hosted-render-smoke-routes.mjs";
 
 const DEFAULT_URL = "https://preview.runt.run/n/topic-viz";
@@ -86,6 +91,8 @@ const runtimedWasmRequests = [];
 const rendererCompletions = [];
 const fatalIsolatedDiagnostics = [];
 const diagnosticTasks = [];
+const performanceResources = [];
+const performanceRequests = new Map();
 let catalogApiCheck = null;
 let viewerCssCheck = null;
 let screenshotSaved = false;
@@ -135,6 +142,9 @@ async function main() {
   });
 
   page.on("requestfailed", (request) => {
+    finishPerformanceRequest(request, {
+      failure: request.failure()?.errorText ?? "unknown",
+    });
     if (!isRelevantRequestUrl(request.url())) {
       return;
     }
@@ -145,8 +155,32 @@ async function main() {
     });
   });
 
+  page.on("request", (request) => {
+    const kind = classifyPerformanceResource(request.url(), {
+      targetOrigin,
+      rendererAssetOrigin,
+      outputDocumentOrigin,
+    });
+    if (!kind) {
+      return;
+    }
+    performanceRequests.set(request, {
+      kind,
+      url: request.url(),
+      start_ms: elapsedMs(),
+      end_ms: null,
+      status: null,
+      contentType: null,
+      failure: null,
+    });
+  });
+
   page.on("response", (response) => {
     const url = response.url();
+    finishPerformanceRequest(response.request(), {
+      status: response.status(),
+      contentType: response.headers()["content-type"] ?? null,
+    });
     if (url.includes("sift_wasm.wasm")) {
       siftWasmRequests.push({
         url,
@@ -165,6 +199,12 @@ async function main() {
     }
   });
 
+  page.on("websocket", (socket) => {
+    if (socket.url().includes("/sync?")) {
+      markTiming("live_sync_websocket");
+    }
+  });
+
   try {
     if (
       expectedCatalogOwnerPrincipal ||
@@ -172,18 +212,22 @@ async function main() {
       expectedLatestRevisionNotebookHeadsHash ||
       expectedLatestRevisionRuntimeHeadsHash
     ) {
+      const started = elapsedMs();
       catalogApiCheck = await checkHostedCatalogApi(targetUrl, {
         expectedCatalogOwnerPrincipal,
         expectedLatestRevisionActorLabel,
         expectedLatestRevisionNotebookHeadsHash,
         expectedLatestRevisionRuntimeHeadsHash,
       });
+      catalogApiCheck = withTiming(catalogApiCheck, started, elapsedMs());
     }
     if (requireViewerCssSplit) {
+      const started = elapsedMs();
       viewerCssCheck = await checkViewerCssSplit(targetUrl, {
         maxPrimaryBytes: maxPrimaryViewerCssBytes,
         minSupplementalCount: minSupplementalViewerCssCount,
       });
+      viewerCssCheck = withTiming(viewerCssCheck, started, elapsedMs());
       failures.push(...viewerCssCheck.failures);
     }
     markTiming("preflight");
@@ -406,6 +450,7 @@ async function main() {
           expectedLatestRevisionNotebookHeadsHash,
           expectedLatestRevisionRuntimeHeadsHash,
           timings_ms: timingsMs,
+          performanceDiagnostics: summarizePerformanceResources(performanceResources, timingsMs),
           catalogApiCheck,
           viewerCssCheck,
           executionCounts,
@@ -465,6 +510,23 @@ function parseExpectedTexts(envName, fallback) {
 
 function markTiming(name) {
   timingsMs[name] ??= Math.round(performance.now() - smokeStartedAt);
+}
+
+function elapsedMs() {
+  return Math.round(performance.now() - smokeStartedAt);
+}
+
+function finishPerformanceRequest(request, updates) {
+  const record = performanceRequests.get(request);
+  if (!record) {
+    return;
+  }
+  performanceRequests.delete(request);
+  performanceResources.push({
+    ...record,
+    ...updates,
+    end_ms: elapsedMs(),
+  });
 }
 
 function themeModeSpec(value) {
