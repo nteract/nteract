@@ -35,7 +35,6 @@ import { createNotebookViewModel, NotebookDocumentShell } from "@/components/not
 import { navigateMarkdownHeading } from "@/components/cell/markdown-heading-navigation";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
-import type { TracebackCellTarget } from "@/components/outputs/traceback-output";
 import { useWidgetStoreRequired } from "@/components/widgets/widget-store-context";
 import { useTheme } from "@/hooks/useTheme";
 import { ErrorBoundary } from "@/lib/error-boundary";
@@ -1050,28 +1049,19 @@ function NotebookViewer({
     () => createNotebookViewModel(cells, { resolveLanguage: cloudSourceLanguage }),
     [cells],
   );
-  const { readOnlyCells, codeCellCount, outlineItems } = notebookViewModel;
+  const { readOnlyCells, codeCellCount, outlineItems, tracebackTargetsByExecutionId } =
+    notebookViewModel;
   useEffect(() => {
     if (!selectedOutlineItemId) return;
     if (!outlineItems.some((item) => item.id === selectedOutlineItemId)) {
       setSelectedOutlineItemId(null);
     }
   }, [outlineItems, selectedOutlineItemId]);
-  const tracebackTargets = useMemo(() => {
-    const targets = new Map<string, TracebackCellTarget>();
-    for (const cell of cells) {
-      if (!cell.executionId) continue;
-      targets.set(cell.executionId, {
-        cellId: cell.id,
-      });
-    }
-    return targets;
-  }, [cells]);
   const resolveTracebackExecutionTarget = useCallback(
-    (executionId: string) => tracebackTargets.get(executionId) ?? null,
-    [tracebackTargets],
+    (executionId: string) => tracebackTargetsByExecutionId.get(executionId) ?? null,
+    [tracebackTargetsByExecutionId],
   );
-  const handleTracebackCellNavigate = useCallback((target: TracebackCellTarget) => {
+  const handleTracebackCellNavigate = useCallback((target: { cellId: string }) => {
     findCellElement(target.cellId)?.scrollIntoView({
       behavior: "smooth",
       block: "center",

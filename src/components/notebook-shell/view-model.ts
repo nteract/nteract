@@ -16,6 +16,11 @@ export interface NotebookViewCell {
   metadata: Record<string, unknown>;
 }
 
+export interface NotebookTracebackCellTarget {
+  cellId: string;
+  label?: string;
+}
+
 export type NotebookViewLanguageResolver = (
   language: string | null | undefined,
 ) => SupportedLanguage | null;
@@ -25,6 +30,7 @@ export interface NotebookViewModel {
   cellIds: string[];
   readOnlyCells: ReadOnlyNotebookCellData[];
   outlineItems: NotebookOutlineItem[];
+  tracebackTargetsByExecutionId: ReadonlyMap<string, NotebookTracebackCellTarget>;
   codeCellCount: number;
 }
 
@@ -41,6 +47,7 @@ export function createNotebookViewModel(
     cellIds: cells.map((cell) => cell.id),
     readOnlyCells: notebookViewCellsToReadOnlyCells(cells, options.resolveLanguage),
     outlineItems: notebookViewCellsToOutlineItems(cells),
+    tracebackTargetsByExecutionId: notebookViewCellsToTracebackTargets(cells),
     codeCellCount: cells.filter((cell) => cell.cellType === "code").length,
   };
 }
@@ -74,6 +81,21 @@ export function notebookViewCellsToOutlineItems(
     hrefTarget: "heading",
     getStatusLabel: notebookViewCellOutlineStatusLabel,
   }).items;
+}
+
+export function notebookViewCellsToTracebackTargets(
+  cells: readonly NotebookViewCell[],
+): ReadonlyMap<string, NotebookTracebackCellTarget> {
+  const targets = new Map<string, NotebookTracebackCellTarget>();
+  for (const cell of cells) {
+    if (!cell.executionId) continue;
+    const target: NotebookTracebackCellTarget = { cellId: cell.id };
+    if (typeof cell.executionCount === "number") {
+      target.label = `In [${cell.executionCount}]`;
+    }
+    targets.set(cell.executionId, target);
+  }
+  return targets;
 }
 
 function notebookViewCellOutlineStatusLabel(cell: NotebookViewCell): string | null {

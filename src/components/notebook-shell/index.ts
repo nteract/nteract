@@ -13,9 +13,11 @@ export {
   notebookViewCellsToOutlineItems,
   notebookViewCellsToReadOnlyCells,
   notebookViewCellToReadOnlyCell,
+  notebookViewCellsToTracebackTargets,
   type CreateNotebookViewModelOptions,
   type NotebookViewModel,
   type NotebookViewCell,
   type NotebookViewCellType,
   type NotebookViewLanguageResolver,
+  type NotebookTracebackCellTarget,
 } from "./view-model";

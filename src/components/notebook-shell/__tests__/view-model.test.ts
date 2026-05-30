@@ -3,6 +3,7 @@ import {
   createNotebookViewModel,
   notebookViewCellsToOutlineItems,
   notebookViewCellsToReadOnlyCells,
+  notebookViewCellsToTracebackTargets,
   type NotebookViewCell,
 } from "../view-model";
 
@@ -125,5 +126,49 @@ describe("notebook shell view model", () => {
       cellId: "code-1",
       statusLabel: "In [7]",
     });
+    expect(viewModel.tracebackTargetsByExecutionId.get("exec-1")).toEqual({
+      cellId: "code-1",
+      label: "In [7]",
+    });
+  });
+
+  it("projects traceback execution ids to notebook cells", () => {
+    const targets = notebookViewCellsToTracebackTargets([
+      {
+        id: "markdown-1",
+        cellType: "markdown",
+        source: "# Intro",
+        language: null,
+        executionId: null,
+        executionCount: null,
+        outputs: [],
+        metadata: {},
+      },
+      {
+        id: "code-1",
+        cellType: "code",
+        source: "raise ValueError",
+        language: "python",
+        executionId: "exec-1",
+        executionCount: 4,
+        outputs: [],
+        metadata: {},
+      },
+      {
+        id: "code-2",
+        cellType: "code",
+        source: "print('pending')",
+        language: "python",
+        executionId: "exec-2",
+        executionCount: null,
+        outputs: [],
+        metadata: {},
+      },
+    ]);
+
+    expect([...targets.entries()]).toEqual([
+      ["exec-1", { cellId: "code-1", label: "In [4]" }],
+      ["exec-2", { cellId: "code-2" }],
+    ]);
   });
 });
