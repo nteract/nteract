@@ -228,9 +228,9 @@ UX:
   publish revisions.
 
 Network topology still matters. A public published notebook URL must reach the
-Worker so the explicit public ACL row can be checked. If an optional outer
-perimeter such as Cloudflare Access protects the entire hostname, it will block
-anonymous public viewers before the Worker sees the request.
+Worker so the explicit public ACL row can be checked. Host-level auth
+perimeters that block anonymous traffic before the Worker sees the request are
+not compatible with public viewer links.
 
 ## Display Names And Privacy
 

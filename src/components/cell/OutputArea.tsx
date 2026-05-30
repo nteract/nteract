@@ -84,8 +84,10 @@ function withSavedWidgetStateHint(
 
 const FOCUSED_OUTPUT_WELL_VIEWPORT_RATIO = 0.8;
 const MIN_OUTPUT_WELL_HEIGHT = 360;
+const DEFERRED_OUTPUT_PLACEHOLDER_HEIGHT = 96;
 const SIFT_VIEWPORT_TOP_INSET_PX = 96;
 const SIFT_VIEWPORT_BOTTOM_INSET_PX = 32;
+const DEFAULT_DEFERRED_ISOLATED_FRAME_ROOT_MARGIN = "1200px 0px";
 
 function siftFocusAccent(isDark: boolean, colorTheme?: string): string {
   if (colorTheme === "cream") {
@@ -112,6 +114,53 @@ function useOutputWellMaxHeight(viewportRatio: number): number {
   }, [viewportRatio]);
 
   return height;
+}
+
+function useDeferredIsolatedFrame({
+  enabled,
+  rootMargin,
+}: {
+  enabled: boolean;
+  rootMargin: string;
+}) {
+  const targetRef = useRef<HTMLDivElement | null>(null);
+  const [activated, setActivated] = useState(!enabled);
+
+  useEffect(() => {
+    if (!enabled) {
+      setActivated(true);
+    }
+  }, [enabled]);
+
+  useEffect(() => {
+    if (!enabled || activated) return;
+
+    if (typeof window === "undefined" || typeof window.IntersectionObserver === "undefined") {
+      setActivated(true);
+      return;
+    }
+
+    const target = targetRef.current;
+    if (!target) {
+      setActivated(true);
+      return;
+    }
+
+    const observer = new window.IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting || entry.intersectionRatio > 0)) {
+          setActivated(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin },
+    );
+
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [activated, enabled, rootMargin]);
+
+  return { activated, targetRef };
 }
 
 import type { JupyterOutput } from "./jupyter-output";
@@ -198,6 +247,18 @@ interface OutputAreaProps {
    * @default false
    */
   preloadIframe?: boolean;
+  /**
+   * Defer mounting isolated output frames until the output is near the
+   * viewport. Once mounted, the frame stays mounted so interactive outputs
+   * keep their internal state.
+   * @default false
+   */
+  deferIsolatedFrameUntilVisible?: boolean;
+  /**
+   * IntersectionObserver root margin used when
+   * `deferIsolatedFrameUntilVisible` is enabled.
+   */
+  deferredIsolatedFrameRootMargin?: string;
   /**
    * Callback when a link is clicked in isolated outputs.
    */
@@ -531,6 +592,8 @@ function OutputAreaSingle({
   priority = DEFAULT_PRIORITY,
   isolated = "auto",
   preloadIframe = false,
+  deferIsolatedFrameUntilVisible = false,
+  deferredIsolatedFrameRootMargin = DEFAULT_DEFERRED_ISOLATED_FRAME_ROOT_MARGIN,
   onLinkClick,
   onWidgetUpdate,
   searchQuery,
@@ -588,6 +651,13 @@ function OutputAreaSingle({
   // When preloading, we render the iframe even with no outputs (hidden)
   // This allows it to bootstrap ahead of time for instant rendering
   const showPreloadedIframe = preloadIframe && !collapsed;
+  const shouldDeferIsolatedFrame =
+    deferIsolatedFrameUntilVisible && shouldIsolate && !showPreloadedIframe && !collapsed;
+  const deferredIsolatedFrame = useDeferredIsolatedFrame({
+    enabled: shouldDeferIsolatedFrame,
+    rootMargin: deferredIsolatedFrameRootMargin,
+  });
+  const shouldMountIsolatedFrame = !shouldDeferIsolatedFrame || deferredIsolatedFrame.activated;
 
   // Frame name for dev-tools picker. `code-Out[N]-{cellId}` mirrors the
   // Jupyter `Out[N]` convention with the cell ID appended so the picker can
@@ -612,7 +682,10 @@ function OutputAreaSingle({
   const allowWheelBoundaryScroll =
     !focused && !shouldScrollPassthroughFrame && !shouldLockSiftWheelBoundary;
   const showSiftInteractionCue =
-    hasSiftOutputs && shouldUseScrollPassthroughFrame && !staticFrameInteractionActive;
+    shouldMountIsolatedFrame &&
+    hasSiftOutputs &&
+    shouldUseScrollPassthroughFrame &&
+    !staticFrameInteractionActive;
   const siftFrameAccent = siftFocusAccent(darkMode, colorTheme);
   const siftFrameStyle = hasSiftOutputs
     ? ({
@@ -622,6 +695,11 @@ function OutputAreaSingle({
           ? `0 0 0 2px ${siftFrameAccent}cc, 0 12px 30px ${siftFrameAccent}24`
           : undefined,
       } as React.CSSProperties)
+    : undefined;
+  const deferredIsolatedFramePlaceholderStyle = shouldDeferIsolatedFrame
+    ? {
+        minHeight: `${hasSiftOutputs ? MIN_OUTPUT_WELL_HEIGHT : DEFERRED_OUTPUT_PLACEHOLDER_HEIGHT}px`,
+      }
     : undefined;
 
   const hasCollapseControl = onToggleCollapse !== undefined;
@@ -678,6 +756,14 @@ function OutputAreaSingle({
       setStaticFrameInteractionActive(false);
     }
   }, []);
+
+  const setStaticFrameInteractionNode = useCallback(
+    (node: HTMLDivElement | null) => {
+      staticFrameInteractionRef.current = node;
+      deferredIsolatedFrame.targetRef.current = node;
+    },
+    [deferredIsolatedFrame.targetRef],
+  );
 
   // Handle messages from iframe, routing widget messages to comm bridge
   const handleIframeMessage = useCallback(
@@ -938,7 +1024,7 @@ function OutputAreaSingle({
           {/* Preloaded or active isolated frame */}
           {(shouldIsolate || showPreloadedIframe) && (
             <div
-              ref={staticFrameInteractionRef}
+              ref={setStaticFrameInteractionNode}
               className={cn(
                 shouldIsolate ? "relative outline-none transition-shadow" : "hidden",
                 hasSiftOutputs && "group/sift rounded-md overflow-hidden",
@@ -957,26 +1043,35 @@ function OutputAreaSingle({
               }
               onKeyDown={shouldUseScrollPassthroughFrame ? handleStaticFrameKeyDown : undefined}
             >
-              <IsolatedFrame
-                ref={frameRef}
-                name={frameName}
-                darkMode={darkMode}
-                colorTheme={colorTheme}
-                minHeight={24}
-                maxHeight={isolatedOutputWellMaxHeight}
-                autoHeight={shouldIsolate && !focused}
-                allowWheelBoundaryScroll={allowWheelBoundaryScroll}
-                scrollPassthrough={shouldScrollPassthroughFrame}
-                onReady={handleIsolatedFrameReady}
-                onLinkClick={onLinkClick}
-                onMouseDown={activateStaticFrameInteraction}
-                onWidgetUpdate={onWidgetUpdate}
-                onMessage={handleIframeMessage}
-                onError={handleIframeError}
-                onDiagnostic={onDiagnostic}
-                hostContext={hostContext}
-                outputDocumentUrl={hostContext?.nteract?.outputDocumentUrl}
-              />
+              {shouldMountIsolatedFrame ? (
+                <IsolatedFrame
+                  ref={frameRef}
+                  name={frameName}
+                  darkMode={darkMode}
+                  colorTheme={colorTheme}
+                  minHeight={24}
+                  maxHeight={isolatedOutputWellMaxHeight}
+                  autoHeight={shouldIsolate && !focused}
+                  allowWheelBoundaryScroll={allowWheelBoundaryScroll}
+                  scrollPassthrough={shouldScrollPassthroughFrame}
+                  onReady={handleIsolatedFrameReady}
+                  onLinkClick={onLinkClick}
+                  onMouseDown={activateStaticFrameInteraction}
+                  onWidgetUpdate={onWidgetUpdate}
+                  onMessage={handleIframeMessage}
+                  onError={handleIframeError}
+                  onDiagnostic={onDiagnostic}
+                  hostContext={hostContext}
+                  outputDocumentUrl={hostContext?.nteract?.outputDocumentUrl}
+                />
+              ) : (
+                <div
+                  aria-hidden="true"
+                  className="rounded-md"
+                  data-slot="isolated-frame-deferred"
+                  style={deferredIsolatedFramePlaceholderStyle}
+                />
+              )}
               {showSiftInteractionCue && (
                 <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-end rounded-b-md pb-[9px] pr-[84px] opacity-0 transition-opacity duration-150 group-hover/sift:opacity-100 group-focus-within/sift:opacity-100">
                   <SiftScrollHandoffCue

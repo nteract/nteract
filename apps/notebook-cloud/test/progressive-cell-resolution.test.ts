@@ -124,6 +124,74 @@ describe("cloud viewer progressive cell resolution", () => {
 
     assert.deepEqual(events, ["initial"]);
   });
+
+  it("limits async output resolution to top-down batches", async () => {
+    const gates = [deferred<void>(), deferred<void>(), deferred<void>()];
+    const events: string[] = [];
+
+    const resolution = resolveCellsProgressively(
+      [
+        blobBackedCodeCell("first", "sha256:first"),
+        blobBackedCodeCell("second", "sha256:second"),
+        blobBackedCodeCell("third", "sha256:third"),
+      ],
+      textBlobResolver({
+        "sha256:first": async () => {
+          events.push("fetch:first:start");
+          await gates[0].promise;
+          events.push("fetch:first:finish");
+          return "first output";
+        },
+        "sha256:second": async () => {
+          events.push("fetch:second:start");
+          await gates[1].promise;
+          events.push("fetch:second:finish");
+          return "second output";
+        },
+        "sha256:third": async () => {
+          events.push("fetch:third:start");
+          await gates[2].promise;
+          events.push("fetch:third:finish");
+          return "third output";
+        },
+      }),
+      "python",
+      createOutputResolutionCache(),
+      {
+        maxConcurrentAsyncCells: 2,
+        onInitialCells() {
+          events.push("initial");
+        },
+        onCellResolved(cell) {
+          events.push(`resolved:${cell.id}`);
+        },
+      },
+    );
+
+    await Promise.resolve();
+    assert.deepEqual(events, ["initial", "fetch:first:start", "fetch:second:start"]);
+
+    gates[1].resolve();
+    await waitForEvent(events, "fetch:third:start");
+    assert.deepEqual(events, [
+      "initial",
+      "fetch:first:start",
+      "fetch:second:start",
+      "fetch:second:finish",
+      "resolved:second",
+      "fetch:third:start",
+    ]);
+
+    gates[0].resolve();
+    gates[2].resolve();
+    const cells = await resolution;
+
+    assert.deepEqual(
+      cells.map((cell) => cell.outputs.length),
+      [1, 1, 1],
+    );
+    assert.ok(events.indexOf("fetch:third:start") > events.indexOf("resolved:second"));
+  });
 });
 
 function textBlobResolver(values: Record<string, string | (() => Promise<string>)>): BlobResolver {
@@ -139,6 +207,24 @@ function textBlobResolver(values: Record<string, string | (() => Promise<string>
   };
 }
 
+function blobBackedCodeCell(id: string, blob: string) {
+  return {
+    id,
+    cell_type: "code",
+    source: id,
+    outputs: [
+      {
+        output_id: `${id}-output`,
+        output_type: "display_data",
+        data: {
+          "text/plain": { blob },
+        },
+        metadata: {},
+      },
+    ],
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
@@ -147,4 +233,12 @@ function deferred<T>() {
     reject = promiseReject;
   });
   return { promise, resolve, reject };
+}
+
+async function waitForEvent(events: readonly string[], expected: string): Promise<void> {
+  for (let index = 0; index < 20; index += 1) {
+    if (events.includes(expected)) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.fail(`Timed out waiting for event ${expected}. Saw: ${events.join(", ")}`);
 }

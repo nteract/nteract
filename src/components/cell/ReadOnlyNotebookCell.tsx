@@ -28,6 +28,8 @@ export interface ReadOnlyNotebookCellProps {
   sourceClassName?: string;
   outputClassName?: string;
   lineWrapping?: boolean;
+  deferIsolatedFrameUntilVisible?: boolean;
+  deferredIsolatedFrameRootMargin?: string;
   resolveTracebackExecutionTarget?: TracebackExecutionResolver;
   onNavigateToTracebackCell?: TracebackCellNavigator;
 }
@@ -48,6 +50,8 @@ export function ReadOnlyNotebookCell({
   sourceClassName,
   outputClassName,
   lineWrapping = true,
+  deferIsolatedFrameUntilVisible,
+  deferredIsolatedFrameRootMargin,
   resolveTracebackExecutionTarget,
   onNavigateToTracebackCell,
 }: ReadOnlyNotebookCellProps) {
@@ -78,6 +82,8 @@ export function ReadOnlyNotebookCell({
         priority={priority}
         hostContext={hostContext}
         className={outputClassName}
+        deferIsolatedFrameUntilVisible={deferIsolatedFrameUntilVisible}
+        deferredIsolatedFrameRootMargin={deferredIsolatedFrameRootMargin}
         resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
         onNavigateToTracebackCell={onNavigateToTracebackCell}
       />

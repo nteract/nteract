@@ -7,7 +7,7 @@ import {
   openWebSocket,
   safeWebSocketUrl,
   sendBinaryFrame,
-} from "./hosted-access-smoke-ws.mjs";
+} from "./raw-websocket-client.mjs";
 import { assertWasmRoundtripAuthEnv, credentialedSmokeOrigin } from "./wasm-roundtrip-env.mjs";
 
 const baseUrl = process.env.NOTEBOOK_CLOUD_URL ?? "http://127.0.0.1:8787";
