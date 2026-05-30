@@ -550,9 +550,10 @@ async function routeSnapshot(
   if (!runtimeStateDocId) {
     return json({ error: "X-Runtime-State-Doc-Id header is required" }, 400);
   }
-  const runtimeKey = runtimeHeadsHash
-    ? runtimeStateSnapshotKey(runtimeStateDocId, runtimeHeadsHash)
-    : null;
+  if (!runtimeHeadsHash) {
+    return json({ error: "X-Runtime-Heads-Hash header is required" }, 400);
+  }
+  const runtimeKey = runtimeStateSnapshotKey(runtimeStateDocId, runtimeHeadsHash);
   await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
     httpMetadata: {
       contentType: request.headers.get("content-type") ?? "application/octet-stream",
@@ -565,33 +566,31 @@ async function routeSnapshot(
     },
   });
 
-  if (runtimeHeadsHash && runtimeKey) {
-    const runtimeObject = await env.NOTEBOOK_SNAPSHOTS.get(runtimeKey);
-    if (!runtimeObject) {
-      await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
-      return json(
-        {
-          error: "snapshot publish missing runtime-state snapshot",
-          runtime_heads_hash: runtimeHeadsHash,
-        },
-        424,
-      );
-    }
+  const runtimeObject = await env.NOTEBOOK_SNAPSHOTS.get(runtimeKey);
+  if (!runtimeObject) {
+    await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
+    return json(
+      {
+        error: "snapshot publish missing runtime-state snapshot",
+        runtime_heads_hash: runtimeHeadsHash,
+      },
+      424,
+    );
+  }
 
-    const validated = await validateSnapshotPair({
-      request,
-      env,
-      notebookId,
-      notebookHeadsHash: headsHash,
-      runtimeHeadsHash,
-      expectedRuntimeStateDocId: runtimeStateDocId,
-      notebookBytes: new Uint8Array(body),
-      runtimeStateBytes: new Uint8Array(await runtimeObject.arrayBuffer()),
-    });
-    if (!validated.ok) {
-      await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
-      return json(validated.body, validated.status);
-    }
+  const validated = await validateSnapshotPair({
+    request,
+    env,
+    notebookId,
+    notebookHeadsHash: headsHash,
+    runtimeHeadsHash,
+    expectedRuntimeStateDocId: runtimeStateDocId,
+    notebookBytes: new Uint8Array(body),
+    runtimeStateBytes: new Uint8Array(await runtimeObject.arrayBuffer()),
+  });
+  if (!validated.ok) {
+    await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
+    return json(validated.body, validated.status);
   }
 
   let revisionId: string;
