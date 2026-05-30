@@ -18,9 +18,9 @@ const stats = [
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
   {
     label: "current imports",
-    value: "46",
+    value: "58",
     detail:
-      "used shell toolbar, notebook rail, package headers, search, full cells, read-only cells, cell gutter, runtime dialogs and banners, theme, output area, expanded renderer, editor, and widget surfaces",
+      "used shell toolbar, notebook rail, package headers, search, full cells, read-only cells, cell gutter, runtime dialogs and banners, theme, output area, expanded renderer, editor, and expanded widget surfaces",
   },
 ];
 
@@ -142,11 +142,12 @@ const families = [
   },
   {
     family: "Widgets",
-    source: "src/components/widgets/**",
+    source:
+      "src/components/widgets/{widget-view,widget-store-context,widget-store}.tsx + src/components/widgets/controls/index.ts",
     target: "nteract widgets",
     status: "active",
     intent:
-      "WidgetView, WidgetStore, selected built-in controls, unsupported fallback, and static snapshots now render from comm-state fixtures.",
+      "WidgetView, WidgetStore, the current built-in controls registry, form, selection, numeric, status, and layout controls, unsupported fallback, and static snapshots now render from comm-state fixtures.",
   },
   {
     family: "Runtime decisions",

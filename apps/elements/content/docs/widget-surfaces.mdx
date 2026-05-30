@@ -5,9 +5,11 @@ description: Fixture-backed notebook widget components from nteract/nteract.
 
 import { WidgetSurfacesExample } from "@/components/widget-surfaces-example";
 
-Widgets are notebook output components. This page starts cataloging the current
+Widgets are notebook output components. This page catalogs the current
 `src/components/widgets` path with local comm-state fixtures, not a live kernel,
-iframe, sync engine, or generated WASM resolver.
+iframe, sync engine, or generated WASM resolver. The interactive examples import
+the production controls registry and render through `WidgetView`, so the page is
+tracking nteract-owned widget surfaces instead of page-local form stand-ins.
 
 <WidgetSurfacesExample />
 
@@ -16,4 +18,6 @@ iframe, sync engine, or generated WASM resolver.
 The live notebook receives widget state from `RuntimeStateDoc` through
 `SyncEngine.commChanges$`, then forwards it to isolated output frames over the
 comm bridge. The catalog keeps those host responsibilities outside the rendered
-component examples.
+component examples. Browser APIs, blob/DataView conversion, output-widget routing,
+controller/gamepad input, anywidget ESM loading, and generated WASM handoffs
+remain explicit adapter boundaries for later catalog slices.

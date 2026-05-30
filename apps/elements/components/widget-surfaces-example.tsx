@@ -11,25 +11,10 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
-import { ButtonWidget } from "@/components/widgets/controls/button-widget";
-import { CheckboxWidget } from "@/components/widgets/controls/checkbox-widget";
-import { DropdownWidget } from "@/components/widgets/controls/dropdown-widget";
-import { HTMLWidget } from "@/components/widgets/controls/html-widget";
-import { IntProgress } from "@/components/widgets/controls/int-progress";
-import { IntSlider } from "@/components/widgets/controls/int-slider";
-import { VBoxWidget } from "@/components/widgets/controls/vbox-widget";
-import { registerWidget } from "@/components/widgets/widget-registry";
+import "@/components/widgets/controls";
 import { WidgetStoreContext, useWidgetModels } from "@/components/widgets/widget-store-context";
 import { createWidgetStore, type WidgetStore } from "@/components/widgets/widget-store";
 import { WidgetView } from "@/components/widgets/widget-view";
-
-registerWidget("ButtonModel", ButtonWidget);
-registerWidget("CheckboxModel", CheckboxWidget);
-registerWidget("DropdownModel", DropdownWidget);
-registerWidget("HTMLModel", HTMLWidget);
-registerWidget("IntProgressModel", IntProgress);
-registerWidget("IntSliderModel", IntSlider);
-registerWidget("VBoxModel", VBoxWidget);
 
 type FixtureModel = {
   id: string;
@@ -135,6 +120,177 @@ const fixtureModels: FixtureModel[] = [
     },
   },
   {
+    id: "widget-region",
+    state: {
+      _model_name: "RadioButtonsModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "region",
+      index: 2,
+      _options_labels: ["North", "South", "West"],
+      disabled: false,
+    },
+  },
+  {
+    id: "widget-metric",
+    state: {
+      _model_name: "ToggleButtonsModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "metric",
+      index: 0,
+      _options_labels: ["MAE", "MAPE", "RMSE"],
+      tooltips: [
+        "Mean absolute error",
+        "Mean absolute percentage error",
+        "Root mean squared error",
+      ],
+      disabled: false,
+    },
+  },
+  {
+    id: "widget-horizon",
+    state: {
+      _model_name: "FloatSliderModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "horizon",
+      value: 6.5,
+      min: 1,
+      max: 12,
+      step: 0.5,
+      readout: true,
+      readout_format: ".1f",
+      orientation: "horizontal",
+      disabled: false,
+    },
+  },
+  {
+    id: "widget-confidence",
+    state: {
+      _model_name: "FloatRangeSliderModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "confidence",
+      value: [0.12, 0.84],
+      min: 0,
+      max: 1,
+      step: 0.01,
+      readout: true,
+      readout_format: ".2f",
+      orientation: "horizontal",
+      disabled: false,
+    },
+  },
+  {
+    id: "widget-feature-picker",
+    state: {
+      _model_name: "SelectMultipleModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "features",
+      index: [0, 2, 3],
+      _options_labels: ["month", "region", "segment", "discount"],
+      rows: 4,
+      disabled: false,
+    },
+  },
+  {
+    id: "widget-sku",
+    state: {
+      _model_name: "ComboboxModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "sku",
+      value: "SKU-2048",
+      options: ["SKU-1024", "SKU-2048", "SKU-4096"],
+      placeholder: "Select SKU",
+      ensure_option: false,
+      continuous_update: true,
+      disabled: false,
+    },
+  },
+  {
+    id: "widget-notes",
+    state: {
+      _model_name: "TextareaModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "notes",
+      value: "Holiday lift is excluded from the baseline forecast.",
+      rows: 3,
+      placeholder: "Fixture notebook note",
+      continuous_update: false,
+      disabled: false,
+    },
+  },
+  {
+    id: "widget-report-date",
+    state: {
+      _model_name: "DatePickerModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "report date",
+      value: { year: 2026, month: 4, date: 29 },
+      min: { year: 2026, month: 0, date: 1 },
+      max: { year: 2026, month: 11, date: 31 },
+      disabled: false,
+    },
+  },
+  {
+    id: "widget-accent",
+    state: {
+      _model_name: "ColorPickerModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "accent",
+      value: "#0ea5e9",
+      concise: false,
+      disabled: false,
+    },
+  },
+  {
+    id: "widget-valid",
+    state: {
+      _model_name: "ValidModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "validated",
+      value: true,
+      readout: "missing columns",
+    },
+  },
+  {
+    id: "widget-control-note",
+    state: {
+      _model_name: "LabelModel",
+      _model_module: "@jupyter-widgets/controls",
+      value: "Control widgets render through the same registry path as live comms.",
+    },
+  },
+  {
+    id: "widget-control-strip",
+    state: {
+      _model_name: "HBoxModel",
+      _model_module: "@jupyter-widgets/controls",
+      children: [
+        "IPY_MODEL_widget-report-date",
+        "IPY_MODEL_widget-accent",
+        "IPY_MODEL_widget-valid",
+      ],
+      box_style: "success",
+    },
+  },
+  {
+    id: "widget-controls-suite",
+    state: {
+      _model_name: "VBoxModel",
+      _model_module: "@jupyter-widgets/controls",
+      children: [
+        "IPY_MODEL_widget-control-note",
+        "IPY_MODEL_widget-region",
+        "IPY_MODEL_widget-metric",
+        "IPY_MODEL_widget-horizon",
+        "IPY_MODEL_widget-confidence",
+        "IPY_MODEL_widget-feature-picker",
+        "IPY_MODEL_widget-sku",
+        "IPY_MODEL_widget-notes",
+        "IPY_MODEL_widget-control-strip",
+      ],
+      box_style: "success",
+    },
+  },
+  {
     id: "widget-unknown",
     state: {
       _model_name: "CustomResearchWidgetModel",
@@ -164,6 +320,28 @@ const renderedWidgets = [
     name: "IntProgress",
     source: "src/components/widgets/controls/int-progress.tsx",
     role: "ProgressStyleModel reference resolution through IPY_MODEL state.",
+  },
+  {
+    name: "Form controls",
+    source:
+      "src/components/widgets/controls/{textarea,radio-buttons,toggle-buttons,combobox,select-multiple}-widget.tsx",
+    role: "Text entry and selection traitlets update local fixture state through the production store contract.",
+  },
+  {
+    name: "Numeric controls",
+    source: "src/components/widgets/controls/{float-slider,float-range-slider}.tsx",
+    role: "Float widgets exercise the same readout formatting and range update paths as live comms.",
+  },
+  {
+    name: "Status controls",
+    source:
+      "src/components/widgets/controls/{date-picker-widget,color-picker,valid-widget,label-widget}.tsx",
+    role: "Date, color, validation, and label models render from ordinary saved widget state.",
+  },
+  {
+    name: "HBoxWidget",
+    source: "src/components/widgets/controls/hbox-widget.tsx",
+    role: "Horizontal container resolves child model references and shares the WidgetView nesting path.",
   },
   {
     name: "VBoxWidget",
@@ -350,6 +528,19 @@ export function WidgetSurfacesExample() {
             >
               <WidgetView modelId="widget-dashboard" />
             </div>
+            <div
+              className="rounded-lg border border-fd-border bg-fd-background p-4"
+              data-testid="widget-control-suite"
+            >
+              <div className="mb-3">
+                <h3 className="text-sm font-semibold">Built-in controls suite</h3>
+                <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
+                  These models come from the current controls registry and render through
+                  WidgetView, not page-local form components.
+                </p>
+              </div>
+              <WidgetView modelId="widget-controls-suite" />
+            </div>
             <div className="grid gap-3 md:grid-cols-2">
               <div className="rounded-lg border border-fd-border bg-fd-background p-4">
                 <h3 className="text-sm font-semibold">Unsupported model fallback</h3>
@@ -405,9 +596,9 @@ export function WidgetSurfacesExample() {
           <div>
             <h2 className="text-sm font-semibold">Next widget adapters</h2>
             <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
-              Image, audio, video, FileUpload, OutputModel, ipycanvas, and anywidget examples should
-              be added once the catalog has isolated adapters for blob URLs, DataViews, rich output
-              routing, and ESM module loading.
+              Image, audio, video, FileUpload, OutputModel, controller, ipycanvas, and anywidget
+              examples should be added once the catalog has isolated adapters for blob URLs,
+              DataViews, rich output routing, browser APIs, and ESM module loading.
             </p>
           </div>
         </div>
