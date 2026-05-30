@@ -4,7 +4,10 @@ import { SiftTable, type TableData, type TableEngineState } from "@nteract/sift"
 import {
   AlertTriangle,
   Braces,
+  Database,
+  FileAudio,
   FileImage,
+  FileText,
   FileWarning,
   ListFilter,
   Table2,
@@ -12,11 +15,16 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-output";
+import { AudioOutput } from "@/components/outputs/audio-output";
 import { ImageOutput } from "@/components/outputs/image-output";
+import { JavaScriptOutput } from "@/components/outputs/javascript-output";
 import { JsonOutput } from "@/components/outputs/json-output";
+import { MathOutput } from "@/components/outputs/math-output";
 import { selectMimeType } from "@/components/outputs/mime-priority";
 import { isSafeForMainDom } from "@/components/outputs/safe-mime-types";
+import { SvgOutput } from "@/components/outputs/svg-output";
 import { TracebackOutput } from "@/components/outputs/traceback-output";
+import { OutputArea, type JupyterOutput } from "@/components/cell/OutputArea";
 
 const svgFigure = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 180">
   <rect width="420" height="180" rx="16" fill="#f8fafc"/>
@@ -30,6 +38,18 @@ const svgFigure = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 180"
 </svg>`;
 
 const imageDataUrl = `data:image/svg+xml;utf8,${encodeURIComponent(svgFigure)}`;
+
+const svgOutputFixture = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 180">
+  <rect width="420" height="180" rx="16" fill="#eef2ff"/>
+  <circle cx="92" cy="92" r="36" fill="#3b82f6" opacity="0.85"/>
+  <circle cx="174" cy="72" r="44" fill="#10b981" opacity="0.82"/>
+  <circle cx="280" cy="98" r="52" fill="#f59e0b" opacity="0.78"/>
+  <path d="M56 142 H360" stroke="#475569" stroke-width="3" stroke-linecap="round"/>
+  <text x="56" y="38" fill="#1e293b" font-family="ui-sans-serif, system-ui" font-size="16" font-weight="700">svg-output fixture</text>
+</svg>`;
+
+const silentAudioDataUrl =
+  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=";
 
 const jsonFixture = {
   run: {
@@ -233,6 +253,28 @@ const siftData: TableData = {
   ],
 };
 
+const siftParquetUrl =
+  "https://huggingface.co/datasets/mstz/heart_failure/resolve/refs%2Fconvert%2Fparquet/death/train/0000.parquet";
+
+const siftUrlMilestones = [
+  {
+    phase: "Resolve",
+    value: "mstz/heart_failure - death/train/0000.parquet",
+  },
+  {
+    phase: "Fetch",
+    value: "12 KB parquet source from HuggingFace",
+  },
+  {
+    phase: "Decode boundary",
+    value: "generated sift-wasm load_parquet_row_group",
+  },
+  {
+    phase: "Render",
+    value: "SiftTable mounted with fixture TableData",
+  },
+];
+
 const tracebackFixture = {
   ename: "ValueError",
   evalue: "feature matrix contains null values",
@@ -276,6 +318,36 @@ const tracebackFixture = {
   ],
 };
 
+const outputAreaFixtures: JupyterOutput[] = [
+  {
+    output_id: "output-area-stream",
+    output_type: "stream",
+    name: "stdout",
+    text: "loaded 22,767 rows\nvalidated fold 02 with mae=8.42\n",
+  },
+  {
+    output_id: "output-area-html",
+    output_type: "display_data",
+    data: {
+      "text/html": "<strong>unsafe HTML fixture</strong>",
+      "text/plain": "unsafe HTML fixture",
+    },
+    metadata: {},
+  },
+  {
+    output_id: "output-area-parquet",
+    output_type: "display_data",
+    data: {
+      "application/vnd.apache.parquet": {
+        url: siftParquetUrl,
+        rows: siftData.rowCount,
+      },
+      "text/plain": "heart_failure parquet fixture",
+    },
+    metadata: {},
+  },
+];
+
 const mimeFixtures = [
   {
     label: "Rich traceback beats text",
@@ -309,6 +381,11 @@ const mimeFixtures = [
 
 const renderedPieces = [
   {
+    name: "OutputArea",
+    source: "src/components/cell/OutputArea.tsx",
+    note: "Notebook output lane composition, collapse control, DOM-vs-isolated segmentation, and search count plumbing rendered with static outputs.",
+  },
+  {
     name: "AnsiStreamOutput",
     source: "src/components/outputs/ansi-output.tsx",
     note: "stdout/stderr stream rendering, long-output preview, and ANSI color classes.",
@@ -329,6 +406,26 @@ const renderedPieces = [
     note: "Notebook media frame with data URL and preload handling.",
   },
   {
+    name: "MathOutput",
+    source: "src/components/outputs/math-output.tsx",
+    note: "KaTeX-backed text/latex rendering that is safe in the main output lane.",
+  },
+  {
+    name: "SvgOutput",
+    source: "src/components/outputs/svg-output.tsx",
+    note: "SVG insertion and responsive sizing for vector notebook figures.",
+  },
+  {
+    name: "AudioOutput",
+    source: "src/components/outputs/audio-output.tsx",
+    note: "Notebook audio player for data URLs, blob URLs, and base64 payloads.",
+  },
+  {
+    name: "JavaScriptOutput",
+    source: "src/components/outputs/javascript-output.tsx",
+    note: "Main-DOM safety fallback for JavaScript output; execution remains isolated only.",
+  },
+  {
     name: "TracebackOutput",
     source: "src/components/outputs/traceback-output.tsx",
     note: "nteract-owned structured traceback renderer with source context and copy affordance.",
@@ -336,20 +433,15 @@ const renderedPieces = [
   {
     name: "SiftTable",
     source: "packages/sift/src/react.tsx",
-    note: "nteract-owned Arrow/parquet table UI rendered here with static TableData.",
+    note: "nteract-owned Arrow/parquet table UI rendered here with static TableData and a fixture-backed URL handoff.",
   },
 ];
 
 const adapterBoundaries = [
   {
-    name: "OutputArea",
-    reason:
-      "Owns output focus, scroll handoff, iframe sizing, search highlighting, and widget bridge wiring.",
-  },
-  {
     name: "IsolatedFrame",
     reason:
-      "Required for HTML, markdown with raw HTML, SVG insertion, JavaScript, Plotly, Vega, and GeoJSON plugin surfaces.",
+      "Required for HTML, markdown with raw HTML, executable JavaScript, Plotly, Vega, and GeoJSON plugin surfaces.",
   },
   {
     name: "Widget output",
@@ -357,9 +449,9 @@ const adapterBoundaries = [
       "Needs fixture-backed WidgetStore and saved widget state before controls can be shown without kernel comm state.",
   },
   {
-    name: "Sift URL loader",
+    name: "Generated Sift WASM decode",
     reason:
-      "Parquet and Arrow URL sources need generated sift-wasm glue and a served WASM asset; this catalog uses TableData until the docs app owns that asset path.",
+      "Parquet and Arrow URL bytes still need generated sift-wasm glue and a served WASM asset; this catalog shows the URL handoff with decoded TableData until the docs app owns that asset path.",
   },
 ];
 
@@ -397,6 +489,9 @@ function RendererCard({
 
 export function OutputRenderersExample() {
   const [siftState, setSiftState] = useState<TableEngineState | null>(null);
+  const [siftUrlState, setSiftUrlState] = useState<TableEngineState | null>(null);
+  const [outputAreaCollapsed, setOutputAreaCollapsed] = useState(false);
+  const [outputAreaMatchCount, setOutputAreaMatchCount] = useState(0);
 
   return (
     <div className="not-prose space-y-6" data-testid="output-renderers-example">
@@ -406,9 +501,9 @@ export function OutputRenderersExample() {
           <div>
             <h2 className="text-sm font-semibold">Output fixture adapter</h2>
             <p className="mt-1 text-xs leading-5">
-              These examples render current output components directly with static nbformat-like
-              fixtures. The iframe and widget paths stay documented as adapter boundaries until the
-              docs app has a runtime-free isolation fixture.
+              These examples render current output components with static nbformat-like fixtures.
+              OutputArea uses the docs isolated-frame adapter for iframe lanes, while widget comms,
+              plugin injection, and generated WASM stay explicit adapter boundaries.
             </p>
           </div>
         </div>
@@ -447,6 +542,44 @@ export function OutputRenderersExample() {
         </RendererCard>
 
         <RendererCard
+          title="Math output"
+          source="src/components/outputs/math-output.tsx"
+          icon={Braces}
+        >
+          <div className="rounded-md border border-fd-border bg-fd-background p-3">
+            <MathOutput content="$$\\operatorname{MAE}=\\frac{1}{n}\\sum_{i=1}^{n}|y_i-\\hat{y}_i|=8.42$$" />
+          </div>
+        </RendererCard>
+
+        <RendererCard
+          title="SVG output"
+          source="src/components/outputs/svg-output.tsx"
+          icon={FileImage}
+        >
+          <div className="rounded-md border border-fd-border bg-fd-background p-3">
+            <SvgOutput data={svgOutputFixture} />
+          </div>
+        </RendererCard>
+
+        <RendererCard
+          title="Audio output"
+          source="src/components/outputs/audio-output.tsx"
+          icon={FileAudio}
+        >
+          <div className="rounded-md border border-fd-border bg-fd-background p-3">
+            <AudioOutput data={silentAudioDataUrl} mediaType="audio/wav" />
+          </div>
+        </RendererCard>
+
+        <RendererCard
+          title="JavaScript output boundary"
+          source="src/components/outputs/javascript-output.tsx"
+          icon={FileText}
+        >
+          <JavaScriptOutput code="element.textContent = 'executed in isolated iframe only';" />
+        </RendererCard>
+
+        <RendererCard
           title="Error fallback"
           source="src/components/outputs/ansi-output.tsx"
           icon={AlertTriangle}
@@ -464,6 +597,56 @@ export function OutputRenderersExample() {
       </section>
 
       <RendererCard
+        title="Output area lanes"
+        source="src/components/cell/OutputArea.tsx"
+        icon={ListFilter}
+      >
+        <div className="space-y-3" data-testid="output-area-lanes-surface">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_260px]">
+            <div className="rounded-md border border-fd-border bg-fd-background p-3">
+              <div className="text-xs font-medium text-fd-muted-foreground">
+                Static output sequence
+              </div>
+              <div className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+                Stream output stays in the document lane. HTML and parquet split into the docs
+                isolated-frame adapter, matching the production lane policy without loading a
+                runtime iframe bundle.
+              </div>
+            </div>
+            <div className="rounded-md border border-fd-border bg-fd-background p-3">
+              <div className="text-xs font-medium text-fd-muted-foreground">Search fixture</div>
+              <div className="mt-2 font-mono text-xs text-fd-foreground">
+                query=fold · matches={outputAreaMatchCount}
+              </div>
+              <button
+                type="button"
+                className="mt-3 rounded-md border border-fd-border px-2 py-1 text-xs font-medium text-fd-foreground transition-colors hover:bg-fd-muted"
+                onClick={() => setOutputAreaCollapsed((value) => !value)}
+              >
+                {outputAreaCollapsed ? "Show outputs" : "Collapse outputs"}
+              </button>
+            </div>
+          </div>
+          <div className="rounded-md border border-fd-border bg-background py-3">
+            <OutputArea
+              outputs={outputAreaFixtures}
+              cellId="elements-output-area"
+              executionCount={12}
+              collapsed={outputAreaCollapsed}
+              onToggleCollapse={() => setOutputAreaCollapsed((value) => !value)}
+              searchQuery="fold"
+              onSearchMatchCount={setOutputAreaMatchCount}
+              hostContext={{
+                nteract: {
+                  colorTheme: "classic",
+                },
+              }}
+            />
+          </div>
+        </div>
+      </RendererCard>
+
+      <RendererCard
         title="Rich traceback"
         source="src/components/outputs/traceback-output.tsx"
         icon={FileWarning}
@@ -479,13 +662,76 @@ export function OutputRenderersExample() {
           <div className="grid gap-2 text-xs text-fd-muted-foreground md:grid-cols-[minmax(0,1fr)_auto]">
             <div>
               Static TableData mirrors the renderer handoff after parquet/Arrow bytes have been
-              decoded. The production URL path is still tracked as an adapter boundary.
+              decoded. The generated WASM decode path is still tracked as an adapter boundary.
             </div>
             <div className="font-mono">
               {siftState
                 ? `${siftState.filteredCount}/${siftState.totalCount} rows`
                 : `${siftData.rowCount}/${siftData.rowCount} rows`}
             </div>
+          </div>
+        </div>
+      </RendererCard>
+
+      <RendererCard
+        title="Sift parquet URL handoff"
+        source="packages/sift/src/react.tsx"
+        icon={Database}
+      >
+        <div className="space-y-4" data-testid="sift-parquet-url-surface">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_280px]">
+            <div className="rounded-md border border-fd-border bg-fd-background p-3">
+              <div className="text-xs font-medium text-fd-muted-foreground">
+                HuggingFace parquet source
+              </div>
+              <a
+                href={siftParquetUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-2 block break-words font-mono text-xs leading-5 text-fd-foreground [overflow-wrap:anywhere]"
+              >
+                {siftParquetUrl}
+              </a>
+            </div>
+            <div className="rounded-md border border-fd-border bg-fd-background p-3">
+              <div className="text-xs font-medium text-fd-muted-foreground">Catalog source</div>
+              <div className="mt-2 font-mono text-xs text-fd-foreground">
+                source.kind = table-data
+              </div>
+              <div className="mt-1 text-xs leading-5 text-fd-muted-foreground">
+                The URL is real; the docs surface stays runtime-free by rendering the decoded table
+                fixture.
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-2 md:grid-cols-4">
+            {siftUrlMilestones.map((milestone) => (
+              <div
+                key={milestone.phase}
+                className="rounded-md border border-fd-border bg-fd-background p-3"
+              >
+                <div className="text-xs font-semibold">{milestone.phase}</div>
+                <div className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+                  {milestone.value}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="h-[320px] min-w-0 overflow-hidden rounded-md border border-fd-border bg-fd-background">
+            <SiftTable source={{ kind: "table-data", data: siftData }} onChange={setSiftUrlState} />
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-fd-muted-foreground">
+            <span>
+              This keeps the visible renderer faithful to the Sift UI while keeping network, blob,
+              and generated WASM concerns outside the docs runtime.
+            </span>
+            <span className="font-mono">
+              {siftUrlState
+                ? `${siftUrlState.filteredCount}/${siftUrlState.totalCount} rows`
+                : `${siftData.rowCount}/${siftData.rowCount} rows`}
+            </span>
           </div>
         </div>
       </RendererCard>

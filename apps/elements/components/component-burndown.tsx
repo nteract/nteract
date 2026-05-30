@@ -18,9 +18,9 @@ const stats = [
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
   {
     label: "current imports",
-    value: "39",
+    value: "44",
     detail:
-      "used shell toolbar, package headers, search, full cells, read-only cells, cell gutter, runtime dialogs and banners, theme, renderer, editor, and widget surfaces",
+      "used shell toolbar, package headers, search, full cells, read-only cells, cell gutter, runtime dialogs and banners, theme, output area, expanded renderer, editor, and widget surfaces",
   },
 ];
 
@@ -132,11 +132,12 @@ const families = [
   },
   {
     family: "Outputs",
-    source: "src/components/outputs/** + packages/sift/src/react.tsx",
+    source:
+      "src/components/cell/OutputArea.tsx + src/components/outputs/** + packages/sift/src/react.tsx",
     target: "nteract renderers",
     status: "active",
     intent:
-      "AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, TracebackOutput, MIME priority, and SiftTable now render from fixtures; Sift parquet/Arrow URL loading remains an explicit WASM asset adapter boundary.",
+      "OutputArea lane composition, AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, MathOutput, SvgOutput, AudioOutput, JavaScriptOutput, TracebackOutput, MIME priority, SiftTable, and a fixture-backed Sift parquet URL handoff now render from fixtures; production iframe bootstrapping, plugin-backed HTML/Plotly/Vega/GeoJSON, widget comms, and generated Sift WASM decoding remain explicit adapter boundaries.",
   },
   {
     family: "Widgets",
