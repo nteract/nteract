@@ -4,8 +4,6 @@ import tls from "node:tls";
 
 import { FrameType } from "runtimed";
 
-import { webSocketUpgradeRequestHeaders } from "./hosted-access-smoke-env.mjs";
-
 export async function clientForSocket(socket, safeUrl) {
   const queue = [];
   const waiters = [];
@@ -139,28 +137,31 @@ export function safeWebSocketUrl(url) {
   return safe.href;
 }
 
-export async function openWebSocket(url, { accessToken, origin, protocols = [] } = {}) {
+export async function openWebSocket(
+  url,
+  { origin, protocols = [], headers: extraHeaders = {} } = {},
+) {
   const target = new URL(url);
   const key = randomBytes(16).toString("base64");
   const socket = await openTcpSocket(target);
   const requestHeaders = webSocketUpgradeRequestHeaders(target, {
     key,
     origin,
-    accessToken,
     protocols,
+    headers: extraHeaders,
   });
   socket.write(`${requestHeaders.join("\r\n")}\r\n\r\n`);
 
-  const { headers, leftover } = await readUpgradeResponse(socket);
+  const { headers: responseHeaders, leftover } = await readUpgradeResponse(socket);
   const expectedAccept = createHash("sha1")
     .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
     .digest("base64");
   assert(
-    headers.statusCode === 101,
-    `WebSocket upgrade failed with HTTP ${headers.statusCode}: ${headers.bodyPreview}`,
+    responseHeaders.statusCode === 101,
+    `WebSocket upgrade failed with HTTP ${responseHeaders.statusCode}: ${responseHeaders.bodyPreview}`,
   );
   assert(
-    headers.fields.get("sec-websocket-accept") === expectedAccept,
+    responseHeaders.fields.get("sec-websocket-accept") === expectedAccept,
     "WebSocket upgrade returned an invalid Sec-WebSocket-Accept header",
   );
 
@@ -302,6 +303,32 @@ export class RawWebSocketClient {
 
 export function fingerprintPrincipal(principal) {
   return createHash("sha256").update(principal).digest("hex").slice(0, 16);
+}
+
+export function webSocketUpgradeRequestHeaders(
+  target,
+  { key, origin, protocols = [], headers = {} } = {},
+) {
+  const requestHeaders = [
+    `GET ${target.pathname}${target.search} HTTP/1.1`,
+    `Host: ${target.host}`,
+    "Upgrade: websocket",
+    "Connection: Upgrade",
+    `Sec-WebSocket-Key: ${key}`,
+    "Sec-WebSocket-Version: 13",
+  ];
+  if (origin) {
+    requestHeaders.push(`Origin: ${origin}`);
+  }
+  for (const [name, value] of Object.entries(headers)) {
+    if (value !== undefined && value !== null) {
+      requestHeaders.push(`${name}: ${value}`);
+    }
+  }
+  if (protocols.length > 0) {
+    requestHeaders.push(`Sec-WebSocket-Protocol: ${protocols.join(", ")}`);
+  }
+  return requestHeaders;
 }
 
 function openTcpSocket(url) {

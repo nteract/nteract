@@ -159,10 +159,9 @@ field:
 
 Do not expose client secrets, access tokens, refresh tokens, or raw JWT claims.
 
-## Not The Target Path
+## Avoid Edge-Only Login
 
-Cloudflare Access is not the default for this demo. It remains an optional
-outer perimeter for deployments that deliberately want Access cookies/assertions
-and accept the extra product/configuration layer. A fully Access-protected host
-also blocks anonymous public viewers at the edge unless bypass rules are added,
-which conflicts with public published notebook URLs.
+Do not put the login decision in a host-level edge perimeter for this demo. The
+notebook host must be able to validate OIDC credentials directly, authorize
+public viewer links through the room ACL, and let authenticated users fall back
+to public read when they do not have editor permissions.

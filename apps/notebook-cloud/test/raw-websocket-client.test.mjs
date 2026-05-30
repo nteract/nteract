@@ -10,9 +10,9 @@ import {
   decodeFrame,
   fingerprintPrincipal,
   safeWebSocketUrl,
-} from "../scripts/hosted-access-smoke-ws.mjs";
+} from "../scripts/raw-websocket-client.mjs";
 
-describe("hosted Access smoke WebSocket helpers", () => {
+describe("raw WebSocket client helpers", () => {
   it("redacts token-shaped query values without skipping later parameters", () => {
     const url = new URL(
       "wss://cloud.test/n/demo/sync?token=eyJowner&session=eyJsession&plain=ok&dev_token=secret",
@@ -71,7 +71,7 @@ describe("hosted Access smoke WebSocket helpers", () => {
     const frame = await decodeFrame(bytes);
 
     assert.equal(frame.json.type, "cloud_room_ready");
-    assert.equal(fingerprintPrincipal("user:cloudflare-access:access-user-123").length, 16);
+    assert.equal(fingerprintPrincipal("user:anaconda:alice").length, 16);
   });
 });
 

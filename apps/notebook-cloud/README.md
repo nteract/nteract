@@ -1,6 +1,6 @@
 # nteract notebook cloud prototype
 
-This app is a Cloudflare Worker prototype for hosted nteract notebook rooms. It is intentionally small: the Worker authenticates dev credentials, direct OIDC browser sessions, Anaconda API-key publishing requests, optional Cloudflare Access credentials, or anonymous viewer connections, authorizes the principal through the D1 room ACL, stamps a trusted `<principal>/<operator>` actor label, and routes `/n/:notebookId/sync` to a Durable Object keyed by notebook id.
+This app is a Cloudflare Worker prototype for hosted nteract notebook rooms. It is intentionally small: the Worker authenticates dev credentials, direct OIDC browser sessions, Anaconda API-key publishing requests, or anonymous viewer connections, authorizes the principal through the D1 room ACL, stamps a trusted `<principal>/<operator>` actor label, and routes `/n/:notebookId/sync` to a Durable Object keyed by notebook id.
 
 The current Durable Object does not host kernels. It owns a `runtimed-wasm` room host for the notebook's `NotebookDoc` + `RuntimeStateDoc`, syncs peers with typed-frame v4, rejects unauthorized Automerge changes before mutating the room, checkpoints the materialized document pair in Durable Object storage, rewrites canonical CBOR presence through the shared helper, and stores bounded frame metadata for sync frames that actually change a materialized document. Viewer-scope peers use the normal sync exchange so they can materialize live room updates, while the room host uses read-only peer state as a protocol hint and still rejects any viewer-authored changes explicitly. No-op read-only sync control frames are acknowledged and delivered as protocol traffic, but they are not persisted as room-event history. Editor-scope live `NotebookDoc` writes are deliberately limited to existing markdown-cell source edits in this prototype; code cells and structural document changes remain read-only unless the connection has owner scope. Runtime peers use a separate `RuntimeStatePeerHandle` authoring surface: they can sync kernel lifecycle, widget comm topology, output routing, and progress/output state for room-accepted executions into `RuntimeStateDoc`, but they cannot create execution intent, edit `NotebookDoc`, rewrite trust/environment/path/project metadata, or acquire the frontend notebook editing API.
 
@@ -242,111 +242,6 @@ X-Notebook-Cloud-Auth-Provider: anaconda-api-key
 
 See `docs/architecture/hosted-direct-oidc-demo-runbook.md`.
 
-## Optional Cloudflare Access auth
-
-This is an implemented prototype path, but it is not the intended default
-production path. The architecture points notebook-cloud at direct OIDC on
-`preview.runt.run`, reusing the retired `runtimed/intheloop` Anaconda stage
-OIDC lane.
-
-When `NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN` and `NOTEBOOK_CLOUD_ACCESS_AUD`
-are configured, the Worker can authenticate Cloudflare Access/OIDC-style JWTs
-before running the D1 ACL lookup. Tokens are accepted from:
-
-- `Cf-Access-Jwt-Assertion` for Cloudflare Access-protected requests
-- `CF-Access-Token` for CLI/API requests using `cloudflared access token`
-- `Authorization: Bearer <jwt>` for native/system clients
-- WebSocket subprotocol `nteract-access-token.<base64url-jwt>` for browser
-  WebSockets that cannot set custom headers
-- `CF_Authorization` cookie as a browser fallback
-
-URL-carried Access tokens are intentionally ignored. The JWT must validate with
-RS256 against `https://<team-domain>/cdn-cgi/access/certs`, with `iss` matching
-the team domain and `aud` matching `NOTEBOOK_CLOUD_ACCESS_AUD`. The resulting
-principal is `user:cloudflare-access:<sub>`, and the requested `scope` is still
-only a request: the room ACL decides whether that principal may enter as
-`viewer`, `editor`, `runtime_peer`, or `owner`.
-
-When Cloudflare Access forwards `Cf-Access-Jwt-Assertion` to the Worker, that
-edge assertion is authoritative at the origin. Client-carried header credentials
-such as `CF-Access-Token` or `Authorization: Bearer` are ignored for Worker
-identity selection on that request. Browser-visible Access token subprotocols
-remain mutually exclusive with forwarded assertions and are rejected if both are
-present.
-
-`GET /api/health` includes a non-secret
-`auth.cloudflare_access.status` readiness field. Expect `configured` for an
-Access-backed deployment; `partial` means exactly one of
-`NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN` or `NOTEBOOK_CLOUD_ACCESS_AUD` is missing.
-
-The Access principal namespace names the authority validated by the Worker:
-`user:cloudflare-access:<encoded-sub>`. Access `email` and `name` claims are
-stamped as display/audit metadata on the trusted room connection; they are not
-used as ACL subjects. The Durable Object receives provider, transport,
-principal namespace, display name, and email only through Worker-stamped
-trusted headers, and the `cloud_room_ready` control frame may expose that
-non-secret metadata to clients.
-
-The Worker treats same-origin notebook pages as allowed WebSocket origins by
-default. Set `NOTEBOOK_CLOUD_ALLOWED_ORIGINS` on Access-backed browser
-deployments to a comma-separated list of additional notebook application
-origins that may open `/n/:id/sync`, for example:
-
-```text
-NOTEBOOK_CLOUD_ALLOWED_ORIGINS=https://notebooks.example.com
-```
-
-Do not include the renderer asset origin in this list. It serves public
-build-time sidecars, not authenticated notebook room traffic.
-
-Access assertion-backed and cookie-backed WebSocket upgrades must always send an
-allowed `Origin`. Browser-visible credential subprotocols also require
-`Origin`, because those credentials are available to page JavaScript.
-Header-authenticated native and CLI clients may omit `Origin`; if they do send
-one, it must match the Worker origin or an entry in
-`NOTEBOOK_CLOUD_ALLOWED_ORIGINS`. The hosted Access smoke sends
-`NOTEBOOK_CLOUD_ACCESS_ORIGIN` by default so the browser-compatible path is
-exercised even though the raw smoke connection uses `CF-Access-Token`.
-
-The hosted Access smoke uses a real Access JWT from `cloudflared`, grants
-principal ACL rows, sends real Automerge frames, and verifies that a granted
-viewer sees owner/editor markdown edits:
-
-```bash
-cloudflared access login https://<notebook-host>
-export NOTEBOOK_CLOUD_ACCESS_JWT="$(cloudflared access token -app=https://<notebook-host>)"
-
-NOTEBOOK_CLOUD_URL=https://<notebook-host> \
-NOTEBOOK_CLOUD_ACCESS_JWT="$NOTEBOOK_CLOUD_ACCESS_JWT" \
-pnpm --dir apps/notebook-cloud smoke:hosted:access:preflight
-
-cargo xtask wasm runtimed --skip-renderer-plugins
-NOTEBOOK_CLOUD_URL=https://<notebook-host> \
-NOTEBOOK_CLOUD_ACCESS_ORIGIN=https://<notebook-host> \
-NOTEBOOK_CLOUD_ACCESS_NOTEBOOK_ID=access-demo-$(date +%Y%m%d%H%M%S) \
-pnpm --dir apps/notebook-cloud smoke:hosted:access
-```
-
-Before creating or mutating the smoke notebook, the script preflights
-`/api/health` with `CF-Access-Token` and requires
-`auth.cloudflare_access.status === "configured"`. That catches missing
-`NOTEBOOK_CLOUD_ACCESS_TEAM_DOMAIN` / `NOTEBOOK_CLOUD_ACCESS_AUD` deployment
-vars before ACL writes or WebSocket sync attempts.
-
-Use `NOTEBOOK_CLOUD_ACCESS_EDITOR_JWT` and
-`NOTEBOOK_CLOUD_ACCESS_VIEWER_JWT` to run the same smoke with separate Access
-users. Add `NOTEBOOK_CLOUD_ACCESS_PUBLIC_SMOKE=1` only for a host that allows
-unauthenticated public viewer sockets to reach the Worker. A hostname protected
-entirely by Access should block anonymous public viewers at the edge.
-
-The historical Access + Anaconda runbook is
-`docs/architecture/hosted-access-anaconda-demo-runbook.md`; the current target
-runbook is `docs/architecture/hosted-direct-oidc-demo-runbook.md`.
-
-The viewer auth menu has a "Use browser session" mode for Cloudflare Access
-trials. It stores only the requested room scope in localStorage; the credential
-remains the browser's Access session and is validated by the Worker.
-
 Requests with no dev credential become anonymous public viewers. The Worker derives:
 
 ```text
@@ -355,7 +250,7 @@ anonymous:<session>/browser:<session>
 
 from the `viewer_session` query parameter, `X-Viewer-Session` header, or a generated UUID. This is intentionally not `system`: `system` is reserved for seed/import authorship, while anonymous viewers are real room connections with read-only `viewer` scope. Anonymous viewers cannot write `NotebookDoc`, `RuntimeStateDoc`, blob, pool, or request frames. Anonymous presence is local-only so public page views do not appear as collaborators to editors.
 
-Snapshot, render, and blob reads require `viewer` authorization. Anonymous
+Snapshot and blob reads require `viewer` authorization. Anonymous
 users only receive that scope when the notebook has an explicit public
 `notebook_acl` row. Production hosts should move output blobs to signed URLs or
 a dedicated output origin before accepting private notebook data at scale.
@@ -376,7 +271,7 @@ revokes one row using this JSON body:
 ```json
 {
   "subject_kind": "principal",
-  "subject": "user:cloudflare-access:alice",
+  "subject": "user:anaconda:alice",
   "scope": "editor"
 }
 ```
@@ -407,7 +302,7 @@ Bindings in `wrangler.toml`:
 - `RENDERER_ASSETS_BASE_URL` (optional): base URL for renderer plugin assets such as `sift_wasm.wasm`. The prototype deployment points this at the dedicated `nteract-notebook-cloud-assets` Worker. If unset, the viewer uses the main Worker-owned `/renderer-assets/` route so sandboxed `srcdoc` iframes can fetch plugin WASM through explicit CORS headers.
 - `RUNTIMED_WASM_BASE_URL` (optional): base URL for `runtimed_wasm.js` and `runtimed_wasm_bg.wasm`. The prototype deployment also points this at the dedicated asset Worker so the large WASM module is loaded as a CDN cacheable file instead of being inlined into the viewer bundle.
 - `OUTPUT_DOCUMENT_BASE_URL` (optional): URL for the isolated output document shell. The prototype deployment points this at the dedicated `nteract-notebook-cloud-outputs` Worker. If unset, the shared renderer keeps using browser `srcdoc` for local/prototype fallback.
-- `NOTEBOOK_CLOUD_ALLOWED_ORIGINS` (optional): comma- or whitespace-separated notebook application origins added to the same-origin WebSocket allowlist. Cookie-backed Access WebSocket upgrades and browser-visible credential subprotocols always require an allowed `Origin`; header-authenticated native/CLI clients may omit `Origin`, but any supplied `Origin` must be allowed.
+- `NOTEBOOK_CLOUD_ALLOWED_ORIGINS` (optional): comma- or whitespace-separated notebook application origins added to the same-origin WebSocket allowlist. Browser-visible credential subprotocols always require an allowed `Origin`; header-authenticated native/CLI clients may omit `Origin`, but any supplied `Origin` must be allowed.
 
 The dedicated renderer asset Worker serves only public, build-time sidecar files from the plugin asset bundle. It intentionally sends `Access-Control-Allow-Origin: *` so sandboxed `srcdoc` iframes with opaque origins can fetch renderer WASM and so the parent viewer can import runtime WASM from a CDN origin. Do not serve authenticated, notebook-specific, or user-generated blobs from this origin; those belong behind the notebook host's blob resolver or a future signed output origin. Deploy the renderer asset Worker before the main Worker when `RENDERER_ASSETS_BASE_URL` or `RUNTIMED_WASM_BASE_URL` points at the separate origin.
 
@@ -522,11 +417,6 @@ pnpm --dir apps/notebook-cloud smoke:hosted:live
 NOTEBOOK_CLOUD_URL=https://preview.runt.run \
 NOTEBOOK_CLOUD_DEV_TOKEN=... \
 pnpm --dir apps/notebook-cloud smoke:hosted:collab
-
-NOTEBOOK_CLOUD_URL=https://<access-protected-notebook-host> \
-NOTEBOOK_CLOUD_ACCESS_ORIGIN=https://<access-protected-notebook-host> \
-NOTEBOOK_CLOUD_ACCESS_JWT="$(cloudflared access token -app=https://<access-protected-notebook-host>)" \
-pnpm --dir apps/notebook-cloud smoke:hosted:access
 
 NOTEBOOK_CLOUD_HOSTED_URL=https://preview.runt.run/n/<id>/<vanity-name> \
 NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM=0 \

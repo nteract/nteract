@@ -155,7 +155,7 @@ Two concepts, two surfaces:
 
 **Server-side: enum dispatch** (in `nteract-identity`)
 
-In order to make this easy to work with we'll have a fixed set of providers: Local, OIDC, and JupyterHub. OIDC covers a broad collection of issuers (Anaconda, Cloudflare Access, Clerk, Auth0, Okta, WorkOS, generic OIDC) through configuration alone. The enum makes "which providers this build knows about" explicit in the type system, costs nothing at runtime, and avoids the `dyn`-incompatibility of Return-Position-`impl Trait`-in-Traits.
+In order to make this easy to work with we'll have a fixed set of providers: Local, OIDC, and JupyterHub. OIDC covers a broad collection of issuers (Anaconda, Clerk, Auth0, Okta, WorkOS, generic OIDC) through configuration alone. The enum makes "which providers this build knows about" explicit in the type system, costs nothing at runtime, and avoids the `dyn`-incompatibility of Return-Position-`impl Trait`-in-Traits.
 
 ```rust
 pub enum IdentityProvider {
@@ -188,7 +188,7 @@ Each variant's inner provider exposes its own `authenticate` as RPITIT (Return-P
 nteract-identity/
 +-- lib.rs            # ActorLabel, Principal, AuthenticatedUser, AuthError, Credential, IdentityProvider enum
 +-- local.rs          # LocalProvider (peer creds)
-+-- oidc.rs           # OidcProvider (JWKS bearer; configurable for Anaconda, Cloudflare Access, Clerk, Auth0, Okta, WorkOS, generic OIDC)
++-- oidc.rs           # OidcProvider (JWKS bearer; configurable for Anaconda, Clerk, Auth0, Okta, WorkOS, generic OIDC)
 \-- jupyterhub.rs     # JupyterHubProvider (Hub cookie/token via /hub/api/user)
 ```
 
@@ -232,7 +232,7 @@ credential vocabulary.
 
 2. **One-time ticket**. Client POSTs `/api/session-tickets` with the real bearer (header-set, normal CORS). Server returns a short-lived (~10s, single-use) ticket. Client opens `wss://host/n/<id>?ticket=<one-time>`. Server validates the ticket, consumes it, and the connection is authenticated as the original user. The real bearer never appears in the WebSocket URL. Costs one extra round trip; the server tracks outstanding tickets in memory or D1.
 
-3. **Cookie**. Browsers send cookies automatically on the WS upgrade when same-site. This is useful for deployments such as Cloudflare Access where the cookie is part of the perimeter session and the Worker validates a forwarded assertion. It is deployment-specific for providers such as JupyterHub because provider cookies also bring CSRF and origin handling.
+3. **Cookie**. Browsers send cookies automatically on the WS upgrade when same-site. This is deployment-specific for providers such as JupyterHub because provider cookies also bring CSRF and origin handling.
 
 4. **`Authorization` header** (system-to-system only). Native clients (desktop daemon, agents, CLI) set `Authorization: Bearer ...` directly on the upgrade request. Browsers cannot. This is the trivial path for the desktop daemon connecting to an Anaconda-hosted or JupyterHub-hosted room on the user's behalf.
 
@@ -240,7 +240,7 @@ Base options by provider:
 
 | Provider | Browser clients | System clients |
 |----------|-----------------|----------------|
-| `Oidc` (Anaconda, Cloudflare Access, Clerk, ...) | Cloudflare Access assertion, subprotocol bearer token, or one-time ticket depending on deployment | `Authorization` header |
+| `Oidc` (Anaconda, Clerk, ...) | Subprotocol bearer token or one-time ticket depending on deployment | `Authorization` header |
 | `JupyterHub` | Hub-issued token via subprotocol or ticket; cookie only when the deployment owns CSRF/origin policy | `Authorization` header with Hub-issued token |
 | `Local` | N/A (no WS) | Unix peer creds |
 
