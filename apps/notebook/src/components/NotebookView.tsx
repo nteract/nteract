@@ -93,46 +93,44 @@ function CellAdder({
   const ribbonClass = adderRibbonClasses[cellType] ?? defaultAdderRibbonClass;
 
   return (
-    <div className="flex h-7 w-full items-center select-none">
-      {/* Hover zone limited to the ribbon area */}
-      <div className="group/adder flex h-full flex-shrink-0 items-center pr-3">
-        {/* Ribbon zone — widens on hover to reveal cell type options */}
-        <div
-          className={cn(
-            "flex h-full flex-shrink-0 items-center overflow-hidden",
-            "w-1 bg-gray-200 transition-all duration-200 ease-out dark:bg-gray-700",
-            "group-hover/adder:w-auto group-hover/adder:rounded-r-sm group-hover/adder:pr-1",
-            "group-focus-within/adder:w-auto group-focus-within/adder:rounded-r-sm group-focus-within/adder:pr-1",
-            ribbonClass,
-          )}
+    <div data-slot="cell-adder" className="group/adder flex h-7 w-full items-center select-none">
+      <div
+        data-slot="cell-adder-ribbon"
+        className={cn(
+          "h-full w-1 shrink-0 bg-gray-200 transition-colors duration-150 dark:bg-gray-700",
+          ribbonClass,
+        )}
+      />
+      <div
+        data-slot="cell-adder-actions"
+        className={cn(
+          "ml-[3.25rem] flex items-center gap-1 opacity-0 transition-opacity duration-150",
+          "group-hover/adder:opacity-100 group-hover/adder:delay-75",
+          "group-focus-within/adder:opacity-100 group-focus-within/adder:delay-75",
+        )}
+      >
+        <button
+          type="button"
+          title="Add code cell"
+          onClick={() => onAdd("code", afterCellId)}
+          className="inline-flex h-6 items-center gap-1 rounded-sm px-1.5 text-xs font-medium text-muted-foreground/55 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
         >
-          <div
-            className={cn(
-              "flex items-center gap-0.5 pl-1.5 opacity-0 transition-opacity duration-150",
-              "group-hover/adder:opacity-100 group-hover/adder:delay-75",
-              "group-focus-within/adder:opacity-100 group-focus-within/adder:delay-75",
-            )}
-          >
-            <button
-              type="button"
-              title="Add code cell"
-              onClick={() => onAdd("code", afterCellId)}
-              className="flex items-center whitespace-nowrap rounded-sm px-2 py-0.5 text-xs font-medium text-white/70 transition-colors hover:bg-white/20 hover:text-white"
-            >
-              + Code
-            </button>
-            <button
-              type="button"
-              title="Add markdown cell"
-              onClick={() => onAdd("markdown", afterCellId)}
-              className="flex items-center whitespace-nowrap rounded-sm px-2 py-0.5 text-xs font-medium text-white/70 transition-colors hover:bg-white/20 hover:text-white"
-            >
-              + Markdown
-            </button>
-          </div>
-        </div>
+          <Plus className="h-3 w-3" aria-hidden="true" />
+          Add code
+        </button>
+        <span className="text-muted-foreground/30" aria-hidden="true">
+          ·
+        </span>
+        <button
+          type="button"
+          title="Add markdown cell"
+          onClick={() => onAdd("markdown", afterCellId)}
+          className="inline-flex h-6 items-center gap-1 rounded-sm px-1.5 text-xs font-medium text-muted-foreground/55 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+        >
+          <Plus className="h-3 w-3" aria-hidden="true" />
+          Add markdown
+        </button>
       </div>
-      {/* Content area — no hover trigger */}
       <div className="flex-1" />
     </div>
   );
