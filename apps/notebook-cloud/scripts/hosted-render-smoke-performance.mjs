@@ -309,6 +309,26 @@ function firstDefined(...values) {
 }
 
 const PERFORMANCE_BUDGET_METRICS = {
+  collab_connected_ms: {
+    group: "collab_path",
+    label: "browser collaboration connections",
+  },
+  collab_editor_update_max_ms: {
+    group: "collab_path",
+    label: "editor-to-editor update propagation",
+  },
+  collab_anonymous_update_max_ms: {
+    group: "collab_path",
+    label: "editor-to-anonymous viewer update propagation",
+  },
+  collab_editor_convergence_max_ms: {
+    group: "collab_path",
+    label: "editor convergence",
+  },
+  collab_total_ms: {
+    group: "collab_path",
+    label: "browser collaboration smoke",
+  },
   first_useful_render_ms: {
     group: "live_path",
     label: "first useful render",

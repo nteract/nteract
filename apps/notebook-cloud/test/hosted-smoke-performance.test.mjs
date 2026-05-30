@@ -9,6 +9,7 @@ import {
   summarizeViewerMilestones,
   withTiming,
 } from "../scripts/hosted-render-smoke-performance.mjs";
+import { summarizeCollabPerformanceTimings } from "../scripts/hosted-collab-smoke-performance.mjs";
 
 describe("hosted smoke performance diagnostics", () => {
   const origins = {
@@ -398,6 +399,9 @@ describe("hosted smoke performance diagnostics", () => {
 
   it("reports explicit hosted performance budget failures", () => {
     const diagnostics = {
+      collab_path: {
+        collab_anonymous_update_max_ms: 1_250,
+      },
       live_path: {
         first_useful_render_ms: 5_025,
         live_sync_websocket_ms: 1_323,
@@ -411,11 +415,19 @@ describe("hosted smoke performance diagnostics", () => {
     assert.deepEqual(
       performanceBudgetFailures(diagnostics, {
         first_useful_render_ms: 5_500,
+        collab_anonymous_update_max_ms: 1_000,
         live_sync_websocket_ms: null,
         sift_wasm_complete_ms: 3_000,
         arrow_data_complete_ms: 8_000,
       }),
       [
+        {
+          kind: "performance-budget",
+          metric: "collab_anonymous_update_max_ms",
+          text: "editor-to-anonymous viewer update propagation took 1250 ms, expected <= 1000 ms",
+          expected_ms: 1000,
+          actual_ms: 1250,
+        },
         {
           kind: "performance-budget",
           metric: "sift_wasm_complete_ms",
@@ -439,6 +451,39 @@ describe("hosted smoke performance diagnostics", () => {
       () =>
         performanceBudgetFailures({ live_path: {}, sidecar_assets: {} }, { made_up_metric_ms: 1 }),
       /Unknown performance budget metric: made_up_metric_ms/,
+    );
+  });
+
+  it("summarizes browser collaboration timings for live viewer budgets", () => {
+    assert.deepEqual(
+      summarizeCollabPerformanceTimings({
+        alice_connected: 110,
+        bob_connected: 125,
+        anonymous_connected: 180,
+        alice_to_bob: 55,
+        alice_to_bob_editor: 65,
+        alice_to_anonymous: 70,
+        bob_to_alice: 45,
+        bob_to_alice_editor: 75,
+        bob_to_anonymous: 80,
+        bob_to_alice_exact: 90,
+        bob_to_bob_exact: 60,
+        alice_ping_1_alice_exact: 100,
+        alice_ping_1_bob_exact: 115,
+        alice_ping_1_anonymous: 130,
+        overlap_editors_converged: 140,
+        overlap_anonymous: 150,
+        total: 2_500,
+      }),
+      {
+        collab_path: {
+          collab_connected_ms: 180,
+          collab_editor_update_max_ms: 115,
+          collab_anonymous_update_max_ms: 150,
+          collab_editor_convergence_max_ms: 140,
+          collab_total_ms: 2500,
+        },
+      },
     );
   });
 });

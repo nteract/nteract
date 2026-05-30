@@ -1,4 +1,5 @@
 import { access, readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { FrameType } from "runtimed";
 import {
@@ -13,6 +14,7 @@ import { assertWasmRoundtripAuthEnv, credentialedSmokeOrigin } from "./wasm-roun
 const baseUrl = process.env.NOTEBOOK_CLOUD_URL ?? "http://127.0.0.1:8787";
 const devAuthToken = process.env.NOTEBOOK_CLOUD_DEV_TOKEN;
 const roomId = `wasm-${Date.now()}`;
+const runtimeStateDocId = `runtime-state:${randomUUID()}`;
 const timingsMs = {};
 const wasmJsUrl = new URL(
   "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js",
@@ -48,7 +50,7 @@ await timed("acl_grants", async () => {
     scope: "viewer",
   });
 });
-await timed("ungranted_editor_denial", () => assertEditorDenied(roomId, "charlie"));
+await timed("ungranted_editor_downgrade", () => assertEditorDowngraded(roomId, "charlie"));
 
 const { alice, bob, anonymous } = await timed("connect_peers", async () => ({
   alice: await connect(roomId, "alice", "desktop:wasm", "owner"),
@@ -106,12 +108,13 @@ console.log(
       ok: true,
       baseUrl,
       roomId,
+      runtimeStateDocId,
       checks: [
         "runtimed_wasm_init",
         "owner_seeded_acl_room",
         "editor_acl_grant",
         "anonymous_viewer_acl_grant",
-        "ungranted_editor_denied",
+        "ungranted_editor_downgraded_to_viewer",
         "real_automerge_sync_payload",
         "durable_object_materialized_room_sync",
         "editor_editor_convergence",
@@ -192,14 +195,16 @@ async function grantAcl(notebookId, body) {
   assert(response.status === 201, `ACL grant failed: ${response.status} ${await response.text()}`);
 }
 
-async function assertEditorDenied(notebookId, user) {
+async function assertEditorDowngraded(notebookId, user) {
+  const client = await connect(notebookId, user, "desktop:wasm", "editor");
   try {
-    const client = await connect(notebookId, user, "desktop:wasm", "editor");
+    assert(
+      client.ready.connection_scope === "viewer",
+      `ungranted editor ${user} connected with scope ${client.ready.connection_scope}`,
+    );
+  } finally {
     await closeClient(client);
-  } catch {
-    return;
   }
-  throw new Error(`ungranted editor ${user} unexpectedly connected`);
 }
 
 function sendHandleChanges(client, handle) {
@@ -299,6 +304,7 @@ function requestHeaders(user, operator, scope, contentType) {
     "X-User": user,
     "X-Operator": operator,
     "X-Scope": scope,
+    "X-Runtime-State-Doc-Id": runtimeStateDocId,
   };
   if (devAuthToken) {
     headers["X-Notebook-Cloud-Dev-Token"] = devAuthToken;
