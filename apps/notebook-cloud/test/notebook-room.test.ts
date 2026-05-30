@@ -86,7 +86,23 @@ describe("NotebookRoom presence rewrite", () => {
 
     assert.equal(presencePeerLabel(baseIdentity), "alice");
     assert.equal(presencePeerLabel(withoutDisplayName), "alice@example.com");
-    assert.equal(presencePeerLabel(withoutFriendlyMetadata), "user:dev:alice");
+    assert.equal(presencePeerLabel(withoutFriendlyMetadata), "alice");
+  });
+
+  it("keeps rewritten Anaconda presence labels human-scale when metadata is missing", () => {
+    const identity = {
+      ...authenticateDevRequest(
+        new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=editor"),
+      ),
+      principal: "user:anaconda:fe0f6c3a-f7c7-4c04-9b8d-77e596da1375",
+      metadata: {
+        provider: "oidc" as const,
+        transport: "oidc-bearer" as const,
+        principalNamespace: "user:anaconda",
+      },
+    };
+
+    assert.equal(presencePeerLabel(identity), "Anaconda user fe0f6c3a");
   });
 
   it("falls back to the authenticated operator for invalid presented actor labels", async () => {
