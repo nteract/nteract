@@ -118,14 +118,16 @@ host. Three behaviors then matter, demonstrated by tests in
    sync, and the v5 peer keeps the vX peer's unknown top-level key and unknown
    cell-metadata key. Cells merge cleanly; the root is not doubled.
 
-2. **`schema_version` is LWW, not monotonic**
-   (`test_cross_version_schema_version_is_lww_not_monotonic`). Two peers writing
-   different versions concurrently converge to a single value, but it is an LWW
-   pick decided by `(lamport, actor)`, unrelated to which schema is newer. In the
-   test the *stale* peer wins and stamps the shared doc backward (v6 -> v4). This
-   is single-writer by **convention** only (the migrate-on-load path is the lone
-   writer, and desktop rooms are single-version). Cloud breaks the convention.
-   Tracked as **SE-1** in [cleanup-punchlist.md](cleanup-punchlist.md).
+2. **`schema_version` resolves to the conflict-set max, not the LWW winner**
+   (`test_cross_version_schema_version_resolves_to_max_not_lww`). Two peers
+   writing different versions concurrently leave an Automerge conflict set. A
+   plain `get` returns the `(lamport, actor)` winner, which can be the *older*
+   value, stamping the doc backward (v6 -> v4). Both read sites — the
+   `schema_version()` accessor and the load-time classifier — instead resolve
+   over the full conflict set (`get_all`) and take the max, so the observed
+   version is monotonic. The fix is read-side: the CRDT still records the LWW
+   pick, so there is no write-back and no op-history growth. This was **SE-1**;
+   see [cleanup-punchlist.md](cleanup-punchlist.md).
 
 3. **Divergent genesis breaks sync.** The original incident, at the sync layer.
    Guarded by #3134 (build-time drift) and #3192 (host hash-pinning). Any future
@@ -147,10 +149,25 @@ dropped at the `.ipynb` boundary. Additive cell data must live under
 5. Structural change uses a sidecar, never an in-place reshape of the root.
 6. `.ipynb` is the truth on disk for saved notebooks; the `.automerge` is the
    sole copy for untitled notebooks and the live sync substrate.
+7. `schema_version` is read through conflict-set max resolution, never a bare
+   `get`. A new read site must use `schema_version()` (or the same `get_all` +
+   max), or a concurrent stale write can be read as a backward stamp.
 
-## Open question
+## Resolution: read-side monotonic-max (SE-1)
 
-`schema_version` as a single LWW scalar has no mixed-version semantics. Before
-cloud ships mixed versions in one room it needs either host-enforced
-single-writer auth (does #3192's room-host auth let a peer update
-`schema_version`?) or monotonic-max merge semantics. See SE-1.
+`schema_version` stays a plain LWW scalar on the wire, but every reader resolves
+it over its full Automerge conflict set and takes the max. Both read sites carry
+the fix: the `schema_version()` accessor and the load-time classifier in
+`load_or_create_inner`. The classifier keeps its tri-state — an empty conflict
+set is absent (a v5-skeleton doc is current), a non-empty set with no
+non-negative integer is malformed (quarantine), otherwise the max is the version.
+
+Read-side resolution was chosen over write-back reconciliation (re-stamping the
+doc to the max on load/merge) and over host-enforced single-writer auth. Re-stamp
+mutates a doc on load, grows op history on every daemon restart, and at the sync
+merge point injects a daemon-authored change that desynchronizes peer sync state.
+Host auth needs a room-host concept that does not exist yet and does nothing for
+desktop or already-diverged docs. Read-side max is deterministic (the conflict
+set is identical across converged peers), needs no auth, heals already-diverged
+docs on read, and never writes. The `.am` binary keeps the conflict; that is
+harmless because `.ipynb` is the on-disk truth and every reader resolves the max.
