@@ -1156,6 +1156,24 @@ impl NotebookDoc {
                             _ => SchemaState::Invalid,
                         };
 
+                        // An absent version is only "current" if the doc actually
+                        // has the v5 root skeleton (cells + metadata as Maps). A
+                        // pre-version/legacy doc (cells as a List, or missing) can
+                        // also lack `schema_version`; accepting it would hide its
+                        // cells (`cells_map_id()` -> None) and later break
+                        // `add_cell`, so quarantine it instead of silently loading
+                        // an unusable notebook.
+                        let state = match state {
+                            SchemaState::Absent
+                                if loaded.cells_map_id().is_some()
+                                    && loaded.metadata_map_id().is_some() =>
+                            {
+                                SchemaState::Absent
+                            }
+                            SchemaState::Absent => SchemaState::Invalid,
+                            other => other,
+                        };
+
                         // Current, NEWER-than-this-build (forward-tolerant), and
                         // version-less docs are all usable as-is. Only genuinely
                         // older numeric versions migrate (v3/v4) or are rejected
@@ -4037,6 +4055,34 @@ mod tests {
         assert!(
             path.with_extension("automerge.corrupt").exists(),
             "a malformed-version doc must be preserved as .corrupt"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "persistence")]
+    fn test_load_version_less_doc_without_v5_skeleton_rejected() {
+        // A version-less doc that lacks the v5 cells Map (a pre-version/legacy
+        // shape) must be quarantined, not accepted as current: accepting it would
+        // hide its cells (cells_map_id() -> None) and later break add_cell.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("notebook.automerge");
+
+        let mut doc = NotebookDoc::new("noskel-test");
+        doc.add_cell(0, "c1", "code").unwrap();
+        let _ = doc.doc.delete(automerge::ROOT, "schema_version");
+        let _ = doc.doc.delete(automerge::ROOT, "cells");
+        assert_eq!(doc.schema_version(), None);
+        doc.save_to_file(&path).unwrap();
+
+        let loaded = NotebookDoc::load_or_create(&path, "noskel-test");
+        assert_eq!(
+            loaded.cell_count(),
+            0,
+            "a version-less doc without the v5 cells map must be rejected, not accepted"
+        );
+        assert!(
+            path.with_extension("automerge.corrupt").exists(),
+            "a version-less non-skeleton doc must be preserved as .corrupt"
         );
     }
 
