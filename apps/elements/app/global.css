@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "../../../packages/sift/src/style.css";
 @import "fumadocs-ui/css/neutral.css";
 @import "fumadocs-ui/css/preset.css";
 @import "../../../src/styles/ansi.css";
@@ -13,7 +14,14 @@
 @source "../../../src/components/ui/**/*.{ts,tsx}";
 @source "../../../src/components/widgets/**/*.{ts,tsx}";
 @source "../../../apps/notebook/src/components/**/*.{ts,tsx}";
+@source "../../../packages/sift/src/**/*.{ts,tsx}";
 
 :root {
   --fd-layout-width: 1320px;
+}
+
+/* Sift's package stylesheet includes demo-page heading rules. */
+body h1 {
+  font-family: inherit;
+  color: inherit;
 }

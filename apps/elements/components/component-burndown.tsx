@@ -99,11 +99,11 @@ const families = [
   },
   {
     family: "Outputs",
-    source: "src/components/outputs/**",
+    source: "src/components/outputs/** + packages/sift/src/react.tsx",
     target: "nteract renderers",
     status: "active",
     intent:
-      "AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, TracebackOutput, and MIME priority now render from fixtures; Sift can join via a URL-backed Hugging Face parquet fixture like the demo page.",
+      "AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, TracebackOutput, MIME priority, and SiftTable now render from fixtures; Sift parquet/Arrow URL loading remains an explicit WASM asset adapter boundary.",
   },
   {
     family: "Widgets",
