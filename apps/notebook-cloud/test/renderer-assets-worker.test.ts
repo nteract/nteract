@@ -25,6 +25,7 @@ describe("renderer assets Worker", () => {
     assert.deepEqual(seenPaths, ["/sift_wasm.wasm"]);
     assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
     assert.equal(response.headers.get("Access-Control-Allow-Methods"), "GET, HEAD, OPTIONS");
+    assert.equal(response.headers.get("Timing-Allow-Origin"), "*");
     assert.equal(response.headers.get("Cache-Control"), "public, max-age=31536000, immutable");
     assert.equal(response.headers.get("Content-Type"), "application/wasm");
     assert.equal(await response.text(), "wasm");
@@ -50,6 +51,7 @@ describe("renderer assets Worker", () => {
     assert.equal(response.status, 200);
     assert.deepEqual(seenPaths, ["/runtimed_wasm_bg.wasm"]);
     assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+    assert.equal(response.headers.get("Timing-Allow-Origin"), "*");
     assert.equal(response.headers.get("Cache-Control"), "public, max-age=31536000, immutable");
   });
 

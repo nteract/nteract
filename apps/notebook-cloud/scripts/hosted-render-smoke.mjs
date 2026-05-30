@@ -19,6 +19,7 @@ import {
 } from "./hosted-render-smoke-assets.mjs";
 import { hasPreflightFailures } from "./hosted-render-smoke-preflight.mjs";
 import {
+  applyResourceTimingSizes,
   classifyPerformanceResource,
   performanceBudgetFailures,
   refinePerformanceResourceKind,
@@ -101,6 +102,13 @@ const performanceBudgets = {
   ),
   sift_wasm_complete_ms: parseOptionalBudget("NOTEBOOK_CLOUD_MAX_SIFT_WASM_COMPLETE_MS"),
   arrow_data_complete_ms: parseOptionalBudget("NOTEBOOK_CLOUD_MAX_ARROW_DATA_COMPLETE_MS"),
+  snapshot_pair_bytes: parseOptionalBudget("NOTEBOOK_CLOUD_MAX_SNAPSHOT_PAIR_BYTES"),
+  viewer_shell_bytes: parseOptionalBudget("NOTEBOOK_CLOUD_MAX_VIEWER_SHELL_BYTES"),
+  runtimed_wasm_bytes: parseOptionalBudget("NOTEBOOK_CLOUD_MAX_RUNTIMED_WASM_BYTES"),
+  isolated_renderer_bytes: parseOptionalBudget("NOTEBOOK_CLOUD_MAX_ISOLATED_RENDERER_BYTES"),
+  output_document_bytes: parseOptionalBudget("NOTEBOOK_CLOUD_MAX_OUTPUT_DOCUMENT_BYTES"),
+  sift_wasm_bytes: parseOptionalBudget("NOTEBOOK_CLOUD_MAX_SIFT_WASM_BYTES"),
+  arrow_data_bytes: parseOptionalBudget("NOTEBOOK_CLOUD_MAX_ARROW_DATA_BYTES"),
 };
 const expectedThemeModes = parseExpectedTexts("NOTEBOOK_CLOUD_SMOKE_THEME_MODES", [
   "light",
@@ -215,6 +223,7 @@ async function main() {
       end_ms: null,
       status: null,
       contentType: null,
+      contentLength: null,
       failure: null,
     });
   });
@@ -224,6 +233,7 @@ async function main() {
     finishPerformanceRequest(response.request(), {
       status: response.status(),
       contentType: response.headers()["content-type"] ?? null,
+      contentLength: parseContentLength(response.headers()["content-length"]),
     });
     if (url.includes("sift_wasm.wasm")) {
       siftWasmRequests.push({
@@ -384,6 +394,8 @@ async function main() {
     await flushDiagnosticTasks();
     await Promise.race([networkIdleTask, Promise.resolve()]);
     markTiming("diagnostics_flushed");
+    const browserResourceTimings = await collectBrowserResourceTimings(page);
+    applyResourceTimingSizes(performanceResources, browserResourceTimings);
 
     const executionCounts = await page
       .locator("[data-slot='execution-count']")
@@ -544,6 +556,7 @@ async function main() {
           viewer_milestones_ms: viewerMilestones,
           performanceDiagnostics,
           performanceBudgets,
+          browserResourceTimingCount: browserResourceTimings.length,
           catalogApiCheck,
           viewerCssCheck,
           runtimeWasmHintCheck,
@@ -610,6 +623,14 @@ function parseOptionalBudget(envName) {
   return parsePositiveInteger(process.env[envName], null, envName);
 }
 
+function parseContentLength(value) {
+  if (!value) {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
 function markTiming(name) {
   markTimingAt(name, elapsedMs());
 }
@@ -634,6 +655,17 @@ function finishPerformanceRequest(request, updates) {
       ...updates,
       end_ms: elapsedMs(),
     }),
+  );
+}
+
+async function collectBrowserResourceTimings(page) {
+  return page.evaluate(() =>
+    performance.getEntriesByType("resource").map((entry) => ({
+      name: entry.name,
+      transferSize: entry.transferSize,
+      encodedBodySize: entry.encodedBodySize,
+      decodedBodySize: entry.decodedBodySize,
+    })),
   );
 }
 
