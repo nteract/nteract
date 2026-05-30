@@ -33,6 +33,7 @@ These entries define the center of gravity for the system:
 | Document boundaries | [The Three-Document Split](three-document-split.md) | Draft |
 | Schema evolution | [Notebook Schema Evolution and the Frozen Genesis](schema-evolution-and-genesis.md) | Draft |
 | Runtime-state identity | [Runtime State Document Identity](runtime-state-document-identity.md) | Draft |
+| Environment lifecycle | [Captured Environment Lifecycle](captured-environment-lifecycle.md) | Draft |
 | Notebook host shell | [Notebook Host Shell Convergence](notebook-host-shell-convergence.md) | Draft |
 | Execution ordering | [Cell Execution Pipeline and Control-Plane Separation](execution-pipeline.md) | Draft |
 | Blob storage | [Blob Storage and Content Addressing](blob-storage-and-content-addressing.md) | Draft |
