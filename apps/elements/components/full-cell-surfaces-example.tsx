@@ -6,6 +6,8 @@ import { CodeCell } from "@/notebook-components/CodeCell";
 import { MarkdownCell } from "@/notebook-components/MarkdownCell";
 import { NotebookView } from "@/notebook-components/NotebookView";
 import { RawCell } from "@/notebook-components/RawCell";
+import { getElementsNotebookScenario } from "@/components/notebook-scenarios";
+import type { NotebookViewCell } from "@/components/notebook-shell";
 import { CrdtBridgeProvider } from "../../notebook/src/hooks/useCrdtBridge";
 import {
   flushCellUIState,
@@ -24,7 +26,9 @@ import {
 import { resetNotebookOutputs, setOutput } from "../../notebook/src/lib/notebook-outputs";
 import type {
   CodeCell as CodeCellType,
+  JupyterOutput,
   MarkdownCell as MarkdownCellType,
+  NotebookCell,
   RawCell as RawCellType,
 } from "../../notebook/src/types";
 
@@ -66,59 +70,9 @@ const rawCell: RawCellType = {
   },
 };
 
-const viewCodeCell: CodeCellType = {
-  cell_type: "code",
-  id: "elements-view-code-cell",
-  source: [
-    "features = orders.assign(month=orders.date.dt.month)",
-    "predictions = model.predict(features_holdout)",
-    "display(predictions.head())",
-  ].join("\n"),
-  execution_count: 18,
-  outputs: [],
-  metadata: {},
-};
-
-const viewMarkdownCell: MarkdownCellType = {
-  cell_type: "markdown",
-  id: "elements-view-markdown-cell",
-  source: [
-    "## Model notes",
-    "",
-    "The workspace fixture renders through the production `NotebookView` shell.",
-  ].join("\n"),
-  metadata: {},
-};
-
-const viewHiddenCodeCell: CodeCellType = {
-  cell_type: "code",
-  id: "elements-view-hidden-code-cell",
-  source: "cached = features.sample(2000, random_state=42)",
-  execution_count: 17,
-  outputs: [],
-  metadata: {
-    jupyter: {
-      source_hidden: true,
-      outputs_hidden: true,
-    },
-  },
-};
-
-const viewRawCell: RawCellType = {
-  cell_type: "raw",
-  id: "elements-view-raw-cell",
-  source: "runtime: python\nowner: forecasting",
-  metadata: {
-    format: "yaml",
-  },
-};
-
-const initialNotebookViewCellIds = [
-  viewMarkdownCell.id,
-  viewCodeCell.id,
-  viewHiddenCodeCell.id,
-  viewRawCell.id,
-];
+const fullCellScenario = getElementsNotebookScenario("desktop-local-owner");
+const notebookViewCells = fullCellScenario.cells.map(scenarioCellToNotebookCell);
+const initialNotebookViewCellIds = fullCellScenario.viewModel.cellIds;
 
 const fullCellRows = [
   {
@@ -144,17 +98,17 @@ const fullCellRows = [
 const fullCellBoundaryRows = [
   {
     surface: "Cell document state",
-    catalogPath: "replaceNotebookCells fixture seed",
+    catalogPath: "ElementsNotebookScenario -> replaceNotebookCells",
     productionBoundary: "NotebookView document projection",
     detail:
-      "The catalog writes direct-cell and workspace-shell fixtures into the notebook cell store so the production cells can subscribe normally without opening a notebook document.",
+      "The catalog writes shared scenario cells into the notebook cell store so the production cells can subscribe normally without opening a notebook document.",
   },
   {
     surface: "Execution and output state",
-    catalogPath: "setExecution and setOutput fixtures",
+    catalogPath: "scenario outputs -> setExecution/setOutput",
     productionBoundary: "runtimed execution pipeline",
     detail:
-      "The code cell sees the same execution pointer and output IDs as production, but queueing, kernel lifecycle, and output mutation still stay outside the docs runtime.",
+      "Scenario code cells seed the same execution pointer and output ID stores as production, but queueing, kernel lifecycle, and output mutation still stay outside the docs runtime.",
   },
   {
     surface: "Transient cell UI state",
@@ -188,16 +142,37 @@ const fullCellBoundaryRows = [
 
 const noop = () => {};
 
+function scenarioCellToNotebookCell(cell: NotebookViewCell): NotebookCell {
+  if (cell.cellType === "code") {
+    return {
+      cell_type: "code",
+      id: cell.id,
+      source: cell.source,
+      execution_count: cell.executionCount,
+      outputs: cell.outputs as JupyterOutput[],
+      metadata: cell.metadata,
+    };
+  }
+
+  if (cell.cellType === "markdown") {
+    return {
+      cell_type: "markdown",
+      id: cell.id,
+      source: cell.source,
+      metadata: cell.metadata,
+    };
+  }
+
+  return {
+    cell_type: "raw",
+    id: cell.id,
+    source: cell.source,
+    metadata: cell.metadata,
+  };
+}
+
 function seedFullCellFixtures() {
-  replaceNotebookCells([
-    codeCell,
-    markdownCell,
-    rawCell,
-    viewMarkdownCell,
-    viewCodeCell,
-    viewHiddenCodeCell,
-    viewRawCell,
-  ]);
+  replaceNotebookCells([codeCell, markdownCell, rawCell, ...notebookViewCells]);
   resetNotebookOutputs();
   resetNotebookExecutions();
 
@@ -225,29 +200,25 @@ function seedFullCellFixtures() {
   });
   setCellExecutionPointer(codeCell.id, "elements-execution");
 
-  setOutput("elements-view-output-stream", {
-    output_id: "elements-view-output-stream",
-    output_type: "stream",
-    name: "stdout",
-    text: "workspace fixture rendered through NotebookView\n",
-  });
-  setOutput("elements-view-output-result", {
-    output_id: "elements-view-output-result",
-    output_type: "execute_result",
-    execution_count: 18,
-    data: {
-      "text/plain": "3 rows x 8 columns",
-    },
-    metadata: {},
-  });
-  setExecution("elements-view-execution", {
-    execution_count: 18,
-    status: "done",
-    success: true,
-    output_ids: ["elements-view-output-stream", "elements-view-output-result"],
-    submitted_by_actor_label: "local:kyle",
-  });
-  setCellExecutionPointer(viewCodeCell.id, "elements-view-execution");
+  for (const cell of fullCellScenario.cells) {
+    if (cell.cellType !== "code" || !cell.executionId) continue;
+    const outputIds = cell.outputs
+      .map((output, index) => output.output_id ?? `${cell.executionId}:output:${index}`)
+      .filter((outputId): outputId is string => outputId.length > 0);
+
+    cell.outputs.forEach((output, index) => {
+      const outputId = output.output_id ?? `${cell.executionId}:output:${index}`;
+      setOutput(outputId, { ...output, output_id: outputId } as JupyterOutput);
+    });
+    setExecution(cell.executionId, {
+      execution_count: cell.executionCount,
+      status: cell.executionCount === null ? "queued" : "done",
+      success: cell.executionCount === null ? null : true,
+      output_ids: outputIds,
+      submitted_by_actor_label: fullCellScenario.capabilities.access.actorLabel,
+    });
+    setCellExecutionPointer(cell.id, cell.executionId);
+  }
 
   setFocusedCellId(codeCell.id);
   setExecutingCellIds(new Set());
@@ -422,10 +393,10 @@ export function FullCellSurfacesExample() {
               <h2 className="text-sm font-semibold">NotebookView workspace shell</h2>
             </div>
             <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
-              This fixture imports the production workspace renderer, seeds the split cell and
-              output stores, then hands `NotebookView` a local visual order. Stable DOM ordering,
-              hidden-cell grouping, adders, and cell navigation remain visible without opening a
-              notebook document or WASM handle.
+              This fixture imports the production workspace renderer, seeds it from the shared
+              Elements notebook scenario, then hands `NotebookView` a local visual order. Stable DOM
+              ordering, adders, and cell navigation remain visible without opening a notebook
+              document or WASM handle.
             </p>
           </div>
           <div className="bg-background p-3">
