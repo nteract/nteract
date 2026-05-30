@@ -1,5 +1,6 @@
 import type { ElementType, ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import type { NotebookShellCapabilities } from "./capabilities";
 
 export interface NotebookDocumentShellProps {
   /**
@@ -11,6 +12,7 @@ export interface NotebookDocumentShellProps {
   toolbar?: ReactNode;
   notices?: ReactNode;
   children: ReactNode;
+  capabilities?: NotebookShellCapabilities;
   className?: string;
   stageClassName?: string;
   toolbarClassName?: string;
@@ -25,6 +27,7 @@ export function NotebookDocumentShell({
   toolbar,
   notices,
   children,
+  capabilities,
   className,
   stageClassName,
   toolbarClassName,
@@ -37,6 +40,10 @@ export function NotebookDocumentShell({
   return (
     <Root
       className={cn("flex min-h-0 flex-1 overflow-hidden", className)}
+      data-authenticated={capabilities?.auth.canUseAuthenticatedIdentity}
+      data-can-edit={capabilities?.canEditCells}
+      data-can-execute={capabilities?.canExecute}
+      data-can-share={capabilities?.canManageSharing}
       data-slot="notebook-document-shell"
     >
       {rail}

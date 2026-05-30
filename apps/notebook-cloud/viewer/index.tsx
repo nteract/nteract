@@ -67,6 +67,7 @@ import {
 } from "./collaborator-auth";
 import { connectCloudSyncRuntime, type CloudSyncRuntime } from "./live-sync";
 import { loadSnapshotPairHandle } from "./runtimed-wasm-client";
+import { cloudNotebookShellCapabilities } from "./shell-capabilities";
 import {
   beginOidcLogin,
   completeOidcRedirect,
@@ -1141,7 +1142,16 @@ function NotebookViewer({
     }
     return true;
   }, []);
-  const canEditMarkdown = canEditLiveNotebook(connectionScope);
+  const shellCapabilities = useMemo(
+    () =>
+      cloudNotebookShellCapabilities({
+        authState,
+        connectionScope,
+        hasCodeCells: codeCellCount > 0,
+      }),
+    [authState, codeCellCount, connectionScope],
+  );
+  const canEditMarkdown = shellCapabilities.canEditMarkdown;
   const getLiveNotebookHandle = useCallback(() => liveRuntimeRef.current?.handle ?? null, []);
   const handleMarkdownSourceChange = useCallback(
     (cellId: string, source: string) => {
@@ -1201,7 +1211,7 @@ function NotebookViewer({
       <div className="cloud-toolbar-actions">
         <ThemeToggle theme={theme} onThemeChange={setTheme} className="cloud-theme-toggle" />
 
-        {connectionScope === "owner" ? (
+        {shellCapabilities.canManageSharing ? (
           <CloudSharingControls
             aclEndpoint={config.aclEndpoint}
             invitesEndpoint={config.invitesEndpoint}
@@ -1226,7 +1236,7 @@ function NotebookViewer({
           onAuthStateChange={refreshAuthState}
         />
 
-        {status.kind === "ready" && codeCellCount > 0 ? (
+        {status.kind === "ready" && shellCapabilities.canToggleCode ? (
           <button
             type="button"
             className="cloud-code-toggle"
@@ -1251,6 +1261,7 @@ function NotebookViewer({
       toolbar={toolbar}
       toolbarClassName="cloud-report-toolbar"
       toolbarLabel="Notebook view status and controls"
+      capabilities={shellCapabilities}
       rail={rail}
       stageLabel="Hosted notebook"
     >
@@ -2132,10 +2143,6 @@ const EMPTY_REMOTE_CELL_PRESENCE: RemoteCellPresence = {
   cursors: [],
   selections: [],
 };
-
-function canEditLiveNotebook(connectionScope: string | null): boolean {
-  return connectionScope === "editor" || connectionScope === "owner";
-}
 
 function appendEndpointPathSegment(endpoint: string, segment: string): string {
   const base = endpoint.endsWith("/") ? endpoint.slice(0, -1) : endpoint;
