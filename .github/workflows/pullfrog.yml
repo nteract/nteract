@@ -31,4 +31,4 @@ jobs:
           prompt: ${{ inputs.prompt }}
         env:
           AWS_REGION: us-east-1
-          BEDROCK_MODEL_ID: us.anthropic.claude-opus-4-6-v1
+          BEDROCK_MODEL_ID: us.anthropic.claude-opus-4-8
