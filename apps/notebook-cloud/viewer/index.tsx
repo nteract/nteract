@@ -118,8 +118,6 @@ import {
 } from "./widget-runtime";
 import "./index.css";
 
-loadSupplementalViewerCss();
-
 interface CloudViewerConfig {
   notebookId: string;
   headsHash: string | null;
@@ -384,6 +382,10 @@ function CloudNotebookProviders({
   children: ReactNode;
   config: CloudViewerConfig;
 }) {
+  useEffect(() => {
+    loadSupplementalViewerCss();
+  }, []);
+
   return (
     <IsolatedRendererProvider
       basePath={rendererAssetBasePathForProvider(config.rendererAssetsBasePath)}
