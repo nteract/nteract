@@ -1828,11 +1828,13 @@ function viewerShell(
 }
 
 function viewerResourceHints(config: ViewerShellConfig | null): string {
+  const viewerEntryHint = `<link rel="modulepreload" href="/assets/notebook-cloud-viewer.js" />`;
   if (!config) {
-    return "";
+    return viewerEntryHint;
   }
 
   return [
+    viewerEntryHint,
     `<link rel="modulepreload" href="${escapeHtml(config.runtimedWasmModulePath)}" crossorigin />`,
     `<link rel="preload" href="${escapeHtml(
       config.runtimedWasmPath,

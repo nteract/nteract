@@ -59,6 +59,7 @@ describe("HTML script serialization", () => {
     assert.match(html, /id="nteract-cloud-viewer-config" type="application\/json"/);
     assert.match(html, /href="\/assets\/notebook-cloud-viewer\.css"/);
     assert.match(html, /src="\/assets\/notebook-cloud-viewer\.js"/);
+    assert.match(html, /rel="modulepreload" href="\/assets\/notebook-cloud-viewer\.js"/);
     assert.match(html, /rel="modulepreload" href="\/assets\/runtimed_wasm\.js" crossorigin/);
     assert.match(
       html,
@@ -70,13 +71,23 @@ describe("HTML script serialization", () => {
     );
     assert.ok(
       html.indexOf(viewerThemeBootstrapScript()) <
+        html.indexOf('rel="modulepreload" href="/assets/notebook-cloud-viewer.js"'),
+      "theme bootstrap must run before viewer bundle hints so first paint stays theme-safe",
+    );
+    assert.ok(
+      html.indexOf('rel="modulepreload" href="/assets/notebook-cloud-viewer.js"') <
         html.indexOf('rel="modulepreload" href="/assets/runtimed_wasm.js"'),
-      "theme bootstrap must run before runtime WASM hints so first paint stays theme-safe",
+      "viewer bundle modulepreload should be discoverable before runtime WASM hints",
     );
     assert.ok(
       html.indexOf('rel="modulepreload" href="/assets/runtimed_wasm.js"') <
         html.indexOf("/assets/notebook-cloud-viewer.css"),
       "runtime WASM modulepreload should be discoverable before the render-blocking stylesheet",
+    );
+    assert.ok(
+      html.indexOf('rel="modulepreload" href="/assets/notebook-cloud-viewer.js"') <
+        html.indexOf("/assets/notebook-cloud-viewer.css"),
+      "viewer bundle modulepreload should be discoverable before the render-blocking stylesheet",
     );
     assert.doesNotMatch(html, /"renderEndpoint"/);
     assert.match(html, /"catalogEndpoint":"\/api\/n\/demo"/);
@@ -127,6 +138,7 @@ describe("HTML script serialization", () => {
     assert.match(html, /nteract cloud notebooks/);
     assert.match(html, /id="nteract-cloud-auth-config"/);
     assert.doesNotMatch(html, /id="nteract-cloud-viewer-config"/);
+    assert.match(html, /rel="modulepreload" href="\/assets\/notebook-cloud-viewer\.js"/);
     assert.doesNotMatch(html, /rel="modulepreload" href="[^"]*runtimed_wasm\.js/);
     assert.doesNotMatch(html, /rel="preload" href="[^"]*runtimed_wasm_bg\.wasm/);
     assert.doesNotMatch(html, /In the Loop - Collaborative Notebooks/);
