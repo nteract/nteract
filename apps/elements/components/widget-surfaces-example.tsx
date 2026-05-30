@@ -494,6 +494,20 @@ const fixtureModels: FixtureModel[] = [
     },
   },
   {
+    id: "widget-controller",
+    state: {
+      _model_name: "ControllerModel",
+      _model_module: "@jupyter-widgets/controls",
+      index: 0,
+      connected: false,
+      name: "",
+      mapping: "",
+      timestamp: 0,
+      buttons: ["IPY_MODEL_widget-controller-a", "IPY_MODEL_widget-controller-b"],
+      axes: ["IPY_MODEL_widget-axis-x", "IPY_MODEL_widget-axis-y"],
+    },
+  },
+  {
     id: "widget-controller-a",
     state: {
       _model_name: "ControllerButtonModel",
@@ -919,8 +933,8 @@ const renderedWidgets = [
   {
     name: "Play and controller controls",
     source:
-      "src/components/widgets/controls/{play-widget,controller-button-widget,controller-axis-widget}.tsx",
-    role: "Browser-bound controls render from frozen state while live Gamepad polling remains an explicit adapter boundary.",
+      "src/components/widgets/controls/{play-widget,controller-widget,controller-button-widget,controller-axis-widget}.tsx",
+    role: "ControllerModel polls a docs-owned Gamepad API fixture and updates child button/axis models through the production widget context.",
   },
 ];
 
@@ -946,6 +960,35 @@ const adapterBoundaries = [
     body: "Inline and URL-backed _esm/_css now mount through AnyWidgetView. Kernel-originated blob resolver URLs and sandbox policy remain iframe/runtime adapter concerns.",
   },
 ];
+
+function fixtureGamepad(frame: number): Gamepad {
+  const primaryPressed = frame % 2 === 1;
+  const secondaryPressed = frame % 3 === 0;
+
+  return {
+    id: "nteract fixture gamepad",
+    index: 0,
+    connected: true,
+    mapping: "standard",
+    timestamp: 1000 + frame,
+    buttons: [
+      {
+        pressed: primaryPressed,
+        touched: primaryPressed,
+        value: primaryPressed ? 1 : 0.18,
+      },
+      {
+        pressed: secondaryPressed,
+        touched: secondaryPressed,
+        value: secondaryPressed ? 0.82 : 0.08,
+      },
+    ],
+    axes: [
+      Number((Math.sin(frame / 2) * 0.85).toFixed(2)),
+      Number((Math.cos(frame / 3) * 0.65).toFixed(2)),
+    ],
+  } as unknown as Gamepad;
+}
 
 const savedPasswordModel = {
   id: "widget-password-snapshot",
@@ -1177,6 +1220,80 @@ function OutputWidgetReplayFixture() {
   );
 }
 
+function ControllerPollingFixture() {
+  const [frame, setFrame] = useState(1);
+  const frameRef = useRef(frame);
+  const [mockReady, setMockReady] = useState(false);
+  const [mockError, setMockError] = useState<string | null>(null);
+
+  useEffect(() => {
+    frameRef.current = frame;
+  }, [frame]);
+
+  useEffect(() => {
+    const target = navigator as Navigator & { getGamepads?: Navigator["getGamepads"] };
+    const ownDescriptor = Object.getOwnPropertyDescriptor(target, "getGamepads");
+
+    try {
+      Object.defineProperty(target, "getGamepads", {
+        configurable: true,
+        value: () => [fixtureGamepad(frameRef.current), null, null, null],
+      });
+      setMockReady(true);
+      setMockError(null);
+    } catch (error) {
+      setMockReady(false);
+      setMockError(error instanceof Error ? error.message : "Gamepad API fixture unavailable");
+    }
+
+    return () => {
+      if (ownDescriptor) {
+        Object.defineProperty(target, "getGamepads", ownDescriptor);
+      } else {
+        Reflect.deleteProperty(target, "getGamepads");
+      }
+    };
+  }, []);
+
+  const pulseGamepad = useCallback(() => {
+    setFrame((current) => current + 1);
+  }, []);
+
+  return (
+    <div className="space-y-3" data-testid="widget-controller-polling-suite">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h4 className="text-sm font-semibold">ControllerModel polling</h4>
+          <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
+            The fixture installs a local Gamepad API response so the real ControllerWidget polls
+            browser state, marks the controller connected, and updates child button and axis models.
+          </p>
+        </div>
+        <Button size="sm" variant="outline" onClick={pulseGamepad}>
+          Pulse gamepad
+        </Button>
+      </div>
+      <div className="rounded-md border border-fd-border bg-fd-background p-3">
+        {mockReady ? (
+          <WidgetView modelId="widget-controller" />
+        ) : (
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-fd-muted-foreground">
+            Gamepad fixture unavailable{mockError ? `: ${mockError}` : "."}
+          </div>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-2 text-xs text-fd-muted-foreground">
+        <span className="rounded-full border border-fd-border bg-fd-card px-2 py-1">
+          fixture frame <span className="font-mono">{frame}</span>
+        </span>
+        <span className="rounded-full border border-fd-border bg-fd-card px-2 py-1">
+          navigator.getGamepads
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function WidgetFixtureProvider({ children }: { children: ReactNode }) {
   const storeRef = useRef<WidgetStore | null>(null);
   if (!storeRef.current) {
@@ -1368,8 +1485,9 @@ export function WidgetSurfacesExample() {
               <div className="mb-3">
                 <h3 className="text-sm font-semibold">Layout and browser-bound controls</h3>
                 <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
-                  Tabs, accordion, stack, play, and controller sub-controls render from fixture
-                  state. The live ControllerModel Gamepad loop remains a browser adapter boundary.
+                  Tabs, accordion, stack, play, and controller controls render from fixture state.
+                  The controller fixture drives the production Gamepad polling path with a local
+                  browser adapter.
                 </p>
               </div>
               <div className="grid gap-4 lg:grid-cols-[1.3fr_0.7fr]">
@@ -1380,12 +1498,7 @@ export function WidgetSurfacesExample() {
                 </div>
                 <div className="space-y-3 rounded-lg border border-fd-border bg-fd-card p-3">
                   <WidgetView modelId="widget-play" />
-                  <div className="flex items-center gap-2">
-                    <WidgetView modelId="widget-controller-a" />
-                    <WidgetView modelId="widget-controller-b" />
-                  </div>
-                  <WidgetView modelId="widget-axis-x" />
-                  <WidgetView modelId="widget-axis-y" />
+                  <ControllerPollingFixture />
                 </div>
               </div>
             </div>
@@ -1445,9 +1558,9 @@ export function WidgetSurfacesExample() {
             <h2 className="text-sm font-semibold">Next widget adapters</h2>
             <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
               The remaining widget catalog work is narrower now: live kernel blob resolver state,
-              ControllerModel Gamepad polling, live captured-output comm transport, richer ipycanvas
-              image buffers, and kernel-originated anywidget asset URLs need explicit iframe/runtime
-              adapters before they can render here.
+              live captured-output comm transport, richer ipycanvas image buffers, and
+              kernel-originated anywidget asset URLs need explicit iframe/runtime adapters before
+              they can render here.
             </p>
           </div>
         </div>

@@ -156,7 +156,7 @@ const families = [
     target: "nteract widgets",
     status: "active",
     intent:
-      "WidgetView, WidgetStore, AnyWidgetView, the AFM model proxy, inline and URL-backed anywidget assets, the current built-in controls registry, form, selection, numeric, status, media, hydrated DataView image buffers, docs-local bufferPaths URL hydration, file upload, OutputModel with nested widget-view output and local replay, layout containers, controller sub-controls, ipycanvas CanvasModel command replay, unsupported fallback, and static snapshots now render from comm-state fixtures.",
+      "WidgetView, WidgetStore, AnyWidgetView, the AFM model proxy, inline and URL-backed anywidget assets, the current built-in controls registry, form, selection, numeric, status, media, hydrated DataView image buffers, docs-local bufferPaths URL hydration, file upload, OutputModel with nested widget-view output and local replay, layout containers, ControllerModel polling against a fixture Gamepad API, ipycanvas CanvasModel command replay, unsupported fallback, and static snapshots now render from comm-state fixtures.",
   },
   {
     family: "Runtime decisions",
