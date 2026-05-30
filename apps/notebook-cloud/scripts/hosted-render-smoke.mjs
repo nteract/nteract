@@ -8,7 +8,9 @@ import {
   consoleMessageLevel,
   isolatedDiagnosticFailure,
   isFatalIsolatedDiagnostic,
+  matchesSiftLoadMilestone,
   parseIsolatedDiagnosticText,
+  siftLoadMilestoneTimingName,
 } from "./hosted-render-smoke-diagnostics.mjs";
 import {
   DEFAULT_PRIMARY_VIEWER_CSS_MAX_BYTES,
@@ -59,6 +61,10 @@ const expectedLatestRevisionNotebookHeadsHash =
 const expectedLatestRevisionRuntimeHeadsHash =
   process.env.NOTEBOOK_CLOUD_EXPECTED_LATEST_REVISION_RUNTIME_HEADS_HASH ?? "";
 const requireSiftWasm = process.env.NOTEBOOK_CLOUD_REQUIRE_SIFT_WASM !== "0";
+const expectedSiftLoadMilestones = parseExpectedTexts(
+  "NOTEBOOK_CLOUD_EXPECTED_SIFT_LOAD_MILESTONES",
+  requireSiftWasm ? ["first-chunk-fetched", "engine-mounted", "streaming-complete"] : [],
+);
 const requireRuntimedWasm = process.env.NOTEBOOK_CLOUD_REQUIRE_RUNTIMED_WASM !== "0";
 const requireViewerCssSplit = process.env.NOTEBOOK_CLOUD_REQUIRE_VIEWER_CSS_SPLIT !== "0";
 const maxPrimaryViewerCssBytes = parsePositiveInteger(
@@ -102,6 +108,7 @@ let runtimeWasmHintCheck = null;
 let screenshotSaved = false;
 let pageTextMatches = {};
 let themeModeChecks = [];
+const siftLoadMilestoneMatches = {};
 const smokeStartedAt = performance.now();
 const timingsMs = {};
 
@@ -304,10 +311,35 @@ async function main() {
       );
       markTiming("first_output_iframe");
     }
+    const siftLoadMilestoneTask = Promise.all(
+      expectedSiftLoadMilestones.map((milestone) =>
+        waitForSiftLoadMilestone(page, milestone).then((diagnostic) => {
+          siftLoadMilestoneMatches[milestone] = {
+            observed_ms: diagnostic.observedAtMs,
+            renderer_elapsed_ms:
+              typeof diagnostic.details?.elapsedMs === "number"
+                ? diagnostic.details.elapsedMs
+                : null,
+            row_count:
+              typeof diagnostic.details?.rowCount === "number" ? diagnostic.details.rowCount : null,
+            chunk_count:
+              typeof diagnostic.details?.chunkCount === "number"
+                ? diagnostic.details.chunkCount
+                : null,
+          };
+          markTimingAt(siftLoadMilestoneTimingName(milestone), diagnostic.observedAtMs);
+          return diagnostic;
+        }),
+      ),
+    ).catch((error) => ({ error }));
     const frameTextMatches =
       expectedFrameTexts.length > 0 ? await waitForFrameText(page, expectedFrameTexts) : {};
     if (expectedFrameTexts.length > 0) {
       markTiming("frame_texts");
+    }
+    const siftLoadMilestoneResult = await siftLoadMilestoneTask;
+    if ("error" in siftLoadMilestoneResult) {
+      throw siftLoadMilestoneResult.error;
     }
 
     // Give async iframe plugin fetches a beat to surface late CORS or WASM failures.
@@ -467,6 +499,7 @@ async function main() {
           executionCounts,
           reportCellCount,
           presenceText,
+          siftLoadMilestoneMatches,
           frameTextMatches,
           pageTextMatches,
           themeModeChecks,
@@ -521,7 +554,11 @@ function parseExpectedTexts(envName, fallback) {
 }
 
 function markTiming(name) {
-  timingsMs[name] ??= Math.round(performance.now() - smokeStartedAt);
+  markTimingAt(name, elapsedMs());
+}
+
+function markTimingAt(name, value) {
+  timingsMs[name] ??= Math.round(value);
 }
 
 function elapsedMs() {
@@ -862,6 +899,7 @@ async function checkHostedCatalogApi(
 function captureIsolatedDiagnostic(message, parsedDiagnostic) {
   const diagnostic = {
     ...parsedDiagnostic,
+    observedAtMs: elapsedMs(),
     level: consoleMessageLevel(message.type()),
     text: message.text(),
     details: null,
@@ -935,6 +973,27 @@ async function waitForFrameText(page, expectedTexts) {
     .filter(([, found]) => !found)
     .map(([text]) => text);
   throw new Error(`Timed out waiting for hosted renderer iframe text: ${missing.join(", ")}`);
+}
+
+async function waitForSiftLoadMilestone(page, milestone) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (fatalIsolatedDiagnostics.length > 0) {
+      await flushDiagnosticTasks();
+      throw new SmokeFailure(fatalIsolatedDiagnostics.map(isolatedDiagnosticFailure));
+    }
+    await flushDiagnosticTasks();
+    const diagnostic = siftDiagnostics.find((entry) =>
+      matchesSiftLoadMilestone(entry, { phase: milestone }),
+    );
+    if (diagnostic) {
+      return diagnostic;
+    }
+    await page.waitForTimeout(100);
+  }
+
+  throw new Error(`Timed out waiting for Sift load milestone: ${milestone}`);
 }
 
 async function saveScreenshot(page) {

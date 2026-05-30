@@ -43,3 +43,18 @@ export function isolatedDiagnosticFailure(diagnostic) {
     details: diagnostic.details ?? null,
   };
 }
+
+export function siftLoadMilestoneTimingName(milestone) {
+  return `sift_${milestone.replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`;
+}
+
+export function matchesSiftLoadMilestone(
+  diagnostic,
+  { source = "arrow-stream-manifest", phase } = {},
+) {
+  return (
+    diagnostic?.phase === "sift-load-milestone" &&
+    diagnostic.details?.source === source &&
+    diagnostic.details?.phase === phase
+  );
+}
