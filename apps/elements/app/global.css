@@ -19,9 +19,3 @@
 :root {
   --fd-layout-width: 1320px;
 }
-
-/* Sift's package stylesheet includes demo-page heading rules. */
-body h1 {
-  font-family: inherit;
-  color: inherit;
-}

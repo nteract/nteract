@@ -43,7 +43,7 @@
   color: var(--sift-accent);
 }
 
-h1 {
+.sift-page h1 {
   margin: 0;
   font:
     700 30px/1.08 Georgia,
