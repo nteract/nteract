@@ -144,10 +144,8 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
               <div
                 className={cn(
                   "flex w-7 flex-shrink-0 flex-col items-center gap-1 pt-1 select-none sm:w-10",
-                  rightGutterContent && "opacity-100 transition-opacity duration-150",
                   rightGutterContent &&
-                    "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
-                  rightGutterContent && isFocused && "sm:opacity-100",
+                    "pointer-events-none opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100",
                 )}
               >
                 {rightGutterContent}
@@ -182,10 +180,8 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 <div
                   className={cn(
                     "sticky top-2 flex w-7 flex-shrink-0 flex-col items-center gap-1 pt-1 select-none sm:w-10",
-                    outputRightGutterContent && "opacity-100 transition-opacity duration-150",
                     outputRightGutterContent &&
-                      "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
-                    outputRightGutterContent && isFocused && "sm:opacity-100",
+                      "pointer-events-none opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100",
                   )}
                 >
                   {outputRightGutterContent}
@@ -215,10 +211,8 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
             <div
               className={cn(
                 "flex w-7 flex-shrink-0 flex-col items-center gap-1 pt-3 select-none sm:w-10",
-                rightGutterContent && "opacity-100 transition-opacity duration-150",
                 rightGutterContent &&
-                  "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
-                rightGutterContent && isFocused && "sm:opacity-100",
+                  "pointer-events-none opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100",
               )}
             >
               {rightGutterContent}
