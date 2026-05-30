@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  buildNotebookOutlineTree,
   notebookCellAnchorHref,
   notebookCellAnchorId,
   notebookHeadingAnchorHref,
@@ -8,6 +9,7 @@ import {
   parseMarkdownHeadings,
   projectNotebookOutline,
   resolveNotebookOutlineSelection,
+  resolveNotebookOutlineContextItemId,
   slugifyNotebookHeading,
 } from "../src/notebook-outline";
 
@@ -235,5 +237,54 @@ describe("resolveNotebookOutlineSelection", () => {
     ]).items;
 
     expect(resolveNotebookOutlineSelection(items, { selectedCellId: "a" })).toBe("a:heading:0");
+  });
+
+  it("resolves focused code cells to the nearest preceding heading when cell order is available", () => {
+    const items = projectNotebookOutline([
+      { id: "intro", cell_type: "markdown", source: "# Load data" },
+      { id: "load", cell_type: "code", source: "df = pandas.read_csv(path)" },
+      { id: "clean-heading", cell_type: "markdown", source: "## Clean columns" },
+      { id: "clean", cell_type: "code", source: "df = df.dropna()" },
+    ]).items;
+
+    const cellIds = ["intro", "load", "clean-heading", "clean"];
+
+    expect(resolveNotebookOutlineContextItemId(items, cellIds, "load")).toBe("intro:heading:0");
+    expect(
+      resolveNotebookOutlineSelection(items, {
+        selectedCellId: "clean",
+        cellIds,
+      }),
+    ).toBe("clean-heading:heading:0");
+  });
+
+  it("keeps following code cells in the deepest trailing heading from a multi-heading cell", () => {
+    const items = projectNotebookOutline([
+      { id: "intro", cell_type: "markdown", source: "# Load data\n\n## CSV import" },
+      { id: "load", cell_type: "code", source: "df = pandas.read_csv(path)" },
+    ]).items;
+
+    expect(
+      resolveNotebookOutlineSelection(items, {
+        selectedCellId: "load",
+        cellIds: ["intro", "load"],
+      }),
+    ).toBe("intro:heading:1");
+  });
+});
+
+describe("buildNotebookOutlineTree", () => {
+  it("nests headings by markdown level without losing document order", () => {
+    const items = projectNotebookOutline([
+      { id: "a", cell_type: "markdown", source: "# Load data\n\n## CSV\n\n### Schema" },
+      { id: "b", cell_type: "markdown", source: "## Warehouse" },
+      { id: "c", cell_type: "markdown", source: "# Model" },
+    ]).items;
+
+    const tree = buildNotebookOutlineTree(items);
+
+    expect(tree.map((node) => node.item.title)).toEqual(["Load data", "Model"]);
+    expect(tree[0].children.map((node) => node.item.title)).toEqual(["CSV", "Warehouse"]);
+    expect(tree[0].children[0].children.map((node) => node.item.title)).toEqual(["Schema"]);
   });
 });

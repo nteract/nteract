@@ -41,6 +41,11 @@ export interface NotebookOutlineProjection {
   source: "headings" | "cells" | "empty";
 }
 
+export interface NotebookOutlineTreeNode {
+  item: NotebookOutlineItem;
+  children: NotebookOutlineTreeNode[];
+}
+
 export interface ProjectNotebookOutlineOptions<TCell extends NotebookOutlineSourceCell> {
   getStatusLabel?: (cell: TCell) => string | null | undefined;
   fallbackToCells?: boolean;
@@ -50,6 +55,7 @@ export interface ProjectNotebookOutlineOptions<TCell extends NotebookOutlineSour
 export interface NotebookOutlineSelectionInput {
   selectedItemId?: string | null;
   selectedCellId?: string | null;
+  cellIds?: readonly string[];
 }
 
 export interface ParsedNotebookHeading {
@@ -160,6 +166,30 @@ export function deriveNotebookOutlineItems<TCell extends NotebookOutlineSourceCe
   return projectNotebookOutline(cells, options).items;
 }
 
+export function buildNotebookOutlineTree(
+  items: readonly NotebookOutlineItem[],
+): NotebookOutlineTreeNode[] {
+  const roots: NotebookOutlineTreeNode[] = [];
+  const stack: NotebookOutlineTreeNode[] = [];
+
+  for (const item of items) {
+    const node: NotebookOutlineTreeNode = { item, children: [] };
+    while (stack.length > 0 && stack[stack.length - 1].item.level >= item.level) {
+      stack.pop();
+    }
+
+    const parent = stack.at(-1);
+    if (parent) {
+      parent.children.push(node);
+    } else {
+      roots.push(node);
+    }
+    stack.push(node);
+  }
+
+  return roots;
+}
+
 export function slugifyNotebookHeading(title: string): string {
   const slug = cleanOutlineTitle(title)
     .normalize("NFKD")
@@ -203,10 +233,43 @@ export function resolveNotebookOutlineSelection(
   }
 
   if (selection.selectedCellId) {
-    return items.find((item) => item.cellId === selection.selectedCellId)?.id ?? null;
+    const exactItem = items.find((item) => item.cellId === selection.selectedCellId);
+    if (exactItem) return exactItem.id;
+
+    if (selection.cellIds) {
+      return resolveNotebookOutlineContextItemId(
+        items,
+        selection.cellIds,
+        selection.selectedCellId,
+      );
+    }
   }
 
   return null;
+}
+
+export function resolveNotebookOutlineContextItemId(
+  items: readonly NotebookOutlineItem[],
+  cellIds: readonly string[],
+  cellId: string,
+): string | null {
+  const cellIndexById = new Map(cellIds.map((id, index) => [id, index]));
+  const selectedCellIndex = cellIndexById.get(cellId);
+  if (selectedCellIndex == null) return null;
+
+  let contextItem: NotebookOutlineItem | null = null;
+  let contextCellIndex = -1;
+
+  for (const item of items) {
+    const itemCellIndex = cellIndexById.get(item.cellId);
+    if (itemCellIndex == null || itemCellIndex > selectedCellIndex) continue;
+    if (itemCellIndex >= contextCellIndex) {
+      contextItem = item;
+      contextCellIndex = itemCellIndex;
+    }
+  }
+
+  return contextItem?.id ?? null;
 }
 
 function nextHeadingAnchor(title: string, anchorCounts: Map<string, number>): string {

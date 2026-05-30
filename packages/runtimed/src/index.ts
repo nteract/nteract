@@ -132,6 +132,7 @@ export {
 
 // Notebook outline projection
 export {
+  buildNotebookOutlineTree,
   deriveNotebookOutlineItems,
   notebookCellAnchorHref,
   notebookCellAnchorId,
@@ -140,6 +141,7 @@ export {
   notebookOutlineItemHref,
   parseMarkdownHeadings,
   projectNotebookOutline,
+  resolveNotebookOutlineContextItemId,
   resolveNotebookOutlineSelection,
   slugifyNotebookHeading,
   type NotebookOutlineHrefTarget,
@@ -148,6 +150,7 @@ export {
   type NotebookOutlineProjection,
   type NotebookOutlineSelectionInput,
   type NotebookOutlineSourceCell,
+  type NotebookOutlineTreeNode,
   type ParsedNotebookHeading,
   type ProjectNotebookOutlineOptions,
 } from "./notebook-outline";
