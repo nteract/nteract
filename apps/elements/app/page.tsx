@@ -5,7 +5,6 @@ import {
   Cloud,
   FileCode2,
   Frame,
-  ListChecks,
   Palette,
   PanelLeft,
   PanelTop,
@@ -27,12 +26,6 @@ const entries = [
     description: "Runtime-state matrix for the current notebook toolbar.",
     href: "/docs/notebook-toolbar-surfaces",
     icon: PanelTop,
-  },
-  {
-    title: "Component burn-down",
-    description: "Track notebook-specific components we should own.",
-    href: "/docs/component-burndown",
-    icon: ListChecks,
   },
   {
     title: "Cell anatomy",
