@@ -42,7 +42,6 @@ import { useTheme } from "@/hooks/useTheme";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { isTextAttributionEvent, type NotebookOutlineItem } from "runtimed";
 import { createNotebookCloudBlobResolver } from "../src/blob-resolver";
-import { snapshotWidgetCommsFromRuntimeState } from "../src/widget-comms";
 import { EditableMarkdownCell, type CloudTextAttributionQueue } from "./editable-markdown-cell";
 import type { RemoteCellPresence } from "@/components/editor/presence-state";
 import {
@@ -90,12 +89,8 @@ import {
   reduceCloudViewerPresenceMessage,
 } from "./presence";
 import { shouldShowPrototypeDevControls } from "./prototype-dev-controls";
-import {
-  createOutputResolutionCache,
-  type RenderCell,
-  type ResolvedCell,
-} from "./render-resolution";
-import { resolveCellsProgressively } from "./progressive-cell-resolution";
+import { createOutputResolutionCache, type ResolvedCell } from "./render-resolution";
+import { materializeCloudNotebookView } from "./cloud-view-model";
 import { rendererAssetBasePathForProvider } from "./renderer-assets";
 import {
   buildCloudShareAccessRows,
@@ -757,19 +752,12 @@ function NotebookViewer({
           config.runtimedWasmModulePath,
           config.runtimedWasmPath,
         );
-        const rawCells = JSON.parse(handle.get_cells_json()) as RenderCell[];
-        const runtimeState = handle.get_runtime_state();
-        const widgetComms = snapshotWidgetCommsFromRuntimeState(runtimeState, blobResolver);
-        const metadata = parseJsonOrNull(handle.get_metadata_snapshot_json?.());
-        const notebookLanguage = languageFromNotebookMetadata(metadata) ?? "python";
-        notebookLanguageRef.current = notebookLanguage;
         const outputResolutionCache = outputResolutionCacheRef.current;
-        const resolvedCells = await resolveCellsProgressively(
-          rawCells,
+        const materialized = await materializeCloudNotebookView(handle, {
           blobResolver,
-          notebookLanguage,
+          defaultNotebookLanguage: "python",
           outputResolutionCache,
-          {
+          callbacks: {
             shouldContinue: () => !cancelled && !liveMaterializedRef.current,
             onInitialCells(syncCells) {
               if (syncCells.length === 0) return;
@@ -786,15 +774,22 @@ function NotebookViewer({
               setCells(progressiveCells);
             },
           },
-        );
-        if (cancelled || liveMaterializedRef.current) return;
-
-        snapshotResolvedRef.current = true;
-        await projectCloudWidgetComms(widgetStore, widgetComms, projectedWidgetCommIdsRef, {
-          isAllowedBlobUrl: (url) => isConfiguredBlobUrl(url, config.blobBasePath),
-          shouldContinue: () => !cancelled && !liveMaterializedRef.current,
         });
         if (cancelled || liveMaterializedRef.current) return;
+        notebookLanguageRef.current = materialized.notebookLanguage;
+
+        snapshotResolvedRef.current = true;
+        await projectCloudWidgetComms(
+          widgetStore,
+          materialized.widgetComms,
+          projectedWidgetCommIdsRef,
+          {
+            isAllowedBlobUrl: (url) => isConfiguredBlobUrl(url, config.blobBasePath),
+            shouldContinue: () => !cancelled && !liveMaterializedRef.current,
+          },
+        );
+        if (cancelled || liveMaterializedRef.current) return;
+        const resolvedCells = materialized.cells;
         preloadSiftWasm(resolvedCells);
         setCells(resolvedCells);
         if (resolvedCells.length === 0) {
@@ -875,27 +870,13 @@ function NotebookViewer({
 
     const materializeLiveCells = async (liveRuntime: CloudSyncRuntime) => {
       const sequence = ++materializeSequence;
-      const rawCells = JSON.parse(liveRuntime.handle.get_cells_json()) as RenderCell[];
-      if (rawCells.length === 0) {
-        if (!snapshotResolvedRef.current || cellsRef.current.length > 0) {
-          return;
-        }
-      }
-      const widgetComms = snapshotWidgetCommsFromRuntimeState(
-        liveRuntime.handle.get_runtime_state(),
-        blobResolver,
-      );
-      const metadata = parseJsonOrNull(liveRuntime.handle.get_metadata_snapshot_json?.());
-      const notebookLanguage =
-        languageFromNotebookMetadata(metadata) ?? notebookLanguageRef.current ?? "python";
-      notebookLanguageRef.current = notebookLanguage;
+      const previousNotebookLanguage = notebookLanguageRef.current;
       const outputResolutionCache = outputResolutionCacheRef.current;
-      const resolvedCells = await resolveCellsProgressively(
-        rawCells,
+      const materialized = await materializeCloudNotebookView(liveRuntime.handle, {
         blobResolver,
-        notebookLanguage,
+        defaultNotebookLanguage: previousNotebookLanguage ?? "python",
         outputResolutionCache,
-        {
+        callbacks: {
           shouldContinue: () => !disposed && sequence === materializeSequence,
           onInitialCells(syncCells) {
             if (syncCells.length === 0) return;
@@ -915,15 +896,27 @@ function NotebookViewer({
             setCells(progressiveCells);
           },
         },
+      });
+      if (materialized.rawCellCount === 0) {
+        if (!snapshotResolvedRef.current || cellsRef.current.length > 0) {
+          return;
+        }
+      }
+      if (disposed || sequence !== materializeSequence) return;
+      notebookLanguageRef.current = materialized.notebookLanguage;
+
+      await projectCloudWidgetComms(
+        widgetStore,
+        materialized.widgetComms,
+        projectedWidgetCommIdsRef,
+        {
+          isAllowedBlobUrl: (url) => isConfiguredBlobUrl(url, config.blobBasePath),
+          shouldContinue: () => !disposed && sequence === materializeSequence,
+        },
       );
       if (disposed || sequence !== materializeSequence) return;
-
-      await projectCloudWidgetComms(widgetStore, widgetComms, projectedWidgetCommIdsRef, {
-        isAllowedBlobUrl: (url) => isConfiguredBlobUrl(url, config.blobBasePath),
-        shouldContinue: () => !disposed && sequence === materializeSequence,
-      });
-      if (disposed || sequence !== materializeSequence) return;
       liveMaterializedRef.current = true;
+      const resolvedCells = materialized.cells;
       preloadSiftWasm(resolvedCells);
       setCells(resolvedCells);
       setStatus(
@@ -2154,23 +2147,6 @@ function ViewerStartupError({ message }: { message: string }) {
       </div>
     </main>
   );
-}
-
-function languageFromNotebookMetadata(metadata: unknown): string | null {
-  if (typeof metadata !== "object" || metadata === null) return null;
-  const languageInfo = (metadata as Record<string, unknown>).language_info;
-  if (typeof languageInfo !== "object" || languageInfo === null) return null;
-  const name = (languageInfo as Record<string, unknown>).name;
-  return typeof name === "string" ? name : null;
-}
-
-function parseJsonOrNull(value: string | undefined): unknown {
-  if (!value) return null;
-  try {
-    return JSON.parse(value) as unknown;
-  } catch {
-    return null;
-  }
 }
 
 function isConfiguredBlobUrl(value: string, blobBasePath: string): boolean {
