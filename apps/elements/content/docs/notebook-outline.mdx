@@ -10,9 +10,11 @@ contents. It keeps reading navigation available while leaving clear sibling
 slots for packages, variables, renderers, and future notebook tools.
 
 This fixture now renders the current notebook app toolbar and shared
-`NotebookRail` directly. The package panel is supplied through
-`NotebookPackagesPanel` and hosts the current `DependencyHeader` with static
-dependency state.
+`NotebookRail` directly. The outline is projected with the same
+`projectNotebookOutline` helper production uses, then fed `outlineCellIds` so a
+focused code cell resolves to the nearest preceding heading. The package panel
+is supplied through `NotebookPackagesPanel` and hosts the current
+`DependencyHeader` with static dependency state.
 
 <RailOutlineExample />
 
@@ -27,7 +29,16 @@ dependency state.
   outline selection, and inert navigation callbacks.
 - The package panel imports `DependencyHeader` from the notebook app with
   fixture dependency and sync state.
-- The outline should start from materialized markdown headings.
+- The outline starts from `projectNotebookOutline` over fixture cells, matching
+  the production projection path from materialized markdown headings.
+- Contextual selection depends on `outlineCellIds`: a focused code cell inside a
+  section highlights the nearest preceding markdown heading.
+- Production active-section tracking still belongs to the app shell through
+  viewport observation and `resolveNotebookOutlineSelection`; this page only
+  fixtures the active item.
+- Heading navigation remains app-owned. Production routes heading anchors
+  through `navigateMarkdownHeading`, `scrollIntoView`, and history replacement;
+  the catalog keeps the callback inert.
 - Keep the rail icon-led. The current shared rail exposes outline and packages;
   variables, renderers, and future side panels are tracked as planned sibling
   panels until the app has current components for them.
