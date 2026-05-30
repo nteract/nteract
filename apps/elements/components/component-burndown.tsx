@@ -18,9 +18,9 @@ const stats = [
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
   {
     label: "current imports",
-    value: "85+",
+    value: "90+",
     detail:
-      "used shell toolbar, notebook rail, package headers, search, full cells, read-only cells, cell gutter, cell presence, runtime dialogs and banners, theme, output area, isolated output policy, plugin renderer, editor, widget controls, widget media, widget output, and ipycanvas surfaces",
+      "used shell toolbar, notebook rail, package headers, search, full cells, read-only cells, cell gutter, cell presence, runtime dialogs and banners, theme, output area, isolated output policy, plugin renderer, editor, widget controls, widget media, widget output, ipycanvas, and anywidget surfaces",
   },
 ];
 
@@ -156,7 +156,7 @@ const families = [
     target: "nteract widgets",
     status: "active",
     intent:
-      "WidgetView, WidgetStore, the current built-in controls registry, form, selection, numeric, status, media, file upload, OutputModel, layout containers, controller sub-controls, ipycanvas CanvasModel command replay, unsupported fallback, and static snapshots now render from comm-state fixtures.",
+      "WidgetView, WidgetStore, AnyWidgetView, the AFM model proxy, the current built-in controls registry, form, selection, numeric, status, media, file upload, OutputModel, layout containers, controller sub-controls, ipycanvas CanvasModel command replay, unsupported fallback, and static snapshots now render from comm-state fixtures.",
   },
   {
     family: "Runtime decisions",

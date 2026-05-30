@@ -29,6 +29,134 @@ type FixtureModel = {
   bufferPaths?: string[][];
 };
 
+const anyWidgetEsm = `
+export default {
+  render({ model, el }) {
+    el.classList.add("elements-anywidget-fixture");
+
+    const header = document.createElement("div");
+    header.className = "elements-anywidget-header";
+
+    const title = document.createElement("div");
+    title.className = "elements-anywidget-title";
+    title.textContent = String(model.get("title") || "AnyWidget");
+
+    const status = document.createElement("div");
+    status.className = "elements-anywidget-status";
+    status.textContent = String(model.get("status") || "ready");
+
+    header.append(title, status);
+
+    const body = document.createElement("div");
+    body.className = "elements-anywidget-body";
+
+    const value = document.createElement("button");
+    value.type = "button";
+    value.className = "elements-anywidget-value";
+
+    const meter = document.createElement("div");
+    meter.className = "elements-anywidget-meter";
+    const meterFill = document.createElement("div");
+    meterFill.className = "elements-anywidget-meter-fill";
+    meter.append(meterFill);
+
+    const custom = document.createElement("div");
+    custom.className = "elements-anywidget-custom";
+    custom.textContent = "waiting for custom message";
+
+    body.append(value, meter, custom);
+    el.append(header, body);
+
+    const update = () => {
+      const count = Number(model.get("value") || 0);
+      value.textContent = "value " + count;
+      meterFill.style.width = Math.min(100, count * 12) + "%";
+    };
+
+    const onCustom = (content, buffers) => {
+      const kind = content && typeof content.kind === "string" ? content.kind : "message";
+      custom.textContent = kind + " with " + (buffers ? buffers.length : 0) + " buffer(s)";
+    };
+
+    value.addEventListener("click", () => {
+      const next = Number(model.get("value") || 0) + 1;
+      model.set("value", next);
+      model.save_changes();
+      model.send({ kind: "anywidget-click", value: next });
+      update();
+    });
+
+    model.on("change:value", update);
+    model.on("msg:custom", onCustom);
+    update();
+
+    return () => {
+      model.off("change:value", update);
+      model.off("msg:custom", onCustom);
+      el.replaceChildren();
+    };
+  }
+};
+`;
+
+const anyWidgetCss = `
+.elements-anywidget-fixture {
+  display: grid;
+  gap: 12px;
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  border-radius: 8px;
+  padding: 14px;
+  background: color-mix(in srgb, canvas 94%, #0ea5e9 6%);
+  color: canvastext;
+}
+
+.elements-anywidget-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.elements-anywidget-title {
+  font: 700 14px/1.3 ui-sans-serif, system-ui, sans-serif;
+}
+
+.elements-anywidget-status,
+.elements-anywidget-custom {
+  color: color-mix(in srgb, currentColor 62%, transparent);
+  font: 500 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.elements-anywidget-body {
+  display: grid;
+  gap: 10px;
+}
+
+.elements-anywidget-value {
+  justify-self: start;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 6px;
+  padding: 7px 10px;
+  background: color-mix(in srgb, canvas 86%, currentColor 14%);
+  color: canvastext;
+  font: 700 13px/1 ui-sans-serif, system-ui, sans-serif;
+}
+
+.elements-anywidget-meter {
+  overflow: hidden;
+  height: 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.elements-anywidget-meter-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: #10b981;
+  transition: width 160ms ease;
+}
+`;
+
 const fixtureModels: FixtureModel[] = [
   {
     id: "widget-media-title",
@@ -138,6 +266,18 @@ const fixtureModels: FixtureModel[] = [
       _send_client_ready_event: true,
       width: 320,
       height: 180,
+    },
+  },
+  {
+    id: "widget-anywidget",
+    state: {
+      _model_name: "AnyModel",
+      _model_module: "anywidget",
+      _esm: anyWidgetEsm,
+      _css: anyWidgetCss,
+      title: "AnyWidget AFM fixture",
+      status: "inline ESM loaded by AnyWidgetView",
+      value: 4,
     },
   },
   {
@@ -584,6 +724,11 @@ const renderedWidgets = [
     role: "CanvasModel renders through WidgetView and replays a local binary command buffer via the CanvasManager router.",
   },
   {
+    name: "AnyWidgetView",
+    source: "src/components/widgets/anywidget-view.tsx",
+    role: "Inline _esm and _css fixtures exercise the AFM model proxy, CSS injection, state save, and custom message bridge.",
+  },
+  {
     name: "Layout containers",
     source: "src/components/widgets/controls/{gridbox,tab,accordion,stack}-widget.tsx",
     role: "Container widgets resolve IPY_MODEL children and render nested WidgetView surfaces from saved state.",
@@ -615,7 +760,7 @@ const adapterBoundaries = [
   {
     title: "Anywidget ESM",
     icon: PackageOpen,
-    body: "Dynamic _esm and _css loading remains an iframe/runtime boundary, not a docs-page side effect.",
+    body: "Inline _esm and _css now mount through AnyWidgetView; remote URL loading, sandbox policy, and kernel-originated assets remain iframe/runtime adapter concerns.",
   },
 ];
 
@@ -724,6 +869,40 @@ function CanvasCommandFixture() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function AnyWidgetFixture() {
+  const { store } = useWidgetStoreRequired();
+
+  const sendCustomPayload = useCallback(() => {
+    const buffer = new Uint8Array([4, 8, 15, 16]).buffer;
+    store.emitCustomMessage("widget-anywidget", { kind: "docs-custom-payload" }, [buffer]);
+  }, [store]);
+
+  useEffect(() => {
+    sendCustomPayload();
+  }, [sendCustomPayload]);
+
+  return (
+    <div
+      className="rounded-lg border border-fd-border bg-fd-background p-4"
+      data-testid="widget-anywidget-suite"
+    >
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold">AnyWidget AFM fixture</h3>
+          <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
+            AnyModel renders through WidgetView and AnyWidgetView. The fixture uses inline ESM and
+            CSS to exercise model.get, model.set, save_changes, and msg:custom without a live comm.
+          </p>
+        </div>
+        <Button size="sm" variant="outline" onClick={sendCustomPayload}>
+          Send custom payload
+        </Button>
+      </div>
+      <WidgetView modelId="widget-anywidget" />
     </div>
   );
 }
@@ -894,6 +1073,7 @@ export function WidgetSurfacesExample() {
               </div>
             </div>
             <CanvasCommandFixture />
+            <AnyWidgetFixture />
             <div
               className="rounded-lg border border-fd-border bg-fd-background p-4"
               data-testid="widget-layout-suite"
@@ -979,8 +1159,8 @@ export function WidgetSurfacesExample() {
             <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
               The remaining widget catalog work is narrower now: binary buffer hydration, live
               ControllerModel Gamepad polling, output-widget nesting, richer ipycanvas image
-              buffers, and anywidget ESM loading need explicit iframe/runtime adapters before they
-              can render here.
+              buffers, and remote anywidget ESM/CSS URLs need explicit iframe/runtime adapters
+              before they can render here.
             </p>
           </div>
         </div>
