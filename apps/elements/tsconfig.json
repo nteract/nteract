@@ -10,8 +10,12 @@
       "@/components/editor/*": ["../../src/components/editor/*"],
       "@/components/outputs/*": ["../../src/components/outputs/*"],
       "@/components/ui/*": ["../../src/components/ui/*"],
+      "@/components/widgets/*": ["../../src/components/widgets/*"],
       "@/lib/dark-mode": ["../../src/lib/dark-mode"],
+      "@/lib/error-boundary": ["../../src/lib/error-boundary"],
+      "@/lib/output-error-fallback": ["../../src/lib/output-error-fallback"],
       "@/lib/utils": ["../../src/lib/utils"],
+      "@/lib/widget-error-fallback": ["../../src/lib/widget-error-fallback"],
       "@/notebook-components/*": ["../../apps/notebook/src/components/*"],
       "@/*": ["./*"],
       "collections/*": ["./.source/*"]

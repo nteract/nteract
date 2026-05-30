@@ -17,8 +17,8 @@ const stats = [
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
   {
     label: "current imports",
-    value: "15",
-    detail: "used shell, runtime, theme, renderer, and editor surfaces",
+    value: "21",
+    detail: "used shell, runtime, theme, renderer, editor, and widget surfaces",
   },
 ];
 
@@ -106,8 +106,9 @@ const families = [
     family: "Widgets",
     source: "src/components/widgets/**",
     target: "nteract widgets",
-    status: "planned",
-    intent: "Treat widget controls as notebook output components, not generic form widgets.",
+    status: "active",
+    intent:
+      "WidgetView, WidgetStore, selected built-in controls, unsupported fallback, and static snapshots now render from comm-state fixtures.",
   },
   {
     family: "Runtime decisions",
@@ -139,7 +140,7 @@ const rules = [
   {
     title: "Use current components first",
     icon: ShieldCheck,
-    body: "Catalog pages render existing components through fixtures as soon as isolation allows. Cell, runtime, theme, editor, and output pages now start with real notebook pieces.",
+    body: "Catalog pages render existing components through fixtures as soon as isolation allows. Cell, runtime, theme, editor, output, and widget pages now start with real notebook pieces.",
   },
   {
     title: "Audit before cataloging",
