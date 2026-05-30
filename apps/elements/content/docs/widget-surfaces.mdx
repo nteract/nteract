@@ -32,7 +32,10 @@ The `OutputModel` fixture also includes a nested
 `MediaProvider` custom renderer shape used by the notebook app. A local replay
 control updates the same `outputs` trait through the widget context, so the
 catalog covers the `OutputWidget` state-update path without opening a live comm
-channel.
+channel. The widget boundary map separates the catalog's deterministic
+`WidgetStore`, `WidgetUpdateManager`, media buffer, and anywidget asset fixtures
+from the production RuntimeStateDoc, live comm bridge, daemon blob resolver, and
+kernel-originated asset paths.
 
 <WidgetSurfacesExample />
 
@@ -47,4 +50,7 @@ asset URLs, and generated WASM handoffs remain
 explicit adapter boundaries for later catalog slices. The docs-local media URL
 hydrator and blob uploader only handle static assets and stub `ContentRef`
 objects; production daemon blob resolver lifecycle and sync-originated
-`bufferPaths` still stay outside the catalog runtime.
+`bufferPaths` still stay outside the catalog runtime. The rendered map is the
+contract for that split: if a future slice moves a production boundary into the
+catalog, it should replace the row with a fixture-backed adapter rather than
+quietly importing runtime state.

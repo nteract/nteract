@@ -1008,6 +1008,44 @@ const adapterBoundaries = [
   },
 ];
 
+const widgetBoundaryRows = [
+  {
+    surface: "Saved widget state",
+    catalogPath: "fixture WidgetStore",
+    productionBoundary: "RuntimeStateDoc inbound",
+    detail:
+      "Control widgets, media widgets, layout containers, and play/controller examples render from seeded model state instead of subscribing to sync.",
+  },
+  {
+    surface: "Widget state updates",
+    catalogPath: "WidgetUpdateManager with docs CRDT writer",
+    productionBoundary: "comm bridge outbound",
+    detail:
+      "Catalog controls call the same update manager path, then write inert ContentRefs locally. Production sends validated updates back through the live comm bridge.",
+  },
+  {
+    surface: "Captured OutputWidget output",
+    catalogPath: "local OutputModel replay",
+    productionBoundary: "kernel captured-output comms",
+    detail:
+      "The nested widget-view MIME path resolves through MediaProvider and WidgetStore; live stdout/display capture and comm replay remain runtime responsibilities.",
+  },
+  {
+    surface: "Binary buffers and media URLs",
+    catalogPath: "DataView, static bufferPaths, and docs blob uploader",
+    productionBoundary: "daemon blob resolver lifecycle",
+    detail:
+      "The catalog hydrates static assets and uploads local binary leaves so widget media paths stay visible without daemon blob URL signing.",
+  },
+  {
+    surface: "AnyWidget assets",
+    catalogPath: "inline and URL-backed fixtures",
+    productionBoundary: "kernel-originated ESM/CSS assets",
+    detail:
+      "AnyWidgetView mounts against deterministic _esm and _css fixtures. Kernel-originated asset URLs and sandbox policy stay behind the runtime adapter.",
+  },
+];
+
 function fixtureGamepad(frame: number): Gamepad {
   const primaryPressed = frame % 2 === 1;
   const secondaryPressed = frame % 3 === 0;
@@ -1692,6 +1730,53 @@ export function WidgetSurfacesExample() {
               </div>
             </div>
           </WidgetFixtureProvider>
+        </div>
+      </section>
+
+      <section className="rounded-lg border border-fd-border bg-fd-card p-4">
+        <h2 className="text-sm font-semibold">Widget Boundary Map</h2>
+        <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+          The catalog renders production widget components against deterministic fixtures while
+          keeping kernel comm transport, sync, daemon blob routing, and iframe asset policy outside
+          the docs runtime.
+        </p>
+        <div className="mt-4 overflow-hidden rounded-md border border-fd-border">
+          <div className="hidden grid-cols-[180px_220px_210px_minmax(0,1fr)] gap-3 border-b border-fd-border bg-fd-muted/40 px-3 py-2 text-[11px] font-medium uppercase text-fd-muted-foreground xl:grid">
+            <span>Surface</span>
+            <span>Catalog path</span>
+            <span>Production boundary</span>
+            <span>Notes</span>
+          </div>
+          {widgetBoundaryRows.map((row) => (
+            <div
+              key={row.surface}
+              className="grid gap-2 border-b border-fd-border px-3 py-3 text-xs last:border-b-0 xl:grid-cols-[180px_220px_210px_minmax(0,1fr)] xl:gap-3"
+            >
+              <div>
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                  Surface
+                </div>
+                <div className="font-semibold">{row.surface}</div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                  Catalog path
+                </div>
+                <div className="font-mono text-[11px] text-emerald-700 dark:text-emerald-300">
+                  {row.catalogPath}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                  Production boundary
+                </div>
+                <div className="font-mono text-[11px] text-amber-700 dark:text-amber-300">
+                  {row.productionBoundary}
+                </div>
+              </div>
+              <p className="leading-5 text-fd-muted-foreground">{row.detail}</p>
+            </div>
+          ))}
         </div>
       </section>
 
