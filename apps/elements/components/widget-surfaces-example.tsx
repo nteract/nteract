@@ -24,6 +24,169 @@ type FixtureModel = {
 
 const fixtureModels: FixtureModel[] = [
   {
+    id: "widget-media-title",
+    state: {
+      _model_name: "HTMLModel",
+      _model_module: "@jupyter-widgets/controls",
+      value: "<strong>Media widget fixture</strong>",
+    },
+  },
+  {
+    id: "widget-image",
+    state: {
+      _model_name: "ImageModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "image",
+      value:
+        "data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20240%20120%22%3E%3Crect%20width%3D%22240%22%20height%3D%22120%22%20rx%3D%2214%22%20fill%3D%22%23eff6ff%22%2F%3E%3Cpath%20d%3D%22M24%2088%20C58%2058%2082%2070%20112%2044%20C144%2016%20168%2058%20216%2032%22%20fill%3D%22none%22%20stroke%3D%22%230ea5e9%22%20stroke-width%3D%229%22%20stroke-linecap%3D%22round%22%2F%3E%3Ccircle%20cx%3D%22112%22%20cy%3D%2244%22%20r%3D%228%22%20fill%3D%22%2310b981%22%2F%3E%3Ctext%20x%3D%2224%22%20y%3D%2228%22%20font-family%3D%22ui-sans-serif%2C%20system-ui%22%20font-size%3D%2214%22%20font-weight%3D%22700%22%20fill%3D%22%231e293b%22%3EImageWidget%3C%2Ftext%3E%3C%2Fsvg%3E",
+      format: "svg+xml",
+      width: "240",
+      height: "120",
+    },
+  },
+  {
+    id: "widget-audio",
+    state: {
+      _model_name: "AudioModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "audio",
+      value: "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=",
+      format: "wav",
+      controls: true,
+      autoplay: false,
+      loop: false,
+    },
+  },
+  {
+    id: "widget-video",
+    state: {
+      _model_name: "VideoModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "video",
+      value: "data:video/mp4;base64,AAAAHGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDE=",
+      format: "mp4",
+      controls: true,
+      autoplay: false,
+      loop: false,
+      width: "240",
+      height: "120",
+    },
+  },
+  {
+    id: "widget-file-upload",
+    state: {
+      _model_name: "FileUploadModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "Attach data",
+      button_style: "info",
+      icon: "upload",
+      accept: ".csv,.parquet",
+      multiple: true,
+      disabled: false,
+      value: [
+        {
+          name: "forecast.csv",
+          type: "text/csv",
+          size: 1842,
+          content: "cmVnaW9uLG1hZQp3ZXN0LDguNDIK",
+          last_modified: 1772246400000,
+        },
+      ],
+    },
+  },
+  {
+    id: "widget-output",
+    state: {
+      _model_name: "OutputModel",
+      _model_module: "@jupyter-widgets/output",
+      outputs: [
+        {
+          output_type: "stream",
+          name: "stdout",
+          text: "captured widget output\n",
+        },
+        {
+          output_type: "display_data",
+          data: {
+            "application/json": {
+              status: "complete",
+              rows: 128,
+              source: "OutputWidget fixture",
+            },
+            "text/plain": "{status: complete, rows: 128}",
+          },
+          metadata: {
+            "application/json": { collapsed: 1 },
+          },
+        },
+      ],
+    },
+  },
+  {
+    id: "widget-media-box",
+    state: {
+      _model_name: "GridBoxModel",
+      _model_module: "@jupyter-widgets/controls",
+      children: [
+        "IPY_MODEL_widget-image",
+        "IPY_MODEL_widget-audio",
+        "IPY_MODEL_widget-video",
+        "IPY_MODEL_widget-file-upload",
+      ],
+      box_style: "info",
+    },
+  },
+  {
+    id: "widget-axis-x",
+    state: {
+      _model_name: "ControllerAxisModel",
+      _model_module: "@jupyter-widgets/controls",
+      value: 0.42,
+    },
+  },
+  {
+    id: "widget-axis-y",
+    state: {
+      _model_name: "ControllerAxisModel",
+      _model_module: "@jupyter-widgets/controls",
+      value: -0.28,
+    },
+  },
+  {
+    id: "widget-controller-a",
+    state: {
+      _model_name: "ControllerButtonModel",
+      _model_module: "@jupyter-widgets/controls",
+      pressed: true,
+      value: 0.94,
+    },
+  },
+  {
+    id: "widget-controller-b",
+    state: {
+      _model_name: "ControllerButtonModel",
+      _model_module: "@jupyter-widgets/controls",
+      pressed: false,
+      value: 0.12,
+    },
+  },
+  {
+    id: "widget-play",
+    state: {
+      _model_name: "PlayModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "frame",
+      value: 6,
+      min: 0,
+      max: 12,
+      step: 1,
+      interval: 500,
+      _playing: false,
+      repeat: true,
+      disabled: false,
+    },
+  },
+  {
     id: "widget-summary",
     state: {
       _model_name: "HTMLModel",
@@ -291,6 +454,35 @@ const fixtureModels: FixtureModel[] = [
     },
   },
   {
+    id: "widget-tab",
+    state: {
+      _model_name: "TabModel",
+      _model_module: "@jupyter-widgets/controls",
+      children: ["IPY_MODEL_widget-dashboard", "IPY_MODEL_widget-media-box"],
+      _titles: ["Controls", "Media"],
+      selected_index: 0,
+    },
+  },
+  {
+    id: "widget-accordion",
+    state: {
+      _model_name: "AccordionModel",
+      _model_module: "@jupyter-widgets/controls",
+      children: ["IPY_MODEL_widget-controls-suite", "IPY_MODEL_widget-output"],
+      _titles: ["Built-ins", "Captured output"],
+      selected_index: 0,
+    },
+  },
+  {
+    id: "widget-stack",
+    state: {
+      _model_name: "StackModel",
+      _model_module: "@jupyter-widgets/controls",
+      children: ["IPY_MODEL_widget-media-box", "IPY_MODEL_widget-output"],
+      selected_index: 1,
+    },
+  },
+  {
     id: "widget-unknown",
     state: {
       _model_name: "CustomResearchWidgetModel",
@@ -353,6 +545,32 @@ const renderedWidgets = [
     source: "src/components/widgets/controls/button-widget.tsx",
     role: "Custom comm event is logged by the fixture adapter instead of sent to a kernel.",
   },
+  {
+    name: "Media widgets",
+    source: "src/components/widgets/controls/{image-widget,audio-widget,video-widget}.tsx",
+    role: "Image, audio, and video widgets render through buildMediaSrc with static data URLs instead of kernel-provided buffers.",
+  },
+  {
+    name: "FileUploadWidget",
+    source: "src/components/widgets/controls/file-upload-widget.tsx",
+    role: "The upload surface renders saved value state and keeps local file selection inside the fixture store.",
+  },
+  {
+    name: "OutputWidget",
+    source: "src/components/widgets/controls/output-widget.tsx",
+    role: "Captured outputs flow through the widget OutputModel path and MediaRouter without a live comm channel.",
+  },
+  {
+    name: "Layout containers",
+    source: "src/components/widgets/controls/{gridbox,tab,accordion,stack}-widget.tsx",
+    role: "Container widgets resolve IPY_MODEL children and render nested WidgetView surfaces from saved state.",
+  },
+  {
+    name: "Play and controller controls",
+    source:
+      "src/components/widgets/controls/{play-widget,controller-button-widget,controller-axis-widget}.tsx",
+    role: "Browser-bound controls render from frozen state while live Gamepad polling remains an explicit adapter boundary.",
+  },
 ];
 
 const adapterBoundaries = [
@@ -369,7 +587,7 @@ const adapterBoundaries = [
   {
     title: "Binary buffers",
     icon: FileJson,
-    body: "bufferPaths and DataView replacement are adapter concerns for image, audio, video, and anywidget bytes.",
+    body: "Media widgets render from static data URLs here; bufferPaths and DataView replacement remain adapter concerns for live kernel bytes.",
   },
   {
     title: "Anywidget ESM",
@@ -541,6 +759,51 @@ export function WidgetSurfacesExample() {
               </div>
               <WidgetView modelId="widget-controls-suite" />
             </div>
+            <div
+              className="rounded-lg border border-fd-border bg-fd-background p-4"
+              data-testid="widget-media-suite"
+            >
+              <div className="mb-3">
+                <h3 className="text-sm font-semibold">Media and captured output widgets</h3>
+                <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
+                  Image, audio, video, file upload, and OutputModel fixtures render through
+                  WidgetView with saved comm state and static payloads.
+                </p>
+              </div>
+              <div className="space-y-4">
+                <WidgetView modelId="widget-media-title" />
+                <WidgetView modelId="widget-media-box" />
+                <WidgetView modelId="widget-output" />
+              </div>
+            </div>
+            <div
+              className="rounded-lg border border-fd-border bg-fd-background p-4"
+              data-testid="widget-layout-suite"
+            >
+              <div className="mb-3">
+                <h3 className="text-sm font-semibold">Layout and browser-bound controls</h3>
+                <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
+                  Tabs, accordion, stack, play, and controller sub-controls render from fixture
+                  state. The live ControllerModel Gamepad loop remains a browser adapter boundary.
+                </p>
+              </div>
+              <div className="grid gap-4 lg:grid-cols-[1.3fr_0.7fr]">
+                <div className="space-y-4">
+                  <WidgetView modelId="widget-tab" />
+                  <WidgetView modelId="widget-accordion" />
+                  <WidgetView modelId="widget-stack" />
+                </div>
+                <div className="space-y-3 rounded-lg border border-fd-border bg-fd-card p-3">
+                  <WidgetView modelId="widget-play" />
+                  <div className="flex items-center gap-2">
+                    <WidgetView modelId="widget-controller-a" />
+                    <WidgetView modelId="widget-controller-b" />
+                  </div>
+                  <WidgetView modelId="widget-axis-x" />
+                  <WidgetView modelId="widget-axis-y" />
+                </div>
+              </div>
+            </div>
             <div className="grid gap-3 md:grid-cols-2">
               <div className="rounded-lg border border-fd-border bg-fd-background p-4">
                 <h3 className="text-sm font-semibold">Unsupported model fallback</h3>
@@ -596,9 +859,9 @@ export function WidgetSurfacesExample() {
           <div>
             <h2 className="text-sm font-semibold">Next widget adapters</h2>
             <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
-              Image, audio, video, FileUpload, OutputModel, controller, ipycanvas, and anywidget
-              examples should be added once the catalog has isolated adapters for blob URLs,
-              DataViews, rich output routing, browser APIs, and ESM module loading.
+              The remaining widget catalog work is narrower now: binary buffer hydration, live
+              ControllerModel Gamepad polling, ipycanvas, output-widget nesting, and anywidget ESM
+              loading need explicit iframe/runtime adapters before they can render here.
             </p>
           </div>
         </div>

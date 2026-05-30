@@ -18,9 +18,9 @@ const stats = [
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
   {
     label: "current imports",
-    value: "64",
+    value: "70+",
     detail:
-      "used shell toolbar, notebook rail, package headers, search, full cells, read-only cells, cell gutter, cell presence, runtime dialogs and banners, theme, output area, plugin renderer, editor, and expanded widget surfaces",
+      "used shell toolbar, notebook rail, package headers, search, full cells, read-only cells, cell gutter, cell presence, runtime dialogs and banners, theme, output area, plugin renderer, editor, widget controls, widget media, and widget output surfaces",
   },
 ];
 
@@ -147,7 +147,7 @@ const families = [
     target: "nteract widgets",
     status: "active",
     intent:
-      "WidgetView, WidgetStore, the current built-in controls registry, form, selection, numeric, status, and layout controls, unsupported fallback, and static snapshots now render from comm-state fixtures.",
+      "WidgetView, WidgetStore, the current built-in controls registry, form, selection, numeric, status, media, file upload, OutputModel, layout containers, controller sub-controls, unsupported fallback, and static snapshots now render from comm-state fixtures.",
   },
   {
     family: "Runtime decisions",

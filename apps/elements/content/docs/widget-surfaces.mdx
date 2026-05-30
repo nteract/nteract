@@ -10,6 +10,9 @@ Widgets are notebook output components. This page catalogs the current
 iframe, sync engine, or generated WASM resolver. The interactive examples import
 the production controls registry and render through `WidgetView`, so the page is
 tracking nteract-owned widget surfaces instead of page-local form stand-ins.
+The catalog now includes saved-state fixtures for control widgets, media
+widgets, `FileUploadModel`, `OutputModel`, layout containers, play controls, and
+controller sub-controls.
 
 <WidgetSurfacesExample />
 
@@ -18,6 +21,7 @@ tracking nteract-owned widget surfaces instead of page-local form stand-ins.
 The live notebook receives widget state from `RuntimeStateDoc` through
 `SyncEngine.commChanges$`, then forwards it to isolated output frames over the
 comm bridge. The catalog keeps those host responsibilities outside the rendered
-component examples. Browser APIs, blob/DataView conversion, output-widget routing,
-controller/gamepad input, anywidget ESM loading, and generated WASM handoffs
-remain explicit adapter boundaries for later catalog slices.
+component examples. Browser APIs, blob/DataView conversion, nested
+output-widget routing, live controller/gamepad input, anywidget ESM loading, and
+generated WASM handoffs remain explicit adapter boundaries for later catalog
+slices.
