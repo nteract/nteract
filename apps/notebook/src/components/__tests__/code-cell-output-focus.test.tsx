@@ -10,6 +10,7 @@ let mockExecution: {
   submitted_by_actor_label?: string | null;
 } | null = null;
 let mockIsExecuting = false;
+let mockIsFocused = false;
 let mockIsQueued = false;
 const mockEditorBlur = vi.fn();
 
@@ -104,7 +105,7 @@ vi.mock("../../hooks/useCrdtBridge", () => ({
 
 vi.mock("../../lib/cell-ui-state", () => ({
   useIsCellExecuting: () => mockIsExecuting,
-  useIsCellFocused: () => false,
+  useIsCellFocused: () => mockIsFocused,
   useIsCellQueued: () => mockIsQueued,
   useIsGroupExecuting: () => false,
   useIsNextCellFromFocused: () => false,
@@ -169,6 +170,7 @@ describe("CodeCell output focus", () => {
   beforeEach(() => {
     mockExecution = null;
     mockIsExecuting = false;
+    mockIsFocused = false;
     mockIsQueued = false;
     mockOutputs = [
       {
@@ -266,6 +268,55 @@ describe("CodeCell output focus", () => {
     expect(status).not.toHaveClass("text-destructive/80");
     expect(rule).toHaveClass("bg-primary/45");
     expect(stopButton).toHaveClass("text-destructive");
+  });
+
+  it("keeps idle footer language quiet until the cell is engaged", () => {
+    mockOutputs = [];
+    mockExecution = null;
+
+    const { container } = render(
+      <CodeCell
+        cell={makeCell()}
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+
+    const footer = container.querySelector('[data-slot="code-cell-current-line"]');
+    const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
+
+    expect(footer?.getAttribute("data-execution-state")).toBe("idle");
+    expect(status?.textContent).toBe("Ready to run in Python");
+    expect(status).toHaveClass("max-w-0");
+    expect(status).toHaveClass("opacity-0");
+    expect(status).toHaveClass("group-hover:max-w-40");
+    expect(rule).toHaveClass("bg-transparent");
+  });
+
+  it("shows idle footer language when the cell is focused", () => {
+    mockOutputs = [];
+    mockExecution = null;
+    mockIsFocused = true;
+
+    const { container } = render(
+      <CodeCell
+        cell={makeCell()}
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+
+    const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+
+    expect(status?.textContent).toBe("Ready to run in Python");
+    expect(status).toHaveClass("max-w-40");
+    expect(status).toHaveClass("opacity-100");
+    expect(status).not.toHaveClass("max-w-0");
   });
 
   it("omits output chrome for short stream output", () => {

@@ -214,6 +214,7 @@ function CodeCellCurrentLine({
   const languageLabel =
     language === "ipython" ? "Python" : (languageDisplayNames[language] ?? "Code");
   const state = isExecuting ? "running" : isQueued ? "queued" : count !== null ? "ran" : "idle";
+  const isQuietIdle = state === "idle" && !isFocused;
   const statusLabel = executionPhrase({ count, isExecuting, isQueued, languageLabel });
   const countLabel = executionCountLabel(count);
   const visibleCountLabel = visibleExecutionCountLabel(count);
@@ -281,7 +282,10 @@ function CodeCellCurrentLine({
       <span
         data-slot="code-cell-current-line-status"
         className={cn(
-          "shrink-0 font-medium transition-colors duration-150",
+          "shrink-0 whitespace-nowrap font-medium transition-[color,opacity,max-width] duration-150",
+          isQuietIdle
+            ? "max-w-0 overflow-hidden opacity-0 group-hover:max-w-40 group-hover:opacity-100 group-focus-within:max-w-40 group-focus-within:opacity-100"
+            : "max-w-40 opacity-100",
           isFocused && "text-foreground/70",
           isExecuting && "text-primary",
           isQueued && "text-sky-700 dark:text-sky-300",
