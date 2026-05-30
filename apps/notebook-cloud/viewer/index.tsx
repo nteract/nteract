@@ -89,11 +89,10 @@ import {
 import { shouldShowPrototypeDevControls } from "./prototype-dev-controls";
 import {
   createOutputResolutionCache,
-  resolveCell,
-  resolveCellSync,
   type RenderCell,
   type ResolvedCell,
 } from "./render-resolution";
+import { resolveCellsProgressively } from "./progressive-cell-resolution";
 import { rendererAssetBasePathForProvider } from "./renderer-assets";
 import {
   buildCloudShareAccessRows,
@@ -755,20 +754,27 @@ function NotebookViewer({
         const notebookLanguage = languageFromNotebookMetadata(metadata) ?? "python";
         notebookLanguageRef.current = notebookLanguage;
         const outputResolutionCache = outputResolutionCacheRef.current;
-        const syncCells = rawCells.map((cell, index) =>
-          resolveCellSync(cell, blobResolver, index, notebookLanguage, outputResolutionCache),
-        );
-        if (!cancelled && !liveMaterializedRef.current && syncCells.length > 0) {
-          setCells(syncCells);
-          setStatus({
-            kind: "loading",
-            message: `Rendering ${syncCells.length} cells while resolving output payloads...`,
-          });
-        }
-        const resolvedCells = await Promise.all(
-          rawCells.map((cell, index) =>
-            resolveCell(cell, blobResolver, index, notebookLanguage, outputResolutionCache),
-          ),
+        const resolvedCells = await resolveCellsProgressively(
+          rawCells,
+          blobResolver,
+          notebookLanguage,
+          outputResolutionCache,
+          {
+            shouldContinue: () => !cancelled && !liveMaterializedRef.current,
+            onInitialCells(syncCells) {
+              if (syncCells.length === 0) return;
+              setCells(syncCells);
+              setStatus({
+                kind: "loading",
+                message: `Rendering ${syncCells.length} cells while resolving output payloads...`,
+              });
+            },
+            onCellResolved(resolvedCell, _index, progressiveCells) {
+              if (progressiveCells.length === 0) return;
+              preloadSiftWasm([resolvedCell]);
+              setCells(progressiveCells);
+            },
+          },
         );
         if (cancelled || liveMaterializedRef.current) return;
 
@@ -872,23 +878,30 @@ function NotebookViewer({
         languageFromNotebookMetadata(metadata) ?? notebookLanguageRef.current ?? "python";
       notebookLanguageRef.current = notebookLanguage;
       const outputResolutionCache = outputResolutionCacheRef.current;
-      const syncCells = rawCells.map((cell, index) =>
-        resolveCellSync(cell, blobResolver, index, notebookLanguage, outputResolutionCache),
-      );
-      if (disposed || sequence !== materializeSequence) return;
-      if (syncCells.length > 0) {
-        liveMaterializedRef.current = true;
-        preloadSiftWasm(syncCells);
-        setCells(syncCells);
-        setStatus({
-          kind: "loading",
-          message: `Rendering ${syncCells.length} live cells while resolving output payloads...`,
-        });
-      }
-      const resolvedCells = await Promise.all(
-        rawCells.map((cell, index) =>
-          resolveCell(cell, blobResolver, index, notebookLanguage, outputResolutionCache),
-        ),
+      const resolvedCells = await resolveCellsProgressively(
+        rawCells,
+        blobResolver,
+        notebookLanguage,
+        outputResolutionCache,
+        {
+          shouldContinue: () => !disposed && sequence === materializeSequence,
+          onInitialCells(syncCells) {
+            if (syncCells.length === 0) return;
+            liveMaterializedRef.current = true;
+            preloadSiftWasm(syncCells);
+            setCells(syncCells);
+            setStatus({
+              kind: "loading",
+              message: `Rendering ${syncCells.length} live cells while resolving output payloads...`,
+            });
+          },
+          onCellResolved(resolvedCell, _index, progressiveCells) {
+            if (progressiveCells.length === 0) return;
+            liveMaterializedRef.current = true;
+            preloadSiftWasm([resolvedCell]);
+            setCells(progressiveCells);
+          },
+        },
       );
       if (disposed || sequence !== materializeSequence) return;
 
