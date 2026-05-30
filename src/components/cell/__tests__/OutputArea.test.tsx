@@ -1,4 +1,4 @@
-import { createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe-libraries";
 import { OutputArea, type JupyterOutput } from "../OutputArea";
@@ -215,6 +215,7 @@ describe("OutputArea iframe theme sync", () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("re-sends the current cream color theme when the iframe becomes ready", async () => {
@@ -302,6 +303,50 @@ describe("OutputArea iframe theme sync", () => {
     expect(getByTestId("isolated-frame").getAttribute("data-host-context")).toContain(
       "https://cdn.example.test/plugins/",
     );
+  });
+
+  it("defers opt-in isolated output frames until the output nears the viewport", async () => {
+    let intersectionCallback: IntersectionObserverCallback | undefined;
+    const observer = {
+      observe: vi.fn(),
+      disconnect: vi.fn(),
+      unobserve: vi.fn(),
+      takeRecords: vi.fn(() => []),
+    };
+    vi.stubGlobal(
+      "IntersectionObserver",
+      vi.fn(function MockIntersectionObserver(callback: IntersectionObserverCallback) {
+        intersectionCallback = callback;
+        return observer;
+      }),
+    );
+
+    const { container } = render(
+      <OutputArea outputs={makeMarkdownOutput()} isolated deferIsolatedFrameUntilVisible />,
+    );
+
+    expect(screen.queryByTestId("isolated-frame")).toBeNull();
+    expect(container.querySelector('[data-slot="isolated-frame-deferred"]')).not.toBeNull();
+    expect(mockFrameHandle.renderBatch).not.toHaveBeenCalled();
+    expect(observer.observe).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      intersectionCallback?.(
+        [{ isIntersecting: true, intersectionRatio: 1 } as IntersectionObserverEntry],
+        observer as unknown as IntersectionObserver,
+      );
+    });
+
+    expect(screen.getByTestId("isolated-frame")).toBeInTheDocument();
+    expect(observer.disconnect).toHaveBeenCalled();
+    await waitFor(() => {
+      expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
+        expect.objectContaining({
+          mimeType: "text/markdown",
+          outputId: "markdown-output",
+        }),
+      ]);
+    });
   });
 
   it("activates static iframe outputs on pointer down and keeps them active when the pointer leaves", () => {

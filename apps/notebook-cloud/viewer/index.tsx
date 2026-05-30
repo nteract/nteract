@@ -1238,6 +1238,8 @@ function NotebookViewer({
           cellClassName="cloud-cell"
           sourceClassName="cloud-source-block"
           outputClassName="cloud-output-block"
+          deferIsolatedFrameUntilVisible
+          deferredIsolatedFrameRootMargin="600px 0px"
           resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
           onNavigateToTracebackCell={handleTracebackCellNavigate}
           renderCellError={(error, _cell, index) => (
@@ -1984,6 +1986,8 @@ function CloudLiveNotebook({
               className="cloud-cell"
               sourceClassName="cloud-source-block"
               outputClassName="cloud-output-block"
+              deferIsolatedFrameUntilVisible
+              deferredIsolatedFrameRootMargin="600px 0px"
               resolveTracebackExecutionTarget={resolveTracebackExecutionTarget}
               onNavigateToTracebackCell={onNavigateToTracebackCell}
             />
