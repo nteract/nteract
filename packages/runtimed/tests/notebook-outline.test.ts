@@ -131,6 +131,45 @@ describe("projectNotebookOutline", () => {
     });
   });
 
+  it("prefers explicit metadata and leading section comments for code fallback titles", () => {
+    const projection = projectNotebookOutline([
+      {
+        id: "a",
+        cell_type: "code",
+        source: "df = pandas.read_csv(path)",
+        metadata: { title: "Load raw data" },
+      },
+      {
+        id: "b",
+        cell_type: "code",
+        source: "# ---- Clean columns ----\ndf = df.dropna()",
+      },
+      {
+        id: "c",
+        cell_type: "code",
+        source: "# noqa: F401\nimport pandas as pd",
+      },
+    ]);
+
+    expect(projection.items.map((item) => item.title)).toEqual([
+      "Load raw data",
+      "Clean columns",
+      "# noqa: F401",
+    ]);
+  });
+
+  it("cleans prose markdown fallback titles when no headings exist", () => {
+    const projection = projectNotebookOutline([
+      {
+        id: "a",
+        cell_type: "markdown",
+        source: "> **Summary:** [model findings](./findings.md) <br />",
+      },
+    ]);
+
+    expect(projection.items[0].title).toBe("Summary: model findings");
+  });
+
   it("can project heading hrefs when a host exposes heading anchors", () => {
     const projection = projectNotebookOutline(
       [{ id: "cell:1", cell_type: "markdown", source: "# Load data" }],

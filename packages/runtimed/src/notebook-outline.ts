@@ -13,7 +13,14 @@ export interface NotebookOutlineSourceCell {
   cell_type?: string | null;
   cellType?: string | null;
   execution_count?: number | null;
+  metadata?: NotebookOutlineSourceMetadata | null;
 }
+
+export type NotebookOutlineSourceMetadata = Record<string, unknown> & {
+  title?: unknown;
+  heading?: unknown;
+  name?: unknown;
+};
 
 export interface NotebookOutlineItem {
   id: string;
@@ -234,8 +241,17 @@ function encodeNotebookAnchorComponent(value: string): string {
 }
 
 function summarizeCell(cell: NotebookOutlineSourceCell, index: number): string {
+  const explicitTitle = metadataOutlineTitle(cell.metadata);
+  if (explicitTitle) return explicitTitle;
+
   const source = cell.source ?? "";
   const kind = cellKind(cell);
+
+  if (kind === "code") {
+    const sectionTitle = codeSectionCommentTitle(source);
+    if (sectionTitle) return sectionTitle;
+  }
+
   const firstLine = source
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -245,15 +261,64 @@ function summarizeCell(cell: NotebookOutlineSourceCell, index: number): string {
   }
 
   if (kind !== "markdown") {
-    return truncateOutlineTitle(firstLine.replace(/\s+/g, " ").trim());
+    return summarizeCodeLikeLine(firstLine);
   }
 
-  return cleanOutlineTitle(firstLine.replace(/^#{1,6}\s+/, ""));
+  return summarizeMarkdownProseLine(firstLine);
+}
+
+function metadataOutlineTitle(
+  metadata: NotebookOutlineSourceMetadata | null | undefined,
+): string | null {
+  if (!metadata) return null;
+
+  for (const key of ["title", "heading", "name"] as const) {
+    const value = metadata[key];
+    if (typeof value !== "string") continue;
+    const title = cleanOutlineTitle(value);
+    if (title) return title;
+  }
+
+  return null;
+}
+
+function codeSectionCommentTitle(source: string): string | null {
+  for (const rawLine of source.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const match = line.match(/^(?:#|\/\/|--)\s*(?:%%\s*)?(?:[-=]{2,}\s*)?(.*?)(?:\s*[-=]{2,})?$/);
+    if (!match) return null;
+
+    const title = cleanOutlineTitle(match[1]);
+    if (!title || isIgnoredCodeCommentTitle(title)) return null;
+    return title;
+  }
+
+  return null;
+}
+
+function isIgnoredCodeCommentTitle(title: string): boolean {
+  return /^(?:noqa|type:\s*ignore|pylint|ruff|flake8|fmt:|pragma:)/i.test(title);
+}
+
+function summarizeMarkdownProseLine(line: string): string {
+  return cleanOutlineTitle(
+    line
+      .replace(/^#{1,6}\s+/, "")
+      .replace(/^>\s*/, "")
+      .replace(/^(?:[-*+]|\d+[.)])\s+/, ""),
+  );
+}
+
+function summarizeCodeLikeLine(line: string): string {
+  return truncateOutlineTitle(line.replace(/\s+/g, " ").trim());
 }
 
 function cleanOutlineTitle(title: string): string {
   const text = title
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/<[^>]+>/g, "")
     .replace(/[`*_~]/g, "")
     .replace(/\s+/g, " ")
     .trim();
