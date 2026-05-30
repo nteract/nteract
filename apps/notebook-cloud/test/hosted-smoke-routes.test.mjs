@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   catalogApiUrlForViewer,
+  isRenderCacheApiUrl,
   notebookViewerUrl,
   pinnedNotebookViewerUrl,
 } from "../scripts/hosted-render-smoke-routes.mjs";
@@ -54,5 +55,20 @@ describe("hosted render smoke routes", () => {
   it("returns null for non-viewer URLs", () => {
     assert.equal(catalogApiUrlForViewer("https://example.com/"), null);
     assert.equal(catalogApiUrlForViewer("https://example.com/n/foo/sync"), null);
+  });
+
+  it("identifies stale render-cache API URLs", () => {
+    assert.equal(isRenderCacheApiUrl("https://example.com/api/n/foo/render"), true);
+    assert.equal(isRenderCacheApiUrl("https://example.com/api/n/foo/render?cache=1"), true);
+    assert.equal(isRenderCacheApiUrl("https://example.com/api/n/foo/renders/heads"), true);
+    assert.equal(isRenderCacheApiUrl("https://example.com/api/n/foo/renders/heads/"), true);
+    assert.equal(isRenderCacheApiUrl("https://example.com/api/n/foo/snapshots/heads"), false);
+    assert.equal(
+      isRenderCacheApiUrl("https://example.com/api/n/foo/runtime-snapshots/heads"),
+      false,
+    );
+    assert.equal(isRenderCacheApiUrl("https://example.com/api/n/foo/blobs/sha256"), false);
+    assert.equal(isRenderCacheApiUrl("https://example.com/n/foo/r/heads"), false);
+    assert.equal(isRenderCacheApiUrl("not a url"), false);
   });
 });

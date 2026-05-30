@@ -25,7 +25,7 @@ import {
   withTiming,
 } from "./hosted-render-smoke-performance.mjs";
 import { checkRuntimeWasmHints } from "./hosted-render-smoke-runtime-wasm.mjs";
-import { catalogApiUrlForViewer } from "./hosted-render-smoke-routes.mjs";
+import { catalogApiUrlForViewer, isRenderCacheApiUrl } from "./hosted-render-smoke-routes.mjs";
 
 const DEFAULT_URL = "https://preview.runt.run/n/topic-viz";
 const DEFAULT_RENDERER_ASSET_ORIGIN = "https://nteract-notebook-cloud-assets.rgbkrk.workers.dev";
@@ -67,6 +67,7 @@ const expectedSiftLoadMilestones = parseExpectedTexts(
 );
 const requireRuntimedWasm = process.env.NOTEBOOK_CLOUD_REQUIRE_RUNTIMED_WASM !== "0";
 const requireViewerCssSplit = process.env.NOTEBOOK_CLOUD_REQUIRE_VIEWER_CSS_SPLIT !== "0";
+const forbidRenderCacheRequests = process.env.NOTEBOOK_CLOUD_FORBID_RENDER_CACHE_REQUESTS !== "0";
 const maxPrimaryViewerCssBytes = parsePositiveInteger(
   process.env.NOTEBOOK_CLOUD_MAX_PRIMARY_VIEWER_CSS_BYTES,
   DEFAULT_PRIMARY_VIEWER_CSS_MAX_BYTES,
@@ -102,6 +103,7 @@ const siftDiagnostics = [];
 const diagnosticTasks = [];
 const performanceResources = [];
 const performanceRequests = new Map();
+const renderCacheRequests = [];
 let catalogApiCheck = null;
 let viewerCssCheck = null;
 let runtimeWasmHintCheck = null;
@@ -167,6 +169,12 @@ async function main() {
   });
 
   page.on("request", (request) => {
+    if (forbidRenderCacheRequests && isRenderCacheApiUrl(request.url())) {
+      renderCacheRequests.push({
+        method: request.method(),
+        url: request.url(),
+      });
+    }
     const kind = classifyPerformanceResource(request.url(), {
       targetOrigin,
       rendererAssetOrigin,
@@ -462,6 +470,13 @@ async function main() {
         });
       }
     }
+    if (forbidRenderCacheRequests && renderCacheRequests.length > 0) {
+      failures.push({
+        kind: "render-cache-request",
+        text: "Hosted viewer requested stale render-cache endpoints instead of live sync materialization",
+        requests: renderCacheRequests,
+      });
+    }
     if (screenshotPath) {
       await saveScreenshot(page);
     }
@@ -496,6 +511,8 @@ async function main() {
           catalogApiCheck,
           viewerCssCheck,
           runtimeWasmHintCheck,
+          forbidRenderCacheRequests,
+          renderCacheRequests,
           executionCounts,
           reportCellCount,
           presenceText,
