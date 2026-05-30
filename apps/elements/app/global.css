@@ -1,5 +1,5 @@
 @import "tailwindcss";
-@import "../../../packages/sift/src/style.css";
+@import "../../../packages/sift/src/library.css";
 @import "fumadocs-ui/css/neutral.css";
 @import "fumadocs-ui/css/preset.css";
 @import "../../../src/styles/ansi.css";

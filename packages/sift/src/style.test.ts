@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vite-plus/test";
 
-const styleCss = readFileSync("src/style.css", "utf8");
+const styleCss = readFileSync("src/library.css", "utf8");
 
 describe("Sift stylesheet", () => {
   it("lets vertical wheel gestures chain at table boundaries", () => {
