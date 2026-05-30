@@ -28,6 +28,10 @@ const [fixtureNotebookBytes, fixtureRuntimeBytes] = await Promise.all([
     ),
   ),
 ]);
+const fixtureRuntimeStateDocId = runtimeStateDocIdFromSnapshotPair(
+  fixtureNotebookBytes,
+  fixtureRuntimeBytes,
+);
 
 if (typeof WebSocket === "undefined") {
   throw new Error("This smoke script requires Node.js with a global WebSocket implementation");
@@ -226,15 +230,18 @@ assert(
   invalidAuthResponse.status === 400,
   `invalid auth should return 400, got ${invalidAuthResponse.status}`,
 );
-const runtimePut = await putBytes(runtimePath, runtimeBytes, "application/octet-stream");
+const runtimePut = await putBytes(runtimePath, runtimeBytes, "application/octet-stream", {
+  "X-Runtime-State-Doc-Id": fixtureRuntimeStateDocId,
+});
 assert(runtimePut.ok === true, `runtime snapshot PUT failed: ${JSON.stringify(runtimePut)}`);
 assertBytesEqual(
-  await fetchBytes(runtimePath),
+  await fetchBytes(runtimePath, { "X-Runtime-State-Doc-Id": fixtureRuntimeStateDocId }),
   runtimeBytes,
   "runtime snapshot GET did not round-trip",
 );
 const snapshotPut = await putBytes(snapshotPath, snapshotBytes, "application/octet-stream", {
   "X-Runtime-Heads-Hash": runtimeHeads,
+  "X-Runtime-State-Doc-Id": fixtureRuntimeStateDocId,
 });
 assert(snapshotPut.ok === true, `snapshot PUT failed: ${JSON.stringify(snapshotPut)}`);
 assertBytesEqual(await fetchBytes(snapshotPath), snapshotBytes, "snapshot GET did not round-trip");
@@ -315,7 +322,7 @@ async function seedNotebook(notebookId, ownerUser, grants = []) {
     `/api/n/${encodeURIComponent(notebookId)}/runtime-snapshots/${encodeURIComponent(runtimeHeads)}`,
     fixtureRuntimeBytes,
     "application/octet-stream",
-    { "X-User": ownerUser },
+    { "X-User": ownerUser, "X-Runtime-State-Doc-Id": fixtureRuntimeStateDocId },
   );
   await putBytes(
     `/api/n/${encodeURIComponent(notebookId)}/snapshots/${encodeURIComponent(snapshotHeads)}`,
@@ -324,6 +331,7 @@ async function seedNotebook(notebookId, ownerUser, grants = []) {
     {
       "X-User": ownerUser,
       "X-Runtime-Heads-Hash": runtimeHeads,
+      "X-Runtime-State-Doc-Id": fixtureRuntimeStateDocId,
     },
   );
   for (const grant of grants) {
@@ -584,9 +592,23 @@ async function putBytes(pathname, body, contentType, extraHeaders = {}) {
   return response.json();
 }
 
-async function fetchBytes(pathname) {
+function runtimeStateDocIdFromSnapshotPair(notebookBytes, runtimeBytes) {
+  const handle = wasm.NotebookHandle.load_snapshot(notebookBytes, runtimeBytes);
+  try {
+    const runtimeStateDocId = handle.get_runtime_state_doc_id();
+    assert(
+      typeof runtimeStateDocId === "string" && runtimeStateDocId.length > 0,
+      "NotebookDoc smoke fixture is missing runtime_state_doc_id",
+    );
+    return runtimeStateDocId;
+  } finally {
+    handle.free();
+  }
+}
+
+async function fetchBytes(pathname, extraHeaders = {}) {
   const url = new URL(pathname, baseUrl);
-  const response = await fetch(url);
+  const response = await fetch(url, { headers: extraHeaders });
   assert(response.ok, `${url.href} returned ${response.status}`);
   return new Uint8Array(await response.arrayBuffer());
 }

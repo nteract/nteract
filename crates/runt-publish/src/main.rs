@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 use automerge::AutoCommit;
 use clap::Parser;
-use notebook_doc::{default_runtime_state_doc_id, NotebookDoc};
+use notebook_doc::NotebookDoc;
 use notebook_sync::connect;
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use runtime_doc::RuntimeStateDoc;
@@ -157,7 +157,7 @@ async fn main() -> Result<()> {
         collect_snapshot_blob_refs(&snapshot.notebook_bytes, &snapshot.runtime_state_bytes)?;
     let initial_ref_count = refs.len();
     let runtime_state_doc_id =
-        runtime_state_doc_id_from_notebook_snapshot(&snapshot.notebook_bytes, &notebook_id)?;
+        runtime_state_doc_id_from_notebook_snapshot(&snapshot.notebook_bytes)?;
 
     let publisher = Publisher::new(args, notebook_id, blob_base_url, blob_store_path)?;
     let uploaded_blobs = publisher.upload_blob_closure(&mut refs).await?;
@@ -520,15 +520,12 @@ async fn wait_for_imported_cells(
     }
 }
 
-fn runtime_state_doc_id_from_notebook_snapshot(
-    notebook_bytes: &[u8],
-    fallback_notebook_id: &str,
-) -> Result<String> {
+fn runtime_state_doc_id_from_notebook_snapshot(notebook_bytes: &[u8]) -> Result<String> {
     let notebook_doc = NotebookDoc::load(notebook_bytes)
         .context("load NotebookDoc from exported snapshot bytes")?;
-    Ok(notebook_doc
+    notebook_doc
         .runtime_state_doc_id()
-        .unwrap_or_else(|| default_runtime_state_doc_id(fallback_notebook_id)))
+        .context("NotebookDoc snapshot is missing runtime_state_doc_id")
 }
 
 fn collect_runtime_snapshot_blob_refs(
@@ -803,6 +800,7 @@ fn with_trailing_slash(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::transaction::Transactable;
     use notebook_doc::{AttachmentEncoding, AttachmentRef};
     use std::collections::HashMap;
 
@@ -985,6 +983,35 @@ mod tests {
         assert_eq!(
             default_notebook_id(Path::new("/tmp/Topic Viz!.ipynb")),
             "topic-viz"
+        );
+    }
+
+    #[test]
+    fn runtime_state_doc_id_comes_from_notebook_pointer() {
+        let mut notebook_doc = NotebookDoc::new("publish-runtime-pointer");
+        let runtime_state_doc_id =
+            runtime_state_doc_id_from_notebook_snapshot(&notebook_doc.save()).unwrap();
+
+        assert_eq!(
+            runtime_state_doc_id,
+            notebook_doc.runtime_state_doc_id().unwrap()
+        );
+    }
+
+    #[test]
+    fn runtime_state_doc_id_is_required() {
+        let mut notebook_doc = NotebookDoc::new("publish-runtime-pointer");
+        notebook_doc
+            .doc_mut()
+            .delete(automerge::ROOT, "runtime_state_doc_id")
+            .unwrap();
+
+        let error = runtime_state_doc_id_from_notebook_snapshot(&notebook_doc.save()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("NotebookDoc snapshot is missing runtime_state_doc_id"),
+            "{error:#}"
         );
     }
 

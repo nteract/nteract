@@ -38,6 +38,7 @@ const fixtureBlobs = Array.isArray(fixtureManifest.blobs) ? fixtureManifest.blob
 const handle = NotebookHandle.load_snapshot(snapshotBytes, runtimeSnapshotBytes);
 const headsHash = headsDigest(handle.get_heads_hex());
 const runtimeHeadsHash = headsDigest(handle.get_runtime_state_heads_hex());
+const runtimeStateDocId = requiredRuntimeStateDocId(handle);
 const cells = JSON.parse(handle.get_cells_json());
 handle.free();
 
@@ -49,6 +50,9 @@ await putBytes(
   `/api/n/${encodeURIComponent(notebookId)}/runtime-snapshots/${encodeURIComponent(runtimeHeadsHash)}`,
   runtimeSnapshotBytes,
   "application/octet-stream",
+  {
+    "X-Runtime-State-Doc-Id": runtimeStateDocId,
+  },
 );
 await putBytes(
   `/api/n/${encodeURIComponent(notebookId)}/snapshots/${encodeURIComponent(headsHash)}`,
@@ -56,6 +60,7 @@ await putBytes(
   "application/octet-stream",
   {
     "X-Runtime-Heads-Hash": runtimeHeadsHash,
+    "X-Runtime-State-Doc-Id": runtimeStateDocId,
   },
 );
 
@@ -77,6 +82,7 @@ console.log(
       fixtureName,
       notebookId,
       viewerUrl: new URL(`/n/${encodeURIComponent(notebookId)}`, baseUrl).href,
+      runtimeStateDocId,
       headsHash,
       runtimeHeadsHash,
       cells: cells.length,
@@ -126,6 +132,15 @@ async function uploadFixtureBlob(blob) {
 function headsDigest(heads) {
   const input = heads.length > 0 ? heads.slice().sort().join("\n") : "empty";
   return `heads-${createHash("sha256").update(input).digest("hex").slice(0, 24)}`;
+}
+
+function requiredRuntimeStateDocId(handle) {
+  const runtimeStateDocId = handle.get_runtime_state_doc_id();
+  assert(
+    typeof runtimeStateDocId === "string" && runtimeStateDocId.length > 0,
+    "NotebookDoc fixture is missing runtime_state_doc_id",
+  );
+  return runtimeStateDocId;
 }
 
 async function putBytes(pathname, body, contentType, extraHeaders = {}) {
