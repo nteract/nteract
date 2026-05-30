@@ -4288,6 +4288,91 @@ mod tests {
         assert_eq!(server_ids, client_ids); // Same order after merge
     }
 
+    // ── Cross-version sync (the cloud topology) ───────────────────────
+    //
+    // Desktop ships daemon + frontend as one build, so every peer in a room
+    // runs the same schema version and none of the below can happen. Cloud
+    // (prototype) lets external, independently-versioned peers share a room
+    // through the host. These tests model that: two peers built from the
+    // *byte-identical* frozen genesis (NOTEBOOK_GENESIS_V5_BYTES), so they
+    // share a common ancestor and merge cleanly. A future vX that regenerates
+    // the genesis breaks this precondition — that is the original data-loss
+    // incident, at the sync layer.
+
+    /// Additive forward-compat across a live sync: a current (v5) peer keeps a
+    /// future (vX) peer's fields it cannot interpret. Sync exchanges ops keyed
+    /// by ObjId, not typed structs, so unknown keys merge and survive.
+    #[test]
+    fn test_cross_version_sync_preserves_additive_future_fields() {
+        let mut v5 = NotebookDoc::new_with_actor("room-nb", "peer-v5");
+        let mut future = NotebookDoc::new_with_actor("room-nb", "peer-future");
+
+        // v5 peer authors an ordinary cell.
+        v5.add_cell(0, "c-v5", "code").unwrap();
+        v5.update_source("c-v5", "print('v5')").unwrap();
+
+        // Future peer bumps the version and writes additive data a vX build
+        // might introduce: a new top-level key, and a new key inside a cell's
+        // metadata map. Cell metadata (not a bare cell field) is the additive
+        // surface — bare cell fields have no extras bag and die at the .ipynb
+        // boundary.
+        let future_version = SCHEMA_VERSION + 1;
+        future
+            .doc
+            .put(automerge::ROOT, "schema_version", future_version)
+            .unwrap();
+        future
+            .doc
+            .put(automerge::ROOT, "workspace_id", "ws-42")
+            .unwrap();
+        future.add_cell(0, "c-future", "code").unwrap();
+        future.update_source("c-future", "print('future')").unwrap();
+        future
+            .set_cell_metadata("c-future", &serde_json::json!({ "vx_pin": "abc123" }))
+            .unwrap();
+
+        // Live sync, both directions, to convergence.
+        let mut s_v5 = sync::State::new();
+        let mut s_future = sync::State::new();
+        sync_docs(&mut v5, &mut s_v5, &mut future, &mut s_future, 20);
+
+        // Cells from both peers merged cleanly, shared root not doubled.
+        let v5_ids: Vec<String> = v5.get_cells().iter().map(|c| c.id.clone()).collect();
+        let future_ids: Vec<String> = future.get_cells().iter().map(|c| c.id.clone()).collect();
+        assert_eq!(
+            v5_ids.len(),
+            2,
+            "both peers' cells present, genesis not doubled"
+        );
+        assert!(v5_ids.contains(&"c-v5".to_string()));
+        assert!(v5_ids.contains(&"c-future".to_string()));
+        assert_eq!(
+            v5_ids, future_ids,
+            "both peers converge to the same cell order"
+        );
+
+        // Only the future peer wrote schema_version (its write causally
+        // succeeds the seed), so the bump propagates cleanly — no conflict.
+        // Concurrent conflicting writes are Part 2's subject.
+        assert_eq!(v5.schema_version(), Some(future_version));
+
+        // The future peer's additive top-level key survives on the v5 peer,
+        // which has no code that reads it.
+        assert!(
+            matches!(
+                v5.doc.get(automerge::ROOT, "workspace_id"),
+                Ok(Some((automerge::Value::Scalar(_), _)))
+            ),
+            "unknown future top-level key preserved on the v5 peer"
+        );
+
+        // The future peer's additive cell metadata survives on the v5 peer.
+        let meta = v5
+            .get_cell_metadata("c-future")
+            .expect("future cell metadata present");
+        assert_eq!(meta["vx_pin"], "abc123");
+    }
+
     #[test]
     #[cfg(feature = "persistence")]
     fn test_notebook_doc_filename_deterministic() {
