@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowDownToLine,
   Boxes,
@@ -10,9 +10,15 @@ import {
   LockKeyhole,
   MonitorPlay,
   Palette,
+  PlugZap,
   ShieldCheck,
 } from "lucide-react";
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
+import {
+  createDaemonRendererPluginLoader,
+  daemonOutputFrameUrl,
+  daemonRendererAssetsBaseUrl,
+} from "@/components/isolated/daemon-renderer-assets";
 import { IsolatedFrame, outputSegmentLane, selectedOutputMimeType } from "@/components/isolated";
 import type { RenderPayload } from "@/components/isolated";
 import {
@@ -34,6 +40,11 @@ import {
 } from "@/components/isolated/mcp-app-structured-content";
 import { McpAppOutputFrame, type McpAppCellData } from "@/components/isolated/mcp-app-output-frame";
 import { outputFrameDisplayHeight } from "@/components/isolated/output-frame-sizing";
+import {
+  needsRendererPlugin,
+  rendererPluginInfoForMime,
+  rendererPluginNameForMime,
+} from "@/components/isolated/renderer-plugin-info";
 
 const laneOutputs: JupyterOutput[] = [
   {
@@ -238,6 +249,62 @@ const framePayloads: RenderPayload[] = [
   },
 ];
 
+const daemonBlobBaseUrl = "https://outputs.example.test/artifacts/";
+const docsRendererPluginBaseUrl = "/fixtures/daemon-assets";
+
+const daemonRendererAssetRows = [
+  "text/markdown",
+  "text/latex",
+  "application/vnd.plotly.v1+json",
+  "application/vnd.vegalite.v6+json",
+  "application/geo+json",
+  "application/vnd.apache.parquet",
+  "application/vnd.nteract.arrow-stream-manifest+json",
+  "text/plain",
+].map((mime) => {
+  const plugin = rendererPluginInfoForMime(mime);
+  return {
+    mime,
+    plugin: rendererPluginNameForMime(mime) ?? "core",
+    css: plugin?.hasCss ?? false,
+    needsPlugin: needsRendererPlugin(mime),
+  };
+});
+
+const daemonRendererAssetCspSamples = [
+  {
+    label: "allowed daemon frame",
+    value: daemonOutputFrameUrl(daemonBlobBaseUrl, {
+      frameDomains: ["https://outputs.example.test", "http://localhost:*"],
+    }),
+  },
+  {
+    label: "blocked by CSP",
+    value: daemonOutputFrameUrl(daemonBlobBaseUrl, {
+      frameDomains: ["https://other-renderer.example.test"],
+    }),
+  },
+  {
+    label: "plugin asset base",
+    value: daemonRendererAssetsBaseUrl(daemonBlobBaseUrl),
+  },
+];
+
+const daemonRendererPluginLoadMimes = [
+  "text/markdown",
+  "application/vnd.plotly.v1+json",
+  "application/vnd.nteract.arrow-stream-manifest+json",
+  "text/plain",
+];
+
+type PluginLoadState = {
+  mime: string;
+  status: "pending" | "loaded" | "core" | "error";
+  pluginId: string;
+  codeBytes?: number;
+  cssBytes?: number;
+};
+
 const sizingSamples = [
   { contentHeight: 18, autoHeight: true, maxHeight: 400, minHeight: 24 },
   { contentHeight: 720, autoHeight: false, maxHeight: 420, minHeight: 24 },
@@ -267,6 +334,13 @@ function documentPreview(document: ReturnType<typeof createIsolatedFrameDocument
 
 export function IsolatedOutputSurfacesExample() {
   const [mcpFrameEvents, setMcpFrameEvents] = useState<string[]>([]);
+  const [pluginLoadStates, setPluginLoadStates] = useState<PluginLoadState[]>(
+    daemonRendererPluginLoadMimes.map((mime) => ({
+      mime,
+      status: "pending",
+      pluginId: rendererPluginNameForMime(mime) ?? "core",
+    })),
+  );
   const baseContext = createNteractEmbedHostContext({
     isDark: false,
     colorTheme: "cream",
@@ -330,6 +404,48 @@ export function IsolatedOutputSurfacesExample() {
       }),
     },
   ];
+
+  useEffect(() => {
+    const loader = createDaemonRendererPluginLoader(docsRendererPluginBaseUrl);
+    let cancelled = false;
+
+    async function loadPlugins() {
+      const loaded = await Promise.all(
+        daemonRendererPluginLoadMimes.map(async (mime): Promise<PluginLoadState> => {
+          try {
+            const plugin = await loader?.(mime);
+            if (!plugin) {
+              return {
+                mime,
+                status: "core",
+                pluginId: rendererPluginNameForMime(mime) ?? "core",
+              };
+            }
+            return {
+              mime,
+              status: "loaded",
+              pluginId: plugin.id ?? rendererPluginNameForMime(mime) ?? mime,
+              codeBytes: plugin.code.length,
+              cssBytes: plugin.css?.length ?? 0,
+            };
+          } catch {
+            return {
+              mime,
+              status: "error",
+              pluginId: rendererPluginNameForMime(mime) ?? mime,
+            };
+          }
+        }),
+      );
+      if (!cancelled) setPluginLoadStates(loaded);
+    }
+
+    void loadPlugins();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <div className="not-prose space-y-8" data-testid="isolated-output-surfaces">
@@ -408,6 +524,109 @@ export function IsolatedOutputSurfacesExample() {
               <dd className="font-mono">{mergedContext.safeAreaInsets?.bottom}px</dd>
             </div>
           </dl>
+        </div>
+      </section>
+
+      <section
+        className="min-w-0 overflow-hidden rounded-lg border border-fd-border bg-fd-card"
+        data-testid="daemon-renderer-assets-surface"
+      >
+        <div className="border-b border-fd-border p-4">
+          <div className="flex items-center gap-2">
+            <PlugZap className="size-4 text-fd-muted-foreground" />
+            <h2 className="text-sm font-semibold">Daemon renderer asset handoff</h2>
+          </div>
+          <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+            The catalog uses the production daemon asset helpers with docs-served fixture bundles.
+            This covers MIME-to-plugin routing, output-frame CSP checks, plugin asset URLs, and the
+            renderer plugin loader without daemon state or generated renderer artifacts.
+          </p>
+        </div>
+        <div className="grid min-w-0 gap-4 p-4 xl:grid-cols-[0.9fr_1.1fr]">
+          <div className="min-w-0 space-y-3">
+            {daemonRendererAssetCspSamples.map((sample) => (
+              <div
+                key={sample.label}
+                className="rounded-md border border-fd-border bg-fd-background p-3"
+              >
+                <div className="text-[11px] font-medium uppercase text-fd-muted-foreground">
+                  {sample.label}
+                </div>
+                <div className="mt-1 break-words font-mono text-xs [overflow-wrap:anywhere]">
+                  {sample.value ?? "null"}
+                </div>
+              </div>
+            ))}
+            <div className="rounded-md border border-fd-border bg-fd-background p-3">
+              <div className="text-[11px] font-medium uppercase text-fd-muted-foreground">
+                docs fixture base
+              </div>
+              <div className="mt-1 break-words font-mono text-xs [overflow-wrap:anywhere]">
+                {docsRendererPluginBaseUrl}/renderer-plugins
+              </div>
+            </div>
+          </div>
+
+          <div className="min-w-0 overflow-hidden rounded-md border border-fd-border bg-fd-background">
+            <div className="hidden grid-cols-[minmax(0,1.2fr)_120px_90px_90px] gap-3 border-b border-fd-border px-3 py-2 text-[11px] font-medium uppercase text-fd-muted-foreground 2xl:grid">
+              <span>MIME</span>
+              <span>plugin</span>
+              <span>CSS</span>
+              <span>route</span>
+            </div>
+            {daemonRendererAssetRows.map((row) => (
+              <div
+                key={row.mime}
+                className="grid min-w-0 gap-2 border-b border-fd-border px-3 py-3 text-xs last:border-b-0 2xl:grid-cols-[minmax(0,1.2fr)_120px_90px_90px] 2xl:gap-3 2xl:py-2"
+              >
+                <div className="min-w-0">
+                  <div className="text-[11px] font-medium uppercase text-fd-muted-foreground 2xl:hidden">
+                    MIME
+                  </div>
+                  <span className="min-w-0 break-words font-mono [overflow-wrap:anywhere]">
+                    {row.mime}
+                  </span>
+                </div>
+                <div className="min-w-0">
+                  <div className="text-[11px] font-medium uppercase text-fd-muted-foreground 2xl:hidden">
+                    plugin
+                  </div>
+                  <span className="font-mono">{row.plugin}</span>
+                </div>
+                <div className="min-w-0">
+                  <div className="text-[11px] font-medium uppercase text-fd-muted-foreground 2xl:hidden">
+                    CSS
+                  </div>
+                  <span>{row.css ? "yes" : "no"}</span>
+                </div>
+                <div className="min-w-0">
+                  <div className="text-[11px] font-medium uppercase text-fd-muted-foreground 2xl:hidden">
+                    route
+                  </div>
+                  <span>{row.needsPlugin ? "plugin" : "core"}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="grid min-w-0 gap-3 border-t border-fd-border p-4 md:grid-cols-2 xl:grid-cols-4">
+          {pluginLoadStates.map((state) => (
+            <div
+              key={state.mime}
+              className="min-w-0 rounded-md border border-fd-border bg-fd-background p-3"
+            >
+              <div className="break-words font-mono text-[11px] leading-5 text-fd-muted-foreground [overflow-wrap:anywhere]">
+                {state.mime}
+              </div>
+              <div className="mt-2 text-sm font-semibold">{state.status}</div>
+              <div className="mt-1 text-xs text-fd-muted-foreground">
+                {state.pluginId}
+                {typeof state.codeBytes === "number"
+                  ? ` · ${state.codeBytes} JS bytes · ${state.cssBytes ?? 0} CSS bytes`
+                  : ""}
+              </div>
+            </div>
+          ))}
         </div>
       </section>
 

@@ -138,7 +138,7 @@ const families = [
     target: "nteract renderers",
     status: "active",
     intent:
-      "OutputArea lane composition, top-level widget-view MIME handoff, nested OutputModel widget-view routing, AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, MathOutput, SvgOutput, AudioOutput, JavaScriptOutput, PlotlyOutput, VegaOutput, GeoJsonOutput, PdfOutput, VideoOutput, TracebackOutput, MIME priority, SiftTable with static TableData, a HuggingFace Parquet URL, and an Arrow stream manifest decoded by docs-served Sift WASM now render from fixtures; live JavaScript execution, third-party renderer loading, live kernel widget comm transport, and production renderer asset bundles remain explicit adapter boundaries.",
+      "OutputArea lane composition, top-level widget-view MIME handoff, nested OutputModel widget-view routing, AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, MathOutput, SvgOutput, AudioOutput, JavaScriptOutput, PlotlyOutput, VegaOutput, GeoJsonOutput, PdfOutput, VideoOutput, TracebackOutput, MIME priority, SiftTable with static TableData, a HuggingFace Parquet URL, and an Arrow stream manifest decoded by docs-served Sift WASM now render from fixtures; live JavaScript execution, real third-party renderer execution, and live kernel widget comm transport remain explicit adapter boundaries.",
   },
   {
     family: "Output isolation",
@@ -147,7 +147,7 @@ const families = [
     target: "nteract renderers",
     status: "active",
     intent:
-      "Host-context theme merging, output lane routing, sizing, MCP structured output mapping, the production McpAppOutputFrame/createNteractOutputEmbed wrapper, and the docs IsolatedFrame/frame-config adapters now render with fixture-owned iframe readiness instead of desktop renderer artifacts.",
+      "Host-context theme merging, output lane routing, sizing, MCP structured output mapping, daemon renderer asset URL routing, MIME-to-plugin metadata, docs-served renderer-plugin fixture loading, the production McpAppOutputFrame/createNteractOutputEmbed wrapper, and the docs IsolatedFrame/frame-config adapters now render with fixture-owned iframe readiness instead of desktop renderer artifacts.",
   },
   {
     family: "Widgets",
