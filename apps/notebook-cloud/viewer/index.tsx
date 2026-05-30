@@ -35,6 +35,7 @@ import { ReadOnlyNotebookCell } from "@/components/cell/ReadOnlyNotebookCell";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import { NotebookRail, type NotebookRailPanelId } from "@/components/notebook-rail/NotebookRail";
+import { navigateMarkdownHeading } from "@/components/cell/markdown-heading-navigation";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import type { TracebackCellTarget } from "@/components/outputs/traceback-output";
@@ -1108,12 +1109,35 @@ function NotebookViewer({
   const handleSelectOutlineItem = useCallback((item: NotebookOutlineItem) => {
     setSelectedOutlineItemId(item.id);
   }, []);
-  const handleNavigateOutlineItem = useCallback((item: NotebookOutlineItem) => {
+  const handleNavigateOutlineItem = useCallback((item: NotebookOutlineItem, href: string) => {
     setSelectedOutlineItemId(item.id);
-    findCellElement(item.cellId)?.scrollIntoView({
-      behavior: "smooth",
-      block: "start",
-    });
+    const target = findCellElement(item.cellId);
+    if (!target) return false;
+
+    if (item.headingAnchorId) {
+      void navigateMarkdownHeading(item.cellId, item.headingAnchorId, {
+        behavior: "smooth",
+      }).then((handled) => {
+        if (!handled) {
+          target.scrollIntoView({
+            behavior: "smooth",
+            block: "start",
+          });
+        }
+      });
+    } else {
+      target.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }
+    if (href.startsWith("#")) {
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${window.location.search}${href}`,
+      );
+    }
     return true;
   }, []);
   const canEditMarkdown = canEditLiveNotebook(connectionScope);

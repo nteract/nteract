@@ -38,7 +38,7 @@ import { logger } from "../lib/logger";
 import {
   isMeasuredElementFound,
   registerMarkdownHeadingNavigator,
-} from "../lib/markdown-heading-navigation";
+} from "@/components/cell/markdown-heading-navigation";
 import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";
 import { openUrl } from "../lib/open-url";
 import { presenceSenderExtension } from "../lib/presence-sender";

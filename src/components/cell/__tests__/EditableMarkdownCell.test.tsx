@@ -4,12 +4,23 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { EditableMarkdownCell } from "../EditableMarkdownCell";
 import type { CodeMirrorEditorRef } from "@/components/editor";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
+import { navigateMarkdownHeading } from "../markdown-heading-navigation";
 
 const outputAreaCalls = vi.hoisted(() => ({
   props: [] as Array<{
     cellId?: string;
     className?: string;
     hostContext?: unknown;
+    onIsolatedFrameHandleChange?: (
+      handle: {
+        isReady: boolean;
+        measureElement: (headingAnchorId: string) => Promise<{
+          found: boolean;
+          top: number;
+          height: number;
+        }>;
+      } | null,
+    ) => void;
     priority?: readonly string[];
     outputs: Array<{ data?: Record<string, unknown>; output_type?: string }>;
   }>,
@@ -20,6 +31,7 @@ vi.mock("@/components/cell/OutputArea", () => ({
     cellId?: string;
     className?: string;
     hostContext?: unknown;
+    onIsolatedFrameHandleChange?: (handle: unknown) => void;
     priority?: readonly string[];
     outputs: Array<{ data?: Record<string, unknown>; output_type?: string }>;
   }) => {
@@ -32,7 +44,9 @@ vi.mock("@/components/cell/OutputArea", () => ({
         data-mimes={Object.keys(props.outputs[0]?.data ?? {}).join(",")}
         data-priority={props.priority?.join(",") ?? ""}
         data-testid="output-area"
-      />
+      >
+        <iframe data-slot="isolated-frame" title="markdown preview" />
+      </div>
     );
   },
 }));
@@ -132,6 +146,37 @@ describe("EditableMarkdownCell", () => {
     fireEvent.mouseDown(screen.getByRole("button", { name: "Render markdown" }));
 
     expect(onEditingChange).toHaveBeenCalledWith(false);
+  });
+
+  it("registers isolated markdown heading navigation for outline links", async () => {
+    const scrollTo = vi.fn();
+    Object.defineProperty(window, "scrollTo", {
+      configurable: true,
+      value: scrollTo,
+    });
+    const measureElement = vi.fn(async () => ({ found: true, top: 48, height: 24 }));
+
+    render(
+      <Harness
+        id="markdown-heading"
+        source="## Target"
+        editing={false}
+        onEditingChange={() => undefined}
+      />,
+    );
+
+    outputAreaCalls.props.at(-1)?.onIsolatedFrameHandleChange?.({
+      isReady: true,
+      measureElement,
+    });
+
+    await expect(
+      navigateMarkdownHeading("markdown-heading", "notebook-cell-markdown-heading-heading-target", {
+        behavior: "auto",
+      }),
+    ).resolves.toBe(true);
+    expect(measureElement).toHaveBeenCalledWith("notebook-cell-markdown-heading-heading-target");
+    expect(scrollTo).toHaveBeenCalledWith({ top: 48 - 16, behavior: "auto" });
   });
 });
 

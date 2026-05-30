@@ -13,8 +13,13 @@ import {
 } from "react";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
+import type { IsolatedFrameHandle } from "@/components/isolated/isolated-frame";
 import { cn } from "@/lib/utils";
 import { CellContainer } from "./CellContainer";
+import {
+  registerMarkdownHeadingNavigator,
+  scrollIsolatedMarkdownHeading,
+} from "./markdown-heading-navigation";
 import { OutputArea } from "./OutputArea";
 import type { JupyterOutput } from "./jupyter-output";
 
@@ -58,6 +63,8 @@ export function EditableMarkdownCell({
   presenceIndicators,
 }: EditableMarkdownCellProps) {
   const suppressNextToggleClickRef = useRef(false);
+  const viewRef = useRef<HTMLDivElement>(null);
+  const previewFrameRef = useRef<IsolatedFrameHandle | null>(null);
 
   const markdownOutput = useMemo<JupyterOutput>(
     () => ({
@@ -124,6 +131,27 @@ export function EditableMarkdownCell({
     [enterEditing],
   );
 
+  const handlePreviewFrameHandleChange = useCallback((handle: IsolatedFrameHandle | null) => {
+    previewFrameRef.current = handle;
+  }, []);
+
+  const scrollToHeading = useCallback(
+    async (headingAnchorId: string, options?: { behavior?: ScrollBehavior }) => {
+      if (editing) return false;
+      return scrollIsolatedMarkdownHeading({
+        frame: previewFrameRef.current,
+        root: viewRef.current,
+        headingAnchorId,
+        behavior: options?.behavior,
+      });
+    },
+    [editing],
+  );
+
+  useEffect(() => {
+    return registerMarkdownHeadingNavigator(id, scrollToHeading);
+  }, [id, scrollToHeading]);
+
   useEffect(() => {
     if (!editing) return;
     const frame = requestAnimationFrame(() => {
@@ -134,6 +162,7 @@ export function EditableMarkdownCell({
 
   return (
     <CellContainer
+      ref={viewRef}
       id={id}
       cellType="markdown"
       className={className}
@@ -182,6 +211,7 @@ export function EditableMarkdownCell({
               priority={priority}
               hostContext={hostContext}
               className={previewOutputClassName}
+              onIsolatedFrameHandleChange={handlePreviewFrameHandleChange}
             />
           </div>
         )

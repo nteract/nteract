@@ -1,5 +1,6 @@
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef } from "react";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
+import type { IsolatedFrameHandle } from "@/components/isolated/isolated-frame";
 import { ReadOnlyCodeMirror } from "@/components/editor/readonly-codemirror";
 import type { SupportedLanguage } from "@/components/editor/languages";
 import type {
@@ -9,6 +10,10 @@ import type {
 import { cn } from "@/lib/utils";
 import { CellContainer } from "./CellContainer";
 import { ExecutionCount } from "./ExecutionCount";
+import {
+  registerMarkdownHeadingNavigator,
+  scrollIsolatedMarkdownHeading,
+} from "./markdown-heading-navigation";
 import { OutputArea } from "./OutputArea";
 import type { JupyterOutput } from "./jupyter-output";
 
@@ -146,10 +151,9 @@ function renderReadOnlyCellSource({
 }): ReactNode {
   if (cellType === "markdown") {
     return (
-      <OutputArea
+      <ReadOnlyMarkdownSource
         cellId={cellId}
-        outputs={[markdownSourceOutput(cellId, source)]}
-        isolated="auto"
+        source={source}
         priority={priority}
         hostContext={hostContext}
         className={cn("pl-0 pr-0", sourceClassName)}
@@ -164,6 +168,57 @@ function renderReadOnlyCellSource({
       lineWrapping={lineWrapping}
       className={sourceClassName}
     />
+  );
+}
+
+function ReadOnlyMarkdownSource({
+  cellId,
+  source,
+  priority,
+  hostContext,
+  className,
+}: {
+  cellId: string;
+  source: string;
+  priority?: readonly string[];
+  hostContext?: NteractEmbedHostContextPatch;
+  className?: string;
+}) {
+  const viewRef = useRef<HTMLDivElement>(null);
+  const frameRef = useRef<IsolatedFrameHandle | null>(null);
+  const output = useMemo(() => markdownSourceOutput(cellId, source), [cellId, source]);
+
+  const handleFrameHandleChange = useCallback((handle: IsolatedFrameHandle | null) => {
+    frameRef.current = handle;
+  }, []);
+
+  const scrollToHeading = useCallback(
+    (headingAnchorId: string, options?: { behavior?: ScrollBehavior }) =>
+      scrollIsolatedMarkdownHeading({
+        frame: frameRef.current,
+        root: viewRef.current,
+        headingAnchorId,
+        behavior: options?.behavior,
+      }),
+    [],
+  );
+
+  useEffect(() => {
+    return registerMarkdownHeadingNavigator(cellId, scrollToHeading);
+  }, [cellId, scrollToHeading]);
+
+  return (
+    <div ref={viewRef} data-slot="read-only-markdown-source">
+      <OutputArea
+        cellId={cellId}
+        outputs={[output]}
+        isolated="auto"
+        priority={priority}
+        hostContext={hostContext}
+        className={className}
+        onIsolatedFrameHandleChange={handleFrameHandleChange}
+      />
+    </div>
   );
 }
 

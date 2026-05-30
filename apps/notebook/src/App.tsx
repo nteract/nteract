@@ -87,7 +87,7 @@ import { getTrustApprovalHandoffDisplayStatus, KERNEL_STATUS } from "./lib/kerne
 import { type PendingTrustAction } from "./lib/trust-actions";
 import { useObservable } from "./lib/use-observable";
 import { logger } from "./lib/logger";
-import { navigateMarkdownHeading } from "./lib/markdown-heading-navigation";
+import { navigateMarkdownHeading } from "@/components/cell/markdown-heading-navigation";
 import { getNotebookCellsSnapshot, useSourceVersion } from "./lib/notebook-cells";
 import { useNotebookQueueProjection } from "./lib/notebook-executions";
 import { useDetectRuntime, useNotebookMetadata } from "./lib/notebook-metadata";

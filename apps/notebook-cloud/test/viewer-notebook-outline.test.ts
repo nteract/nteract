@@ -25,6 +25,10 @@ test("cloud notebook outline derives headings from live materialized cells", () 
       ["intro:heading:1", "intro", "Setup", 2],
     ],
   );
+  assert.deepEqual(
+    outline.map((item) => item.href),
+    ["#notebook-cell-intro-heading-intro", "#notebook-cell-intro-heading-setup"],
+  );
 });
 
 test("cloud notebook outline follows live cell source updates", () => {
