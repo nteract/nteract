@@ -36,6 +36,7 @@ export async function clientForSocket(socket, safeUrl) {
   socket.addEventListener("error", (event) => {
     failWaiters(event.error ?? new Error(`WebSocket error from ${safeUrl}`));
   });
+  socket.drainBufferedData?.();
 
   if (socket.readyState !== RawWebSocketClient.OPEN) {
     await new Promise((resolve, reject) => {
@@ -185,6 +186,9 @@ export class RawWebSocketClient {
       this.dispatch("close", {});
     });
     this.socket.on("error", (error) => this.dispatch("error", { error }));
+  }
+
+  drainBufferedData() {
     if (this.buffer.length > 0) {
       this.receive(Buffer.alloc(0));
     }

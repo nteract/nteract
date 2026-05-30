@@ -22,6 +22,8 @@ const timeoutMs = Number(process.env.NOTEBOOK_CLOUD_SMOKE_TIMEOUT_MS ?? 60_000);
 const convergenceRounds = Number(process.env.NOTEBOOK_CLOUD_COLLAB_ROUNDS ?? 4);
 const screenshotPath = process.env.NOTEBOOK_CLOUD_SMOKE_SCREENSHOT;
 const timingsMs = {};
+const editableMarkdownCellSelector = ".cloud-editable-markdown-cell";
+const editableMarkdownEditorSelector = `${editableMarkdownCellSelector} .cm-content[contenteditable='true']`;
 const performanceBudgets = {
   collab_connected_ms: parseOptionalBudget(process.env.NOTEBOOK_CLOUD_MAX_COLLAB_CONNECTED_MS),
   collab_editor_update_max_ms: parseOptionalBudget(
@@ -210,13 +212,12 @@ ${bobMarker}
         }),
         failures,
         visitedUrls,
-        allowSyncFailure: true,
       }),
     );
     contexts.push(charlie.context);
-    await timed("charlie_denied", () => waitForPresence(charlie.page, "Offline"));
+    await timed("charlie_downgraded", () => waitForPresence(charlie.page, "viewing"));
     await assertNoEditableMarkdown(charlie.page);
-    checks.push("ungranted_editor_denied");
+    checks.push("ungranted_editor_downgraded_to_viewer");
 
     assertTokenAbsentFromUrls(visitedUrls, token);
     checks.push("token_absent_from_urls");
@@ -334,10 +335,7 @@ function instrumentPage({ page, name, failures, visitedUrls, allowSyncFailure })
 }
 
 async function replaceMarkdown(page, source, localEvidenceText) {
-  const editor = page
-    .locator("[data-slot='cloud-editable-markdown-cell'] .cm-content[contenteditable='true']")
-    .first();
-  await editor.waitFor({ state: "visible", timeout: timeoutMs });
+  const editor = await ensureEditableMarkdown(page);
   await editor.click();
   await page.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
   await page.keyboard.insertText(source);
@@ -345,38 +343,26 @@ async function replaceMarkdown(page, source, localEvidenceText) {
 }
 
 async function waitForEditableMarkdown(page) {
-  await page
-    .locator("[data-slot='cloud-editable-markdown-cell'] .cm-content[contenteditable='true']")
-    .first()
-    .waitFor({ state: "visible", timeout: timeoutMs });
+  await ensureEditableMarkdown(page);
 }
 
 async function focusEditableMarkdown(page) {
-  const editor = page
-    .locator("[data-slot='cloud-editable-markdown-cell'] .cm-content[contenteditable='true']")
-    .first();
-  await editor.waitFor({ state: "visible", timeout: timeoutMs });
+  const editor = await ensureEditableMarkdown(page);
   await editor.click();
 }
 
 async function waitForEditableMarkdownText(page, expectedText) {
-  const editor = page
-    .locator("[data-slot='cloud-editable-markdown-cell'] .cm-content[contenteditable='true']")
-    .first();
+  const editor = page.locator(editableMarkdownEditorSelector).first();
   await editor.waitFor({ state: "visible", timeout: timeoutMs });
   await page.waitForFunction(
     ([selector, expected]) => document.querySelector(selector)?.textContent?.includes(expected),
-    [
-      "[data-slot='cloud-editable-markdown-cell'] .cm-content[contenteditable='true']",
-      expectedText,
-    ],
+    [editableMarkdownEditorSelector, expectedText],
     { timeout: timeoutMs },
   );
 }
 
 async function waitForEditableMarkdownExactText(page, expectedText) {
-  const selector = "[data-slot='cloud-editable-markdown-cell'] .cm-content[contenteditable='true']";
-  const editor = page.locator(selector).first();
+  const editor = page.locator(editableMarkdownEditorSelector).first();
   await editor.waitFor({ state: "visible", timeout: timeoutMs });
   await page.waitForFunction(
     ([contentSelector, expected]) => {
@@ -387,7 +373,7 @@ async function waitForEditableMarkdownExactText(page, expectedText) {
         .join("\n");
       return text.trimEnd() === expected.trimEnd();
     },
-    [selector, expectedText],
+    [editableMarkdownEditorSelector, expectedText],
     { timeout: timeoutMs },
   );
 }
@@ -413,24 +399,38 @@ async function waitForEditorsEqualContaining(pages, expectedMarkers) {
 }
 
 async function editableMarkdownText(page) {
-  const selector = "[data-slot='cloud-editable-markdown-cell'] .cm-content[contenteditable='true']";
-  await page.locator(selector).first().waitFor({ state: "visible", timeout: timeoutMs });
+  await page.locator(editableMarkdownEditorSelector).first().waitFor({
+    state: "visible",
+    timeout: timeoutMs,
+  });
   return page.evaluate((contentSelector) => {
     const content = document.querySelector(contentSelector);
     if (!content) return "";
     return Array.from(content.querySelectorAll(".cm-line"))
       .map((line) => line.textContent ?? "")
       .join("\n");
-  }, selector);
+  }, editableMarkdownEditorSelector);
 }
 
 async function assertNoEditableMarkdown(page) {
-  const count = await page
-    .locator("[data-slot='cloud-editable-markdown-cell'] .cm-content[contenteditable='true']")
-    .count();
+  const count = await page.locator(editableMarkdownEditorSelector).count();
   if (count !== 0) {
     throw new Error("ungranted editor unexpectedly received an editable markdown surface");
   }
+}
+
+async function ensureEditableMarkdown(page) {
+  const cell = page.locator(editableMarkdownCellSelector).first();
+  await cell.waitFor({ state: "visible", timeout: timeoutMs });
+
+  const editor = page.locator(editableMarkdownEditorSelector).first();
+  if ((await editor.count()) > 0 && (await editor.isVisible().catch(() => false))) {
+    return editor;
+  }
+
+  await cell.locator(".cloud-markdown-cell-action").first().click({ timeout: timeoutMs });
+  await editor.waitFor({ state: "visible", timeout: timeoutMs });
+  return editor;
 }
 
 async function waitForPresence(page, expectedText) {

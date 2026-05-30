@@ -62,6 +62,26 @@ describe("raw WebSocket client helpers", () => {
     assert.deepEqual(Array.from(received[0]), [FrameType.AUTOMERGE_SYNC, 1, 2, 3]);
   });
 
+  it("keeps upgrade response leftover frames until client listeners are attached", async () => {
+    const payload = new TextEncoder().encode(JSON.stringify({ type: "cloud_room_ready" }));
+    const bytes = new Uint8Array(payload.byteLength + 1);
+    bytes[0] = FrameType.SESSION_CONTROL;
+    bytes.set(payload, 1);
+    const raw = new RawWebSocketClient(
+      new FakeNetSocket(),
+      serverFrame({ fin: true, opcode: 0x2, payload: Buffer.from(bytes) }),
+    );
+
+    const client = await clientForSocket(raw, "wss://cloud.test/n/demo/sync");
+    const frame = await client.nextFrame(
+      (candidate) =>
+        candidate.type === FrameType.SESSION_CONTROL && candidate.json?.type === "cloud_room_ready",
+      250,
+    );
+
+    assert.equal(frame.json.type, "cloud_room_ready");
+  });
+
   it("decodes session control JSON and fingerprints principals without leaking raw ids", async () => {
     const payload = new TextEncoder().encode(JSON.stringify({ type: "cloud_room_ready" }));
     const bytes = new Uint8Array(payload.byteLength + 1);
