@@ -16,34 +16,39 @@ import { useEffect, type ReactNode } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { CellInsertionRibbon } from "@/components/cell/CellInsertionRibbon";
 import { CodeCellCurrentLine } from "@/components/cell/CodeCellCurrentLine";
-import { OutputArea, type JupyterOutput } from "@/components/cell/OutputArea";
+import { OutputArea } from "@/components/cell/OutputArea";
 import { CodeMirrorEditor } from "@/components/editor/codemirror-editor";
+import {
+  getElementsNotebookScenario,
+  resolveElementsNotebookLanguage,
+} from "@/components/notebook-scenarios";
+import type { NotebookViewCell } from "@/components/notebook-shell";
 import { CellPresenceIndicators } from "@/notebook-components/cell/CellPresenceIndicators";
 import { startCursorDispatch } from "../../notebook/src/lib/cursor-registry";
 import { emitPresence } from "../../notebook/src/lib/notebook-frame-bus";
 
-const primaryCellId = "fixture-code-cell";
-const sourceFixture = `features = orders.assign(month=orders.date.dt.month)
-model.fit(features[columns], target)
-predictions = model.predict(features_holdout)`;
+const anatomyScenario = getElementsNotebookScenario("desktop-local-owner");
+const primaryCell = getPrimaryAnatomyCell(anatomyScenario.cells);
+const primaryCellId = primaryCell.id;
+const sourceFixture = primaryCell.source;
+const outputFixtures = primaryCell.outputs;
+const executionCount = primaryCell.executionCount;
+const languageLabel =
+  primaryCell.language === "python" ? "Python" : (primaryCell.language ?? "Cell");
+const editorLanguage = resolveElementsNotebookLanguage(primaryCell.language) ?? "plain";
 
-const outputFixtures: JupyterOutput[] = [
-  {
-    output_id: "cell-anatomy-stream",
-    output_type: "stream",
-    name: "stdout",
-    text: "training fold=01 mae=8.91\nvalidating fold=02 mae=8.42",
-  },
-  {
-    output_id: "cell-anatomy-result",
-    output_type: "execute_result",
-    execution_count: 12,
-    data: {
-      "text/plain": "MAE=8.42  MAPE=6.8%  Backtest=16 weeks",
-    },
-    metadata: {},
-  },
-];
+function getPrimaryAnatomyCell(cells: readonly NotebookViewCell[]) {
+  const cell =
+    cells.find((item) => item.id === "cell-model-code") ??
+    cells.find((item) => item.cellType === "code") ??
+    cells[0];
+  if (!cell) {
+    throw new Error(
+      "Elements notebook scenario needs at least one cell for the cell anatomy page.",
+    );
+  }
+  return cell;
+}
 
 const layers = [
   {
@@ -371,15 +376,15 @@ function SourceFixture() {
       <div className="overflow-hidden rounded-md border border-border bg-background">
         <CodeMirrorEditor
           initialValue={sourceFixture}
-          language="python"
+          language={editorLanguage}
           lineWrapping
           maxHeight="190px"
           readOnly
         />
       </div>
       <CodeCellCurrentLine
-        languageLabel="Python"
-        count={12}
+        languageLabel={languageLabel}
+        count={executionCount}
         elapsedMs={1476}
         isFocused
         activityContent={
@@ -403,7 +408,7 @@ function OutputFixture() {
         <OutputArea
           outputs={outputFixtures}
           cellId={primaryCellId}
-          executionCount={12}
+          executionCount={executionCount}
           isolated={false}
           useOutputWell={false}
         />
@@ -447,8 +452,8 @@ function BoundarySourceFixture({ sourceHidden = false }: { sourceHidden?: boolea
         </pre>
       )}
       <CodeCellCurrentLine
-        languageLabel="Python"
-        count={12}
+        languageLabel={languageLabel}
+        count={executionCount}
         elapsedMs={1476}
         isFocused
         onExecute={() => {}}

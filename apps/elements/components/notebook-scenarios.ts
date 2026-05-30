@@ -166,10 +166,27 @@ const notebookCells: readonly NotebookViewCell[] = [
     id: "cell-model-code",
     cellType: "code",
     language: "python",
-    source: "model.fit(features[columns], target)",
+    source:
+      "features = orders.assign(month=orders.date.dt.month)\nmodel.fit(features[columns], target)\npredictions = model.predict(features_holdout)",
     executionId: "execution-model-run",
-    executionCount: null,
-    outputs: [],
+    executionCount: 15,
+    outputs: [
+      {
+        output_id: "output-model-run-stream",
+        output_type: "stream",
+        name: "stdout",
+        text: "training fold=01 mae=8.91\nvalidating fold=02 mae=8.42",
+      },
+      {
+        output_id: "output-model-run-result",
+        output_type: "execute_result",
+        execution_count: 15,
+        data: {
+          "text/plain": "MAE=8.42  MAPE=6.8%  Backtest=16 weeks",
+        },
+        metadata: {},
+      },
+    ],
     metadata: {},
   },
   {
