@@ -10,6 +10,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import type { CustomRenderer } from "@/components/outputs/media-router";
 import { Button } from "@/components/ui/button";
@@ -226,6 +227,69 @@ const anyWidgetCss = `
 }
 `;
 
+const initialOutputWidgetOutputs: JupyterOutput[] = [
+  {
+    output_type: "stream",
+    name: "stdout",
+    text: "captured widget output\n",
+  },
+  {
+    output_type: "display_data",
+    data: {
+      "application/json": {
+        status: "complete",
+        rows: 128,
+        source: "OutputWidget fixture",
+      },
+      "text/plain": "{status: complete, rows: 128}",
+    },
+    metadata: {
+      "application/json": { collapsed: 1 },
+    },
+  },
+  {
+    output_type: "display_data",
+    data: {
+      [WIDGET_VIEW_MIME]: { model_id: "widget-output-nested-threshold" },
+      "text/plain": "IntSlider(value=41)",
+    },
+    metadata: {},
+  },
+];
+
+function replayedOutputWidgetOutputs(run: number): JupyterOutput[] {
+  return [
+    {
+      output_type: "stream",
+      name: "stdout",
+      text: `replayed widget output ${run}\n`,
+    },
+    {
+      output_type: "display_data",
+      data: {
+        "application/json": {
+          replayed: true,
+          run,
+          rows: 128 + run * 8,
+          source: "OutputWidget replay fixture",
+        },
+        "text/plain": `OutputWidget replay ${run}`,
+      },
+      metadata: {
+        "application/json": { collapsed: 0 },
+      },
+    },
+    {
+      output_type: "display_data",
+      data: {
+        [WIDGET_VIEW_MIME]: { model_id: "widget-output-replay-threshold" },
+        "text/plain": `IntSlider(value=${Math.min(95, 48 + run * 7)})`,
+      },
+      metadata: {},
+    },
+  ];
+}
+
 const fixtureModels: FixtureModel[] = [
   {
     id: "widget-media-title",
@@ -329,35 +393,7 @@ const fixtureModels: FixtureModel[] = [
     state: {
       _model_name: "OutputModel",
       _model_module: "@jupyter-widgets/output",
-      outputs: [
-        {
-          output_type: "stream",
-          name: "stdout",
-          text: "captured widget output\n",
-        },
-        {
-          output_type: "display_data",
-          data: {
-            "application/json": {
-              status: "complete",
-              rows: 128,
-              source: "OutputWidget fixture",
-            },
-            "text/plain": "{status: complete, rows: 128}",
-          },
-          metadata: {
-            "application/json": { collapsed: 1 },
-          },
-        },
-        {
-          output_type: "display_data",
-          data: {
-            [WIDGET_VIEW_MIME]: { model_id: "widget-output-nested-threshold" },
-            "text/plain": "IntSlider(value=41)",
-          },
-          metadata: {},
-        },
-      ],
+      outputs: initialOutputWidgetOutputs,
     },
   },
   {
@@ -367,6 +403,21 @@ const fixtureModels: FixtureModel[] = [
       _model_module: "@jupyter-widgets/controls",
       description: "nested threshold",
       value: 41,
+      min: 0,
+      max: 100,
+      step: 1,
+      readout: true,
+      orientation: "horizontal",
+      disabled: false,
+    },
+  },
+  {
+    id: "widget-output-replay-threshold",
+    state: {
+      _model_name: "IntSliderModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "replay threshold",
+      value: 55,
       min: 0,
       max: 100,
       step: 1,
@@ -848,7 +899,7 @@ const renderedWidgets = [
   {
     name: "OutputWidget",
     source: "src/components/widgets/controls/output-widget.tsx",
-    role: "Captured outputs flow through the widget OutputModel path and nested widget-view MIME resolves through MediaProvider without a live comm channel.",
+    role: "Captured outputs flow through the widget OutputModel path; local replay updates the same store key and nested widget-view MIME resolves through MediaProvider.",
   },
   {
     name: "ipycanvas widget",
@@ -882,7 +933,7 @@ const adapterBoundaries = [
   {
     title: "Comm bridge outbound",
     icon: Cable,
-    body: "State updates stay local to the fixture. Custom messages are logged instead of crossing JSON-RPC or shell channels.",
+    body: "State updates stay local to the fixture. Custom messages and output replay updates are logged instead of crossing JSON-RPC or shell channels.",
   },
   {
     title: "Binary buffers",
@@ -1065,6 +1116,67 @@ function AnyWidgetFixture() {
   );
 }
 
+function OutputWidgetReplayFixture() {
+  const { sendUpdate } = useWidgetStoreRequired();
+  const [replayCount, setReplayCount] = useState(0);
+
+  const replayOutputs = useCallback(() => {
+    const next = replayCount + 1;
+    void sendUpdate("widget-output-replay-threshold", {
+      value: Math.min(95, 48 + next * 7),
+    });
+    void sendUpdate("widget-output", { outputs: replayedOutputWidgetOutputs(next) });
+    setReplayCount(next);
+  }, [replayCount, sendUpdate]);
+
+  const restoreOutputs = useCallback(() => {
+    setReplayCount(0);
+    void sendUpdate("widget-output-nested-threshold", { value: 41 });
+    void sendUpdate("widget-output-replay-threshold", { value: 55 });
+    void sendUpdate("widget-output", { outputs: initialOutputWidgetOutputs });
+  }, [sendUpdate]);
+
+  const clearOutputs = useCallback(() => {
+    setReplayCount(0);
+    void sendUpdate("widget-output", { outputs: [] });
+  }, [sendUpdate]);
+
+  return (
+    <div
+      className="rounded-md border border-fd-border bg-fd-card p-3"
+      data-testid="widget-output-replay-suite"
+    >
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h4 className="text-sm font-semibold">OutputModel replay</h4>
+          <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
+            The fixture updates the OutputModel&apos;s `outputs` trait through the widget context,
+            matching the store update shape used after captured output state is resolved.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" onClick={replayOutputs}>
+            Replay outputs
+          </Button>
+          <Button size="sm" variant="outline" onClick={restoreOutputs}>
+            Restore
+          </Button>
+          <Button size="sm" variant="ghost" onClick={clearOutputs}>
+            Clear
+          </Button>
+        </div>
+      </div>
+      <div
+        className="mb-3 text-xs text-fd-muted-foreground"
+        data-testid="widget-output-replay-count"
+      >
+        replay count: <span className="font-mono">{replayCount}</span>
+      </div>
+      <WidgetView modelId="widget-output" />
+    </div>
+  );
+}
+
 function WidgetFixtureProvider({ children }: { children: ReactNode }) {
   const storeRef = useRef<WidgetStore | null>(null);
   if (!storeRef.current) {
@@ -1237,13 +1349,14 @@ export function WidgetSurfacesExample() {
                 <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
                   Image, audio, video, file upload, and OutputModel fixtures render through
                   WidgetView with saved comm state, static payloads, hydrated DataView image values,
-                  a docs-local buffer URL fixture, and a nested widget-view MIME output.
+                  a docs-local buffer URL fixture, nested widget-view MIME output, and local output
+                  replay updates.
                 </p>
               </div>
               <div className="space-y-4">
                 <WidgetView modelId="widget-media-title" />
                 <WidgetView modelId="widget-media-box" />
-                <WidgetView modelId="widget-output" />
+                <OutputWidgetReplayFixture />
               </div>
             </div>
             <CanvasCommandFixture />
@@ -1332,7 +1445,7 @@ export function WidgetSurfacesExample() {
             <h2 className="text-sm font-semibold">Next widget adapters</h2>
             <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
               The remaining widget catalog work is narrower now: live kernel blob resolver state,
-              ControllerModel Gamepad polling, live output-widget comm replay, richer ipycanvas
+              ControllerModel Gamepad polling, live captured-output comm transport, richer ipycanvas
               image buffers, and kernel-originated anywidget asset URLs need explicit iframe/runtime
               adapters before they can render here.
             </p>

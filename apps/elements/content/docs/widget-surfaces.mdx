@@ -22,7 +22,10 @@ fixture URL listed in `bufferPaths`, hydrated into a `DataView` before seeding
 `WidgetStore`, mirroring the iframe bridge shape without importing that runtime.
 The `OutputModel` fixture also includes a nested
 `application/vnd.jupyter.widget-view+json` output, resolved by the same
-`MediaProvider` custom renderer shape used by the notebook app.
+`MediaProvider` custom renderer shape used by the notebook app. A local replay
+control updates the same `outputs` trait through the widget context, so the
+catalog covers the `OutputWidget` state-update path without opening a live comm
+channel.
 
 <WidgetSurfacesExample />
 
@@ -32,7 +35,7 @@ The live notebook receives widget state from `RuntimeStateDoc` through
 `SyncEngine.commChanges$`, then forwards it to isolated output frames over the
 comm bridge. The catalog keeps those host responsibilities outside the rendered
 component examples. Browser APIs, live blob URL fetching, live output-widget
-comm replay, live controller/gamepad input, richer ipycanvas image buffers,
+comm transport, live controller/gamepad input, richer ipycanvas image buffers,
 kernel-originated anywidget asset URLs, and generated WASM handoffs remain
 explicit adapter boundaries for later catalog slices. The docs-local media URL
 hydrator only fetches static assets from this app; production daemon blob
