@@ -96,7 +96,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
         className={cn(
           "cell-container group relative flex transition-colors duration-150",
           bgColor,
-          isFocused && "-mx-4 px-4",
+          isFocused && "-mr-4 pr-4",
           isDragging && "opacity-50",
           // Output focus dim wins over the existing opacity-70 dim on the
           // output row. Applied to the whole cell container so the editor

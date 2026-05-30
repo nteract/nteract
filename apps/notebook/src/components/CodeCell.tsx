@@ -642,7 +642,7 @@ export const CodeCell = memo(function CodeCell({
         }
         outputContent={
           isOutputsHidden && outputs.length > 0 ? (
-            <div className="flex items-center justify-start mt-0.5 pl-5">
+            <div className="flex items-center justify-start mt-0.5 pl-6">
               <button
                 type="button"
                 onClick={() => onToggleOutputsHidden?.(false)}
