@@ -46,11 +46,11 @@ describe("CellInsertionRibbon", () => {
     const intent = container.querySelector('[data-slot="cell-adder-ribbon-intent"]');
 
     expect(adder).toHaveAttribute("data-terminal", "true");
-    expect(adder).toHaveClass("h-[clamp(5rem,16vh,8rem)]");
+    expect(adder).toHaveClass("h-[clamp(3.5rem,9vh,5.5rem)]");
     expect(ribbon).toHaveClass(
-      "[mask-image:linear-gradient(to_bottom,black_0,black_calc(100%-2.25rem),transparent_100%)]",
+      "[mask-image:linear-gradient(to_bottom,black_0,black_calc(100%-1.5rem),transparent_100%)]",
     );
-    expect(intent).toHaveClass("h-10");
+    expect(intent).toHaveClass("h-7");
     expect(intent).toHaveClass("bg-gradient-to-b");
   });
 });

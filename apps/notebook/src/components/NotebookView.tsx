@@ -63,7 +63,7 @@ export interface NotebookViewProps {
   markdownHeadingAnchorsByCellId?: ReadonlyMap<string, readonly MarkdownHeadingAnchor[]>;
 }
 
-const NOTEBOOK_TAIL_SPACE = "clamp(6rem, 18vh, 12rem)";
+const NOTEBOOK_TAIL_SPACE = "clamp(4rem, 10vh, 6rem)";
 const NOTEBOOK_TAIL_PIN_THRESHOLD_PX = 96;
 
 function CellAdder({

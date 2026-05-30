@@ -56,7 +56,7 @@ export function CellInsertionRibbon({
       data-terminal={terminal || undefined}
       className={cn(
         "group/adder flex w-full select-none",
-        terminal ? "h-[clamp(5rem,16vh,8rem)] items-start" : "h-7 items-center",
+        terminal ? "h-[clamp(3.5rem,9vh,5.5rem)] items-start" : "h-7 items-center",
         notebookCellLayoutVars,
         className,
       )}
@@ -73,7 +73,7 @@ export function CellInsertionRibbon({
         className={cn(
           "relative h-full w-1 shrink-0 overflow-hidden",
           terminal &&
-            "[mask-image:linear-gradient(to_bottom,black_0,black_calc(100%-2.25rem),transparent_100%)]",
+            "[mask-image:linear-gradient(to_bottom,black_0,black_calc(100%-1.5rem),transparent_100%)]",
         )}
       >
         <div
@@ -88,7 +88,7 @@ export function CellInsertionRibbon({
             data-slot="cell-adder-ribbon-intent"
             className={cn(
               "absolute left-0 top-0 w-full transition-colors duration-150",
-              terminal ? "h-10" : "h-full",
+              terminal ? "h-7" : "h-full",
               ribbonClass,
             )}
           />
