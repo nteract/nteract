@@ -124,10 +124,7 @@ describe("cloud live sync", () => {
       "alice@example.com",
     );
     const { display_name: _displayName, email: _email, ...actorOnlyReady } = ready;
-    assert.equal(
-      cloudRoomReadyPeerLabel(actorOnlyReady),
-      "user:anaconda:uuid-123/browser:session-1",
-    );
+    assert.equal(cloudRoomReadyPeerLabel(actorOnlyReady), "Anaconda user uuid-123");
   });
 
   it("does not expose PoolDoc sync from the cloud viewer adapter", () => {

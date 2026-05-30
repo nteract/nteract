@@ -1,4 +1,5 @@
 import type { CloudflareWebSocket, DurableObjectState, Env } from "./cloudflare-types.ts";
+import { identityDisplayLabel } from "./display-label.ts";
 import {
   allowsBlobUpload,
   isAnonymousViewer,
@@ -711,9 +712,11 @@ export function rewritePresenceFrame(
 }
 
 export function presencePeerLabel(identity: AuthenticatedConnection): string {
-  return (
-    identity.metadata.displayName?.trim() || identity.metadata.email?.trim() || identity.principal
-  );
+  return identityDisplayLabel({
+    displayName: identity.metadata.displayName,
+    email: identity.metadata.email,
+    principal: identity.principal,
+  });
 }
 
 function notebookIdFromPath(pathname: string): string | undefined {

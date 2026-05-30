@@ -7,6 +7,7 @@ import {
   type SyncableHandle,
 } from "runtimed";
 import { isConnectionScope, type ConnectionScope } from "../src/auth-shared";
+import { identityDisplayLabel } from "../src/display-label";
 import { FrameType, type SessionControlMessage } from "../src/protocol";
 import {
   cloudPrototypeAuthFromWindow,
@@ -409,7 +410,11 @@ export function cloudRoomReadyPeerLabel(
     "actor_label" | "display_name" | "email"
   >,
 ): string {
-  return ready.display_name?.trim() || ready.email?.trim() || ready.actor_label;
+  return identityDisplayLabel({
+    displayName: ready.display_name,
+    email: ready.email,
+    principal: ready.actor_label,
+  });
 }
 
 const consoleSyncLogger = {
