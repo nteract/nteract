@@ -41,11 +41,31 @@ const binaryImageSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220
   <text x="18" y="88" font-family="ui-sans-serif, system-ui" font-size="12" font-weight="700" fill="#111827">DataView ImageModel</text>
 </svg>`;
 
+const restoredCanvasPngBase64 = [
+  "iVBORw0KGgoAAAANSUhEUgAAAFAAAAA8CAMAAADG+c2+AAAArlBMVEX4+vzx9Pahpaw9Q08RGCfc/OfE4dDU9+KPpp/K8dsb",
+  "Mjg3Q0ul2sIEeFfC7NVDn4EPKjC45s9NpYgJVEXH79mHyK4TgWEEdVay48tyu6AIelkGbVGGx64wk3R7wadptpqMy7IEeVsI",
+  "iY4MnM0OpelQp4q96dIFfWis3sfW+OOO2+gojm8VotM1temb1LwahWau4MhSqIvE8ueQzbQrkHFIoYRntJmT0LYji2yV0Lhf",
+  "MnjhAAABRklEQVRYw+3S+1OCMADAcR8gLNpMU1OjEkQNCit7////WMTGVsSxZ911t+9Pjtt93KvTsdls/6hur+/0e13OLFe4",
+  "gYMb4KE26DlVnhnQp6BvBARHFAxMgMfQYemDaAjhibkVjsaw6NTQGU6mM1h2ZuKW54slpJ1rvkMUXsBvXXp+4AS+56qAoytY",
+  "a4xqUyRAb4U3GsXrZB1Hnz832x+zxMGQrGmX4HbLEDT8rSh4Xe0xSqrSxlMRBNnZxRTM1EFww27hloK5MogYNwUJSxVk3r4Y",
+  "5dorBBW3KIeZ7hmmd8S7J2PdW34g3qT6cCDewVUCH8nr+/KG0yxP8qx5fVwQ1dfHjQM+YW8u7HFAsuGVuNcOkhfzLOG1gy8Y",
+  "BKZAciOvMl4ruCm9NymvFZzJ3jD3DPeFN5TzeO/wHW7NgvJZ8PdAm832V30Abf9DLJ+2qr0AAAAASUVORK5CYII=",
+].join("");
+
 function textDataView(value: string): DataView {
   const bytes = new TextEncoder().encode(value);
   const copy = new Uint8Array(bytes.byteLength);
   copy.set(bytes);
   return new DataView(copy.buffer);
+}
+
+function base64ToUint8ClampedArray(value: string): Uint8ClampedArray {
+  const binary = globalThis.atob(value);
+  const bytes = new Uint8ClampedArray(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
 }
 
 function fixtureAssetUrl(pathname: string): string {
@@ -918,7 +938,7 @@ const renderedWidgets = [
   {
     name: "ipycanvas widget",
     source: "src/components/widgets/ipycanvas/{canvas-widget,ipycanvas-commands}.tsx",
-    role: "CanvasModel renders through WidgetView and replays a local binary command buffer via the CanvasManager router.",
+    role: "CanvasModel renders through WidgetView, replays a local binary command buffer via the CanvasManager router, and restores saved image_data bytes.",
   },
   {
     name: "AnyWidgetView",
@@ -952,7 +972,7 @@ const adapterBoundaries = [
   {
     title: "Binary buffers",
     icon: FileJson,
-    body: "Media widgets now cover inline DataViews and a docs-local bufferPaths URL hydrator; ipycanvas replays a local DataView command buffer. Live kernel blob resolver state and sync hydration remain adapter concerns.",
+    body: "Media widgets now cover inline DataViews and a docs-local bufferPaths URL hydrator; ipycanvas replays local command buffers and saved image_data bytes. Live kernel blob resolver state and sync hydration remain adapter concerns.",
   },
   {
     title: "Anywidget ESM",
@@ -1053,16 +1073,27 @@ function encodeCanvasCommands(commands: unknown[]): ArrayBuffer {
   return copy.buffer;
 }
 
+function restoredCanvasImageData(): Uint8ClampedArray {
+  return base64ToUint8ClampedArray(restoredCanvasPngBase64);
+}
+
 function CanvasCommandFixture() {
-  const { store } = useWidgetStoreRequired();
+  const { sendUpdate, store } = useWidgetStoreRequired();
   const [replayCount, setReplayCount] = useState(0);
+  const [restoreCount, setRestoreCount] = useState(0);
 
   const replayCommands = useCallback(() => {
+    void sendUpdate("widget-canvas", { image_data: null });
     store.emitCustomMessage("widget-canvas-manager", { dtype: "uint8" }, [
       encodeCanvasCommands(canvasCommands),
     ]);
     setReplayCount((count) => count + 1);
-  }, [store]);
+  }, [sendUpdate, store]);
+
+  const restoreImageData = useCallback(() => {
+    void sendUpdate("widget-canvas", { image_data: restoredCanvasImageData() });
+    setRestoreCount((count) => count + 1);
+  }, [sendUpdate]);
 
   useEffect(() => {
     replayCommands();
@@ -1078,11 +1109,16 @@ function CanvasCommandFixture() {
           <h3 className="text-sm font-semibold">ipycanvas command replay</h3>
           <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
             CanvasModel renders through WidgetView. The fixture sends the same binary command buffer
-            shape the CanvasManager router receives from the kernel, without a live comm.
+            shape the CanvasManager router receives from the kernel, then restores saved
+            <code className="mx-1 rounded bg-fd-muted px-1 py-0.5">image_data</code>
+            bytes through the widget store without a live comm.
           </p>
         </div>
         <Button size="sm" variant="outline" onClick={replayCommands}>
           Replay commands
+        </Button>
+        <Button size="sm" variant="outline" onClick={restoreImageData}>
+          Restore image_data
         </Button>
       </div>
       <div className="grid gap-4 lg:grid-cols-[minmax(0,360px)_1fr]">
@@ -1106,9 +1142,17 @@ function CanvasCommandFixture() {
               <span className="text-fd-muted-foreground">replays</span>
               <span className="font-mono">{replayCount}</span>
             </div>
+            <div className="flex justify-between gap-3">
+              <span className="text-fd-muted-foreground">image_data restores</span>
+              <span className="font-mono" data-testid="widget-canvas-image-data-restores">
+                {restoreCount}
+              </span>
+            </div>
           </div>
           <div className="mt-3 break-words font-mono text-[11px] leading-5 text-fd-muted-foreground [overflow-wrap:anywhere]">
-            {"switchCanvas -> clear -> set -> fillRect -> fillCircle -> strokeLine -> fillText"}
+            {
+              "switchCanvas -> clear -> set -> fillRect -> fillCircle -> strokeLine -> fillText -> image_data"
+            }
           </div>
         </div>
       </div>
@@ -1558,9 +1602,8 @@ export function WidgetSurfacesExample() {
             <h2 className="text-sm font-semibold">Next widget adapters</h2>
             <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
               The remaining widget catalog work is narrower now: live kernel blob resolver state,
-              live captured-output comm transport, richer ipycanvas image buffers, and
-              kernel-originated anywidget asset URLs need explicit iframe/runtime adapters before
-              they can render here.
+              live captured-output comm transport, and kernel-originated anywidget asset URLs need
+              explicit iframe/runtime adapters before they can render here.
             </p>
           </div>
         </div>
