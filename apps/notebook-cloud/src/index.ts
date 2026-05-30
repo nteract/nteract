@@ -1811,6 +1811,11 @@ function viewer(notebookId: string, request: Request, env: Env, headsHash?: stri
   );
 }
 
+interface ViewerShellConfig extends Record<string, unknown> {
+  runtimedWasmModulePath: string;
+  runtimedWasmPath: string;
+}
+
 function homeViewer(request: Request, env: Env): Response {
   return viewerShell("nteract cloud notebooks", env, authConfigForRequest(request, env), null);
 }
@@ -1828,7 +1833,7 @@ function viewerShell(
   title: string,
   env: Env,
   authConfig: unknown,
-  config: Record<string, unknown> | null,
+  config: ViewerShellConfig | null,
 ): Response {
   const html = `<!doctype html>
 <html lang="en">
@@ -1838,6 +1843,7 @@ function viewerShell(
   <title>${title}</title>
   <style id="nteract-cloud-viewer-theme-surface">${viewerThemeFirstPaintStyle()}</style>
   <script>${viewerThemeBootstrapScript()}</script>
+  ${viewerResourceHints(config)}
   <link rel="stylesheet" href="/assets/notebook-cloud-viewer.css" />
 </head>
 <body>
@@ -1865,6 +1871,19 @@ function viewerShell(
       viewerContentSecurityPolicy(env),
     ),
   );
+}
+
+function viewerResourceHints(config: ViewerShellConfig | null): string {
+  if (!config) {
+    return "";
+  }
+
+  return [
+    `<link rel="modulepreload" href="${escapeHtml(config.runtimedWasmModulePath)}" crossorigin />`,
+    `<link rel="preload" href="${escapeHtml(
+      config.runtimedWasmPath,
+    )}" as="fetch" type="application/wasm" crossorigin />`,
+  ].join("\n  ");
 }
 
 function authConfigForRequest(request: Request, env: Env): { oidc: Record<string, string> | null } {
