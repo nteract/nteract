@@ -64,11 +64,7 @@ export function ReadOnlyNotebook({
   return (
     <section
       aria-label={label}
-      className={cn(
-        "flex min-h-0 flex-1 flex-col overflow-x-clip overscroll-x-contain",
-        displayMode === "notebook" && "-ml-8 pl-8",
-        className,
-      )}
+      className={cn("flex min-h-0 flex-1 flex-col overflow-x-clip overscroll-x-contain", className)}
       data-cell-count={cells.length}
       data-slot="read-only-notebook"
     >

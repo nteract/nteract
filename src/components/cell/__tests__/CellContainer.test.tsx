@@ -3,6 +3,23 @@ import { describe, expect, it } from "vite-plus/test";
 import { CellContainer } from "../CellContainer";
 
 describe("CellContainer", () => {
+  it("keeps state lane inside the cell surface instead of outside the rail edge", () => {
+    const { container } = render(
+      <CellContainer
+        id="presence-cell"
+        cellType="code"
+        codeContent={<div>source</div>}
+        presenceIndicators={<span>peer</span>}
+      />,
+    );
+
+    const lane = container.querySelector('[data-slot="cell-state-lane"]');
+
+    expect(lane).toHaveClass("left-1");
+    expect(lane).toHaveClass("w-[var(--cell-content-column-inset,3.25rem)]");
+    expect(lane).not.toHaveClass("-translate-x-full");
+  });
+
   it("shows right edge controls when the cell is focused", () => {
     const { container } = render(
       <CellContainer

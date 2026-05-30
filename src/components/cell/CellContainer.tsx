@@ -135,10 +135,10 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
           className,
         )}
       >
-        {/* Optional state lane - floats outside layout so the ribbon can lead the cell surface. */}
+        {/* Optional state lane - lives inside the source inset so clipped scroll containers do not hide it. */}
         <div
           data-slot="cell-state-lane"
-          className="absolute left-0 top-0 z-10 flex -translate-x-full flex-col items-end justify-start gap-0.5 pr-1 pt-3.5 select-none"
+          className="absolute left-1 top-0 z-10 flex w-[var(--cell-content-column-inset,3.25rem)] flex-col items-center justify-start gap-0.5 pt-3.5 select-none"
           onMouseDown={onFocus}
         >
           {gutterContent}

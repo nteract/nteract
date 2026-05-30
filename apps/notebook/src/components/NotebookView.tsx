@@ -863,7 +863,7 @@ function NotebookViewContent({
   return (
     <div
       ref={containerRef}
-      className="flex-1 -ml-8 overflow-y-auto overflow-x-clip overscroll-x-contain scroll-smooth pt-0 pb-4 pl-8 pr-2"
+      className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain scroll-smooth pt-0 pb-4 pl-0 pr-2"
       style={{
         contain: "paint",
         overflowAnchor: "none",

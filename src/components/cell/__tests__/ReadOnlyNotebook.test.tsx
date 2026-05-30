@@ -113,8 +113,6 @@ describe("ReadOnlyNotebook", () => {
     expect(notebook).toHaveAttribute("aria-label", "Notebook cells");
     expect(notebook).toHaveAttribute("data-cell-count", "2");
     expect(notebook).toHaveClass("notebook-shell");
-    expect(notebook).toHaveClass("-ml-8");
-    expect(notebook).toHaveClass("pl-8");
 
     const cells = screen.getAllByTestId("read-only-cell");
     expect(cells).toHaveLength(2);
