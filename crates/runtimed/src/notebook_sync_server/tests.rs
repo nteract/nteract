@@ -9243,3 +9243,38 @@ async fn autosave_writes_empty_doc_over_whitespace_only_file() {
         "whitespace-only file has no cells to protect; empty doc writes through"
     );
 }
+
+/// Codex P2a: an empty notebook explicitly saved to a path latches the room
+/// ready, so a later autosave of the still-empty room writes (is not mistaken
+/// for a failed-load empty by the zeroing guard).
+#[tokio::test]
+async fn explicit_save_of_empty_notebook_latches_ready_for_later_autosave() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "empty.ipynb");
+
+    // Starts not-ready, 0 cells, no file on disk.
+    assert!(!room.ever_ready());
+    assert_eq!(room.doc.read().await.cell_count(), 0);
+
+    // Explicit save of the empty notebook writes the file and latches ready.
+    save_notebook_to_disk(&room, Some(notebook_path.to_str().unwrap()))
+        .await
+        .expect("explicit save of empty notebook must write");
+    assert!(
+        room.ever_ready(),
+        "a completed write must latch the room ready"
+    );
+
+    // Now place real content on disk and autosave the still-empty (but ready)
+    // room: it must overwrite, proving the zeroing guard did NOT skip it.
+    write_two_cell_notebook(&notebook_path).await;
+    assert_eq!(disk_cell_count(&notebook_path), 2);
+    save_notebook_to_disk(&room, None)
+        .await
+        .expect("ready empty room must autosave through");
+    assert_eq!(
+        disk_cell_count(&notebook_path),
+        0,
+        "a ready room writes its empty state on autosave (not skipped)"
+    );
+}

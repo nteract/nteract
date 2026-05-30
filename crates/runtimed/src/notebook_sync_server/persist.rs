@@ -361,6 +361,16 @@ pub(crate) async fn save_notebook_to_disk(
             }
         })?;
 
+    // A completed write means this room now has a persisted good state on disk,
+    // so latch it ready (monotonic). This covers the case where an empty
+    // notebook is explicitly saved/Save-As'd to a path before it ever held a
+    // cell: without this, a later autosave of a legitimately-empty edit
+    // (e.g. metadata/dependency change) would have cell_count == 0 and
+    // ever_ready == false and be mistaken for a failed-load empty by the
+    // zeroing guard above. A failed-load room never reaches this point — the
+    // guard returns early before any write.
+    room.mark_ready();
+
     // Update last_self_write timestamp so the file watcher skips our own write.
     // Applies to all rooms (including ephemeral that were just promoted to
     // file-backed via this save) - a watcher may start up right after
