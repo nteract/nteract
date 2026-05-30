@@ -39,6 +39,10 @@ import {
   isMeasuredElementFound,
   registerMarkdownHeadingNavigator,
 } from "@/components/cell/markdown-heading-navigation";
+import {
+  createMarkdownFormattingKeyMap,
+  shouldStartMarkdownEditMode,
+} from "@/components/cell/markdown-editor-keymap";
 import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";
 import { openUrl } from "../lib/open-url";
 import { presenceSenderExtension } from "../lib/presence-sender";
@@ -87,74 +91,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   const isPreviousCellFromFocused = useIsPreviousCellFromFocused(cell.id);
   const isNextCellFromFocused = useIsNextCellFromFocused(cell.id);
   const searchQuery = useSearchQuery();
-  const applyInlineFormatting = useCallback(
-    (prefix: string, suffix = prefix) =>
-      (view: EditorView) => {
-        const selection = view.state.selection.main;
-        const selectedText = view.state.doc.sliceString(selection.from, selection.to);
-        const wrappedText = `${prefix}${selectedText}${suffix}`;
-
-        view.dispatch({
-          changes: {
-            from: selection.from,
-            to: selection.to,
-            insert: wrappedText,
-          },
-          selection: {
-            anchor: selection.from + prefix.length,
-            head: selection.from + prefix.length + selectedText.length,
-          },
-        });
-        return true;
-      },
-    [],
-  );
-
-  const applyLinkFormatting = useCallback((view: EditorView) => {
-    const selection = view.state.selection.main;
-    const selectedText = view.state.doc.sliceString(selection.from, selection.to);
-    const linkText = selectedText || "link text";
-    const formattedText = `[${linkText}](https://)`;
-
-    view.dispatch({
-      changes: {
-        from: selection.from,
-        to: selection.to,
-        insert: formattedText,
-      },
-      selection: selectedText
-        ? {
-            anchor: selection.from + 1,
-            head: selection.from + 1 + linkText.length,
-          }
-        : {
-            anchor: selection.from + 1,
-            head: selection.from + 1 + "link text".length,
-          },
-    });
-    return true;
-  }, []);
-
-  const applyQuoteFormatting = useCallback((view: EditorView) => {
-    const selection = view.state.selection.main;
-    const selectedText = view.state.doc.sliceString(selection.from, selection.to);
-    const text = selectedText || "quote";
-    const quotedText = text
-      .split("\n")
-      .map((line) => `> ${line}`)
-      .join("\n");
-
-    view.dispatch({
-      changes: { from: selection.from, to: selection.to, insert: quotedText },
-      selection: {
-        anchor: selection.from,
-        head: selection.from + quotedText.length,
-      },
-    });
-    return true;
-  }, []);
-
-  const [editing, setEditing] = useState(cell.source === "");
+  const [editing, setEditing] = useState(shouldStartMarkdownEditMode(cell.source));
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const presence = usePresenceContext();
   const { extension: crdtBridgeExt } = useCrdtBridge(cell.id);
@@ -487,38 +424,9 @@ export const MarkdownCell = memo(function MarkdownCell({
           return true;
         },
       },
-      {
-        key: "Mod-b",
-        run: applyInlineFormatting("**"),
-      },
-      {
-        key: "Mod-i",
-        run: applyInlineFormatting("*"),
-      },
-      {
-        key: "Mod-u",
-        run: applyInlineFormatting("<u>", "</u>"),
-      },
-      {
-        key: "Mod-k",
-        run: applyLinkFormatting,
-      },
-      {
-        key: "Mod-Shift-.",
-        run: applyQuoteFormatting,
-      },
-      {
-        key: "Mod-Shift->",
-        run: applyQuoteFormatting,
-      },
+      ...createMarkdownFormattingKeyMap(),
     ],
-    [
-      navigationKeyMap,
-      cell.source,
-      applyInlineFormatting,
-      applyLinkFormatting,
-      applyQuoteFormatting,
-    ],
+    [navigationKeyMap, cell.source],
   );
 
   // Focus editor when entering edit mode (after initial mount)

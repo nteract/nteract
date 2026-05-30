@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import type { KeyBinding } from "@codemirror/view";
 import { forwardRef, useImperativeHandle, useRef } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { EditableMarkdownCell } from "../EditableMarkdownCell";
@@ -57,10 +58,14 @@ vi.mock("@/components/editor/codemirror-editor", () => ({
     {
       className?: string;
       initialValue?: string;
+      keyMap?: readonly KeyBinding[];
       onBlur?: () => void;
       placeholder?: string;
     }
-  >(function MockCodeMirrorEditor({ className, initialValue = "", onBlur, placeholder }, ref) {
+  >(function MockCodeMirrorEditor(
+    { className, initialValue = "", keyMap, onBlur, placeholder },
+    ref,
+  ) {
     useImperativeHandle(ref, () => ({
       focus: vi.fn(),
       setCursorPosition: vi.fn(),
@@ -77,6 +82,7 @@ vi.mock("@/components/editor/codemirror-editor", () => ({
     return (
       <textarea
         className={className}
+        data-keymap={keyMap?.map((binding) => binding.key).join(",") ?? ""}
         data-testid="codemirror-editor"
         onBlur={onBlur}
         placeholder={placeholder}
@@ -146,6 +152,21 @@ describe("EditableMarkdownCell", () => {
     fireEvent.mouseDown(screen.getByRole("button", { name: "Render markdown" }));
 
     expect(onEditingChange).toHaveBeenCalledWith(false);
+  });
+
+  it("uses the shared desktop markdown editing affordances", () => {
+    render(<Harness id="markdown-keys" source="## Current" editing onEditingChange={() => {}} />);
+
+    expect(screen.getByText("md")).toBeInTheDocument();
+    expect(screen.getByTestId("codemirror-editor")).toHaveAttribute(
+      "placeholder",
+      "Enter markdown...",
+    );
+    expect(screen.getByTestId("codemirror-editor").getAttribute("data-keymap")).toContain("Mod-b");
+    expect(screen.getByTestId("codemirror-editor").getAttribute("data-keymap")).toContain("Mod-k");
+    expect(screen.getByTestId("codemirror-editor").getAttribute("data-keymap")).toContain(
+      "Ctrl-Enter",
+    );
   });
 
   it("registers isolated markdown heading navigation for outline links", async () => {

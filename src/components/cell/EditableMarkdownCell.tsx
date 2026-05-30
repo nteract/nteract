@@ -20,6 +20,10 @@ import {
   registerMarkdownHeadingNavigator,
   scrollIsolatedMarkdownHeading,
 } from "./markdown-heading-navigation";
+import {
+  createMarkdownEditModeKeyMap,
+  shouldExitMarkdownEditOnBlur,
+} from "./markdown-editor-keymap";
 import { OutputArea } from "./OutputArea";
 import type { JupyterOutput } from "./jupyter-output";
 
@@ -55,7 +59,7 @@ export function EditableMarkdownCell({
   previewClassName,
   previewOutputClassName,
   actionClassName,
-  placeholder = "Markdown",
+  placeholder = "Enter markdown...",
   priority,
   hostContext,
   editorExtensions,
@@ -65,6 +69,8 @@ export function EditableMarkdownCell({
   const suppressNextToggleClickRef = useRef(false);
   const viewRef = useRef<HTMLDivElement>(null);
   const previewFrameRef = useRef<IsolatedFrameHandle | null>(null);
+  const sourceRef = useRef(source);
+  sourceRef.current = source;
 
   const markdownOutput = useMemo<JupyterOutput>(
     () => ({
@@ -79,21 +85,23 @@ export function EditableMarkdownCell({
     () => (editorExtensions ? [...editorExtensions] : undefined),
     [editorExtensions],
   );
-  const editorKeyMapArray = useMemo(
-    () => (editorKeyMap ? [...editorKeyMap] : undefined),
-    [editorKeyMap],
-  );
-
   const enterEditing = useCallback(() => {
     onEditingChange(true);
   }, [onEditingChange]);
 
   const exitEditing = useCallback(() => {
-    const currentSource = editorRef.current?.getEditor()?.state.doc.toString() ?? source;
-    if (currentSource.trim().length > 0) {
+    const currentSource = editorRef.current?.getEditor()?.state.doc.toString() ?? sourceRef.current;
+    if (shouldExitMarkdownEditOnBlur(currentSource)) {
       onEditingChange(false);
     }
-  }, [editorRef, onEditingChange, source]);
+  }, [editorRef, onEditingChange]);
+
+  const editorKeyMapArray = useMemo(() => {
+    return [
+      ...createMarkdownEditModeKeyMap({ exitEditing }),
+      ...(editorKeyMap ? [...editorKeyMap] : []),
+    ];
+  }, [editorKeyMap, exitEditing]);
 
   const handleActionMouseDown = useCallback(
     (event: MouseEvent<HTMLButtonElement>) => {
@@ -182,6 +190,9 @@ export function EditableMarkdownCell({
       codeContent={
         editing ? (
           <div className={sourceClassName} data-slot="editable-markdown-source">
+            <div className="flex items-center gap-1 py-1">
+              <span className="font-mono text-xs text-muted-foreground">md</span>
+            </div>
             <CodeMirrorEditor
               ref={editorRef}
               initialValue={source}

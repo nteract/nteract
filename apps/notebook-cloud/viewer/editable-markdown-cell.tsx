@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { EditableMarkdownCell as SharedEditableMarkdownCell } from "@/components/cell/EditableMarkdownCell";
+import { shouldStartMarkdownEditMode } from "@/components/cell/markdown-editor-keymap";
 import type { CodeMirrorEditorRef } from "@/components/editor";
 import {
   remoteCursorsExtension,
@@ -63,7 +64,7 @@ export function EditableMarkdownCell({
   onPresenceCursor,
   onPresenceSelection,
 }: EditableMarkdownCellProps) {
-  const [editing, setEditing] = useState(cell.source.trim().length === 0);
+  const [editing, setEditing] = useState(shouldStartMarkdownEditMode(cell.source));
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const getHandleRef = useRef(getHandle);
   const onSourceChangeRef = useRef(onSourceChange);
@@ -123,7 +124,7 @@ export function EditableMarkdownCell({
   }, [bridge, cell.source, editing]);
 
   useEffect(() => {
-    if (cell.source.trim().length === 0 && !editing) {
+    if (shouldStartMarkdownEditMode(cell.source) && !editing) {
       setEditing(true);
     }
   }, [cell.source, editing]);

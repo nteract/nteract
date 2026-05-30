@@ -37,7 +37,8 @@ test("cloud markdown editor remounts with latest source state", () => {
   const sourceText = readFileSync(sourcePath, "utf8");
 
   assert.match(sourceText, /if \(!editing\) return;\s+bridge\.applyFullSource\(cell\.source\);/);
-  assert.match(sourceText, /cell\.source\.trim\(\)\.length === 0 && !editing/);
+  assert.match(sourceText, /shouldStartMarkdownEditMode\(cell\.source\) && !editing/);
+  assert.match(sourceText, /@\/components\/cell\/markdown-editor-keymap/);
 });
 
 test("cloud live notebook passes renderer policy into editable markdown cells", () => {
