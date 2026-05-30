@@ -4373,6 +4373,60 @@ mod tests {
         assert_eq!(meta["vx_pin"], "abc123");
     }
 
+    /// Reproduction of the multi-writer `schema_version` hazard for cloud.
+    ///
+    /// `schema_version` is a single LWW scalar, single-writer only by
+    /// *convention* (the migrate-on-load path is the lone writer, and desktop
+    /// rooms are single-version). In a mixed-version cloud room two peers can
+    /// write it concurrently: two upgraded peers migrating a stale room doc,
+    /// or a stale peer re-stamping its old version. There is no monotonic/max
+    /// merge: the CRDT picks an LWW winner by (lamport, actor), unrelated to
+    /// which schema is newer, so a stale peer's lower version can win and stamp
+    /// the shared doc backward.
+    ///
+    /// Characterization test: it pins today's (undesirable) behavior so it is
+    /// reproducible. When the fix lands (host-enforced single-writer auth, or
+    /// monotonic-max merge semantics) this test should be updated to assert the
+    /// new guarantee.
+    #[test]
+    fn test_cross_version_schema_version_is_lww_not_monotonic() {
+        let mut old = NotebookDoc::new_with_actor("room-nb", "peer-old");
+        let mut new = NotebookDoc::new_with_actor("room-nb", "peer-new");
+
+        // Concurrent, conflicting writes (neither peer has seen the other).
+        old.doc
+            .put(automerge::ROOT, "schema_version", 4u64)
+            .unwrap();
+        new.doc
+            .put(automerge::ROOT, "schema_version", 6u64)
+            .unwrap();
+
+        let mut s_old = sync::State::new();
+        let mut s_new = sync::State::new();
+        sync_docs(&mut old, &mut s_old, &mut new, &mut s_new, 20);
+
+        // CRDT determinism holds: both peers converge to the SAME value...
+        assert_eq!(
+            old.schema_version(),
+            new.schema_version(),
+            "peers converge to a single value"
+        );
+        // ...but it is an LWW pick of one of the two written values, never
+        // their max. There is no merge rule that says "higher schema wins."
+        //
+        // Here the *older* peer wins: the converged value is 4, not 6. The tie
+        // is broken by actor id (concurrent writes have equal lamport counter),
+        // and "peer-old" sorts above "peer-new" by bytes, so the stale peer
+        // stamps the shared doc backward; v6 is silently downgraded to v4.
+        // The winner is decided by actor bytes, not by which schema is newer;
+        // swapping the labels flips it. That arbitrariness is the hazard.
+        let converged = old.schema_version().unwrap();
+        assert_eq!(
+            converged, 4,
+            "stale peer's lower version wins the LWW tie, stamping the doc backward"
+        );
+    }
+
     #[test]
     #[cfg(feature = "persistence")]
     fn test_notebook_doc_filename_deterministic() {
