@@ -290,6 +290,10 @@ const daemonRendererAssetCspSamples = [
   },
 ];
 
+const productionOutputFrameUrl = daemonOutputFrameUrl(daemonBlobBaseUrl, {
+  frameDomains: ["https://outputs.example.test", "http://localhost:*"],
+});
+
 const daemonRendererPluginLoadMimes = [
   "text/markdown",
   "application/vnd.plotly.v1+json",
@@ -563,6 +567,26 @@ export function IsolatedOutputSurfacesExample() {
               </div>
               <div className="mt-1 break-words font-mono text-xs [overflow-wrap:anywhere]">
                 {docsRendererPluginBaseUrl}/renderer-plugins
+              </div>
+            </div>
+            <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-emerald-950 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-100">
+              <div className="text-[11px] font-medium uppercase text-emerald-700 dark:text-emerald-300">
+                production hosted frame
+              </div>
+              <p className="mt-2 text-xs leading-5">
+                If the host CSP lists the daemon blob origin in{" "}
+                <code className="rounded bg-emerald-100 px-1 py-0.5 dark:bg-emerald-950">
+                  frameDomains
+                </code>
+                , the app passes this URL as the isolated output document instead of depending on
+                inline{" "}
+                <code className="rounded bg-emerald-100 px-1 py-0.5 dark:bg-emerald-950">
+                  srcdoc
+                </code>
+                .
+              </p>
+              <div className="mt-2 break-words font-mono text-xs [overflow-wrap:anywhere]">
+                {productionOutputFrameUrl ?? "null"}
               </div>
             </div>
           </div>

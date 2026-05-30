@@ -8,7 +8,10 @@ import { IsolatedOutputSurfacesExample } from "@/components/isolated-output-surf
 Notebook output isolation is nteract-owned UI infrastructure. It decides which
 outputs stay in the notebook DOM, which move into sandboxed frames, how hosted
 output documents receive theme and asset context, and how MCP app structured
-content becomes shared output manifests.
+content becomes shared output manifests. It also documents the production hosted
+frame path added in #3142: when an MCP host advertises the daemon blob origin in
+`frameDomains`, nteract should use the daemon `/output-frame` document instead
+of relying on inline `srcdoc` inside the host CSP.
 
 <IsolatedOutputSurfacesExample />
 
@@ -16,20 +19,22 @@ content becomes shared output manifests.
 
 The page imports current helpers from `src/components/isolated/**`: output lane
 policy, frame sizing, host-context theme variables, MCP host-context conversion,
-MCP structured content conversion, and the production `McpAppOutputFrame`
-wrapper. Frame document selection and sandbox policy use a docs-local alias for
-the production helper so Next does not import the raw Tauri `frame.html?raw`
-bundle. The MCP frame surface uses a fixture renderer bundle for resolved
-HTML/text payloads, while the docs-local `IsolatedFrame` adapter keeps payload
-shape and host context visible without Vite virtual renderer artifacts. The
-daemon renderer asset section imports the production MIME-to-plugin metadata,
-output-frame CSP gate, renderer asset URL helpers, and plugin loader. It fetches
-tiny docs-served renderer-plugin fixtures instead of daemon-generated artifacts.
+MCP structured content conversion, daemon output-frame CSP gating, and the
+production `McpAppOutputFrame` wrapper. Frame document selection and sandbox
+policy use a docs-local alias for the production helper so Next does not import
+the raw Tauri `frame.html?raw` bundle. The MCP frame surface uses a fixture
+renderer bundle for resolved HTML/text payloads, while the docs-local
+`IsolatedFrame` adapter keeps payload shape and host context visible without
+Vite virtual renderer artifacts. The daemon renderer asset section imports the
+production MIME-to-plugin metadata, output-frame CSP gate, renderer asset URL
+helpers, and plugin loader. It fetches tiny docs-served renderer-plugin fixtures
+instead of daemon-generated artifacts.
 
 ## What stays behind adapters
 
 The production frame runtime still owns JavaScript evaluation, renderer plugin
 execution, widget comm replay, untrusted raw HTML execution, generated asset hash
-injection, and daemon blob-route authorization. The catalog should keep those as
-explicit adapters until they can be exercised without importing desktop runtime
-state or executing untrusted output code in the docs app.
+injection, daemon blob-route authorization, and the actual `/output-frame`
+document served from the daemon. The catalog should keep those as explicit
+adapters until they can be exercised without importing desktop runtime state or
+executing untrusted output code in the docs app.
