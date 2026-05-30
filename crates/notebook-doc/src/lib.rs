@@ -4112,6 +4112,100 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "persistence")]
+    fn test_v4_to_v5_migration_preserves_realistic_notebook() {
+        // Stable-release confidence: the v4 -> v5 upgrade path (which every
+        // stable user hits on update) must preserve a realistic notebook —
+        // multiple ordered cells of mixed type, their sources and cell metadata,
+        // and inline conda/uv deps — while adding the v5 runtime_state_doc_id and
+        // stamping schema_version = 5. v4->v5 is structurally additive, so nothing
+        // should be lost.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("notebook.automerge");
+
+        let mut doc = NotebookDoc::new("v4-rich");
+        doc.add_cell(0, "c1", "code").unwrap();
+        doc.update_source("c1", "import numpy as np").unwrap();
+        doc.add_cell(1, "c2", "markdown").unwrap();
+        doc.update_source("c2", "# Heading").unwrap();
+        doc.add_cell(2, "c3", "code").unwrap();
+        doc.update_source("c3", "np.arange(3)").unwrap();
+        assert!(doc
+            .set_cell_metadata(
+                "c1",
+                &serde_json::json!({ "tags": ["setup"], "collapsed": true }),
+            )
+            .unwrap());
+        doc.add_conda_dependency("numpy").unwrap();
+        doc.add_uv_dependency("polars").unwrap();
+
+        // Downgrade to a genuine v4 shape: no runtime_state_doc_id (the v5 field),
+        // schema_version = 4.
+        let _ = doc.doc.delete(automerge::ROOT, "runtime_state_doc_id");
+        let _ = doc.doc.put(automerge::ROOT, "schema_version", 4u64);
+        assert_eq!(doc.schema_version(), Some(4));
+        assert_eq!(doc.runtime_state_doc_id(), None);
+        doc.save_to_file(&path).unwrap();
+
+        // Migrate on load.
+        let loaded = NotebookDoc::load_or_create(&path, "v4-rich");
+
+        // Version + identity migrated.
+        assert_eq!(loaded.schema_version(), Some(SCHEMA_VERSION));
+        assert_eq!(
+            loaded.runtime_state_doc_id(),
+            Some(default_runtime_state_doc_id("v4-rich"))
+        );
+
+        // Cells: count, order, and sources preserved.
+        let cells = loaded.get_cells();
+        assert_eq!(cells.len(), 3, "all cells survive migration");
+        assert_eq!(
+            cells.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            ["c1", "c2", "c3"],
+            "cell order (fractional position) survives migration"
+        );
+        assert_eq!(cells[0].source, "import numpy as np");
+        assert_eq!(cells[1].source, "# Heading");
+        assert_eq!(cells[2].source, "np.arange(3)");
+
+        // Cell metadata preserved.
+        let c1_meta = loaded
+            .get_cell_metadata("c1")
+            .expect("c1 metadata survives");
+        assert_eq!(c1_meta["tags"], serde_json::json!(["setup"]));
+        assert_eq!(c1_meta["collapsed"], serde_json::json!(true));
+
+        // Inline conda/uv deps preserved.
+        let snap = loaded.get_metadata_snapshot().expect("metadata snapshot");
+        assert!(
+            snap.runt
+                .conda
+                .as_ref()
+                .unwrap()
+                .dependencies
+                .contains(&"numpy".to_string()),
+            "conda deps survive migration"
+        );
+        assert!(
+            snap.runt
+                .uv
+                .as_ref()
+                .unwrap()
+                .dependencies
+                .contains(&"polars".to_string()),
+            "uv deps survive migration"
+        );
+
+        // The original file is migrated in place, not quarantined.
+        assert!(path.exists());
+        assert!(
+            !path.with_extension("automerge.corrupt").exists(),
+            "a v4 doc migrates, it is not preserved as .corrupt"
+        );
+    }
+
+    #[test]
     fn test_sync_between_two_docs() {
         // Server creates a notebook with cells
         let mut server = NotebookDoc::new("sync-test");
