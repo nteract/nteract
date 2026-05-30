@@ -46,4 +46,48 @@ test.describe("notebook rail outline", () => {
 
     await expect(validateHeading).toHaveAttribute("aria-current", "location");
   });
+
+  test("scrolls to a nested heading inside a markdown cell through the iframe bridge", async ({
+    page,
+  }) => {
+    const notebookId = crypto.randomUUID();
+    await openNotebookRoom(page, notebookId);
+    await waitForKernelStatus(page, "idle", 120_000);
+
+    mcp = await McpPeer.start();
+    await mcp.connectNotebook(notebookId);
+    await mcp.createCell(
+      [
+        "# Parent section",
+        "",
+        ...Array.from({ length: 48 }, (_, index) => `Filler paragraph ${index + 1}.`),
+        "",
+        "## Deep child",
+        "",
+        "The outline should land here, not only at the cell top.",
+      ].join("\n\n"),
+      "markdown",
+    );
+    await waitForCellCount(page, 2);
+
+    const childHeading = page
+      .frameLocator('iframe[data-slot="isolated-frame"][name^="md-"]')
+      .getByRole("heading", { name: "Deep child" });
+    await expect(childHeading).toBeAttached();
+    const beforeClickY = (await childHeading.boundingBox())?.y ?? Infinity;
+
+    await page.getByLabel("Outline").click();
+    await page.getByRole("link", { name: "Deep child" }).click();
+
+    await expect
+      .poll(async () => page.evaluate(() => window.location.hash))
+      .not.toContain("-heading-");
+
+    await expect
+      .poll(async () => (await childHeading.boundingBox())?.y ?? Infinity)
+      .toBeLessThan(beforeClickY - 400);
+    await expect
+      .poll(async () => (await childHeading.boundingBox())?.y ?? Infinity)
+      .toBeLessThan(480);
+  });
 });

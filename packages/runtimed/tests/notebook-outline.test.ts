@@ -184,6 +184,21 @@ describe("projectNotebookOutline", () => {
       href: "#notebook-cell-cell_3a_1-heading-load-data",
     });
   });
+
+  it("keeps multiple markdown headings in one cell on the cell href by default", () => {
+    const projection = projectNotebookOutline([
+      { id: "a", cell_type: "markdown", source: "# Load data\n\n## Clean columns" },
+    ]);
+
+    expect(projection.items.map((item) => item.href)).toEqual([
+      "#notebook-cell-a",
+      "#notebook-cell-a",
+    ]);
+    expect(projection.items.map((item) => item.headingAnchorId)).toEqual([
+      "notebook-cell-a-heading-load-data",
+      "notebook-cell-a-heading-clean-columns",
+    ]);
+  });
 });
 
 describe("slugifyNotebookHeading", () => {

@@ -20,6 +20,7 @@ import { Code2, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { notebookCellAnchorId } from "runtimed";
 import { Button } from "@/components/ui/button";
+import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
 import type { Runtime } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
@@ -58,6 +59,7 @@ export interface NotebookViewProps {
   onReportOutputMatchCount?: (cellId: string, count: number) => void;
   onSetCellSourceHidden?: (cellId: string, hidden: boolean) => void;
   onSetCellOutputsHidden?: (cellId: string, hidden: boolean) => void;
+  markdownHeadingAnchorsByCellId?: ReadonlyMap<string, readonly MarkdownHeadingAnchor[]>;
 }
 
 /** Tailwind classes for cell adder ribbon colors — must be static strings for tree-shaking. */
@@ -369,6 +371,7 @@ function NotebookViewContent({
   onReportOutputMatchCount,
   onSetCellSourceHidden,
   onSetCellOutputsHidden,
+  markdownHeadingAnchorsByCellId,
 }: NotebookViewProps) {
   const presence = usePresenceContext();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -881,6 +884,7 @@ function NotebookViewContent({
             dragHandleProps={dragHandleProps}
             isDragging={isDragging}
             rightGutterContent={rightGutterContent}
+            headingAnchors={markdownHeadingAnchorsByCellId?.get(cell.id)}
           />
         );
       }
@@ -915,6 +919,7 @@ function NotebookViewContent({
       onReportOutputMatchCount,
       onSetCellSourceHidden,
       onSetCellOutputsHidden,
+      markdownHeadingAnchorsByCellId,
       outputFocusedCellId,
       focusCell,
       handleOutputFocusChange,

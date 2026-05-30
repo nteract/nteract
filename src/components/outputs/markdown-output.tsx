@@ -1,7 +1,8 @@
 import { Check, Copy } from "lucide-react";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import ReactMarkdown, { type Options as ReactMarkdownOptions } from "react-markdown";
 import { StaticCodeBlock } from "@/components/editor/static-highlight";
+import type { MarkdownHeadingAnchor } from "./markdown-heading-anchors";
 import type { Options as RehypeKatexOptions } from "rehype-katex";
 import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
@@ -26,6 +27,7 @@ interface MarkdownOutputProps {
    * Enable copy button on code blocks
    */
   enableCopyCode?: boolean;
+  headingAnchors?: readonly MarkdownHeadingAnchor[];
 }
 
 const remarkPlugins: NonNullable<ReactMarkdownOptions["remarkPlugins"]> = [remarkGfm, remarkMath];
@@ -92,6 +94,20 @@ function CodeBlock({ children, language = "", enableCopy = true, isDark = false 
   );
 }
 
+function textFromReactNode(node: ReactNode): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(textFromReactNode).join("");
+  if (typeof node === "object" && "props" in node) {
+    return textFromReactNode((node as { props?: { children?: ReactNode } }).props?.children);
+  }
+  return "";
+}
+
+function normalizeHeadingText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
 /**
  * MarkdownOutput component for rendering Markdown content in notebook outputs.
  *
@@ -109,8 +125,46 @@ export function MarkdownOutput({
   content,
   className = "",
   enableCopyCode = true,
+  headingAnchors = [],
 }: MarkdownOutputProps) {
   const isDark = useDarkMode();
+  let headingCursor = 0;
+
+  const takeHeadingAnchor = (level: number, children: ReactNode): MarkdownHeadingAnchor | null => {
+    if (headingCursor >= headingAnchors.length) return null;
+
+    const renderedTitle = normalizeHeadingText(textFromReactNode(children));
+    const matchingIndex = headingAnchors.findIndex((anchor, index) => {
+      return (
+        index >= headingCursor &&
+        anchor.level === level &&
+        normalizeHeadingText(anchor.title) === renderedTitle
+      );
+    });
+    if (matchingIndex >= 0) {
+      headingCursor = matchingIndex + 1;
+      return headingAnchors[matchingIndex];
+    }
+
+    const nextAnchor = headingAnchors[headingCursor];
+    if (nextAnchor?.level === level) {
+      headingCursor += 1;
+      return nextAnchor;
+    }
+
+    return null;
+  };
+
+  const headingAttributes = (level: number, children: ReactNode) => {
+    const anchor = takeHeadingAnchor(level, children);
+    if (!anchor) return {};
+
+    return {
+      id: anchor.headingAnchorId,
+      "data-nteract-heading-anchor": anchor.headingAnchorId,
+      "data-nteract-outline-item-id": anchor.itemId,
+    };
+  };
 
   if (!content) {
     return null;
@@ -231,42 +285,66 @@ export function MarkdownOutput({
           // Headings
           h1({ children, ...props }) {
             return (
-              <h1 className="mb-4 mt-6 text-2xl font-bold" {...props}>
+              <h1
+                className="mb-4 mt-6 text-2xl font-bold"
+                {...props}
+                {...headingAttributes(1, children)}
+              >
                 {children}
               </h1>
             );
           },
           h2({ children, ...props }) {
             return (
-              <h2 className="mb-3 mt-5 text-xl font-bold" {...props}>
+              <h2
+                className="mb-3 mt-5 text-xl font-bold"
+                {...props}
+                {...headingAttributes(2, children)}
+              >
                 {children}
               </h2>
             );
           },
           h3({ children, ...props }) {
             return (
-              <h3 className="mb-2 mt-4 text-lg font-semibold" {...props}>
+              <h3
+                className="mb-2 mt-4 text-lg font-semibold"
+                {...props}
+                {...headingAttributes(3, children)}
+              >
                 {children}
               </h3>
             );
           },
           h4({ children, ...props }) {
             return (
-              <h4 className="mb-2 mt-3 text-base font-semibold" {...props}>
+              <h4
+                className="mb-2 mt-3 text-base font-semibold"
+                {...props}
+                {...headingAttributes(4, children)}
+              >
                 {children}
               </h4>
             );
           },
           h5({ children, ...props }) {
             return (
-              <h5 className="mb-1 mt-2 text-sm font-semibold" {...props}>
+              <h5
+                className="mb-1 mt-2 text-sm font-semibold"
+                {...props}
+                {...headingAttributes(5, children)}
+              >
                 {children}
               </h5>
             );
           },
           h6({ children, ...props }) {
             return (
-              <h6 className="mb-1 mt-2 text-sm font-medium" {...props}>
+              <h6
+                className="mb-1 mt-2 text-sm font-medium"
+                {...props}
+                {...headingAttributes(6, children)}
+              >
                 {children}
               </h6>
             );

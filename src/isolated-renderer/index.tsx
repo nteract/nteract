@@ -36,6 +36,7 @@ import {
   NTERACT_CLEAR_OUTPUTS,
   NTERACT_DIAGNOSTIC,
   NTERACT_INSTALL_RENDERER,
+  NTERACT_MEASURE_ELEMENT,
   NTERACT_RENDER_BATCH,
   NTERACT_RENDER_OUTPUT,
   NTERACT_RENDERER_READY,
@@ -431,6 +432,29 @@ function setupMessageListener() {
     }
     layoutPulseTimers = [];
     return {};
+  });
+  rpcTransport.onRequest(NTERACT_MEASURE_ELEMENT, (params) => {
+    const anchorId =
+      typeof params === "object" && params && "anchorId" in params
+        ? String((params as { anchorId?: unknown }).anchorId ?? "")
+        : "";
+    const element = anchorId
+      ? (document.getElementById(anchorId) ??
+        Array.from(document.querySelectorAll("[data-nteract-heading-anchor]")).find(
+          (candidate) => candidate.getAttribute("data-nteract-heading-anchor") === anchorId,
+        ))
+      : null;
+
+    if (!(element instanceof HTMLElement)) {
+      return { found: false };
+    }
+
+    const rect = element.getBoundingClientRect();
+    return {
+      found: true,
+      top: rect.top + window.scrollY,
+      height: rect.height,
+    };
   });
   rpcTransport.onNotification(NTERACT_INSTALL_RENDERER, (params) => {
     const { code, css } = params as { code: string; css?: string };

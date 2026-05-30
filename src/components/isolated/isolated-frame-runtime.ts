@@ -20,6 +20,7 @@ import {
   NTERACT_EVAL_RESULT,
   NTERACT_INSTALL_RENDERER,
   NTERACT_LINK_CLICK,
+  NTERACT_MEASURE_ELEMENT,
   NTERACT_MOUSE_DOWN,
   NTERACT_PING,
   NTERACT_RENDER_BATCH,
@@ -38,6 +39,7 @@ import {
   NTERACT_WIDGET_STATE,
   NTERACT_WIDGET_UPDATE,
   NTERACT_WHEEL_BOUNDARY,
+  type NteractMeasureElementResult,
 } from "./rpc-methods";
 
 export const TYPE_TO_METHOD: Record<string, string> = {
@@ -279,6 +281,26 @@ export class IsolatedFrameRuntime {
     // The bootstrap document owns search navigation before the React renderer is
     // ready, so search commands bypass the renderer-ready queue.
     this.deliver({ type: "search_navigate", payload: { matchIndex } });
+  }
+
+  async measureElement(anchorId: string): Promise<NteractMeasureElementResult | null> {
+    const transport = this.rendererTransport();
+    if (!transport || !anchorId) return null;
+
+    const result = await transport.request(NTERACT_MEASURE_ELEMENT, { anchorId });
+    if (typeof result !== "object" || result === null) return null;
+    const record = result as Partial<NteractMeasureElementResult>;
+    if (record.found !== true) {
+      return { found: false };
+    }
+    if (typeof record.top !== "number" || typeof record.height !== "number") {
+      return null;
+    }
+    return {
+      found: true,
+      top: record.top,
+      height: record.height,
+    };
   }
 
   handleWindowMessage(event: MessageEvent): boolean {

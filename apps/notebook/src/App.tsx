@@ -22,6 +22,7 @@ import {
 } from "runtimed";
 import { IsolationTest } from "@/components/isolated";
 import { MediaProvider } from "@/components/outputs/media-provider";
+import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-heading-anchors";
 import { getCrdtCommWriter, setCrdtCommWriter } from "@/components/widgets/crdt-comm-writer";
 import { SavedWidgetStateProvider } from "@/components/widgets/saved-widget-state-context";
 import {
@@ -86,6 +87,7 @@ import { getTrustApprovalHandoffDisplayStatus, KERNEL_STATUS } from "./lib/kerne
 import { type PendingTrustAction } from "./lib/trust-actions";
 import { useObservable } from "./lib/use-observable";
 import { logger } from "./lib/logger";
+import { navigateMarkdownHeading } from "./lib/markdown-heading-navigation";
 import { getNotebookCellsSnapshot, useSourceVersion } from "./lib/notebook-cells";
 import { useNotebookQueueProjection } from "./lib/notebook-executions";
 import { useDetectRuntime, useNotebookMetadata } from "./lib/notebook-metadata";
@@ -751,6 +753,22 @@ function AppContent() {
     notebookQueueProjection.executing_cell_id,
     notebookQueueProjection.queued_cell_ids,
   ]);
+  const markdownHeadingAnchorsByCellId = useMemo(() => {
+    const map = new Map<string, MarkdownHeadingAnchor[]>();
+    for (const item of outlineItems) {
+      if (item.kind !== "heading" || item.headingAnchorId === null) continue;
+      const anchors = map.get(item.cellId) ?? [];
+      anchors.push({
+        itemId: item.id,
+        title: item.title,
+        level: item.level,
+        anchor: item.anchor ?? null,
+        headingAnchorId: item.headingAnchorId,
+      });
+      map.set(item.cellId, anchors);
+    }
+    return map;
+  }, [outlineItems]);
   const activeOutlineItemId = useActiveOutlineItemId(
     outlineItems,
     cellIds,
@@ -935,16 +953,31 @@ function AppContent() {
     [setFocusedCellId],
   );
 
-  const handleNavigateOutlineItem = useCallback((_item: NotebookOutlineItem, href: string) => {
+  const handleNavigateOutlineItem = useCallback((item: NotebookOutlineItem, href: string) => {
     if (!href.startsWith("#")) return false;
-    const target = document.getElementById(href.slice(1));
+    const fallbackHref = `#${item.cellAnchorId}`;
+    const target = document.getElementById(
+      item.headingAnchorId ? item.cellAnchorId : href.slice(1),
+    );
     if (!target) return false;
 
-    target.scrollIntoView({ block: "start", behavior: "smooth" });
+    if (item.headingAnchorId) {
+      void navigateMarkdownHeading(item.cellId, item.headingAnchorId, { behavior: "smooth" }).then(
+        (handled) => {
+          if (!handled) {
+            target.scrollIntoView({ block: "start", behavior: "smooth" });
+          }
+        },
+      );
+    } else {
+      target.scrollIntoView({ block: "start", behavior: "smooth" });
+    }
     window.history.replaceState(
       null,
       "",
-      `${window.location.pathname}${window.location.search}${href}`,
+      `${window.location.pathname}${window.location.search}${
+        item.headingAnchorId ? fallbackHref : href
+      }`,
     );
     return true;
   }, []);
@@ -2088,6 +2121,7 @@ function AppContent() {
                 onReportOutputMatchCount={globalFind.reportOutputMatchCount}
                 onSetCellSourceHidden={setCellSourceHidden}
                 onSetCellOutputsHidden={setCellOutputsHidden}
+                markdownHeadingAnchorsByCellId={markdownHeadingAnchorsByCellId}
               />
             </CrdtBridgeProvider>
           </div>

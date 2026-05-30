@@ -223,6 +223,37 @@ describe("NotebookRail", () => {
     ).not.toBeNull();
   });
 
+  it("keeps nested same-cell markdown headings on the cell href by default", () => {
+    render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={[
+          outlineItems[0],
+          {
+            id: "cell-a:heading:1",
+            cellId: "cell-a",
+            title: "Load details",
+            level: 2,
+            kind: "heading" as const,
+            cellAnchorId: "notebook-cell-cell-a",
+            headingAnchorId: "notebook-cell-cell-a-heading-load-details",
+            href: "#notebook-cell-cell-a",
+            anchor: "load-details",
+          },
+        ]}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "Load details" })).toHaveAttribute(
+      "href",
+      "#notebook-cell-cell-a",
+    );
+  });
+
   it("renders the adapter-provided package panel when packages is active", () => {
     render(
       <NotebookRail
