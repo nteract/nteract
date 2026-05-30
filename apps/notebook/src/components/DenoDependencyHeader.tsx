@@ -1,12 +1,14 @@
 import { Check, ExternalLink, FileText, Info, Package, RefreshCw } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 import type { DenoConfigInfo } from "../hooks/useDenoConfig";
 
 interface DenoDependencyHeaderProps {
   denoConfigInfo: DenoConfigInfo | null;
   flexibleNpmImports: boolean;
   onSetFlexibleNpmImports: (enabled: boolean) => void;
+  variant?: "header" | "rail";
   // Sync state props - shows banner when config drifts from running kernel
   syncState?: { status: "synced" | "dirty" } | null;
   syncing?: boolean;
@@ -19,20 +21,39 @@ export function DenoDependencyHeader({
   denoConfigInfo,
   flexibleNpmImports,
   onSetFlexibleNpmImports,
+  variant = "header",
   syncState,
   syncing,
   onSyncNow,
   justSynced,
 }: DenoDependencyHeaderProps) {
+  const isRail = variant === "rail";
+
   return (
-    <div className="border-b bg-emerald-50/30 dark:bg-emerald-950/10">
-      <div className="px-3 py-3">
+    <div
+      className={cn(isRail ? "space-y-3" : "border-b bg-emerald-50/30 dark:bg-emerald-950/10")}
+      data-variant={variant}
+    >
+      <div className={cn(!isRail && "px-3 py-3")}>
         {/* Deno badge */}
-        <div className="mb-2 flex items-center gap-2">
-          <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
-            Deno
-          </span>
-          <span className="text-xs text-muted-foreground">Dependencies</span>
+        <div
+          className={cn(
+            "mb-2 flex items-center gap-2",
+            isRail &&
+              "mb-3 justify-between rounded-md border bg-background px-3 py-2 shadow-sm shadow-black/[0.02]",
+          )}
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+              Deno
+            </span>
+            <span className="truncate text-xs text-muted-foreground">Dependencies</span>
+          </div>
+          {isRail && (
+            <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+              {denoConfigInfo ? "Config" : "Imports"}
+            </span>
+          )}
         </div>
 
         {/* Success feedback after sync completed */}
@@ -45,8 +66,15 @@ export function DenoDependencyHeader({
 
         {/* Config drift notice - kernel restart needed */}
         {syncState?.status === "dirty" && onSyncNow && (
-          <div className="mb-3 flex items-center justify-between rounded bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400">
-            <div className="flex items-center gap-2">
+          <div
+            className={cn(
+              "mb-3 rounded bg-amber-500/10 text-xs text-amber-700 dark:text-amber-400",
+              isRail
+                ? "flex flex-col gap-2 px-3 py-2"
+                : "flex items-center justify-between px-2 py-1.5",
+            )}
+          >
+            <div className="flex items-start gap-2">
               <Info className="h-3.5 w-3.5 shrink-0" />
               <span>Configuration changed — restart kernel to apply</span>
             </div>
@@ -54,7 +82,10 @@ export function DenoDependencyHeader({
               type="button"
               onClick={onSyncNow}
               disabled={syncing}
-              className="flex items-center gap-1 rounded bg-amber-600 px-2 py-0.5 text-white text-xs font-medium hover:bg-amber-700 transition-colors disabled:opacity-50"
+              className={cn(
+                "flex items-center gap-1 rounded bg-amber-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-amber-700 disabled:opacity-50",
+                isRail && "self-start py-1",
+              )}
             >
               <RefreshCw className={`h-3 w-3 ${syncing ? "animate-spin" : ""}`} />
               Restart
@@ -99,7 +130,12 @@ export function DenoDependencyHeader({
         )}
 
         {/* Auto-install npm packages setting */}
-        <div className="mb-3 flex items-start gap-2.5">
+        <div
+          className={cn(
+            "mb-3 flex items-start gap-2.5",
+            isRail && "rounded-md border bg-background px-3 py-2",
+          )}
+        >
           <Checkbox
             id="flexible-npm-imports"
             checked={flexibleNpmImports}

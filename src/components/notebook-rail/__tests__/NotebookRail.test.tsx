@@ -9,6 +9,10 @@ const outlineItems = [
     title: "Load data",
     level: 1,
     kind: "heading" as const,
+    cellAnchorId: "notebook-cell-cell-a",
+    headingAnchorId: "notebook-cell-cell-a-heading-load-data",
+    href: "#notebook-cell-cell-a",
+    anchor: "load-data",
   },
   {
     id: "cell-b:heading:0",
@@ -16,6 +20,10 @@ const outlineItems = [
     title: "Clean columns",
     level: 2,
     kind: "heading" as const,
+    cellAnchorId: "notebook-cell-cell-b",
+    headingAnchorId: "notebook-cell-cell-b-heading-clean-columns",
+    href: "#notebook-cell-cell-b",
+    anchor: "clean-columns",
   },
 ];
 
@@ -36,12 +44,16 @@ describe("NotebookRail", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Load data" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Load data" })).toHaveAttribute(
       "aria-current",
       "location",
     );
+    expect(screen.getByRole("link", { name: "Load data" })).toHaveAttribute(
+      "href",
+      "#notebook-cell-cell-a",
+    );
 
-    fireEvent.click(screen.getByRole("button", { name: "Clean columns" }));
+    fireEvent.click(screen.getByRole("link", { name: "Clean columns" }));
     expect(onSelectOutlineItem).toHaveBeenCalledWith(outlineItems[1]);
   });
 
@@ -66,6 +78,64 @@ describe("NotebookRail", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Packages" }));
     expect(onActivePanelChange).toHaveBeenCalledWith("packages");
+  });
+
+  it("lets the host handle anchor navigation without browser default navigation", () => {
+    const onSelectOutlineItem = vi.fn();
+    const onNavigateOutlineItem = vi.fn(() => true);
+
+    render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={outlineItems}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+        onSelectOutlineItem={onSelectOutlineItem}
+        onNavigateOutlineItem={onNavigateOutlineItem}
+      />,
+    );
+
+    const clickResult = fireEvent.click(screen.getByRole("link", { name: "Load data" }));
+
+    expect(clickResult).toBe(false);
+    expect(onSelectOutlineItem).toHaveBeenCalledWith(outlineItems[0]);
+    expect(onNavigateOutlineItem).toHaveBeenCalledWith(outlineItems[0], "#notebook-cell-cell-a");
+  });
+
+  it("marks only the first outline item for a focused cell when no item is pinned", () => {
+    render(
+      <NotebookRail
+        activePanelId="outline"
+        collapsed={false}
+        outlineItems={[
+          outlineItems[0],
+          {
+            id: "cell-a:heading:1",
+            cellId: "cell-a",
+            title: "Load details",
+            level: 2,
+            kind: "heading" as const,
+            cellAnchorId: "notebook-cell-cell-a",
+            headingAnchorId: "notebook-cell-cell-a-heading-load-details",
+            href: "#notebook-cell-cell-a",
+            anchor: "load-details",
+          },
+          outlineItems[1],
+        ]}
+        selectedOutlineCellId="cell-a"
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "Load data" })).toHaveAttribute(
+      "aria-current",
+      "location",
+    );
+    expect(screen.getByRole("link", { name: "Load details" })).not.toHaveAttribute("aria-current");
   });
 
   it("renders the adapter-provided package panel when packages is active", () => {

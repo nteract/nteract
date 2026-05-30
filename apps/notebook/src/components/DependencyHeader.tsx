@@ -1,11 +1,15 @@
 import { Check, Download, FileText, Info, Plus, RefreshCw, X } from "lucide-react";
 import { type KeyboardEvent, useCallback, useEffect, useState } from "react";
+import { cn } from "@/lib/utils";
 import type { EnvSyncState, PyProjectDeps, PyProjectInfo } from "./runtime-surface-types";
+
+type DependencyPanelVariant = "header" | "rail";
 
 interface DependencyHeaderProps {
   dependencies: string[];
   requiresPython: string | null;
   loading: boolean;
+  variant?: DependencyPanelVariant;
   onAdd: (pkg: string) => Promise<void>;
   onRemove: (pkg: string) => Promise<void>;
   onSetRequiresPython: (version: string | null) => Promise<void>;
@@ -29,6 +33,7 @@ export function DependencyHeader({
   dependencies,
   requiresPython,
   loading,
+  variant = "header",
   onAdd,
   onRemove,
   onSetRequiresPython,
@@ -43,6 +48,7 @@ export function DependencyHeader({
 }: DependencyHeaderProps) {
   const [newDep, setNewDep] = useState("");
   const [pythonSpec, setPythonSpec] = useState(requiresPython ?? "");
+  const isRail = variant === "rail";
 
   useEffect(() => {
     setPythonSpec(requiresPython ?? "");
@@ -83,11 +89,29 @@ export function DependencyHeader({
   );
 
   return (
-    <div className="border-b bg-uv/[0.02] dark:bg-uv/[0.04]" data-testid="deps-panel">
-      <div className="px-3 py-3">
+    <div
+      className={cn(isRail ? "space-y-3" : "border-b bg-uv/[0.02] dark:bg-uv/[0.04]")}
+      data-testid="deps-panel"
+      data-variant={variant}
+    >
+      <div className={cn(!isRail && "px-3 py-3")}>
         {/* uv badge */}
-        <div className="mb-2 flex items-center gap-2">
-          <span className="rounded bg-uv/20 px-1.5 py-0.5 text-xs font-medium text-uv">uv</span>
+        <div
+          className={cn(
+            "mb-2 flex items-center gap-2",
+            isRail &&
+              "mb-3 justify-between rounded-md border bg-background px-3 py-2 shadow-sm shadow-black/[0.02]",
+          )}
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="rounded bg-uv/20 px-1.5 py-0.5 text-xs font-medium text-uv">uv</span>
+            {isRail && <span className="truncate text-xs text-muted-foreground">Python</span>}
+          </div>
+          {isRail && (
+            <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+              {isUsingProjectEnv ? "Project env" : packageCountLabel(dependencies.length)}
+            </span>
+          )}
         </div>
 
         {/* Success feedback after sync completed */}
@@ -100,8 +124,15 @@ export function DependencyHeader({
 
         {/* Environment drift notice - kernel restart needed */}
         {syncState?.status === "dirty" && onSyncNow && (
-          <div className="mb-3 flex items-center justify-between rounded bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400">
-            <div className="flex items-center gap-2">
+          <div
+            className={cn(
+              "mb-3 rounded bg-amber-500/10 text-xs text-amber-700 dark:text-amber-400",
+              isRail
+                ? "flex flex-col gap-2 px-3 py-2"
+                : "flex items-center justify-between px-2 py-1.5",
+            )}
+          >
+            <div className="flex items-start gap-2">
               <Info className="h-3.5 w-3.5 shrink-0" />
               <span>
                 Re-initialize the environment to use{" "}
@@ -125,7 +156,10 @@ export function DependencyHeader({
               onClick={onSyncNow}
               disabled={loading}
               data-testid="deps-restart-button"
-              className="flex items-center gap-1 rounded bg-amber-600 px-2 py-0.5 text-white text-xs font-medium hover:bg-amber-700 transition-colors disabled:opacity-50"
+              className={cn(
+                "flex items-center gap-1 rounded bg-amber-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-amber-700 disabled:opacity-50",
+                isRail && "self-start py-1",
+              )}
             >
               <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
               Re-initialize
@@ -136,10 +170,10 @@ export function DependencyHeader({
         {/* pyproject.toml detected banner */}
         {pyprojectInfo?.has_dependencies && (
           <div className="mb-3 rounded bg-muted/80 px-2 py-1.5 text-xs text-muted-foreground">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
+            <div className={cn("flex items-center justify-between", isRail && "items-start gap-3")}>
+              <div className="flex min-w-0 items-start gap-2">
                 <FileText className="h-3.5 w-3.5 shrink-0" />
-                <span>
+                <span className="min-w-0">
                   <code className="rounded bg-muted px-1">{pyprojectInfo.relative_path}</code>
                   {pyprojectInfo.project_name && (
                     <span className="text-muted-foreground ml-1">
@@ -148,7 +182,7 @@ export function DependencyHeader({
                   )}
                 </span>
               </div>
-              <div className="flex items-center gap-2">
+              <div className={cn("flex items-center gap-2", isRail && "flex-wrap justify-end")}>
                 {onUseProjectEnv && !isUsingProjectEnv && (
                   <button
                     type="button"
@@ -229,7 +263,12 @@ export function DependencyHeader({
             </div>
           )
         ) : (
-          <label className="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
+          <label
+            className={cn(
+              "mb-3 flex items-center gap-2 text-xs text-muted-foreground",
+              isRail && "flex-col items-stretch gap-1.5",
+            )}
+          >
             <span className="shrink-0">Python</span>
             <input
               type="text"
@@ -239,7 +278,10 @@ export function DependencyHeader({
               onKeyDown={handlePythonKeyDown}
               placeholder=">=3.13"
               data-testid="uv-python-input"
-              className="w-40 rounded border bg-background px-2 py-1 font-mono text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              className={cn(
+                "rounded border bg-background px-2 py-1 font-mono text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary",
+                isRail ? "w-full" : "w-40",
+              )}
               disabled={loading}
               autoComplete="off"
               spellCheck={false}
@@ -254,9 +296,9 @@ export function DependencyHeader({
               {dependencies.map((dep) => (
                 <div
                   key={dep}
-                  className="flex items-center gap-1 rounded bg-background px-2 py-1 text-xs border"
+                  className="flex max-w-full items-center gap-1 rounded border bg-background px-2 py-1 text-xs"
                 >
-                  <span className="font-mono">{dep}</span>
+                  <span className="min-w-0 truncate font-mono">{dep}</span>
                   <button
                     type="button"
                     onClick={() => onRemove(dep)}
@@ -305,4 +347,8 @@ export function DependencyHeader({
       </div>
     </div>
   );
+}
+
+function packageCountLabel(count: number): string {
+  return count === 1 ? "1 package" : `${count} packages`;
 }

@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  notebookCellAnchorHref,
+  notebookCellAnchorId,
+  notebookHeadingAnchorHref,
+  notebookHeadingAnchorId,
+  notebookOutlineItemHref,
   parseMarkdownHeadings,
   projectNotebookOutline,
+  resolveNotebookOutlineSelection,
   slugifyNotebookHeading,
 } from "../src/notebook-outline";
 
@@ -44,6 +50,9 @@ describe("projectNotebookOutline", () => {
           title: "Load data",
           level: 1,
           kind: "heading",
+          cellAnchorId: "notebook-cell-a",
+          headingAnchorId: "notebook-cell-a-heading-load-data",
+          href: "#notebook-cell-a",
           anchor: "load-data",
           statusLabel: null,
         },
@@ -85,6 +94,9 @@ describe("projectNotebookOutline", () => {
           title: "Notebook intro",
           level: 1,
           kind: "cell",
+          cellAnchorId: "notebook-cell-a",
+          headingAnchorId: null,
+          href: "#notebook-cell-a",
           anchor: null,
           detail: "Markdown",
           statusLabel: null,
@@ -95,6 +107,9 @@ describe("projectNotebookOutline", () => {
           title: "df = pandas.read_csv(path)",
           level: 1,
           kind: "cell",
+          cellAnchorId: "notebook-cell-b",
+          headingAnchorId: null,
+          href: "#notebook-cell-b",
           anchor: null,
           detail: "Code",
           statusLabel: "Running",
@@ -105,6 +120,9 @@ describe("projectNotebookOutline", () => {
           title: "Raw 3",
           level: 1,
           kind: "cell",
+          cellAnchorId: "notebook-cell-c",
+          headingAnchorId: null,
+          href: "#notebook-cell-c",
           anchor: null,
           detail: "Raw",
           statusLabel: null,
@@ -112,10 +130,110 @@ describe("projectNotebookOutline", () => {
       ],
     });
   });
+
+  it("prefers explicit metadata and leading section comments for code fallback titles", () => {
+    const projection = projectNotebookOutline([
+      {
+        id: "a",
+        cell_type: "code",
+        source: "df = pandas.read_csv(path)",
+        metadata: { title: "Load raw data" },
+      },
+      {
+        id: "b",
+        cell_type: "code",
+        source: "# ---- Clean columns ----\ndf = df.dropna()",
+      },
+      {
+        id: "c",
+        cell_type: "code",
+        source: "# noqa: F401\nimport pandas as pd",
+      },
+    ]);
+
+    expect(projection.items.map((item) => item.title)).toEqual([
+      "Load raw data",
+      "Clean columns",
+      "# noqa: F401",
+    ]);
+  });
+
+  it("cleans prose markdown fallback titles when no headings exist", () => {
+    const projection = projectNotebookOutline([
+      {
+        id: "a",
+        cell_type: "markdown",
+        source: "> **Summary:** [model findings](./findings.md) <br />",
+      },
+    ]);
+
+    expect(projection.items[0].title).toBe("Summary: model findings");
+  });
+
+  it("can project heading hrefs when a host exposes heading anchors", () => {
+    const projection = projectNotebookOutline(
+      [{ id: "cell:1", cell_type: "markdown", source: "# Load data" }],
+      { hrefTarget: "heading" },
+    );
+
+    expect(projection.items[0]).toMatchObject({
+      cellAnchorId: "notebook-cell-cell_3a_1",
+      headingAnchorId: "notebook-cell-cell_3a_1-heading-load-data",
+      href: "#notebook-cell-cell_3a_1-heading-load-data",
+    });
+  });
 });
 
 describe("slugifyNotebookHeading", () => {
   it("normalizes markdown heading titles into reusable anchors", () => {
     expect(slugifyNotebookHeading("`Load` **data** [now](./file.ipynb)")).toBe("load-data-now");
+  });
+});
+
+describe("notebook outline anchors", () => {
+  it("creates stable cell and heading anchor targets without DOM or React", () => {
+    expect(notebookCellAnchorId("cell:1")).toBe("notebook-cell-cell_3a_1");
+    expect(notebookCellAnchorHref("cell:1")).toBe("#notebook-cell-cell_3a_1");
+    expect(notebookHeadingAnchorId("cell:1", "load-data")).toBe(
+      "notebook-cell-cell_3a_1-heading-load-data",
+    );
+    expect(notebookHeadingAnchorHref("cell:1", "load-data")).toBe(
+      "#notebook-cell-cell_3a_1-heading-load-data",
+    );
+  });
+
+  it("resolves an outline item href for cell or heading targets", () => {
+    const item = projectNotebookOutline([
+      { id: "cell:1", cell_type: "markdown", source: "# Load data" },
+    ]).items[0];
+
+    expect(notebookOutlineItemHref(item)).toBe("#notebook-cell-cell_3a_1");
+    expect(notebookOutlineItemHref(item, "heading")).toBe(
+      "#notebook-cell-cell_3a_1-heading-load-data",
+    );
+  });
+});
+
+describe("resolveNotebookOutlineSelection", () => {
+  it("prefers a valid pinned item over the focused cell fallback", () => {
+    const items = projectNotebookOutline([
+      { id: "a", cell_type: "markdown", source: "# Load data\n## Load details" },
+      { id: "b", cell_type: "markdown", source: "# Clean columns" },
+    ]).items;
+
+    expect(
+      resolveNotebookOutlineSelection(items, {
+        selectedItemId: "a:heading:1",
+        selectedCellId: "b",
+      }),
+    ).toBe("a:heading:1");
+  });
+
+  it("falls back to the first item for the focused cell", () => {
+    const items = projectNotebookOutline([
+      { id: "a", cell_type: "markdown", source: "# Load data\n## Load details" },
+    ]).items;
+
+    expect(resolveNotebookOutlineSelection(items, { selectedCellId: "a" })).toBe("a:heading:0");
   });
 });

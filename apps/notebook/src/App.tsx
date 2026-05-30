@@ -252,13 +252,8 @@ function AppContent() {
   const globalFind = useGlobalFind(cellIds);
 
   const [activeRailPanel, setActiveRailPanel] = useState<NotebookRailPanelId>("outline");
-  const [railCollapsed, setRailCollapsed] = useState(false);
+  const [railCollapsed, setRailCollapsed] = useState(true);
   const [selectedOutlineItemId, setSelectedOutlineItemId] = useState<string | null>(null);
-  const [outlineNavigationTarget, setOutlineNavigationTarget] = useState<{
-    cellId: string;
-    requestId: number;
-  } | null>(null);
-  const outlineNavigationRequestIdRef = useRef(0);
   const [showIsolationTest, setShowIsolationTest] = useState(false);
   const [trustDialogOpen, setTrustDialogOpen] = useState(false);
   const [envBuildDialogOpen, setEnvBuildDialogOpen] = useState(false);
@@ -786,10 +781,14 @@ function AppContent() {
 
   useEffect(() => {
     if (!selectedOutlineItemId) return;
-    if (!outlineItems.some((item) => item.id === selectedOutlineItemId)) {
+    const selectedOutlineItem = outlineItems.find((item) => item.id === selectedOutlineItemId);
+    if (
+      !selectedOutlineItem ||
+      (focusedCellId !== null && focusedCellId !== selectedOutlineItem.cellId)
+    ) {
       setSelectedOutlineItemId(null);
     }
-  }, [outlineItems, selectedOutlineItemId]);
+  }, [focusedCellId, outlineItems, selectedOutlineItemId]);
 
   const handleRailPanelChange = useCallback((panelId: NotebookRailPanelId) => {
     setActiveRailPanel(panelId);
@@ -809,14 +808,23 @@ function AppContent() {
     (item: NotebookOutlineItem) => {
       setSelectedOutlineItemId(item.id);
       setFocusedCellId(item.cellId);
-      outlineNavigationRequestIdRef.current += 1;
-      setOutlineNavigationTarget({
-        cellId: item.cellId,
-        requestId: outlineNavigationRequestIdRef.current,
-      });
     },
     [setFocusedCellId],
   );
+
+  const handleNavigateOutlineItem = useCallback((_item: NotebookOutlineItem, href: string) => {
+    if (!href.startsWith("#")) return false;
+    const target = document.getElementById(href.slice(1));
+    if (!target) return false;
+
+    target.scrollIntoView({ block: "start", behavior: "smooth" });
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${window.location.search}${href}`,
+    );
+    return true;
+  }, []);
 
   const setBlockedTrustAction = useCallback((action: PendingTrustAction | null) => {
     pendingTrustActionRef.current = action;
@@ -1812,6 +1820,7 @@ function AppContent() {
             onActivePanelChange={handleRailPanelChange}
             onCollapsedChange={setRailCollapsed}
             onSelectOutlineItem={handleSelectOutlineItem}
+            onNavigateOutlineItem={handleNavigateOutlineItem}
             packagesPanel={
               <NotebookPackagesPanel>
                 {runtime === "python" && hasUvDependencies && hasCondaDependencies && (
@@ -1859,6 +1868,7 @@ function AppContent() {
                 )}
                 {runtime === "deno" && (
                   <DenoDependencyHeader
+                    variant="rail"
                     denoConfigInfo={denoConfigInfo}
                     flexibleNpmImports={flexibleNpmImports}
                     onSetFlexibleNpmImports={setFlexibleNpmImports}
@@ -1870,6 +1880,7 @@ function AppContent() {
                 )}
                 {runtime === "python" && envType === "conda" && (
                   <CondaDependencyHeader
+                    variant="rail"
                     dependencies={condaDependencies?.dependencies ?? []}
                     channels={condaDependencies?.channels ?? []}
                     python={condaDependencies?.python ?? null}
@@ -1890,6 +1901,7 @@ function AppContent() {
                 )}
                 {runtime === "python" && envType === "pixi" && (
                   <PixiDependencyHeader
+                    variant="rail"
                     pixiInfo={pixiInfo}
                     envSource={envSource}
                     syncState={pixiDerivedSyncState}
@@ -1899,6 +1911,7 @@ function AppContent() {
                 )}
                 {runtime === "python" && envType !== "conda" && envType !== "pixi" && (
                   <DependencyHeader
+                    variant="rail"
                     dependencies={dependencies?.dependencies ?? []}
                     requiresPython={dependencies?.requires_python ?? null}
                     loading={depsLoading}
@@ -1941,7 +1954,6 @@ function AppContent() {
                 loadError={loadError}
                 runtime={runtime}
                 sessionRuntimeState={sessionStatus?.runtime_state ?? null}
-                scrollTarget={outlineNavigationTarget}
                 onFocusCell={setFocusedCellId}
                 onExecuteCell={handleExecuteCell}
                 onInterruptKernel={interruptKernel}

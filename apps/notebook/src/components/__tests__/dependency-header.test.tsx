@@ -42,4 +42,23 @@ describe("DependencyHeader", () => {
       expect(onSetRequiresPython).toHaveBeenCalledWith(null);
     });
   });
+
+  it("keeps dependency actions wired in the rail variant", async () => {
+    const user = userEvent.setup();
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    renderDependencyHeader({
+      variant: "rail",
+      dependencies: ["pandas", "polars"],
+      onAdd,
+    });
+
+    expect(screen.getByTestId("deps-panel").getAttribute("data-variant")).toBe("rail");
+    expect(screen.getByText("2 packages")).toBeDefined();
+
+    await user.type(screen.getByTestId("deps-add-input"), "  numpy  {Enter}");
+
+    await waitFor(() => {
+      expect(onAdd).toHaveBeenCalledWith("numpy");
+    });
+  });
 });
