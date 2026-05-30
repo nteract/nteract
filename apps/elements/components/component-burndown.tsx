@@ -18,9 +18,9 @@ const stats = [
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
   {
     label: "current imports",
-    value: "95+",
+    value: "100+",
     detail:
-      "used shell toolbar, notebook rail, package headers, search, full cells, read-only cells, cell gutter, cell presence, runtime dialogs and banners, theme, output area, isolated output policy, plugin renderer, editor, widget controls, widget media, hydrated widget buffers, widget output, ipycanvas, and anywidget surfaces",
+      "used shell toolbar, notebook rail, package headers, search, full cells, read-only cells, cell gutter, cell presence, runtime dialogs and banners, theme, output area, isolated output policy, widget-view MIME handoff, plugin renderer, editor, widget controls, widget media, hydrated widget buffers, widget output, ipycanvas, and anywidget surfaces",
   },
 ];
 
@@ -138,7 +138,7 @@ const families = [
     target: "nteract renderers",
     status: "active",
     intent:
-      "OutputArea lane composition, AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, MathOutput, SvgOutput, AudioOutput, JavaScriptOutput, PlotlyOutput, VegaOutput, GeoJsonOutput, PdfOutput, VideoOutput, TracebackOutput, MIME priority, SiftTable, and a fixture-backed Sift parquet URL handoff now render from fixtures; live JavaScript execution, third-party renderer loading, widget comms, and generated Sift WASM decoding remain explicit adapter boundaries.",
+      "OutputArea lane composition, top-level widget-view MIME handoff, AnsiStreamOutput, AnsiErrorOutput, JsonOutput, ImageOutput, MathOutput, SvgOutput, AudioOutput, JavaScriptOutput, PlotlyOutput, VegaOutput, GeoJsonOutput, PdfOutput, VideoOutput, TracebackOutput, MIME priority, SiftTable, and a fixture-backed Sift parquet URL handoff now render from fixtures; live JavaScript execution, nested OutputModel widgets, third-party renderer loading, live widget comms, and generated Sift WASM decoding remain explicit adapter boundaries.",
   },
   {
     family: "Output isolation",

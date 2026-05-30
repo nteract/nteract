@@ -9,6 +9,9 @@ import {
   useState,
   type CSSProperties,
 } from "react";
+import { WidgetView } from "@/components/widgets/widget-view";
+import { useWidgetStore } from "@/components/widgets/widget-store-context";
+import { parseWidgetViewModelId, WIDGET_VIEW_MIME } from "@/components/widgets/widget-state";
 import {
   anyOutputNeedsIsolation,
   hasWidgetOutputs,
@@ -118,9 +121,45 @@ function stringifyPayloadData(data: unknown): string {
 }
 
 function outputLabel(payload: RenderPayload): string {
+  if (payload.mimeType === WIDGET_VIEW_MIME) return "widget view adapter";
   if (payload.mimeType === "text/markdown") return "markdown preview adapter";
   if (payload.mimeType === "text/plain") return "text output adapter";
   return payload.mimeType;
+}
+
+function WidgetPayloadPreview({ payload }: { payload: RenderPayload }) {
+  const widgetContext = useWidgetStore();
+  const modelId = parseWidgetViewModelId(payload.data);
+
+  if (!modelId || widgetContext === null) {
+    return (
+      <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-fd-foreground">
+        {stringifyPayloadData(payload.data)}
+      </pre>
+    );
+  }
+
+  return (
+    <div
+      className="rounded-md border border-fd-border bg-fd-background p-3"
+      data-elements-widget-frame-adapter="true"
+      data-widget-model-id={modelId}
+    >
+      <WidgetView modelId={modelId} />
+    </div>
+  );
+}
+
+function PayloadPreview({ payload }: { payload: RenderPayload }) {
+  if (payload.mimeType === WIDGET_VIEW_MIME) {
+    return <WidgetPayloadPreview payload={payload} />;
+  }
+
+  return (
+    <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-fd-foreground">
+      {stringifyPayloadData(payload.data)}
+    </pre>
+  );
 }
 
 export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>(
@@ -211,9 +250,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
             <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-fd-muted-foreground">
               {outputLabel(payload)}
             </div>
-            <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-fd-foreground">
-              {stringifyPayloadData(payload.data)}
-            </pre>
+            <PayloadPreview payload={payload} />
           </div>
         ))}
       </div>

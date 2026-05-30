@@ -10,10 +10,11 @@ import {
   FileText,
   FileWarning,
   ListFilter,
+  SlidersHorizontal,
   Table2,
   Terminal,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-output";
 import { AudioOutput } from "@/components/outputs/audio-output";
 import { ImageOutput } from "@/components/outputs/image-output";
@@ -30,6 +31,10 @@ import { TracebackOutput } from "@/components/outputs/traceback-output";
 import { VegaOutput } from "@/components/outputs/vega-output";
 import { VideoOutput } from "@/components/outputs/video-output";
 import { OutputArea, type JupyterOutput } from "@/components/cell/OutputArea";
+import "@/components/widgets/controls";
+import { WidgetStoreContext } from "@/components/widgets/widget-store-context";
+import { createWidgetStore, type WidgetStore } from "@/components/widgets/widget-store";
+import { WIDGET_VIEW_MIME } from "@/components/widgets/widget-state";
 
 const svgFigure = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 180">
   <rect width="420" height="180" rx="16" fill="#f8fafc"/>
@@ -628,6 +633,79 @@ const outputAreaFixtures: JupyterOutput[] = [
   },
 ];
 
+const widgetOutputModels = [
+  {
+    id: "output-widget-summary",
+    state: {
+      _model_name: "HTMLModel",
+      _model_module: "@jupyter-widgets/controls",
+      value: "<strong>Widget output</strong> <span>rendered through OutputArea</span>",
+    },
+  },
+  {
+    id: "output-widget-threshold",
+    state: {
+      _model_name: "IntSliderModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "threshold",
+      value: 42,
+      min: 0,
+      max: 100,
+      step: 1,
+      readout: true,
+      orientation: "horizontal",
+      disabled: false,
+    },
+  },
+  {
+    id: "output-widget-progress-style",
+    state: {
+      _model_name: "ProgressStyleModel",
+      _model_module: "@jupyter-widgets/controls",
+      bar_color: "#10b981",
+    },
+  },
+  {
+    id: "output-widget-progress",
+    state: {
+      _model_name: "IntProgressModel",
+      _model_module: "@jupyter-widgets/controls",
+      description: "complete",
+      value: 68,
+      min: 0,
+      max: 100,
+      bar_style: "success",
+      orientation: "horizontal",
+      style: "IPY_MODEL_output-widget-progress-style",
+    },
+  },
+  {
+    id: "output-widget-panel",
+    state: {
+      _model_name: "VBoxModel",
+      _model_module: "@jupyter-widgets/controls",
+      children: [
+        "IPY_MODEL_output-widget-summary",
+        "IPY_MODEL_output-widget-threshold",
+        "IPY_MODEL_output-widget-progress",
+      ],
+      box_style: "success",
+    },
+  },
+];
+
+const widgetOutputFixtures: JupyterOutput[] = [
+  {
+    output_id: "output-area-widget-view",
+    output_type: "display_data",
+    data: {
+      [WIDGET_VIEW_MIME]: { model_id: "output-widget-panel" },
+      "text/plain": "VBox(children=(HTML(), IntSlider(), IntProgress()))",
+    },
+    metadata: {},
+  },
+];
+
 const mimeFixtures = [
   {
     label: "Rich traceback beats text",
@@ -651,6 +729,13 @@ const mimeFixtures = [
     },
   },
   {
+    label: "Widget view selects widget MIME",
+    data: {
+      [WIDGET_VIEW_MIME]: { model_id: "output-widget-panel" },
+      "text/plain": "VBox(children=...)",
+    },
+  },
+  {
     label: "Structured JSON stays inspectable",
     data: {
       "application/json": jsonFixture,
@@ -663,7 +748,7 @@ const renderedPieces = [
   {
     name: "OutputArea",
     source: "src/components/cell/OutputArea.tsx",
-    note: "Notebook output lane composition, collapse control, DOM-vs-isolated segmentation, and search count plumbing rendered with static outputs.",
+    note: "Notebook output lane composition, collapse control, DOM-vs-isolated segmentation, widget-view MIME handoff, and search count plumbing rendered with static outputs.",
   },
   {
     name: "AnsiStreamOutput",
@@ -746,12 +831,12 @@ const adapterBoundaries = [
   {
     name: "IsolatedFrame",
     reason:
-      "Required in production for HTML, markdown with raw HTML, executable JavaScript, and renderer library bootstrap. This page uses deterministic fixture globals for visible Plotly, Vega, and GeoJSON component paths.",
+      "Required in production for HTML, markdown with raw HTML, executable JavaScript, widget bridge bootstrap, and renderer library bootstrap. This page uses deterministic fixture globals and a docs widget adapter for visible component paths.",
   },
   {
-    name: "Widget output",
+    name: "Nested widget output",
     reason:
-      "Needs fixture-backed WidgetStore and saved widget state before controls can be shown without kernel comm state.",
+      "Top-level widget-view MIME now renders through OutputArea with fixture comm state. Widget views nested inside OutputModel outputs still use the current unsupported nested-widget guard until that production path exists.",
   },
   {
     name: "Generated Sift WASM decode",
@@ -790,6 +875,52 @@ function RendererCard({
       <div className="p-4">{children}</div>
     </section>
   );
+}
+
+function seedOutputWidgetStore(store: WidgetStore) {
+  for (const model of widgetOutputModels) {
+    store.createModel(model.id, model.state);
+  }
+}
+
+function OutputWidgetFixtureProvider({ children }: { children: ReactNode }) {
+  const storeRef = useRef<WidgetStore | null>(null);
+  if (!storeRef.current) {
+    storeRef.current = createWidgetStore();
+  }
+  const store = storeRef.current;
+
+  useEffect(() => {
+    seedOutputWidgetStore(store);
+  }, [store]);
+
+  const sendUpdate = useCallback(
+    async (commId: string, state: Record<string, unknown>) => {
+      store.updateModel(commId, state);
+    },
+    [store],
+  );
+
+  const sendCustom = useCallback(() => {}, []);
+
+  const closeComm = useCallback(
+    (commId: string) => {
+      store.deleteModel(commId);
+    },
+    [store],
+  );
+
+  const contextValue = useMemo(
+    () => ({
+      store,
+      sendUpdate,
+      sendCustom,
+      closeComm,
+    }),
+    [closeComm, sendCustom, sendUpdate, store],
+  );
+
+  return <WidgetStoreContext.Provider value={contextValue}>{children}</WidgetStoreContext.Provider>;
 }
 
 export function OutputRenderersExample() {
@@ -988,6 +1119,39 @@ export function OutputRenderersExample() {
         icon={FileWarning}
       >
         <TracebackOutput data={tracebackFixture} />
+      </RendererCard>
+
+      <RendererCard
+        title="Widget display output"
+        source="apps/notebook/src/App.tsx + src/components/cell/OutputArea.tsx"
+        icon={SlidersHorizontal}
+      >
+        <OutputWidgetFixtureProvider>
+          <div className="space-y-3" data-testid="output-widget-view-surface">
+            <div className="rounded-md border border-fd-border bg-fd-background p-3">
+              <div className="text-xs font-medium text-fd-muted-foreground">
+                application/vnd.jupyter.widget-view+json
+              </div>
+              <div className="mt-2 text-xs leading-5 text-fd-muted-foreground">
+                The docs isolated-frame adapter receives the same payload shape that OutputArea
+                sends to the production renderer frame, then resolves the model from a local
+                WidgetStore fixture.
+              </div>
+            </div>
+            <div className="rounded-md border border-fd-border bg-background py-3">
+              <OutputArea
+                outputs={widgetOutputFixtures}
+                cellId="elements-widget-output"
+                executionCount={18}
+                hostContext={{
+                  nteract: {
+                    colorTheme: "classic",
+                  },
+                }}
+              />
+            </div>
+          </div>
+        </OutputWidgetFixtureProvider>
       </RendererCard>
 
       <RendererCard title="Sift table renderer" source="packages/sift/src/react.tsx" icon={Table2}>
