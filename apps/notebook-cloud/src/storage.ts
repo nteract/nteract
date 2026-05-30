@@ -173,10 +173,6 @@ export function runtimeStateSnapshotKey(runtimeStateDocId: string, headsHash: st
   return documentSnapshotKey(runtimeStateDocId, headsHash);
 }
 
-export function runtimeSnapshotKey(notebookId: string, headsHash: string): string {
-  return `n/${encodePathComponent(notebookId)}/snapshots/runtime-state/${encodePathComponent(headsHash)}.am`;
-}
-
 export function blobKey(notebookId: string, hash: string): string {
   return `n/${encodePathComponent(notebookId)}/blobs/${encodePathComponent(hash)}`;
 }
