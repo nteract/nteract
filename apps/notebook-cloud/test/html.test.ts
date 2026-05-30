@@ -59,14 +59,24 @@ describe("HTML script serialization", () => {
     assert.match(html, /id="nteract-cloud-viewer-config" type="application\/json"/);
     assert.match(html, /href="\/assets\/notebook-cloud-viewer\.css"/);
     assert.match(html, /src="\/assets\/notebook-cloud-viewer\.js"/);
+    assert.match(html, /rel="modulepreload" href="\/assets\/runtimed_wasm\.js" crossorigin/);
+    assert.match(
+      html,
+      /rel="preload" href="\/assets\/runtimed_wasm_bg\.wasm" as="fetch" type="application\/wasm" crossorigin/,
+    );
     assert.ok(
       html.indexOf(viewerThemeFirstPaintStyle()) < html.indexOf(viewerThemeBootstrapScript()),
       "theme first-paint style must apply before the bootstrap script resolves the final theme",
     );
     assert.ok(
       html.indexOf(viewerThemeBootstrapScript()) <
+        html.indexOf('rel="modulepreload" href="/assets/runtimed_wasm.js"'),
+      "theme bootstrap must run before runtime WASM hints so first paint stays theme-safe",
+    );
+    assert.ok(
+      html.indexOf('rel="modulepreload" href="/assets/runtimed_wasm.js"') <
         html.indexOf("/assets/notebook-cloud-viewer.css"),
-      "theme bootstrap must run before the stylesheet to avoid dark-to-light first paint",
+      "runtime WASM modulepreload should be discoverable before the render-blocking stylesheet",
     );
     assert.doesNotMatch(html, /"renderEndpoint"/);
     assert.match(html, /"catalogEndpoint":"\/api\/n\/demo"/);
@@ -117,6 +127,8 @@ describe("HTML script serialization", () => {
     assert.match(html, /nteract cloud notebooks/);
     assert.match(html, /id="nteract-cloud-auth-config"/);
     assert.doesNotMatch(html, /id="nteract-cloud-viewer-config"/);
+    assert.doesNotMatch(html, /rel="modulepreload" href="[^"]*runtimed_wasm\.js/);
+    assert.doesNotMatch(html, /rel="preload" href="[^"]*runtimed_wasm_bg\.wasm/);
     assert.doesNotMatch(html, /In the Loop - Collaborative Notebooks/);
   });
 
@@ -210,6 +222,14 @@ describe("HTML script serialization", () => {
     assert.match(
       html,
       /"runtimedWasmPath":"https:\/\/wasm\.example\/runtime\/runtimed_wasm_bg\.wasm"/,
+    );
+    assert.match(
+      html,
+      /rel="modulepreload" href="https:\/\/wasm\.example\/runtime\/runtimed_wasm\.js" crossorigin/,
+    );
+    assert.match(
+      html,
+      /rel="preload" href="https:\/\/wasm\.example\/runtime\/runtimed_wasm_bg\.wasm" as="fetch" type="application\/wasm" crossorigin/,
     );
     assert.match(
       response.headers.get("Content-Security-Policy") ?? "",
