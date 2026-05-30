@@ -9,6 +9,8 @@ let mockExecution: {
   execution_count: number | null;
   submitted_by_actor_label?: string | null;
 } | null = null;
+let mockIsExecuting = false;
+let mockIsQueued = false;
 const mockEditorBlur = vi.fn();
 
 vi.mock("@/components/cell/CellContainer", () => ({
@@ -101,9 +103,9 @@ vi.mock("../../hooks/useCrdtBridge", () => ({
 }));
 
 vi.mock("../../lib/cell-ui-state", () => ({
-  useIsCellExecuting: () => false,
+  useIsCellExecuting: () => mockIsExecuting,
   useIsCellFocused: () => false,
-  useIsCellQueued: () => false,
+  useIsCellQueued: () => mockIsQueued,
   useIsGroupExecuting: () => false,
   useIsNextCellFromFocused: () => false,
   useIsPreviousCellFromFocused: () => false,
@@ -166,6 +168,8 @@ function makeCell(): CodeCellType {
 describe("CodeCell output focus", () => {
   beforeEach(() => {
     mockExecution = null;
+    mockIsExecuting = false;
+    mockIsQueued = false;
     mockOutputs = [
       {
         output_type: "display_data",
@@ -234,6 +238,34 @@ describe("CodeCell output focus", () => {
     expect(footer?.getAttribute("data-execution-label")).toBe("Execution 12");
     expect(footer?.textContent?.replace(/\s+/g, "")).toContain("CompletedinPython·run12");
     expect(footer?.textContent).not.toContain("In [12]");
+  });
+
+  it("keeps running status active while the stop control carries danger", () => {
+    mockOutputs = [];
+    mockExecution = { execution_count: null, submitted_by_actor_label: null };
+    mockIsExecuting = true;
+
+    const { container, getByTestId } = render(
+      <CodeCell
+        cell={makeCell()}
+        onFocus={() => {}}
+        onExecute={() => {}}
+        onInterrupt={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+
+    const footer = container.querySelector('[data-slot="code-cell-current-line"]');
+    const status = container.querySelector('[data-slot="code-cell-current-line-status"]');
+    const rule = container.querySelector('[data-slot="code-cell-current-line-rule"]');
+    const stopButton = getByTestId("execute-button");
+
+    expect(footer?.getAttribute("data-execution-state")).toBe("running");
+    expect(status?.textContent).toBe("Running in Python");
+    expect(status).toHaveClass("text-primary");
+    expect(status).not.toHaveClass("text-destructive/80");
+    expect(rule).toHaveClass("bg-primary/45");
+    expect(stopButton).toHaveClass("text-destructive");
   });
 
   it("omits output chrome for short stream output", () => {

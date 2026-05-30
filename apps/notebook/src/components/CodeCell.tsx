@@ -178,7 +178,7 @@ function executionLineClass({
   isFocused: boolean;
 }) {
   if (isExecuting) {
-    return "bg-destructive/35";
+    return "bg-primary/45";
   }
 
   if (isQueued) {
@@ -279,10 +279,11 @@ function CodeCellCurrentLine({
         )}
       </button>
       <span
+        data-slot="code-cell-current-line-status"
         className={cn(
           "shrink-0 font-medium transition-colors duration-150",
           isFocused && "text-foreground/70",
-          isExecuting && "text-destructive/80",
+          isExecuting && "text-primary",
           isQueued && "text-sky-700 dark:text-sky-300",
         )}
       >
@@ -297,7 +298,7 @@ function CodeCellCurrentLine({
             className={cn(
               "shrink-0 tabular-nums transition-colors duration-150",
               isFocused && "text-foreground/75",
-              isExecuting && "text-destructive/80",
+              isExecuting && "text-primary/90",
               isQueued && "text-sky-700 dark:text-sky-300",
             )}
           >
@@ -306,6 +307,7 @@ function CodeCellCurrentLine({
         </>
       )}
       <div
+        data-slot="code-cell-current-line-rule"
         className={cn(
           "h-px min-w-6 flex-1 rounded-full transition-colors duration-150",
           executionLineClass({ isExecuting, isQueued, isFocused }),
