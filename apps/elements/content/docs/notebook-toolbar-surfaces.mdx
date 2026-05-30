@@ -1,0 +1,19 @@
+---
+title: Notebook toolbar surfaces
+description: Runtime-free NotebookToolbar states from the current notebook app.
+---
+
+import { NotebookToolbarSurfacesExample } from "@/components/notebook-toolbar-surfaces-example";
+
+The notebook toolbar is workspace chrome, not generic button inventory. This
+page renders the current `NotebookToolbar` with static runtime, environment,
+dependency, and update fixtures so the catalog can track the real desktop
+surface without importing daemon hooks or notebook state.
+
+<NotebookToolbarSurfacesExample />
+
+## Adapter rule
+
+Toolbar previews own only props and callbacks. Kernel start, interrupt, restart,
+dependency toggles, update restarts, and cell insertion stay inert in the docs
+app until a host adapter is deliberately introduced.

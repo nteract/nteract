@@ -71,7 +71,7 @@ const families = [
     target: "nteract shell",
     status: "active",
     intent:
-      "NotebookToolbar, NotebookRail, NotebookPackagesPanel, and the package panel DependencyHeader now render from current source with fixture-owned panel state and inert host callbacks.",
+      "NotebookToolbar now has a dedicated runtime-state matrix, while NotebookRail, NotebookPackagesPanel, and the package panel DependencyHeader render from current source with fixture-owned panel state and inert host callbacks.",
   },
   {
     family: "Notebook search",
