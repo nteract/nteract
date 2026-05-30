@@ -884,7 +884,7 @@ const fixtureModels: FixtureModel[] = [
     state: {
       _model_name: "CustomResearchWidgetModel",
       _model_module: "lab-extension",
-      value: "adapter needed",
+      value: "unsupported model fallback",
     },
   },
 ];
@@ -1043,6 +1043,30 @@ const widgetBoundaryRows = [
     productionBoundary: "kernel-originated ESM/CSS assets",
     detail:
       "AnyWidgetView mounts against deterministic _esm and _css fixtures. Kernel-originated asset URLs and sandbox policy stay behind the runtime adapter.",
+  },
+];
+
+const nextWidgetAdapters = [
+  {
+    adapter: "Live OutputModel comm capture",
+    catalogPath: "local OutputModel replay",
+    productionBoundary: "SyncEngine.commChanges$ to output frame bridge",
+    nextFixture:
+      "Add a typed fixture script for append, update, clear, and nested widget-view MIME messages so replay remains deterministic.",
+  },
+  {
+    adapter: "Kernel-originated AnyWidget assets",
+    catalogPath: "same-origin public fixture URLs",
+    productionBoundary: "daemon blob resolver and frameDomains policy",
+    nextFixture:
+      "Add a resolver fixture that turns kernel asset references into allowed iframe URLs without importing host runtime policy.",
+  },
+  {
+    adapter: "Production widget blob lifecycle",
+    catalogPath: "docs-local uploader and inert ContentRefs",
+    productionBoundary: "daemon blob URL signing and cleanup lifecycle",
+    nextFixture:
+      "Add fixture lifecycle states for pending, resolved, stale, and revoked blobs before cataloging host resolver UI.",
   },
 ];
 
@@ -1805,13 +1829,51 @@ export function WidgetSurfacesExample() {
       <section className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
         <div className="flex items-start gap-3">
           <CircleDotDashed className="mt-0.5 size-4 flex-none text-amber-600" aria-hidden="true" />
-          <div>
+          <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold">Next widget adapters</h2>
             <p className="mt-1 text-xs leading-5 text-fd-muted-foreground">
               The remaining widget catalog work is narrower now: live captured-output comm
               transport, kernel-originated anywidget asset URLs, and production daemon blob resolver
               lifecycle need explicit iframe/runtime adapters before they can render here.
             </p>
+            <div className="mt-4 overflow-hidden rounded-md border border-amber-500/25 bg-fd-card/70">
+              <div className="hidden grid-cols-[190px_210px_230px_minmax(0,1fr)] gap-3 border-b border-amber-500/20 px-3 py-2 text-[11px] font-medium uppercase text-fd-muted-foreground xl:grid">
+                <span>Adapter</span>
+                <span>Catalog path</span>
+                <span>Production boundary</span>
+                <span>Next fixture</span>
+              </div>
+              {nextWidgetAdapters.map((row) => (
+                <div
+                  key={row.adapter}
+                  className="grid gap-2 border-b border-amber-500/20 px-3 py-3 text-xs last:border-b-0 xl:grid-cols-[190px_210px_230px_minmax(0,1fr)] xl:gap-3"
+                >
+                  <div>
+                    <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                      Adapter
+                    </div>
+                    <div className="font-semibold">{row.adapter}</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                      Catalog path
+                    </div>
+                    <div className="font-mono text-[11px] text-emerald-700 dark:text-emerald-300">
+                      {row.catalogPath}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] font-medium uppercase text-fd-muted-foreground xl:hidden">
+                      Production boundary
+                    </div>
+                    <div className="font-mono text-[11px] text-amber-700 dark:text-amber-300">
+                      {row.productionBoundary}
+                    </div>
+                  </div>
+                  <p className="leading-5 text-fd-muted-foreground">{row.nextFixture}</p>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </section>
