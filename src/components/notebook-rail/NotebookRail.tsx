@@ -1,11 +1,4 @@
-import {
-  ChevronLeft,
-  ChevronRight,
-  ListTree,
-  Package,
-  PanelLeft,
-  type LucideIcon,
-} from "lucide-react";
+import { ChevronLeft, ChevronRight, ListTree, Package, type LucideIcon } from "lucide-react";
 import type { MouseEvent, ReactNode } from "react";
 import { resolveNotebookOutlineSelection, type NotebookOutlineItem } from "runtimed";
 import { cn } from "@/lib/utils";
@@ -73,9 +66,6 @@ export function NotebookRail({
           active={false}
           onClick={() => onCollapsedChange(!collapsed)}
         />
-        <div className="mb-2 flex size-8 items-center justify-center rounded-md bg-background text-muted-foreground ring-1 ring-border">
-          <PanelLeft className="size-4" aria-hidden="true" />
-        </div>
         {railButtons.map((item) => (
           <NotebookRailButton
             key={item.id}
