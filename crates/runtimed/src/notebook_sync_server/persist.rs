@@ -243,20 +243,38 @@ pub(crate) async fn save_notebook_to_disk(
     .map_err(|e| SaveError::Unrecoverable(format!("Failed to build v4 notebook: {e}")))?;
     let cell_count = v4_notebook.cells.len();
 
+    // Any doc we observe with at least one cell is, by definition, a room in a
+    // known-good state. Latch it ready (monotonic) so a later emptying of this
+    // same room autosaves instead of being mistaken for a failed load. This
+    // also rescues a room repopulated by the file watcher after an earlier
+    // failed initial load.
+    if cell_count >= 1 {
+        room.mark_ready();
+    }
+
     // Zeroing guard (automatic saves only). A failed/incomplete streaming load
     // empties the room doc (peer_session clears all cells on load failure).
     // Autosave and kernel-teardown both call this with `target_path = None`, so
     // without this guard an empty room would overwrite a populated `.ipynb` and
     // destroy the user's notebook. Skip the write when the in-memory doc has 0
-    // cells but a non-empty file already exists on disk, and return Ok so the
-    // autosave debouncer keeps running (Unrecoverable would disable it). An
-    // explicit user save (`target_path = Some`) is a deliberate action and
-    // bypasses this: emptying then saving on purpose still works. A genuinely
-    // empty doc over an empty/absent file still round-trips, and a brand-new
-    // untitled notebook has no existing file to protect.
+    // cells, the room has never been ready, and a non-empty file already exists
+    // on disk; return Ok so the autosave debouncer keeps running (Unrecoverable
+    // would disable it). An explicit user save (`target_path = Some`) is a
+    // deliberate action and bypasses this. A genuinely empty doc over an
+    // empty/absent file still round-trips, and a brand-new untitled notebook
+    // has no existing file to protect.
     //
-    // The trigger condition is "disk has bytes," not "disk parses to >=1 cell."
-    // The most common reason a streaming load fails is that the file is corrupt
+    // `!room.ever_ready()` is what separates a failed load from a legitimate
+    // emptying. `ever_ready` is a set-once latch (never cleared) flipped true
+    // when a load completes, the room is created fresh, or any doc with >=1
+    // cell is observed. So once a notebook has loaded or held content, deleting
+    // its last cell or editing metadata on a loaded-empty notebook WRITES the
+    // empty state; only a room that has never been ready (initial load failed
+    // or never ran) is protected. Because the bit is monotonic there is no
+    // clear-on-reload / clear-on-save lifecycle to get wrong.
+    //
+    // The disk trigger is "disk has bytes," not "disk parses to >=1 cell." The
+    // most common reason a streaming load fails is that the file is corrupt
     // (load.rs: jiter parse error, "not a JSON object", "'cells' is not an
     // array") — exactly the cases where a parse-and-count of the on-disk bytes
     // returns 0 and would let the empty doc through. Protecting on raw
@@ -264,15 +282,15 @@ pub(crate) async fn save_notebook_to_disk(
     // clobbered by a crashed prior write, and well-formed populated notebooks
     // alike. The only cost is that an unparseable file is never auto-overwritten
     // by an empty doc, which is the safe direction for a data-loss guard.
-    if target_path.is_none() && cell_count == 0 {
+    if target_path.is_none() && cell_count == 0 && !room.ever_ready() {
         let disk_has_content = existing_raw
             .as_ref()
             .is_some_and(|bytes| bytes.iter().any(|b| !b.is_ascii_whitespace()));
         if disk_has_content {
             warn!(
                 "[notebook-sync] Skipping autosave of empty doc over existing on-disk content for \
-                 {:?} (likely a failed initial load); preserving file. Explicit save still \
-                 permitted.",
+                 {:?} (room never ready, likely a failed initial load); preserving file. Explicit \
+                 save still permitted.",
                 notebook_path
             );
             return Ok(notebook_path.to_string_lossy().to_string());

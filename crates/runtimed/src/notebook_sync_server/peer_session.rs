@@ -169,6 +169,10 @@ where
     {
         Ok(count) => {
             room.finish_loading();
+            // Load completed: the room now reflects disk. Latch it ready so a
+            // later legitimate emptying autosaves instead of being skipped by
+            // the zeroing guard.
+            room.mark_ready();
             info!(
                 "[notebook-sync] Streaming load complete: {} cells from {}",
                 count,

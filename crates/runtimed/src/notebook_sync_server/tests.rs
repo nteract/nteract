@@ -9105,6 +9105,122 @@ async fn autosave_skips_zeroing_write_when_disk_cells_not_array() {
     );
 }
 
+/// Codex P1: the user deletes the last cell of a notebook that loaded
+/// successfully (e.g. via MCP/Python). The room legitimately has 0 cells and
+/// the on-disk file still has bytes, so the old guard skipped the write and
+/// reported success — disk kept stale content. With the `ever_ready` latch set
+/// by load success, this autosave WRITES the empty notebook.
+#[tokio::test]
+async fn autosave_writes_empty_doc_after_successful_load_then_emptied() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "loaded_then_emptied.ipynb");
+    write_two_cell_notebook(&notebook_path).await;
+
+    // Reproduce a successful streaming load: the load populates the doc and
+    // latches the room ready (peer_session calls mark_ready on the Ok branch).
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-a", "code").unwrap();
+        doc.add_cell(1, "cell-b", "markdown").unwrap();
+    }
+    room.finish_loading();
+    room.mark_ready();
+
+    // User now deletes every cell.
+    {
+        let mut doc = room.doc.write().await;
+        doc.clear_all_cells().unwrap();
+        assert_eq!(doc.cell_count(), 0);
+    }
+
+    save_notebook_to_disk(&room, None)
+        .await
+        .expect("autosave of a legitimately-emptied loaded notebook must write");
+
+    assert_eq!(
+        disk_cell_count(&notebook_path),
+        0,
+        "deleting the last cell of a loaded notebook must persist the empty state"
+    );
+}
+
+/// Codex P1, second case: a metadata/dependency edit on an already-saved EMPTY
+/// notebook. The room has 0 cells and the file has bytes, so the old guard
+/// skipped. Because the room loaded successfully (ever_ready true), the write
+/// goes through and the metadata edit lands on disk.
+#[tokio::test]
+async fn autosave_writes_metadata_edit_on_loaded_empty_notebook() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "loaded_empty_meta.ipynb");
+
+    // An already-saved empty notebook on disk (valid nbformat, zero cells).
+    tokio::fs::write(
+        &notebook_path,
+        r#"{ "nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": [] }"#,
+    )
+    .await
+    .unwrap();
+
+    // The room loaded that empty notebook successfully.
+    room.finish_loading();
+    room.mark_ready();
+    assert_eq!(room.doc.read().await.cell_count(), 0);
+
+    // A metadata edit lands; the doc stays at 0 cells.
+    room.state
+        .with_doc(|sd| sd.set_path(Some(&notebook_path.to_string_lossy())))
+        .unwrap();
+
+    save_notebook_to_disk(&room, None)
+        .await
+        .expect("metadata edit on a loaded empty notebook must write");
+
+    assert_eq!(
+        disk_cell_count(&notebook_path),
+        0,
+        "loaded empty notebook stays empty but the write must not be skipped"
+    );
+}
+
+/// Observing a doc with >=1 cell latches the room ready. This covers a room
+/// repopulated by the file watcher after an earlier failed load: once content
+/// has gone through save_notebook_to_disk, a later emptying autosaves rather
+/// than being treated as a failed-load zeroing.
+#[tokio::test]
+async fn autosave_latches_ready_on_first_populated_save_then_writes_empty() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "repopulated.ipynb");
+
+    // Room starts not-ready (built via with_debouncer, not new_fresh).
+    assert!(!room.ever_ready());
+
+    // First save observes one cell -> latches ready and writes.
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "only-cell", "code").unwrap();
+        doc.update_source("only-cell", "x = 1").unwrap();
+    }
+    save_notebook_to_disk(&room, None)
+        .await
+        .expect("populated save writes");
+    assert!(room.ever_ready(), ">=1-cell save must latch the room ready");
+    assert_eq!(disk_cell_count(&notebook_path), 1);
+
+    // Now empty it; the autosave must write the empty state, not skip.
+    {
+        let mut doc = room.doc.write().await;
+        doc.clear_all_cells().unwrap();
+    }
+    save_notebook_to_disk(&room, None)
+        .await
+        .expect("emptying a once-populated room must write the empty state");
+    assert_eq!(
+        disk_cell_count(&notebook_path),
+        0,
+        "ready room writes its empty state instead of preserving stale disk"
+    );
+}
+
 /// A file that is only whitespace carries no cells to lose, so the guard must
 /// not fire: an empty doc over a whitespace-only file still writes through.
 #[tokio::test]
