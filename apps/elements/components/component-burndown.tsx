@@ -18,9 +18,9 @@ const stats = [
   { label: "component forks", value: "0", detail: "current sources stay canonical" },
   {
     label: "current imports",
-    value: "44",
+    value: "46",
     detail:
-      "used shell toolbar, package headers, search, full cells, read-only cells, cell gutter, runtime dialogs and banners, theme, output area, expanded renderer, editor, and widget surfaces",
+      "used shell toolbar, notebook rail, package headers, search, full cells, read-only cells, cell gutter, runtime dialogs and banners, theme, output area, expanded renderer, editor, and widget surfaces",
   },
 ];
 
@@ -66,11 +66,12 @@ const phases = [
 const families = [
   {
     family: "Notebook workspace",
-    source: "apps/notebook/src/components/{NotebookView,NotebookToolbar,DependencyHeader}.tsx",
+    source:
+      "apps/notebook/src/components/{NotebookView,NotebookToolbar,DependencyHeader}.tsx + src/components/notebook-rail/NotebookRail.tsx",
     target: "nteract shell",
     status: "active",
     intent:
-      "NotebookToolbar renders from current source; the sidebar rail remains a fixture-backed adapter, and its package panel now hosts the current DependencyHeader instead of a catalog-only package list.",
+      "NotebookToolbar, NotebookRail, NotebookPackagesPanel, and the package panel DependencyHeader now render from current source with fixture-owned panel state and inert host callbacks.",
   },
   {
     family: "Notebook search",

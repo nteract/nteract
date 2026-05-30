@@ -1,8 +1,18 @@
 "use client";
 
-import { Boxes, ListTree, Package, PanelLeft, ShieldCheck, Variable } from "lucide-react";
+import { Boxes, ListTree, ShieldCheck, Variable } from "lucide-react";
 import { useState } from "react";
-import { KERNEL_STATUS, RUNTIME_STATUS, type RuntimeLifecycle } from "runtimed";
+import {
+  KERNEL_STATUS,
+  RUNTIME_STATUS,
+  type NotebookOutlineItem,
+  type RuntimeLifecycle,
+} from "runtimed";
+import {
+  NotebookPackagesPanel,
+  NotebookRail,
+  type NotebookRailPanelId,
+} from "@/components/notebook-rail";
 import { cn } from "@/lib/utils";
 import { DependencyHeader } from "@/notebook-components/DependencyHeader";
 import { NotebookToolbar } from "@/notebook-components/NotebookToolbar";
@@ -11,19 +21,69 @@ const noop = () => {};
 const asyncNoop = async () => {};
 const asyncTrue = async () => true;
 
-type RailPanelKey = "outline" | "packages" | "variables" | "renderers";
-
 const runningIdleLifecycle: RuntimeLifecycle = {
   lifecycle: "Running",
   activity: "Idle",
 };
 
-const outlineItems = [
-  { title: "Load data", depth: 0 },
-  { title: "Clean columns", depth: 1 },
-  { title: "Explore shape", depth: 0 },
-  { title: "Model run", depth: 0 },
-  { title: "Findings", depth: 1 },
+const outlineItems: NotebookOutlineItem[] = [
+  {
+    id: "cell-load-data:heading:0",
+    cellId: "cell-load-data",
+    title: "Load data",
+    level: 1,
+    kind: "heading",
+    cellAnchorId: "notebook-cell-cell-load-data",
+    headingAnchorId: "notebook-cell-cell-load-data-heading-load-data",
+    href: "#notebook-cell-cell-load-data",
+    anchor: "load-data",
+    statusLabel: "markdown",
+  },
+  {
+    id: "cell-clean-columns:heading:0",
+    cellId: "cell-clean-columns",
+    title: "Clean columns",
+    level: 2,
+    kind: "heading",
+    cellAnchorId: "notebook-cell-cell-clean-columns",
+    headingAnchorId: "notebook-cell-cell-clean-columns-heading-clean-columns",
+    href: "#notebook-cell-cell-clean-columns",
+    anchor: "clean-columns",
+    detail: "code",
+  },
+  {
+    id: "cell-explore-shape:heading:0",
+    cellId: "cell-explore-shape",
+    title: "Explore shape",
+    level: 1,
+    kind: "heading",
+    cellAnchorId: "notebook-cell-cell-explore-shape",
+    headingAnchorId: "notebook-cell-cell-explore-shape-heading-explore-shape",
+    href: "#notebook-cell-cell-explore-shape",
+    anchor: "explore-shape",
+  },
+  {
+    id: "cell-model-run:heading:0",
+    cellId: "cell-model-run",
+    title: "Model run",
+    level: 1,
+    kind: "heading",
+    cellAnchorId: "notebook-cell-cell-model-run",
+    headingAnchorId: "notebook-cell-cell-model-run-heading-model-run",
+    href: "#notebook-cell-cell-model-run",
+    anchor: "model-run",
+  },
+  {
+    id: "cell-findings:heading:0",
+    cellId: "cell-findings",
+    title: "Findings",
+    level: 2,
+    kind: "heading",
+    cellAnchorId: "notebook-cell-cell-findings",
+    headingAnchorId: "notebook-cell-cell-findings-heading-findings",
+    href: "#notebook-cell-cell-findings",
+    anchor: "findings",
+  },
 ];
 
 const cells = [
@@ -34,12 +94,12 @@ const cells = [
   },
   {
     label: "Code",
-    title: "read_csv",
+    title: "Clean columns",
     body: "df = pandas.read_csv('runs.csv')",
   },
   {
     label: "Output",
-    title: "Preview",
+    title: "Explore shape",
     body: "2,148 rows x 18 columns",
   },
 ];
@@ -57,24 +117,27 @@ const rendererItems = [
   { name: "image/png", state: "inline" },
 ];
 
-const railItems = [
-  { key: "outline", icon: ListTree, label: "Outline" },
-  { key: "packages", icon: Package, label: "Packages" },
-  { key: "variables", icon: Variable, label: "Variables" },
-  { key: "renderers", icon: Boxes, label: "Renderers" },
-] satisfies Array<{ key: RailPanelKey; icon: typeof ListTree; label: string }>;
+const plannedRailPanels = [
+  {
+    icon: Variable,
+    title: "Variables",
+    detail: `${variableItems.length} fixture names`,
+    body: "A future rail sibling for live namespace inspection once the app has a current variable surface.",
+  },
+  {
+    icon: Boxes,
+    title: "Renderers",
+    detail: `${rendererItems.length} fixture MIME lanes`,
+    body: "A future diagnostics panel for output MIME routing, plugin loading, and renderer health.",
+  },
+];
 
 export function RailOutlineExample() {
-  const [activePanel, setActivePanel] = useState<RailPanelKey>("outline");
-  const panelTitle = railItems.find((item) => item.key === activePanel)?.label ?? "Outline";
-  const panelDetail =
-    activePanel === "outline"
-      ? `${outlineItems.length} headings`
-      : activePanel === "packages"
-        ? "uv:inline · 4 packages"
-        : activePanel === "variables"
-          ? `${variableItems.length} live names`
-          : `${rendererItems.length} renderers`;
+  const [activePanel, setActivePanel] = useState<NotebookRailPanelId>("outline");
+  const [railCollapsed, setRailCollapsed] = useState(false);
+  const [selectedOutlineItemId, setSelectedOutlineItemId] = useState(outlineItems[1]?.id ?? null);
+  const selectedOutlineItem =
+    outlineItems.find((item) => item.id === selectedOutlineItemId) ?? outlineItems[0];
 
   return (
     <div
@@ -103,67 +166,44 @@ export function RailOutlineExample() {
         isDepsOpen={false}
         depsOutOfSync={false}
       />
-      <div className="grid min-h-[500px] grid-cols-[48px_minmax(260px,300px)_minmax(320px,1fr)] overflow-x-auto">
-        <aside className="flex flex-col items-center gap-2 border-r border-fd-border bg-fd-muted/40 px-2 py-3">
-          <div className="mb-3 flex size-8 items-center justify-center rounded-md bg-fd-primary text-fd-primary-foreground">
-            <PanelLeft className="size-4" aria-hidden="true" />
-          </div>
-          {railItems.map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              aria-pressed={activePanel === item.key}
-              onClick={() => setActivePanel(item.key)}
-              className={cn(
-                "flex size-8 items-center justify-center rounded-md border text-xs",
-                "transition-colors hover:border-fd-border hover:bg-fd-background hover:text-fd-foreground",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fd-primary/40",
-                activePanel === item.key
-                  ? "border-fd-primary bg-fd-primary text-fd-primary-foreground"
-                  : "border-transparent text-fd-muted-foreground",
-              )}
-              title={item.label}
-            >
-              <item.icon className="size-4" aria-hidden="true" />
-            </button>
-          ))}
-        </aside>
+      <div className="grid min-h-[500px] grid-cols-[auto_minmax(320px,1fr)] overflow-x-auto">
+        <NotebookRail
+          activePanelId={activePanel}
+          collapsed={railCollapsed}
+          outlineItems={outlineItems}
+          selectedOutlineItemId={selectedOutlineItemId}
+          selectedOutlineCellId={selectedOutlineItem?.cellId ?? null}
+          packagesSummary="uv:inline · 4 packages"
+          packagesPanel={
+            <NotebookPackagesPanel>
+              <PackagePanelContent />
+            </NotebookPackagesPanel>
+          }
+          onActivePanelChange={setActivePanel}
+          onCollapsedChange={setRailCollapsed}
+          onSelectOutlineItem={(item) => setSelectedOutlineItemId(item.id)}
+          onNavigateOutlineItem={() => true}
+        />
 
-        <aside className="min-h-0 overflow-y-auto border-r border-fd-border bg-fd-background p-4">
-          <div className="mb-4 flex items-start justify-between gap-3">
-            <div>
-              <p className="text-xs font-medium uppercase tracking-[0.08em] text-fd-muted-foreground">
-                Notebook
-              </p>
-              <h3 className="mt-1 text-sm font-semibold">{panelTitle}</h3>
-            </div>
-            <span className="rounded-full border border-fd-border bg-fd-muted px-2 py-1 text-[11px] text-fd-muted-foreground">
-              {panelDetail}
-            </span>
-          </div>
-
-          {activePanel === "outline" && <OutlinePanel />}
-          {activePanel === "packages" && <PackagePanel />}
-          {activePanel === "variables" && <VariablesPanel />}
-          {activePanel === "renderers" && <RenderersPanel />}
-        </aside>
-
-        <main className="bg-fd-muted/20 p-6">
+        <main className="min-w-[320px] bg-fd-muted/20 p-6">
           <div className="mx-auto max-w-2xl space-y-3">
             <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs leading-5 text-emerald-900 dark:text-emerald-300">
               <div className="mb-1 flex items-center gap-2 font-semibold">
                 <ShieldCheck className="size-3.5" aria-hidden="true" />
-                NotebookToolbar and DependencyHeader are rendered from the notebook app.
+                NotebookToolbar, NotebookRail, and DependencyHeader render from current sources.
               </div>
               <p>
-                The rail shell stays fixture-backed while package management starts using current
-                dependency UI inside the left-side panel.
+                The docs app owns fixture state only: selected outline item, collapsed state,
+                package callbacks, and inert anchor navigation.
               </p>
             </div>
             {cells.map((cell) => (
               <section
                 key={cell.title}
-                className="rounded-lg border border-fd-border bg-fd-background p-4 shadow-sm"
+                className={cn(
+                  "rounded-lg border border-fd-border bg-fd-background p-4 shadow-sm",
+                  selectedOutlineItem?.title === cell.title && "border-fd-primary/50",
+                )}
               >
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <h4 className="text-sm font-semibold">{cell.title}</h4>
@@ -174,6 +214,31 @@ export function RailOutlineExample() {
                 <p className="font-mono text-xs leading-6 text-fd-muted-foreground">{cell.body}</p>
               </section>
             ))}
+            <section className="rounded-lg border border-dashed border-fd-border bg-fd-background p-4">
+              <div className="mb-3 flex items-center gap-2">
+                <ListTree className="size-4 text-fd-muted-foreground" aria-hidden="true" />
+                <h4 className="text-sm font-semibold">Planned sibling panels</h4>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {plannedRailPanels.map((panel) => (
+                  <div key={panel.title} className="rounded-md border border-fd-border p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <panel.icon
+                          className="size-4 text-fd-muted-foreground"
+                          aria-hidden="true"
+                        />
+                        <h5 className="text-sm font-medium">{panel.title}</h5>
+                      </div>
+                      <span className="shrink-0 rounded bg-fd-muted px-1.5 py-0.5 text-[10px] text-fd-muted-foreground">
+                        {panel.detail}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-xs leading-5 text-fd-muted-foreground">{panel.body}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
           </div>
         </main>
       </div>
@@ -181,31 +246,7 @@ export function RailOutlineExample() {
   );
 }
 
-function OutlinePanel() {
-  return (
-    <>
-      <nav className="space-y-1" aria-label="Notebook outline preview">
-        {outlineItems.map((item, index) => (
-          <div
-            key={item.title}
-            className={cn(
-              "flex items-center rounded-md px-2 py-1.5 text-sm",
-              item.depth === 1 && "ml-4",
-              index === 0 ? "bg-fd-primary text-fd-primary-foreground" : "text-fd-muted-foreground",
-            )}
-          >
-            {item.title}
-          </div>
-        ))}
-      </nav>
-      <div className="mt-6 rounded-md border border-dashed border-fd-border p-3 text-xs leading-5 text-fd-muted-foreground">
-        Packages and variables are sibling rail panels, not sections inside the outline.
-      </div>
-    </>
-  );
-}
-
-function PackagePanel() {
+function PackagePanelContent() {
   return (
     <div className="space-y-3">
       <div className="rounded-md border border-fd-border bg-fd-muted/40 p-3 text-xs leading-5 text-fd-muted-foreground">
@@ -228,46 +269,6 @@ function PackagePanel() {
           justSynced={false}
         />
       </div>
-    </div>
-  );
-}
-
-function VariablesPanel() {
-  return (
-    <div className="space-y-2">
-      {variableItems.map((variable) => (
-        <div key={variable.name} className="rounded-md border border-fd-border px-2 py-2">
-          <div className="flex items-center justify-between gap-2">
-            <span className="min-w-0 truncate font-mono text-xs text-fd-foreground">
-              {variable.name}
-            </span>
-            <span className="rounded bg-fd-muted px-1.5 py-0.5 text-[10px] text-fd-muted-foreground">
-              {variable.type}
-            </span>
-          </div>
-          <div className="mt-1 truncate text-[11px] text-fd-muted-foreground">{variable.value}</div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function RenderersPanel() {
-  return (
-    <div className="space-y-2">
-      {rendererItems.map((renderer) => (
-        <div
-          key={renderer.name}
-          className="flex items-center justify-between gap-3 rounded-md border border-fd-border px-2 py-2"
-        >
-          <span className="min-w-0 truncate font-mono text-xs text-fd-foreground">
-            {renderer.name}
-          </span>
-          <span className="rounded bg-fd-muted px-1.5 py-0.5 text-[10px] text-fd-muted-foreground">
-            {renderer.state}
-          </span>
-        </div>
-      ))}
     </div>
   );
 }
