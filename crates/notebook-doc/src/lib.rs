@@ -1132,30 +1132,55 @@ impl NotebookDoc {
                 Ok(data) => match AutoCommit::load(&data) {
                     Ok(doc) => {
                         let mut loaded = Self { doc };
+                        // Classify the persisted `schema_version`. `schema_version()`
+                        // collapses both "key absent" and "key present but not a
+                        // non-negative integer" to None, and casts a negative Int
+                        // to a huge u64 — so read the raw value here to tell a
+                        // version-less doc (treat as current) apart from a
+                        // malformed one (quarantine).
+                        #[derive(Clone, Copy)]
+                        enum SchemaState {
+                            Absent,
+                            Valid(u64),
+                            Invalid,
+                        }
+                        let state = match loaded.doc.get(automerge::ROOT, "schema_version") {
+                            Ok(None) => SchemaState::Absent,
+                            Ok(Some((automerge::Value::Scalar(s), _))) => match s.as_ref() {
+                                automerge::ScalarValue::Uint(v) => SchemaState::Valid(*v),
+                                automerge::ScalarValue::Int(v) if *v >= 0 => {
+                                    SchemaState::Valid(*v as u64)
+                                }
+                                _ => SchemaState::Invalid,
+                            },
+                            _ => SchemaState::Invalid,
+                        };
+
                         // Current, NEWER-than-this-build (forward-tolerant), and
                         // version-less docs are all usable as-is. Only genuinely
-                        // older schemas migrate (v3/v4) or are rejected (< v3).
-                        let version = loaded.schema_version();
-                        let current_or_newer = match version {
-                            // No `schema_version` field. There are no legacy v1
-                            // docs in the field, and a version-less doc that
-                            // otherwise has the v5 object skeleton (e.g. a
-                            // transient partial-sync state on a live doc) is
-                            // current, not v1 — condemning it would be a
-                            // data-loss trap. Treat None as current.
-                            None => true,
+                        // older numeric versions migrate (v3/v4) or are rejected
+                        // (< v3); a malformed value is rejected.
+                        let tolerate = match state {
+                            // No `schema_version` key: there are no legacy v1 docs
+                            // in the field, and a version-less doc that otherwise
+                            // has the v5 object skeleton (e.g. a transient
+                            // partial-sync state on a live doc) is current, not v1
+                            // — condemning it would be a data-loss trap.
+                            SchemaState::Absent => true,
                             // This build's version, or a doc written by a NEWER
                             // build.
-                            Some(v) => v >= SCHEMA_VERSION,
+                            SchemaState::Valid(v) => v >= SCHEMA_VERSION,
+                            // Present but not a non-negative integer: malformed.
+                            SchemaState::Invalid => false,
                         };
-                        if current_or_newer {
-                            match version {
-                                Some(v) if v > SCHEMA_VERSION => info!(
+                        if tolerate {
+                            match state {
+                                SchemaState::Valid(v) if v > SCHEMA_VERSION => info!(
                                     "[notebook-doc] Loaded forward-version v{} doc from {:?} for \
                                      {} (this build is v{}); reading tolerantly, no downgrade",
                                     v, path, notebook_id, SCHEMA_VERSION
                                 ),
-                                None => info!(
+                                SchemaState::Absent => info!(
                                     "[notebook-doc] Loaded version-less doc from {:?} for {} \
                                      (treating as current)",
                                     path, notebook_id
@@ -1170,13 +1195,13 @@ impl NotebookDoc {
                             // Forward tolerance: a newer doc works because schema
                             // evolution is additive — unknown metadata keys
                             // round-trip via `extras`, missing typed fields take
-                            // `#[serde(default)]`. Critically we must NOT write
-                            // our older SCHEMA_VERSION over a newer one (that loses
-                            // the version and can lose a concurrent Automerge LWW
-                            // race) and must NOT migrate. (Bare unknown *cell*
-                            // fields are dropped on read — the cell-level
-                            // asymmetry — so additive cell data lives under
-                            // cells/{id}/metadata, never a bare field.)
+                            // `#[serde(default)]`. We must NOT write our older
+                            // SCHEMA_VERSION over a newer one (loses the version,
+                            // risks a concurrent Automerge LWW downgrade) and must
+                            // NOT migrate. (Bare unknown *cell* fields are dropped
+                            // on read — the cell-level asymmetry — so additive cell
+                            // data lives under cells/{id}/metadata, never a bare
+                            // field.)
                             if let Some(label) = actor_label {
                                 loaded.set_actor(label);
                             }
@@ -1186,18 +1211,15 @@ impl NotebookDoc {
                             return loaded;
                         }
 
-                        // Older schema (`Some(v)` with `v < SCHEMA_VERSION`).
-                        // v3 → v5: output_id was added to OutputManifest in v4,
-                        // but it's minted at capture time (#[serde(default)]), so
-                        // that part is a no-op. v5 adds the notebook-level
-                        // RuntimeStateDoc identity pointer. v3/v4 are REAL
-                        // in-the-field docs: nteract 2.0 (Mar 2026) shipped v3,
-                        // v4 landed mid-May (#2760), v5 late-May (#3086), so a
-                        // doc last written by an early-2.0 build can still be v3/v4
-                        // on disk until a v5 build re-opens it. This migration is
-                        // live and must keep working.
-                        if matches!(version, Some(3) | Some(4)) {
-                            let v = version.unwrap_or_default();
+                        // Older numeric version (< SCHEMA_VERSION). v3 → v5:
+                        // output_id was added to OutputManifest in v4 but is minted
+                        // at capture time (#[serde(default)]), a no-op; v5 adds the
+                        // notebook-level RuntimeStateDoc identity pointer. v3/v4 are
+                        // REAL in-field docs: nteract 2.0 (Mar 2026) shipped v3, v4
+                        // landed mid-May (#2760), v5 late-May (#3086), so a doc last
+                        // written by an early-2.0 build can still be v3/v4 on disk
+                        // until a v5 build re-opens it — this migration is live.
+                        if let SchemaState::Valid(v @ (3 | 4)) = state {
                             info!(
                                 "[notebook-doc] Migrating schema v{} → v{} for {} at {:?}",
                                 v, SCHEMA_VERSION, notebook_id, path
@@ -1213,18 +1235,22 @@ impl NotebookDoc {
                             return loaded;
                         }
 
-                        // v1–v2 predate nteract 2.0 and use incompatible cell
-                        // schemas (ordered List vs fractional-indexed Map). They
-                        // no longer exist in the field; this is a harmless legacy
-                        // guard. Preserve the file for manual recovery, start fresh.
-                        warn!(
-                            "[notebook-doc] Rejecting schema v{} notebook at {:?} for {}; \
-                             migration is only supported from v3. \
-                             Preserving as .corrupt and starting fresh.",
-                            version.unwrap_or_default(),
-                            path,
-                            notebook_id
-                        );
+                        // v1/v2 (pre-2.0 prototype, gone — incompatible List-vs-Map
+                        // cell schema) or a malformed schema_version. Preserve the
+                        // file for manual recovery, then start fresh.
+                        match state {
+                            SchemaState::Valid(v) => warn!(
+                                "[notebook-doc] Rejecting schema v{} notebook at {:?} for {}; \
+                                 migration is only supported from v3. Preserving as .corrupt \
+                                 and starting fresh.",
+                                v, path, notebook_id
+                            ),
+                            _ => warn!(
+                                "[notebook-doc] Rejecting notebook at {:?} for {}: malformed \
+                                 schema_version. Preserving as .corrupt and starting fresh.",
+                                path, notebook_id
+                            ),
+                        }
                         Self::preserve_corrupt(path);
                     }
                     Err(e) => {
@@ -3977,6 +4003,40 @@ mod tests {
         assert!(
             path.with_extension("automerge.corrupt").exists(),
             "a v2 doc must be preserved as .corrupt"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "persistence")]
+    fn test_load_malformed_schema_version_rejected_not_forward_loaded() {
+        // A present-but-malformed `schema_version` (wrong type) must be
+        // quarantined, NOT mistaken for a version-less/current doc. This is the
+        // absent-vs-invalid distinction the tri-state classifier draws.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("notebook.automerge");
+
+        let mut doc = NotebookDoc::new("malformed-test");
+        doc.add_cell(0, "c1", "code").unwrap();
+        // A string where a non-negative integer belongs.
+        let _ = doc
+            .doc
+            .put(automerge::ROOT, "schema_version", "not-a-number");
+        assert_eq!(
+            doc.schema_version(),
+            None,
+            "schema_version() collapses a malformed value to None"
+        );
+        doc.save_to_file(&path).unwrap();
+
+        let loaded = NotebookDoc::load_or_create(&path, "malformed-test");
+        assert_eq!(
+            loaded.cell_count(),
+            0,
+            "a malformed schema_version must be rejected, not forward-loaded"
+        );
+        assert!(
+            path.with_extension("automerge.corrupt").exists(),
+            "a malformed-version doc must be preserved as .corrupt"
         );
     }
 
